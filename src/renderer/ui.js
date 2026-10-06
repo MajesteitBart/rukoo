@@ -87,87 +87,238 @@ export function formatAddress(a) {
   return a.name ? `${a.name} <${a.address}>` : a.address;
 }
 
+
+const DAYS_SHORT = ['zo', 'ma', 'di', 'wo', 'do', 'vr', 'za'];
+
+// Reader header: "Vandaag 14:45", "Gisteren 09:12" or "di 6 okt. 2026, 14:45".
+export function readerDate(ts, now = Date.now()) {
+  const diff = Math.round((startOfDay(now) - startOfDay(ts)) / 86400000);
+  if (diff === 0) return `Vandaag ${hhmm(ts)}`;
+  if (diff === 1) return `Gisteren ${hhmm(ts)}`;
+  const d = new Date(ts);
+  return `${DAYS_SHORT[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}. ${d.getFullYear()}, ${hhmm(ts)}`;
+}
+
+// ---------- avatars ----------
+
+export function initials(a) {
+  const raw = String((a && (a.name || a.address)) || '?')
+    .replace(/\(.*?\)|["'<>[\]]/g, ' ')
+    .trim();
+  const words = a && !a.name && raw.includes('@') ? [raw.split('@')[0]] : raw.split(/[\s._-]+/).filter(Boolean);
+  const first = [...(words[0] || '?')];
+  const last = words.length > 1 ? [...words[words.length - 1]] : [];
+  return (first[0] + (last[0] || first[1] || '')).toUpperCase();
+}
+
+export function hue(text) {
+  let h = 7;
+  for (const c of String(text || '').toLowerCase()) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return h;
+}
+
+export function avatar(a, cls = '') {
+  const key = (a && (a.address || a.name)) || '';
+  return `<span class="avatar ${cls}" style="--h:${hue(key)}" aria-hidden="true">${esc(initials(a))}</span>`;
+}
+
+// ---------- theme ----------
+
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+export function applyTheme(theme = 'system') {
+  const light = theme === 'light' || (theme === 'system' && !darkQuery.matches);
+  document.documentElement.classList.toggle('light', light);
+  return light;
+}
+
+export function onSystemThemeChange(fn) {
+  darkQuery.addEventListener('change', fn);
+}
+
+export const isLight = () => document.documentElement.classList.contains('light');
+
 // ---------- toast ----------
 
 let toastTimer = null;
-export function toast(message, ms = 2600) {
+let toastAction = null;
+
+function hideToast() {
+  document.getElementById('toast')?.classList.remove('show');
+  toastAction = null;
+}
+
+// opts: a duration in ms, or { ms, action: { label, run } }. A toast with an action stays longer
+// and its action also runs on Ctrl+Z (see runToastAction).
+export function toast(message, opts = {}) {
+  if (typeof opts === 'number') opts = { ms: opts };
   const el = document.getElementById('toast');
-  el.textContent = message;
+  if (!el) return;
+  const ms = opts.ms || (opts.action ? 8000 : 2600);
+  el.textContent = '';
+  const text = document.createElement('span');
+  text.textContent = message;
+  el.appendChild(text);
+  toastAction = opts.action || null;
+  if (toastAction) {
+    const b = document.createElement('button');
+    b.textContent = toastAction.label;
+    b.addEventListener('click', runToastAction);
+    el.appendChild(b);
+  }
+  el.classList.toggle('has-action', Boolean(toastAction));
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
+  toastTimer = setTimeout(hideToast, ms);
+  el.onmouseenter = () => clearTimeout(toastTimer);
+  el.onmouseleave = () => {
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, 2500);
+  };
+}
+
+export function runToastAction() {
+  const action = toastAction;
+  if (!action) return false;
+  hideToast();
+  action.run();
+  return true;
 }
 
 // ---------- popover menu ----------
 
 let openMenu = null;
+let menuAnchor = null;
 
-export function closeMenu() {
-  if (openMenu) {
-    openMenu.remove();
-    openMenu = null;
-  }
+export function closeMenu({ refocus = false } = {}) {
+  if (!openMenu) return;
+  openMenu.remove();
+  openMenu = null;
+  if (refocus && menuAnchor && document.contains(menuAnchor)) menuAnchor.focus();
+  menuAnchor = null;
 }
 
-// items: [{label, action, danger}] ; anchor: element the menu hangs from.
-export function showMenu(anchor, items, { above = false } = {}) {
+export const menuOpen = () => Boolean(openMenu);
+
+// items: [{ label, action, icon, shortcut, danger, checked, disabled }] or { separator: true } or { heading }.
+// Opens below the anchor element, or at { x, y } for context menus.
+export function showMenu(anchor, items, { above = false, at = null, align = 'right' } = {}) {
   closeMenu();
   const menu = document.createElement('div');
   menu.className = 'menu';
   menu.setAttribute('role', 'menu');
-  for (const item of items.filter(Boolean)) {
+  const list = items.filter(Boolean);
+  list.forEach((item, i) => {
+    if (item.separator) {
+      if (i > 0 && i < list.length - 1 && !list[i - 1].separator) menu.insertAdjacentHTML('beforeend', '<div class="menu-sep" role="separator"></div>');
+      return;
+    }
+    if (item.heading) {
+      menu.insertAdjacentHTML('beforeend', `<div class="menu-heading">${esc(item.heading)}</div>`);
+      return;
+    }
     const b = document.createElement('button');
-    b.textContent = item.label;
-    b.setAttribute('role', 'menuitem');
-    if (item.danger) b.className = 'danger';
+    b.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemcheckbox');
+    if (item.checked !== undefined) b.setAttribute('aria-checked', String(Boolean(item.checked)));
+    b.className = `${item.danger ? 'danger' : ''} ${item.current ? 'current' : ''}`;
+    if (item.current) b.setAttribute('aria-current', 'true');
+    b.disabled = Boolean(item.disabled);
+    const lead = item.checked !== undefined ? (item.checked ? icons.check : '') : item.icon ? icons[item.icon] || item.icon : '';
+    b.innerHTML = `<span class="mi">${lead}</span><span class="ml">${esc(item.label)}</span>${item.hint ? `<span class="mh">${esc(item.hint)}</span>` : ''}${
+      item.shortcut ? `<kbd>${esc(item.shortcut)}</kbd>` : ''
+    }`;
     b.addEventListener('click', (e) => {
       e.stopPropagation();
       closeMenu();
       item.action();
     });
     menu.appendChild(b);
-  }
+  });
   document.body.appendChild(menu);
-  const r = anchor.getBoundingClientRect();
   const mw = menu.offsetWidth;
   const mh = menu.offsetHeight;
-  let left = Math.min(r.right - mw, window.innerWidth - mw - 8);
-  left = Math.max(8, left);
-  let top = above ? r.top - mh - 6 : r.bottom + 4;
-  if (top + mh > window.innerHeight - 8) top = Math.max(48, r.top - mh - 6);
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
-  menu.style.transformOrigin = above ? 'bottom right' : 'top right';
+  let left;
+  let top;
+  if (at) {
+    left = Math.min(at.x, window.innerWidth - mw - 8);
+    top = at.y + mh > window.innerHeight - 8 ? Math.max(8, at.y - mh) : at.y;
+    menu.style.transformOrigin = 'top left';
+  } else {
+    const r = anchor.getBoundingClientRect();
+    left = align === 'left' ? r.left : r.right - mw;
+    top = above ? r.top - mh - 6 : r.bottom + 4;
+    if (top + mh > window.innerHeight - 8) top = Math.max(48, r.top - mh - 6);
+    menu.style.transformOrigin = `${above ? 'bottom' : 'top'} ${align === 'left' ? 'left' : 'right'}`;
+  }
+  menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - mw - 8))}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
   openMenu = menu;
-  menu.querySelector('button')?.focus();
+  menuAnchor = anchor || null;
+  menu.addEventListener('keydown', (e) => {
+    const buttons = [...menu.querySelectorAll('button:not(:disabled)')];
+    const i = buttons.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      buttons[(i + step + buttons.length) % buttons.length]?.focus();
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      buttons[e.key === 'Home' ? 0 : buttons.length - 1]?.focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu({ refocus: true });
+    } else if (e.key === 'Tab') {
+      closeMenu();
+    }
+  });
+  menu.querySelector('button:not(:disabled)')?.focus();
 }
 
 document.addEventListener('mousedown', (e) => {
   if (openMenu && !openMenu.contains(e.target)) closeMenu();
 });
+window.addEventListener('blur', () => closeMenu());
+window.addEventListener('resize', () => closeMenu());
 
 // ---------- dialogs ----------
 
-export function dialog({ title, body = '', buttons = [{ label: 'OK', value: true }], render }) {
+export function dialog({ title, body = '', buttons = [{ label: 'OK', value: true }], render, wide = false }) {
   return new Promise((resolve) => {
+    const before = document.activeElement;
     const scrim = document.createElement('div');
     scrim.className = 'scrim';
-    scrim.innerHTML = `<div class="dialog" role="dialog" aria-modal="true">
-      ${title ? `<h2>${esc(title)}</h2>` : ''}
+    scrim.innerHTML = `<div class="dialog ${wide ? 'wide' : ''}" role="dialog" aria-modal="true" ${title ? 'aria-labelledby="dialog-title"' : ''}>
+      ${title ? `<h2 id="dialog-title">${esc(title)}</h2>` : ''}
       <div class="dialog-body">${body}</div>
       <div class="buttons">${buttons
-        .map((b, i) => `<button data-i="${i}" class="${b.danger ? 'danger' : ''}">${esc(b.label)}</button>`)
+        .map((b, i) => `<button data-i="${i}" class="${b.danger ? 'danger' : ''} ${b.primary ? 'primary' : ''}">${esc(b.label)}</button>`)
         .join('')}</div>
     </div>`;
     const done = (value) => {
       scrim.remove();
       document.removeEventListener('keydown', onKey, true);
+      if (before && document.contains(before)) before.focus();
       resolve(value);
     };
     const onKey = (e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         done(null);
+      }
+      // Keep Tab inside the dialog.
+      if (e.key === 'Tab') {
+        const items = [...scrim.querySelectorAll('button, input, textarea, select')].filter((x) => !x.disabled);
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener('keydown', onKey, true);
@@ -192,7 +343,7 @@ export function confirmDialog(title, message, okLabel = 'OK', danger = false) {
     body: `<p>${esc(message)}</p>`,
     buttons: [
       { label: 'Annuleren', value: false },
-      { label: okLabel, value: true, danger }
+      { label: okLabel, value: true, danger, primary: !danger }
     ]
   });
 }
@@ -202,15 +353,18 @@ export function choiceDialog(title, options, current) {
     title,
     buttons: [{ label: 'Annuleren', value: null }],
     render(body, done) {
-      body.innerHTML = options
+      body.innerHTML = `<div class="choices" role="radiogroup">${options
         .map(
           (o, i) =>
-            `<button class="radio-row" data-i="${i}"><span class="radio ${o.value === current ? 'on' : ''}"></span><span>${esc(o.label)}</span></button>`
+            `<button class="radio-row" role="radio" aria-checked="${o.value === current}" data-i="${i}"><span class="radio ${o.value === current ? 'on' : ''}"></span><span class="rl">${esc(o.label)}</span>${
+              o.hint ? `<span class="rh">${esc(o.hint)}</span>` : ''
+            }</button>`
         )
-        .join('');
+        .join('')}</div>`;
       body.querySelectorAll('.radio-row').forEach((b) =>
         b.addEventListener('click', () => done(options[Number(b.dataset.i)].value))
       );
+      setTimeout(() => (body.querySelector('.radio.on')?.parentElement || body.querySelector('.radio-row'))?.focus(), 0);
     }
   });
 }

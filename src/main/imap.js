@@ -249,12 +249,21 @@ class ImapAccount {
     });
   }
 
-  move(path, uid, destination) {
+  // Returns the message's uid in the destination and that mailbox's UIDVALIDITY, as far as the
+  // server reports them (UIDPLUS). With expectUidValidity, refuses to touch a mailbox whose uids
+  // were reassigned since: the uid would point at another message.
+  move(path, uid, destination, { expectUidValidity = null } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);
       try {
+        if (expectUidValidity && String(client.mailbox.uidValidity) !== String(expectUidValidity)) {
+          throw Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY' });
+        }
         const res = await client.messageMove(String(uid), destination, { uid: true });
-        return res && res.uidMap ? res.uidMap.get(uid) || null : null;
+        return {
+          uid: res && res.uidMap ? res.uidMap.get(uid) || null : null,
+          uidValidity: res && res.uidValidity ? String(res.uidValidity) : null
+        };
       } finally {
         lock.release();
       }

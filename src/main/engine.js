@@ -14,6 +14,12 @@ const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73'
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
 const LIMITS = { inbox: 300, default: 100 };
 const VIEW_ROLES = { drafts: 'drafts', sent: 'sent', trash: 'trash', junk: 'junk', archive: 'archive' };
+// Earlier versions put this signature under every mail by default; it is now opt-in.
+const OLD_DEFAULT_SIGNATURE = 'Verzonden vanaf mijn pc';
+// How long a move or delete can be undone.
+const UNDO_MS = 10 * 60 * 1000;
+// Folders whose mail is not archived, even though Gmail's All Mail also holds it.
+const SYSTEM_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 
 const DEFAULT_SETTINGS = {
   theme: 'system',
@@ -29,7 +35,7 @@ const DEFAULT_SETTINGS = {
   vips: [],
   spam: [],
   defaultAccountId: null,
-  signature: 'Verzonden vanaf mijn pc'
+  signature: ''
 };
 
 function readJson(file, fallback) {
@@ -82,6 +88,8 @@ class Engine extends EventEmitter {
     this.saveTimers = new Map();
     // Local changes whose IMAP command has not finished yet; re-applied over sync results.
     this.pending = new Map();
+    // Recent moves, keyed by the id the message had before it moved, so they can be reversed.
+    this.undoable = new Map();
   }
 
   file(...parts) {
@@ -92,6 +100,12 @@ class Engine extends EventEmitter {
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.accounts = readJson(this.file('accounts.json'), []);
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.file('settings.json'), {}) };
+    // Once only, so a user who sets this signature again keeps it.
+    if (!this.settings.signatureOptIn) {
+      if (this.settings.signature === OLD_DEFAULT_SIGNATURE) this.settings.signature = '';
+      this.settings.signatureOptIn = true;
+      if (fs.existsSync(this.file('settings.json'))) this.persistSettings();
+    }
     this.saved = readJson(this.file('saved.json'), []);
     for (const acc of this.accounts) {
       this.caches.set(acc.id, readJson(this.file('cache', `${acc.id}.json`), { folders: [], boxes: {}, lastSync: null }));
@@ -282,8 +296,11 @@ class Engine extends EventEmitter {
       lastSync: cache.lastSync || null,
       error: cache.error || null,
       syncing: this.syncs.has(acc.id),
+      archive: (this.archiveFolder(acc.id) || {}).path || null,
       folders: (cache.folders || [])
-        .filter((f) => f.role !== 'all' && f.role !== 'flagged' && f.role !== 'important')
+        .filter((f) => f.role !== 'flagged' && f.role !== 'important' && (f.role !== 'all' || this.archiveFolder(acc.id) === f))
+        // Gmail's All Mail is where archived mail goes, so it is shown as the archive.
+        .map((f) => (f.role === 'all' ? { ...f, role: 'archive' } : f))
         .map((f) => ({ path: f.path, name: util.displayFolderName(f), role: f.role || null }))
     };
   }
@@ -425,6 +442,11 @@ class Engine extends EventEmitter {
 
   // ---------- sync ----------
 
+  // Gmail has no archive folder; archiving there means moving to All Mail.
+  archiveFolder(accountId) {
+    return this.folderByRole(accountId, 'archive') || this.folderByRole(accountId, 'all');
+  }
+
   folderByRole(accountId, role) {
     const cache = this.caches.get(accountId);
     return cache && cache.folders.find((f) => f.role === role);
@@ -492,6 +514,8 @@ class Engine extends EventEmitter {
     try {
       cache.folders = await session.listFolders();
       const targets = cache.folders.filter((f) => SYNC_ROLES.includes(f.role)).map((f) => f.path);
+      const archive = this.archiveFolder(id);
+      if (archive && !targets.includes(archive.path)) targets.push(archive.path);
       // Keep user folders that were opened before in sync too.
       for (const p of [...extraFolders, ...Object.keys(cache.boxes)]) {
         if (!targets.includes(p) && cache.folders.some((f) => f.path === p)) targets.push(p);
@@ -536,6 +560,7 @@ class Engine extends EventEmitter {
     };
     if (!sameValidity && prev) {
       fs.rmSync(this.file('bodies', acc.id), { recursive: true, force: true });
+      for (const [key, r] of this.undoable) if (r.accountId === acc.id && r.destination === folderPath) this.undoable.delete(key);
     }
     // Only report mail that arrived after an earlier sync, never the initial download.
     if (info.role !== 'inbox' || !prev) return [];
@@ -603,12 +628,27 @@ class Engine extends EventEmitter {
       if (!cache) continue;
       for (const [folderPath, box] of Object.entries(cache.boxes)) {
         const info = cache.folders.find((f) => f.path === folderPath) || { path: folderPath };
+        // Gmail's All Mail also holds every message of the other folders. Normally its copies of those
+        // are hidden; the archive view only drops what is still in a system folder, so archived mail
+        // with a label stays visible there.
+        const elsewhere = info.role === 'all' ? this.messageIdsOutside(cache, folderPath, predicate.archive ? SYSTEM_ROLES : null) : null;
         for (const m of box.messages) {
+          if (elsewhere && m.messageId && elsewhere.has(m.messageId)) continue;
           if (predicate(info, m)) out.push(this.publicMessage(acc, folderPath, m));
         }
       }
     }
     return out;
+  }
+
+  messageIdsOutside(cache, folderPath, roles = null) {
+    const ids = new Set();
+    for (const [p, box] of Object.entries(cache.boxes)) {
+      if (p === folderPath) continue;
+      if (roles && !roles.includes((cache.folders.find((f) => f.path === p) || {}).role)) continue;
+      for (const m of box.messages) if (m.messageId) ids.add(m.messageId);
+    }
+    return ids;
   }
 
   viewPredicate(view, folder) {
@@ -624,6 +664,10 @@ class Engine extends EventEmitter {
         return (info, m) => m.starred && info.role !== 'trash' && info.role !== 'junk';
       case 'folder':
         return (info) => info.path === folder;
+      case 'everything':
+        return () => true;
+      case 'archive':
+        return Object.assign((info) => info.role === 'archive' || info.role === 'all', { archive: true });
       default:
         if (VIEW_ROLES[view]) return (info) => info.role === VIEW_ROLES[view];
         return () => false;
@@ -793,17 +837,67 @@ class Engine extends EventEmitter {
     if (destination === folder) return;
     this.removeFromCache(acc, folder, uid);
     this.changed(acc.id);
+    let moved;
     try {
-      await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).move(folder, uid, destination));
+      moved = await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).move(folder, uid, destination));
     } catch (err) {
       const box = this.caches.get(acc.id).boxes[folder];
       if (box) box.messages.push(msg);
       this.changed(acc.id);
       throw new Error(friendlyError(err));
     }
+    // Servers without UIDPLUS do not report the new uid; such a move cannot be undone.
+    if (moved && moved.uid && moved.uidValidity) {
+      this.rememberMove(id, { accountId: acc.id, folder, destination, uid: moved.uid, uidValidity: moved.uidValidity, msg });
+    }
     if (this.caches.get(acc.id).boxes[destination]) {
       this.syncFolderAndNotify(acc, destination).catch(() => {});
     }
+  }
+
+  rememberMove(id, record) {
+    const now = Date.now();
+    for (const [key, r] of this.undoable) if (now - r.at > UNDO_MS) this.undoable.delete(key);
+    this.undoable.set(id, { ...record, at: now });
+  }
+
+  canUndo(id) {
+    return this.undoable.has(id);
+  }
+
+  // Moves a message back to where it was before move(), remove() or archive().
+  // Returns the id it gets in its old folder.
+  async undoMove(id) {
+    const rec = this.undoable.get(id);
+    this.undoable.delete(id);
+    if (!rec || Date.now() - rec.at > UNDO_MS) throw new Error('Dit kan niet meer ongedaan worden gemaakt.');
+    const acc = this.account(rec.accountId);
+    this.removeFromCache(acc, rec.destination, rec.uid);
+    this.changed(acc.id);
+    let uid;
+    try {
+      const back = await this.withPending(acc, rec.destination, rec.uid, { removed: true }, () =>
+        this.session(acc).move(rec.destination, rec.uid, rec.folder, { expectUidValidity: rec.uidValidity })
+      );
+      uid = back && back.uid;
+    } catch (err) {
+      if (this.caches.get(acc.id).boxes[rec.destination]) this.syncFolderAndNotify(acc, rec.destination).catch(() => {});
+      if (err && err.code === 'UIDVALIDITY') throw new Error('Dit kan niet meer ongedaan worden gemaakt: de map is op de server opnieuw opgebouwd.');
+      throw new Error(friendlyError(err));
+    }
+    // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
+    const box = this.caches.get(acc.id).boxes[rec.folder];
+    if (box && uid && !box.messages.some((m) => m.uid === uid)) box.messages.push({ ...rec.msg, uid });
+    this.changed(acc.id);
+    if (box) this.syncFolderAndNotify(acc, rec.folder).catch(() => {});
+    return uid ? encodeId(acc.id, rec.folder, uid) : null;
+  }
+
+  async archive(id) {
+    const { acc } = this.locate(id);
+    const target = this.archiveFolder(acc.id);
+    if (!target) throw new Error('Dit account heeft geen archiefmap.');
+    await this.move(id, target.path);
   }
 
   // Moves to Prullenbak, or deletes for good when the message is already there.
@@ -967,6 +1061,8 @@ class Engine extends EventEmitter {
     const drafts = this.folderByRole(acc.id, 'drafts');
     if (!drafts) throw new Error('Deze account heeft geen map Concepten.');
     const mail = await this.buildMail(acc, payload);
+    // A Message-ID of our own finds the stored draft again on servers that do not report its uid.
+    mail.messageId = `<${crypto.randomUUID()}@${mail.from.address.split('@')[1] || 'rukoo.invalid'}>`;
     // Keep Bcc in the stored draft so it survives reopening.
     const raw = await ImapAccount.compose({ ...mail, keepBcc: true });
     const session = this.session(acc);
@@ -974,7 +1070,15 @@ class Engine extends EventEmitter {
     if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
     await this.syncFolderInto(acc, drafts.path);
     this.changed(acc.id);
-    return uid ? encodeId(acc.id, drafts.path, uid) : null;
+    const stored = uid || this.uidByMessageId(acc.id, drafts.path, mail.messageId);
+    return stored ? encodeId(acc.id, drafts.path, stored) : null;
+  }
+
+  uidByMessageId(accountId, folderPath, messageId) {
+    const box = this.caches.get(accountId).boxes[folderPath];
+    const norm = (v) => String(v || '').replace(/[<>]/g, '').toLowerCase();
+    const hit = box && box.messages.find((m) => m.messageId && norm(m.messageId) === norm(messageId));
+    return hit ? hit.uid : null;
   }
 
   async discardDraft(id) {

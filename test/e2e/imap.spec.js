@@ -40,12 +40,12 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
 
     await win.fill('[name=password]', eth.pass);
     await win.click('button[type=submit]');
-    await expect(win.locator('.list-title .sub')).toHaveText(eth.user, { timeout: 30000 });
+    await expect(win.locator('.list-title .sub')).toContainText(eth.user, { timeout: 30000 });
     const row = win.locator('.item', { hasText: 'Welkom in je echte inbox' });
     await expect(row).toBeVisible({ timeout: 30000 });
     await row.click();
     await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('via SMTP binnen', { timeout: 30000 });
-    await expect(win.locator('.group-head .synced').first()).toContainText('Laatste synchronisatie');
+    await expect(win.locator('.sync-status')).toContainText('Bijgewerkt');
   } finally {
     await app.close();
   }

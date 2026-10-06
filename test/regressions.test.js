@@ -157,3 +157,18 @@ test('message ids from a draft parse back with Bcc only when kept', async () => 
   assert.equal((await simpleParser(await ImapAccount.compose({ ...mail, keepBcc: true }))).bcc.text, 'x@y.nl');
   assert.equal((await simpleParser(await ImapAccount.compose(mail))).bcc, undefined);
 });
+
+test('demo mail of today stays in the past and in order at any hour', () => {
+  const { seed } = require('../src/main/demo');
+  const order = (now) =>
+    seed(now)
+      .boxes.INBOX.messages.filter((m) => new Date(m.date).toDateString() === new Date(now).toDateString())
+      .sort((a, b) => b.date - a.date)
+      .map((m) => m.subject);
+  const evening = order(new Date(2026, 9, 7, 21, 0).getTime());
+  for (const [h, min] of [[0, 5], [9, 30], [13, 30], [14, 50]]) {
+    const now = new Date(2026, 9, 7, h, min).getTime();
+    assert.deepEqual(order(now), evening, `order at ${h}:${min}`);
+    assert.ok(seed(now).boxes.INBOX.messages.every((m) => m.date <= now), `all in the past at ${h}:${min}`);
+  }
+});

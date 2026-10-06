@@ -47,9 +47,12 @@ function seed(now = Date.now()) {
     const d = new Date(today);
     d.setDate(d.getDate() - daysAgo);
     d.setHours(h, m, 0, 0);
-    // Keep "today" messages in the past relative to now.
-    if (daysAgo === 0 && d.getTime() > now) return now - (60 - m) * 60000;
-    return d.getTime();
+    if (daysAgo > 0) return d.getTime();
+    // Today's mail must lie in the past. Before 15:00, when the latest one is due, squeeze all
+    // of today into the time since midnight, so the messages keep their order.
+    const midnight = new Date(now).setHours(0, 0, 0, 0);
+    if (now >= midnight + 15 * 3600000) return d.getTime();
+    return midnight + Math.floor(((h * 60 + m) / (15 * 60)) * (now - midnight));
   };
   const me = { name: 'Demo Gebruiker', address: DEMO_EMAIL };
   const pdf = (name) => ({
@@ -415,9 +418,12 @@ class DemoAccount {
     this.persist();
   }
 
-  async move(p, uid, destination) {
+  async move(p, uid, destination, { expectUidValidity = null } = {}) {
     const src = this.box(p);
     const dest = this.box(destination);
+    if (expectUidValidity && String(src.uidValidity) !== String(expectUidValidity)) {
+      throw Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY' });
+    }
     const idx = src.messages.findIndex((m) => m.uid === Number(uid));
     if (idx < 0) throw new Error('Bericht niet gevonden.');
     const [m] = src.messages.splice(idx, 1);
@@ -425,7 +431,7 @@ class DemoAccount {
     dest.messages.push(m);
     dest.messages.sort((a, b) => a.uid - b.uid);
     this.persist();
-    return m.uid;
+    return { uid: m.uid, uidValidity: String(dest.uidValidity) };
   }
 
   async deleteForever(p, uid) {

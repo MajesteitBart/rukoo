@@ -2,13 +2,13 @@ import { icons } from './icons.js';
 import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm } from './ui.js';
 
 const THEMES = [
-  { value: 'system', label: 'Afstemmen op systeeminstelling' },
+  { value: 'system', label: 'Systeeminstelling volgen' },
   { value: 'light', label: 'Licht' },
   { value: 'dark', label: 'Donker' }
 ];
 const DENSITY = [
-  { value: 'standard', label: 'Standaard' },
-  { value: 'compact', label: 'Compact' }
+  { value: 'standard', label: 'Standaard', hint: 'Afzender, onderwerp en voorbeeldtekst' },
+  { value: 'compact', label: 'Compact', hint: 'Eén regel per e-mail' }
 ];
 const BADGES = [
   { value: 'new', label: 'Nieuwe e-mails' },
@@ -33,7 +33,6 @@ const COLORS = [
   { value: '#5ec2ff', label: 'Lichtblauw' }
 ];
 const HIDEABLE = [
-  ['unread', 'Ongelezen'],
   ['vip', "VIP's"],
   ['starred', 'Sterren'],
   ['saved', 'Opgeslagen e-mails'],
@@ -143,10 +142,10 @@ export function openSettings(ctx) {
         <div class="settings-group-title">Algemeen</div>
         <div class="card">
           ${row({ title: 'Mappen beheren', desc: 'Geef uw e-mailmappen weer of verberg ze.', action: 'folders' })}
-          ${row({ title: 'Weergeven', value: labelOf(DENSITY, s.density), action: 'density' })}
-          ${row({ title: 'Donkere stand', value: labelOf(THEMES, s.theme), action: 'theme' })}
+          ${row({ title: 'Lijstweergave', value: labelOf(DENSITY, s.density), action: 'density' })}
+          ${row({ title: 'Thema', value: labelOf(THEMES, s.theme), action: 'theme' })}
           ${row({ title: 'E-mails donker weergeven', desc: 'Pas de kleuren van HTML-e-mails aan in de donkere stand.', action: 'toggle:darkEmails', toggle: s.darkEmails })}
-          ${row({ title: 'Acties voor vegen', desc: 'Veeg naar rechts om als (on)gelezen te markeren en naar links om te wissen.', action: 'toggle:swipeActions', toggle: s.swipeActions, sep: true })}
+          ${row({ title: 'Vegen op aanraakschermen', desc: 'Veeg naar rechts om als (on)gelezen te markeren en naar links om te wissen.', action: 'toggle:swipeActions', toggle: s.swipeActions })}
           ${row({ title: 'Inhoud passend maken', desc: 'Maak e-mailinhoud kleiner zodat deze in het venster past.', action: 'toggle:fitContent', toggle: s.fitContent })}
           ${row({ title: 'Meldingen', desc: 'Toon een Windows-melding bij nieuwe e-mails.', action: 'toggle:notifications', toggle: s.notifications })}
           ${row({ title: 'Tellingen app-pictogrambadge', value: labelOf(BADGES, s.badge), action: 'badge' })}
@@ -345,12 +344,12 @@ export function openSettings(ctx) {
       case 'vips':
         return go(a);
       case 'density': {
-        const v = await choiceDialog('Weergeven', DENSITY, s.density);
+        const v = await choiceDialog('Lijstweergave', DENSITY, s.density);
         if (v) set({ density: v });
         return;
       }
       case 'theme': {
-        const v = await choiceDialog('Donkere stand', THEMES, s.theme);
+        const v = await choiceDialog('Thema', THEMES, s.theme);
         if (v) set({ theme: v });
         return;
       }

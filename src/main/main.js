@@ -18,11 +18,20 @@ const {
 const { Engine } = require('./engine');
 const { GoogleAuth } = require('./google');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
+const { WindowState } = require('./windowstate');
 
 const APP_ID = 'nl.bvdm.rukoo-mail';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
-const DARK_BAR = { color: '#000000', symbolColor: '#f2f2f2', height: 40 };
-const LIGHT_BAR = { color: '#f4f4f4', symbolColor: '#1a1a1a', height: 40 };
+const DARK_BAR = { color: '#141519', symbolColor: '#e6e8ee', height: 40 };
+const LIGHT_BAR = { color: '#f4f5f7', symbolColor: '#1a1c22', height: 40 };
+const RENDERER = path.join(__dirname, '..', 'renderer');
+const WEB_PREFERENCES = {
+  preload: path.join(__dirname, 'preload.js'),
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: true,
+  spellcheck: true
+};
 
 // Before the rename to Rukoo Mail the app kept its data in %APPDATA%\E-mail. Electron has already created an
 // empty folder under the new name by now, so swap it for the old one. If the old folder is in use, keep using it
@@ -45,6 +54,9 @@ else adoptLegacyData();
 app.setAppUserModelId(APP_ID);
 
 let win = null;
+// Open compose windows by webContents id, with the options they were opened with.
+const composeWindows = new Map();
+let windowState = null;
 let engine = null;
 let google = null;
 let syncTimer = null;
@@ -67,15 +79,31 @@ const secrets = {
   }
 };
 
+// Events for the main window only.
 function send(type, payload) {
   if (win && !win.isDestroyed()) win.webContents.send('mail:event', { type, payload });
 }
 
+function windows() {
+  return [win, ...[...composeWindows.values()].map((c) => c.win)].filter((w) => w && !w.isDestroyed());
+}
+
+function broadcast(type, payload) {
+  for (const w of windows()) w.webContents.send('mail:event', { type, payload });
+}
+
+function themeColors() {
+  const dark = nativeTheme.shouldUseDarkColors;
+  return { bar: dark ? DARK_BAR : LIGHT_BAR, background: dark ? DARK_BAR.color : LIGHT_BAR.color };
+}
+
 function applyTheme() {
   nativeTheme.themeSource = engine.settings.theme === 'light' ? 'light' : engine.settings.theme === 'dark' ? 'dark' : 'system';
-  if (win && !win.isDestroyed() && process.platform === 'win32') {
-    win.setTitleBarOverlay(nativeTheme.shouldUseDarkColors ? DARK_BAR : LIGHT_BAR);
-    win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#000000' : '#f4f4f4');
+  if (process.platform !== 'win32') return;
+  const { bar, background } = themeColors();
+  for (const w of windows()) {
+    w.setTitleBarOverlay(bar);
+    w.setBackgroundColor(background);
   }
 }
 
@@ -122,7 +150,10 @@ function notify(messages) {
 }
 
 function showWindow() {
-  if (!win) return;
+  if (!win || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
@@ -132,13 +163,139 @@ function safeUrl(url) {
   return /^(https?:|mailto:)/i.test(String(url || ''));
 }
 
+function parseMailto(url) {
+  try {
+    const u = new URL(url);
+    const to = decodeURIComponent(u.pathname || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((address) => ({ name: '', address }));
+    return { mode: 'new', to, subject: u.searchParams.get('subject') || '', body: u.searchParams.get('body') || '' };
+  } catch (_) {
+    return { mode: 'new' };
+  }
+}
+
 function openUrl(url) {
   if (/^mailto:/i.test(url)) {
-    send('compose-mailto', url);
-    showWindow();
+    openComposeWindow(parseMailto(url));
     return;
   }
   if (safeUrl(url)) shell.openExternal(url);
+}
+
+// Links never navigate an app window; they open in the browser or, for mailto:, in a compose window.
+function harden(w) {
+  w.webContents.setWindowOpenHandler(({ url }) => {
+    openUrl(url);
+    return { action: 'deny' };
+  });
+  w.webContents.on('will-navigate', (e, url) => {
+    if (url !== w.webContents.getURL()) {
+      e.preventDefault();
+      openUrl(url);
+    }
+  });
+  w.webContents.on('will-frame-navigate', (e) => {
+    // Clicks inside a mail frame must never replace the frame contents.
+    if (!e.isMainFrame && !/^(about:|data:)/.test(e.url)) {
+      e.preventDefault();
+      openUrl(e.url);
+    }
+  });
+}
+
+// Test mode: a never-shown window does not paint, so park it off-screen without focus.
+function reveal(w, maximized = false) {
+  w.once('ready-to-show', () => {
+    if (process.env.SEM_HIDDEN) {
+      w.setPosition(-5000, -5000);
+      w.showInactive();
+      return;
+    }
+    if (maximized) w.maximize();
+    w.show();
+  });
+}
+
+const COMPOSE_MODES = new Set(['new', 'reply', 'replyAll', 'forward', 'draft']);
+
+function composeOptions(input = {}) {
+  const text = (v, max) => String(v || '').slice(0, max);
+  const people = (list) =>
+    (Array.isArray(list) ? list : []).slice(0, 100).map((a) => ({ name: text(a && a.name, 200), address: text(a && a.address, 320) }));
+  return {
+    mode: COMPOSE_MODES.has(input.mode) ? input.mode : 'new',
+    id: input.id ? text(input.id, 2000) : null,
+    accountId: input.accountId ? text(input.accountId, 200) : null,
+    to: people(input.to),
+    subject: text(input.subject, 1000),
+    body: text(input.body, 20000)
+  };
+}
+
+function openComposeWindow(input) {
+  const opts = composeOptions(input);
+  if (opts.mode === 'draft' && opts.id) {
+    const open = [...composeWindows.values()].find((c) => c.draftId === opts.id && !c.win.isDestroyed());
+    if (open) {
+      open.win.show();
+      open.win.focus();
+      return true;
+    }
+  }
+  const b = windowState.bounds('compose', { width: 880, height: 780, minWidth: 560, minHeight: 460 });
+  // A second compose window opens slightly offset, so the first stays visible behind it.
+  const others = windows().filter((w) => w !== win);
+  const last = others[others.length - 1];
+  const pos = last ? { x: last.getBounds().x + 28, y: last.getBounds().y + 28 } : Number.isFinite(b.x) ? { x: b.x, y: b.y } : {};
+  const { bar, background } = themeColors();
+  const w = new BrowserWindow({
+    width: b.width,
+    height: b.height,
+    ...pos,
+    minWidth: 560,
+    minHeight: 460,
+    show: false,
+    title: 'Nieuw bericht',
+    icon: fs.existsSync(ICON) ? ICON : undefined,
+    backgroundColor: background,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: bar,
+    webPreferences: WEB_PREFERENCES
+  });
+  const id = w.webContents.id;
+  composeWindows.set(id, { win: w, opts, draftId: opts.mode === 'draft' ? opts.id : null });
+  w.on('closed', () => composeWindows.delete(id));
+  harden(w);
+  if (!process.env.SEM_HIDDEN) windowState.track('compose', w);
+  reveal(w);
+  w.loadFile(path.join(RENDERER, 'compose.html'));
+  return true;
+}
+
+async function saveAllAttachments(id) {
+  const full = await engine.getMessage(id);
+  const list = full.attachments || [];
+  if (!list.length) return 0;
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Bijlagen opslaan in',
+    defaultPath: app.getPath('downloads'),
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (res.canceled || !res.filePaths[0]) return 0;
+  const dir = res.filePaths[0];
+  for (const att of list) {
+    const a = await engine.attachment(id, att.index);
+    const name = safeName(a.filename);
+    const ext = path.extname(name);
+    let file = path.join(dir, name);
+    for (let n = 2; fs.existsSync(file); n++) file = path.join(dir, `${path.basename(name, ext)} (${n})${ext}`);
+    fs.writeFileSync(file, a.content);
+    markOfTheWeb(file);
+  }
+  return list.length;
 }
 
 async function tempAttachment(id, index) {
@@ -165,6 +322,9 @@ const api = {
   contacts: () => engine.contacts(),
   get: (id) => engine.getMessage(id),
   setFlags: (id, flags) => engine.setFlags(id, flags),
+  archive: (id) => engine.archive(id),
+  canUndo: (id) => engine.canUndo(id),
+  undoMove: (id) => engine.undoMove(id),
   markAllRead: (scope, view, folder) => engine.markAllRead(scope, view, folder),
   move: (id, dest) => engine.move(id, dest),
   remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
@@ -173,7 +333,13 @@ const api = {
   markSpam: (id) => engine.markSpam(id),
   removeSpam: (address) => engine.updateSettings({ spam: engine.settings.spam.filter((a) => a !== address) }),
   saveToDevice: (id) => engine.saveToDevice(id),
-  send: (payload) => engine.send(payload),
+  send: async (payload) => {
+    await engine.send(payload);
+    send('toast', 'E-mail verzonden');
+    return true;
+  },
+  openCompose: (opts) => openComposeWindow(opts),
+  toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
   saveDraft: (payload) => engine.saveDraft(payload),
   discardDraft: (id) => engine.discardDraft(id),
   addAccount: (input) => engine.addAccount(input),
@@ -232,6 +398,7 @@ const api = {
     markOfTheWeb(res.filePath);
     return res.filePath;
   },
+  saveAllAttachments: (id) => saveAllAttachments(id),
   exportEml: async (id) => {
     const full = await engine.getMessage(id);
     const name = `${(full.subject || 'bericht').replace(/[<>:"/\\|?*]/g, '_').slice(0, 80)}.eml`;
@@ -273,11 +440,31 @@ const api = {
   appInfo: () => ({ version: app.getVersion(), dataDir: app.getPath('userData') })
 };
 
-ipcMain.handle('mail:call', async (_event, method, args) => {
-  if (!Object.prototype.hasOwnProperty.call(api, method)) return { ok: false, error: `Onbekende actie: ${method}` };
+// Calls that act on the window that makes them.
+const windowApi = {
+  composeInit: (sender) => {
+    const c = composeWindows.get(sender.id);
+    return c ? c.opts : null;
+  },
+  // Lets a compose window claim its draft once autosave created one, so the draft cannot open twice.
+  composeDraft: (sender, draftId) => {
+    const c = composeWindows.get(sender.id);
+    if (c) c.draftId = draftId ? String(draftId) : null;
+  },
+  // Closes without asking again; the compose window has already handled unsaved changes.
+  composeClose: (sender) => {
+    const w = BrowserWindow.fromWebContents(sender);
+    if (w && w !== win) w.destroy();
+  }
+};
+
+ipcMain.handle('mail:call', async (event, method, args) => {
+  const own = Object.prototype.hasOwnProperty;
+  if (!own.call(api, method) && !own.call(windowApi, method)) return { ok: false, error: `Onbekende actie: ${method}` };
   const started = Date.now();
   try {
-    return { ok: true, result: await api[method](...(args || [])) };
+    const result = own.call(windowApi, method) ? await windowApi[method](event.sender, ...(args || [])) : await api[method](...(args || []));
+    return { ok: true, result };
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   } finally {
@@ -286,60 +473,40 @@ ipcMain.handle('mail:call', async (_event, method, args) => {
 });
 
 function createWindow() {
-  const dark = nativeTheme.shouldUseDarkColors;
+  const b = windowState.bounds('main', { width: 1440, height: 920, minWidth: 760, minHeight: 560 });
+  const { bar, background } = themeColors();
   win = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: b.width,
+    height: b.height,
+    ...(Number.isFinite(b.x) ? { x: b.x, y: b.y } : {}),
     minWidth: 760,
     minHeight: 560,
     show: false,
     title: 'Rukoo Mail',
     icon: fs.existsSync(ICON) ? ICON : undefined,
-    backgroundColor: dark ? '#000000' : '#f4f4f4',
+    backgroundColor: background,
     titleBarStyle: 'hidden',
-    titleBarOverlay: dark ? DARK_BAR : LIGHT_BAR,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      spellcheck: true
-    }
+    titleBarOverlay: bar,
+    webPreferences: WEB_PREFERENCES
   });
   Menu.setApplicationMenu(null);
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    openUrl(url);
-    return { action: 'deny' };
-  });
-  win.webContents.on('will-navigate', (e, url) => {
-    if (url !== win.webContents.getURL()) {
-      e.preventDefault();
-      openUrl(url);
-    }
-  });
-  win.webContents.on('will-frame-navigate', (e) => {
-    // Clicks inside the reader frame must never replace the frame contents.
-    if (!e.isMainFrame && !/^(about:|data:)/.test(e.url)) {
-      e.preventDefault();
-      openUrl(e.url);
-    }
-  });
+  harden(win);
   win.on('focus', () => {
     newSinceFocus = 0;
     refreshBadge();
   });
-  win.once('ready-to-show', () => {
-    if (!process.env.SEM_HIDDEN) return win.show();
-    // Test mode: a never-shown window does not paint, so park it off-screen without focus.
-    win.setPosition(-5000, -5000);
-    win.showInactive();
+  win.on('closed', () => {
+    win = null;
   });
-  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  if (!process.env.SEM_HIDDEN) windowState.track('main', win);
+  reveal(win, b.maximized);
+  win.loadFile(path.join(RENDERER, 'index.html'));
 }
 
 app.on('second-instance', showWindow);
 
 app.whenReady().then(() => {
+  windowState = new WindowState(path.join(app.getPath('userData'), 'window-state.json'));
   google = new GoogleAuth({
     configPath: path.join(app.getPath('userData'), 'google-oauth.json'),
     openBrowser: (url) => shell.openExternal(url)
@@ -354,7 +521,7 @@ app.whenReady().then(() => {
   engine.on('new-mail', notify);
   nativeTheme.on('updated', () => {
     applyTheme();
-    send('theme');
+    broadcast('theme');
   });
   applyTheme();
   createWindow();
