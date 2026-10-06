@@ -16,6 +16,7 @@ const {
   Menu
 } = require('electron');
 const { Engine } = require('./engine');
+const { GoogleAuth } = require('./google');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
 
 const APP_ID = 'nl.bvdm.samsung-email-desktop';
@@ -28,6 +29,7 @@ app.setAppUserModelId(APP_ID);
 
 let win = null;
 let engine = null;
+let google = null;
 let syncTimer = null;
 let newSinceFocus = 0;
 
@@ -228,6 +230,28 @@ const api = {
     if (!dataUrl || !count) win.setOverlayIcon(null, '');
     else win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), count === 1 ? '1 nieuwe e-mail' : `${count} nieuwe e-mails`);
   },
+  googleSignIn: async () => {
+    const grant = await google.signIn();
+    showWindow();
+    return engine.addGoogleAccount(grant);
+  },
+  googleReauth: async (accountId) => {
+    const grant = await google.signIn(engine.account(accountId).email);
+    showWindow();
+    return engine.addGoogleAccount(grant, { reauthId: accountId });
+  },
+  googleCancel: () => google.cancel(),
+  googleImportClient: async () => {
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Google OAuth-client importeren',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (res.canceled || !res.filePaths[0]) return false;
+    google.importClient(res.filePaths[0]);
+    engine.emit('updated');
+    return true;
+  },
   appInfo: () => ({ version: app.getVersion(), dataDir: app.getPath('userData') })
 };
 
@@ -298,7 +322,11 @@ function createWindow() {
 app.on('second-instance', showWindow);
 
 app.whenReady().then(() => {
-  engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets }).init();
+  google = new GoogleAuth({
+    configPath: path.join(app.getPath('userData'), 'google-oauth.json'),
+    openBrowser: (url) => shell.openExternal(url)
+  });
+  engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets, google }).init();
   // Test mode only: lets end-to-end tests simulate server conditions.
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   engine.on('updated', () => {

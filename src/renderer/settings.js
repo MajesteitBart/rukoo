@@ -171,6 +171,7 @@ export function openSettings(ctx) {
           ${row({ title: 'Accountkleur', value: labelOf(COLORS, a.color), action: 'acc-color' })}
           ${a.isDefault ? '' : row({ title: 'Instellen als standaardaccount', desc: 'Nieuwe e-mails worden vanaf dit account verzonden.', action: 'acc-default' })}
           ${row({ title: 'Nu synchroniseren', desc: a.lastSync ? `Laatst gesynchroniseerd op ${numericDate(a.lastSync)}  ${hhmm(a.lastSync)}` : '', action: 'acc-sync' })}
+          ${a.provider === 'google' && s && state.googleAvailable ? row({ title: a.auth === 'oauth2' ? 'Opnieuw aanmelden bij Google' : 'Overschakelen naar Google-aanmelding', desc: a.auth === 'oauth2' ? 'Gebruik dit als Google de toegang heeft ingetrokken.' : 'Meld je aan via je browser in plaats van met een app-wachtwoord.', action: 'acc-google' }) : ''}
           ${a.type === 'imap' ? row({ title: 'Serverinstellingen', desc: `${esc(a.imap.host)} / ${esc(a.smtp.host)}`, action: 'acc-server' }) : ''}
         </div>
         <div class="settings-group-title"></div>
@@ -183,7 +184,7 @@ export function openSettings(ctx) {
       title = 'Serverinstellingen';
       body = `<div class="card"><form class="form" data-form="server">
         <label>Gebruikersnaam<input type="text" name="user" value="${esc(a.imap.user || a.email)}"/></label>
-        <label>Wachtwoord<input type="password" name="password" placeholder="Laat leeg om het huidige wachtwoord te houden"/></label>
+        ${a.auth === 'oauth2' ? '' : `<label>Wachtwoord<input type="password" name="password" placeholder="Laat leeg om het huidige wachtwoord te houden"/></label>`}
         <div class="two"><label>IMAP-server<input type="text" name="imapHost" value="${esc(a.imap.host)}"/></label>
           <label>Poort<input type="number" name="imapPort" value="${a.imap.port}"/></label>
           <label class="inline"><input type="checkbox" name="imapSecure" ${a.imap.secure ? 'checked' : ''}/> SSL/TLS</label></div>
@@ -375,6 +376,15 @@ export function openSettings(ctx) {
         return render();
       case 'acc-server':
         return go('server', { id: acc.id });
+      case 'acc-google':
+        toast('Meld je aan in je browser...', 60000);
+        try {
+          await api('googleReauth', acc.id);
+          toast('Aangemeld bij Google');
+        } catch (err) {
+          toast(err.message, 6000);
+        }
+        return render();
       case 'acc-remove': {
         const ok = await confirmDialog('Account verwijderen?', `${acc.email} en alle lokaal opgeslagen e-mails van dit account worden van deze pc verwijderd. Op de server blijft alles bewaard.`, 'Verwijderen', true);
         if (!ok) return;

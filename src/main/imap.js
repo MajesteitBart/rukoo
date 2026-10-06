@@ -12,6 +12,7 @@ const AUTO_SENT_HOSTS = /(gmail\.com|googlemail\.com|office365\.com|outlook\.com
 
 function friendlyError(err) {
   const msg = String((err && (err.responseText || err.response || err.message)) || err);
+  if (err && err.oauth) return msg;
   if (err && err.authenticationFailed) return 'Aanmelden mislukt. Controleer je e-mailadres en (app-)wachtwoord.';
   if (/AUTHENTICATIONFAILED|Invalid credentials|authentication failed|535|Username and Password not accepted/i.test(msg)) {
     return 'Aanmelden mislukt. Controleer je e-mailadres en (app-)wachtwoord.';
@@ -24,20 +25,27 @@ function friendlyError(err) {
 }
 
 class ImapAccount {
-  constructor(account, password) {
+  // credentials: a password string, or { accessToken: async () => token } for OAuth (XOAUTH2).
+  constructor(account, credentials) {
     this.account = account;
-    this.password = password;
+    this.credentials = credentials;
     this.client = null;
     this.queue = Promise.resolve();
   }
 
-  imapOptions() {
+  async auth(user) {
+    const c = this.credentials;
+    if (c && typeof c === 'object' && c.accessToken) return { user, accessToken: await c.accessToken() };
+    return { user, pass: c };
+  }
+
+  async imapOptions() {
     const { imap } = this.account;
     return {
       host: imap.host,
       port: Number(imap.port),
       secure: Boolean(imap.secure),
-      auth: { user: imap.user || this.account.email, pass: this.password },
+      auth: await this.auth(imap.user || this.account.email),
       logger: false,
       emitLogs: false,
       connectionTimeout: 20000,
@@ -47,14 +55,15 @@ class ImapAccount {
     };
   }
 
-  transport() {
+  async transport() {
     const { smtp } = this.account;
+    const auth = await this.auth(smtp.user || this.account.email);
     return nodemailer.createTransport({
       host: smtp.host,
       port: Number(smtp.port),
       secure: Boolean(smtp.secure),
       requireTLS: !smtp.secure,
-      auth: { user: smtp.user || this.account.email, pass: this.password },
+      auth: auth.accessToken ? { type: 'OAuth2', user: auth.user, accessToken: auth.accessToken } : auth,
       connectionTimeout: 20000,
       tls: { rejectUnauthorized: !smtp.allowInvalidCert }
     });
@@ -62,7 +71,7 @@ class ImapAccount {
 
   async connect() {
     if (this.client && this.client.usable) return this.client;
-    const client = new ImapFlow(this.imapOptions());
+    const client = new ImapFlow(await this.imapOptions());
     const drop = () => {
       if (this.client === client) this.client = null;
     };
@@ -94,7 +103,7 @@ class ImapAccount {
   }
 
   async verify() {
-    const client = new ImapFlow(this.imapOptions());
+    const client = new ImapFlow(await this.imapOptions());
     client.on('error', () => {});
     try {
       await client.connect();
@@ -104,7 +113,9 @@ class ImapAccount {
       throw new Error(`IMAP: ${friendlyError(err)}`);
     }
     try {
-      await this.transport().verify();
+      const transport = await this.transport();
+      await transport.verify();
+      transport.close();
     } catch (err) {
       throw new Error(`SMTP: ${friendlyError(err)}`);
     }
@@ -278,7 +289,7 @@ class ImapAccount {
   // Sends the message and returns the raw RFC 822 source.
   async send(mail) {
     const raw = await ImapAccount.compose(mail);
-    const transporter = this.transport();
+    const transporter = await this.transport();
     try {
       const recipients = [...(mail.to || []), ...(mail.cc || []), ...(mail.bcc || [])].map((a) => a.address || a);
       await transporter.sendMail({

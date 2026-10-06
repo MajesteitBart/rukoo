@@ -65,10 +65,13 @@ function lowerAddr(a) {
 }
 
 class Engine extends EventEmitter {
-  constructor({ dataDir, secrets }) {
+  constructor({ dataDir, secrets, google = null }) {
     super();
     this.dataDir = dataDir;
     this.secrets = secrets || { encrypt: (s) => s, decrypt: (s) => s };
+    this.google = google;
+    // Short-lived OAuth access tokens per account, kept in memory only.
+    this.tokens = new Map();
     this.accounts = [];
     this.settings = { ...DEFAULT_SETTINGS };
     this.caches = new Map();
@@ -141,11 +144,72 @@ class Engine extends EventEmitter {
   session(acc) {
     if (this.sessions.has(acc.id)) return this.sessions.get(acc.id);
     const s =
-      acc.type === 'demo'
-        ? new DemoAccount(acc, this.file('demo-server.json'))
-        : new ImapAccount(acc, this.secrets.decrypt(acc.secret));
+      acc.type === 'demo' ? new DemoAccount(acc, this.file('demo-server.json')) : new ImapAccount(acc, this.credentials(acc));
     this.sessions.set(acc.id, s);
     return s;
+  }
+
+  credentials(acc) {
+    if (acc.auth === 'oauth2') return { accessToken: () => this.accessToken(acc) };
+    return this.secrets.decrypt(acc.secret);
+  }
+
+  // Returns a valid Google access token, refreshing it with the stored refresh token when needed.
+  accessToken(acc) {
+    const cached = this.tokens.get(acc.id);
+    if (cached && cached.accessToken && cached.expiresAt - Date.now() > 60000) return Promise.resolve(cached.accessToken);
+    if (cached && cached.refreshing) return cached.refreshing;
+    if (!this.google) return Promise.reject(new Error('Google-aanmelding is niet beschikbaar.'));
+    const refreshing = this.google
+      .refresh(this.secrets.decrypt(acc.secret))
+      .then((t) => {
+        this.tokens.set(acc.id, t);
+        return t.accessToken;
+      })
+      .catch((err) => {
+        this.tokens.delete(acc.id);
+        throw err;
+      });
+    this.tokens.set(acc.id, { refreshing });
+    return refreshing;
+  }
+
+  // Adds a Google account after the browser sign-in, or refreshes the grant of an existing one.
+  async addGoogleAccount(grant, { reauthId = null } = {}) {
+    const email = String(grant.email || '').toLowerCase();
+    if (reauthId) {
+      const acc = this.account(reauthId);
+      if (acc.email.toLowerCase() !== email) {
+        throw new Error(`Je hebt je aangemeld als ${grant.email}, maar dit account is ${acc.email}.`);
+      }
+      acc.auth = 'oauth2';
+      acc.secret = this.secrets.encrypt(grant.refreshToken);
+      this.tokens.set(acc.id, { accessToken: grant.accessToken, expiresAt: grant.expiresAt });
+      const old = this.sessions.get(acc.id);
+      this.sessions.delete(acc.id);
+      if (old) await old.close();
+      this.persistAccounts();
+      this.syncAccount(acc.id).catch(() => {});
+      return this.publicAccount(acc);
+    }
+    const defaults = serverDefaults('google', email);
+    const acc = {
+      id: crypto.randomUUID(),
+      type: 'imap',
+      provider: 'google',
+      auth: 'oauth2',
+      email,
+      name: grant.name || email.split('@')[0],
+      label: email,
+      color: COLORS[this.accounts.length % COLORS.length],
+      signature: null,
+      imap: { ...defaults.imap, user: email },
+      smtp: { ...defaults.smtp, user: email },
+      secret: this.secrets.encrypt(grant.refreshToken),
+      createdAt: Date.now()
+    };
+    this.tokens.set(acc.id, { accessToken: grant.accessToken, expiresAt: grant.expiresAt });
+    return this.finishAdd(acc);
   }
 
   defaultAccount() {
@@ -163,6 +227,7 @@ class Engine extends EventEmitter {
       label: acc.label || acc.email,
       color: acc.color,
       signature: acc.signature,
+      auth: acc.auth || (acc.type === 'demo' ? 'none' : 'password'),
       imap: acc.imap ? { ...acc.imap } : null,
       smtp: acc.smtp ? { ...acc.smtp } : null,
       isDefault: this.defaultAccount() === acc,
@@ -180,6 +245,7 @@ class Engine extends EventEmitter {
       accounts: this.accounts.map((a) => this.publicAccount(a)),
       settings: this.settings,
       providers: publicProviders(),
+      googleAvailable: Boolean(this.google && this.google.available()),
       demoEmail: DEMO_EMAIL
     };
   }
@@ -190,9 +256,6 @@ class Engine extends EventEmitter {
       throw new Error('Voer een geldig e-mailadres in.');
     }
     const finalEmail = input.type === 'demo' ? DEMO_EMAIL : email;
-    if (this.accounts.some((a) => a.email.toLowerCase() === finalEmail.toLowerCase())) {
-      throw new Error('Dit account is al toegevoegd.');
-    }
     const defaults = serverDefaults(input.provider || 'other', finalEmail);
     const acc = {
       id: crypto.randomUUID(),
@@ -209,11 +272,19 @@ class Engine extends EventEmitter {
       createdAt: Date.now()
     };
     if (acc.type === 'imap' && !input.password) throw new Error('Voer je wachtwoord in.');
+    return this.finishAdd(acc);
+  }
+
+  async finishAdd(acc) {
+    if (this.accounts.some((a) => a.email.toLowerCase() === acc.email.toLowerCase())) {
+      throw new Error('Dit account is al toegevoegd.');
+    }
     const session = this.session(acc);
     try {
       await session.verify();
     } catch (err) {
       this.sessions.delete(acc.id);
+      this.tokens.delete(acc.id);
       await session.close();
       throw err;
     }
@@ -244,9 +315,9 @@ class Engine extends EventEmitter {
         ...acc,
         imap: { ...acc.imap, ...(patch.imap || {}) },
         smtp: { ...acc.smtp, ...(patch.smtp || {}) },
-        secret: patch.password ? this.secrets.encrypt(patch.password) : acc.secret
+        secret: patch.password && acc.auth !== 'oauth2' ? this.secrets.encrypt(patch.password) : acc.secret
       };
-      const probe = new ImapAccount(next, this.secrets.decrypt(next.secret));
+      const probe = new ImapAccount(next, this.credentials(next));
       await probe.verify();
       Object.assign(acc, next);
       const old = this.sessions.get(id);
@@ -265,6 +336,7 @@ class Engine extends EventEmitter {
     if (s) await s.close();
     this.accounts = this.accounts.filter((a) => a !== acc);
     this.caches.delete(id);
+    this.tokens.delete(id);
     clearTimeout(this.saveTimers.get(id));
     this.saveTimers.delete(id);
     fs.rmSync(this.file('cache', `${id}.json`), { force: true });

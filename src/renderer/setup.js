@@ -11,6 +11,7 @@ export function openSetup(ctx, { first = false } = {}) {
   const providers = ctx.S.data.providers;
 
   const close = () => {
+    api('googleCancel').catch(() => {});
     page.remove();
     document.removeEventListener('keydown', onKey, true);
   };
@@ -34,10 +35,49 @@ export function openSetup(ctx, { first = false } = {}) {
           }).join('')}
         </div>
         <button class="setup-demo" data-s="demo">Probeer het eerst met een demo-account</button>
+        ${ctx.S.data.googleAvailable ? '' : '<button class="setup-demo" style="margin-top:4px" data-s="import-google">Google OAuth-client importeren</button>'}
       </div>`;
   }
 
-  function showLogin(id) {
+  // Google accounts sign in through the browser (OAuth); a password form stays available as fallback.
+  function showGoogle() {
+    page.innerHTML = `
+      <button class="icon-btn setup-back" data-s="grid" title="Terug">${icons.back}</button>
+      <div class="setup-inner login">
+        <div class="login-head"><span class="logo">${providerLogos.google}</span><h2>Aanmelden bij Google</h2></div>
+        <p class="note">Je browser opent de aanmeldpagina van Google. Kies je account en geef E-mail toegang tot Gmail. Daarna kom je hier vanzelf terug.</p>
+        <div class="error" data-error style="margin-top:14px"></div>
+        <div class="actions" style="margin-top:22px">
+          <button class="link-btn" data-s="password-mode">App-wachtwoord gebruiken</button>
+          <button class="btn" data-s="google">Aanmelden met Google</button>
+        </div>
+        <div class="google-wait" hidden style="margin-top:22px;display:flex;align-items:center;gap:12px">
+          <span class="spinner" style="border-color:rgba(128,128,128,.35);border-top-color:var(--primary)"></span>
+          <span style="flex:1">Wachten op aanmelding in je browser...</span>
+          <button class="link-btn" data-s="google-cancel">Annuleren</button>
+        </div>
+      </div>`;
+  }
+
+  async function googleSignIn() {
+    const btn = page.querySelector('[data-s="google"]');
+    const wait = page.querySelector('.google-wait');
+    const err = page.querySelector('[data-error]');
+    btn.disabled = true;
+    wait.hidden = false;
+    err.textContent = '';
+    try {
+      done(await api('googleSignIn'));
+    } catch (ex) {
+      if (!page.isConnected) return;
+      if (!/geannuleerd/i.test(ex.message)) err.textContent = ex.message;
+      btn.disabled = false;
+      wait.hidden = true;
+    }
+  }
+
+  function showLogin(id, { forcePassword = false } = {}) {
+    if (id === 'google' && !forcePassword && ctx.S.data.googleAvailable) return showGoogle();
     const p = providers.find((x) => x.id === id);
     const manual = p.manual;
     page.innerHTML = `
@@ -131,7 +171,26 @@ export function openSetup(ctx, { first = false } = {}) {
       case 'close':
         return close();
       case 'grid':
+        api('googleCancel').catch(() => {});
         return showGrid();
+      case 'google':
+        return googleSignIn();
+      case 'google-cancel':
+        return api('googleCancel');
+      case 'password-mode':
+        api('googleCancel').catch(() => {});
+        return showLogin('google', { forcePassword: true });
+      case 'import-google':
+        try {
+          if (await api('googleImportClient')) {
+            ctx.S.data = await api('state');
+            toast('Google-aanmelding is ingesteld');
+            showGrid();
+          }
+        } catch (ex) {
+          toast(ex.message, 5000);
+        }
+        return;
       case 'manual':
         b.hidden = true;
         page.querySelector('.manual').hidden = false;
