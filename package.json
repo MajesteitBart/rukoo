@@ -1,0 +1,59 @@
+{
+  "name": "samsung-email-desktop",
+  "version": "1.0.0",
+  "description": "Samsung E-mail for Windows: an Electron desktop clone of the Samsung Email app",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:e2e": "playwright test",
+    "screenshots": "node scripts/screenshots.js docs/screenshots",
+    "icon": "node scripts/start-icon.js",
+    "dist": "electron-builder --win nsis portable"
+  },
+  "author": "Bart van der Meeren",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "html-to-text": "^10.0.1",
+    "iconv-lite": "^0.7.3",
+    "imapflow": "^2.2.6",
+    "libqp": "^2.1.2",
+    "mailparser": "^3.9.36",
+    "nodemailer": "^10.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "productName": "E-mail",
+  "private": true,
+  "build": {
+    "appId": "nl.bvdm.samsung-email-desktop",
+    "productName": "E-mail",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "E-mail-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "E-mail-Portable-${version}.${ext}"
+    }
+  }
+}

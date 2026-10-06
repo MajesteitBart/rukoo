@@ -1,0 +1,67 @@
+// Line icons in the style of One UI: 24px grid, 1.6px round strokes.
+const p = (d, extra = '') =>
+  `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
+
+export const icons = {
+  menu: p('<path d="M4 6.5h16M4 12h16M4 17.5h16"/>'),
+  search: p('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 20 20"/>'),
+  more: p('<circle cx="12" cy="5.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="18.5" r="1.3" fill="currentColor" stroke="none"/>'),
+  star: p('<path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/>'),
+  starFilled: p('<path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" fill="currentColor"/>'),
+  clip: p('<path d="M15.5 7.5 8.6 14.4a1.8 1.8 0 0 0 2.5 2.5l7.3-7.3a3.6 3.6 0 0 0-5.1-5.1l-7.4 7.4a5.3 5.3 0 0 0 7.5 7.5l6-6"/>'),
+  compose: p('<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m9 15 .6-2.6 5.6-5.6a1.4 1.4 0 0 1 2 2l-5.6 5.6z"/>'),
+  expand: p('<path d="M14 4h6v6M20 4l-6.5 6.5M10 20H4v-6M4 20l6.5-6.5"/>'),
+  collapse: p('<path d="M20 4l-6 6M14 5v5h5M4 20l6-6M10 19v-5H5"/>'),
+  up: p('<path d="m5 15 7-7 7 7"/>'),
+  down: p('<path d="m5 9 7 7 7-7"/>'),
+  back: p('<path d="m15 4-8 8 8 8"/>'),
+  close: p('<path d="M5 5l14 14M19 5 5 19"/>'),
+  reply: p('<path d="M20 7v4a4 4 0 0 1-4 4H5"/><path d="m9 11-4 4 4 4"/>'),
+  replyAll: p('<path d="M21 7v4a4 4 0 0 1-4 4H8"/><path d="m12 11-4 4 4 4"/><path d="m8 11-4 4 4 4"/>'),
+  forward: p('<path d="M4 12h15M13 6l6 6-6 6"/>'),
+  trash: p('<path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l1 13.5h9l1-13.5M10 10.5v6M14 10.5v6"/>'),
+  send: p('<path d="M20.5 3.5 10 14"/><path d="m20.5 3.5-6.5 17-4-6.5-6.5-4z"/>'),
+  settings: p('<circle cx="12" cy="12" r="3"/><path d="M12 2.8 14 4l2.3-.3 1.2 2 2.1 1-.1 2.3 1.3 2-1.3 2 .1 2.3-2.1 1-1.2 2L14 20l-2 1.2L10 20l-2.3.3-1.2-2-2.1-1 .1-2.3L3.2 13l1.3-2-.1-2.3 2.1-1 1.2-2L10 4z"/>'),
+  inbox: p('<rect x="3.5" y="4" width="17" height="16" rx="3"/><path d="M3.5 13.5H8l1.2 2.5h5.6l1.2-2.5h4.5"/>'),
+  unread: p('<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4 7 8 6 8-6"/>'),
+  saved: p('<rect x="4" y="3.5" width="16" height="17" rx="3"/><path d="M12 7.5v7M8.5 11.5 12 15l3.5-3.5"/>'),
+  drafts: p('<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8.5 15.5.5-2.5 5.6-5.6a1.4 1.4 0 0 1 2 2L11 15z"/>'),
+  sent: p('<rect x="3.5" y="5.5" width="13" height="12" rx="2.5"/><path d="m4 7 6 4.5L16 7"/><path d="M15 16h6M18.5 13.5 21 16l-2.5 2.5"/>'),
+  junk: p('<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>'),
+  archive: p('<rect x="3.5" y="4" width="17" height="4.5" rx="1.5"/><path d="M5 8.5V19a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V8.5M10 12.5h4"/>'),
+  folder: p('<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'),
+  check: p('<path d="m5 12.5 4.5 4.5L19 7.5"/>'),
+  eye: p('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>'),
+  eyeOff: p('<path d="M4 4l16 16M10 6c.6-.1 1.3-.2 2-.2 6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3 3.6M6.6 7.3C4 9 2.5 12 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.2-1"/><path d="M9.9 10a3 3 0 0 0 4.1 4.1"/>'),
+  undo: p('<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>'),
+  redo: p('<path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>'),
+  image: p('<rect x="3.5" y="4" width="17" height="16" rx="3"/><circle cx="9" cy="9.5" r="1.7"/><path d="m4 17 5-4.5 4 3.5 2.5-2 4.5 3.5"/>'),
+  bold: p('<path d="M7 4.5h6a3.5 3.5 0 0 1 0 7H7zM7 11.5h7a4 4 0 0 1 0 8H7z" stroke-width="2.4"/>'),
+  italic: p('<path d="M10 4.5h8M6 19.5h8M15 4.5l-6 15"/>'),
+  underline: p('<path d="M7 4v7a5 5 0 0 0 10 0V4M5 20.5h14"/>'),
+  textColor: p('<path d="M6 4.5h12M12 4.5v11"/><path d="M5 20.5h14" stroke-width="2.4"/>'),
+  highlight: p('<rect x="5" y="3.5" width="14" height="12.5" rx="2"/><path d="M9 7h6M12 7v6"/><path d="M5 20.5h14" stroke-width="2.4"/>'),
+  ol: p('<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 4.5h1.5V8M4 8h3M4 10.5h2.5L4 13.5h3M4 16h3l-1.5 1.5L7 19H4" stroke-width="1.2"/>'),
+  ul: p('<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2" fill="currentColor"/><circle cx="4.5" cy="12" r="1.2" fill="currentColor"/><circle cx="4.5" cy="18" r="1.2" fill="currentColor"/>'),
+  indent: p('<path d="M4 5h16M11 10h9M11 14h9M4 19h16M4 9.5l3 2.5-3 2.5"/>'),
+  outdent: p('<path d="M4 5h16M11 10h9M11 14h9M4 19h16M7 9.5 4 12l3 2.5"/>'),
+  caret: p('<path d="m7 10 5 5 5-5" fill="currentColor"/>'),
+  sync: p('<path d="M20 11a8 8 0 0 0-14.3-4.6L4 8.5M4 4v4.5h4.5M4 13a8 8 0 0 0 14.3 4.6L20 15.5M20 20v-4.5h-4.5"/>'),
+  plus: p('<path d="M12 5v14M5 12h14"/>'),
+  file: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/>'),
+  download: p('<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>'),
+  person: p('<circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>'),
+  mailOpen: p('<path d="M3.5 10 12 4l8.5 6v9a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19z"/><path d="m4 10.5 8 5.5 8-5.5"/>'),
+  info: p('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.2"/>')
+};
+
+// Provider tiles on the setup screen.
+export const providerLogos = {
+  google: `<svg viewBox="0 0 48 48" width="56" height="56"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.7 13.3l7.9 6.1C12.5 13.6 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 2.9-2.2 5.4-4.7 7.1l7.6 5.9c4.4-4.1 6.9-10.1 6.9-17.5z"/><path fill="#FBBC05" d="M10.6 28.6A14.5 14.5 0 0 1 9.5 24c0-1.6.3-3.2.8-4.6l-7.9-6.1A23.9 23.9 0 0 0 0 24c0 3.9.9 7.5 2.6 10.7z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.6-5.9c-2.1 1.4-4.9 2.3-8.3 2.3-6.2 0-11.5-4.2-13.4-9.9l-8 6.1C6.6 42.6 14.6 48 24 48z"/></svg>`,
+  yahoo: `<svg viewBox="0 0 48 48" width="56" height="56"><rect x="5" y="10" width="38" height="28" rx="3" fill="#4b0099"/><path d="m6 13 18 13 18-13" fill="none" stroke="#fff" stroke-width="3.5"/></svg>`,
+  outlook: `<svg viewBox="0 0 48 48" width="56" height="56"><rect x="20" y="11" width="22" height="26" rx="2" fill="none" stroke="#1d72c6" stroke-width="2.4"/><path d="m21 14 10 8 10-8" fill="none" stroke="#1d72c6" stroke-width="2.4"/><path d="M4 9.5 25 5v38L4 38.5z" fill="#1d72c6"/><ellipse cx="14.5" cy="24" rx="5" ry="6.5" fill="none" stroke="#fff" stroke-width="3"/></svg>`,
+  exchange: `<svg viewBox="0 0 48 48" width="56" height="56"><path d="M4 9 25 5v38L4 39z" fill="#1d72c6"/><path d="M10 16h9M10 24h8M10 32h9M10 16v16" stroke="#fff" stroke-width="3" fill="none"/><rect x="26" y="11" width="17" height="26" rx="2" fill="#2f8ae0"/><path d="m29 17 10 14M39 17 29 31M31 15h7M31 33h7" stroke="#fff" stroke-width="2" fill="none"/></svg>`,
+  office365: `<svg viewBox="0 0 48 48" width="56" height="56"><path d="M8 11 30 4l10 4v32l-10 4-22-7 22 3V10l-15 4v18l-7 3z" fill="#eb3c00"/></svg>`,
+  other: `<svg viewBox="0 0 48 48" width="56" height="56"><rect x="6" y="11" width="36" height="26" rx="2" fill="none" stroke="#9a9a9a" stroke-width="3"/><path d="m7 12 17 13 17-13" fill="none" stroke="#9a9a9a" stroke-width="3"/></svg>`,
+  demo: `<svg viewBox="0 0 48 48" width="56" height="56"><circle cx="24" cy="24" r="20" fill="#2fd6c0"/><path d="M14 18h20v13H14z" fill="none" stroke="#04332d" stroke-width="2.6"/><path d="m15 19 9 7 9-7" fill="none" stroke="#04332d" stroke-width="2.6"/></svg>`
+};
