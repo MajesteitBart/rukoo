@@ -229,6 +229,11 @@ function renderDrawer() {
 }
 
 function onDrawerClick(e) {
+  // At tablet widths the drawer floats over a backdrop; clicking the backdrop closes it.
+  if (!e.target.closest('.drawer-card')) {
+    S.drawerOpen = false;
+    return renderShell();
+  }
   const t = e.target.closest('button');
   if (!t) return;
   if (t.dataset.action === 'settings') return openSettings(ctx);
@@ -757,7 +762,8 @@ function renderReader() {
   const isSaved = m.role === 'saved';
   el.innerHTML = `
     <div class="reader-top">
-      <button class="icon-btn" data-reader="expand" title="${S.expanded ? 'Verkleinen' : 'Vergroten'}">${S.expanded ? icons.collapse : icons.expand}</button>
+      <button class="icon-btn narrow-only" data-reader="back" title="Terug naar lijst">${icons.back}</button>
+      <button class="icon-btn wide-only" data-reader="expand" title="${S.expanded ? 'Verkleinen' : 'Vergroten'}">${S.expanded ? icons.collapse : icons.expand}</button>
       <div class="nav">
         <button class="icon-btn" data-reader="prev" title="Vorige">${icons.up}</button>
         <button class="icon-btn" data-reader="next" title="Volgende">${icons.down}</button>
@@ -878,6 +884,8 @@ function bindReader() {
       return;
     }
     switch (btn.dataset.reader) {
+      case 'back':
+        return closeReader();
       case 'expand':
         S.expanded = !S.expanded;
         renderShell();
@@ -1021,8 +1029,14 @@ window.mail.on(async ({ type, payload }) => {
   }
 });
 
+// The drawer is docked on wide windows and floats on narrow ones; follow the breakpoint.
+let wasWide = window.innerWidth > 1100;
 window.addEventListener('resize', () => {
-  if (window.innerWidth > 1100 && !S.drawerOpen && S.autoClosed) S.drawerOpen = true;
+  const wide = window.innerWidth > 1100;
+  if (wide === wasWide) return;
+  wasWide = wide;
+  S.drawerOpen = wide;
+  if (S.data) renderShell();
 });
 
 // Context shared with the compose, settings and setup pages.

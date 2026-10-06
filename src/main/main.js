@@ -85,7 +85,8 @@ function notify(messages) {
     const n = new Notification({
       title: m.from.name || m.from.address,
       body: [m.subject, m.preview].filter(Boolean).join('\n').slice(0, 180),
-      icon: fs.existsSync(ICON) ? ICON : undefined,
+      // nativeImage can read from inside app.asar; a plain path cannot.
+      icon: nativeImage.createFromPath(ICON),
       silent: false
     });
     n.on('click', () => {
@@ -207,7 +208,7 @@ const api = {
   setBadge: (dataUrl, count) => {
     if (!win || process.platform !== 'win32') return;
     if (!dataUrl || !count) win.setOverlayIcon(null, '');
-    else win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), `${count} nieuwe e-mails`);
+    else win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), count === 1 ? '1 nieuwe e-mail' : `${count} nieuwe e-mails`);
   },
   appInfo: () => ({ version: app.getVersion(), dataDir: app.getPath('userData') })
 };

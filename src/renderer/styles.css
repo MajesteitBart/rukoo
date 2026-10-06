@@ -808,6 +808,10 @@ select {
   display: none;
 }
 
+.narrow-only {
+  display: none;
+}
+
 /* Narrow windows: single pane like the phone. */
 @media (max-width: 1100px) {
   .drawer {
@@ -828,6 +832,15 @@ select {
 @media (max-width: 820px) {
   .listpane {
     width: 100%;
+  }
+  .narrow-only {
+    display: inline-grid;
+  }
+  .wide-only {
+    display: none;
+  }
+  .reader {
+    border-left: 0;
   }
   .shell.has-message .listpane {
     display: none;
