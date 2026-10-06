@@ -169,6 +169,8 @@ export function openSettings(ctx) {
           ${row({ title: 'Weergavenaam', value: esc(a.name || ''), action: 'acc-name' })}
           ${row({ title: 'Handtekening', value: esc(a.signature ?? `Algemeen: ${s.signature || 'geen'}`), action: 'acc-signature' })}
           ${row({ title: 'Accountkleur', value: labelOf(COLORS, a.color), action: 'acc-color' })}
+          ${row({ title: 'Standaard afzender', value: esc(a.defaultFrom), action: 'acc-from' })}
+          ${row({ title: 'Afzenderadressen', desc: a.identities.length > 1 ? `${a.identities.length - 1} ${a.identities.length === 2 ? 'alias' : 'aliassen'}` : 'Alleen het accountadres', action: 'acc-aliases' })}
           ${a.isDefault ? '' : row({ title: 'Instellen als standaardaccount', desc: 'Nieuwe e-mails worden vanaf dit account verzonden.', action: 'acc-default' })}
           ${row({ title: 'Nu synchroniseren', desc: a.lastSync ? `Laatst gesynchroniseerd op ${numericDate(a.lastSync)}  ${hhmm(a.lastSync)}` : '', action: 'acc-sync' })}
           ${a.provider === 'google' && s && state.googleAvailable ? row({ title: a.auth === 'oauth2' ? 'Opnieuw aanmelden bij Google' : 'Overschakelen naar Google-aanmelding', desc: a.auth === 'oauth2' ? 'Gebruik dit als Google de toegang heeft ingetrokken.' : 'Meld je aan via je browser in plaats van met een app-wachtwoord.', action: 'acc-google' }) : ''}
@@ -194,6 +196,28 @@ export function openSettings(ctx) {
         <div class="error" data-error></div>
         <div><button class="btn" type="submit">Opslaan</button></div>
       </form></div>`;
+    }
+
+    if (view === 'aliases') {
+      const a = state.accounts.find((x) => x.id === params.id);
+      if (!a) return back();
+      title = 'Afzenderadressen';
+      body = `
+        <div class="settings-group-title">Verzenden als</div>
+        <div class="card">
+          ${a.identities
+            .map((i) =>
+              row({
+                title: `${esc(i.address)}${i.address === a.defaultFrom ? ' (standaard)' : ''}`,
+                desc: i.primary ? 'Accountadres' : 'Klik om als standaard in te stellen of te verwijderen',
+                action: i.primary ? `alias-default:${encodeURIComponent(i.address)}` : `alias:${encodeURIComponent(i.address)}`
+              })
+            )
+            .join('')}
+          ${row({ title: 'Alias toevoegen', action: 'alias-add', lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}
+          ${a.auth === 'oauth2' ? row({ title: 'Ophalen uit Gmail', desc: 'Neemt de geverifieerde adressen over uit "Verzenden als" in Gmail.', action: 'alias-gmail' }) : ''}
+        </div>
+        <p class="empty" style="padding:24px 40px;text-align:left">De server moet verzenden als dit adres toestaan. In Gmail staat dat onder Instellingen &gt; Accounts &gt; Verzenden als.</p>`;
     }
 
     if (view === 'folders') {
@@ -273,6 +297,34 @@ export function openSettings(ctx) {
       if (hidden.has(id)) hidden.delete(id);
       else hidden.add(id);
       return set({ hiddenViews: [...hidden] });
+    }
+    if (a.startsWith('alias-default:') || a.startsWith('alias:')) {
+      const acc = ctx.S.data.accounts.find((x) => x.id === params.id);
+      if (!acc) return;
+      const address = decodeURIComponent(a.slice(a.indexOf(':') + 1));
+      const setDefault = () => api('updateAccount', acc.id, { defaultFrom: address });
+      let choice = 'default';
+      if (a.startsWith('alias:')) {
+        choice = await dialog({
+          title: address,
+          buttons: [
+            { label: 'Verwijderen', value: 'remove', danger: true },
+            { label: 'Annuleren', value: null },
+            { label: 'Standaard maken', value: 'default' }
+          ]
+        });
+      }
+      try {
+        if (choice === 'default') await setDefault();
+        if (choice === 'remove') {
+          const rest = acc.identities.filter((i) => !i.primary && i.address !== address).map((i) => ({ address: i.address, name: i.name }));
+          await api('updateAccount', acc.id, { aliases: rest });
+        }
+      } catch (err) {
+        toast(err.message, 5000);
+      }
+      await render();
+      return ctx.refresh();
     }
     if (a.startsWith('list-add:')) {
       const key = a.slice(9);
@@ -376,6 +428,32 @@ export function openSettings(ctx) {
         return render();
       case 'acc-server':
         return go('server', { id: acc.id });
+      case 'acc-aliases':
+        return go('aliases', { id: acc.id });
+      case 'acc-from': {
+        const v = await choiceDialog(
+          'Standaard afzender',
+          acc.identities.map((i) => ({ value: i.address, label: i.address })),
+          acc.defaultFrom
+        );
+        if (v) update({ defaultFrom: v });
+        return;
+      }
+      case 'alias-add': {
+        const v = await promptDialog('Alias toevoegen', '', { placeholder: 'naam@voorbeeld.nl' });
+        if (!v || !v.trim()) return;
+        const aliases = acc.identities.filter((i) => !i.primary).map((i) => ({ address: i.address, name: i.name }));
+        update({ aliases: [...aliases, { address: v.trim(), name: acc.name }] });
+        return;
+      }
+      case 'alias-gmail':
+        try {
+          const updated = await api('fetchGmailAliases', acc.id);
+          toast(`${updated.identities.length - 1} aliassen opgehaald uit Gmail`);
+        } catch (err) {
+          toast(err.message, 6000);
+        }
+        return render();
       case 'acc-google':
         toast('Meld je aan in je browser...', 60000);
         try {

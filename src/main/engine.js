@@ -65,8 +65,9 @@ function lowerAddr(a) {
 }
 
 class Engine extends EventEmitter {
-  constructor({ dataDir, secrets, google = null }) {
+  constructor({ dataDir, secrets, google = null, fetchImpl = null }) {
     super();
+    this.fetch = fetchImpl || ((...args) => fetch(...args));
     this.dataDir = dataDir;
     this.secrets = secrets || { encrypt: (s) => s, decrypt: (s) => s };
     this.google = google;
@@ -212,6 +213,51 @@ class Engine extends EventEmitter {
     return this.finishAdd(acc);
   }
 
+  // Every address this account can send from: the account address first, then its aliases.
+  identities(acc) {
+    const own = { address: acc.email, name: acc.name || '', primary: true };
+    const aliases = (acc.aliases || [])
+      .filter((a) => a.address && a.address.toLowerCase() !== acc.email.toLowerCase())
+      .map((a) => ({ address: a.address, name: a.name || acc.name || '', primary: false }));
+    return [own, ...aliases];
+  }
+
+  identity(acc, address) {
+    const list = this.identities(acc);
+    if (!address) return list.find((i) => i.address.toLowerCase() === String(acc.defaultFrom || '').toLowerCase()) || list[0];
+    return list.find((i) => i.address.toLowerCase() === String(address).toLowerCase()) || null;
+  }
+
+  // Reads verified "Send mail as" addresses from Gmail. The https://mail.google.com/ scope covers this call.
+  async fetchGmailAliases(id) {
+    const acc = this.account(id);
+    if (acc.auth !== 'oauth2') throw new Error('Alleen beschikbaar voor accounts met Google-aanmelding.');
+    const token = await this.accessToken(acc);
+    let res;
+    try {
+      res = await this.fetch('https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs', {
+        headers: { authorization: `Bearer ${token}` },
+        redirect: 'error'
+      });
+    } catch (_) {
+      throw new Error('Kan Gmail niet bereiken.');
+    }
+    if (!res.ok) throw new Error(`Gmail gaf de aliassen niet terug (${res.status}).`);
+    const body = await res.json();
+    const usable = (body.sendAs || []).filter((s) => s.isPrimary || s.verificationStatus === 'accepted');
+    acc.aliases = usable
+      .filter((s) => s.sendAsEmail.toLowerCase() !== acc.email.toLowerCase())
+      .map((s) => ({ address: s.sendAsEmail.toLowerCase(), name: s.displayName || '' }));
+    const gmailDefault = usable.find((s) => s.isDefault);
+    // Only adopt Gmail's default when the user has not picked one in this app.
+    if (!acc.defaultFrom && gmailDefault) acc.defaultFrom = gmailDefault.sendAsEmail.toLowerCase();
+    if (acc.defaultFrom && !this.identity(acc, acc.defaultFrom)) acc.defaultFrom = null;
+    acc.aliasesFetchedAt = Date.now();
+    this.persistAccounts();
+    this.emit('updated');
+    return this.publicAccount(acc);
+  }
+
   defaultAccount() {
     return this.accounts.find((a) => a.id === this.settings.defaultAccountId) || this.accounts[0] || null;
   }
@@ -228,6 +274,8 @@ class Engine extends EventEmitter {
       color: acc.color,
       signature: acc.signature,
       auth: acc.auth || (acc.type === 'demo' ? 'none' : 'password'),
+      identities: this.identities(acc),
+      defaultFrom: this.identity(acc).address,
       imap: acc.imap ? { ...acc.imap } : null,
       smtp: acc.smtp ? { ...acc.smtp } : null,
       isDefault: this.defaultAccount() === acc,
@@ -305,6 +353,24 @@ class Engine extends EventEmitter {
     if (patch.name !== undefined) acc.name = String(patch.name);
     if (patch.signature !== undefined) acc.signature = patch.signature;
     if (patch.color) acc.color = patch.color;
+    if (patch.aliases) {
+      // Validate the whole list before touching the account, so a typo cannot wipe existing aliases.
+      const seen = new Set([acc.email.toLowerCase()]);
+      const next = [];
+      for (const a of patch.aliases) {
+        const address = String(a.address || '').trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) throw new Error(`Ongeldig e-mailadres: ${a.address}`);
+        if (seen.has(address)) continue;
+        seen.add(address);
+        next.push({ address, name: a.name || '' });
+      }
+      acc.aliases = next;
+      if (acc.defaultFrom && !this.identity(acc, acc.defaultFrom)) acc.defaultFrom = null;
+    }
+    if (patch.defaultFrom !== undefined) {
+      if (patch.defaultFrom && !this.identity(acc, patch.defaultFrom)) throw new Error('Dit adres hoort niet bij dit account.');
+      acc.defaultFrom = patch.defaultFrom ? patch.defaultFrom.toLowerCase() : null;
+    }
     if (patch.makeDefault) {
       this.settings.defaultAccountId = id;
       this.persistSettings();
@@ -421,6 +487,8 @@ class Engine extends EventEmitter {
     const cache = this.caches.get(id);
     const session = this.session(acc);
     const fresh = [];
+    // Pick up Gmail aliases once for Google accounts; failures here never block mail sync.
+    if (acc.auth === 'oauth2' && !acc.aliasesFetchedAt) await this.fetchGmailAliases(id).catch(() => {});
     try {
       cache.folders = await session.listFolders();
       const targets = cache.folders.filter((f) => SYNC_ROLES.includes(f.role)).map((f) => f.path);
@@ -810,8 +878,10 @@ class Engine extends EventEmitter {
       (list || [])
         .map((a) => (typeof a === 'string' ? { name: '', address: a.trim() } : a))
         .filter((a) => a.address);
+    const from = this.identity(acc, payload.from || null);
+    if (!from) throw new Error(`Je kunt niet verzenden als ${payload.from} vanaf dit account.`);
     return {
-      from: { name: acc.name || '', address: acc.email },
+      from: { name: from.name || acc.name || '', address: from.address },
       to: addrs(payload.to),
       cc: addrs(payload.cc),
       bcc: addrs(payload.bcc),
@@ -853,7 +923,7 @@ class Engine extends EventEmitter {
       prev.score += weight;
       map.set(key, prev);
     };
-    const own = new Set(this.accounts.map((a) => a.email.toLowerCase()));
+    const own = new Set(this.accounts.flatMap((a) => this.identities(a).map((i) => i.address.toLowerCase())));
     for (const cache of this.caches.values()) {
       for (const [folderPath, box] of Object.entries(cache.boxes)) {
         const info = cache.folders.find((f) => f.path === folderPath) || {};

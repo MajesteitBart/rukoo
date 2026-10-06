@@ -235,3 +235,38 @@ test('without a Prullenbak, delete asks before removing for good', async () => {
   await expect(win.locator('#toast')).toContainText('Verwijderd');
   await expect(win.locator('.item', { hasText: 'Bencompare' })).toHaveCount(0);
 });
+
+test('default sender: add an alias, make it default, compose and send from it', async () => {
+  await win.click('[data-action="settings"]');
+  await win.click('.row:has-text("demo@voorbeeld.nl")');
+  await expect(win.locator('[data-a="acc-from"] .value')).toHaveText('demo@voorbeeld.nl');
+  await win.click('[data-a="acc-aliases"]');
+  await expect(win.locator('.settings h1')).toHaveText('Afzenderadressen');
+  await win.click('[data-a="alias-add"]');
+  await win.fill('.scrim .form-input', 'bart@bvdm.ai');
+  await win.click('.scrim .buttons button:has-text("Opslaan")');
+  await expect(win.locator('.settings .row', { hasText: 'bart@bvdm.ai' })).toBeVisible();
+  await win.click('.settings .row:has-text("bart@bvdm.ai")');
+  await win.click('.scrim .buttons button:has-text("Standaard maken")');
+  await expect(win.locator('.settings .row', { hasText: 'bart@bvdm.ai (standaard)' })).toBeVisible();
+  await win.click('[data-a="back"]');
+  await expect(win.locator('[data-a="acc-from"] .value')).toHaveText('bart@bvdm.ai');
+  await win.click('[data-a="back"]');
+  await win.click('[data-a="back"]');
+
+  await win.click('.fab');
+  const from = win.locator('[data-field="account"]');
+  await expect(from).toBeVisible();
+  expect(await from.evaluate((s) => s.selectedOptions[0].textContent)).toContain('bart@bvdm.ai');
+  await win.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
+  await win.fill('[data-field="subject"]', 'Van mijn alias');
+  await win.click('[data-c="send"]');
+  await expect(win.locator('.compose')).toHaveCount(0);
+  await item('Van mijn alias').click();
+  await win.click('[data-reader="details"]');
+  await expect(win.locator('.details')).toContainText('bart@bvdm.ai');
+
+  // Replying to mail that came from one of your own addresses keeps that address.
+  await win.click('[data-reader="reply"]');
+  expect(await win.locator('[data-field="account"]').evaluate((s) => s.selectedOptions[0].textContent)).toContain('bart@bvdm.ai');
+});

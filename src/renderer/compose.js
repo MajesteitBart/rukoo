@@ -62,6 +62,7 @@ function initialState(ctx, opts) {
   const st = {
     mode: opts.mode,
     accountId: acc.id,
+    from: acc.defaultFrom,
     to: opts.to ? [...opts.to] : [],
     cc: [],
     bcc: [],
@@ -83,8 +84,9 @@ function initialState(ctx, opts) {
   st.bodyHtml = `<div>${esc(opts.body || '') || '<br>'}</div><div><br></div><div><br></div>${sigHtml}`;
 
   if (!m) return st;
-  const self = acc.email;
+  const own = (address) => acc.identities.some((i) => sameAddress(i.address, address));
   if (opts.mode === 'draft') {
+    if (m.from && own(m.from.address)) st.from = acc.identities.find((i) => sameAddress(i.address, m.from.address)).address;
     st.to = m.to || [];
     st.cc = m.cc || [];
     st.bcc = m.bcc || [];
@@ -102,25 +104,39 @@ function initialState(ctx, opts) {
   st.original = m;
   if (opts.mode === 'reply' || opts.mode === 'replyAll') {
     const target = (m.replyTo && m.replyTo.length ? m.replyTo : [m.from]).filter(Boolean);
-    const fromSelf = sameAddress(m.from && m.from.address, self);
+    const fromSelf = own(m.from && m.from.address);
     st.to = fromSelf ? [...(m.to || [])] : target;
     if (opts.mode === 'replyAll') {
-      const extra = fromSelf ? [] : (m.to || []).filter((a) => !sameAddress(a.address, self));
+      const extra = fromSelf ? [] : (m.to || []).filter((a) => !own(a.address));
       st.to = uniq([...st.to, ...extra]);
-      st.cc = uniq((m.cc || []).filter((a) => !sameAddress(a.address, self) && !st.to.some((t) => sameAddress(t.address, a.address))));
+      st.cc = uniq((m.cc || []).filter((a) => !own(a.address) && !st.to.some((t) => sameAddress(t.address, a.address))));
       st.showCc = st.cc.length > 0;
     }
     st.subject = prefixed(m.subject, 'Re');
+    st.from = replyFrom(acc, m) || st.from;
     st.inReplyTo = m.messageId;
     st.references = [...(m.references || []), m.messageId].filter(Boolean);
     st.replyToId = m.id;
   }
   if (opts.mode === 'forward') {
     st.subject = prefixed(m.subject, 'Fwd');
+    st.from = replyFrom(acc, m) || st.from;
     st.forwardId = m.id;
     st.attachments = (m.attachments || []).map((a) => ({ forwardIndex: a.index, filename: a.filename, size: a.size }));
   }
   return st;
+}
+
+// Answer from the address the mail was sent to, so mail to an alias is answered from that alias.
+function replyFrom(acc, m) {
+  if (m.from && acc.identities.some((i) => sameAddress(i.address, m.from.address))) {
+    return acc.identities.find((i) => sameAddress(i.address, m.from.address)).address;
+  }
+  const recipients = [...(m.to || []), ...(m.cc || [])];
+  const hit = acc.identities.find((i) => !i.primary && recipients.some((r) => sameAddress(r.address, i.address)));
+  if (hit) return hit.address;
+  const primary = recipients.some((r) => sameAddress(r.address, acc.email));
+  return primary ? acc.email : null;
 }
 
 function quoteHeader(m) {
@@ -157,11 +173,23 @@ export async function openCompose(ctx, opts) {
   page.setAttribute('aria-label', 'Opstellen');
   current = { page, st };
 
+  // One entry per sending address; with several accounts the addresses are grouped per account.
+  const fromOptions = (a) =>
+    a.identities
+      .map((i) => {
+        const key = `${a.id}|${i.address}`;
+        const on = a.id === st.accountId && sameAddress(i.address, st.from);
+        return `<option value="${esc(key)}" ${on ? 'selected' : ''}>${esc(i.name ? `${i.name} <${i.address}>` : i.address)}</option>`;
+      })
+      .join('');
+  const identityCount = accounts.reduce((n, a) => n + a.identities.length, 0);
   const accountField =
-    accounts.length > 1
-      ? `<div class="field"><label>Van</label><select data-field="account">${accounts
-          .map((a) => `<option value="${esc(a.id)}" ${a.id === st.accountId ? 'selected' : ''}>${esc(a.email)}</option>`)
-          .join('')}</select></div>`
+    identityCount > 1
+      ? `<div class="field"><label>Van</label><select data-field="account">${
+          accounts.length > 1
+            ? accounts.map((a) => `<optgroup label="${esc(a.email)}">${fromOptions(a)}</optgroup>`).join('')
+            : fromOptions(accounts[0])
+        }</select></div>`
       : '';
 
   page.innerHTML = `
@@ -310,7 +338,9 @@ export async function openCompose(ctx, opts) {
   page.addEventListener('change', (e) => {
     const t = e.target;
     if (t.dataset.field === 'account') {
-      st.accountId = t.value;
+      const [accountId, ...rest] = t.value.split('|');
+      st.accountId = accountId;
+      st.from = rest.join('|');
       st.dirty = true;
     }
     if (t.dataset.tool === 'font') {
@@ -504,6 +534,7 @@ export async function openCompose(ctx, opts) {
     const forwardIndexes = st.attachments.filter((a) => a.forwardIndex !== undefined).map((a) => a.forwardIndex);
     return {
       accountId: st.accountId,
+      from: st.from,
       to: st.to,
       cc: st.cc,
       bcc: st.bcc,

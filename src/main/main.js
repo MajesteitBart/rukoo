@@ -241,6 +241,7 @@ const api = {
     return engine.addGoogleAccount(grant, { reauthId: accountId });
   },
   googleCancel: () => google.cancel(),
+  fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),
   googleImportClient: async () => {
     const res = await dialog.showOpenDialog(win, {
       title: 'Google OAuth-client importeren',
