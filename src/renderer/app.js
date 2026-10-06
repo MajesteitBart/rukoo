@@ -471,7 +471,11 @@ async function chooseSort() {
 
 async function emptyCurrent() {
   const accounts = S.scope === 'all' ? S.data.accounts : [account(S.scope)];
-  const ok = await confirmDialog(`${viewLabel()} leegmaken?`, 'Alle e-mails in deze map worden definitief verwijderd.', 'Leegmaken', true);
+  const what =
+    S.view === 'trash'
+      ? 'Alle e-mails in deze map worden definitief verwijderd.'
+      : 'Alle e-mails in deze map worden naar de Prullenbak verplaatst.';
+  const ok = await confirmDialog(`${viewLabel()} leegmaken?`, what, 'Leegmaken', true);
   if (!ok) return;
   let n = 0;
   for (const a of accounts) {
@@ -543,8 +547,9 @@ function bindSwipe(pane) {
     // Swallow the click that follows a drag.
     setTimeout(() => (st.moved = false), 0);
   };
-  pane.addEventListener('pointerup', end);
-  pane.addEventListener('pointercancel', end);
+  // Listen on window: a drag released over the reader must still end the swipe.
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
 }
 
 // ---------- message actions ----------
@@ -587,18 +592,39 @@ export async function deleteMessage(m) {
     if (!ok) return renderList();
   }
   S.list = S.list.filter((x) => x.id !== m.id);
-  if (S.selectedId === m.id) {
-    if (next) openMessage(next.id);
-    else closeReader();
-  }
+  if (S.selectedId === m.id) showNext(next);
   renderList();
   try {
-    const where = await api('remove', m.id);
+    let where = await api('remove', m.id);
+    if (where === 'confirm') {
+      const ok = await confirmDialog(
+        'Definitief verwijderen?',
+        'Dit account heeft geen Prullenbak. De e-mail wordt definitief van de server verwijderd.',
+        'Verwijderen',
+        true
+      );
+      if (!ok) return refresh();
+      where = await api('remove', m.id, { force: true });
+    }
     toast(where === 'trash' ? 'Verplaatst naar Prullenbak' : 'Verwijderd');
   } catch (err) {
     toast(err.message, 5000);
     refresh();
   }
+}
+
+// After the open message leaves the list, show the next one. Drafts open in the
+// editor, so they are only selected, never opened automatically.
+function showNext(next) {
+  if (next && next.role !== 'drafts') return openMessage(next.id);
+  closeReader();
+  if (next) selectOnly(next.id);
+}
+
+function selectOnly(id) {
+  S.selectedId = id;
+  $$('.item').forEach((el) => el.classList.toggle('selected', el.dataset.id === id));
+  $(`.item[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
 }
 
 async function moveMessage(m) {
@@ -608,10 +634,7 @@ async function moveMessage(m) {
   if (!dest) return;
   const next = S.selectedId === m.id ? neighbour(m.id) : null;
   S.list = S.list.filter((x) => x.id !== m.id);
-  if (S.selectedId === m.id) {
-    if (next) openMessage(next.id);
-    else closeReader();
-  }
+  if (S.selectedId === m.id) showNext(next);
   renderList();
   try {
     await api('move', m.id, dest);
@@ -643,8 +666,12 @@ function messageMenu(m) {
             const ok = await confirmDialog('Toevoegen aan spamadressen?', `E-mails van ${m.from.address} worden niet meer in je Postvak IN getoond.`, 'Toevoegen');
             if (!ok) return;
             if (S.selectedId === m.id) closeReader();
-            await api('markSpam', m.id).catch((err) => toast(err.message));
-            toast('Toegevoegd aan spamadressen');
+            try {
+              await api('markSpam', m.id);
+              toast('Toegevoegd aan spamadressen');
+            } catch (err) {
+              toast(err.message, 5000);
+            }
           }
         },
     saved
@@ -905,7 +932,7 @@ function bindReader() {
       case 'reply':
       case 'replyAll':
       case 'forward':
-        if (!m.html && m.html !== '') return;
+        if (S.loading || m.html === null || m.html === undefined || m.error) return;
         return openCompose(ctx, { mode: btn.dataset.reader, message: m });
       case 'delete':
         return deleteMessage(listItem);
@@ -941,6 +968,12 @@ document.addEventListener('keydown', (e) => {
   }
   if (editing(e)) return;
   const m = S.message;
+  // Reply and forward need the loaded body (Reply-To, Message-ID, attachments).
+  const ready = m && !S.loading && m.html !== null && m.html !== undefined && !m.error;
+  if (ctrl && ['r', 'f'].includes(e.key.toLowerCase()) && m && !ready) {
+    e.preventDefault();
+    return;
+  }
   if (ctrl && e.shiftKey && e.key.toLowerCase() === 'r' && m) return openCompose(ctx, { mode: 'replyAll', message: m });
   if (ctrl && e.key.toLowerCase() === 'r' && m) {
     e.preventDefault();
@@ -960,7 +993,11 @@ document.addEventListener('keydown', (e) => {
     const i = S.list.findIndex((x) => x.id === S.selectedId);
     const step = e.key === 'ArrowDown' || e.key === 'j' ? 1 : -1;
     const target = S.list[i < 0 ? 0 : i + step];
-    if (target) openMessage(target.id);
+    if (!target) return;
+    if (target.role === 'drafts') {
+      closeReader();
+      selectOnly(target.id);
+    } else openMessage(target.id);
     return;
   }
   if (e.key === 'Escape' && S.expanded) {

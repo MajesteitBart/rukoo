@@ -1142,6 +1142,9 @@ select {
   padding: 18px 34px 40px;
 }
 .editor {
+  /* Keeps any positioned content from a pasted or reopened mail inside the editor. */
+  contain: layout paint;
+  position: relative;
   min-height: 160px;
   outline: none;
   font-size: 16px;

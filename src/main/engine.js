@@ -76,6 +76,8 @@ class Engine extends EventEmitter {
     this.syncs = new Map();
     this.saved = [];
     this.saveTimers = new Map();
+    // Local changes whose IMAP command has not finished yet; re-applied over sync results.
+    this.pending = new Map();
   }
 
   file(...parts) {
@@ -295,8 +297,40 @@ class Engine extends EventEmitter {
     return cache && cache.folders.find((f) => f.path === folderPath);
   }
 
-  syncAll() {
-    return Promise.all(this.accounts.map((a) => this.syncAccount(a.id).catch(() => {})));
+  // Syncs every account; rejects with the collected errors if any account failed.
+  async syncAll() {
+    const errors = [];
+    await Promise.all(
+      this.accounts.map((a) => this.syncAccount(a.id).catch((err) => errors.push(`${a.email}: ${friendlyError(err)}`)))
+    );
+    if (errors.length) throw new Error(errors.join('\n'));
+  }
+
+  pendingKey(accountId, folder, uid) {
+    return `${accountId}\n${folder}\n${uid}`;
+  }
+
+  // Tracks an optimistic change until its IMAP command settles, so a sync that read
+  // server state just before the command cannot undo it in the cache.
+  async withPending(acc, folder, uid, patch, op) {
+    const key = this.pendingKey(acc.id, folder, uid);
+    this.pending.set(key, { ...(this.pending.get(key) || {}), ...patch });
+    try {
+      return await op();
+    } finally {
+      this.pending.delete(key);
+    }
+  }
+
+  applyPending(accountId, folder, messages) {
+    if (!this.pending.size) return messages;
+    const out = [];
+    for (const m of messages) {
+      const p = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      if (!p) out.push(m);
+      else if (!p.removed) out.push({ ...m, ...p });
+    }
+    return out;
   }
 
   syncAccount(id, extraFolders = []) {
@@ -347,14 +381,18 @@ class Engine extends EventEmitter {
     const known = new Map();
     if (prev) for (const m of prev.messages) known.set(m.uid, m);
     const limit = info.role === 'inbox' ? LIMITS.inbox : LIMITS.default;
-    const res = await this.session(acc).syncFolder(folderPath, { limit, known: prev && prev.uidValidity ? known : new Map() });
+    const res = await this.session(acc).syncFolder(folderPath, {
+      limit,
+      known,
+      uidValidity: prev ? prev.uidValidity : null
+    });
     const sameValidity = prev && prev.uidValidity === res.uidValidity;
     const maxKnown = sameValidity ? Math.max(0, ...prev.messages.map((m) => m.uid)) : Infinity;
     cache.boxes[folderPath] = {
       uidValidity: res.uidValidity,
       exists: res.exists,
       syncedAt: Date.now(),
-      messages: res.messages
+      messages: this.applyPending(acc.id, folderPath, res.messages)
     };
     if (!sameValidity && prev) {
       fs.rmSync(this.file('bodies', acc.id), { recursive: true, force: true });
@@ -371,8 +409,14 @@ class Engine extends EventEmitter {
     const box = cache && cache.boxes[folderPath];
     if (box && Date.now() - box.syncedAt < 60000) return;
     const acc = this.account(accountId);
-    await this.syncFolderInto(acc, folderPath);
-    this.changed(accountId);
+    await this.syncFolderAndNotify(acc, folderPath);
+  }
+
+  // For syncs outside runSync (after a move, opening a folder): still report new mail.
+  async syncFolderAndNotify(acc, folderPath) {
+    const fresh = await this.syncFolderInto(acc, folderPath);
+    this.changed(acc.id);
+    if (fresh.length) this.emit('new-mail', fresh);
   }
 
   // ---------- listing ----------
@@ -547,6 +591,7 @@ class Engine extends EventEmitter {
       subject: parsed.subject || base.subject || '',
       date: parsed.date ? parsed.date.getTime() : base.date,
       messageId: parsed.messageId || null,
+      inReplyTo: parsed.inReplyTo || null,
       references: [].concat(parsed.references || []),
       html,
       isHtml: Boolean(parsed.html),
@@ -572,14 +617,20 @@ class Engine extends EventEmitter {
 
   async setFlags(id, flags) {
     const { acc, msg, folder, uid } = this.locate(id);
-    const before = { unread: msg.unread, starred: msg.starred };
-    if (flags.unread !== undefined) msg.unread = Boolean(flags.unread);
-    if (flags.starred !== undefined) msg.starred = Boolean(flags.starred);
+    const patch = {};
+    for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
+    Object.assign(msg, patch);
     this.changed(acc.id);
     try {
-      await this.session(acc).setFlags(folder, uid, flags);
+      await this.withPending(acc, folder, uid, patch, () => this.session(acc).setFlags(folder, uid, patch));
     } catch (err) {
-      Object.assign(msg, before);
+      // Revert on whatever object the cache holds now; a sync may have replaced it.
+      try {
+        const now = this.locate(id).msg;
+        for (const k of Object.keys(patch)) now[k] = !patch[k];
+      } catch (_) {
+        // The message left the cache in the meantime.
+      }
       this.changed(acc.id);
       throw new Error(friendlyError(err));
     }
@@ -603,7 +654,7 @@ class Engine extends EventEmitter {
     this.removeFromCache(acc, folder, uid);
     this.changed(acc.id);
     try {
-      await this.session(acc).move(folder, uid, destination);
+      await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).move(folder, uid, destination));
     } catch (err) {
       const box = this.caches.get(acc.id).boxes[folder];
       if (box) box.messages.push(msg);
@@ -611,20 +662,21 @@ class Engine extends EventEmitter {
       throw new Error(friendlyError(err));
     }
     if (this.caches.get(acc.id).boxes[destination]) {
-      this.syncFolderInto(acc, destination).then(() => this.changed(acc.id)).catch(() => {});
+      this.syncFolderAndNotify(acc, destination).catch(() => {});
     }
   }
 
   // Moves to Prullenbak, or deletes for good when the message is already there.
-  async remove(id) {
-    const { acc, folder, uid } = this.locate(id);
+  // Without a Prullenbak it returns 'confirm' and changes nothing until called with force.
+  async remove(id, { force = false } = {}) {
+    const { acc, folder, uid, msg } = this.locate(id);
     const trash = this.folderByRole(acc.id, 'trash');
     if (trash && trash.path !== folder) return this.move(id, trash.path).then(() => 'trash');
-    const { msg } = this.locate(id);
+    if (!trash && !force) return 'confirm';
     this.removeFromCache(acc, folder, uid);
     this.changed(acc.id);
     try {
-      await this.session(acc).deleteForever(folder, uid);
+      await this.withPending(acc, folder, uid, { removed: true }, () => this.session(acc).deleteForever(folder, uid));
     } catch (err) {
       this.caches.get(acc.id).boxes[folder].messages.push(msg);
       this.changed(acc.id);
@@ -635,7 +687,7 @@ class Engine extends EventEmitter {
 
   async emptyFolder(accountId, folderPath) {
     const ids = this.listMessages({ scope: accountId, view: 'folder', folder: folderPath }).map((m) => m.id);
-    for (const id of ids) await this.remove(id).catch(() => {});
+    for (const id of ids) await this.remove(id, { force: true }).catch(() => {});
     return ids.length;
   }
 
@@ -761,12 +813,8 @@ class Engine extends EventEmitter {
     }
     if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
     if (payload.replyToId) {
-      try {
-        const { msg } = this.locate(payload.replyToId);
-        msg.answered = true;
-      } catch (_) {
-        // The original may have been moved in the meantime.
-      }
+      // The original may have been moved in the meantime; that is fine.
+      await this.setFlags(payload.replyToId, { answered: true }).catch(() => {});
     }
     this.syncAccount(acc.id).catch(() => {});
     return true;
@@ -777,7 +825,8 @@ class Engine extends EventEmitter {
     const drafts = this.folderByRole(acc.id, 'drafts');
     if (!drafts) throw new Error('Deze account heeft geen map Concepten.');
     const mail = await this.buildMail(acc, payload);
-    const raw = await ImapAccount.compose(mail);
+    // Keep Bcc in the stored draft so it survives reopening.
+    const raw = await ImapAccount.compose({ ...mail, keepBcc: true });
     const session = this.session(acc);
     const uid = await session.append(drafts.path, raw, ['\\Seen', '\\Draft']);
     if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});

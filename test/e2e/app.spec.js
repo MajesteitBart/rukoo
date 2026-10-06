@@ -181,3 +181,57 @@ test('keyboard: arrows navigate, Ctrl+N composes, Escape closes', async () => {
   await win.keyboard.press('Escape');
   await expect(win.locator('.compose')).toHaveCount(0);
 });
+
+test('a reopened draft cannot restyle or cover the app', async () => {
+  const state = await win.evaluate(() => window.mail.call('state'));
+  await win.evaluate(
+    (accountId) =>
+      window.mail.call('saveDraft', {
+        accountId,
+        to: ['a@voorbeeld.nl'],
+        subject: 'Kwaadaardig concept',
+        html: '<sty<style></style>le>body{display:none}</style><div class="page scrim" style="position:fixed;inset:0;background:red">X</div><p>tekst</p>'
+      }),
+    state.accounts[0].id
+  );
+  await win.click('[data-view="drafts"]');
+  await item('Kwaadaardig concept').click();
+  await expect(win.locator('.compose .editor')).toContainText('tekst');
+  await expect(win.locator('.compose .editor style')).toHaveCount(0);
+  await expect(win.locator('.compose .editor .scrim')).toHaveCount(0);
+  const fixed = await win.locator('.compose .editor div').first().evaluate((el) => getComputedStyle(el).position);
+  expect(fixed).not.toBe('fixed');
+  await expect(win.locator('body')).toBeVisible();
+  await expect(win.locator('[data-c="send"]')).toBeVisible();
+});
+
+test('a reopened draft keeps its attachment', async () => {
+  await item('Sanne de Vries').click();
+  await win.click('[data-reader="forward"]');
+  await win.fill('[data-rinput="to"]', 'joris@voorbeeld.nl');
+  await win.click('[data-c="close"]');
+  await win.click('.scrim .buttons button:has-text("Opslaan")');
+  await win.click('[data-view="drafts"]');
+  await item('Fwd: Afspraak donderdag').click();
+  await expect(win.locator('.compose-attachments')).toContainText('Voorstel-v3.pdf');
+});
+
+test('without a Prullenbak, delete asks before removing for good', async () => {
+  const state = await win.evaluate(() => window.mail.call('state'));
+  // Simulate a server whose trash folder was not recognised.
+  await app.evaluate((_, id) => {
+    const engine = global.__semEngine;
+    const cache = engine.caches.get(id);
+    cache.folders = cache.folders.filter((f) => f.role !== 'trash');
+  }, state.accounts[0].id);
+  await item('Bencompare').click();
+  await win.click('[data-reader="delete"]');
+  await expect(win.locator('.scrim')).toContainText('geen Prullenbak');
+  await win.click('.scrim .buttons button:has-text("Annuleren")');
+  await expect(item('Bencompare')).toBeVisible();
+  await item('Bencompare').click();
+  await win.click('[data-reader="delete"]');
+  await win.click('.scrim .buttons button:has-text("Verwijderen")');
+  await expect(win.locator('#toast')).toContainText('Verwijderd');
+  await expect(win.locator('.item', { hasText: 'Bencompare' })).toHaveCount(0);
+});

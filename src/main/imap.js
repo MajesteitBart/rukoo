@@ -130,11 +130,13 @@ class ImapAccount {
     });
   }
 
-  syncFolder(path, { limit = 200, known = new Map() } = {}) {
+  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path, { readOnly: true });
       try {
         const box = client.mailbox;
+        // After a UIDVALIDITY change old UIDs point at different messages; reuse nothing.
+        const known = uidValidity && String(box.uidValidity) === String(uidValidity) ? knownIn : new Map();
         const result = { uidValidity: String(box.uidValidity), exists: box.exists, messages: [] };
         if (!box.exists) return result;
         const start = Math.max(1, box.exists - limit + 1);
@@ -220,7 +222,7 @@ class ImapAccount {
     });
   }
 
-  setFlags(path, uid, { unread, starred }) {
+  setFlags(path, uid, { unread, starred, answered }) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);
       try {
@@ -229,6 +231,7 @@ class ImapAccount {
         if (unread === false) await client.messageFlagsAdd(String(uid), ['\\Seen'], opts);
         if (starred === true) await client.messageFlagsAdd(String(uid), ['\\Flagged'], opts);
         if (starred === false) await client.messageFlagsRemove(String(uid), ['\\Flagged'], opts);
+        if (answered === true) await client.messageFlagsAdd(String(uid), ['\\Answered'], opts);
       } finally {
         lock.release();
       }
@@ -265,9 +268,11 @@ class ImapAccount {
     });
   }
 
-  static async compose(mail) {
-    const composer = new MailComposer({ ...mail, attachDataUrls: true });
-    return composer.compile().build();
+  static async compose({ keepBcc = false, ...mail }) {
+    const node = new MailComposer({ ...mail, attachDataUrls: true }).compile();
+    // Drafts keep their Bcc header; sent mail must not reveal it.
+    node.keepBcc = keepBcc;
+    return node.build();
   }
 
   // Sends the message and returns the raw RFC 822 source.

@@ -16,6 +16,7 @@ const {
   Menu
 } = require('electron');
 const { Engine } = require('./engine');
+const { RISKY, safeName, markOfTheWeb } = require('./files');
 
 const APP_ID = 'nl.bvdm.samsung-email-desktop';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
@@ -62,7 +63,8 @@ function applyTheme() {
 function scheduleSync() {
   clearInterval(syncTimer);
   const minutes = Number(engine.settings.syncInterval) || 0;
-  if (minutes > 0) syncTimer = setInterval(() => engine.syncAll(), minutes * 60000);
+  // Errors are stored per account and shown in the list; nothing to do with them here.
+  if (minutes > 0) syncTimer = setInterval(() => engine.syncAll().catch(() => {}), minutes * 60000);
 }
 
 function badgeCount() {
@@ -123,8 +125,9 @@ function openUrl(url) {
 async function tempAttachment(id, index) {
   const a = await engine.attachment(id, index);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'samsung-email-'));
-  const file = path.join(dir, path.basename(a.filename).replace(/[<>:"/\\|?*]/g, '_'));
+  const file = path.join(dir, safeName(a.filename));
   fs.writeFileSync(file, a.content);
+  markOfTheWeb(file);
   return file;
 }
 
@@ -145,7 +148,7 @@ const api = {
   setFlags: (id, flags) => engine.setFlags(id, flags),
   markAllRead: (scope, view, folder) => engine.markAllRead(scope, view, folder),
   move: (id, dest) => engine.move(id, dest),
-  remove: (id) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id)),
+  remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
   emptyFolder: (accountId, folder) => engine.emptyFolder(accountId, folder),
   toggleVip: (address) => engine.toggleVip(address),
   markSpam: (id) => engine.markSpam(id),
@@ -183,6 +186,20 @@ const api = {
     return `data:image/${ext};base64,${fs.readFileSync(file).toString('base64')}`;
   },
   openAttachment: async (id, index) => {
+    const a = await engine.attachment(id, index);
+    if (RISKY.test(safeName(a.filename))) {
+      const res = await dialog.showMessageBox(win, {
+        type: 'warning',
+        title: 'Bijlage openen',
+        message: `${safeName(a.filename)} kan een programma starten.`,
+        detail: 'Dit type bestand wordt niet vanuit e-mail geopend. Sla het op en open het alleen als je de afzender vertrouwt.',
+        buttons: ['Annuleren', 'Opslaan...'],
+        defaultId: 0,
+        cancelId: 0
+      });
+      if (res.response === 1) return api.saveAttachment(id, index);
+      return false;
+    }
     const file = await tempAttachment(id, index);
     const err = await shell.openPath(file);
     if (err) throw new Error(err);
@@ -190,9 +207,10 @@ const api = {
   },
   saveAttachment: async (id, index) => {
     const a = await engine.attachment(id, index);
-    const res = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), a.filename) });
+    const res = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), safeName(a.filename)) });
     if (res.canceled || !res.filePath) return false;
     fs.writeFileSync(res.filePath, a.content);
+    markOfTheWeb(res.filePath);
     return res.filePath;
   },
   exportEml: async (id) => {
@@ -281,6 +299,8 @@ app.on('second-instance', showWindow);
 
 app.whenReady().then(() => {
   engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets }).init();
+  // Test mode only: lets end-to-end tests simulate server conditions.
+  if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   engine.on('updated', () => {
     send('updated');
     if (engine.settings.badge === 'unread') refreshBadge();
@@ -293,7 +313,7 @@ app.whenReady().then(() => {
   applyTheme();
   createWindow();
   scheduleSync();
-  engine.syncAll();
+  engine.syncAll().catch(() => {});
 });
 
 app.on('window-all-closed', () => app.quit());

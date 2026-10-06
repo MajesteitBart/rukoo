@@ -387,6 +387,7 @@ class DemoAccount {
       from: m.from,
       to: m.to,
       cc: m.cc,
+      bcc: m.bcc || [],
       subject: m.subject,
       date: new Date(m.date),
       messageId: m.messageId,
@@ -396,16 +397,20 @@ class DemoAccount {
       html: m.html || undefined,
       attachments: (m.attachments || []).map((a) => ({ ...a }))
     });
-    return composer.compile().build();
+    // Like an IMAP server, return the stored message as it was saved, Bcc included.
+    const node = composer.compile();
+    node.keepBcc = true;
+    return node.build();
   }
 
-  async setFlags(p, uid, { unread, starred }) {
+  async setFlags(p, uid, { unread, starred, answered }) {
     const m = this.find(p, uid);
     const set = new Set(m.flags);
     if (unread === true) set.delete('\\Seen');
     if (unread === false) set.add('\\Seen');
     if (starred === true) set.add('\\Flagged');
     if (starred === false) set.delete('\\Flagged');
+    if (answered === true) set.add('\\Answered');
     m.flags = [...set];
     this.persist();
   }
@@ -437,6 +442,7 @@ class DemoAccount {
       from: util.addressFromParsed(parsed.from)[0] || { name: '', address: DEMO_EMAIL },
       to: util.addressFromParsed(parsed.to),
       cc: util.addressFromParsed(parsed.cc),
+      bcc: util.addressFromParsed(parsed.bcc),
       subject: parsed.subject || '',
       date: (parsed.date || new Date()).getTime(),
       html: parsed.html || null,

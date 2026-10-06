@@ -70,8 +70,10 @@ export function openSettings(ctx) {
   const stack = ['main'];
   let params = {};
 
+  // Live status (sync times, errors) matters on the overview pages; forms must not be reset under the user.
   const unsubscribe = window.mail.on(({ type }) => {
-    if (type === 'updated') setTimeout(render, 80);
+    const view = stack[stack.length - 1];
+    if (type === 'updated' && (view === 'main' || view === 'account')) setTimeout(render, 80);
   });
 
   const close = () => {

@@ -32,11 +32,22 @@ function uniq(list) {
   });
 }
 
-// Strip document-level tags so a reopened draft cannot restyle the app.
+// A reopened draft goes into the app document itself, so it is parsed in an inert
+// document and reduced to plain content: no styles sheets, scripts, app class names
+// or fixed positioning that could cover the editor.
 function cleanDraftHtml(html) {
-  return String(html || '')
-    .replace(/<style[\s\S]*?<\/style\s*>/gi, '')
-    .replace(/<\/?(html|head|body|meta|link|title)\b[^>]*>/gi, '');
+  const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+  doc.querySelectorAll('style, link, meta, script, noscript, iframe, frame, object, embed, base, form, title, template').forEach((n) => n.remove());
+  for (const el of doc.body.querySelectorAll('*')) {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on') || name === 'id' || name === 'contenteditable' || name === 'tabindex') el.removeAttribute(attr.name);
+      else if (name === 'class' && attr.value !== 'signature') el.removeAttribute(attr.name);
+      else if ((name === 'href' || name === 'src') && /^\s*(javascript|vbscript|data:text\/html)/i.test(attr.value)) el.removeAttribute(attr.name);
+    }
+    if (el.style && /fixed|sticky|absolute/i.test(el.style.position)) el.style.position = '';
+  }
+  return doc.body.innerHTML;
 }
 
 function initialState(ctx, opts) {
@@ -81,6 +92,11 @@ function initialState(ctx, opts) {
     st.subject = m.subject || '';
     st.bodyHtml = cleanDraftHtml(m.html);
     st.draftId = m.id;
+    // Attachments stay on the stored draft; they are copied from it when sending or re-saving.
+    st.forwardId = m.id;
+    st.attachments = (m.attachments || []).map((a) => ({ forwardIndex: a.index, filename: a.filename, size: a.size }));
+    st.inReplyTo = m.inReplyTo || null;
+    st.references = m.references || [];
     return st;
   }
   st.original = m;
