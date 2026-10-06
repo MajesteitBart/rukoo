@@ -1,7 +1,7 @@
 {
-  "name": "samsung-email-desktop",
+  "name": "rukoo-mail",
   "version": "1.0.0",
-  "description": "Samsung E-mail for Windows: an Electron desktop clone of the Samsung Email app",
+  "description": "Rukoo Mail: an email client for Windows, built with Electron",
   "main": "src/main/main.js",
   "scripts": {
     "start": "node scripts/start.js",
@@ -27,11 +27,11 @@
     "electron": "^44.5.1",
     "electron-builder": "^26.15.3"
   },
-  "productName": "E-mail",
+  "productName": "Rukoo Mail",
   "private": true,
   "build": {
-    "appId": "nl.bvdm.samsung-email-desktop",
-    "productName": "E-mail",
+    "appId": "nl.bvdm.rukoo-mail",
+    "productName": "Rukoo Mail",
     "directories": {
       "output": "dist"
     },
@@ -50,10 +50,10 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "E-mail-Setup-${version}.${ext}"
+      "artifactName": "Rukoo-Mail-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "E-mail-Portable-${version}.${ext}"
+      "artifactName": "Rukoo-Mail-Portable-${version}.${ext}"
     }
   }
 }

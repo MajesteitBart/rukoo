@@ -6,11 +6,15 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; font-src * data:; media-src * data:; connect-src 'none'; frame-src 'self' about: data:; object-src 'none'"
     />
-    <title>E-mail</title>
+    <title>Rukoo Mail</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="titlebar"><span class="titlebar-name">E-mail</span></div>
+    <div class="titlebar">
+      <img class="titlebar-icon brand-dark" src="assets/rukoo-icon-dark.svg" alt="" />
+      <img class="titlebar-icon brand-light" src="assets/rukoo-icon.svg" alt="" />
+      <span class="titlebar-name">Rukoo Mail</span>
+    </div>
     <div id="app"></div>
     <div id="overlays"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

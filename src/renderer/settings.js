@@ -1,5 +1,5 @@
 import { icons } from './icons.js';
-import { api, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm } from './ui.js';
+import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm } from './ui.js';
 
 const THEMES = [
   { value: 'system', label: 'Afstemmen op systeeminstelling' },
@@ -156,7 +156,7 @@ export function openSettings(ctx) {
           ${row({ title: "VIP's", desc: "E-mails van VIP's verschijnen in de map VIP's.", action: 'vips' })}
         </div>
         <div class="settings-group-title">Over</div>
-        <div class="card">${row({ title: 'Over E-mail', desc: 'Versie en opslaglocatie', action: 'about' })}</div>`;
+        <div class="card">${row({ title: 'Over Rukoo Mail', desc: 'Versie en opslaglocatie', action: 'about' })}</div>`;
     }
 
     if (view === 'account') {
@@ -372,8 +372,7 @@ export function openSettings(ctx) {
       case 'about': {
         const info = await api('appInfo');
         return dialog({
-          title: 'E-mail voor Windows',
-          body: `<p>Versie ${esc(info.version)}</p><p>Een desktopversie van Samsung E-mail, gebouwd met Electron. Gegevens staan in:<br><code style="user-select:text">${esc(info.dataDir)}</code></p>`
+          body: `${brandLogo('about-logo')}<p>Versie ${esc(info.version)}</p><p>Een e-mailprogramma voor Windows, gebouwd met Electron. Gegevens staan in:<br><code style="user-select:text">${esc(info.dataDir)}</code></p>`
         });
       }
     }

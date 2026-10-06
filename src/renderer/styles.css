@@ -104,10 +104,21 @@ select {
   z-index: 100;
   pointer-events: none;
 }
+.titlebar-icon {
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+}
 .titlebar-name {
   font-size: 12px;
   color: var(--text-3);
   letter-spacing: 0.02em;
+}
+
+/* The logo comes in a light and a dark colourway; show the one that matches the theme. */
+:root.light .brand-dark,
+:root:not(.light) .brand-light {
+  display: none;
 }
 
 #app {
@@ -914,6 +925,11 @@ select {
   font-size: 19px;
   font-weight: 600;
 }
+.about-logo {
+  display: block;
+  height: 40px;
+  margin: 4px 0 18px;
+}
 .dialog p {
   color: var(--text-2);
   margin: 0 0 12px;
@@ -1465,6 +1481,11 @@ select {
 .setup-inner {
   width: min(560px, 90vw);
   padding: 40px 0;
+}
+.setup-logo {
+  display: block;
+  height: 46px;
+  margin: 0 0 30px;
 }
 .setup h1 {
   font-family: var(--font-display);

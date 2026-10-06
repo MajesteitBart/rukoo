@@ -1,4 +1,4 @@
-// Line icons in the style of One UI: 24px grid, 1.6px round strokes.
+// Line icons: 24px grid, 1.6px round strokes.
 const p = (d, extra = '') =>
   `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
 

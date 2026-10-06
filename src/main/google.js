@@ -106,7 +106,7 @@ class GoogleAuth {
           const params = url.searchParams;
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
           if (params.get('state') !== state) {
-            res.end(PAGE('Aanmelden mislukt', 'Ongeldige aanvraag. Start het aanmelden opnieuw vanuit E-mail.'));
+            res.end(PAGE('Aanmelden mislukt', 'Ongeldige aanvraag. Start het aanmelden opnieuw vanuit Rukoo Mail.'));
             return;
           }
           clearTimeout(timer);
@@ -115,7 +115,7 @@ class GoogleAuth {
             reject(oauthError(params.get('error') === 'access_denied' ? 'Je hebt geen toegang gegeven.' : `Google: ${params.get('error')}`, params.get('error')));
             return;
           }
-          res.end(PAGE('Je bent aangemeld', 'Je kunt dit tabblad sluiten en teruggaan naar E-mail.'));
+          res.end(PAGE('Je bent aangemeld', 'Je kunt dit tabblad sluiten en teruggaan naar Rukoo Mail.'));
           resolve(params.get('code'));
         });
 
@@ -146,7 +146,7 @@ class GoogleAuth {
       });
       const granted = String(tokens.scope || '').split(' ');
       if (!granted.includes('https://mail.google.com/')) {
-        throw oauthError('Geef E-mail toegang tot Gmail (vink alle machtigingen aan) en probeer het opnieuw.', 'scope');
+        throw oauthError('Geef Rukoo Mail toegang tot Gmail (vink alle machtigingen aan) en probeer het opnieuw.', 'scope');
       }
       if (!tokens.refresh_token) throw oauthError('Google gaf geen vernieuwingstoken terug. Probeer het opnieuw.', 'no_refresh');
       const profile = decodeJwtPayload(tokens.id_token);

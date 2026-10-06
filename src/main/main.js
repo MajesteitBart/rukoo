@@ -19,12 +19,29 @@ const { Engine } = require('./engine');
 const { GoogleAuth } = require('./google');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
 
-const APP_ID = 'nl.bvdm.samsung-email-desktop';
+const APP_ID = 'nl.bvdm.rukoo-mail';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
 const DARK_BAR = { color: '#000000', symbolColor: '#f2f2f2', height: 40 };
 const LIGHT_BAR = { color: '#f4f4f4', symbolColor: '#1a1a1a', height: 40 };
 
+// Before the rename to Rukoo Mail the app kept its data in %APPDATA%\E-mail. Electron has already created an
+// empty folder under the new name by now, so swap it for the old one. If the old folder is in use, keep using it
+// for this run and try again next launch.
+function adoptLegacyData() {
+  const legacy = path.join(app.getPath('appData'), 'E-mail');
+  const target = app.getPath('userData');
+  if (!fs.existsSync(path.join(legacy, 'data'))) return;
+  if (fs.existsSync(target) && fs.readdirSync(target).length) return;
+  try {
+    if (fs.existsSync(target)) fs.rmdirSync(target);
+    fs.renameSync(legacy, target);
+  } catch {
+    app.setPath('userData', legacy);
+  }
+}
+
 if (process.env.SEM_DATA_DIR) app.setPath('userData', process.env.SEM_DATA_DIR);
+else adoptLegacyData();
 app.setAppUserModelId(APP_ID);
 
 let win = null;
@@ -100,7 +117,7 @@ function notify(messages) {
     n.show();
   }
   if (messages.length > list.length) {
-    new Notification({ title: 'E-mail', body: `${messages.length} nieuwe e-mails` }).show();
+    new Notification({ title: 'Rukoo Mail', body: `${messages.length} nieuwe e-mails` }).show();
   }
 }
 
@@ -126,7 +143,7 @@ function openUrl(url) {
 
 async function tempAttachment(id, index) {
   const a = await engine.attachment(id, index);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'samsung-email-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-mail-'));
   const file = path.join(dir, safeName(a.filename));
   fs.writeFileSync(file, a.content);
   markOfTheWeb(file);
@@ -276,7 +293,7 @@ function createWindow() {
     minWidth: 760,
     minHeight: 560,
     show: false,
-    title: 'E-mail',
+    title: 'Rukoo Mail',
     icon: fs.existsSync(ICON) ? ICON : undefined,
     backgroundColor: dark ? '#000000' : '#f4f4f4',
     titleBarStyle: 'hidden',

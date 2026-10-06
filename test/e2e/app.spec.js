@@ -25,7 +25,7 @@ test.afterEach(async () => {
 
 const item = (text) => win.locator('.item', { hasText: text }).first();
 
-test('first run shows the demo inbox like the phone app', async () => {
+test('first run shows the demo inbox', async () => {
   await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
   await expect(win.locator('.list-title .sub')).toHaveText('demo@voorbeeld.nl');
   await expect(item('ANWB Nieuwsbrief')).toHaveClass(/unread/);

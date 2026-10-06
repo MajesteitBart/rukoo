@@ -1,6 +1,11 @@
-# E-mail for Windows
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/renderer/assets/rukoo-logo-dark.svg">
+  <img src="src/renderer/assets/rukoo-logo.svg" alt="Rukoo Mail" width="240">
+</picture>
 
-A desktop clone of [Samsung Email](https://play.google.com/store/apps/details?id=com.samsung.android.email.provider) for Windows, built with Electron. It follows the One UI tablet layout: a drawer with accounts and folders, a message list grouped by day, and a reading pane with the familiar bottom action bar. The interface is in Dutch, like the phone app it copies.
+# Rukoo Mail
+
+Rukoo Mail is an email client for Windows, built with Electron. It uses a tablet-style layout: a drawer with accounts and folders, a message list grouped by day, and a reading pane with an action bar along the bottom. The interface is in Dutch.
 
 ![Inbox and reading pane](docs/screenshots/3-reader.png)
 
@@ -10,7 +15,7 @@ A desktop clone of [Samsung Email](https://play.google.com/store/apps/details?id
 - IMAP accounts for Yahoo, Outlook, Exchange, Office365 and any other provider, with preset servers per provider and manual IMAP/SMTP settings.
 - A demo account with sample mail, so you can try the app without credentials.
 - Unified inbox across accounts ("Alle accounts") with unread badges per account.
-- Drawer views from the phone app: Postvak IN, Ongelezen, VIP's, Sterren, Opgeslagen e-mails, Concepten, Verzonden, Prullenbak, plus Spam, Archief and your own folders per account.
+- Drawer views: Postvak IN, Ongelezen, VIP's, Sterren, Opgeslagen e-mails, Concepten, Verzonden, Prullenbak, plus Spam, Archief and your own folders per account.
 - Reading pane with sender chip, "Gegevens" details, attachments (open or save), previous/next navigation and a full-width mode.
 - HTML mail renders in a sandboxed frame with scripts stripped. In dark mode HTML mail is recoloured; you can switch that off.
 - Compose, reply, reply all and forward, with "Inclusief vorige berichten", recipient autocomplete, Cc/Bcc, attachments by picker or drag and drop, inline images and a formatting toolbar.
@@ -27,7 +32,7 @@ Keyboard: `Ctrl+N` new mail, `Ctrl+R` reply, `Ctrl+Shift+R` reply all, `Ctrl+F` 
 Google sign-in needs an OAuth client of type "Desktop app" from Google Cloud. The client is not in this repository. The app looks for it in this order:
 
 - the `SEM_GOOGLE_CLIENT_ID` and `SEM_GOOGLE_CLIENT_SECRET` environment variables;
-- `%APPDATA%\E-mail\google-oauth.json`, as `{"client_id": ..., "client_secret": ...}` or Google's own download format, which "Google OAuth-client importeren" on the setup screen writes for you.
+- `%APPDATA%\Rukoo Mail\google-oauth.json`, as `{"client_id": ..., "client_secret": ...}` or Google's own download format, which "Google OAuth-client importeren" on the setup screen writes for you.
 
 While the client's consent screen is unverified, Google shows a warning before you can continue. A Workspace admin may also have to trust the app for the `https://mail.google.com/` scope.
 
@@ -35,7 +40,7 @@ Other providers use IMAP and SMTP with a password; Yahoo requires an app passwor
 
 Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally. Older mail stays on the server.
 
-Passwords and Google refresh tokens are encrypted with Windows DPAPI through Electron's `safeStorage`. Account data and the message cache live in `%APPDATA%\E-mail\data`.
+Passwords and Google refresh tokens are encrypted with Windows DPAPI through Electron's `safeStorage`. Account data and the message cache live in `%APPDATA%\Rukoo Mail\data`. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; the app moves that folder on first launch.
 
 ## Run it
 
@@ -75,5 +80,3 @@ The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.em
 | `src/renderer/` | Plain HTML, CSS and ES modules, no framework or bundler |
 
 The renderer runs sandboxed with context isolation. It can only call the methods in the IPC table in `main.js`.
-
-Samsung and Samsung Email are trademarks of Samsung Electronics. This project is not affiliated with Samsung.

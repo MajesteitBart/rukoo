@@ -11,6 +11,10 @@ export function esc(text) {
     .replace(/'/g, '&#39;');
 }
 
+// The wordmark in both colourways; styles.css hides the one that does not match the theme.
+export const brandLogo = (cls) =>
+  `<img class="${cls} brand-dark" src="assets/rukoo-logo-dark.svg" alt="Rukoo Mail"><img class="${cls} brand-light" src="assets/rukoo-logo.svg" alt="Rukoo Mail">`;
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 

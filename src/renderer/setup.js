@@ -1,5 +1,5 @@
 import { icons, providerLogos } from './icons.js';
-import { api, esc, $, toast } from './ui.js';
+import { api, brandLogo, esc, $, toast } from './ui.js';
 
 const ORDER = ['google', 'yahoo', 'outlook', 'exchange', 'office365', 'other'];
 
@@ -27,6 +27,7 @@ export function openSetup(ctx, { first = false } = {}) {
     page.innerHTML = `
       ${first ? '' : `<button class="icon-btn setup-back" data-s="close" title="Terug">${icons.back}</button>`}
       <div class="setup-inner">
+        ${first ? brandLogo('setup-logo') : ''}
         <h1>E-mail instellen</h1>
         <div class="provider-grid">
           ${ORDER.map((id) => {
@@ -45,7 +46,7 @@ export function openSetup(ctx, { first = false } = {}) {
       <button class="icon-btn setup-back" data-s="grid" title="Terug">${icons.back}</button>
       <div class="setup-inner login">
         <div class="login-head"><span class="logo">${providerLogos.google}</span><h2>Aanmelden bij Google</h2></div>
-        <p class="note">Je browser opent de aanmeldpagina van Google. Kies je account en geef E-mail toegang tot Gmail. Daarna kom je hier vanzelf terug.</p>
+        <p class="note">Je browser opent de aanmeldpagina van Google. Kies je account en geef Rukoo Mail toegang tot Gmail. Daarna kom je hier vanzelf terug.</p>
         <div class="error" data-error style="margin-top:14px"></div>
         <div class="actions" style="margin-top:22px">
           <button class="link-btn" data-s="password-mode">App-wachtwoord gebruiken</button>
