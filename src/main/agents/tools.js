@@ -14,6 +14,8 @@ const { toHtml } = require('./markdown');
 const { unsafeBlock } = require('./context');
 
 const TEXT_MAX = 20000;
+// The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
+const DRAFT_HTML_MAX = 200000;
 const ATTACHMENT_TEXT_MAX = 200000;
 const IMAGE_MAX = 5 * 1024 * 1024;
 const ATTACHMENT_MAX = 10 * 1024 * 1024;
@@ -800,9 +802,14 @@ async function writeDraft(hub, args, call) {
   const to = people(args.to, 'to');
   const cc = people(args.cc, 'cc');
   const bcc = people(args.bcc, 'bcc');
-  const c = hub.ensureConversation(call);
   const format = args.format || 'markdown';
   const html = toHtml(args.body, format);
+  // The composer takes at most this much formatted text (sanitizeAgentHtml in the renderer). Past it the
+  // draft would be cut off mid-way, so it is refused whole instead, before a chat is made for it.
+  if (html.length > DRAFT_HTML_MAX) {
+    throw new ToolError(`The draft is too long for the composer: ${html.length} characters once formatted, the limit is ${DRAFT_HTML_MAX}. Write a shorter one.`);
+  }
+  const c = hub.ensureConversation(call);
   // html-to-text turns each <div><br></div> spacer into an extra blank line; fold those back.
   const bodyText = (format === 'text' ? String(args.body) : htmlToPlain(html).replace(/\n{3,}/g, '\n\n')).trim();
   const request = {
@@ -837,10 +844,12 @@ async function writeDraft(hub, args, call) {
     composerKey: typeof shown.key === 'string' && shown.key ? shown.key.slice(0, 100) : null,
     undone: false
   });
+  // What the composer holds now, as the renderer read it back; the agent's own text only if it said nothing.
+  const composerText = typeof shown.text === 'string' ? shown.text : bodyText;
   return {
     ok: true,
     conversation_id: c.id,
-    draft: { mode: finalMode, to: shownTo, cc: shownCc, subject, body_text: bodyText.slice(0, TEXT_MAX) },
+    draft: { mode: finalMode, to: shownTo, cc: shownCc, subject, body_text: composerText.slice(0, TEXT_MAX) },
     note: 'The draft is in the composer. The user reviews and sends it; you cannot send email.'
   };
 }

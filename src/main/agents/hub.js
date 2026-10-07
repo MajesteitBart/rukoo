@@ -509,15 +509,24 @@ class AgentHub extends EventEmitter {
   }
 
   // The current Rukoo id of an email a card points at: the stored id while it still holds that email, else
-  // the same Message-ID within the same account (mail moves within its account). null when it is gone.
-  locate(ref = {}) {
+  // the same Message-ID within the same account (mail moves within its account), first in the folders Rukoo
+  // has synced, then in the folder Rukoo last moved it to. null when it is gone.
+  async locate(ref = {}) {
     const id = ref.id ? String(ref.id) : '';
     const header = ref.messageHeader ? String(ref.messageHeader) : '';
     const cached = id ? tools.cacheMessage(this.engine, id) : null;
     if (cached && (!header || !cached.messageId || normId(cached.messageId) === normId(header))) return id;
     if (id.startsWith('saved:')) return id;
     if (!header) return null;
-    return tools.findByMessageId(this.engine, header, ref.accountId || tools.accountOfId(id)) || null;
+    const account = ref.accountId || tools.accountOfId(id);
+    const found = tools.findByMessageId(this.engine, header, account);
+    if (found || !account) return found || null;
+    try {
+      return (await this.engine.findMoved(account, header)) || null;
+    } catch (err) {
+      this.log('hub', 'finding a moved email failed:', err.message);
+      return null;
+    }
   }
 
   // Normalizes the email reference the renderer sends, filling gaps from the engine cache.

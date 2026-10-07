@@ -233,6 +233,31 @@ test('write_draft asks the renderer to fill the composer and records a draft ite
   }
 });
 
+test('write_draft refuses a draft the composer cannot hold whole, and reports what the composer shows', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    const c = t.hub.create({ agent: 'claude', message: { id: call.id } });
+    // Within the 100,000 characters the schema allows, but every short line becomes a <div> of its own.
+    const long = await t.hub.callTool(local(c.id), 'write_draft', { body: 'a\n'.repeat(40000) });
+    assert.equal(long.isError, true);
+    assert.match(long.content[0].text, /too long for the composer/);
+    assert.equal(t.ui.length, 0, 'nothing reached the composer');
+    assert.equal(c.items.some((i) => i.type === 'draft'), false);
+    // From outside a chat: refused before a chat is made for it.
+    const chats = t.hub.conversations.size;
+    const outside = await t.hub.callTool(clarkRemote, 'write_draft', { body: 'a\n'.repeat(40000), mode: 'new' });
+    assert.equal(outside.isError, true);
+    assert.equal(t.hub.conversations.size, chats, 'no empty chat left behind');
+    // body_text is the composer's text as the renderer read it back (here with the signature it added).
+    t.hub.ui = async () => ({ ok: true, draft: { to: [], subject: 'Re: Call on Thursday', text: 'Thursday works.\n\n-- \nBart' } });
+    const res = data(await t.hub.callTool(local(c.id), 'write_draft', { body: 'Thursday works.' }));
+    assert.equal(res.draft.body_text, 'Thursday works.\n\n-- \nBart');
+  } finally {
+    await t.done();
+  }
+});
+
 test('show_plan upserts by plan id or task ids; show_sources keeps only safe links', async () => {
   const t = await setup();
   try {
@@ -688,14 +713,63 @@ test('a source card finds its email again after the email moved', async () => {
     assert.equal(source.messageId, call.id);
     assert.equal(source.messageHeader, '<demo-13@example.com>');
     assert.equal(source.accountId, t.acc.id);
-    assert.equal(t.hub.locate({ id: source.messageId, messageHeader: source.messageHeader, accountId: source.accountId }), call.id);
+    assert.equal(await t.hub.locate({ id: source.messageId, messageHeader: source.messageHeader, accountId: source.accountId }), call.id);
     // Archived: the stored id is stale, the Message-ID finds it in Archive.
     await t.engine.archive(call.id);
-    const now = t.hub.locate({ id: source.messageId, messageHeader: source.messageHeader, accountId: source.accountId });
+    const now = await t.hub.locate({ id: source.messageId, messageHeader: source.messageHeader, accountId: source.accountId });
     assert.ok(now && now !== call.id);
     assert.equal(decodeId(now).folder, 'Archive');
     // Without the header nothing can be found.
-    assert.equal(t.hub.locate({ id: source.messageId }), null);
+    assert.equal(await t.hub.locate({ id: source.messageId }), null);
+  } finally {
+    await t.done();
+  }
+});
+
+test('a source card finds its email in a folder that was never opened, after Rukoo moved it there', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    const ref = { id: call.id, messageHeader: '<demo-13@example.com>', accountId: t.acc.id };
+    const cache = t.engine.caches.get(t.acc.id);
+    assert.equal(cache.boxes.Travel, undefined, 'Travel was never opened, so Rukoo does not sync it');
+    await t.engine.move(call.id, 'Travel');
+    assert.equal(cache.boxes.Travel, undefined, 'the move does not sync a folder that is not in the cache');
+    const now = await t.hub.locate(ref);
+    assert.ok(now, 'found, not reported as gone');
+    assert.equal(decodeId(now).folder, 'Travel');
+    assert.equal(t.engine.locate(now).msg.subject, 'Call on Thursday');
+    // Moved on from there: the newest destination counts, and an undone move counts too.
+    await t.engine.move(now, 'Invoices');
+    const later = await t.hub.locate(ref);
+    assert.equal(decodeId(later).folder, 'Invoices');
+    const back = await t.engine.undoMove(now);
+    assert.equal(decodeId(back).folder, 'Travel');
+    assert.deepEqual(cache.moves.filter((m) => m.id === 'demo-13@example.com'), [{ id: 'demo-13@example.com', folder: 'Travel' }]);
+    assert.equal(await t.hub.locate(ref), back);
+    // Another account never finds this account's move.
+    assert.equal(await t.hub.locate({ ...ref, accountId: 'acc-other' }), null);
+  } finally {
+    await t.done();
+  }
+});
+
+test('the folder a message was moved to is kept with the account cache, for the newest moves only', async () => {
+  const t = await setup();
+  try {
+    for (let i = 0; i < 505; i++) t.engine.noteMove(t.acc.id, `<m${i}@example.com>`, 'Travel');
+    t.engine.noteMove(t.acc.id, '<M3@Example.com>', 'Invoices');
+    const { moves } = t.engine.caches.get(t.acc.id);
+    assert.equal(moves.length, 500);
+    assert.equal(moves[0].id, 'm6@example.com', 'the oldest go first');
+    assert.deepEqual(moves[moves.length - 1], { id: 'm3@example.com', folder: 'Invoices' }, 'one entry per Message-ID, the latest move');
+    // Without a Message-ID there is nothing to find it by.
+    t.engine.noteMove(t.acc.id, '', 'Travel');
+    assert.equal(t.engine.caches.get(t.acc.id).moves.length, 500);
+    // Saved to disk with the rest of the cache.
+    t.engine.flush();
+    const saved = JSON.parse(fs.readFileSync(path.join(t.dir, 'cache', `${t.acc.id}.json`), 'utf8'));
+    assert.equal(saved.moves.length, 500);
   } finally {
     await t.done();
   }

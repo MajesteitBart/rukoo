@@ -20,6 +20,8 @@ const VIEW_ROLES = { drafts: 'drafts', sent: 'sent', trash: 'trash', junk: 'junk
 const OLD_DEFAULT_SIGNATURE = 'Verzonden vanaf mijn pc';
 // How long a move or delete can be undone.
 const UNDO_MS = 10 * 60 * 1000;
+// How many moves per account are remembered by Message-ID, so a reference can find the mail again.
+const MOVES_KEPT = 500;
 // Folders whose mail is not archived, even though Gmail's All Mail also holds it.
 const SYSTEM_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 
@@ -72,6 +74,11 @@ function sha(text) {
 
 function lowerAddr(a) {
   return String((a && a.address) || a || '').trim().toLowerCase();
+}
+
+// A Message-ID header as a comparable key: no angle brackets, lower case.
+function messageKey(v) {
+  return String(v || '').trim().replace(/[<>]/g, '').toLowerCase();
 }
 
 class Engine extends EventEmitter {
@@ -862,6 +869,7 @@ class Engine extends EventEmitter {
     if (moved && moved.uid && moved.uidValidity) {
       this.rememberMove(id, { accountId: acc.id, folder, destination, uid: moved.uid, uidValidity: moved.uidValidity, msg });
     }
+    this.noteMove(acc.id, msg.messageId, destination);
     if (this.caches.get(acc.id).boxes[destination]) {
       this.syncFolderAndNotify(acc, destination).catch(() => {});
     }
@@ -875,6 +883,33 @@ class Engine extends EventEmitter {
 
   canUndo(id) {
     return this.undoable.has(id);
+  }
+
+  // Where a message went, by its Message-ID, kept with the account's cache. Rukoo only syncs folders it has
+  // opened, so this is how a reference to the message (an agent's source card) finds it in any other folder.
+  noteMove(accountId, messageId, folder) {
+    const key = messageKey(messageId);
+    const cache = this.caches.get(accountId);
+    if (!key || !cache) return;
+    const moves = (Array.isArray(cache.moves) ? cache.moves : []).filter((m) => m.id !== key);
+    moves.push({ id: key, folder });
+    cache.moves = moves.slice(-MOVES_KEPT);
+    this.persistCache(accountId);
+  }
+
+  // The current id of a message Rukoo moved, found by its Message-ID in the folder it was moved to. That folder
+  // is synced first when it is not in the cache yet. null when Rukoo did not move it or it is no longer there.
+  async findMoved(accountId, messageId) {
+    const key = messageKey(messageId);
+    const cache = this.caches.get(accountId);
+    const last = key && cache && Array.isArray(cache.moves) ? cache.moves.find((m) => m.id === key) : null;
+    if (!last || !cache.folders.some((f) => f.path === last.folder)) return null;
+    let uid = this.uidByMessageId(accountId, last.folder, messageId);
+    if (!uid) {
+      await this.openFolder(accountId, last.folder);
+      uid = this.uidByMessageId(accountId, last.folder, messageId);
+    }
+    return uid ? encodeId(accountId, last.folder, uid) : null;
   }
 
   // Moves a message back to where it was before move(), remove() or archive().
@@ -900,6 +935,7 @@ class Engine extends EventEmitter {
     // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
     const box = this.caches.get(acc.id).boxes[rec.folder];
     if (box && uid && !box.messages.some((m) => m.uid === uid)) box.messages.push({ ...rec.msg, uid });
+    this.noteMove(acc.id, rec.msg.messageId, rec.folder);
     this.changed(acc.id);
     if (box) this.syncFolderAndNotify(acc, rec.folder).catch(() => {});
     return uid ? encodeId(acc.id, rec.folder, uid) : null;
@@ -1110,8 +1146,8 @@ class Engine extends EventEmitter {
 
   uidByMessageId(accountId, folderPath, messageId) {
     const box = this.caches.get(accountId).boxes[folderPath];
-    const norm = (v) => String(v || '').replace(/[<>]/g, '').toLowerCase();
-    const hit = box && box.messages.find((m) => m.messageId && norm(m.messageId) === norm(messageId));
+    const want = messageKey(messageId);
+    const hit = want && box && box.messages.find((m) => m.messageId && messageKey(m.messageId) === want);
     return hit ? hit.uid : null;
   }
 

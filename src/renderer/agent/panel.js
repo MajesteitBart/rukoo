@@ -859,14 +859,21 @@ export function mountAgentPanel(ctx) {
     if (url) api('openAgentLink', String(url)).catch((err) => showError(err));
   }
 
+  // A source being looked up: finding a moved email can sync a folder first, so clicks meanwhile are ignored.
+  let locating = false;
+
   async function openSource(source) {
     if (source && source.messageId) {
+      if (locating) return;
       // The email may have moved since the agent showed it; main finds it again by its Message-ID.
       let id = source.messageId;
+      locating = true;
       try {
         id = (await api('agentLocate', { id: source.messageId, messageHeader: source.messageHeader || null, accountId: source.accountId || null })) || null;
       } catch (_) {
         // An older main without agentLocate: try the stored id.
+      } finally {
+        locating = false;
       }
       if (!id) return toast(t('agent.panel.sourceGone'));
       P.keepFor = id;

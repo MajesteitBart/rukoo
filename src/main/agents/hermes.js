@@ -20,6 +20,13 @@ const CONNECT_TIMEOUT = 8000;
 const SILENCE = 45000;
 const RECONNECTS = 5;
 const STOP_WAIT = 10000;
+// Without an event stream a run is followed by its status: this often, and given up (after asking Hermes to
+// stop it) once that many polls in a row got no answer, about a minute.
+const POLL_EVERY = 3000;
+const POLL_MISSES = 20;
+// A stop Hermes did not take is sent again after this long, then after twice as long each time, up to ten
+// times this (five minutes).
+const STOP_RETRY = 30000;
 
 const CHOICES = {
   once: { id: 'once', label: 'Allow once', kind: 'primary' },
@@ -33,6 +40,24 @@ const sleep = (ms, signal) =>
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener('abort', () => (clearTimeout(timer), resolve()), { once: true });
   });
+
+// The part of a run's final output that the transcript does not show yet. streamed is all text the run
+// streamed; segment the text since the last tool call (leading white space dropped, like the deltas); lost
+// whether the stream broke off before the run ended, so its later events never arrived.
+function missingText(streamed, segment, output, lost = false) {
+  const out = String(output || '').replace(/^\s+/, '').trimEnd();
+  const all = String(streamed || '').trimEnd();
+  const seg = String(segment || '');
+  if (!out || all.endsWith(out) || seg.startsWith(out)) return '';
+  // The answer was cut off part-way: add the rest.
+  if (seg && out.startsWith(seg)) return out.slice(seg.length);
+  // Nothing streamed since the last tool call: the final answer never came through.
+  if (!seg) return out;
+  // Other text streamed last. With the whole stream that is the answer worded differently, so it is not shown
+  // twice. After a lost stream it can be text from before a tool call the stream never reported: the final
+  // answer follows it.
+  return lost ? `\n\n${out}` : '';
+}
 
 function describe(err) {
   const cause = err && err.cause;
@@ -64,8 +89,10 @@ function httpError(res) {
 }
 
 class HermesAdapter {
-  constructor({ id = 'clark', config, hub, log, paths } = {}) {
+  // timing: test-only overrides of {backoff, pollEvery, pollMisses, stopRetry}.
+  constructor({ id = 'clark', config, hub, log, paths, timing } = {}) {
     this.id = id;
+    this.timing = { backoff: 1000, pollEvery: POLL_EVERY, pollMisses: POLL_MISSES, stopRetry: STOP_RETRY, ...(timing || {}) };
     this.config = typeof config === 'function' ? config : () => config || {};
     this.hub = hub || null;
     this.log = logger(log);
@@ -74,6 +101,8 @@ class HermesAdapter {
     this.checking = null;
     // run id → live state, so dispose() can stop what is still running on the server.
     this.runs = new Map();
+    // run id → state of a run Rukoo no longer follows whose stop Hermes has not taken yet (see keepStopping).
+    this.unstopped = new Map();
   }
 
   settings() {
@@ -265,7 +294,8 @@ class HermesAdapter {
       server,
       lastSeq: -1,
       terminal: null,
-      streamed: false,
+      // All text the run streamed, and the part since the last tool call.
+      text: '',
       segment: '',
       counters: {},
       open: {},
@@ -296,23 +326,36 @@ class HermesAdapter {
         // Five reconnects in a row without progress, not five over a long run.
         if (state.lastSeq > seen) failures = 0;
         if (outcome === 'gone' || ++failures > RECONNECTS) {
-          // The stream cannot be resumed: ask for the run's final status instead.
-          const final = await this.poll(state).catch(() => null);
-          if (final) state.terminal = final;
-          else throw new AgentError('offline', `Lost the connection to ${name} during the turn`);
+          // Follow the run by its status. A stream that only kept failing is tried again once Hermes answers
+          // that the run still goes on, so its text and approval requests come through again; a stream that
+          // is gone is followed by status until the run ends.
+          const res = await this.watch(state, name, outcome !== 'gone');
+          if (res && res.status === 'running') {
+            failures = 0;
+            continue;
+          }
+          state.lost = true;
+          state.terminal = res;
           break;
         }
-        await sleep(Math.min(1000 * 2 ** (failures - 1), 8000), state.controller.signal);
+        await sleep(Math.min(this.timing.backoff * 2 ** (failures - 1), 8 * this.timing.backoff), state.controller.signal);
       }
     } finally {
       if (turn.signal) turn.signal.removeEventListener('abort', onAbort);
       clearTimeout(state.stopTimer);
       this.runs.delete(runId);
+      // The run is over: a stop that did not go through no longer matters.
+      if (state.terminal) this.settleStop(state);
     }
     for (const key of Object.values(state.open).flat()) turn.emit({ type: 'tool-end', key, error: false });
     const t = state.terminal;
     if (!t) return { status: 'stopped' };
-    if (t.status === 'done' && !state.streamed && t.output) turn.emit({ type: 'text', delta: t.output });
+    // The final output can hold more than what streamed (the connection dropped part-way, or only an earlier
+    // segment streamed): add what is missing.
+    if (t.status === 'done' && t.output) {
+      const missing = missingText(state.text, state.segment, t.output, Boolean(state.lost));
+      if (missing) turn.emit({ type: 'text', delta: missing });
+    }
     if (t.status === 'error') turn.emit({ type: 'error', code: t.error.code, detail: t.error.detail });
     return t.status === 'error' ? { status: 'error', error: t.error } : { status: t.status };
   }
@@ -355,6 +398,8 @@ class HermesAdapter {
     return readSse(res.body, parser, { idleMs: SILENCE, signal: state.controller.signal });
   }
 
+  // The run's state on the server: its terminal result, {status: 'running'} while Hermes still works on
+  // it, or null when the server did not answer usefully.
   async poll(state) {
     const res = await this.request('GET', `/v1/runs/${encodeURIComponent(state.runId)}`, { server: state.server });
     if (!res.ok || !res.data) return null;
@@ -362,6 +407,29 @@ class HermesAdapter {
     if (d.status === 'completed') return { status: 'done', output: d.output || '' };
     if (d.status === 'cancelled') return { status: 'stopped' };
     if (d.status === 'failed' || d.status === 'interrupted') return { status: 'error', error: this.failure(d) };
+    if (['queued', 'running', 'waiting_for_approval', 'stopping'].includes(d.status)) return { status: 'running' };
+    return null;
+  }
+
+  // Follows a run by its status once its event stream cannot be resumed. Hermes keeps the run going, so
+  // giving up would leave an approved action running where Stop no longer reaches it. Returns the terminal
+  // result, {status: 'running'} as soon as Hermes reports the run going on when retry is set, or null once
+  // the turn is stopped. When the server stops answering, the run is stopped first, and a stop Hermes does
+  // not take is sent again in the background.
+  async watch(state, name, retry = false) {
+    let misses = 0;
+    while (!state.controller.signal.aborted) {
+      const res = await this.poll(state).catch(() => null);
+      if (res && (res.status !== 'running' || retry)) return res;
+      if (res) misses = 0;
+      else if (++misses >= this.timing.pollMisses) {
+        state.stopping = true;
+        if (await this.sendStop(state)) throw new AgentError('offline', `Lost the connection to ${name} during the turn; Rukoo stopped the run`);
+        this.keepStopping(state);
+        throw new AgentError('offline', `Lost the connection to ${name} during the turn; Rukoo keeps asking it to stop the run`);
+      }
+      await sleep(this.timing.pollEvery, state.controller.signal);
+    }
     return null;
   }
 
@@ -403,7 +471,8 @@ class HermesAdapter {
         if (!state.segment) delta = delta.replace(/^\s+/, '');
         if (!delta) return;
         state.segment += delta;
-        state.streamed = true;
+        // Kept across tool calls, to compare with the run's final output.
+        state.text += delta;
         turn.emit({ type: 'text', delta });
         return;
       }
@@ -545,22 +614,68 @@ class HermesAdapter {
   stopRun(state) {
     if (state.stopping) return;
     state.stopping = true;
-    this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`, { server: state.server }).catch((err) => this.log('hermes: stop failed', err.detail || err));
+    this.sendStop(state, CONNECT_TIMEOUT).then((taken) => {
+      // The turn ends after STOP_WAIT either way; a run that may still be going is asked again later.
+      if (!taken && !state.terminal) this.keepStopping(state);
+    });
     // The cancelled event normally follows within a second; do not wait on a server that went away.
     state.stopTimer = setTimeout(() => state.controller.abort(), STOP_WAIT);
   }
 
+  // One stop request. true when Hermes took it or answered that nothing is left to stop: a run that already
+  // ended answers 200 with its status, an unknown run 404, a run Hermes no longer holds 409 (run_not_active).
+  // Anything else, an auth failure or no answer included, says nothing about the run: false.
+  async sendStop(state, timeout = 5000) {
+    try {
+      const res = await this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`, { timeout, server: state.server });
+      if (res.ok || res.status === 404 || res.status === 409) return true;
+      this.log(`hermes: stopping ${state.runId} failed: HTTP ${res.status}`);
+    } catch (err) {
+      this.log(`hermes: stopping ${state.runId} failed: ${err.detail || describe(err)}`);
+    }
+    return false;
+  }
+
+  // Sends the stop of a run Rukoo let go of again until Hermes takes it: once the server answers again, an
+  // approved action must not go on unseen. The wait doubles from timing.stopRetry up to ten times that.
+  // dispose() makes a last try.
+  keepStopping(state) {
+    if (this.unstopped.has(state.runId)) return;
+    this.unstopped.set(state.runId, state);
+    let wait = this.timing.stopRetry;
+    const schedule = () => {
+      state.retryTimer = setTimeout(async () => {
+        const taken = await this.sendStop(state);
+        if (this.unstopped.get(state.runId) !== state) return;
+        if (taken) return this.settleStop(state);
+        wait = Math.min(wait * 2, 10 * this.timing.stopRetry);
+        schedule();
+      }, wait);
+      // Never what keeps the app (or a test run) from exiting.
+      if (state.retryTimer.unref) state.retryTimer.unref();
+    };
+    schedule();
+  }
+
+  settleStop(state) {
+    clearTimeout(state.retryTimer);
+    if (this.unstopped.get(state.runId) === state) this.unstopped.delete(state.runId);
+  }
+
   async dispose() {
-    const runs = [...this.runs.values()];
+    // Followed runs and runs whose stop did not go through yet, each once.
+    const runs = new Map([...this.unstopped, ...this.runs]);
+    for (const state of this.unstopped.values()) clearTimeout(state.retryTimer);
+    this.unstopped.clear();
     this.runs.clear();
     // A run outlives our connection on the server, so stop them explicitly (best effort, quickly).
-    const stops = runs.map((state) => {
+    const stops = [...runs.values()].map((state) => {
       state.stopping = true;
       state.controller.abort();
-      return this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`, { timeout: 2000, server: state.server }).catch(() => {});
+      return this.sendStop(state, 2000);
     });
     await Promise.all(stops);
   }
 }
 
-module.exports = { HermesAdapter };
+module.exports = { HermesAdapter, missingText };
