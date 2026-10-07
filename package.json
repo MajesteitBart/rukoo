@@ -7,6 +7,7 @@
     "start": "node scripts/start.js",
     "test": "node --test \"test/*.test.js\"",
     "test:e2e": "playwright test",
+    "i18n:check": "node --test test/i18n.test.js",
     "screenshots": "node scripts/screenshots.js docs/screenshots",
     "icon": "node scripts/start-icon.js",
     "dist": "electron-builder --win nsis portable"

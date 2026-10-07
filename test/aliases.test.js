@@ -18,35 +18,35 @@ async function demoEngine(opts = {}) {
 test('default sender: aliases, default, validation and the From of sent mail', async () => {
   const { engine, acc } = await demoEngine();
   let pub = engine.publicAccount(engine.account(acc.id));
-  assert.equal(pub.defaultFrom, 'demo@voorbeeld.nl');
+  assert.equal(pub.defaultFrom, 'demo@example.com');
   assert.equal(pub.identities.length, 1);
 
   pub = await engine.updateAccount(acc.id, {
-    aliases: [{ address: 'Bart@Bvdm.ai', name: 'Bart' }, { address: 'bart@bvdm.ai' }, { address: 'demo@voorbeeld.nl' }]
+    aliases: [{ address: 'Bart@Bvdm.ai', name: 'Bart' }, { address: 'bart@bvdm.ai' }, { address: 'demo@example.com' }]
   });
-  assert.deepEqual(pub.identities.map((i) => i.address), ['demo@voorbeeld.nl', 'bart@bvdm.ai'], 'deduplicated, lowercased');
-  await assert.rejects(engine.updateAccount(acc.id, { aliases: [{ address: 'geen-adres' }] }), /Ongeldig/);
-  await assert.rejects(engine.updateAccount(acc.id, { defaultFrom: 'iemand@anders.nl' }), /hoort niet/);
+  assert.deepEqual(pub.identities.map((i) => i.address), ['demo@example.com', 'bart@bvdm.ai'], 'deduplicated, lowercased');
+  await assert.rejects(engine.updateAccount(acc.id, { aliases: [{ address: 'geen-adres' }] }), /Invalid/);
+  await assert.rejects(engine.updateAccount(acc.id, { defaultFrom: 'iemand@anders.nl' }), /does not belong/);
 
   pub = await engine.updateAccount(acc.id, { defaultFrom: 'bart@bvdm.ai' });
   assert.equal(pub.defaultFrom, 'bart@bvdm.ai');
 
   // No explicit From: the default sender is used.
-  await engine.send({ accountId: acc.id, to: ['demo@voorbeeld.nl'], subject: 'Via standaard', text: 'x' });
+  await engine.send({ accountId: acc.id, to: ['demo@example.com'], subject: 'Using the default sender', text: 'x' });
   // Explicit From: the account address.
-  await engine.send({ accountId: acc.id, from: 'demo@voorbeeld.nl', to: ['demo@voorbeeld.nl'], subject: 'Via account', text: 'x' });
-  await assert.rejects(engine.send({ accountId: acc.id, from: 'vreemd@elders.nl', to: ['demo@voorbeeld.nl'], subject: 'x', text: 'x' }), /niet verzenden als/);
+  await engine.send({ accountId: acc.id, from: 'demo@example.com', to: ['demo@example.com'], subject: 'Using the account address', text: 'x' });
+  await assert.rejects(engine.send({ accountId: acc.id, from: 'vreemd@elders.nl', to: ['demo@example.com'], subject: 'x', text: 'x' }), /cannot send as/);
   await engine.syncAccount(acc.id);
   const inbox = engine.listMessages({ scope: acc.id, view: 'inbox' });
-  assert.equal(inbox.find((m) => m.subject === 'Via standaard').from.address, 'bart@bvdm.ai');
-  assert.equal(inbox.find((m) => m.subject === 'Via standaard').from.name, 'Bart');
-  assert.equal(inbox.find((m) => m.subject === 'Via account').from.address, 'demo@voorbeeld.nl');
+  assert.equal(inbox.find((m) => m.subject === 'Using the default sender').from.address, 'bart@bvdm.ai');
+  assert.equal(inbox.find((m) => m.subject === 'Using the default sender').from.name, 'Bart');
+  assert.equal(inbox.find((m) => m.subject === 'Using the account address').from.address, 'demo@example.com');
 
   assert.ok(!engine.contacts().some((c) => c.address === 'bart@bvdm.ai'), 'own aliases are not suggested as contacts');
 
   // Removing the default alias falls back to the account address.
   pub = await engine.updateAccount(acc.id, { aliases: [] });
-  assert.equal(pub.defaultFrom, 'demo@voorbeeld.nl');
+  assert.equal(pub.defaultFrom, 'demo@example.com');
   await engine.close();
 });
 

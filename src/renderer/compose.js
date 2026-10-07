@@ -1,3 +1,4 @@
+import { t, setLanguage } from './i18n.js';
 // The compose window: the editor from composer.js on its own, for mailto links and for messages
 // popped out of the main window. It talks to the main process directly.
 import { api, esc, toast, applyTheme, onSystemThemeChange } from './ui.js';
@@ -13,7 +14,7 @@ async function init() {
     try {
       message = await api('get', opts.id);
     } catch (err) {
-      host.innerHTML = `<div class="compose-error"><p class="error">${esc(err.message)}</p><button class="btn secondary">Sluiten</button></div>`;
+      host.innerHTML = `<div class="compose-error"><p class="error">${esc(err.message)}</p><button class="btn secondary" data-i18n="common.actions.close">${esc(t('common.actions.close'))}</button></div>`;
       host.querySelector('button').addEventListener('click', () => api('composeClose'));
       return;
     }
@@ -30,10 +31,11 @@ async function init() {
   });
   const retheme = async () => {
     const next = await api('state');
+    setLanguage(next.settings.language);
     applyTheme(next.settings.theme);
     editor.retheme(next);
   };
-  window.mail.on(({ type }) => type === 'theme' && retheme());
+  window.mail.on(({ type }) => (type === 'theme' || type === 'language') && retheme());
   onSystemThemeChange(retheme);
 }
 

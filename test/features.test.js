@@ -19,8 +19,8 @@ async function freshEngine() {
 test('newsletters expose their unsubscribe link, personal mail does not', async () => {
   const { engine, acc } = await freshEngine();
   const inbox = engine.listMessages({ scope: acc.id, view: 'inbox' });
-  const letter = await engine.getMessage(inbox.find((m) => m.from.name === 'ANWB Nieuwsbrief').id);
-  assert.deepEqual(letter.unsubscribe, { url: 'https://example.com/afmelden', mail: null, oneClick: true });
+  const letter = await engine.getMessage(inbox.find((m) => m.from.name === 'ANWB Newsletter').id);
+  assert.deepEqual(letter.unsubscribe, { url: 'https://example.com/unsubscribe', mail: null, oneClick: true });
   const personal = await engine.getMessage(inbox.find((m) => m.from.name === 'Sanne de Vries').id);
   assert.equal(personal.unsubscribe, null);
   await engine.close();
@@ -28,19 +28,19 @@ test('newsletters expose their unsubscribe link, personal mail does not', async 
 
 test('folders can be created, and names are checked', async () => {
   const { engine, acc } = await freshEngine();
-  const created = await engine.createFolder(acc.id, '  Projecten ');
-  assert.equal(created, 'Projecten');
-  assert.ok(engine.state().accounts[0].folders.some((f) => f.path === 'Projecten' && f.role === null));
-  await engine.openFolder(acc.id, 'Projecten');
-  assert.deepEqual(engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Projecten' }), []);
-  await assert.rejects(engine.createFolder(acc.id, 'projecten'), /al een map/);
-  await assert.rejects(engine.createFolder(acc.id, 'a/b'), /mag geen/);
-  await assert.rejects(engine.createFolder(acc.id, '   '), /naam/);
+  const created = await engine.createFolder(acc.id, '  Projects ');
+  assert.equal(created, 'Projects');
+  assert.ok(engine.state().accounts[0].folders.some((f) => f.path === 'Projects' && f.role === null));
+  await engine.openFolder(acc.id, 'Projects');
+  assert.deepEqual(engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Projects' }), []);
+  await assert.rejects(engine.createFolder(acc.id, 'projects'), /already exists/);
+  await assert.rejects(engine.createFolder(acc.id, 'a/b'), /cannot contain/);
+  await assert.rejects(engine.createFolder(acc.id, '   '), /name/);
   await engine.close();
 });
 
 test('logos come from the sender\'s own site; free-mail senders keep initials', () => {
-  assert.equal(siteOf('nieuwsbrieven@anwb.nl'), 'anwb.nl');
+  assert.equal(siteOf('newsletter@anwb.nl'), 'anwb.nl');
   assert.equal(siteOf('news@mail.bbc.co.uk'), 'bbc.co.uk');
   assert.equal(siteOf('sanne@gmail.com'), null);
   assert.equal(siteOf('iemand@ziggo.nl'), null);

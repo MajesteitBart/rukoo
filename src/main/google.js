@@ -1,5 +1,7 @@
 'use strict';
 
+const { t, getLanguage } = require('../i18n');
+
 // "Aanmelden met Google": OAuth 2.0 for installed apps with a loopback redirect and PKCE.
 // https://developers.google.com/identity/protocols/oauth2/native-app
 const http = require('http');
@@ -30,7 +32,7 @@ function decodeJwtPayload(jwt) {
   return JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
 }
 
-const PAGE = (title, text) => `<!doctype html><html lang="nl"><meta charset="utf-8"><title>${title}</title>
+const PAGE = (title, text) => `<!doctype html><html lang="${getLanguage()}"><meta charset="utf-8"><title>${title}</title>
 <body style="font:16px 'Segoe UI',sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
 <div style="text-align:center;max-width:420px"><h1 style="font-weight:600;font-size:24px">${title}</h1><p style="color:#aaa">${text}</p></div></body></html>`;
 
@@ -66,17 +68,17 @@ class GoogleAuth {
   importClient(file) {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     const c = raw.installed || raw.web || raw;
-    if (!c.client_id || !c.client_secret) throw new Error('Dit bestand bevat geen Google OAuth-client.');
+    if (!c.client_id || !c.client_secret) throw new Error(t('errors.google.invalidClient'));
     fs.writeFileSync(this.configPath, JSON.stringify({ client_id: c.client_id, client_secret: c.client_secret }), { mode: 0o600 });
   }
 
   cancel() {
-    if (this.pending) this.pending(oauthError('Aanmelden geannuleerd.', 'cancelled'));
+    if (this.pending) this.pending(oauthError(t('errors.google.cancelled'), 'cancelled'));
   }
 
   async signIn(loginHint) {
     const client = this.client();
-    if (!client) throw oauthError('Google-aanmelding is niet ingesteld op deze pc.', 'no_client');
+    if (!client) throw oauthError(t('errors.google.notConfigured'), 'no_client');
     this.cancel();
 
     const verifier = base64url(crypto.randomBytes(48));
@@ -92,7 +94,7 @@ class GoogleAuth {
 
     try {
       const code = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(oauthError('Aanmelden duurde te lang. Probeer het opnieuw.', 'timeout')), SIGN_IN_TIMEOUT);
+        const timer = setTimeout(() => reject(oauthError(t('errors.google.timeout'), 'timeout')), SIGN_IN_TIMEOUT);
         this.pending = (err) => {
           clearTimeout(timer);
           reject(err);
@@ -106,16 +108,16 @@ class GoogleAuth {
           const params = url.searchParams;
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
           if (params.get('state') !== state) {
-            res.end(PAGE('Aanmelden mislukt', 'Ongeldige aanvraag. Start het aanmelden opnieuw vanuit Rukoo Mail.'));
+            res.end(PAGE(t('setup.google.failed'), t('setup.google.invalidRequest')));
             return;
           }
           clearTimeout(timer);
           if (params.get('error')) {
-            res.end(PAGE('Aanmelden geannuleerd', 'Je kunt dit tabblad sluiten.'));
-            reject(oauthError(params.get('error') === 'access_denied' ? 'Je hebt geen toegang gegeven.' : `Google: ${params.get('error')}`, params.get('error')));
+            res.end(PAGE(t('setup.google.cancelled'), t('setup.google.closeTab')));
+            reject(oauthError(params.get('error') === 'access_denied' ? t('errors.google.denied') : `Google: ${params.get('error')}`, params.get('error')));
             return;
           }
-          res.end(PAGE('Je bent aangemeld', 'Je kunt dit tabblad sluiten en teruggaan naar Rukoo Mail.'));
+          res.end(PAGE(t('setup.google.success'), t('setup.google.return')));
           resolve(params.get('code'));
         });
 
@@ -146,11 +148,11 @@ class GoogleAuth {
       });
       const granted = String(tokens.scope || '').split(' ');
       if (!granted.includes('https://mail.google.com/')) {
-        throw oauthError('Geef Rukoo Mail toegang tot Gmail (vink alle machtigingen aan) en probeer het opnieuw.', 'scope');
+        throw oauthError(t('errors.google.scope'), 'scope');
       }
-      if (!tokens.refresh_token) throw oauthError('Google gaf geen vernieuwingstoken terug. Probeer het opnieuw.', 'no_refresh');
+      if (!tokens.refresh_token) throw oauthError(t('errors.google.noRefreshToken'), 'no_refresh');
       const profile = decodeJwtPayload(tokens.id_token);
-      if (!profile.email) throw oauthError('Google gaf geen e-mailadres terug.', 'no_email');
+      if (!profile.email) throw oauthError(t('errors.google.noEmail'), 'no_email');
       return {
         email: profile.email,
         name: profile.name || '',
@@ -167,7 +169,7 @@ class GoogleAuth {
 
   async refresh(refreshToken) {
     const client = this.client();
-    if (!client) throw oauthError('Google-aanmelding is niet ingesteld op deze pc.', 'no_client');
+    if (!client) throw oauthError(t('errors.google.notConfigured'), 'no_client');
     const tokens = await this.tokenRequest({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
@@ -187,14 +189,14 @@ class GoogleAuth {
         redirect: 'error'
       });
     } catch (_) {
-      throw oauthError('Kan Google niet bereiken. Controleer je internetverbinding.', 'network');
+      throw oauthError(t('errors.google.connection'), 'network');
     }
     const body = await res.json().catch(() => ({}));
     if (res.ok) return body;
     if (body.error === 'invalid_grant') {
-      throw oauthError('Je Google-toegang is verlopen of ingetrokken. Meld je opnieuw aan via Instellingen.', 'invalid_grant');
+      throw oauthError(t('errors.google.expired'), 'invalid_grant');
     }
-    throw oauthError(`Google weigerde de aanvraag (${body.error || res.status}).`, body.error || 'token_error');
+    throw oauthError(t('errors.google.request', { reason: body.error || res.status }), body.error || 'token_error');
   }
 }
 

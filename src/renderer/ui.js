@@ -1,3 +1,4 @@
+import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 
 export const api = (method, ...args) => window.mail.call(method, ...args);
@@ -18,9 +19,7 @@ export const brandLogo = (cls) =>
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-const MONTHS = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
-const MONTHS_SHORT = ['jan', 'feb', 'mrt', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
-const DAYS = ['zondag', 'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag'];
+const dateFormat = (ts, options) => new Intl.DateTimeFormat(getLocale(), options).format(new Date(ts));
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -31,36 +30,33 @@ function startOfDay(d) {
 }
 
 export function hhmm(ts) {
-  const d = new Date(ts);
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return dateFormat(ts, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 }
 
 // List time: "14:45" today, "5 okt." this year, "05-10-2025" before that.
 export function listTime(ts, now = Date.now()) {
   const d = new Date(ts);
   if (startOfDay(ts) === startOfDay(now)) return hhmm(ts);
-  if (d.getFullYear() === new Date(now).getFullYear()) return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}.`;
-  return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
+  if (d.getFullYear() === new Date(now).getFullYear()) return dateFormat(ts, { day: 'numeric', month: 'short' });
+  return numericDate(ts);
 }
 
 export function groupLabel(ts, now = Date.now()) {
   const diff = Math.round((startOfDay(now) - startOfDay(ts)) / 86400000);
-  if (diff <= 0) return 'Vandaag';
-  if (diff === 1) return 'Gisteren';
+  if (diff <= 0) return t('common.dates.today');
+  if (diff === 1) return t('common.dates.yesterday');
   const d = new Date(ts);
-  if (diff < 7) return DAYS[d.getDay()].replace(/^./, (c) => c.toUpperCase());
-  if (d.getFullYear() === new Date(now).getFullYear()) return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
-  return `${MONTHS[d.getMonth()].replace(/^./, (c) => c.toUpperCase())} ${d.getFullYear()}`;
+  if (diff < 7) return dateFormat(ts, { weekday: 'long' }).replace(/^./, (c) => c.toUpperCase());
+  if (d.getFullYear() === new Date(now).getFullYear()) return dateFormat(ts, { day: 'numeric', month: 'long' });
+  return dateFormat(ts, { month: 'long', year: 'numeric' }).replace(/^./, (c) => c.toUpperCase());
 }
 
 export function longDate(ts) {
-  const d = new Date(ts);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}  ${hhmm(ts)}`;
+  return `${dateFormat(ts, { day: 'numeric', month: 'long', year: 'numeric' })}  ${hhmm(ts)}`;
 }
 
 export function numericDate(ts) {
-  const d = new Date(ts);
-  return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
+  return dateFormat(ts, { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
 export function quoteDate(ts) {
@@ -73,8 +69,8 @@ export function quoteDate(ts) {
 export function fileSize(bytes) {
   if (!bytes && bytes !== 0) return '';
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} kB`;
-  return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
+  if (bytes < 1024 * 1024) return `${new Intl.NumberFormat(getLocale(), { maximumFractionDigits: 0 }).format(bytes / 1024)} kB`;
+  return `${new Intl.NumberFormat(getLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(bytes / 1024 / 1024)} MB`;
 }
 
 export function person(a) {
@@ -88,15 +84,12 @@ export function formatAddress(a) {
 }
 
 
-const DAYS_SHORT = ['zo', 'ma', 'di', 'wo', 'do', 'vr', 'za'];
-
 // Reader header: "Vandaag 14:45", "Gisteren 09:12" or "di 6 okt. 2026, 14:45".
 export function readerDate(ts, now = Date.now()) {
   const diff = Math.round((startOfDay(now) - startOfDay(ts)) / 86400000);
-  if (diff === 0) return `Vandaag ${hhmm(ts)}`;
-  if (diff === 1) return `Gisteren ${hhmm(ts)}`;
-  const d = new Date(ts);
-  return `${DAYS_SHORT[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}. ${d.getFullYear()}, ${hhmm(ts)}`;
+  if (diff === 0) return `${t('common.dates.today')} ${hhmm(ts)}`;
+  if (diff === 1) return `${t('common.dates.yesterday')} ${hhmm(ts)}`;
+  return `${dateFormat(ts, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}, ${hhmm(ts)}`;
 }
 
 // ---------- previews ----------
@@ -303,7 +296,7 @@ window.addEventListener('resize', () => closeMenu());
 
 // ---------- dialogs ----------
 
-export function dialog({ title, body = '', buttons = [{ label: 'OK', value: true }], render, wide = false }) {
+export function dialog({ title, body = '', buttons = [{ get label() { return t('common.actions.ok'); }, value: true }], render, wide = false }) {
   return new Promise((resolve) => {
     const before = document.activeElement;
     const scrim = document.createElement('div');
@@ -357,12 +350,12 @@ export function dialog({ title, body = '', buttons = [{ label: 'OK', value: true
   });
 }
 
-export function confirmDialog(title, message, okLabel = 'OK', danger = false) {
+export function confirmDialog(title, message, okLabel = t('common.actions.ok'), danger = false) {
   return dialog({
     title,
     body: `<p>${esc(message)}</p>`,
     buttons: [
-      { label: 'Annuleren', value: false },
+      { get label() { return t('common.actions.cancel'); }, value: false },
       { label: okLabel, value: true, danger, primary: !danger }
     ]
   });
@@ -371,7 +364,7 @@ export function confirmDialog(title, message, okLabel = 'OK', danger = false) {
 export function choiceDialog(title, options, current) {
   return dialog({
     title,
-    buttons: [{ label: 'Annuleren', value: null }],
+    buttons: [{ get label() { return t('common.actions.cancel'); }, value: null }],
     render(body, done) {
       body.innerHTML = `<div class="choices" role="radiogroup">${options
         .map(

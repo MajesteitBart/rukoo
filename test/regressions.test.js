@@ -65,22 +65,22 @@ test('a sync during a move does not bring the message back', async () => {
 
 test('re-saving and sending a draft keeps its attachments, Bcc and threading', async () => {
   const { engine, acc } = await freshEngine();
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sem-att-')), 'offerte.pdf');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sem-att-')), 'quote.pdf');
   fs.writeFileSync(file, '%PDF-1.4 test');
   const firstId = await engine.saveDraft({
     accountId: acc.id,
-    to: ['klant@voorbeeld.nl'],
-    bcc: ['archief@voorbeeld.nl'],
-    subject: 'Re: Offerte',
-    html: '<p>concept</p>',
-    attachments: [{ path: file, filename: 'offerte.pdf' }],
-    inReplyTo: '<orig@voorbeeld.nl>',
-    references: ['<orig@voorbeeld.nl>']
+    to: ['klant@example.com'],
+    bcc: ['archief@example.com'],
+    subject: 'Re: Quote',
+    html: '<p>draft</p>',
+    attachments: [{ path: file, filename: 'quote.pdf' }],
+    inReplyTo: '<orig@example.com>',
+    references: ['<orig@example.com>']
   });
   const draft = await engine.getMessage(firstId);
   assert.equal(draft.attachments.length, 1);
-  assert.deepEqual(draft.bcc.map((a) => a.address), ['archief@voorbeeld.nl']);
-  assert.equal(draft.inReplyTo, '<orig@voorbeeld.nl>');
+  assert.deepEqual(draft.bcc.map((a) => a.address), ['archief@example.com']);
+  assert.equal(draft.inReplyTo, '<orig@example.com>');
 
   // What the compose window does when a reopened draft is saved again.
   const secondId = await engine.saveDraft({
@@ -88,7 +88,7 @@ test('re-saving and sending a draft keeps its attachments, Bcc and threading', a
     to: draft.to,
     bcc: draft.bcc,
     subject: draft.subject,
-    html: '<p>concept v2</p>',
+    html: '<p>draft v2</p>',
     forwardId: firstId,
     forwardIndexes: draft.attachments.map((a) => a.index),
     inReplyTo: draft.inReplyTo,
@@ -96,15 +96,15 @@ test('re-saving and sending a draft keeps its attachments, Bcc and threading', a
     draftId: firstId
   });
   const second = await engine.getMessage(secondId);
-  assert.equal(second.attachments[0].filename, 'offerte.pdf');
-  assert.equal(engine.listMessages({ scope: acc.id, view: 'drafts' }).filter((m) => m.subject === 'Re: Offerte').length, 1);
+  assert.equal(second.attachments[0].filename, 'quote.pdf');
+  assert.equal(engine.listMessages({ scope: acc.id, view: 'drafts' }).filter((m) => m.subject === 'Re: Quote').length, 1);
 
   await engine.send({
     accountId: acc.id,
-    to: ['demo@voorbeeld.nl'],
+    to: ['demo@example.com'],
     bcc: second.bcc,
     subject: second.subject,
-    html: '<p>definitief</p>',
+    html: '<p>final</p>',
     forwardId: secondId,
     forwardIndexes: second.attachments.map((a) => a.index),
     inReplyTo: second.inReplyTo,
@@ -112,19 +112,19 @@ test('re-saving and sending a draft keeps its attachments, Bcc and threading', a
     draftId: secondId
   });
   await engine.syncAccount(acc.id);
-  const received = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.subject === 'Re: Offerte');
+  const received = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.subject === 'Re: Quote');
   const full = await engine.getMessage(received.id);
-  assert.equal(full.attachments[0].filename, 'offerte.pdf');
-  assert.equal(full.inReplyTo, '<orig@voorbeeld.nl>');
+  assert.equal(full.attachments[0].filename, 'quote.pdf');
+  assert.equal(full.inReplyTo, '<orig@example.com>');
   assert.equal(full.bcc.length, 0, 'sent mail does not reveal Bcc');
-  assert.ok(!engine.listMessages({ scope: acc.id, view: 'drafts' }).some((m) => m.subject === 'Re: Offerte'));
+  assert.ok(!engine.listMessages({ scope: acc.id, view: 'drafts' }).some((m) => m.subject === 'Re: Quote'));
   await engine.close();
 });
 
 test('replying sets \\Answered on the server', async () => {
   const { engine, acc } = await freshEngine();
   const original = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.from.name === 'Sanne de Vries');
-  await engine.send({ accountId: acc.id, to: ['sanne@voorbeeld.nl'], subject: 'Re: x', text: 'ok', replyToId: original.id });
+  await engine.send({ accountId: acc.id, to: ['sanne@example.com'], subject: 'Re: x', text: 'ok', replyToId: original.id });
   await engine.syncAccount(acc.id);
   assert.equal(engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === original.id).answered, true);
   await engine.close();
@@ -135,7 +135,7 @@ test('syncAll reports failing accounts instead of claiming success', async () =>
   engine.session(engine.account(acc.id)).listFolders = async () => {
     throw new Error('Verbinding geweigerd');
   };
-  await assert.rejects(engine.syncAll(), /demo@voorbeeld\.nl: Verbinding geweigerd/);
+  await assert.rejects(engine.syncAll(), /demo@example\.com: Verbinding geweigerd/);
   assert.equal(engine.state().accounts[0].error, 'Verbinding geweigerd');
   await engine.close();
 });
@@ -147,8 +147,8 @@ test('attachment names cannot escape the folder or hide an executable', () => {
   assert.ok(RISKY.test(safeName('invoice‮fdp.exe')), 'right-to-left override does not hide .exe');
   assert.ok(RISKY.test(safeName('script.js.')), 'trailing dots are stripped');
   assert.ok(RISKY.test(safeName('Snelkoppeling.LNK')));
-  assert.ok(!RISKY.test(safeName('Contractbevestiging.pdf')));
-  assert.equal(safeName(''), 'bijlage');
+  assert.ok(!RISKY.test(safeName('Contract-confirmation.pdf')));
+  assert.equal(safeName(''), 'attachment');
 });
 
 test('message ids from a draft parse back with Bcc only when kept', async () => {

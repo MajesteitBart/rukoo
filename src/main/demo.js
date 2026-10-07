@@ -6,7 +6,7 @@ const { simpleParser } = require('mailparser');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const util = require('./mailutil');
 
-const DEMO_EMAIL = 'demo@voorbeeld.nl';
+const DEMO_EMAIL = 'demo@example.com';
 
 const FOLDERS = [
   { path: 'INBOX', name: 'INBOX', role: 'inbox' },
@@ -15,8 +15,8 @@ const FOLDERS = [
   { path: 'Trash', name: 'Trash', role: 'trash' },
   { path: 'Junk', name: 'Junk', role: 'junk' },
   { path: 'Archive', name: 'Archive', role: 'archive' },
-  { path: 'Facturen', name: 'Facturen', role: null },
-  { path: 'Reizen', name: 'Reizen', role: null }
+  { path: 'Invoices', name: 'Invoices', role: null },
+  { path: 'Travel', name: 'Travel', role: null }
 ];
 
 function newsletter({ brand, color, title, intro, items }) {
@@ -25,19 +25,19 @@ function newsletter({ brand, color, title, intro, items }) {
       (i) => `<tr><td style="padding:16px 24px;border-top:1px solid #e6e6e6">
 <h3 style="margin:0 0 6px;font:600 18px Arial,sans-serif;color:#111">${i.title}</h3>
 <p style="margin:0;font:15px/1.5 Arial,sans-serif;color:#444">${i.text}</p>
-<p style="margin:10px 0 0"><a href="https://example.com/${encodeURIComponent(i.title)}" style="color:${color};font:600 14px Arial,sans-serif">Lees meer</a></p>
+<p style="margin:10px 0 0"><a href="https://example.com/${encodeURIComponent(i.title)}" style="color:${color};font:600 14px Arial,sans-serif">Read more</a></p>
 </td></tr>`
     )
     .join('');
-  return `<!doctype html><html><body style="margin:0;background:#f2f2f2">
+  return `<!doctype html><html lang="en"><body style="margin:0;background:#f2f2f2">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f2f2"><tr><td align="center" style="padding:24px 12px">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;max-width:600px">
-<tr><td style="padding:14px 24px;text-align:right;font:12px Arial,sans-serif"><a href="https://example.com/browser" style="color:#3b78c4">Bekijk e-mail in browser</a></td></tr>
+<tr><td style="padding:14px 24px;text-align:right;font:12px Arial,sans-serif"><a href="https://example.com/browser" style="color:#3b78c4">View email in browser</a></td></tr>
 <tr><td style="padding:20px 24px;background:${color};color:#fff;font:700 26px Arial,sans-serif">${brand}</td></tr>
 <tr><td style="padding:24px"><h1 style="margin:0 0 8px;font:700 26px Arial,sans-serif;color:#111">${title}</h1>
 <p style="margin:0;font:16px/1.5 Arial,sans-serif;color:#333">${intro}</p></td></tr>
 ${blocks}
-<tr><td style="padding:20px 24px;background:#fafafa;font:12px Arial,sans-serif;color:#777">Je ontvangt deze e-mail omdat je je hebt aangemeld. <a href="https://example.com/afmelden" style="color:#777">Afmelden</a></td></tr>
+<tr><td style="padding:20px 24px;background:#fafafa;font:12px Arial,sans-serif;color:#777">You are receiving this email because you subscribed. <a href="https://example.com/unsubscribe" style="color:#777">Unsubscribe</a></td></tr>
 </table></td></tr></table></body></html>`;
 }
 
@@ -54,7 +54,7 @@ function seed(now = Date.now()) {
     if (now >= midnight + 15 * 3600000) return d.getTime();
     return midnight + Math.floor(((h * 60 + m) / (15 * 60)) * (now - midnight));
   };
-  const me = { name: 'Demo Gebruiker', address: DEMO_EMAIL };
+  const me = { name: 'Demo User', address: DEMO_EMAIL };
   const pdf = (name) => ({
     filename: name,
     contentType: 'application/pdf',
@@ -66,18 +66,18 @@ function seed(now = Date.now()) {
 
   const inbox = [
     {
-      from: { name: 'ANWB Nieuwsbrief', address: 'nieuwsbrieven@anwb.nl' },
-      subject: 'Dit kost een verkeersboete in 2027',
+      from: { name: 'ANWB Newsletter', address: 'newsletter@anwb.nl' },
+      subject: 'Traffic fines in 2027: what you will pay',
       date: at(0, 14, 45),
       html: newsletter({
         brand: 'ANWB',
         color: '#0b5cad',
-        title: 'Rijden met laagstaande zon: zorg dat je ruiten schoon zijn',
-        intro: 'Volg deze tips en voorkom gevaarlijke situaties. Zo heb je beter zicht.',
+        title: 'Driving in low sun: keep your windows clean',
+        intro: 'Follow these tips to improve visibility and avoid dangerous situations.',
         items: [
-          { title: 'Top 10 goedkoopste nieuwe auto\'s', text: 'Deze modellen kosten het minst in aanschaf en onderhoud.' },
-          { title: 'Dit kost een verkeersboete in 2027', text: 'Een overzicht van de nieuwe tarieven per overtreding.' },
-          { title: 'Winterbanden: wanneer wissel je?', text: 'Vanaf 7 graden grijpen winterbanden beter dan zomerbanden.' }
+          { title: 'Top 10 cheapest new cars', text: 'These models cost the least to buy and maintain.' },
+          { title: 'Traffic fines in 2027: what you will pay', text: 'An overview of the new fines for each offence.' },
+          { title: 'Winter tyres: when should you switch?', text: 'Below 7°C, winter tyres offer better grip than summer tyres.' }
         ]
       }),
       unread: true
@@ -99,66 +99,66 @@ function seed(now = Date.now()) {
       unread: true
     },
     {
-      from: { name: 'Vandebron', address: 'klantenservice@vandebron.nl' },
-      subject: 'Alsjeblieft, hierbij opnieuw je contract',
+      from: { name: 'Vandebron', address: 'support@vandebron.nl' },
+      subject: 'Here is another copy of your contract',
       date: at(0, 13, 0),
-      text: 'Beste Demo Gebruiker,\n\nKlantnummer: 2434702\n\nGa je akkoord met je nieuwe contract? In de bijlage vind je de contractbevestiging.\n\nGroene groet,\nVandebron',
-      attachments: [pdf('Contractbevestiging.pdf')],
+      text: 'Dear Demo User,\n\nCustomer number: 2434702\n\nDo you agree to your new contract? The contract confirmation is attached.\n\nGreen regards,\nVandebron',
+      attachments: [pdf('Contract-confirmation.pdf')],
       unread: true
     },
     {
-      from: { name: 'Vandebron', address: 'klantenservice@vandebron.nl' },
-      subject: 'Alsjeblieft, hierbij opnieuw je contract',
+      from: { name: 'Vandebron', address: 'support@vandebron.nl' },
+      subject: 'Here is another copy of your contract',
       date: at(0, 12, 54),
-      text: 'Beste Demo Gebruiker,\n\nKlantnummer: 2434702\n\nGa je akkoord met je nieuwe contract? In de bijlage vind je de contractbevestiging.\n\nGroene groet,\nVandebron',
-      attachments: [pdf('Contractbevestiging.pdf')],
+      text: 'Dear Demo User,\n\nCustomer number: 2434702\n\nDo you agree to your new contract? The contract confirmation is attached.\n\nGreen regards,\nVandebron',
+      attachments: [pdf('Contract-confirmation.pdf')],
       unread: true
     },
     {
       from: { name: 'Vandebron No Reply', address: 'noreply@vandebron.nl' },
-      subject: 'Je wachtwoord is gewijzigd',
+      subject: 'Your password has changed',
       date: at(0, 12, 30),
-      text: 'Je wachtwoord is gewijzigd.\n\nWas jij dit niet? Neem dan direct contact met ons op.',
+      text: 'Your password has changed.\n\nIf this was not you, contact us immediately.',
       unread: true
     },
     {
       from: { name: 'Vandebron No Reply', address: 'noreply@vandebron.nl' },
-      subject: 'Je inloggegevens zijn bijgewerkt',
+      subject: 'Your sign-in details have been updated',
       date: at(0, 12, 30),
-      text: 'Je inloggegevens zijn bijgewerkt.\n\nJe kunt nu inloggen op Mijn Vandebron met je nieuwe gegevens.',
+      text: 'Your sign-in details have been updated.\n\nYou can now sign in to My Vandebron with your new details.',
       unread: false
     },
     {
       from: { name: 'Vandebron No Reply', address: 'noreply@vandebron.nl' },
-      subject: 'Zo wijzig je je wachtwoord van Mijn Vandebron',
+      subject: 'How to change your My Vandebron password',
       date: at(0, 12, 29),
-      text: 'Zo wijzig je je wachtwoord van Mijn Vandebron.\n\nKlik op de link hieronder om een nieuw wachtwoord in te stellen:\nhttps://example.com/wachtwoord',
+      text: 'How to change your My Vandebron password.\n\nClick the link below to set a new password:\nhttps://example.com/password',
       unread: false
     },
     {
       from: { name: 'Vandebron No Reply', address: 'noreply@vandebron.nl' },
-      subject: 'Mislukte inlogpoging op je Mijn Vandebron-account',
+      subject: 'Failed sign-in attempt on your My Vandebron account',
       date: at(0, 12, 29),
-      text: 'Mislukte inlogpoging op je Mijn Vandebron-account.\n\nWe zagen een mislukte inlogpoging. Was jij dit niet? Wijzig dan je wachtwoord.',
+      text: 'Failed sign-in attempt on your My Vandebron account.\n\nWe noticed a failed sign-in attempt. If this was not you, change your password.',
       unread: false
     },
     {
       from: { name: 'Bencompare', address: 'info@bencompare.nl' },
-      subject: 'Inloggen Bencompare',
+      subject: 'Sign in to Bencompare',
       date: at(0, 12, 28),
-      text: 'Uw Bencompare account\n\nInloggen kan via de link hieronder. De link is 15 minuten geldig.\nhttps://example.com/inloggen',
+      text: 'Your Bencompare account\n\nSign in using the link below. The link is valid for 15 minutes.\nhttps://example.com/sign-in',
       unread: false
     },
     {
       from: { name: 'Google', address: 'no-reply@accounts.google.com' },
-      subject: 'Je hebt een deel van je Google-accountgegevens bijgewerkt',
+      subject: 'You updated some of your Google Account details',
       date: at(0, 11, 2),
       html: newsletter({
         brand: 'Google',
         color: '#1a73e8',
-        title: 'Je Google-accountgegevens zijn bijgewerkt',
-        intro: 'Je hebt een deel van je Google-accountgegevens bijgewerkt. Als jij dit was, hoef je niets te doen.',
-        items: [{ title: 'Beveiligingscheck', text: 'Bekijk je recente beveiligingsactiviteit in je Google-account.' }]
+        title: 'Your Google Account details have been updated',
+        intro: 'You updated some of your Google Account details. If this was you, no action is needed.',
+        items: [{ title: 'Security check', text: 'Review recent security activity in your Google Account.' }]
       }),
       unread: true
     },
@@ -181,43 +181,43 @@ function seed(now = Date.now()) {
       starred: true
     },
     {
-      from: { name: 'Sanne de Vries', address: 'sanne@voorbeeld.nl' },
+      from: { name: 'Sanne de Vries', address: 'sanne@example.com' },
       to: [me],
-      cc: [{ name: 'Joris Bakker', address: 'joris@voorbeeld.nl' }],
-      subject: 'Afspraak donderdag',
+      cc: [{ name: 'Joris Bakker', address: 'joris@example.com' }],
+      subject: 'Call on Thursday',
       date: at(1, 16, 12),
-      text: 'Hoi!\n\nZullen we donderdag om 10:00 bellen over het voorstel? Ik heb de laatste versie in de bijlage gezet.\n\nGroet,\nSanne',
-      attachments: [pdf('Voorstel-v3.pdf')],
+      text: 'Hi!\n\nShall we have a call on Thursday at 10:00 to discuss the proposal? I have attached the latest version.\n\nBest,\nSanne',
+      attachments: [pdf('Proposal-v3.pdf')],
       unread: true
     },
     {
       from: { name: 'NS', address: 'noreply@ns.nl' },
-      subject: 'Je reisoverzicht van september',
+      subject: 'Your travel summary for September',
       date: at(1, 9, 3),
-      text: 'Je reisoverzicht van september staat klaar in Mijn NS.\n\nTotaal gereisd: 412 km.',
+      text: 'Your travel summary for September is ready in My NS.\n\nTotal distance travelled: 412 km.',
       unread: false
     },
     {
       from: { name: 'bol', address: 'service@bol.com' },
-      subject: 'Je pakket is onderweg',
+      subject: 'Your parcel is on its way',
       date: at(2, 18, 40),
-      text: 'Goed nieuws! Je pakket is onderweg en wordt morgen tussen 13:00 en 16:00 bezorgd.',
+      text: 'Good news! Your parcel is on its way and will arrive tomorrow between 13:00 and 16:00.',
       unread: false
     },
     {
-      from: { name: 'Joris Bakker', address: 'joris@voorbeeld.nl' },
+      from: { name: 'Joris Bakker', address: 'joris@example.com' },
       to: [me],
-      subject: 'Re: Etentje zaterdag',
+      subject: 'Re: Dinner on Saturday',
       date: at(3, 20, 15),
-      text: 'Top, ik reserveer voor 19:30. Tot zaterdag!\n\n> Zaterdag lukt mij ook.',
+      text: 'Great, I will book a table for 19:30. See you on Saturday!\n\n> Saturday works for me too.',
       unread: false,
       starred: true
     },
     {
-      from: { name: 'Belastingdienst', address: 'noreply@belastingdienst.example' },
-      subject: 'Er staat een nieuw bericht voor u klaar',
+      from: { name: 'Dutch Tax Administration', address: 'noreply@belastingdienst.example' },
+      subject: 'You have a new message',
       date: at(9, 8, 0),
-      text: 'Er staat een nieuw bericht voor u klaar in uw Berichtenbox op MijnOverheid.',
+      text: 'You have a new message in your inbox on MijnOverheid.',
       unread: false
     }
   ];
@@ -225,57 +225,57 @@ function seed(now = Date.now()) {
   const sent = [
     {
       from: me,
-      to: [{ name: 'Sanne de Vries', address: 'sanne@voorbeeld.nl' }],
-      subject: 'Re: Afspraak donderdag',
+      to: [{ name: 'Sanne de Vries', address: 'sanne@example.com' }],
+      subject: 'Re: Call on Thursday',
       date: at(1, 17, 2),
-      text: 'Donderdag 10:00 is goed. Ik bel je.\n\nVerzonden vanaf mijn pc',
+      text: 'Thursday at 10:00 works for me. I will call you.\n\nSent from my PC',
       unread: false
     },
     {
       from: me,
-      to: [{ name: 'Joris Bakker', address: 'joris@voorbeeld.nl' }],
-      subject: 'Etentje zaterdag',
+      to: [{ name: 'Joris Bakker', address: 'joris@example.com' }],
+      subject: 'Dinner on Saturday',
       date: at(3, 19, 50),
-      text: 'Zaterdag lukt mij ook. Reserveer jij?',
+      text: 'Saturday works for me too. Could you book a table?',
       unread: false
     },
     {
       from: me,
-      to: [{ name: 'Vandebron', address: 'klantenservice@vandebron.nl' }],
-      subject: 'Vraag over mijn contract',
+      to: [{ name: 'Vandebron', address: 'support@vandebron.nl' }],
+      subject: 'Question about my contract',
       date: at(4, 10, 30),
-      text: 'Goedemiddag,\n\nKunnen jullie het contract opnieuw sturen? Ik heb het niet ontvangen.\n\nMet vriendelijke groet,\nDemo Gebruiker',
+      text: 'Good afternoon,\n\nCould you send the contract again? I have not received it.\n\nKind regards,\nDemo User',
       unread: false
     }
   ];
 
   const drafts = [
-    { from: me, to: [{ name: '', address: 'info@voorbeeld.nl' }], subject: 'Offerteaanvraag', date: at(2, 11, 0), text: 'Beste,\n\nGraag ontvang ik een offerte voor', unread: false },
-    { from: me, to: [], subject: 'Ideeën voor de vakantie', date: at(5, 21, 0), text: 'Lissabon? Porto?', unread: false },
-    { from: me, to: [{ name: 'Sanne de Vries', address: 'sanne@voorbeeld.nl' }], subject: 'Notities', date: at(6, 9, 30), text: 'Actiepunten:\n- voorstel versturen\n- planning maken', unread: false }
+    { from: me, to: [{ name: '', address: 'info@example.com' }], subject: 'Quote request', date: at(2, 11, 0), text: 'Hello,\n\nI would like to request a quote for', unread: false },
+    { from: me, to: [], subject: 'Holiday ideas', date: at(5, 21, 0), text: 'Lisbon? Porto?', unread: false },
+    { from: me, to: [{ name: 'Sanne de Vries', address: 'sanne@example.com' }], subject: 'Notes', date: at(6, 9, 30), text: 'Action items:\n- send the proposal\n- create a schedule', unread: false }
   ];
 
   const trash = [
-    { from: { name: 'Webshop', address: 'promo@webshop.example' }, subject: 'Laatste kans: 50% korting', date: at(4, 7, 0), text: 'Alleen vandaag: de helft van de prijs.', unread: false }
+    { from: { name: 'Webshop', address: 'promo@webshop.example' }, subject: 'Last chance: 50% off', date: at(4, 7, 0), text: 'Today only: half price.', unread: false }
   ];
 
-  const facturen = [
+  const invoices = [
     {
-      from: { name: 'Ziggo', address: 'facturen@ziggo.example' },
-      subject: 'Je factuur van oktober',
+      from: { name: 'Ziggo', address: 'billing@ziggo.example' },
+      subject: 'Your invoice for October',
       date: at(5, 6, 0),
-      text: 'Je factuur van oktober staat klaar. Het bedrag van € 54,95 wordt rond de 28e afgeschreven.',
-      attachments: [pdf('Factuur-oktober.pdf')],
+      text: 'Your invoice for October is ready. The amount of €54.95 will be debited around the 28th.',
+      attachments: [pdf('Invoice-October.pdf')],
       unread: false
     }
   ];
 
-  const reizen = [
+  const travel = [
     {
       from: { name: 'KLM', address: 'noreply@klm.example' },
-      subject: 'Je boeking naar Lissabon',
+      subject: 'Your booking to Lisbon',
       date: at(12, 14, 0),
-      text: 'Bedankt voor je boeking. Boekingscode: QX7P2L.\nVertrek: 14 november, 07:15 vanaf Amsterdam Schiphol.',
+      text: 'Thank you for your booking. Booking reference: QX7P2L.\nDeparture: 14 November, 07:15 from Amsterdam Schiphol.',
       unread: false
     }
   ];
@@ -298,10 +298,10 @@ function seed(now = Date.now()) {
           text: m.text || null,
           attachments: m.attachments || [],
           // The newsletters carry an unsubscribe header, like real ones do.
-          headers: m.html && m.html.includes('example.com/afmelden')
-            ? { 'List-Unsubscribe': '<https://example.com/afmelden>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }
+          headers: m.html && m.html.includes('example.com/unsubscribe')
+            ? { 'List-Unsubscribe': '<https://example.com/unsubscribe>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }
             : undefined,
-          messageId: `<demo-${uid}@voorbeeld.nl>`,
+          messageId: `<demo-${uid}@example.com>`,
           flags: [...(m.unread ? [] : ['\\Seen']), ...(m.starred ? ['\\Flagged'] : []), ...(pathName === 'Drafts' ? ['\\Draft'] : [])]
         };
         return msg;
@@ -315,8 +315,8 @@ function seed(now = Date.now()) {
   fill('Trash', trash);
   fill('Junk', []);
   fill('Archive', []);
-  fill('Facturen', facturen);
-  fill('Reizen', reizen);
+  fill('Invoices', invoices);
+  fill('Travel', travel);
   return { boxes, nextUid: uid };
 }
 
@@ -477,7 +477,7 @@ class DemoAccount {
         encoding: 'base64',
         cid: a.contentId ? a.contentId.replace(/[<>]/g, '') : undefined
       })),
-      messageId: parsed.messageId || `<demo-${Date.now()}@voorbeeld.nl>`,
+      messageId: parsed.messageId || `<demo-${Date.now()}@example.com>`,
       flags: [...flags]
     };
     box.messages.push(m);

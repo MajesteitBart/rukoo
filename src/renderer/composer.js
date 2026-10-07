@@ -1,3 +1,4 @@
+import { t, localize } from './i18n.js';
 // The message editor. It runs inline in the main window's reading pane, or on its own in a
 // compose window (compose.js). Either way it saves drafts as you write.
 import { icons } from './icons.js';
@@ -7,7 +8,7 @@ import { fillFrame } from './mailframe.js';
 const EMAIL_RE = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
 // Autosave this long after the last change.
 const AUTOSAVE_MS = 8000;
-export const COMPOSE_TITLES = { new: 'Nieuw bericht', reply: 'Beantwoorden', replyAll: 'Allen beantwoorden', forward: 'Doorsturen', draft: 'Concept' };
+export const COMPOSE_TITLES = { get new() { return t('composer.titles.new'); }, get reply() { return t('composer.titles.reply'); }, get replyAll() { return t('composer.titles.replyAll'); }, get forward() { return t('composer.titles.forward'); }, get draft() { return t('composer.titles.draft'); } };
 
 let contactsCache = null;
 let attachmentKey = 0;
@@ -51,14 +52,13 @@ function cleanDraftHtml(html) {
   return doc.body.innerHTML;
 }
 
-const QUOTE_MARK = '-------- Oorspronkelijk bericht --------';
-
 // A saved reply carries the earlier mail after its own text: a header block, then a blockquote.
 // Split that off again, so a reopened draft shows it behind the "···" pill instead of in the text.
 function splitQuote(html) {
   const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
   for (const head of doc.body.querySelectorAll('div')) {
-    if (!head.textContent.trim().startsWith(QUOTE_MARK)) continue;
+    // New drafts carry a stable marker; recognize headers in earlier English/Dutch drafts too.
+    if (!head.hasAttribute('data-rukoo-quote') && !/^-------- (Oorspronkelijk bericht|Original message) --------/.test(head.textContent.trim())) continue;
     let quote = head.nextElementSibling;
     while (quote && quote.tagName === 'BR') quote = quote.nextElementSibling;
     if (!quote || quote.tagName !== 'BLOCKQUOTE') continue;
@@ -175,13 +175,13 @@ function replyFrom(acc, m) {
 
 function quoteHeader(m) {
   const lines = [
-    '-------- Oorspronkelijk bericht --------',
-    `Van: ${formatAddress(m.from)}`,
-    `Datum: ${quoteDate(m.date)}`,
-    `Aan: ${(m.to || []).map(formatAddress).join(', ')}`
+    t('composer.quote.marker'),
+    t('composer.quote.from', { sender: formatAddress(m.from) }),
+    t('composer.quote.date', { date: quoteDate(m.date) }),
+    t('composer.quote.to', { recipients: (m.to || []).map(formatAddress).join(', ') })
   ];
   if (m.cc && m.cc.length) lines.push(`Cc: ${m.cc.map(formatAddress).join(', ')}`);
-  lines.push(`Onderwerp: ${m.subject || ''}`);
+  lines.push(t('composer.quote.subject', { subject: m.subject || '' }));
   return lines.join('\n');
 }
 
@@ -189,19 +189,19 @@ function recipientsHtml(list) {
   return list
     .map(
       (a, i) =>
-        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" title="Verwijderen" tabindex="-1">${icons.close}</button></span>`
+        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}" tabindex="-1">${icons.close}</button></span>`
     )
     .join('');
 }
 
-const FORMAT_BUTTONS = `
-  <button class="icon-btn sm" data-cmd="bold" title="Vet (Ctrl+B)">${icons.bold}</button>
-  <button class="icon-btn sm" data-cmd="italic" title="Cursief (Ctrl+I)">${icons.italic}</button>
-  <button class="icon-btn sm" data-cmd="underline" title="Onderstrepen (Ctrl+U)">${icons.underline}</button>
+const formatButtons = () => `
+  <button class="icon-btn sm" data-cmd="bold" data-i18n-title="composer.format.bold" title="${esc(t('composer.format.bold'))}">${icons.bold}</button>
+  <button class="icon-btn sm" data-cmd="italic" data-i18n-title="composer.format.italic" title="${esc(t('composer.format.italic'))}">${icons.italic}</button>
+  <button class="icon-btn sm" data-cmd="underline" data-i18n-title="composer.format.underline" title="${esc(t('composer.format.underline'))}">${icons.underline}</button>
   <span class="sep"></span>
-  <button class="icon-btn sm" data-c="link" title="Link (Ctrl+K)">${icons.link}</button>
-  <button class="icon-btn sm" data-cmd="insertUnorderedList" title="Opsomming">${icons.ul}</button>
-  <button class="icon-btn sm" data-cmd="insertOrderedList" title="Genummerde lijst">${icons.ol}</button>`;
+  <button class="icon-btn sm" data-c="link" data-i18n-title="composer.format.link" title="${esc(t('composer.format.link'))}">${icons.link}</button>
+  <button class="icon-btn sm" data-cmd="insertUnorderedList" data-i18n-title="composer.format.bullets" title="${esc(t('composer.format.bullets'))}">${icons.ul}</button>
+  <button class="icon-btn sm" data-cmd="insertOrderedList" data-i18n-title="composer.format.numbered" title="${esc(t('composer.format.numbered'))}">${icons.ol}</button>`;
 
 function template(data, st, inline) {
   const accounts = data.accounts;
@@ -226,11 +226,11 @@ function template(data, st, inline) {
   const quoteHead = st.original ? quoteHeader(st.original) : st.quoted ? st.quoted.head : '';
   const quote = st.original || st.quoted
     ? `<div class="quote-zone">
-        <button class="quote-pill" data-c="quote" title="Vorige berichten tonen" aria-expanded="false">···</button>
+        <button class="quote-pill" data-c="quote" data-i18n-title="composer.quote.show" title="${esc(t('composer.quote.show'))}" aria-expanded="false">···</button>
         <div class="quote" hidden>
-          <div class="quote-bar"><span>Vorig bericht</span><button class="link-btn" data-c="include">Niet meesturen</button></div>
+          <div class="quote-bar"><span data-i18n="composer.quote.title">${esc(t('composer.quote.title'))}</span><button class="link-btn" data-c="include" data-i18n="composer.quote.exclude">${esc(t('composer.quote.exclude'))}</button></div>
           <div class="quote-head">${esc(quoteHead)}</div>
-          <iframe class="quote-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" title="Vorig bericht"></iframe>
+          <iframe class="quote-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" data-i18n-title="composer.quote.title" title="${esc(t('composer.quote.title'))}"></iframe>
         </div>
       </div>`
     : '';
@@ -238,48 +238,48 @@ function template(data, st, inline) {
     ${
       inline
         ? `<div class="composer-head">
-            <span class="composer-title">${esc(COMPOSE_TITLES[st.mode] || 'Nieuw bericht')}</span>
+            <span class="composer-title">${esc(COMPOSE_TITLES[st.mode] || t('composer.titles.new'))}</span>
             <span class="spacer"></span>
-            <button class="icon-btn" data-c="popout" title="Openen in een eigen venster">${icons.popOut}</button>
-            <button class="icon-btn" data-c="close" title="Sluiten (Esc)">${icons.close}</button>
+            <button class="icon-btn" data-c="popout" data-i18n-title="composer.actions.popout" title="${esc(t('composer.actions.popout'))}">${icons.popOut}</button>
+            <button class="icon-btn" data-c="close" data-i18n-title="composer.actions.closeShortcut" title="${esc(t('composer.actions.closeShortcut'))}">${icons.close}</button>
           </div>`
         : ''
     }
     <div class="composer-scroll">
       <div class="compose-fields">
-        <div class="field"><label for="from">Van</label>${from}</div>
-        <div class="field" data-rfield="to"><label>Aan</label><div class="recipients"></div>
-          <span class="cc-links"><button class="link-btn" data-c="cc" ${st.showCc ? 'hidden' : ''}>Cc</button><button class="link-btn" data-c="bcc" ${st.showBcc ? 'hidden' : ''}>Bcc</button></span></div>
-        <div class="field" data-rfield="cc" ${st.showCc ? '' : 'hidden'}><label>Cc</label><div class="recipients"></div></div>
-        <div class="field" data-rfield="bcc" ${st.showBcc ? '' : 'hidden'}><label>Bcc</label><div class="recipients"></div></div>
-        <div class="field"><label for="subject">Onderwerp</label><input id="subject" data-field="subject" type="text" value="${esc(st.subject)}" autocomplete="off"/></div>
+        <div class="field"><label for="from" data-i18n="reader.headers.from">${esc(t('reader.headers.from'))}</label>${from}</div>
+        <div class="field" data-rfield="to"><label data-i18n="reader.headers.to">${esc(t('reader.headers.to'))}</label><div class="recipients"></div>
+          <span class="cc-links"><button class="link-btn" data-c="cc" data-i18n="reader.headers.cc" ${st.showCc ? 'hidden' : ''}>${esc(t('reader.headers.cc'))}</button><button class="link-btn" data-c="bcc" data-i18n="reader.headers.bcc" ${st.showBcc ? 'hidden' : ''}>${esc(t('reader.headers.bcc'))}</button></span></div>
+        <div class="field" data-rfield="cc" ${st.showCc ? '' : 'hidden'}><label data-i18n="reader.headers.cc">${esc(t('reader.headers.cc'))}</label><div class="recipients"></div></div>
+        <div class="field" data-rfield="bcc" ${st.showBcc ? '' : 'hidden'}><label data-i18n="reader.headers.bcc">${esc(t('reader.headers.bcc'))}</label><div class="recipients"></div></div>
+        <div class="field"><label for="subject" data-i18n="reader.headers.subject">${esc(t('reader.headers.subject'))}</label><input id="subject" data-field="subject" type="text" value="${esc(st.subject)}" autocomplete="off"/></div>
       </div>
       <div class="compose-body">
-        <div class="editor" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" aria-label="Berichttekst" data-placeholder="Schrijf je bericht"></div>
+        <div class="editor" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" data-i18n-aria-label="composer.body.label" aria-label="${esc(t('composer.body.label'))}" data-i18n-data-placeholder="composer.body.placeholder" data-placeholder="${esc(t('composer.body.placeholder'))}"></div>
         ${quote}
       </div>
-      <div class="compose-attachments" aria-label="Bijlagen"></div>
+      <div class="compose-attachments" data-i18n-aria-label="mailbox.filters.attachments" aria-label="${esc(t('mailbox.filters.attachments'))}"></div>
     </div>
-    <div class="format-row" role="toolbar" aria-label="Opmaak" hidden>
-      ${FORMAT_BUTTONS}
-      <button class="icon-btn sm" data-cmd="outdent" title="Inspringing verkleinen">${icons.outdent}</button>
-      <button class="icon-btn sm" data-cmd="indent" title="Inspringing vergroten">${icons.indent}</button>
+    <div class="format-row" role="toolbar" data-i18n-aria-label="composer.format.label" aria-label="${esc(t('composer.format.label'))}" hidden>
+      ${formatButtons()}
+      <button class="icon-btn sm" data-cmd="outdent" data-i18n-title="composer.format.outdent" title="${esc(t('composer.format.outdent'))}">${icons.outdent}</button>
+      <button class="icon-btn sm" data-cmd="indent" data-i18n-title="composer.format.indent" title="${esc(t('composer.format.indent'))}">${icons.indent}</button>
       <span class="sep"></span>
-      <button class="icon-btn sm" data-color="foreColor" title="Tekstkleur">${icons.textColor}</button>
-      <button class="icon-btn sm" data-color="hiliteColor" title="Markeren">${icons.highlight}</button>
-      <button class="icon-btn sm" data-cmd="removeFormat" title="Opmaak wissen">${icons.clearFormat}</button>
+      <button class="icon-btn sm" data-color="foreColor" data-i18n-title="composer.format.textColor" title="${esc(t('composer.format.textColor'))}">${icons.textColor}</button>
+      <button class="icon-btn sm" data-color="hiliteColor" data-i18n-title="composer.format.highlight" title="${esc(t('composer.format.highlight'))}">${icons.highlight}</button>
+      <button class="icon-btn sm" data-cmd="removeFormat" data-i18n-title="composer.format.clear" title="${esc(t('composer.format.clear'))}">${icons.clearFormat}</button>
     </div>
     <div class="composer-bar">
-      <button class="icon-btn" data-c="attach" title="Bestanden bijvoegen">${icons.clip}</button>
-      <button class="icon-btn" data-c="image" title="Afbeelding invoegen">${icons.image}</button>
-      <button class="icon-btn" data-c="format" title="Opmaak" aria-pressed="false">${icons.textFormat}</button>
-      <button class="icon-btn" data-c="discard" title="Concept verwijderen">${icons.trash}</button>
-      <button class="icon-btn" data-c="more" title="Meer opties" aria-haspopup="menu">${icons.more}</button>
+      <button class="icon-btn" data-c="attach" data-i18n-title="composer.attachments.pick" title="${esc(t('composer.attachments.pick'))}">${icons.clip}</button>
+      <button class="icon-btn" data-c="image" data-i18n-title="composer.attachments.image" title="${esc(t('composer.attachments.image'))}">${icons.image}</button>
+      <button class="icon-btn" data-c="format" data-i18n-title="composer.format.label" title="${esc(t('composer.format.label'))}" aria-pressed="false">${icons.textFormat}</button>
+      <button class="icon-btn" data-c="discard" data-i18n-title="composer.actions.discard" title="${esc(t('composer.actions.discard'))}">${icons.trash}</button>
+      <button class="icon-btn" data-c="more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>
       <span class="spacer"></span>
       <span class="save-state" aria-live="polite"></span>
-      <button class="btn primary send-btn" data-c="send" title="Verzenden (Ctrl+Enter)"><span>Verzenden</span>${icons.send}</button>
+      <button class="btn primary send-btn" data-c="send" data-i18n-title="composer.actions.sendShortcut" title="${esc(t('composer.actions.sendShortcut'))}"><span data-i18n="composer.actions.send">${esc(t('composer.actions.send'))}</span>${icons.send}</button>
     </div>
-    <div class="float-bar" role="toolbar" aria-label="Opmaak" hidden>${FORMAT_BUTTONS}</div>
+    <div class="float-bar" role="toolbar" data-i18n-aria-label="composer.format.label" aria-label="${esc(t('composer.format.label'))}" hidden>${formatButtons()}</div>
     <input type="color" class="color-input" value="#d6336c" tabindex="-1" aria-hidden="true"/>`;
 }
 
@@ -290,7 +290,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const page = document.createElement('div');
   page.className = `compose composer ${inline ? 'inline' : ''}`;
   page.setAttribute('role', inline ? 'region' : 'main');
-  page.setAttribute('aria-label', COMPOSE_TITLES[st.mode] || 'Nieuw bericht');
+  page.setAttribute('aria-label', COMPOSE_TITLES[st.mode] || t('composer.titles.new'));
   page.innerHTML = template(data, st, inline);
   host.appendChild(page);
   // Listeners outside the composer, removed when it closes.
@@ -305,7 +305,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   editor.innerHTML = st.bodyHtml;
   document.execCommand('styleWithCSS', false, true);
 
-  const title = () => onTitle && onTitle(st.subject.trim() || COMPOSE_TITLES[st.mode] || 'Nieuw bericht');
+  const title = () => onTitle && onTitle(st.subject.trim() || COMPOSE_TITLES[st.mode] || t('composer.titles.new'));
   title();
 
   const quoteFrame = $('.quote-frame', page);
@@ -326,8 +326,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // Quiet while you write; only a saved draft is worth mentioning.
   const describeSaved = () => {
     page.dataset.dirty = String(st.dirty);
-    if (st.saving) return showSaveState('Opslaan...');
-    if (!st.dirty && st.savedAt && st.draftId) return showSaveState('Concept opgeslagen', `Opgeslagen om ${hhmm(st.savedAt)}`);
+    if (st.saving) return showSaveState(t('native.attachments.save'));
+    if (!st.dirty && st.savedAt && st.draftId) return showSaveState(t('composer.status.saved'), t('composer.status.savedAt', { time: hhmm(st.savedAt) }));
     showSaveState('');
   };
   describeSaved();
@@ -335,7 +335,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const renderRecipients = (field) => {
     const box = $(`[data-rfield="${field}"] .recipients`, page);
     const draft = box.querySelector('input')?.value || '';
-    box.innerHTML = `${recipientsHtml(st[field])}<input type="text" data-rinput="${field}" autocomplete="off" spellcheck="false" aria-label="${field === 'to' ? 'Aan' : field === 'cc' ? 'Cc' : 'Bcc'}"/>`;
+    box.innerHTML = `${recipientsHtml(st[field])}<input type="text" data-rinput="${field}" autocomplete="off" spellcheck="false" aria-label="${field === 'to' ? t('reader.headers.to') : field === 'cc' ? t('reader.headers.cc') : t('reader.headers.bcc')}"/>`;
     const input = box.querySelector('input');
     input.value = draft;
     return input;
@@ -346,7 +346,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     $('.compose-attachments', page).innerHTML = st.attachments
       .map(
         (a, i) =>
-          `<span class="att-chip" title="${esc(a.path || a.filename)}">${icons.clip}<span class="n">${esc(a.filename)}</span>${a.size ? `<span class="s">${fileSize(a.size)}</span>` : ''}<button data-unattach="${i}" title="Verwijderen">${icons.close}</button></span>`
+          `<span class="att-chip" title="${esc(a.path || a.filename)}">${icons.clip}<span class="n">${esc(a.filename)}</span>${a.size ? `<span class="s">${fileSize(a.size)}</span>` : ''}<button data-unattach="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}">${icons.close}</button></span>`
       )
       .join('');
   };
@@ -535,13 +535,13 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     const range = editorRange();
     const selected = range ? range.toString() : '';
     const url = await dialog({
-      title: 'Link invoegen',
+      title: t('composer.link.title'),
       buttons: [
-        { label: 'Annuleren', value: null },
-        { label: 'Invoegen', value: (scrim) => scrim.querySelector('input').value.trim(), primary: true }
+        { get label() { return t('common.actions.cancel'); }, value: null },
+        { get label() { return t('composer.link.insert'); }, value: (scrim) => scrim.querySelector('input').value.trim(), primary: true }
       ],
       render(body) {
-        body.innerHTML = `<div class="form" style="padding:0"><label>Adres<input class="form-input" type="text" placeholder="https://" value="${/^https?:\/\//.test(selected) ? esc(selected) : ''}"/></label></div>`;
+        body.innerHTML = `<div class="form" style="padding:0"><label data-i18n="composer.link.address">${esc(t('composer.link.address'))}<input class="form-input" type="text" placeholder="https://" value="${/^https?:\/\//.test(selected) ? esc(selected) : ''}"/></label></div>`;
       }
     });
     if (!url) return restoreRange(range);
@@ -665,16 +665,16 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         st.quoteOpen = !st.quoteOpen;
         $('.quote', page).hidden = !st.quoteOpen;
         b.setAttribute('aria-expanded', String(st.quoteOpen));
-        b.title = st.quoteOpen ? 'Vorige berichten verbergen' : 'Vorige berichten tonen';
+        b.title = st.quoteOpen ? t('composer.quote.hide') : t('composer.quote.show');
         if (st.quoteOpen && !quoteDrawn) drawQuote();
         return;
       }
       case 'include':
         st.include = !st.include;
-        b.textContent = st.include ? 'Niet meesturen' : 'Toch meesturen';
+        b.textContent = st.include ? t('composer.quote.exclude') : t('composer.quote.include');
         $('.quote', page).classList.toggle('excluded', !st.include);
         $('.quote-pill', page).classList.toggle('excluded', !st.include);
-        $('.quote-pill', page).textContent = st.include ? '···' : '··· niet meegestuurd';
+        $('.quote-pill', page).textContent = st.include ? '···' : t('composer.quote.excludedPill');
         changed();
         return;
       case 'discard':
@@ -685,12 +685,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return popOut();
       case 'more':
         return showMenu(b, [
-          { icon: 'saved', label: 'Opslaan in Concepten', shortcut: 'Ctrl+S', action: () => saveDraft({ auto: false }) },
-          st.showCc ? null : { icon: 'plus', label: 'Cc toevoegen', action: () => $('[data-c="cc"]', page).click() },
-          st.showBcc ? null : { icon: 'plus', label: 'Bcc toevoegen', action: () => $('[data-c="bcc"]', page).click() },
-          inline ? { icon: 'popOut', label: 'Openen in een eigen venster', action: popOut } : null,
+          { icon: 'saved', get label() { return t('composer.actions.saveDraft'); }, shortcut: 'Ctrl+S', action: () => saveDraft({ auto: false }) },
+          st.showCc ? null : { icon: 'plus', get label() { return t('composer.actions.addCc'); }, action: () => $('[data-c="cc"]', page).click() },
+          st.showBcc ? null : { icon: 'plus', get label() { return t('composer.actions.addBcc'); }, action: () => $('[data-c="bcc"]', page).click() },
+          inline ? { icon: 'popOut', get label() { return t('composer.actions.popout'); }, action: popOut } : null,
           { separator: true },
-          { icon: 'trash', label: 'Concept verwijderen', action: discard, danger: true }
+          { icon: 'trash', get label() { return t('composer.actions.discard'); }, action: discard, danger: true }
         ], { above: true });
     }
   });
@@ -735,7 +735,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if ((st.original || st.quoted) && st.include) {
       const head = esc(st.original ? quoteHeader(st.original) : st.quoted.head).replace(/\n/g, '<br>');
       const quoted = st.original ? st.original.html || '' : st.quoted.html;
-      html += `<br><div style="font-size:13px;color:#555">${head}</div><br><blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${quoted}</blockquote>`;
+      html += `<br><div data-rukoo-quote style="font-size:13px;color:#555">${head}</div><br><blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${quoted}</blockquote>`;
     }
     const attachments = attachmentList.filter((a) => a.path).map((a) => ({ path: a.path, filename: a.filename }));
     const forwardIndexes = attachmentList.filter((a) => a.forwardIndex !== undefined).map((a) => a.forwardIndex);
@@ -795,7 +795,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   async function settleAttachments() {
     if (!pendingRemap) return;
     const { id, sent } = pendingRemap;
-    const lost = new Error('Het concept staat in Concepten, maar de bijlagen ervan zijn niet terug te vinden. Sluit dit venster en open het concept opnieuw.');
+    const lost = new Error(t('composer.errors.missingAttachments'));
     if (!id) throw lost;
     const saved = await api('get', id);
     if (!remapAttachments(sent, saved)) throw lost;
@@ -830,7 +830,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
           pendingRemap = { id, sent };
           await settleAttachments().catch(() => {});
         }
-        if (!auto) toast('Opgeslagen in Concepten');
+        if (!auto) toast(t('composer.status.savedToDrafts'));
         return true;
       } catch (err) {
         failed = true;
@@ -838,7 +838,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return false;
       } finally {
         st.saving = false;
-        if (failed && auto) showSaveState('Automatisch opslaan mislukt');
+        if (failed && auto) showSaveState(t('composer.errors.autosave'));
         else describeSaved();
       }
     });
@@ -874,17 +874,17 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     try {
       flushInputs();
       if (!st.to.length && !st.cc.length && !st.bcc.length) {
-        toast('Voeg minstens één ontvanger toe');
+        toast(t('composer.errors.noRecipients'));
         return $('[data-rinput="to"]', page).focus();
       }
       const bad = [...st.to, ...st.cc, ...st.bcc].find((a) => !EMAIL_RE.test(a.address));
-      if (bad) return toast(`Ongeldig e-mailadres: ${bad.address}`);
+      if (bad) return toast(t('common.errors.invalidEmailValue', { address: bad.address }));
       if (!st.subject.trim()) {
-        const ok = await confirmDialog('Geen onderwerp', 'Wil je deze e-mail zonder onderwerp verzenden?', 'Verzenden');
+        const ok = await confirmDialog(t('composer.send.noSubjectTitle'), t('composer.send.noSubjectHelp'), t('composer.actions.send'));
         if (!ok) return;
       }
       clearTimeout(autosaveTimer);
-      label.textContent = 'Verzenden...';
+      label.textContent = t('composer.status.sending');
       showSaveState('');
       // Nothing typed from here on would make it into the mail, so lock the editor until it is sent.
       page.inert = true;
@@ -892,15 +892,15 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       await settleAttachments();
       await api('send', payload());
       done = true;
-      finish(inline ? 'E-mail verzonden' : null);
+      finish(inline ? t('composer.status.sent') : null);
     } catch (err) {
-      await dialog({ title: 'Verzenden mislukt', body: `<p>${esc(err.message)}</p>` });
+      await dialog({ title: t('composer.errors.send'), body: `<p>${esc(err.message)}</p>` });
     } finally {
       if (!done) {
         sending = false;
         page.inert = false;
         btn.disabled = false;
-        label.textContent = 'Verzenden';
+        label.textContent = t('composer.actions.send');
         describeSaved();
         if (st.dirty) armAutosave();
       }
@@ -911,38 +911,38 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (sending || closing || closed) return;
     const hasContent = st.dirty || st.draftId;
     if (hasContent) {
-      const ok = await confirmDialog('Concept verwijderen?', st.draftId ? 'Dit concept wordt ook uit Concepten verwijderd.' : 'Wat je hebt geschreven gaat verloren.', 'Verwijderen', true);
+      const ok = await confirmDialog(t('composer.discard.title'), st.draftId ? t('composer.discard.savedHelp') : t('composer.discard.unsavedHelp'), t('common.actions.delete'), true);
       if (!ok) return;
     }
     clearTimeout(autosaveTimer);
     closed = true;
     await saving;
     if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
-    finish(st.draftId ? 'Concept verwijderd' : null);
+    finish(st.draftId ? t('composer.status.deleted') : null);
   }
 
   let asking = false;
   async function close() {
     if (asking || closing || closed || sending) return;
     flushInputs();
-    if (!st.dirty) return finish(st.draftId && st.mode !== 'draft' ? 'Concept bewaard in Concepten' : null);
+    if (!st.dirty) return finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
     asking = true;
     const choice = await dialog({
-      title: 'Concept opslaan?',
-      body: '<p>Bewaar dit bericht in Concepten om later verder te schrijven.</p>',
+      title: t('composer.close.title'),
+      body: `<p data-i18n="composer.close.help">${esc(t('composer.close.help'))}</p>`,
       buttons: [
-        { label: st.draftId ? 'Concept verwijderen' : 'Niet opslaan', value: 'discard', danger: true },
-        { label: 'Annuleren', value: null },
-        { label: 'Opslaan', value: 'save', primary: true }
+        { label: st.draftId ? t('composer.actions.discard') : t('composer.close.discard'), value: 'discard', danger: true },
+        { get label() { return t('common.actions.cancel'); }, value: null },
+        { get label() { return t('common.actions.save'); }, value: 'save', primary: true }
       ]
     });
     asking = false;
-    if (choice === 'save') return saveAndFinish('Opgeslagen in Concepten');
+    if (choice === 'save') return saveAndFinish(t('composer.status.savedToDrafts'));
     if (choice === 'discard') {
       closed = true;
       await saving;
       if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
-      finish(st.draftId ? 'Concept verwijderd' : null);
+      finish(st.draftId ? t('composer.status.deleted') : null);
     }
   }
 
@@ -966,10 +966,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (sending || closing || asking) return false;
     flushInputs();
     if (!st.dirty) {
-      finish(st.draftId && st.mode !== 'draft' ? 'Concept bewaard in Concepten' : null);
+      finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
       return true;
     }
-    return saveAndFinish('Concept opgeslagen in Concepten');
+    return saveAndFinish(t('composer.status.savedClosed'));
   }
 
   async function popOut() {
@@ -996,7 +996,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return;
       }
       if (!st.dirty) {
-        if (st.draftId && st.mode !== 'draft') api('toastMain', 'Concept bewaard in Concepten').catch(() => {});
+        if (st.draftId && st.mode !== 'draft') api('toastMain', t('composer.status.kept')).catch(() => {});
         return;
       }
       e.preventDefault();
@@ -1030,6 +1030,19 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     focus: focusStart,
     retheme(next) {
       if (next) data = next;
+      localize(page);
+      page.setAttribute('aria-label', COMPOSE_TITLES[st.mode] || t('composer.titles.new'));
+      const heading = page.querySelector('.composer-title');
+      if (heading) heading.textContent = COMPOSE_TITLES[st.mode] || t('composer.titles.new');
+      title();
+      describeSaved();
+      renderAttachments();
+      page.querySelector('[data-c="quote"]')?.setAttribute('title', t(st.quoteOpen ? 'composer.quote.hide' : 'composer.quote.show'));
+      const include = page.querySelector('[data-c="include"]');
+      if (include) include.textContent = t(st.include ? 'composer.quote.exclude' : 'composer.quote.include');
+      const pill = page.querySelector('.quote-pill');
+      if (pill) pill.textContent = st.include ? '···' : t('composer.quote.excludedPill');
+      if (st.original) page.querySelector('.quote-head').textContent = quoteHeader(st.original);
       if (quoteDrawn) drawQuote();
     }
   };

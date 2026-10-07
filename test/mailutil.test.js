@@ -33,12 +33,12 @@ test('findPreviewPart prefers text/plain and skips attachments', () => {
 });
 
 test('previewFromPart decodes quoted-printable, base64 and html', () => {
-  const qp = Buffer.from('Caf=C3=A9 om 10:00 =\r\nmorgen');
-  assert.equal(util.previewFromPart(qp, { type: 'text/plain', encoding: 'quoted-printable', parameters: { charset: 'utf-8' } }), 'Café om 10:00 morgen');
+  const qp = Buffer.from('Caf=C3=A9 at 10:00 =\r\ntomorrow');
+  assert.equal(util.previewFromPart(qp, { type: 'text/plain', encoding: 'quoted-printable', parameters: { charset: 'utf-8' } }), 'Café at 10:00 tomorrow');
   // Truncated base64 (partial fetch) must not throw.
-  const b64 = Buffer.from(Buffer.from('<p>Hallo <b>daar</b></p><style>x{}</style>').toString('base64').slice(0, 30));
+  const b64 = Buffer.from(Buffer.from('<p>Hello <b>there</b></p><style>x{}</style>').toString('base64').slice(0, 30));
   const out = util.previewFromPart(b64, { type: 'text/html', encoding: 'base64' });
-  assert.match(out, /^Hallo/);
+  assert.match(out, /^Hello/);
   const latin = Buffer.from([0x63, 0x61, 0x66, 0xe9]);
   assert.equal(util.previewFromPart(latin, { type: 'text/plain', encoding: '8bit', parameters: { charset: 'iso-8859-1' } }), 'café');
 });
@@ -51,7 +51,7 @@ test('sanitizeHtml strips scripts, handlers and javascript urls', () => {
 });
 
 test('textToHtml escapes and links urls', () => {
-  const html = util.textToHtml('<b> zie https://example.com/a?b=1.');
+  const html = util.textToHtml('<b> see https://example.com/a?b=1.');
   assert.ok(html.includes('&lt;b&gt;'));
   assert.ok(html.includes('<a href="https://example.com/a?b=1">'));
 });
