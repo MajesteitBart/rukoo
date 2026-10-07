@@ -326,7 +326,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // Quiet while you write; only a saved draft is worth mentioning.
   const describeSaved = () => {
     page.dataset.dirty = String(st.dirty);
-    if (st.saving) return showSaveState(t('native.attachments.save'));
+    if (st.saving) return showSaveState(t('common.status.saving'));
     if (!st.dirty && st.savedAt && st.draftId) return showSaveState(t('composer.status.saved'), t('composer.status.savedAt', { time: hhmm(st.savedAt) }));
     showSaveState('');
   };

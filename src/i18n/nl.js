@@ -223,6 +223,7 @@
   "mailbox.message.collapse": "Inklappen",
   "mailbox.message.noRecipient": "(Geen ontvanger)",
   "mailbox.message.noSubject": "(geen onderwerp)",
+  "mailbox.message.unknownSender": "(Onbekende afzender)",
   "mailbox.message.read": "Gelezen",
   "mailbox.message.replied": "Beantwoord",
   "mailbox.message.select": "Selecteren",
@@ -328,6 +329,11 @@
   "reader.actions.replyShortcut": "Beantwoorden (Ctrl+R)",
   "reader.address.copied": "Gekopieerd",
   "reader.address.copy": "E-mailadres kopiëren",
+  "reader.attachments.count": {
+    "one": "{count} bijlage",
+    "other": "{count} bijlagen"
+  },
+  "reader.attachments.open": "Openen: {filename}",
   "reader.attachments.saveAll": "Alles opslaan",
   "reader.attachments.savedCount": {
     "one": "{count} bijlage opgeslagen",

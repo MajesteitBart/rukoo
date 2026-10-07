@@ -87,7 +87,7 @@
   },
   "common.status.saving": {
     "message": "Saving...",
-    "description": "common > status. Shared interface label."
+    "description": "Progress status while a draft save is running, shown by src/renderer/composer.js (describeSaved). Separate from the Save action in native file dialogs."
   },
   "common.values.none": {
     "message": "None",
@@ -826,6 +826,10 @@
     "message": "(no subject)",
     "description": "mailbox > message. Message list and reader: fallback when the email has no subject."
   },
+  "mailbox.message.unknownSender": {
+    "message": "(Unknown sender)",
+    "description": "Fallback when an email has neither a sender name nor address. Shared by the message list and reader header in src/renderer/app.js (senderLine, renderReader)."
+  },
   "mailbox.message.read": {
     "message": "Read",
     "description": "mailbox > message. src/renderer/app.js (itemHtml); src/renderer/app.js (renderReader)"
@@ -1121,7 +1125,7 @@
   },
   "native.attachments.save": {
     "message": "Save...",
-    "description": "native > attachments. src/renderer/composer.js (mountComposer); src/main/main.js"
+    "description": "Save action in native attachment file dialogs in src/main/main.js. This action is separate from the composer draft-saving progress status."
   },
   "native.export.defaultName": {
     "message": "message",
@@ -1173,6 +1177,17 @@
   "reader.address.copy": {
     "message": "Copy email address",
     "description": "reader > address. src/renderer/app.js (personMenu)"
+  },
+  "reader.attachments.count": {
+    "message": {
+      "one": "{count} attachment",
+      "other": "{count} attachments"
+    },
+    "description": "Reading pane attachment section toggle in src/renderer/app.js (attachmentsHtml). count is the number of attached files; includes plural forms."
+  },
+  "reader.attachments.open": {
+    "message": "Open: {filename}",
+    "description": "Tooltip on image and file attachment open buttons in src/renderer/app.js (attachmentsHtml). filename is the attachment's original filename."
   },
   "reader.attachments.saveAll": {
     "message": "Save all",

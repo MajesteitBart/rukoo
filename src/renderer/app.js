@@ -602,7 +602,7 @@ function senderLine(m) {
     const names = (m.to || []).map(person).filter(Boolean);
     return names.length ? t('mailbox.list.sentTo', { recipients: names.join(', ') }) : t('mailbox.message.noRecipient');
   }
-  return person(m.from) || '(Onbekende afzender)';
+  return person(m.from) || t('mailbox.message.unknownSender');
 }
 
 function listTitle() {
@@ -1439,7 +1439,7 @@ function messageMenu(m) {
 async function printMessage(id) {
   const full = S.message && S.message.id === id && S.message.html != null ? S.message : await api('get', id);
   const head = `<h2 style="font:600 20px Segoe UI,sans-serif;margin:0 0 8px">${esc(full.subject)}</h2>
-    <div style="font:13px Segoe UI,sans-serif;color:#444;margin-bottom:16px">Van: ${esc(formatAddress(full.from))}<br>Aan: ${esc(full.to.map(formatAddress).join(', '))}<br>Datum: ${esc(longDate(full.date))}</div><hr>`;
+    <div style="font:13px Segoe UI,sans-serif;color:#444;margin-bottom:16px">${esc(t('reader.headers.from'))}: ${esc(formatAddress(full.from))}<br>${esc(t('reader.headers.to'))}: ${esc(full.to.map(formatAddress).join(', '))}<br>${esc(t('reader.headers.date'))}: ${esc(longDate(full.date))}</div><hr>`;
   await api('print', `<!doctype html><meta charset="utf-8"><body style="margin:24px">${head}${full.html}</body>`);
 }
 
@@ -1590,7 +1590,7 @@ function detailsHtml(m) {
 
 const previews = new Map();
 
-// One attachment is just its card; several get a header with "Alles opslaan". Images show a thumbnail.
+// One attachment is just its card; several get a header with a save-all action. Images show a thumbnail.
 function attachmentsHtml(m) {
   const list = m.attachments || [];
   if (!list.length) return '';
@@ -1601,20 +1601,20 @@ function attachmentsHtml(m) {
     const thumb = previews.get(`${m.id}|${a.index}`);
     if (kind === 'image') {
       return `<div class="att image" data-preview="${a.index}">
-        <button class="att-open" data-open-att="${a.index}" title="Openen: ${esc(a.filename)}"><span class="thumb">${thumb ? `<img src="${thumb}" alt="">` : `<span class="ftype image">${esc(ext)}</span>`}</span>
+        <button class="att-open" data-open-att="${a.index}" title="${esc(t('reader.attachments.open', { filename: a.filename }))}"><span class="thumb">${thumb ? `<img src="${thumb}" alt="">` : `<span class="ftype image">${esc(ext)}</span>`}</span>
         <span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
         <button class="icon-btn sm" data-save-att="${a.index}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${icons.download}</button>
       </div>`;
     }
     return `<div class="att">
-      <button class="att-open" data-open-att="${a.index}" title="Openen: ${esc(a.filename)}"><span class="ftype ${kind}">${esc(ext)}</span><span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
+      <button class="att-open" data-open-att="${a.index}" title="${esc(t('reader.attachments.open', { filename: a.filename }))}"><span class="ftype ${kind}">${esc(ext)}</span><span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
       <button class="icon-btn sm" data-save-att="${a.index}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${icons.download}</button>
     </div>`;
   };
   const head =
     list.length > 1
       ? `<div class="atts-head">
-          <button class="atts-toggle" data-reader="toggle-atts" aria-expanded="${open}">${icons.chevronDown}<span>${list.length} bijlagen</span><span class="atts-size">${fileSize(total)}</span></button>
+          <button class="atts-toggle" data-reader="toggle-atts" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('reader.attachments.count', { count: list.length }))}</span><span class="atts-size">${fileSize(total)}</span></button>
           <button class="link-btn" data-reader="save-all">${icons.download}<span data-i18n="reader.attachments.saveAll">${esc(t('reader.attachments.saveAll'))}</span></button>
         </div>`
       : '';
@@ -1715,7 +1715,7 @@ function renderReader() {
               <div class="from-line">${
                 draft
                   ? `<span class="draft-tag" data-i18n="composer.titles.draft">${esc(t('composer.titles.draft'))}</span>`
-                  : `<button class="person from-name" data-person="${esc(from.address || '')}" data-name="${esc(from.name || '')}" title="${esc(from.address || '')}">${esc(person(from) || '(Onbekende afzender)')}</button>${
+                  : `<button class="person from-name" data-person="${esc(from.address || '')}" data-name="${esc(from.name || '')}" title="${esc(from.address || '')}">${esc(person(from) || t('mailbox.message.unknownSender'))}</button>${
                       from.name ? `<span class="addr">${esc(from.address)}</span>` : ''
                     }${m.vip ? `<span class="pill vip" data-i18n="mailbox.message.vip">${esc(t('mailbox.message.vip'))}</span>` : ''}`
               }</div>

@@ -112,6 +112,93 @@ test('language changes preserve an inline draft and update a separate compose wi
   await expect(compose.locator('.att-chip')).toContainText('example.txt');
 });
 
+test('attachment counts and open tooltips follow the reader language', async () => {
+  await demo();
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const getMessage = engine.getMessage.bind(engine);
+    engine.getMessage = async (id) => {
+      const message = await getMessage(id);
+      if (message.subject === 'Call on Thursday') {
+        message.attachments.push({ index: 1, filename: 'diagram "draft".png', size: 123, contentType: 'image/png' });
+      }
+      return message;
+    };
+  });
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  for (const [name, count, action] of [['English', '2 attachments', 'Open'], ['Nederlands', '2 bijlagen', 'Openen']]) {
+    await language(name);
+    await expect(win.locator('.atts-toggle')).toContainText(count);
+    await expect(win.locator('[data-open-att="0"]')).toHaveAttribute('title', `${action}: Proposal-v3.pdf`);
+    await expect(win.locator('[data-open-att="1"]')).toHaveAttribute('title', `${action}: diagram "draft".png`);
+  }
+});
+
+test('print headers follow the selected interface language', async () => {
+  await demo();
+  await app.evaluate(({ BrowserWindow }) => {
+    global.__semPrintouts = [];
+    const prototype = Object.getPrototypeOf(BrowserWindow.getAllWindows()[0].webContents);
+    prototype.print = function (_options, done) {
+      global.__semPrintouts.push(decodeURIComponent(this.getURL().split(',').slice(1).join(',')));
+      done(true);
+    };
+  });
+  await win.locator('.item', { hasText: 'Call on Thursday' }).first().click();
+  for (const [name, from, to, date] of [['English', 'From', 'To', 'Date'], ['Nederlands', 'Van', 'Aan', 'Datum']]) {
+    await language(name);
+    const previousCount = await app.evaluate(() => global.__semPrintouts.length);
+    await win.keyboard.press('Control+p');
+    await expect.poll(() => app.evaluate(() => global.__semPrintouts.length)).toBe(previousCount + 1);
+    const html = await app.evaluate(() => global.__semPrintouts.at(-1));
+    expect(html).toContain(`${from}: Sanne de Vries`);
+    expect(html).toContain(`<br>${to}: `);
+    expect(html).toContain(`<br>${date}: `);
+  }
+});
+
+test('missing sender fallback follows the language in the list and reader', async () => {
+  await demo();
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const message = [...engine.caches.values()][0].boxes.INBOX.messages.find((entry) => entry.subject === 'Call on Thursday');
+    message.from = { name: '', address: '' };
+    const getMessage = engine.getMessage.bind(engine);
+    engine.getMessage = async (id) => {
+      const full = await getMessage(id);
+      if (full.subject === message.subject) full.from = { ...message.from };
+      return full;
+    };
+  });
+  for (const [name, sender] of [['English', '(Unknown sender)'], ['Nederlands', '(Onbekende afzender)']]) {
+    await language(name);
+    const item = win.locator('.item', { hasText: 'Call on Thursday' }).first();
+    await expect(item.locator('.sender')).toHaveText(sender);
+    await item.click();
+    await expect(win.locator('.from-name')).toHaveText(sender);
+  }
+});
+
+test('saving a draft displays a progress status in the current language', async () => {
+  await demo();
+  await win.click('[data-action="compose"]');
+  await win.locator('#subject').fill('Draft save progress');
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const saveDraft = engine.saveDraft.bind(engine);
+    engine.saveDraft = async (...args) => {
+      await new Promise((resolve) => { global.__semResumeDraftSave = resolve; });
+      return saveDraft(...args);
+    };
+  });
+  await win.keyboard.press('Control+s');
+  await expect(win.locator('.save-state')).toHaveText('Saving...');
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
+  await expect(win.locator('.save-state')).toHaveText('Opslaan...');
+  await app.evaluate(() => global.__semResumeDraftSave());
+  await expect(win.locator('.save-state')).toHaveText('Concept opgeslagen');
+});
+
 for (const separate of [false, true]) {
   test(`recipient input labels switch languages without losing an unfinished address in the ${separate ? 'separate' : 'inline'} composer`, async () => {
     await demo();
