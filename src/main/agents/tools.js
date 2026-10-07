@@ -9,7 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
-const { htmlToPlain } = require('../mailutil');
+const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
 const { unsafeBlock } = require('./context');
 
@@ -375,6 +375,12 @@ const addr = (a) => ({ name: String((a && a.name) || ''), address: String((a && 
 const agentRole = (role) => (role === 'all' ? 'archive' : role || null);
 const fold = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+// The charset parameter of a Content-Type value, if any.
+function charsetOf(type) {
+  const m = /charset="?([^";\s]+)/i.exec(String(type || ''));
+  return m ? m[1] : null;
+}
+
 function cacheMessage(engine, id) {
   try {
     const { accountId, folder, uid } = decodeId(id);
@@ -713,7 +719,8 @@ async function readAttachment(hub, args, call) {
   const local = call.remote ? null : writeTemp(hub, name, a.content);
   if (local) info.local_path = local;
   if (TEXT_TYPES.test(type) || TEXT_EXT.test(name)) {
-    const text = a.content.toString('utf8');
+    // In the charset the attachment declares (Rukoo's own decoder, as for mail bodies); UTF-8 without one.
+    const text = decodeCharset(a.content, a.charset || charsetOf(meta.contentType) || 'utf-8').replace(/^\uFEFF/, '');
     return { ...info, text: unsafeBlock(text.slice(0, ATTACHMENT_TEXT_MAX), { source: 'attachment', filename: name }), truncated: text.length > ATTACHMENT_TEXT_MAX };
   }
   const data = a.content.toString('base64');
@@ -925,7 +932,12 @@ function showSources(hub, args, call) {
         messageId = null;
       }
     }
-    return { title: s.title, source: s.source || (messageId ? 'Email' : ''), snippet: s.snippet || '', url: safeUrl(s.url), messageId };
+    // Rukoo ids change when mail moves; the Message-ID header and the account let the card find the email
+    // again later (hub.locate).
+    const cached = messageId ? cacheMessage(hub.engine, messageId) : null;
+    const messageHeader = cached && cached.messageId ? String(cached.messageId).slice(0, 1000) : null;
+    const accountId = messageId ? accountOfId(messageId) : null;
+    return { title: s.title, source: s.source || (messageId ? 'Email' : ''), snippet: s.snippet || '', url: safeUrl(s.url), messageId, messageHeader, accountId };
   });
   hub.addItem(c, { type: 'sources', title: args.title || '', sources });
   return { ok: true, conversation_id: c.id, shown: sources.length };

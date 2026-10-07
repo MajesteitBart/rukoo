@@ -197,12 +197,13 @@ export function mountAgentPanel(ctx) {
   const agentRows = () =>
     AGENTS.map((id) => ({ id, name: agentName(id), label: agentName(id), tag: PRODUCTS[id], status: dotOf(stateOf(id)), checked: id === currentAgent() }));
 
+  // The config is local and answers at once; status can wait on the network (an offline Hermes server takes
+  // seconds). So the default agent and the panel come first, and the status fills in when it arrives.
   async function loadAgents() {
     try {
-      const [config, status] = await Promise.all([api('agentConfig'), api('agentStatus')]);
+      const config = await api('agentConfig');
       const before = P.config ? P.config.defaultAgent : null;
       P.config = config;
-      P.status = status;
       P.unavailable = false;
       // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
       if (AGENTS.includes(config.defaultAgent) && config.defaultAgent !== before) P.agentId = config.defaultAgent;
@@ -210,6 +211,17 @@ export function mountAgentPanel(ctx) {
       // No agent support in main (yet): show the panel, but say so instead of failing quietly.
       if (!P.config) P.unavailable = true;
     }
+    redrawAgents();
+    if (P.unavailable) return;
+    try {
+      P.status = await api('agentStatus');
+    } catch (_) {
+      // The status lines keep their last known state.
+    }
+    redrawAgents();
+  }
+
+  function redrawAgents() {
     renderHead();
     refreshComposer();
     if (!P.conv) renderEmpty();
@@ -847,10 +859,18 @@ export function mountAgentPanel(ctx) {
     if (url) api('openAgentLink', String(url)).catch((err) => showError(err));
   }
 
-  function openSource(source) {
+  async function openSource(source) {
     if (source && source.messageId) {
-      P.keepFor = source.messageId;
-      return ctx.openMessage(source.messageId);
+      // The email may have moved since the agent showed it; main finds it again by its Message-ID.
+      let id = source.messageId;
+      try {
+        id = (await api('agentLocate', { id: source.messageId, messageHeader: source.messageHeader || null, accountId: source.accountId || null })) || null;
+      } catch (_) {
+        // An older main without agentLocate: try the stored id.
+      }
+      if (!id) return toast(t('agent.panel.sourceGone'));
+      P.keepFor = id;
+      return ctx.openMessage(id);
     }
     if (source && source.url) openUrl(source.url);
   }
@@ -1194,7 +1214,9 @@ export function mountAgentPanel(ctx) {
       // screen may rewrite them, because the user just asked it to (and Undo brings their text back).
       if (background && theirs) throw blocked();
       if (!fit) {
-        if ((d.dirty || theirs) && (background || !mine)) throw blocked();
+        // A chat that is not on screen never replaces what is open, even a clean reply the user opened
+        // themselves; the chat on screen does, unless the user (or another agent) wrote in it.
+        if (background || ((d.dirty || theirs) && !mine)) throw blocked();
         c = null;
         envelope = null;
       }

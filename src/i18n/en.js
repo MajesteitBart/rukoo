@@ -497,6 +497,10 @@
     "message": "Show",
     "description": "Toast action that opens the chat with the waiting approval."
   },
+  "agent.panel.sourceGone": {
+    "message": "That email is no longer in Rukoo. It may have been deleted, or moved to a folder Rukoo has not downloaded.",
+    "description": "Chat panel toast: you clicked a source card for an email that Rukoo can no longer find."
+  },
   "agent.panel.stop": {
     "message": "Stop",
     "description": "Chat panel input: label of the button that stops the agent while it works."

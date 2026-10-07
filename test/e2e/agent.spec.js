@@ -679,3 +679,34 @@ test('Settings opens at once while agent status is slow, and fills it in when it
   expect(Date.now() - opened).toBeLessThan(3000);
   await expect(win.locator('.settings [data-a="agents"] .desc')).toContainText('Ready', { timeout: 10000 });
 });
+
+test('the panel takes a new default agent at once, before slow status probes answer', async () => {
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Hermes');
+  // Settings made Claude the default while the Hermes server is slow to answer status probes.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    const real = hub.status.bind(hub);
+    hub.status = (...args) => new Promise((resolve) => setTimeout(() => resolve(real(...args)), 6000));
+    hub.cfg.data.defaultAgent = 'claude';
+    hub.emitEvent({ kind: 'agents', status: hub.statuses });
+  });
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude', { timeout: 1500 });
+});
+
+test('a chat that is not on screen leaves an unrelated reply alone, even an empty one', async () => {
+  await openChat('Call on Thursday');
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked', { timeout: 10000 });
+  const cid = await conversationId();
+  await win.keyboard.press('Control+j');
+  await expect(pane()).toBeHidden();
+  // The user opened a reply to another email, nothing typed yet.
+  await item('Sign in to Bencompare').click();
+  await win.click('[data-reader="reply"]');
+  await expect(win.locator('.composer #subject')).toHaveValue('Re: Sign in to Bencompare');
+  const res = await tool(cid, 'write_draft', { body: 'Agent text.' });
+  expect(res.error).toContain('writing another email');
+  await expect(win.locator('.composer #subject')).toHaveValue('Re: Sign in to Bencompare');
+  await expect(editor()).not.toContainText('Agent text.');
+});

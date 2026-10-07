@@ -1092,3 +1092,20 @@ test('hermes: a run answers its approval on the server it started on, even after
     other.server.close();
   }
 });
+
+test('hermes: a submitted run counts as delivered at once, before its first event', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }) });
+    const turn = fakeTurn(conv(), 'hello');
+    const order = [];
+    turn.accepted = () => order.push('accepted');
+    const emit = turn.emit;
+    turn.emit = (event) => (order.push(event.type), emit(event));
+    assert.deepEqual(await adapter.runTurn(turn), { status: 'done' });
+    assert.equal(order[0], 'accepted', 'accepted before any event from the run');
+    assert.equal(order.filter((x) => x === 'accepted').length, 1);
+  } finally {
+    h.server.close();
+  }
+});

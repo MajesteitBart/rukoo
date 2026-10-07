@@ -677,3 +677,45 @@ test('an external agent gets a separate conversation for the same email in anoth
     await t.done();
   }
 });
+
+test('a source card finds its email again after the email moved', async () => {
+  const t = await setup();
+  try {
+    const c = t.hub.create({ agent: 'claude', message: null });
+    const call = t.find('Call on Thursday');
+    data(await t.hub.callTool(local(c.id), 'show_sources', { sources: [{ title: 'Sanne', message_id: call.id }] }));
+    const source = c.items.find((i) => i.type === 'sources').sources[0];
+    assert.equal(source.messageId, call.id);
+    assert.equal(source.messageHeader, '<demo-13@example.com>');
+    assert.equal(source.accountId, t.acc.id);
+    assert.equal(t.hub.locate({ id: source.messageId, messageHeader: source.messageHeader, accountId: source.accountId }), call.id);
+    // Archived: the stored id is stale, the Message-ID finds it in Archive.
+    await t.engine.archive(call.id);
+    const now = t.hub.locate({ id: source.messageId, messageHeader: source.messageHeader, accountId: source.accountId });
+    assert.ok(now && now !== call.id);
+    assert.equal(decodeId(now).folder, 'Archive');
+    // Without the header nothing can be found.
+    assert.equal(t.hub.locate({ id: source.messageId }), null);
+  } finally {
+    await t.done();
+  }
+});
+
+test('read_attachment decodes text attachments in the charset they declare', async () => {
+  const t = await setup();
+  try {
+    const iconv = require('iconv-lite');
+    const call = t.find('Call on Thursday');
+    const realGet = t.engine.getMessage.bind(t.engine);
+    t.engine.getMessage = async (id) => ({ ...(await realGet(id)), attachments: [{ index: 0, filename: 'notes.txt', contentType: 'text/plain', size: 30 }] });
+    t.engine.attachment = async () => ({ filename: 'notes.txt', content: iconv.encode('Café crème, €12', 'windows-1252'), contentType: 'text/plain', charset: 'windows-1252' });
+    const res = data(await t.hub.callTool({ agent: 'clark', conversationId: null, remote: true }, 'read_attachment', { message_id: call.id, index: 0 }));
+    assert.match(res.text, /Café crème, €12/);
+    // No declared charset: UTF-8, without a byte order mark.
+    t.engine.attachment = async () => ({ filename: 'notes.txt', content: Buffer.from('﻿Hallo wereld', 'utf8'), contentType: 'text/plain', charset: null });
+    const plain = data(await t.hub.callTool({ agent: 'clark', conversationId: null, remote: true }, 'read_attachment', { message_id: call.id, index: 0 }));
+    assert.match(plain.text, /\nHallo wereld\n/);
+  } finally {
+    await t.done();
+  }
+});

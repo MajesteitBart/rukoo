@@ -225,6 +225,9 @@ class HermesAdapter {
     if (started.status !== 202 && started.status !== 200) throw httpError(started);
     const runId = started.data && started.data.run_id;
     if (!runId) throw new AgentError('protocol', 'The server did not return a run id');
+    // Hermes has the message now: even a run stopped before its first event used up this turn's email and
+    // notes, so the next message is not sent as a first turn again.
+    if (typeof turn.accepted === 'function') turn.accepted();
     this.invalidate();
     return this.follow(turn, runId, server);
   }

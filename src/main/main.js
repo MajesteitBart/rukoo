@@ -535,6 +535,10 @@ Object.assign(api, {
     const r = agentPlain(ref);
     return agentHub().findFor({ id: agentText(r.id, 2000), messageId: agentText(r.messageId, 1000), accountId: agentText(r.accountId, 200) || null });
   },
+  agentLocate: (ref) => {
+    const r = agentPlain(ref);
+    return agentHub().locate({ id: agentText(r.id, 2000), messageHeader: agentText(r.messageHeader, 1000), accountId: agentText(r.accountId, 200) || null });
+  },
   agentCreate: (input) => {
     const i = agentPlain(input);
     return agentHub().create({ agent: agentText(i.agent, 20), message: agentMessage(i.message) });

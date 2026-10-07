@@ -125,6 +125,7 @@
   "agent.panel.send": "Versturen",
   "agent.panel.setUp": "{name} instellen",
   "agent.panel.show": "Tonen",
+  "agent.panel.sourceGone": "Die e-mail staat niet meer in Rukoo. Misschien is hij verwijderd, of verplaatst naar een map die Rukoo niet heeft gedownload.",
   "agent.panel.stop": "Stoppen",
   "agent.panel.toggle": "Chatten met een agent (Ctrl+J)",
   "agent.panel.transcript": "Gesprek",

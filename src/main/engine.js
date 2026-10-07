@@ -805,7 +805,10 @@ class Engine extends EventEmitter {
     const parsed = await simpleParser(await this.rawSource(id));
     const a = (parsed.attachments || [])[index];
     if (!a) throw new Error(t('errors.attachment.missing'));
-    return { filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }), content: a.content, contentType: a.contentType };
+    // The declared charset, for text attachments that are not UTF-8 (windows-1252 CSVs, iso-8859-1 notes).
+    const type = a.headers && typeof a.headers.get === 'function' ? a.headers.get('content-type') : null;
+    const charset = (type && type.params && type.params.charset) || null;
+    return { filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }), content: a.content, contentType: a.contentType, charset };
   }
 
   async setFlags(id, flags) {
