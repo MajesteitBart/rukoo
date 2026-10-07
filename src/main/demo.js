@@ -297,6 +297,10 @@ function seed(now = Date.now()) {
           html: m.html || null,
           text: m.text || null,
           attachments: m.attachments || [],
+          // The newsletters carry an unsubscribe header, like real ones do.
+          headers: m.html && m.html.includes('example.com/afmelden')
+            ? { 'List-Unsubscribe': '<https://example.com/afmelden>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }
+            : undefined,
           messageId: `<demo-${uid}@voorbeeld.nl>`,
           flags: [...(m.unread ? [] : ['\\Seen']), ...(m.starred ? ['\\Flagged'] : []), ...(pathName === 'Drafts' ? ['\\Draft'] : [])]
         };
@@ -354,8 +358,18 @@ class DemoAccount {
   async verify() {}
 
   async listFolders() {
-    this.load();
-    return FOLDERS.map((f) => ({ ...f, delimiter: '/', specialUse: null }));
+    const state = this.load();
+    const extra = (state.extraFolders || []).map((name) => ({ path: name, name, role: null }));
+    return [...FOLDERS, ...extra].map((f) => ({ ...f, delimiter: '/', specialUse: null }));
+  }
+
+  async createFolder(name) {
+    const state = this.load();
+    if (state.boxes[name]) throw new Error('Er is al een map met die naam.');
+    state.boxes[name] = { uidValidity: '1', uidNext: 1, messages: [] };
+    state.extraFolders = [...(state.extraFolders || []), name];
+    this.persist();
+    return name;
   }
 
   async syncFolder(p, { limit = 200 } = {}) {
@@ -398,6 +412,7 @@ class DemoAccount {
       references: m.references || undefined,
       text: m.text || undefined,
       html: m.html || undefined,
+      headers: m.headers || undefined,
       attachments: (m.attachments || []).map((a) => ({ ...a }))
     });
     // Like an IMAP server, return the stored message as it was saved, Bcc included.

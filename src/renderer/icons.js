@@ -68,6 +68,8 @@ export const icons = {
   print: p('<path d="M7 8.5V3.5h10v5"/><rect x="3.5" y="8.5" width="17" height="8" rx="2"/><path d="M7 14h10v6.5H7z"/>'),
   export: p('<path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 13v5.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V13"/>'),
   ban: p('<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>'),
+  textFormat: p('<path d="M3.5 18 8 6h1.2l4.5 12M5.3 14h6.6"/><path d="M16 12.3c.6-.5 1.4-.8 2.2-.8 1.6 0 2.3.9 2.3 2.4V18M20.5 15c-3-.3-5 .3-5 1.6 0 1.8 3.8 1.7 5-.4"/>'),
+  unsubscribe: p('<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4 7 8 6 8-6"/><path d="M15.5 16.5h6" stroke-width="2"/>', 'class="ic-unsub"'),
   keyboard: p('<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7.5 14h9"/>')
 };
 

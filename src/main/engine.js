@@ -35,7 +35,8 @@ const DEFAULT_SETTINGS = {
   vips: [],
   spam: [],
   defaultAccountId: null,
-  signature: ''
+  signature: '',
+  senderLogos: true
 };
 
 function readJson(file, fallback) {
@@ -779,6 +780,7 @@ class Engine extends EventEmitter {
       references: [].concat(parsed.references || []),
       html,
       isHtml: Boolean(parsed.html),
+      unsubscribe: util.unsubscribeInfo(parsed),
       text: parsed.text || util.htmlToPlain(parsed.html || ''),
       attachments: (parsed.attachments || [])
         .map((a, index) => ({
@@ -891,6 +893,28 @@ class Engine extends EventEmitter {
     this.changed(acc.id);
     if (box) this.syncFolderAndNotify(acc, rec.folder).catch(() => {});
     return uid ? encodeId(acc.id, rec.folder, uid) : null;
+  }
+
+  // The account a message (or a saved copy) belongs to.
+  messageAccount(id) {
+    if (String(id).startsWith('saved:')) {
+      const s = this.saved.find((x) => x.id === id);
+      return s ? this.account(s.accountId) : null;
+    }
+    return this.account(decodeId(id).accountId);
+  }
+
+  async createFolder(accountId, name) {
+    const clean = String(name || '').trim();
+    if (!clean) throw new Error('Geef de map een naam.');
+    if (clean.length > 100 || /[\\/%*]/.test(clean)) throw new Error('Een mapnaam mag geen / \\ % of * bevatten.');
+    const acc = this.account(accountId);
+    const cache = this.caches.get(acc.id);
+    if (cache.folders.some((f) => (f.name || '').toLowerCase() === clean.toLowerCase())) throw new Error('Er is al een map met die naam.');
+    const created = await this.session(acc).createFolder(clean);
+    cache.folders = await this.session(acc).listFolders();
+    this.changed(acc.id);
+    return created;
   }
 
   async archive(id) {

@@ -147,6 +147,7 @@ export function openSettings(ctx) {
           ${row({ title: 'E-mails donker weergeven', desc: 'Pas de kleuren van HTML-e-mails aan in de donkere stand.', action: 'toggle:darkEmails', toggle: s.darkEmails })}
           ${row({ title: 'Vegen op aanraakschermen', desc: 'Veeg naar rechts om als (on)gelezen te markeren en naar links om te wissen.', action: 'toggle:swipeActions', toggle: s.swipeActions })}
           ${row({ title: 'Inhoud passend maken', desc: 'Maak e-mailinhoud kleiner zodat deze in het venster past.', action: 'toggle:fitContent', toggle: s.fitContent })}
+          ${row({ title: "Afzenderlogo's", desc: 'Toont het logo van bedrijven die je mailen. Rukoo Mail haalt het één keer op van hun website.', action: 'toggle:senderLogos', toggle: s.senderLogos !== false })}
           ${row({ title: 'Meldingen', desc: 'Toon een Windows-melding bij nieuwe e-mails.', action: 'toggle:notifications', toggle: s.notifications })}
           ${row({ title: 'Tellingen app-pictogrambadge', value: labelOf(BADGES, s.badge), action: 'badge' })}
           ${row({ title: 'Synchronisatieschema', value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}

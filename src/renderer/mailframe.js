@@ -25,6 +25,30 @@ ${invertCss}
 </style></head><body>${m.html || ''}</body></html>`;
 }
 
+// Newsletters sit on a grey canvas as wide as the window. In the reader that reads as a broken
+// frame, so a light, neutral canvas around the content becomes transparent. Content colours stay.
+function clearCanvas(doc) {
+  const neutral = (el) => {
+    const c = (getComputedStyle(el).backgroundColor.match(/[\d.]+/g) || []).map(Number);
+    if (c.length < 3 || c[3] === 0) return false;
+    return Math.min(c[0], c[1], c[2]) >= 225 && Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]) <= 14;
+  };
+  const width = doc.body.clientWidth;
+  const chain = [doc.body];
+  let el = doc.body;
+  for (let depth = 0; depth < 5; depth++) {
+    const kids = [...el.children].filter((k) => !/^(STYLE|SCRIPT|META|LINK|TITLE)$/.test(k.tagName));
+    if (kids.length !== 1 || kids[0].getBoundingClientRect().width < width * 0.95) break;
+    el = kids[0];
+    chain.push(el);
+  }
+  for (const node of chain) {
+    if (!neutral(node)) continue;
+    node.style.setProperty('background-color', 'transparent', 'important');
+    node.removeAttribute('bgcolor');
+  }
+}
+
 // options: frameDoc's options plus { fitContent }
 export function fillFrame(frame, m, opts = {}) {
   (frame.observers || []).forEach((o) => o.disconnect());
@@ -57,6 +81,7 @@ export function fillFrame(frame, m, opts = {}) {
         if (doc.documentElement.scrollHeight > height + 1) body.style.overflowY = 'auto';
         if (scroller && scroller.scrollTop !== top) scroller.scrollTop = top;
       };
+      if (m.isHtml && doc.body) clearCanvas(doc);
       fit();
       frame.observers = [new ResizeObserver(fit), new ResizeObserver(fit)];
       frame.observers[0].observe(doc.body);

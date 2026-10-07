@@ -202,8 +202,21 @@ function textToHtml(text) {
   return `<div style="white-space:pre-wrap;word-wrap:break-word">${linked}</div>`;
 }
 
+// The List-Unsubscribe header (RFC 2369), with one-click support (RFC 8058) for https links.
+function unsubscribeInfo(parsed) {
+  const list = parsed && parsed.headers && parsed.headers.get('list');
+  const u = list && list.unsubscribe;
+  if (!u) return null;
+  const url = u.url && /^https?:\/\//i.test(u.url) ? u.url : null;
+  const mail = u.mail ? `mailto:${u.mail}` : null;
+  const post = list['unsubscribe-post'];
+  const oneClick = Boolean(url && /^https:/i.test(url) && post && /one-click/i.test(post.name || ''));
+  return url || mail ? { url, mail, oneClick } : null;
+}
+
 module.exports = {
   ROLE_NAMES,
+  unsubscribeInfo,
   folderRole,
   displayFolderName,
   walkStructure,

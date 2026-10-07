@@ -141,6 +141,15 @@ class ImapAccount {
     });
   }
 
+  // Creates a top-level folder in the personal namespace and returns its path.
+  createFolder(name) {
+    return this.run(async (client) => {
+      const prefix = (client.namespace && client.namespace.prefix) || '';
+      const res = await client.mailboxCreate(prefix + name);
+      return (res && res.path) || prefix + name;
+    });
+  }
+
   syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path, { readOnly: true });

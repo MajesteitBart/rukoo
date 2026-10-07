@@ -35,21 +35,16 @@ const path = require('path');
   await win.waitForTimeout(1200);
   await win.screenshot({ path: path.join(out, '3-reader.png') });
 
-  // Compose opens in its own window.
-  const [compose] = await Promise.all([app.waitForEvent('window'), win.click('[data-reader="forward"]')]);
-  watch(compose);
-  await compose.waitForSelector('.compose .editor', { timeout: 15000 });
-  await app.evaluate(({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().includes('compose.html'));
-    w.setSize(940, 820);
-  });
-  await compose.waitForTimeout(1200);
-  await compose.screenshot({ path: path.join(out, '4-compose.png') });
-  await app.evaluate(({ BrowserWindow }) => {
-    BrowserWindow.getAllWindows()
-      .filter((x) => x.webContents.getURL().includes('compose.html'))
-      .forEach((x) => x.destroy());
-  });
+  // Replies and forwards open in the reading pane.
+  await win.click('[data-reader="reply"]');
+  await win.waitForSelector('.composer .editor', { timeout: 15000 });
+  await win.keyboard.type('Ziet er goed uit. Tot donderdag!');
+  await win.mouse.move(1590, 990);
+  await win.waitForTimeout(600);
+  await win.screenshot({ path: path.join(out, '4-compose.png') });
+  await win.click('.composer [data-c="close"]');
+  if (await win.$('.scrim')) await win.click('.scrim .buttons button:text-is("Niet opslaan")');
+  await win.waitForTimeout(300);
 
   await win.click('[data-action="settings"]');
   await win.waitForSelector('.settings .card');

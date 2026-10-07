@@ -19,6 +19,8 @@ const { Engine } = require('./engine');
 const { GoogleAuth } = require('./google');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
+const { Logos, siteOf } = require('./logos');
+const { oneClickUnsubscribe } = require('./net');
 
 const APP_ID = 'nl.bvdm.rukoo-mail';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
@@ -57,6 +59,7 @@ let win = null;
 // Open compose windows by webContents id, with the options they were opened with.
 const composeWindows = new Map();
 let windowState = null;
+let logos = null;
 let engine = null;
 let google = null;
 let syncTimer = null;
@@ -339,6 +342,14 @@ const api = {
     return true;
   },
   openCompose: (opts) => openComposeWindow(opts),
+  // A draft already open in a compose window is brought forward there instead of opening twice.
+  draftWindow: (id) => {
+    const open = [...composeWindows.values()].find((c) => c.draftId && c.draftId === id && !c.win.isDestroyed());
+    if (!open) return false;
+    open.win.show();
+    open.win.focus();
+    return true;
+  },
   toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
   saveDraft: (payload) => engine.saveDraft(payload),
   discardDraft: (id) => engine.discardDraft(id),
@@ -399,6 +410,41 @@ const api = {
     return res.filePath;
   },
   saveAllAttachments: (id) => saveAllAttachments(id),
+  // A thumbnail for image attachments; other types (and SVG, which can carry script) get none.
+  attachmentPreview: async (id, index) => {
+    const a = await engine.attachment(id, index);
+    const type = String(a.contentType || '').toLowerCase();
+    if (!/^image\/(png|jpe?g|gif|webp)$/.test(type) || a.content.length > 8 * 1024 * 1024) return null;
+    return `data:${type};base64,${a.content.toString('base64')}`;
+  },
+  unsubscribe: async (id) => {
+    const m = await engine.getMessage(id);
+    const u = m.unsubscribe;
+    if (!u) throw new Error('Deze e-mail heeft geen afmeldlink.');
+    const acc = engine.messageAccount(id);
+    if (acc && acc.type === 'demo') return { done: true };
+    // Only a 2xx from the endpoint itself counts; a redirect or failure falls back to the page in the browser.
+    if (u.oneClick && (await oneClickUnsubscribe(u.url))) return { done: true };
+    if (u.url) {
+      shell.openExternal(u.url);
+      return { opened: true };
+    }
+    return { mailto: u.mail };
+  },
+  createFolder: (accountId, name) => engine.createFolder(accountId, name),
+  senderLogos: (addresses) => {
+    if (engine.settings.senderLogos === false) return {};
+    const bySite = {};
+    for (const a of (Array.isArray(addresses) ? addresses : []).slice(0, 300)) {
+      const site = siteOf(a);
+      if (site) bySite[a] = site;
+    }
+    return logos.get(Object.values(bySite)).then((found) => {
+      const out = {};
+      for (const [address, site] of Object.entries(bySite)) out[address] = found[site] || null;
+      return out;
+    });
+  },
   exportEml: async (id) => {
     const full = await engine.getMessage(id);
     const name = `${(full.subject || 'bericht').replace(/[<>:"/\\|?*]/g, '_').slice(0, 80)}.eml`;
@@ -507,6 +553,8 @@ app.on('second-instance', showWindow);
 
 app.whenReady().then(() => {
   windowState = new WindowState(path.join(app.getPath('userData'), 'window-state.json'));
+  // Tests run offline: no logo downloads unless asked for.
+  logos = new Logos(path.join(app.getPath('userData'), 'logos'), { enabled: !process.env.SEM_HIDDEN || Boolean(process.env.SEM_LOGOS) });
   google = new GoogleAuth({
     configPath: path.join(app.getPath('userData'), 'google-oauth.json'),
     openBrowser: (url) => shell.openExternal(url)

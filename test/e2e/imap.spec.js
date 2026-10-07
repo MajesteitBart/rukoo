@@ -45,7 +45,7 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
     await expect(row).toBeVisible({ timeout: 30000 });
     await row.click();
     await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('via SMTP binnen', { timeout: 30000 });
-    await expect(win.locator('.sync-status')).toContainText('Bijgewerkt');
+    await expect(win.locator('.sync-status')).toContainText(/bijgewerkt/i);
   } finally {
     await app.close();
   }

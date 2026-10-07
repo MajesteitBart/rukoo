@@ -99,6 +99,26 @@ export function readerDate(ts, now = Date.now()) {
   return `${DAYS_SHORT[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}. ${d.getFullYear()}, ${hhmm(ts)}`;
 }
 
+// ---------- previews ----------
+
+// Newsletters open with "view in browser" lines and mail with a greeting; neither says what it is about.
+const PREVIEW_NOISE = [
+  /^(bekijk|lees|open|view|read)( (deze|de|het|this|the|onze|our))?( (e-?mail|mail|nieuwsbrief|newsletter|bericht|message))?( (in|online|op|on))?( (je|jouw|uw|de|een|your|a|the))? ?(web)?(browser|versie|version|site|website)\b[.!:]?\s*/i,
+  /^(web ?versie|online versie|web version|view online|online bekijken)\b[.!:]?\s*/i,
+  /^(problemen met (het )?(weergeven|bekijken|lezen)[^.?!]*[.?!]|(wordt|is) deze (e-?mail|nieuwsbrief) niet goed (weergegeven|leesbaar|zichtbaar)[^.?!]*[.?!]?|having trouble (viewing|reading)[^.?!]*[.?!]?|can'?t see (this|the) (e-?mail|images)[^.?!]*[.?!]?)\s*/i,
+  /^(beste|hoi|hallo|hi|hey|hello|dear|geachte|goedemorgen|goedemiddag|goedenavond)\b[^,!\n]{0,40}[,!]\s*/i
+];
+
+export function cleanPreview(text) {
+  let out = String(text || '').replace(/\s+/g, ' ').trim();
+  for (let pass = 0; pass < 4; pass++) {
+    const before = out;
+    for (const re of PREVIEW_NOISE) out = out.replace(re, '');
+    if (out === before) break;
+  }
+  return out || String(text || '').trim();
+}
+
 // ---------- avatars ----------
 
 export function initials(a) {

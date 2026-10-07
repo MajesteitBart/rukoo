@@ -14,6 +14,9 @@ import {
   person,
   formatAddress,
   avatar,
+  hue,
+  initials,
+  cleanPreview,
   toast,
   runToastAction,
   showMenu,
@@ -26,7 +29,8 @@ import {
   isLight
 } from './ui.js';
 import { fillFrame } from './mailframe.js';
-import { openSettings } from './settings.js';
+import { mountComposer } from './composer.js';
+import { openSettings, promptDialog } from './settings.js';
 import { openSetup } from './setup.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
@@ -71,8 +75,14 @@ export const S = {
   message: null,
   loading: false,
   expanded: false,
-  allRecipients: false,
-  attachmentsOpen: true
+  details: false,
+  attachmentsOpen: true,
+  // Stacks of mail from one sender that the user unfolded.
+  openStacks: new Set(),
+  // Open the newest message after the next load (at start and on a folder switch).
+  autoOpen: true,
+  // The inline editor in the reading pane, when one is open.
+  composer: null
 };
 
 // Layout preferences live in the renderer; they only matter to this window.
@@ -148,6 +158,17 @@ async function refreshOnce() {
   renderList();
   if (S.checked.size > 1) renderReader();
   else renderReaderNav();
+  autoOpen();
+}
+
+// Show the newest message instead of an empty reading pane. It stays unread until you open it yourself.
+function autoOpen() {
+  if (!S.autoOpen) return;
+  S.autoOpen = false;
+  if (S.composer || S.selectedId || S.checked.size || S.query.trim() || window.innerWidth <= 860) return;
+  // The newest message, whatever order the list is sorted in; a stack it is folded into opens with it.
+  const newest = rows().reduce((a, b) => (!a || b.date > a.date ? b : a), null);
+  if (newest) openMessage(newest.id, { auto: true });
 }
 
 function account(id) {
@@ -218,12 +239,14 @@ function checkedMessages() {
 // What an action applies to: the checked messages, or else the message on screen.
 function targets() {
   if (S.checked.size) return checkedMessages();
+  // While the editor fills the reading pane, there is no message on screen to act on.
+  if (S.composer) return [];
   const m = S.message && (byId(S.message.id) || S.message);
   return m && m.id ? [m] : [];
 }
 
 function cursor() {
-  return S.cursorId && rows().some((m) => m.id === S.cursorId) ? S.cursorId : S.selectedId;
+  return S.cursorId && visibleRows().some((m) => m.id === S.cursorId) ? S.cursorId : S.selectedId;
 }
 
 // ---------- shell ----------
@@ -262,7 +285,7 @@ function renderShell() {
   const collapsed = sidebarCollapsed();
   shell.classList.toggle('collapsed', collapsed);
   shell.classList.toggle('expanded', S.expanded);
-  shell.classList.toggle('has-message', Boolean(S.selectedId) || S.checked.size > 1);
+  shell.classList.toggle('has-message', Boolean(S.selectedId) || S.checked.size > 1 || Boolean(S.composer));
   shell.classList.toggle('compact', S.data?.settings.density === 'compact');
   shell.classList.toggle('selecting', S.checked.size > 0);
   root.style.setProperty('--sidebar-w', `${collapsed ? RAIL_W : SIDEBAR_W}px`);
@@ -301,7 +324,7 @@ function renderSearch() {
       }
       if (e.key === 'ArrowDown' || e.key === 'Enter') {
         e.preventDefault();
-        const first = rows()[0];
+        const first = visibleRows()[0];
         if (first) openMessage(first.id);
         $('.list-scroll').focus();
       }
@@ -359,9 +382,22 @@ function syncStatus() {
   const times = accounts.map((a) => a.lastSync).filter(Boolean);
   if (!times.length) return { cls: '', text: 'Nog niet gesynchroniseerd', title: '' };
   const t = Math.min(...times);
+  const minutes = Math.floor((Date.now() - t) / 60000);
   const today = new Date(t).toDateString() === new Date().toDateString();
-  return { cls: 'ok', text: today ? `Bijgewerkt om ${hhmm(t)}` : `Bijgewerkt op ${numericDate(t)}`, title: 'Klik om nu te synchroniseren (F5)' };
+  const text =
+    minutes < 1 ? 'Zojuist bijgewerkt' : minutes < 60 ? `${minutes} min geleden bijgewerkt` : today ? `Bijgewerkt om ${hhmm(t)}` : `Bijgewerkt op ${numericDate(t)}`;
+  return { cls: 'ok', text, title: `Bijgewerkt op ${numericDate(t)} om ${hhmm(t)}. Klik om te synchroniseren (F5).` };
 }
+
+// Keeps "5 min geleden" current without re-rendering the sidebar.
+setInterval(() => {
+  const el = $('.sync-status');
+  if (!el || !S.data) return;
+  const status = syncStatus();
+  el.className = `sync-status ${status.cls}`;
+  el.title = status.title;
+  el.querySelector('.t').textContent = status.text;
+}, 30000);
 
 function accountAvatar(acc) {
   return `<span class="avatar acc" style="--acc:${esc(acc.color || '#6f9cf2')}" aria-hidden="true">${esc((acc.name || acc.email).trim()[0] || '?').toUpperCase()}</span>`;
@@ -386,26 +422,27 @@ function renderSidebar() {
       const active = S.view === v.id;
       return `<button class="nav-item ${active ? 'active' : ''}" data-view="${v.id}" ${v.drop ? `data-drop-role="${v.drop}"` : ''} title="${esc(v.label)}" ${
         active ? 'aria-current="page"' : ''
-      }><span class="ic ${v.id === 'starred' ? 'star' : ''}">${icons[v.icon]}</span><span class="label">${esc(v.label)}</span>${countHtml(v, counts.views[v.id] || 0)}</button>`;
+      }><span class="ic">${icons[v.icon]}</span><span class="label">${esc(v.label)}</span>${countHtml(v, counts.views[v.id] || 0)}</button>`;
     })
     .join('');
 
+  // Your own folders get a colour of their own, and a letter in the collapsed rail.
   let folderRows = '';
   if (current) {
     const user = current.folders.filter((f) => !f.role && !hidden.has(`folder:${f.path}`));
-    if (user.length) {
-      folderRows =
-        '<div class="nav-section">Mappen</div>' +
-        user
-          .map((f) => {
-            const active = S.view === 'folder' && S.folder === f.path;
-            const n = counts.folders[f.path] || 0;
-            return `<button class="nav-item ${active ? 'active' : ''}" data-folder="${esc(f.path)}" data-drop-path="${esc(f.path)}" title="${esc(f.name)}" ${
-              active ? 'aria-current="page"' : ''
-            }><span class="ic">${icons.folder}</span><span class="label">${esc(f.name)}</span>${n ? `<span class="count muted">${fmt(n)}</span>` : ''}</button>`;
-          })
-          .join('');
-    }
+    folderRows =
+      `<div class="nav-section"><span>Mappen</span><button class="icon-btn xs" data-action="new-folder" title="Nieuwe map">${icons.plus}</button></div>` +
+      user
+        .map((f) => {
+          const active = S.view === 'folder' && S.folder === f.path;
+          const n = counts.folders[f.path] || 0;
+          return `<button class="nav-item ${active ? 'active' : ''}" data-folder="${esc(f.path)}" data-drop-path="${esc(f.path)}" title="${esc(f.name)}" ${
+            active ? 'aria-current="page"' : ''
+          }><span class="ic fdot" style="--h:${hue(f.name)}"><i></i><b>${esc(initials({ name: f.name }).slice(0, 1))}</b></span><span class="label">${esc(f.name)}</span>${
+            n ? `<span class="count muted">${fmt(n)}</span>` : ''
+          }</button>`;
+        })
+        .join('');
   }
 
   const who = current
@@ -415,7 +452,7 @@ function renderSidebar() {
 
   el.innerHTML = `
     <button class="account-switch" data-action="accounts" aria-haspopup="menu" title="${esc(current ? current.email : 'Alle accounts')}">${who}<span class="chev">${icons.chevronUpDown}</span></button>
-    <button class="btn primary compose-btn" data-action="compose" title="Nieuw bericht (Ctrl+N)">${icons.compose}<span>Nieuw bericht</span></button>
+    <button class="btn compose-btn" data-action="compose" title="Nieuw bericht (Ctrl+N)">${icons.compose}<span>Nieuw bericht</span></button>
     <nav class="nav" aria-label="Mappen">${viewRows}${folderRows}</nav>
     <div class="sidebar-foot">
       <button class="sync-status ${status.cls}" data-action="sync" title="${esc(status.title)}"><span class="dot"></span><span class="t">${esc(status.text)}</span></button>
@@ -471,6 +508,8 @@ function bindSidebar() {
         savePrefs();
         renderShell();
         return renderSidebar();
+      case 'new-folder':
+        return newFolder();
     }
     if (t.dataset.view) {
       S.view = t.dataset.view;
@@ -522,12 +561,27 @@ function changeView() {
   S.query = '';
   S.filter = 'all';
   S.checked.clear();
+  S.autoOpen = true;
   // A message from the previous folder would look like it belongs to this one.
   if (S.selectedId) closeReader();
   const input = $('#search');
   if (input) input.value = '';
   $('.list-scroll')?.scrollTo(0, 0);
   refresh();
+}
+
+async function newFolder() {
+  const name = await promptDialog('Nieuwe map', '', { placeholder: 'Naam van de map' });
+  if (!name || !name.trim()) return;
+  try {
+    const path = await api('createFolder', S.scope, name);
+    toast(`Map ${name.trim()} aangemaakt`);
+    S.view = 'folder';
+    S.folder = path;
+    changeView();
+  } catch (err) {
+    toast(err.message, 5000);
+  }
 }
 
 // ---------- list ----------
@@ -606,6 +660,42 @@ function renderList() {
   renderShell();
 }
 
+// Three or more messages in a row from one sender, on the same day, fold into one row.
+function stackKey(m) {
+  if (m.role === 'sent' || m.role === 'drafts') return null;
+  return ((m.from && m.from.address) || '').toLowerCase() || null;
+}
+
+function stackLayout() {
+  const list = rows();
+  const out = { heads: new Map(), hidden: new Set(), members: new Set() };
+  const byDate = S.data.settings.sort === 'date-desc' || S.data.settings.sort === 'date-asc';
+  if (!byDate || S.query.trim()) return out;
+  for (let i = 0; i < list.length; ) {
+    const key = stackKey(list[i]);
+    const day = groupLabel(list[i].date);
+    let j = i + 1;
+    if (key) while (j < list.length && stackKey(list[j]) === key && groupLabel(list[j].date) === day) j++;
+    const rest = list.slice(i + 1, j);
+    if (key && rest.length >= 2) {
+      const id = `${day}|${key}`;
+      // A selected message inside a stack keeps it open, so the selection never hides.
+      const forced = rest.some((m) => m.id === S.selectedId || S.checked.has(m.id));
+      const open = forced || S.openStacks.has(id);
+      out.heads.set(list[i].id, { id, count: rest.length + 1, open, forced, unread: rest.some((m) => m.unread) });
+      for (const m of rest) (open ? out.members : out.hidden).add(m.id);
+    }
+    i = j;
+  }
+  return out;
+}
+
+// The rows on screen, in order: the list without the folded stack members.
+function visibleRows() {
+  const { hidden } = stackLayout();
+  return rows().filter((m) => !hidden.has(m.id));
+}
+
 function listHtml() {
   const list = rows();
   if (!list.length) {
@@ -631,20 +721,23 @@ function listHtml() {
     multi: S.data.accounts.length > 1 && (S.scope === 'all' || searchingAll()),
     showFolder: searchingAll() || S.view === 'starred'
   };
+  const layout = stackLayout();
   let out = '';
   let label = null;
   for (const m of list) {
+    if (layout.hidden.has(m.id)) continue;
     const l = byDate ? groupLabel(m.date) : null;
     if (l !== label) {
       label = l;
       if (l) out += `<div class="group-head" role="presentation">${esc(l)}</div>`;
     }
-    out += itemHtml(m, opts);
+    out += itemHtml(m, { ...opts, stack: layout.heads.get(m.id), stacked: layout.members.has(m.id) });
   }
+  wantLogos(list);
   return out;
 }
 
-function itemHtml(m, { multi, showFolder }) {
+function itemHtml(m, { multi, showFolder, stack, stacked }) {
   const acc = multi && account(m.accountId);
   const draft = m.role === 'drafts';
   const pills = [
@@ -660,30 +753,90 @@ function itemHtml(m, { multi, showFolder }) {
   const checked = S.checked.has(m.id);
   const atCursor = (S.cursorId || S.selectedId) === m.id;
   const who = m.role === 'sent' || draft ? (m.to || [])[0] : m.from;
-  return `<div class="item-wrap" data-id="${esc(m.id)}">${swipe}
-    <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''}" data-id="${esc(m.id)}" role="option" aria-selected="${selected || checked}" draggable="true">
+  const preview = cleanPreview(m.preview);
+  const stackBtn = stack
+    ? stack.open
+      ? stack.forced
+        ? ''
+        : `<button class="stack-btn open" data-stack="${esc(stack.id)}" tabindex="-1" title="Inklappen" aria-expanded="true">${icons.up}</button>`
+      : `<button class="stack-btn ${stack.unread ? 'unread' : ''}" data-stack="${esc(stack.id)}" tabindex="-1" title="Nog ${stack.count - 1} e-mails van ${esc(person(m.from))}" aria-expanded="false">+${stack.count - 1}</button>`
+    : '';
+  return `<div class="item-wrap ${stacked ? 'stacked' : ''}" data-id="${esc(m.id)}">${swipe}
+    <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}" role="option" aria-selected="${selected || checked}" draggable="true">
       <span class="unread-dot" aria-hidden="true"></span>
-      <div class="lead">${avatar(who || { name: '?' })}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" aria-label="Selecteren" tabindex="-1">${icons.check}</button></div>
+      <div class="lead">${senderAvatar(who)}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" aria-label="Selecteren" tabindex="-1">${icons.check}</button></div>
       <div class="body">
         <div class="line1">
           <span class="sender">${draft ? '<span class="draft-tag">Concept</span>' : ''}${esc(senderLine(m))}</span>
+          ${stackBtn}
           <span class="meta">${m.answered ? `<span class="ic-ans" title="Beantwoord">${icons.reply}</span>` : ''}${m.hasAttachments ? `<span class="ic-att" title="Bijlage">${icons.clip}</span>` : ''}<time>${listTime(m.date)}</time></span>
         </div>
         <div class="line2">
-          <span class="subject">${esc(m.subject || '(Geen onderwerp)')}</span><span class="sep"> - </span><span class="preview-inline">${esc(m.preview || '')}</span>
+          <span class="subject">${esc(m.subject || '(Geen onderwerp)')}</span><span class="sep"> - </span><span class="preview-inline">${esc(preview)}</span>
           <span class="flags">${pills}${
             m.role === 'saved'
               ? ''
               : `<button class="star-btn ${m.starred ? 'on' : ''}" data-star tabindex="-1" title="${m.starred ? 'Ster verwijderen' : 'Ster toevoegen'}">${m.starred ? icons.starFilled : icons.star}</button>`
           }</span>
         </div>
-        <div class="preview">${esc(m.preview || '')}</div>
+        <div class="preview">${esc(preview)}</div>
       </div>
     </div>
   </div>`;
 }
 
+// ---------- sender logos ----------
+
+// address -> data url, or null when there is none (people, or nothing found).
+const logos = new Map();
+const logoQueue = new Set();
+let logoTimer = null;
+
+function senderAvatar(who, cls = '') {
+  const address = ((who && who.address) || '').toLowerCase();
+  const logo = address && logos.get(address);
+  if (logo) return `<span class="avatar logo ${cls}" data-addr="${esc(address)}" aria-hidden="true"><img src="${logo}" alt=""></span>`;
+  return avatar(who || { name: '?' }, cls).replace('<span class="avatar', `<span data-addr="${esc(address)}" class="avatar`);
+}
+
+function wantLogos(list) {
+  if (S.data.settings.senderLogos === false) return;
+  for (const m of list) {
+    const who = m.role === 'sent' || m.role === 'drafts' ? (m.to || [])[0] : m.from;
+    const address = ((who && who.address) || '').toLowerCase();
+    if (address && !logos.has(address)) logoQueue.add(address);
+  }
+  if (logoQueue.size && !logoTimer) logoTimer = setTimeout(fetchLogos, 30);
+}
+
+// One request per sender, so a slow site does not hold up the others; each logo appears when it arrives.
+function fetchLogos() {
+  logoTimer = null;
+  for (const address of logoQueue) {
+    logoQueue.delete(address);
+    logos.set(address, null);
+    api('senderLogos', [address])
+      .then((found) => {
+        const url = found && found[address];
+        if (!url) return;
+        logos.set(address, url);
+        for (const el of $$(`.avatar[data-addr="${CSS.escape(address)}"]:not(.logo)`)) {
+          el.classList.add('logo');
+          el.innerHTML = `<img src="${url}" alt="">`;
+        }
+      })
+      .catch(() => {});
+  }
+}
+
 function syncRowClasses() {
+  // A selection inside a folded stack unfolds it.
+  if (S.selectedId && !$(`.list-scroll .item[data-id="${CSS.escape(S.selectedId)}"]`) && rows().some((m) => m.id === S.selectedId)) {
+    const scroll = $('.list-scroll');
+    const top = scroll ? scroll.scrollTop : 0;
+    scroll.innerHTML = listHtml();
+    scroll.scrollTop = top;
+  }
   const at = cursor();
   for (const el of $$('.list-scroll .item')) {
     const id = el.dataset.id;
@@ -722,7 +875,7 @@ function toggleCheck(id) {
 }
 
 function checkRange(toId) {
-  const list = rows();
+  const list = visibleRows();
   const from = list.findIndex((m) => m.id === (S.anchorId || S.selectedId));
   const to = list.findIndex((m) => m.id === toId);
   if (to < 0) return;
@@ -751,6 +904,12 @@ function bindList() {
       return renderList();
     }
     if (btn && btn.dataset.bulk) return bulkAction(btn.dataset.bulk, btn);
+    if (btn && btn.dataset.stack) {
+      const id = btn.dataset.stack;
+      if (S.openStacks.has(id)) S.openStacks.delete(id);
+      else S.openStacks.add(id);
+      return renderList();
+    }
     const item = e.target.closest('.item');
     if (!item || swipeState.moved) return;
     const id = item.dataset.id;
@@ -1018,7 +1177,7 @@ async function setStarred(list, starred) {
 // Takes messages out of the list right away and opens the next one if the open message left.
 function detach(list) {
   const ids = new Set(list.map((m) => m.id));
-  const visible = rows();
+  const visible = visibleRows();
   let next = null;
   const wasOpen = ids.has(S.selectedId);
   if (wasOpen) {
@@ -1273,19 +1432,64 @@ async function printMessage(id) {
   await api('print', `<!doctype html><meta charset="utf-8"><body style="margin:24px">${head}${full.html}</body>`);
 }
 
-function compose(opts) {
+// Writing happens in the reading pane; the pop-out button moves it to a window of its own.
+// Each request to write (or to open a message) takes a number; a request that a newer one overtook
+// while it waited stops, so a slow reply can never replace the message you started after it.
+let composeTurn = 0;
+
+async function compose(opts) {
+  if (!S.data || !S.data.accounts.length) return;
+  const turn = ++composeTurn;
+  if (opts.mode === 'draft' && S.composer && S.composer.draftId === opts.id) return S.composer.focus();
+  // A draft that is open in a compose window stays there.
+  if (opts.mode === 'draft' && (await api('draftWindow', opts.id).catch(() => false))) return;
+  if (turn !== composeTurn) return;
   const accountId = S.scope !== 'all' ? S.scope : null;
-  api('openCompose', { accountId, ...opts }).catch((err) => toast(err.message, 5000));
+  const full = { accountId, ...opts };
+  let message = null;
+  if (full.id) {
+    try {
+      message = await api('get', full.id);
+    } catch (err) {
+      if (turn === composeTurn) toast(err.message, 5000);
+      return;
+    }
+    if (turn !== composeTurn) return;
+  }
+  // Whatever is being written now is kept as a draft before the new message takes its place.
+  if (S.composer && !(await S.composer.leave())) return;
+  if (turn !== composeTurn || S.composer) return;
+  const host = $('.reader');
+  host.innerHTML = '';
+  S.expanded = false;
+  S.composer = mountComposer(host, {
+    data: S.data,
+    opts: full,
+    message,
+    inline: true,
+    onDone: () => {
+      S.composer = null;
+      renderShell();
+      renderReader();
+    },
+    onPopOut: (o) => api('openCompose', { accountId, ...o }).catch((err) => toast(err.message, 5000))
+  });
+  renderShell();
 }
 
 // ---------- reader ----------
 
-export async function openMessage(id) {
+// auto: shown without being asked for (the newest message on load); it stays unread.
+export async function openMessage(id, { auto = false } = {}) {
+  // Opening a message cancels a reply or forward that is still loading.
+  const turn = ++composeTurn;
+  if (S.composer && !(await S.composer.leave())) return;
+  if (turn !== composeTurn) return;
   const m = S.list.find((x) => x.id === id);
   S.selectedId = id;
   S.anchorId = id;
   S.cursorId = id;
-  S.allRecipients = false;
+  S.details = false;
   S.loading = true;
   S.message = m ? { ...m, html: null, attachments: [] } : S.message;
   syncRowClasses();
@@ -1303,7 +1507,7 @@ export async function openMessage(id) {
     if (S.selectedId === id) S.loading = false;
   }
   renderReader();
-  if (m && m.unread && m.role !== 'drafts') setUnread([m], false);
+  if (m && m.unread && m.role !== 'drafts' && !auto) setUnread([m], false);
 }
 
 export function closeReader() {
@@ -1316,7 +1520,7 @@ export function closeReader() {
 }
 
 function renderReaderNav() {
-  const list = rows();
+  const list = visibleRows();
   const i = list.findIndex((x) => x.id === S.selectedId);
   const up = $('[data-reader="prev"]');
   const down = $('[data-reader="next"]');
@@ -1338,49 +1542,84 @@ function attachmentKind(name) {
   return { ext: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', kind: kinds[ext] || 'other' };
 }
 
-function recipientsHtml(m) {
-  const all = [
-    ...(m.to || []).map((a) => ['Aan', a]),
-    ...(m.cc || []).map((a) => ['Cc', a]),
-    ...(m.bcc || []).map((a) => ['Bcc', a])
-  ];
-  if (!all.length) return '';
-  const LIMIT = 4;
-  const shown = S.allRecipients ? all : all.slice(0, LIMIT);
-  let prev = null;
-  const parts = shown.map(([k, a]) => {
-    const label = k !== prev ? `${prev ? '; ' : ''}<span class="rk">${k}</span> ` : ', ';
-    prev = k;
-    return `${label}<button class="person" data-person="${esc(a.address)}" data-name="${esc(a.name || '')}" title="${esc(formatAddress(a))}">${esc(person(a))}</button>`;
-  });
-  const more = all.length > LIMIT && !S.allRecipients ? ` <button class="link-btn" data-reader="all-recipients">+${all.length - LIMIT} meer</button>` : '';
-  return `<div class="recips">${parts.join('')}${more}</div>`;
+function ownAddresses() {
+  return new Set(S.data.accounts.flatMap((a) => [a.email, ...a.identities.map((i) => i.address)]).map((x) => String(x).toLowerCase()));
 }
 
+// "aan mij, Joris Bakker"; the chevron opens the full header.
+function recipientsHtml(m) {
+  const own = ownAddresses();
+  const all = [...(m.to || []), ...(m.cc || []), ...(m.bcc || [])];
+  const names = all.map((a) => (own.has(String(a.address).toLowerCase()) ? 'mij' : person(a)));
+  const unique = [...new Set(names)];
+  const shown = unique.slice(0, 3).join(', ') + (unique.length > 3 ? ` en ${unique.length - 3} anderen` : '');
+  return `<button class="to-summary" data-reader="details" aria-expanded="${S.details}" title="Alle gegevens ${S.details ? 'verbergen' : 'tonen'}">${
+    all.length ? `aan ${esc(shown)}` : 'aan onbekende ontvangers'
+  }${icons.chevronDown}</button>`;
+}
+
+function detailsHtml(m) {
+  if (!S.details) return '';
+  const people = (list) =>
+    (list || [])
+      .map((a) => `<button class="person" data-person="${esc(a.address)}" data-name="${esc(a.name || '')}">${esc(formatAddress(a))}</button>`)
+      .join(', ');
+  const from = m.from || {};
+  const replyTo = (m.replyTo || []).filter((a) => String(a.address).toLowerCase() !== String(from.address || '').toLowerCase());
+  const row = (k, v) => (v ? `<span class="k">${k}</span><span class="v">${v}</span>` : '');
+  return `<div class="details">
+    ${row('Van', people([from]))}
+    ${row('Aan', people(m.to))}
+    ${row('Cc', people(m.cc))}
+    ${row('Bcc', people(m.bcc))}
+    ${row('Antwoord aan', people(replyTo))}
+    ${row('Datum', esc(longDate(m.date)))}
+  </div>`;
+}
+
+const previews = new Map();
+
+// One attachment is just its card; several get a header with "Alles opslaan". Images show a thumbnail.
 function attachmentsHtml(m) {
   const list = m.attachments || [];
   if (!list.length) return '';
   const total = list.reduce((n, a) => n + (a.size || 0), 0);
-  const open = S.attachmentsOpen;
-  return `<section class="atts ${open ? '' : 'closed'}" aria-label="Bijlagen">
-    <div class="atts-head">
-      <button class="atts-toggle" data-reader="toggle-atts" aria-expanded="${open}">${icons.chevronDown}<span>${list.length === 1 ? '1 bijlage' : `${list.length} bijlagen`}</span><span class="atts-size">${fileSize(total)}</span></button>
-      ${list.length > 1 ? `<button class="link-btn" data-reader="save-all">${icons.download}<span>Alles opslaan</span></button>` : ''}
-    </div>
-    ${
-      open
-        ? `<div class="atts-list">${list
-            .map((a) => {
-              const { ext, kind } = attachmentKind(a.filename);
-              return `<div class="att">
-                <button class="att-open" data-open-att="${a.index}" title="Openen: ${esc(a.filename)}"><span class="ftype ${kind}">${esc(ext)}</span><span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
-                <button class="icon-btn sm" data-save-att="${a.index}" title="Opslaan">${icons.download}</button>
-              </div>`;
-            })
-            .join('')}</div>`
-        : ''
+  const open = list.length === 1 || S.attachmentsOpen;
+  const card = (a) => {
+    const { ext, kind } = attachmentKind(a.filename);
+    const thumb = previews.get(`${m.id}|${a.index}`);
+    if (kind === 'image') {
+      return `<div class="att image" data-preview="${a.index}">
+        <button class="att-open" data-open-att="${a.index}" title="Openen: ${esc(a.filename)}"><span class="thumb">${thumb ? `<img src="${thumb}" alt="">` : `<span class="ftype image">${esc(ext)}</span>`}</span>
+        <span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
+        <button class="icon-btn sm" data-save-att="${a.index}" title="Opslaan">${icons.download}</button>
+      </div>`;
     }
-  </section>`;
+    return `<div class="att">
+      <button class="att-open" data-open-att="${a.index}" title="Openen: ${esc(a.filename)}"><span class="ftype ${kind}">${esc(ext)}</span><span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
+      <button class="icon-btn sm" data-save-att="${a.index}" title="Opslaan">${icons.download}</button>
+    </div>`;
+  };
+  const head =
+    list.length > 1
+      ? `<div class="atts-head">
+          <button class="atts-toggle" data-reader="toggle-atts" aria-expanded="${open}">${icons.chevronDown}<span>${list.length} bijlagen</span><span class="atts-size">${fileSize(total)}</span></button>
+          <button class="link-btn" data-reader="save-all">${icons.download}<span>Alles opslaan</span></button>
+        </div>`
+      : '';
+  return `<section class="atts ${open ? '' : 'closed'}" aria-label="Bijlagen">${head}${open ? `<div class="atts-list">${list.map(card).join('')}</div>` : ''}</section>`;
+}
+
+async function loadPreviews(m) {
+  for (const a of m.attachments || []) {
+    const key = `${m.id}|${a.index}`;
+    if (attachmentKind(a.filename).kind !== 'image' || previews.has(key)) continue;
+    previews.set(key, null);
+    const url = await api('attachmentPreview', m.id, a.index).catch(() => null);
+    previews.set(key, url);
+    const el = url && S.message && S.message.id === m.id && $(`.att.image[data-preview="${a.index}"] .thumb`);
+    if (el) el.innerHTML = `<img src="${url}" alt="">`;
+  }
 }
 
 function readerBar(m) {
@@ -1388,21 +1627,22 @@ function readerBar(m) {
   const saved = m.role === 'saved';
   const acc = account(m.accountId);
   const canArchive = Boolean(acc && acc.archive && m.role !== 'archive' && !saved && !draft);
-  const nav = `<span class="spacer"></span>
+  const nav = `<span class="bar-subject" aria-hidden="true">${esc(m.subject || '')}</span>
+    <span class="spacer"></span>
     <button class="icon-btn" data-reader="prev" title="Vorige (Pijl omhoog)">${icons.up}</button>
     <button class="icon-btn" data-reader="next" title="Volgende (Pijl omlaag)">${icons.down}</button>
     <button class="icon-btn wide-only" data-reader="expand" title="${S.expanded ? 'Lijst weer tonen (Esc)' : 'Leesvenster vergroten'}">${S.expanded ? icons.collapse : icons.expand}</button>`;
   const back = `<button class="icon-btn narrow-only" data-reader="back" title="Terug naar de lijst">${icons.back}</button>`;
   if (draft) {
     return `<div class="reader-bar" role="toolbar" aria-label="Acties">${back}
-      <button class="btn primary sm" data-reader="edit" title="Concept bewerken (Enter)">${icons.edit}<span>Concept bewerken</span></button>
-      <button class="tbtn" data-reader="delete" title="Verwijderen (Delete)">${icons.trash}<span>Verwijderen</span></button>
+      <button class="tbtn primary" data-reader="edit" title="Concept bewerken (Enter)">${icons.edit}<span>Bewerken</span></button>
+      <button class="icon-btn" data-reader="delete" title="Verwijderen (Delete)">${icons.trash}</button>
       ${nav}</div>`;
   }
   return `<div class="reader-bar" role="toolbar" aria-label="Acties">${back}
     <button class="tbtn" data-reader="reply" title="Beantwoorden (Ctrl+R)">${icons.reply}<span>Beantwoorden</span></button>
-    <button class="tbtn" data-reader="replyAll" title="Allen beantwoorden (Ctrl+Shift+R)">${icons.replyAll}<span>Allen beantwoorden</span></button>
-    <button class="tbtn" data-reader="forward" title="Doorsturen (Ctrl+F)">${icons.forward}<span>Doorsturen</span></button>
+    <button class="icon-btn" data-reader="replyAll" title="Allen beantwoorden (Ctrl+Shift+R)">${icons.replyAll}</button>
+    <button class="icon-btn" data-reader="forward" title="Doorsturen (Ctrl+F)">${icons.forward}</button>
     <span class="bar-sep"></span>
     ${canArchive ? `<button class="icon-btn" data-reader="archive" title="Archiveren">${icons.archive}</button>` : ''}
     <button class="icon-btn" data-reader="delete" title="Verwijderen (Delete)">${icons.trash}</button>
@@ -1414,7 +1654,8 @@ function readerBar(m) {
 
 function renderReader() {
   const el = $('.reader');
-  if (!el) return;
+  if (!el || S.composer) return;
+  el.classList.remove('scrolled');
   if (S.checked.size > 1) {
     const list = checkedMessages();
     const canArchive = list.some((m) => account(m.accountId)?.archive && m.role !== 'archive');
@@ -1435,7 +1676,7 @@ function renderReader() {
   if (!m) {
     el.innerHTML = `<div class="reader-empty">
       ${icons.mailOpen}
-      <div class="t">Selecteer een e-mail om te lezen</div>
+      <div class="t">Geen e-mail geselecteerd</div>
       <div class="keys"><span><kbd>Ctrl+N</kbd> Nieuw bericht</span><span><kbd>Ctrl+E</kbd> Zoeken</span><span><kbd>↑</kbd><kbd>↓</kbd> Bladeren</span></div>
     </div>`;
     return;
@@ -1447,6 +1688,8 @@ function renderReader() {
     : S.loading || m.html === null || m.html === undefined
       ? '<div class="loading-bar"></div>'
       : '<iframe class="mail-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" title="Inhoud van e-mail"></iframe>';
+  const unsubscribe =
+    m.unsubscribe && !draft ? `<button class="chip-btn" data-reader="unsubscribe" title="Afmelden voor deze e-mails">${icons.unsubscribe}<span>Uitschrijven</span></button>` : '';
   el.innerHTML = `${readerBar(m)}
     <div class="reader-scroll" tabindex="-1">
       <article class="message">
@@ -1456,29 +1699,62 @@ function renderReader() {
             ${m.role === 'saved' || draft ? '' : `<button class="icon-btn reader-star ${m.starred ? 'on' : ''}" data-reader="star" title="${m.starred ? 'Ster verwijderen' : 'Ster toevoegen'}">${m.starred ? icons.starFilled : icons.star}</button>`}
           </div>
           <div class="msg-from">
-            ${avatar(draft ? (m.to || [])[0] || from : from, 'lg')}
+            ${senderAvatar(draft ? (m.to || [])[0] || from : from, 'lg')}
             <div class="who">
               <div class="from-line">${
                 draft
                   ? '<span class="draft-tag">Concept</span>'
-                  : `<button class="person from-name" data-person="${esc(from.address || '')}" data-name="${esc(from.name || '')}">${esc(person(from) || '(Onbekende afzender)')}</button>${
+                  : `<button class="person from-name" data-person="${esc(from.address || '')}" data-name="${esc(from.name || '')}" title="${esc(from.address || '')}">${esc(person(from) || '(Onbekende afzender)')}</button>${
                       from.name ? `<span class="addr">${esc(from.address)}</span>` : ''
                     }${m.vip ? '<span class="pill vip">VIP</span>' : ''}`
               }</div>
               ${recipientsHtml(m)}
             </div>
-            <time class="reader-date" title="${esc(longDate(m.date))}">${esc(readerDate(m.date))}</time>
+            <div class="msg-side">${unsubscribe}<time class="reader-date" title="${esc(longDate(m.date))}">${esc(readerDate(m.date))}</time></div>
           </div>
+          ${detailsHtml(m)}
         </header>
         ${attachmentsHtml(m)}
         ${body}
       </article>
     </div>`;
   renderReaderNav();
+  const scroll = el.querySelector('.reader-scroll');
+  scroll.addEventListener('scroll', () => el.classList.toggle('scrolled', scroll.scrollTop > 56), { passive: true });
   const frame = el.querySelector('.mail-frame');
   if (frame && m.html !== null && m.html !== undefined) {
     const s = S.data?.settings || {};
     fillFrame(frame, m, { light: isLight(), darkEmails: s.darkEmails !== false, fitContent: s.fitContent !== false });
+  }
+  if (!S.loading) loadPreviews(m);
+  wantLogos([m]);
+}
+
+async function unsubscribe(m) {
+  const sender = person(m.from) || 'deze afzender';
+  const ok = await confirmDialog(
+    `Uitschrijven bij ${sender}?`,
+    m.unsubscribe.oneClick || m.unsubscribe.url
+      ? 'Rukoo Mail meldt je af via de afmeldlink van de afzender.'
+      : 'Rukoo Mail maakt een afmeldmail voor je klaar.',
+    'Uitschrijven'
+  );
+  if (!ok) return;
+  try {
+    const res = await api('unsubscribe', m.id);
+    if (res.done) toast(`Uitgeschreven bij ${sender}`);
+    else if (res.opened) toast('De afmeldpagina is geopend in je browser');
+    else if (res.mailto) {
+      const u = new URL(res.mailto);
+      compose({
+        mode: 'new',
+        to: decodeURIComponent(u.pathname).split(',').filter(Boolean).map((address) => ({ name: '', address: address.trim() })),
+        subject: u.searchParams.get('subject') || 'Afmelden',
+        body: u.searchParams.get('body') || ''
+      });
+    }
+  } catch (err) {
+    toast(err.message, 5000);
   }
 }
 
@@ -1544,9 +1820,11 @@ function bindReader() {
         setUnread([item], true);
         toast('Gemarkeerd als ongelezen');
         return;
-      case 'all-recipients':
-        S.allRecipients = true;
+      case 'details':
+        S.details = !S.details;
         return renderReader();
+      case 'unsubscribe':
+        return unsubscribe(m);
       case 'toggle-atts':
         S.attachmentsOpen = !S.attachmentsOpen;
         return renderReader();
@@ -1575,7 +1853,7 @@ function bindReader() {
 }
 
 function step(dir, extend = false) {
-  const list = rows();
+  const list = visibleRows();
   if (!list.length) return;
   const from = cursor();
   const i = list.findIndex((x) => x.id === from);
@@ -1621,6 +1899,7 @@ function editing(e) {
 document.addEventListener('keydown', (e) => {
   if (menuOpen()) return;
   if (document.querySelector('.page, .scrim')) return;
+  if (e.target.closest && e.target.closest('.composer')) return;
   if (!S.data || !S.data.accounts.length) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
@@ -1642,7 +1921,7 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   const list = targets();
-  const m = S.message;
+  const m = S.composer ? null : S.message;
   if (ctrl && key === 'a') {
     e.preventDefault();
     S.checked = new Set(rows().map((x) => x.id));
@@ -1650,6 +1929,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.key === 'Escape') {
     if (clearChecks()) return;
+    if (S.composer) return S.composer.close();
     if (S.expanded) {
       S.expanded = false;
       renderShell();
@@ -1703,7 +1983,7 @@ document.addEventListener('keydown', (e) => {
   }
   if ((e.key === 'Home' || e.key === 'End') && e.target.closest?.('.list-scroll')) {
     e.preventDefault();
-    const all = rows();
+    const all = visibleRows();
     const target = e.key === 'Home' ? all[0] : all[all.length - 1];
     if (target) openMessage(target.id);
   }
@@ -1738,6 +2018,7 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'theme') {
     applyTheme(S.data?.settings.theme);
     if (S.message) renderReader();
+    S.composer?.retheme(S.data);
   }
   if (type === 'open-message') {
     S.scope = 'all';
@@ -1753,7 +2034,31 @@ window.mail.on(async ({ type, payload }) => {
 onSystemThemeChange(() => {
   applyTheme(S.data?.settings.theme);
   if (S.message) renderReader();
+  S.composer?.retheme(S.data);
 });
+
+// Closing the window with unsaved text in the editor: keep it open and ask first.
+window.addEventListener('beforeunload', (e) => {
+  const editor = S.composer;
+  if (!editor || (!editor.isDirty() && !editor.isBusy())) return;
+  e.preventDefault();
+  e.returnValue = false;
+  if (!editor.isBusy()) setTimeout(() => editor.close(), 0);
+});
+
+// Scrollbars show while scrolling and fade after.
+const scrolling = new Map();
+document.addEventListener(
+  'scroll',
+  (e) => {
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    el.classList.add('is-scrolling');
+    clearTimeout(scrolling.get(el));
+    scrolling.set(el, setTimeout(() => el.classList.remove('is-scrolling'), 900));
+  },
+  true
+);
 
 // Context shared with the settings and setup pages.
 export const ctx = {
