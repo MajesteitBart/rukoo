@@ -112,6 +112,35 @@ test('language changes preserve an inline draft and update a separate compose wi
   await expect(compose.locator('.att-chip')).toContainText('example.txt');
 });
 
+for (const separate of [false, true]) {
+  test(`recipient input labels switch languages without losing an unfinished address in the ${separate ? 'separate' : 'inline'} composer`, async () => {
+    await demo();
+    await win.click('[data-action="compose"]');
+    let compose = win;
+    if (separate) {
+      const opened = app.waitForEvent('window');
+      await win.click('[data-c="popout"]');
+      compose = await opened;
+    }
+    await compose.click('[data-c="cc"]');
+    await compose.click('[data-c="bcc"]');
+    const recipient = compose.locator('[data-rinput="to"]');
+    await recipient.fill('unfinished@');
+    const originalInput = await recipient.elementHandle();
+    for (const [code, toLabel] of [['en', 'To'], ['nl', 'Aan'], ['en', 'To']]) {
+      // Apply the same settings API without blurring and committing the unfinished recipient.
+      await win.evaluate((language) => window.mail.call('updateSettings', { language }), code);
+      await expect(compose.locator('html')).toHaveAttribute('lang', code);
+      for (const [field, label] of [['to', toLabel], ['cc', 'Cc'], ['bcc', 'Bcc']]) {
+        await expect(compose.locator(`[data-rinput="${field}"]`)).toHaveAttribute('aria-label', label);
+      }
+      await expect(recipient).toHaveValue('unfinished@');
+      expect(await originalInput.evaluate((element) => element.isConnected)).toBe(true);
+      await expect(recipient).toBeFocused();
+    }
+  });
+}
+
 test('English reply quotes stay behind the quote pill after reopening in Dutch', async () => {
   await demo();
   await win.locator('.item', { hasText: 'Sanne de Vries' }).first().click();

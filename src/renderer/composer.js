@@ -335,7 +335,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const renderRecipients = (field) => {
     const box = $(`[data-rfield="${field}"] .recipients`, page);
     const draft = box.querySelector('input')?.value || '';
-    box.innerHTML = `${recipientsHtml(st[field])}<input type="text" data-rinput="${field}" autocomplete="off" spellcheck="false" aria-label="${field === 'to' ? t('reader.headers.to') : field === 'cc' ? t('reader.headers.cc') : t('reader.headers.bcc')}"/>`;
+    const labelKey = `reader.headers.${field}`;
+    box.innerHTML = `${recipientsHtml(st[field])}<input type="text" data-rinput="${field}" autocomplete="off" spellcheck="false" data-i18n-aria-label="${labelKey}" aria-label="${esc(t(labelKey))}"/>`;
     const input = box.querySelector('input');
     input.value = draft;
     return input;
