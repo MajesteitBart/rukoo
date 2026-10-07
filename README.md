@@ -7,7 +7,10 @@
 
 Rukoo Mail is an email client for Windows, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. The interface is in Dutch and set in Inter.
 
-![Inbox and reading pane](docs/screenshots/3-reader.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/02-inbox.png">
+  <img src="docs/screenshots/light/02-inbox.png" alt="Inbox and reading pane">
+</picture>
 
 ## What works
 
@@ -33,6 +36,72 @@ Rukoo Mail is an email client for Windows, built with Electron. It has three pan
 
 Keyboard in the main window: `Ctrl+N` new mail, `Ctrl+R` reply, `Ctrl+Shift+R` reply all, `Ctrl+F` forward, `Ctrl+E` or `/` search, `↑`/`↓` previous and next, `Shift+↑`/`Shift+↓` extend the selection, `Ctrl+A` select all, `Ctrl+Q` mark read, `Ctrl+U` mark unread, `Ctrl+Shift+V` move, `Delete` delete, `Ctrl+Z` undo, `Ctrl+P` print, `F5` sync, `Esc` clear the selection or search. While writing: `Ctrl+Enter` send, `Ctrl+S` save the draft, `Ctrl+K` insert a link, `Esc` close.
 
+## Screenshots
+
+These use the demo account and follow your light or dark GitHub theme. The top one shows the inbox with the newest message opened by itself; "+3" marks three more messages from the same sender folded into one row. To take them again, run `node scripts/screenshots.js docs/screenshots`.
+
+Scrolled down, the subject moves into the toolbar.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/03-reader-scrolled.png">
+  <img src="docs/screenshots/light/03-reader-scrolled.png" alt="Reader scrolled down">
+</picture>
+
+Personal mail reads "aan mij, Joris Bakker", with the attachment as a card.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/04-reader.png">
+  <img src="docs/screenshots/light/04-reader.png" alt="Personal mail in the reader">
+</picture>
+
+The full sender and recipient details, on request.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/05-reader-details.png">
+  <img src="docs/screenshots/light/05-reader-details.png" alt="Reader with details open">
+</picture>
+
+Four messages from Vandebron No Reply, unfolded from one row.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/06-stack-open.png">
+  <img src="docs/screenshots/light/06-stack-open.png" alt="A stack of messages unfolded">
+</picture>
+
+A reply in the reading pane, with the earlier mail behind "···".
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/07-reply.png">
+  <img src="docs/screenshots/light/07-reply.png" alt="Reply in the reading pane">
+</picture>
+
+Formatting appears above selected text.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/08-reply-format.png">
+  <img src="docs/screenshots/light/08-reply-format.png" alt="Formatting bar above selected text">
+</picture>
+
+The earlier mail, with "Niet meesturen" to leave it out.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/09-reply-quote.png">
+  <img src="docs/screenshots/light/09-reply-quote.png" alt="Reply with the earlier mail shown">
+</picture>
+
+The first run.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/01-setup.png">
+  <img src="docs/screenshots/light/01-setup.png" alt="First run">
+</picture>
+
+Settings.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark/10-settings.png">
+  <img src="docs/screenshots/light/10-settings.png" alt="Settings">
+</picture>
 ## Limits
 
 Google sign-in needs an OAuth client of type "Desktop app" from Google Cloud. The client is not in this repository. The app looks for it in this order:
