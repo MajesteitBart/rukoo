@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; font-src * data:; media-src * data:; connect-src 'none'; frame-src 'self' about: data:; object-src 'none'"
+    />
+    <title>Rukoo agent components</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="agent.css" />
+    <style>
+      /* Dev-only gallery: every component in every state, in panel-wide columns. */
+      body {
+        overflow: auto;
+        padding: 16px;
+      }
+      .gallery {
+        display: flex;
+        gap: 16px;
+        align-items: flex-start;
+      }
+      .gcol {
+        width: 400px;
+        flex: none;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .gcol h2 {
+        margin: 0 0 2px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--text-3);
+      }
+      .gcol h2:not(:first-child) {
+        margin-top: 10px;
+      }
+      .grow {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+      }
+      .gicons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: var(--text-2);
+      }
+      .gicons > span {
+        display: flex;
+        width: 24px;
+        height: 24px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 6px;
+        background: var(--panel-2);
+      }
+      .gpush {
+        margin-top: 150px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="gallery" class="gallery"></div>
+    <script type="module" src="agent-gallery.js"></script>
+  </body>
+</html>

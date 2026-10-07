@@ -1,0 +1,558 @@
+'use strict';
+
+// Clark: Bart's Hermes Agent, reached over Tailscale through the Hermes API server.
+//
+// A turn is a run (POST /v1/runs) bound to a Hermes session, one session per Rukoo conversation. Runs
+// keep going when the event stream drops, can be resumed with Last-Event-ID, and report tool errors;
+// the session stream (/api/sessions/{id}/chat/stream) dies with its connection. A run with session_id
+// loads that session's history and appends the turn to it (verified against Clark, see
+// integrations/hermes/README.md).
+//
+// Node's fetch on purpose, not ./net.js: that module refuses 100.64.0.0/10, which is where a
+// Tailscale peer lives. Requests only ever go to the configured server and never follow redirects.
+const crypto = require('crypto');
+const { SseParser, readSse } = require('./sse');
+const { AgentError, clip, logger, echoFree, approvalTitle } = require('./proc');
+
+const STATUS_TTL = 30000;
+const CONNECT_TIMEOUT = 8000;
+// Hermes sends a keepalive comment every 10 s, so this much silence means the connection is gone.
+const SILENCE = 45000;
+const RECONNECTS = 5;
+const STOP_WAIT = 10000;
+
+const CHOICES = {
+  once: { id: 'once', label: 'Allow once', kind: 'primary' },
+  session: { id: 'session', label: 'Allow for this turn', kind: 'default' },
+  always: { id: 'always', label: 'Always allow', kind: 'default' },
+  deny: { id: 'deny', label: 'Deny', kind: 'danger' }
+};
+
+const sleep = (ms, signal) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => (clearTimeout(timer), resolve()), { once: true });
+  });
+
+function describe(err) {
+  const cause = err && err.cause;
+  if (cause && cause.code) return [cause.code, cause.address && `${cause.address}:${cause.port}`].filter(Boolean).join(' ');
+  if (cause && cause.message) return cause.message;
+  return (err && err.message) || String(err);
+}
+
+// fetch() failures: no route, refused, reset, or our own connect timeout.
+function networkError(err, host) {
+  if (err instanceof AgentError) return err;
+  if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) return new AgentError('offline', `No answer from ${host} within ${CONNECT_TIMEOUT / 1000} s`);
+  return new AgentError('offline', clip(describe(err), 200));
+}
+
+function errorText(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return clip(data.trim(), 200);
+  const e = data.error;
+  return clip((e && (e.message || (typeof e === 'string' ? e : ''))) || data.message || data.detail || '', 200);
+}
+
+function httpError(res) {
+  const text = errorText(res.data);
+  const detail = `HTTP ${res.status}${text ? ': ' + text : ''}`;
+  if (res.status === 401 || res.status === 403) return new AgentError('unauthorized', detail);
+  if (res.status === 429) return new AgentError('rate-limited', detail);
+  return new AgentError('protocol', detail);
+}
+
+class HermesAdapter {
+  constructor({ id = 'clark', config, hub, log, paths } = {}) {
+    this.id = id;
+    this.config = typeof config === 'function' ? config : () => config || {};
+    this.hub = hub || null;
+    this.log = logger(log);
+    this.paths = paths || {};
+    this.cache = null;
+    this.checking = null;
+    // run id → live state, so dispose() can stop what is still running on the server.
+    this.runs = new Map();
+  }
+
+  settings() {
+    const c = this.config() || {};
+    return {
+      enabled: c.enabled !== false,
+      name: String(c.name || '').trim() || 'Hermes',
+      url: String(c.url || '').trim(),
+      key: String(c.key || '').trim(),
+      model: String(c.model || '').trim()
+    };
+  }
+
+  // The configured server with an optional path prefix (Hermes serves profiles under /p/<name>/).
+  base() {
+    const { url } = this.settings();
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new AgentError('not-configured', 'The server URL is not valid');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new AgentError('not-configured', 'The server URL must start with http:// or https://');
+    return { origin: parsed.origin, prefix: parsed.pathname.replace(/\/+$/, ''), host: parsed.host };
+  }
+
+  endpoint(path) {
+    const { origin, prefix } = this.base();
+    const url = new URL(prefix + path, origin);
+    if (url.origin !== origin) throw new AgentError('protocol', 'Refusing a request outside the configured server');
+    return url;
+  }
+
+  async request(method, path, { body, headers, auth = true, timeout = CONNECT_TIMEOUT, signal } = {}) {
+    const { key } = this.settings();
+    const { host } = this.base();
+    const h = { Accept: 'application/json', ...headers };
+    if (auth) h.Authorization = `Bearer ${key}`;
+    if (body !== undefined) h['Content-Type'] = 'application/json';
+    const signals = [AbortSignal.timeout(timeout)];
+    if (signal) signals.push(signal);
+    let res;
+    try {
+      res = await fetch(this.endpoint(path), {
+        method,
+        headers: h,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        redirect: 'error',
+        signal: AbortSignal.any(signals)
+      });
+    } catch (err) {
+      if (signal && signal.aborted) throw new AgentError('stopped', 'Stopped');
+      throw networkError(err, host);
+    }
+    let text = '';
+    try {
+      text = await res.text();
+    } catch (err) {
+      throw networkError(err, host);
+    }
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    return { status: res.status, ok: res.ok, data };
+  }
+
+  invalidate() {
+    this.cache = null;
+  }
+
+  configChanged() {
+    this.invalidate();
+  }
+
+  // Cheap and cached: /health says the server is there, /v1/capabilities that the key works.
+  // force (the Test button) skips the cache.
+  async status({ force = false } = {}) {
+    const s = this.settings();
+    if (!s.enabled) return { state: 'disabled', detail: '' };
+    if (!s.url) return { state: 'unconfigured', detail: 'No server URL' };
+    if (!s.key) return { state: 'unconfigured', detail: 'No API key' };
+    const key = s.url + '\0' + crypto.createHash('sha256').update(s.key).digest('hex');
+    if (!force && this.cache && this.cache.key === key && Date.now() - this.cache.at < STATUS_TTL) return this.cache.value;
+    if (!force && this.checking && this.checking.key === key) return this.checking.promise;
+    const promise = this.check().then((value) => {
+      if (this.checking && this.checking.promise === promise) this.checking = null;
+      this.cache = { key, at: Date.now(), value };
+      return value;
+    });
+    this.checking = { key, promise };
+    return promise;
+  }
+
+  async check() {
+    try {
+      const started = Date.now();
+      const health = await this.request('GET', '/health', { auth: false });
+      if (!health.ok) return { state: 'offline', detail: `Health check answered HTTP ${health.status}` };
+      // Both checks together stay inside the hub's 12 s status deadline.
+      const caps = await this.request('GET', '/v1/capabilities', { timeout: Math.max(2000, 10000 - (Date.now() - started)) });
+      if (caps.status === 401 || caps.status === 403) return { state: 'unauthorized', detail: 'The server refused the API key' };
+      if (!caps.ok) return { state: 'unknown', detail: `Capabilities answered HTTP ${caps.status}` };
+      const features = (caps.data && caps.data.features) || {};
+      if (features.run_submission === false || features.run_events_sse === false) {
+        return { state: 'unknown', detail: 'This Hermes version has no Runs API' };
+      }
+      const version = health.data && health.data.version;
+      return { state: 'ready', detail: version ? `Hermes ${version}` : 'Hermes' };
+    } catch (err) {
+      const e = err instanceof AgentError ? err : networkError(err, '');
+      return { state: e.code === 'not-configured' ? 'unconfigured' : 'offline', detail: e.detail };
+    }
+  }
+
+  async runTurn(turn) {
+    try {
+      return await this.turn(turn);
+    } catch (err) {
+      if (err instanceof AgentError && err.code === 'stopped') return { status: 'stopped' };
+      const e = err instanceof AgentError ? err : new AgentError('unknown', clip(describe(err), 200));
+      if (!(err instanceof AgentError)) this.log('hermes: turn failed', err);
+      return { status: 'error', error: { code: e.code, detail: e.detail } };
+    }
+  }
+
+  async turn(turn) {
+    const s = this.settings();
+    if (!s.enabled) throw new AgentError('disabled', `${s.name} is turned off`);
+    if (!s.url || !s.key) throw new AgentError('not-configured', !s.url ? 'No server URL' : 'No API key');
+    this.base();
+    if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
+
+    const sessionId = await this.session(turn);
+    // Stop can arrive while the session lookup is in flight; nothing has been submitted to Hermes yet.
+    if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
+    const body = { input: turn.input, session_id: sessionId };
+    if (turn.instructions) body.instructions = turn.instructions;
+    if (s.model) body.model = s.model;
+    // A retried POST (lost response) must not start the same turn twice.
+    const idem = String(turn.id || '').replace(/[^\x21-\x7e]/g, '').slice(0, 200) || crypto.randomUUID();
+    const started = await this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-${idem}` }, timeout: 20000 });
+    if (started.status !== 202 && started.status !== 200) throw httpError(started);
+    const runId = started.data && started.data.run_id;
+    if (!runId) throw new AgentError('protocol', 'The server did not return a run id');
+    this.invalidate();
+    return this.follow(turn, runId);
+  }
+
+  // The Hermes session behind a conversation: reused while it exists, recreated when it was deleted.
+  async session(turn) {
+    const conversation = turn.conversation || {};
+    const known = conversation.provider && conversation.provider.sessionId;
+    if (known) {
+      const res = await this.request('GET', `/api/sessions/${encodeURIComponent(known)}`, { signal: turn.signal });
+      if (res.ok) return known;
+      if (res.status !== 404) throw httpError(res);
+      this.log(`hermes: session ${known} is gone, starting a new one`);
+    }
+    // Hermes wants unique session titles; a second chat about the same subject gets the chat id as well.
+    const title = clip(`Rukoo: ${conversation.title || 'Chat'}`, 100);
+    const titles = [title, clip(`${title.slice(0, 85)} (${String(conversation.id || '').slice(-6) || Date.now().toString(36)})`, 100), null];
+    for (const t of titles) {
+      const res = await this.request('POST', '/api/sessions', { body: t ? { title: t } : {}, signal: turn.signal });
+      const id = res.ok && res.data && res.data.session && res.data.session.id;
+      if (id) {
+        turn.setProvider({ sessionId: id });
+        return id;
+      }
+      if (res.status !== 400) throw httpError(res);
+    }
+    throw new AgentError('protocol', 'Could not create a Hermes session');
+  }
+
+  // Streams one run's events into the turn until it ends, reconnecting where the stream left off.
+  async follow(turn, runId) {
+    const name = this.settings().name;
+    const state = {
+      runId,
+      lastSeq: -1,
+      terminal: null,
+      streamed: false,
+      segment: '',
+      counters: {},
+      open: {},
+      subagents: new Map(),
+      approvals: new Map(),
+      stopping: false,
+      controller: new AbortController()
+    };
+    this.runs.set(runId, state);
+    const onAbort = () => this.stopRun(state);
+    if (turn.signal) {
+      if (turn.signal.aborted) onAbort();
+      else turn.signal.addEventListener('abort', onAbort, { once: true });
+    }
+    try {
+      let failures = 0;
+      while (!state.terminal && !state.controller.signal.aborted) {
+        let outcome;
+        const seen = state.lastSeq;
+        try {
+          outcome = await this.stream(turn, state, name);
+        } catch (err) {
+          if (err instanceof AgentError && err.code !== 'offline') throw err;
+          outcome = 'error';
+          this.log(`hermes: event stream for ${runId} failed: ${err.detail || describe(err)}`);
+        }
+        if (state.terminal || state.controller.signal.aborted) break;
+        // Five reconnects in a row without progress, not five over a long run.
+        if (state.lastSeq > seen) failures = 0;
+        if (outcome === 'gone' || ++failures > RECONNECTS) {
+          // The stream cannot be resumed: ask for the run's final status instead.
+          const final = await this.poll(state).catch(() => null);
+          if (final) state.terminal = final;
+          else throw new AgentError('offline', `Lost the connection to ${name} during the turn`);
+          break;
+        }
+        await sleep(Math.min(1000 * 2 ** (failures - 1), 8000), state.controller.signal);
+      }
+    } finally {
+      if (turn.signal) turn.signal.removeEventListener('abort', onAbort);
+      clearTimeout(state.stopTimer);
+      this.runs.delete(runId);
+    }
+    for (const key of Object.values(state.open).flat()) turn.emit({ type: 'tool-end', key, error: false });
+    const t = state.terminal;
+    if (!t) return { status: 'stopped' };
+    if (t.status === 'done' && !state.streamed && t.output) turn.emit({ type: 'text', delta: t.output });
+    if (t.status === 'error') turn.emit({ type: 'error', code: t.error.code, detail: t.error.detail });
+    return t.status === 'error' ? { status: 'error', error: t.error } : { status: t.status };
+  }
+
+  // One connection to the run's event stream. Resolves 'end' | 'idle' | 'aborted' | 'gone'.
+  async stream(turn, state, name) {
+    const { key } = this.settings();
+    const { host } = this.base();
+    const headers = { Authorization: `Bearer ${key}`, Accept: 'text/event-stream' };
+    let path = `/v1/runs/${encodeURIComponent(state.runId)}/events`;
+    if (state.lastSeq >= 0) {
+      headers['Last-Event-ID'] = String(state.lastSeq);
+      path += `?last_seq=${state.lastSeq}`;
+    }
+    // Only connecting has a deadline; the stream itself stays open as long as the run takes.
+    const connect = new AbortController();
+    const timer = setTimeout(() => connect.abort(), CONNECT_TIMEOUT);
+    let res;
+    try {
+      res = await fetch(this.endpoint(path), { headers, redirect: 'error', signal: AbortSignal.any([connect.signal, state.controller.signal]) });
+    } catch (err) {
+      if (state.controller.signal.aborted) return 'aborted';
+      throw networkError(err, host);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 404) {
+      res.body?.cancel().catch(() => {});
+      return 'gone';
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      let data = text;
+      try {
+        data = JSON.parse(text);
+      } catch {}
+      throw httpError({ status: res.status, data });
+    }
+    const parser = new SseParser((frame) => this.onFrame(turn, state, name, frame));
+    return readSse(res.body, parser, { idleMs: SILENCE, signal: state.controller.signal });
+  }
+
+  async poll(state) {
+    const res = await this.request('GET', `/v1/runs/${encodeURIComponent(state.runId)}`);
+    if (!res.ok || !res.data) return null;
+    const d = res.data;
+    if (d.status === 'completed') return { status: 'done', output: d.output || '' };
+    if (d.status === 'cancelled') return { status: 'stopped' };
+    if (d.status === 'failed' || d.status === 'interrupted') return { status: 'error', error: this.failure(d) };
+    return null;
+  }
+
+  failure(data) {
+    const detail = clip(data.error || data.message || data.turn_exit_reason || 'The run failed', 200);
+    if (/\b429\b|rate.?limit/i.test(detail)) return { code: 'rate-limited', detail };
+    if (data.event === 'run.interrupted' || data.status === 'interrupted') return { code: 'offline', detail };
+    return { code: 'unknown', detail };
+  }
+
+  onFrame(turn, state, name, frame) {
+    let data;
+    try {
+      data = JSON.parse(frame.data);
+    } catch {
+      return;
+    }
+    if (!data || typeof data !== 'object') return;
+    const seq = typeof data.seq === 'number' ? data.seq : frame.id !== null && /^\d+$/.test(frame.id) ? Number(frame.id) : null;
+    // A resumed stream replays from Last-Event-ID; never apply an event twice.
+    if (seq !== null) {
+      if (seq <= state.lastSeq) return;
+      state.lastSeq = seq;
+    }
+    const event = data.event || frame.event;
+    try {
+      this.onEvent(turn, state, name, event, data);
+    } catch (err) {
+      this.log(`hermes: could not handle ${event}`, err);
+    }
+  }
+
+  onEvent(turn, state, name, event, data) {
+    switch (event) {
+      case 'message.delta':
+      case 'assistant.delta': {
+        let delta = typeof data.delta === 'string' ? data.delta : '';
+        // Text after a tool call starts with the blank lines that separated it in the model's output.
+        if (!state.segment) delta = delta.replace(/^\s+/, '');
+        if (!delta) return;
+        state.segment += delta;
+        state.streamed = true;
+        turn.emit({ type: 'text', delta });
+        return;
+      }
+      case 'message.interim':
+      case 'assistant.commentary':
+        if (!data.already_streamed && typeof data.text === 'string' && data.text.trim()) {
+          state.segment = '';
+          turn.emit({ type: 'commentary', text: data.text.trim() });
+        }
+        return;
+      case 'tool.started': {
+        const tool = String(data.tool || data.tool_name || 'tool');
+        const n = (state.counters[tool] = (state.counters[tool] || 0) + 1);
+        const key = `${tool}#${n}`;
+        (state.open[tool] = state.open[tool] || []).push(key);
+        state.segment = '';
+        turn.emit({ type: 'tool-start', key, name: tool, detail: clip(data.preview || '', 200) });
+        return;
+      }
+      case 'tool.completed':
+      case 'tool.failed': {
+        const tool = String(data.tool || data.tool_name || 'tool');
+        let key = state.open[tool] && state.open[tool].shift();
+        if (!key) {
+          // A completion without a start (it was before a reconnect window): show it anyway.
+          const n = (state.counters[tool] = (state.counters[tool] || 0) + 1);
+          key = `${tool}#${n}`;
+          turn.emit({ type: 'tool-start', key, name: tool, detail: '' });
+        }
+        const error = event === 'tool.failed' || Boolean(data.error);
+        const end = { type: 'tool-end', key, error };
+        if (error && data.preview) end.detail = clip(data.preview, 200);
+        state.segment = '';
+        turn.emit(end);
+        return;
+      }
+      case 'subagent.start': {
+        const n = (state.counters.subagent = (state.counters.subagent || 0) + 1);
+        const id = data.subagent_id || data.delegation_id || `#${n}`;
+        const key = `subagent:${id}`;
+        state.subagents.set(String(id), key);
+        state.segment = '';
+        turn.emit({ type: 'tool-start', key, name: 'subagent', detail: clip(data.goal || data.preview || '', 200) });
+        return;
+      }
+      case 'subagent.complete': {
+        let id = String(data.subagent_id || data.delegation_id || '');
+        let key = state.subagents.get(id);
+        if (!key) {
+          const first = state.subagents.entries().next().value;
+          if (!first) return;
+          [id, key] = first;
+        }
+        state.subagents.delete(id);
+        turn.emit({ type: 'tool-end', key, error: /fail|error/i.test(String(data.status || '')) });
+        return;
+      }
+      case 'approval.request':
+        state.segment = '';
+        this.approval(turn, state, name, data).catch((err) => this.log('hermes: approval failed', err));
+        return;
+      case 'approval.responded': {
+        // Answered somewhere else (another client, or Hermes timed it out): retire our card.
+        const pending = state.approvals.get(String(data.request_id || ''));
+        if (pending) this.expire(turn, pending);
+        return;
+      }
+      case 'run.completed':
+        state.terminal = { status: 'done', output: typeof data.output === 'string' ? data.output : '' };
+        if (data.usage) turn.emit({ type: 'usage', ...data.usage });
+        return;
+      case 'run.cancelled':
+        state.terminal = { status: 'stopped' };
+        return;
+      case 'run.failed':
+      case 'run.interrupted':
+        state.terminal = { status: 'error', error: this.failure(data) };
+        return;
+      case 'error':
+        state.terminal = { status: 'error', error: { code: 'unknown', detail: clip(data.message || 'Hermes reported an error', 200) } };
+        return;
+      default:
+        // reasoning.available and tool.progress repeat the visible text; the rest is bookkeeping.
+        return;
+    }
+  }
+
+  async approval(turn, state, name, data) {
+    const ids = Array.isArray(data.choices) && data.choices.length ? data.choices : ['once', 'deny'];
+    const choices = ids.map((id) => CHOICES[String(id).toLowerCase()]).filter(Boolean);
+    if (!choices.some((c) => c.id === 'deny')) choices.push(CHOICES.deny);
+    // The MCP trust gate reuses the command approval: "MCP tool '<t>' on UNTRUSTED server '<s>' wants to run…".
+    const command = typeof data.command === 'string' ? data.command : '';
+    let tool = { name: 'terminal', kind: 'command' };
+    const fields = [];
+    if (data.pattern_key === 'mcp_elicitation') {
+      const m = /MCP tool '([^']+)' on (?:UNTRUSTED )?server '([^']+)'/i.exec(command);
+      tool = m ? { name: `mcp__${m[2]}__${m[1]}`, kind: 'mcp', server: m[2], tool: m[1] } : { name: 'mcp', kind: 'other' };
+      if (command) fields.push({ key: 'input', label: 'Tool', value: command });
+    } else if (command) {
+      // Whole: in ask mode this card is the only thing between Clark and the command.
+      fields.push({ key: 'command', label: 'Command', value: command });
+    }
+    const requestId = String(data.request_id || '');
+    const promise = turn.approve({
+      title: approvalTitle(name, tool, 'a tool'),
+      detail: clip(echoFree(typeof data.description === 'string' ? data.description : '', fields), 2000),
+      fields,
+      tool,
+      choices,
+      key: requestId || null
+    });
+    const pending = { promise, requestId };
+    if (requestId) state.approvals.set(requestId, pending);
+    let choice;
+    try {
+      choice = await promise;
+    } finally {
+      state.approvals.delete(requestId);
+    }
+    if (!choice || choice === 'cancel' || pending.expired || state.terminal) return;
+    const body = { choice };
+    if (requestId) body.request_id = requestId;
+    const res = await this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/approval`, { body });
+    // 409: the run ended or Hermes already gave up waiting; nothing left to answer.
+    if (!res.ok && res.status !== 409) {
+      const e = httpError(res);
+      turn.emit({ type: 'error', code: e.code, detail: e.detail });
+    }
+  }
+
+  expire(turn, pending) {
+    pending.expired = true;
+    const itemId = (pending.promise && pending.promise.itemId) || pending.requestId;
+    const cid = turn.conversation && turn.conversation.id;
+    if (itemId && cid && this.hub && typeof this.hub.expireApproval === 'function') this.hub.expireApproval(cid, itemId);
+  }
+
+  stopRun(state) {
+    if (state.stopping) return;
+    state.stopping = true;
+    this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`).catch((err) => this.log('hermes: stop failed', err.detail || err));
+    // The cancelled event normally follows within a second; do not wait on a server that went away.
+    state.stopTimer = setTimeout(() => state.controller.abort(), STOP_WAIT);
+  }
+
+  async dispose() {
+    const runs = [...this.runs.values()];
+    this.runs.clear();
+    // A run outlives our connection on the server, so stop them explicitly (best effort, quickly).
+    const stops = runs.map((state) => {
+      state.stopping = true;
+      state.controller.abort();
+      return this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`, { timeout: 2000 }).catch(() => {});
+    });
+    await Promise.all(stops);
+  }
+}
+
+module.exports = { HermesAdapter };

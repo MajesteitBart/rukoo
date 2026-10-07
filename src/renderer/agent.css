@@ -1,0 +1,2075 @@
+/* Ported from Beautiful UI (beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine.
+   Agent panel components. Everything is scoped under .bui so nothing leaks into the rest of the app. */
+
+/* ---------- tokens ---------- */
+
+/* BUI token names mapped to Rukoo's palette. Rukoo is dark by default, light is :root.light.
+   --hover and --accent are not redefined here: Rukoo's own values are the intended mapping and a
+   `--hover: var(--hover)` on the same element would be a cycle. */
+.bui {
+  --page: var(--panel);
+  --canvas: var(--panel);
+  --surface: var(--raised);
+  --inset: var(--panel-2);
+  --hover-2: var(--active);
+  --ink: var(--text);
+  --ink-2: var(--text-2);
+  --ink-3: var(--text-3);
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+  --line-soft: color-mix(in srgb, var(--border) 60%, transparent);
+  --field: var(--chip);
+  --accent-ink: var(--link);
+  --accent-tint: var(--accent-soft);
+  --green: oklch(0.705 0.154 153.814);
+  --green-tint: oklch(0.705 0.154 153.814 / 0.14);
+  --orange: oklch(0.746 0.156 55.642);
+  --orange-tint: oklch(0.746 0.156 55.642 / 0.14);
+  --red: oklch(0.666 0.18 21.433);
+  --red-tint: oklch(0.666 0.18 21.433 / 0.14);
+  --bui-shadow-xs: 0 0 4px 0 #0000000a;
+  --bui-shadow-sm: 0 18px 47px 0 #00000008, 0 7.5px 19px 0 #00000005, 0 4px 10.5px 0 #00000005, 0 2.3px 5.8px 0 #00000003,
+    0 1.2px 3.1px 0 #00000003, 0 0.5px 1.3px 0 #00000003;
+  --bui-shadow-md: 0 17.54px 23.39px 0 #0000000a, 0 9.4px 12.5px 0 #00000008, 0 5.25px 7px 0 #00000005,
+    0 2.79px 3.72px -2px #00000003, 0 1.16px 1.5px 0 #00000003;
+  --bui-shadow-lg: 0 25px 50px 0 #0000000d, 0 12px 24px 0 #0000000a, 0 6px 12px 0 #00000008, 0 3px 6px 0 #00000005,
+    0 1.5px 3px 0 #00000005;
+  --shadow-hairline: 0 0 0 1px var(--line);
+  --shadow-btn: 0 0 0 1px oklch(1 0 0 / 0.1), 0 1px 2px oklch(0 0 0 / 0.3);
+  --shadow-card: 0 0 0 1px oklch(1 0 0 / 0.11), 0 1px 2px oklch(0 0 0 / 0.2), 0 2px 6px oklch(0 0 0 / 0.2);
+  --shadow-raised: 0 0 0 1px oklch(1 0 0 / 0.13), 0 2px 10px oklch(0 0 0 / 0.22);
+  --shadow-overlay: 0 0 0 1px oklch(1 0 0 / 0.15), 0 8px 28px oklch(0 0 0 / 0.34);
+  --shadow-inset-field: inset 0 1px 2px oklch(0 0 0 / 0.4);
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --radius-window: 14px;
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-link: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+
+  /* 13px rather than BUI's 14 because Rukoo's UI is 13px. Components keep their own explicit sizes. */
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  font-feature-settings: 'cv11', 'ss01';
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+:root.light .bui {
+  --green: oklch(0.603 0.155 150.883);
+  --green-tint: oklch(0.958 0.017 159.118);
+  --orange: oklch(0.689 0.179 49.902);
+  --orange-tint: oklch(0.964 0.021 67.581);
+  --red: oklch(0.621 0.192 23.042);
+  --red-tint: oklch(0.956 0.017 17.462);
+  --shadow-btn: 0 0 0 1px var(--line-strong), var(--bui-shadow-xs);
+  --shadow-card: 0 0 0 1px var(--line), var(--bui-shadow-sm);
+  --shadow-raised: 0 0 0 1px var(--line), var(--bui-shadow-md);
+  --shadow-overlay: 0 0 0 1px var(--line), var(--bui-shadow-lg);
+  --shadow-inset-field: inset 0 1px 2px oklch(0 0 0 / 0.12);
+}
+
+/* ---------- scoped preflight ---------- */
+
+/* Zero specificity (:where) so any class rule, Rukoo's or ours, still wins. */
+:where(.bui *, .bui *::before, .bui *::after) {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0 solid;
+}
+:where(.bui button, .bui input, .bui textarea) {
+  font: inherit;
+  font-feature-settings: inherit;
+  font-variation-settings: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background-color: transparent;
+  border-radius: 0;
+  opacity: 1;
+}
+:where(.bui svg, .bui img, .bui video, .bui canvas) {
+  display: block;
+  vertical-align: middle;
+}
+:where(.bui img, .bui video) {
+  max-width: 100%;
+  height: auto;
+}
+:where(.bui a) {
+  color: inherit;
+  text-decoration: inherit;
+}
+.bui ::placeholder {
+  opacity: 1;
+  color: var(--ink-3);
+}
+.bui ::selection {
+  background: var(--accent-tint);
+  color: var(--ink);
+}
+.bui button:not(:disabled),
+.bui [role='button']:not([aria-disabled='true']),
+.bui a {
+  cursor: pointer;
+}
+.bui button:disabled {
+  cursor: default;
+}
+.bui textarea:focus-visible,
+.bui input:focus-visible {
+  outline: none;
+}
+.bui svg {
+  flex-shrink: 0;
+}
+
+/* ---------- keyframes ---------- */
+
+@keyframes bui-shimmer-text {
+  from {
+    background-position: 150% center;
+  }
+  to {
+    background-position: -50% center;
+  }
+}
+@keyframes bui-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes bui-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes bui-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes bui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes bui-caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes bui-pixel-on {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  18%,
+  42% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 0.15;
+  }
+}
+@keyframes bui-eq-bounce {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* ---------- atoms ---------- */
+
+.bui-shimmer {
+  display: inline-block;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  background-image: linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%);
+  background-size: 200% 100%;
+  animation: bui-shimmer-text 1.8s linear infinite;
+}
+
+.bui-spin {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  border: 1.5px solid var(--line-strong);
+  border-top-color: var(--ink-2);
+  animation: bui-spin 700ms linear infinite;
+}
+
+.bui-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: var(--ink-3);
+}
+.bui-dot--ready {
+  background: var(--green);
+}
+.bui-dot--offline {
+  background: var(--red);
+}
+.bui-dot--busy {
+  background: var(--orange);
+}
+
+/* Buttons: pill shaped, press snaps to .96 like the original (scale is not transitioned). */
+.bui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 500;
+  white-space: nowrap;
+  user-select: none;
+  transition:
+    transform 150ms var(--ease-out),
+    background-color 150ms var(--ease-out),
+    opacity 150ms var(--ease-out);
+}
+.bui-btn:active {
+  scale: 0.96;
+}
+.bui-btn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.bui-btn--primary {
+  background: var(--ink);
+  color: var(--canvas);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.bui-btn--primary:hover {
+  opacity: 0.9;
+}
+.bui-btn--secondary {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-btn);
+}
+.bui-btn--secondary:hover {
+  background: var(--inset);
+}
+.bui-btn--secondary[aria-expanded='true'] {
+  background: var(--hover);
+}
+.bui-btn--ghost {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+.bui-btn--ghost:hover {
+  background: var(--line-strong);
+}
+.bui-btn--accent {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.bui-btn--accent:hover {
+  background: var(--accent-ink);
+}
+.bui-btn--danger {
+  background: var(--red-tint);
+  color: var(--red);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--red) 28%, transparent);
+}
+.bui-btn--danger:hover {
+  background: color-mix(in oklch, var(--red) 22%, transparent);
+}
+.bui-btn--quiet {
+  color: var(--ink);
+}
+.bui-btn--quiet:hover {
+  background: var(--hover);
+}
+/* Not in BUI: a text link that behaves like a button ("Set up Claude"). */
+.bui-btn--link {
+  color: var(--accent-ink);
+  padding: 0;
+  height: auto;
+  font-size: inherit;
+}
+.bui-btn--link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.bui-btn--xs {
+  height: 28px;
+  border-radius: 9999px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  gap: 4px;
+}
+.bui-btn--sm {
+  height: 27px;
+  padding: 0 12px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 9999px;
+  gap: 6px;
+}
+.bui-btn--md {
+  padding: 9px 16px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 9999px;
+  gap: 8px;
+}
+.bui-btn--link.bui-btn--sm,
+.bui-btn--link.bui-btn--md,
+.bui-btn--link.bui-btn--xs {
+  height: auto;
+  padding: 0;
+  border-radius: 3px;
+}
+
+/* Monogram: Rukoo's hue scheme so it matches the avatars in the list and reader. */
+.bui-mono {
+  --h: 220;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 9999px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  background: hsl(var(--h) 38% 27%);
+  color: hsl(var(--h) 70% 84%);
+}
+:root.light .bui-mono {
+  background: hsl(var(--h) 60% 93%);
+  color: hsl(var(--h) 45% 32%);
+}
+.bui-mono.has-img,
+:root.light .bui-mono.has-img {
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+.bui-mono img {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  border-radius: 2px;
+}
+.bui-mono--agent {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+:root.light .bui-mono--agent {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+
+/* Entity chip: the composer's context chip (sender monogram, subject, remove). */
+.bui-entity {
+  display: inline-flex;
+  max-width: 100%;
+  height: 26px;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  background: var(--field);
+  padding: 0 8px 0 4px;
+  box-shadow: var(--shadow-hairline);
+  animation: bui-pop-in 200ms var(--ease-out-strong) both;
+}
+.bui-entity.has-remove {
+  padding-right: 3px;
+}
+.bui-entity__name {
+  flex-shrink: 0;
+  max-width: 144px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.bui-entity__sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.bui-entity__x {
+  display: flex;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  color: var(--ink-3);
+  transition:
+    color 100ms var(--ease-default),
+    background-color 100ms var(--ease-default);
+}
+.bui-entity__x:hover {
+  background: color-mix(in oklab, var(--line) 70%, transparent);
+  color: var(--ink);
+}
+
+/* Loading state: 3x3 pixel grid, shimmering label, live timer. */
+.bui-load {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 10px;
+}
+.bui-load__grid {
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: repeat(3, 4px);
+  gap: 1.5px;
+}
+.bui-load__cell {
+  width: 4px;
+  height: 4px;
+  background: var(--ink);
+  border-radius: 1px;
+  opacity: 0.15;
+  animation: bui-pixel-on 650ms ease-in-out var(--delay) infinite;
+}
+.bui-load__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-image: linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%);
+  background-size: 200% 100%;
+  animation: bui-shimmer-text 1.4s linear infinite;
+}
+.bui-load__time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- stream text ---------- */
+
+.bui-stream {
+  user-select: text;
+  font-size: 13px;
+  line-height: 1.625;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+/* :where() keeps these at the specificity of the spacing rule below, so the spacing wins. */
+.bui-stream :where(p, ul, ol, pre, blockquote) {
+  margin: 0;
+}
+.bui-stream p {
+  text-wrap: pretty;
+}
+.bui-stream > * + *,
+.bui-stream blockquote > * + * {
+  margin-top: 8px;
+}
+/* The markdown subset agents write: lists, code, quotes, headings as bold lines. */
+.bui-stream ul,
+.bui-stream ol {
+  padding-left: 20px;
+}
+.bui-stream li {
+  padding-left: 2px;
+}
+.bui-stream li + li,
+.bui-stream li > ul,
+.bui-stream li > ol {
+  margin-top: 3px;
+}
+.bui-stream li::marker {
+  color: var(--ink-3);
+}
+.bui-stream strong,
+.bui-stream .bui-md-h {
+  font-weight: 600;
+}
+.bui-stream code {
+  border-radius: 4px;
+  background: var(--field);
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+.bui-stream pre {
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--inset);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.bui-stream pre code {
+  border-radius: 0;
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.bui-stream blockquote {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 10px;
+  color: var(--ink-2);
+}
+.bui-stream hr,
+.bui-stream > * + hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.bui-stream a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-ink) 40%, transparent);
+  text-underline-offset: 2px;
+  transition: text-decoration-color 150ms var(--ease-default);
+}
+.bui-stream a:hover {
+  text-decoration-color: currentColor;
+}
+.bui-stream--interim {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.bui-stream__tail {
+  filter: blur(1.6px);
+  -webkit-mask-image: linear-gradient(to right, #000 20%, rgba(0, 0, 0, 0.2));
+  mask-image: linear-gradient(to right, #000 20%, rgba(0, 0, 0, 0.2));
+}
+.bui-stream__caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1.5px;
+  translate: 0 -0.5px;
+  border-radius: 1px;
+  background: var(--ink);
+  vertical-align: text-bottom;
+  animation: bui-caret-blink 1s step-end infinite;
+}
+.bui-stream__caret.is-streaming {
+  animation: none;
+}
+
+/* ---------- thinking ---------- */
+
+.bui-think {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+}
+.bui-think__head {
+  margin: 0 -6px;
+  display: flex;
+  width: fit-content;
+  max-width: calc(100% + 12px);
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 4px 6px;
+  text-align: left;
+  transition:
+    color 100ms var(--ease-default),
+    background-color 100ms var(--ease-default);
+}
+.bui-think.has-text .bui-think__head:hover {
+  background: var(--hover-2);
+}
+.bui-think__head:disabled {
+  cursor: default;
+}
+.bui-think__icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--ink-3);
+  transition: color 200ms var(--ease-default);
+}
+.bui-think.is-working .bui-think__icon {
+  color: var(--ink-2);
+}
+.bui-think__status {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.bui-think__active {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-image: linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%);
+  background-size: 200% 100%;
+  animation: bui-shimmer-text 1.4s linear infinite;
+}
+.bui-think__secs {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.bui-think__done {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--ink-2);
+  animation: bui-fade-in 350ms var(--ease-out) both;
+}
+.bui-think__chev {
+  color: var(--ink-3);
+  transition: transform 300ms var(--ease-default);
+}
+.bui-think.is-expanded .bui-think__chev {
+  transform: rotate(180deg);
+}
+.bui-think__collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 400ms var(--ease-out-strong),
+    opacity 400ms var(--ease-out-strong);
+}
+.bui-think.is-expanded > .bui-think__collapse {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.bui-think__collapse > div {
+  overflow: hidden;
+}
+.bui-think__wrap {
+  position: relative;
+  margin-top: 4px;
+  margin-left: 5px;
+  padding-left: 16px;
+}
+.bui-think__rail {
+  position: absolute;
+  left: 3px;
+  top: -8px;
+  width: 1px;
+  height: 0;
+  background: var(--line);
+  transition: height 500ms var(--ease-out-strong);
+}
+.bui-think__trace {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+.bui-think__text {
+  padding: 2px 6px;
+  font-size: 12.5px;
+  line-height: 1.625;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  animation: bui-fade-up 320ms var(--ease-out-strong) both;
+}
+
+/* ---------- tool chips ---------- */
+
+.bui-tools {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 4px;
+}
+.bui-tools__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+.bui-tool {
+  display: inline-flex;
+  height: 28px;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 0 8px 0 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  text-align: left;
+  box-shadow: var(--shadow-btn);
+  transition:
+    color 100ms var(--ease-default),
+    background-color 100ms var(--ease-default);
+  animation: bui-pop-in 250ms var(--ease-out-strong) both;
+}
+.bui-tool.has-detail:hover {
+  background: var(--hover);
+}
+.bui-tool[aria-expanded='true'] {
+  background: var(--hover-2);
+}
+.bui-tool:not(.has-detail) {
+  cursor: default;
+}
+.bui-tool__ico {
+  display: flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+}
+.bui-tool.is-rukoo .bui-tool__ico {
+  color: var(--accent-ink);
+}
+.bui-tool__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bui-tool.is-running .bui-tool__label {
+  color: var(--ink-2);
+}
+.bui-tool__count {
+  flex-shrink: 0;
+  margin-left: -2px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.bui-tool__status {
+  display: flex;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+.bui-tool.is-done .bui-tool__status {
+  color: var(--green);
+}
+.bui-tool.is-error .bui-tool__status {
+  color: var(--red);
+}
+.bui-tool__detail {
+  margin: 2px 0 2px 8px;
+  border-left: 1px solid var(--line);
+  padding: 2px 0 2px 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+  animation: bui-fade-up 200ms var(--ease-out-strong) both;
+}
+.bui-tool__detail.is-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* ---------- transcript lines ---------- */
+
+.bui-ubwrap {
+  display: flex;
+  justify-content: flex-end;
+  padding-left: 56px;
+}
+.bui-ub {
+  border-radius: 12px;
+  background: var(--field);
+  padding: 6px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  animation: bui-fade-up 300ms var(--ease-out-strong) both;
+}
+.bui-sys {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+  color: var(--ink-3);
+  animation: bui-fade-in 200ms var(--ease-out) both;
+}
+.bui-sys__ico {
+  display: flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--green);
+  color: #fff;
+}
+.bui-sys--declined .bui-sys__ico {
+  background: var(--red);
+}
+.bui-sys__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.bui-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  animation: bui-fade-in 200ms var(--ease-out) both;
+}
+.bui-notice__ico {
+  display: flex;
+  width: 16px;
+  height: 16px;
+  margin-top: 1.5px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--line-strong);
+  color: var(--ink-2);
+}
+.bui-notice--success .bui-notice__ico {
+  background: var(--green);
+  color: #fff;
+}
+.bui-notice--error .bui-notice__ico {
+  background: var(--red);
+  color: #fff;
+}
+.bui-notice--error .bui-notice__text {
+  color: var(--ink);
+}
+.bui-notice__text {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.bui-notice__undo {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-ink);
+  border-radius: 3px;
+}
+.bui-notice__undo:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------- done pill (approval, draft) ---------- */
+
+.bui-donepill {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  background: var(--green-tint);
+  padding: 4px 10px 4px 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--green);
+  animation: bui-pop-in 260ms var(--ease-out-strong) both;
+}
+.bui-donepill__circle {
+  display: flex;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--green);
+  color: #fff;
+}
+.bui-donepill > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bui-donepill--red {
+  background: var(--red-tint);
+  color: var(--red);
+}
+.bui-donepill--red .bui-donepill__circle {
+  background: var(--red);
+}
+.bui-donepill--grey {
+  background: var(--field);
+  color: var(--ink-2);
+}
+.bui-donepill--grey .bui-donepill__circle {
+  background: var(--ink-3);
+}
+
+/* ---------- approval card ---------- */
+
+.bui-approval {
+  width: 100%;
+}
+.bui-approval__card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  animation: bui-fade-up 380ms var(--ease-out-strong) both;
+}
+.bui-approval__pad {
+  padding: 12px;
+}
+.bui-approval__title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.bui-approval__detail {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.625;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.bui-approval__fields {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.bui-approval__k {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.bui-approval__v {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.bui-approval__text {
+  white-space: pre-wrap;
+}
+/* A command, path or file content: its label above, the value in a box across the card. */
+.bui-approval__k.is-code,
+.bui-approval__v.is-code {
+  grid-column: 1 / -1;
+}
+.bui-approval__v.is-code + .bui-approval__k {
+  margin-top: 4px;
+}
+.bui-approval__v.is-code .bui-approval__text {
+  border-radius: 6px;
+  background: var(--inset);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+/* Folded to about six lines until "Show all". */
+.bui-approval__v.is-folded .bui-approval__text {
+  max-height: calc(6 * 1.5em);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent);
+}
+.bui-approval__v.is-code.is-folded .bui-approval__text {
+  max-height: calc(6 * 1.55em + 12px);
+}
+.bui-approval__more {
+  margin-top: 2px;
+  border-radius: 4px;
+  padding: 1px 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-ink);
+}
+.bui-approval__more:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.bui-approval__cut {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.bui-approval__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 0 10px 10px;
+}
+.bui-approval__state {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding-left: 2px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.bui-approval__state .bui-shimmer {
+  font-size: 12px;
+  font-weight: 500;
+}
+.bui-approval__choice {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bui-approval__actions {
+  margin-left: auto;
+  margin-right: -2px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+/* Four choices: a row of their own, two by two, the primary last. The columns follow the labels
+   ("Toestaan voor dit antwoord" is long); on the narrowest panel they stack. */
+.bui-approval__card {
+  container: bui-approval / inline-size;
+}
+.bui-approval__actions.is-many {
+  flex-basis: 100%;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, auto));
+  justify-content: stretch;
+}
+@container bui-approval (max-width: 320px) {
+  .bui-approval__actions.is-many {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.bui-approval__actions.is-many > .bui-btn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Once answered, a card shrinks to its title and the outcome, so a run with several approvals stays readable. */
+.bui-approval:not([data-status='pending']) .bui-approval__detail,
+.bui-approval:not([data-status='pending']) .bui-approval__fields {
+  display: none;
+}
+.bui-approval:not([data-status='pending']) .bui-approval__pad {
+  padding-bottom: 8px;
+}
+.bui-approval:not([data-status='pending']) .bui-approval__title {
+  font-size: 13px;
+}
+.bui-approval[data-status='expired'] .bui-approval__title,
+.bui-approval[data-status='expired'] .bui-approval__detail,
+.bui-approval[data-status='expired'] .bui-approval__fields {
+  color: var(--ink-3);
+}
+
+/* ---------- plan (task rows, list variant) ---------- */
+
+.bui-plan,
+.bui-ctx {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+}
+.bui-plan__head,
+.bui-ctx__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  animation: bui-fade-in 400ms var(--ease-out) both;
+}
+.bui-plan__title,
+.bui-ctx__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.bui-count {
+  display: inline-flex;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  border-radius: 6px;
+  background: var(--inset);
+  padding: 0 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  box-shadow: var(--shadow-hairline);
+  font-variant-numeric: tabular-nums;
+}
+.bui-tasks {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+.bui-task {
+  --i: 0;
+  border-bottom: 1px solid var(--line);
+  transition: background-color 300ms var(--ease-default);
+  animation: bui-fade-up 450ms var(--ease-out-strong) calc(var(--i) * 80ms) both;
+}
+.bui-task:last-child {
+  border-bottom: 0;
+}
+.bui-task.has-detail:hover {
+  background: var(--inset);
+}
+.bui-task__head {
+  display: flex;
+  min-height: 44px;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.bui-task:not(.has-detail) .bui-task__head {
+  cursor: default;
+}
+.bui-task__slot {
+  display: flex;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+/* Up to two lines, so the title is readable at the default width; the tooltip has the rest. */
+.bui-task__label {
+  display: -webkit-box;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.bui-task.is-skipped .bui-task__label {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--ink-3) 60%, transparent);
+}
+.bui-task__amount {
+  flex-shrink: 0;
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.bui-task__pill {
+  display: inline-flex;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  animation: bui-fade-in 200ms var(--ease-out) both;
+}
+.bui-task__pill--done {
+  background: var(--green-tint);
+  color: var(--green);
+}
+.bui-task__pill--failed {
+  background: var(--red-tint);
+  color: var(--red);
+}
+.bui-task__pill--proposed {
+  background: var(--field);
+  color: var(--ink-2);
+  box-shadow: var(--shadow-hairline);
+}
+.bui-task__pill--skipped {
+  background: var(--field);
+  color: var(--ink-3);
+}
+.bui-task__chev {
+  margin-left: -8px;
+  display: flex;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  color: var(--ink-3);
+}
+.bui-task__chev svg {
+  transition: transform 300ms var(--ease-default);
+}
+.bui-task.is-open .bui-task__chev svg {
+  transform: rotate(180deg);
+}
+.bui-task__drawer {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 300ms var(--ease-out-strong),
+    opacity 300ms var(--ease-out-strong);
+}
+.bui-task.is-open > .bui-task__drawer {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.bui-task__clip {
+  overflow: hidden;
+}
+.bui-task__detail {
+  margin-bottom: 10px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 10px;
+}
+.bui-task__rail {
+  margin: 0 auto;
+  height: 100%;
+  width: 1px;
+  background: var(--line);
+}
+.bui-task__steps {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+.bui-task__text {
+  font-size: 12.5px;
+  line-height: 1.625;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.bui-task__step {
+  --j: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.bui-task.is-open .bui-task__step {
+  animation: bui-fade-up 300ms var(--ease-out-strong) calc(120ms + var(--j) * 100ms) both;
+}
+.bui-task__step > span:first-child {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.bui-task__step > span:first-child svg {
+  color: var(--ink-3);
+}
+.bui-task__meta {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.bui-task__link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-ink);
+  border-radius: 3px;
+}
+.bui-task__link > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bui-task__link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.bui-badge {
+  display: flex;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  color: #fff;
+  animation: bui-pop-in 300ms var(--ease-out-strong) both;
+}
+.bui-badge--green {
+  background: var(--green);
+}
+.bui-badge--red {
+  background: var(--red);
+}
+.bui-badge--grey {
+  background: var(--line-strong);
+  color: var(--ink-2);
+}
+.bui-ring {
+  position: relative;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+.bui-ring > svg {
+  position: absolute;
+  inset: 0;
+}
+.bui-ring.is-active > svg {
+  animation: bui-spin 1.1s linear infinite;
+}
+.bui-ring__n {
+  position: relative;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.bui-ring.is-muted .bui-ring__n {
+  color: var(--ink-3);
+}
+
+/* ---------- context cards (sources) ---------- */
+
+.bui-ctx__card {
+  --i: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  animation: bui-fade-up 400ms var(--ease-out-strong) calc(var(--i) * 100ms) both;
+}
+.bui-ctx__bar {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  transition: background-color 150ms var(--ease-default);
+}
+.bui-ctx__bar.is-link:hover {
+  background: var(--hover);
+}
+.bui-ctx__name {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.bui-ctx__name svg {
+  color: var(--ink-3);
+}
+.bui-ctx__name > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bui-ctx__size {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.bui-ctx__body {
+  margin: 0 0 4px;
+  padding: 8px 12px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  line-height: 1.625;
+  color: var(--ink-2);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+  user-select: text;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bui-ctx__foot {
+  padding: 6px 12px 12px;
+}
+.bui-ctx__body + .bui-ctx__foot {
+  padding-top: 6px;
+}
+.bui-ctx__chip {
+  --i: 0;
+  display: inline-flex;
+  max-width: 100%;
+  height: 24px;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  background: var(--inset);
+  padding: 0 8px 0 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-2);
+  box-shadow: var(--shadow-btn);
+  opacity: 0;
+  transform: scale(0.95);
+  transition:
+    opacity 300ms var(--ease-out-strong) calc(var(--i) * 80ms),
+    transform 300ms var(--ease-out-strong) calc(var(--i) * 80ms),
+    background-color 150ms var(--ease-default),
+    color 150ms var(--ease-default);
+}
+.bui-ctx.chips-shown .bui-ctx__chip {
+  opacity: 1;
+  transform: scale(1);
+}
+.bui-ctx__chip:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.bui-ctx__chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bui-ctx__chip svg:last-child {
+  color: var(--ink-3);
+}
+.bui-ctx__badge {
+  --h: 220;
+  display: flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+  background: hsl(var(--h) 38% 30%);
+  color: hsl(var(--h) 70% 86%);
+}
+:root.light .bui-ctx__badge {
+  background: hsl(var(--h) 55% 90%);
+  color: hsl(var(--h) 45% 32%);
+}
+.bui-ctx__badge--mail {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+:root.light .bui-ctx__badge--mail {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+
+/* ---------- recommendation card ---------- */
+
+.bui-rec {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  animation: bui-fade-up 380ms var(--ease-out-strong) both;
+}
+.bui-rec__top {
+  padding: 12px;
+}
+.bui-rec__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.bui-rec__title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.bui-rec__body {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.625;
+  color: var(--ink-2);
+  text-wrap: pretty;
+  animation: bui-fade-in 180ms var(--ease-out) both;
+}
+.bui-rec__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+.bui-rec__foot .bui-btn {
+  font-size: 12.5px;
+}
+
+/* ---------- draft card ---------- */
+
+.bui-draft {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  animation: bui-fade-up 380ms var(--ease-out-strong) both;
+}
+.bui-draft__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 0 12px;
+}
+.bui-draft__ico {
+  display: flex;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+.bui-draft__title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.bui-draft__acts {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+.bui-draft__meta {
+  padding: 2px 12px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+/* Margins, not padding: a clamped box clips at its padding edge, so bottom padding would show part of
+ * the next line. */
+.bui-draft__sum {
+  margin: 4px 12px 10px;
+  font-size: 12.5px;
+  line-height: 1.625;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  user-select: text;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bui-draft.is-undone .bui-draft__title,
+.bui-draft.is-undone .bui-draft__sum {
+  color: var(--ink-3);
+}
+.bui-draft.is-undone .bui-draft__ico {
+  background: var(--field);
+  color: var(--ink-3);
+}
+.bui-draft__undone {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  border-radius: 9999px;
+  background: var(--field);
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+/* ---------- suggestion chips ---------- */
+
+.bui-sugg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bui-sugg__chip {
+  --i: 0;
+  display: inline-flex;
+  height: 26px;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9999px;
+  background: var(--field);
+  padding: 0 10px 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-2);
+  white-space: nowrap;
+  box-shadow: var(--shadow-hairline);
+  transition:
+    color 100ms var(--ease-default),
+    background-color 100ms var(--ease-default);
+  animation: bui-pop-in 200ms var(--ease-out-strong) calc(var(--i) * 40ms) both;
+}
+.bui-sugg__chip svg {
+  color: var(--ink-3);
+  transition: color 100ms var(--ease-default);
+}
+.bui-sugg__chip:hover {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+.bui-sugg__chip:hover svg {
+  color: var(--ink-2);
+}
+.bui-sugg__chip:active {
+  scale: 0.97;
+}
+
+/* ---------- chat composer ---------- */
+
+.bui-pb {
+  position: relative;
+  width: 100%;
+}
+.bui-pb__box {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 6px;
+  box-shadow: var(--shadow-card);
+  transition: border-color 150ms var(--ease-default);
+}
+.bui-pb__box:focus-within {
+  border-color: var(--line-strong);
+}
+.bui-pb.is-disabled .bui-pb__box {
+  background: var(--inset);
+}
+.bui-pb__files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 2px 0;
+}
+.bui-pb__ta {
+  display: block;
+  min-height: 28px;
+  max-height: 120px;
+  min-width: 0;
+  width: 100%;
+  resize: none;
+  background: transparent;
+  padding: 5px 4px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink);
+  outline: none;
+  overflow-wrap: anywhere;
+  overflow-y: hidden;
+}
+.bui-pb__disabled {
+  display: flex;
+  min-height: 28px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 4px;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ink-3);
+}
+.bui-pb__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.bui-pb__spacer {
+  flex: 1;
+}
+.bui-pb__modelbtn {
+  display: flex;
+  height: 28px;
+  min-width: 0;
+  max-width: 70%;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-2);
+  transition:
+    color 150ms var(--ease-default),
+    background-color 150ms var(--ease-default);
+}
+.bui-pb__modelbtn:hover,
+.bui-pb__modelbtn[aria-expanded='true'] {
+  background: var(--hover);
+  color: var(--ink);
+}
+.bui-pb__modelbtn > span:not(.bui-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bui-pb__modelbtn > svg {
+  color: var(--ink-3);
+}
+.bui-pb__send {
+  display: flex;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--line-strong);
+  color: var(--ink-2);
+  transition:
+    background-color 200ms var(--ease-default),
+    color 200ms var(--ease-default);
+}
+.bui-pb__send:enabled {
+  background: var(--ink);
+  color: var(--surface);
+}
+.bui-pb__send:enabled:active {
+  scale: 0.94;
+}
+.bui-pb__menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 10;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 4px;
+  box-shadow: var(--shadow-raised);
+  animation: bui-pop-in 180ms var(--ease-out-strong) both;
+  transform-origin: bottom center;
+}
+.bui-pb__list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.bui-pb__menu .bui-glide__hl {
+  left: 0;
+  right: 0;
+  border-radius: 6px;
+}
+.bui-pb__cmd {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  height: 36px;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border-radius: 6px;
+  padding: 0 8px;
+  text-align: left;
+}
+.bui-pb__cmdicon {
+  display: flex;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-2);
+}
+.bui-pb__cmdname {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.bui-pb__cmddesc {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.bui-pb__empty {
+  display: flex;
+  height: 36px;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* ---------- glide menu (popover on body) ---------- */
+
+.bui-glide {
+  position: relative;
+}
+.bui-glide__hl {
+  pointer-events: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 0;
+  opacity: 0;
+  border-radius: 8px;
+  background: var(--hover);
+  transition:
+    top 220ms var(--ease-out-strong),
+    height 220ms var(--ease-out-strong),
+    opacity 150ms ease;
+}
+.bui-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 176px;
+  max-width: 320px;
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 4px;
+  box-shadow: var(--shadow-raised);
+  animation: bui-pop-in 180ms var(--ease-out-strong) both;
+}
+.bui-menu__list {
+  display: flex;
+  flex-direction: column;
+}
+.bui-menu .bui-glide__hl {
+  border-radius: 6px;
+}
+.bui-menu__row {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  height: 30px;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 0 8px;
+  text-align: left;
+}
+.bui-menu__row:focus-visible {
+  outline: none;
+}
+.bui-menu__ico {
+  display: flex;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-2);
+}
+.bui-menu__label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.bui-menu__tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.bui-menu__check {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--ink);
+  visibility: hidden;
+}
+.bui-menu__row.is-checked .bui-menu__check {
+  visibility: visible;
+}
+.bui-menu__sep {
+  margin: 4px 0;
+  height: 1px;
+  background: var(--line);
+}
+.bui-menu__heading {
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+/* ---------- reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .bui *,
+  .bui *::before,
+  .bui *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .bui-stream__caret {
+    animation: none;
+  }
+  .bui-stream__tail {
+    filter: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
+/* ---------- on the canvas ---------- */
+
+/* In Rukoo the chat sits on the canvas (the folders' grey), not on a card. What is drawn straight onto it
+ * takes the raised surface, so bubbles, chips and code keep their contrast in light mode too. */
+.agentpane .bui-ub,
+.agentpane .bui-sugg__chip,
+.agentpane .bui-stream code,
+.agentpane .bui-stream pre {
+  background: var(--raised);
+  box-shadow: var(--shadow-hairline);
+}
+.agentpane .bui-sugg__chip:hover {
+  background: var(--hover-2);
+}

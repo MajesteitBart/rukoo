@@ -23,6 +23,10 @@ const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
+// ---- agents ----
+const { clipboard } = require('electron');
+const { AgentHub } = require('./agents');
+// ---- /agents ----
 
 const APP_ID = 'nl.bvdm.rukoo-mail';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
@@ -66,6 +70,9 @@ let engine = null;
 let google = null;
 let syncTimer = null;
 let newSinceFocus = 0;
+// ---- agents ----
+let hub = null;
+// ---- /agents ----
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -489,6 +496,78 @@ const api = {
   appInfo: () => ({ version: app.getVersion(), dataDir: app.getPath('userData') })
 };
 
+// ---- agents ----
+// The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
+const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+const agentId = (v) => {
+  if (typeof v !== 'string' || !v || v.length > 200) throw new Error('invalid');
+  return v;
+};
+const agentPlain = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+function agentHub() {
+  if (!hub) throw new Error('unknown');
+  return hub;
+}
+function agentMessage(m) {
+  if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !m.id) return null;
+  const from = m.from && typeof m.from === 'object' ? { name: agentText(m.from.name, 200), address: agentText(m.from.address, 320) } : null;
+  return {
+    id: m.id.slice(0, 2000),
+    messageId: agentText(m.messageId, 1000) || null,
+    accountId: agentText(m.accountId, 200) || null,
+    subject: agentText(m.subject, 1000),
+    from,
+    date: Number(m.date) || null,
+    unsubscribe: m.unsubscribe === true
+  };
+}
+Object.assign(api, {
+  agentConfig: () => agentHub().config(),
+  agentUpdateConfig: (patch) => agentHub().updateConfig(agentPlain(patch)),
+  agentSetSecret: (agent, value) => agentHub().setSecret(agentId(agent), agentText(value, 4000)),
+  agentTest: (agent) => agentHub().test(agentId(agent)),
+  agentStatus: () => agentHub().status(),
+  agentCopyHermesSetup: () => agentHub().copyHermesSetup(),
+  agentRotateToken: () => agentHub().rotateToken(),
+  agentList: () => agentHub().list(),
+  agentGet: (id) => agentHub().get(agentId(id)),
+  agentFindFor: (ref) => {
+    const r = agentPlain(ref);
+    return agentHub().findFor({ id: agentText(r.id, 2000), messageId: agentText(r.messageId, 1000) });
+  },
+  agentCreate: (input) => {
+    const i = agentPlain(input);
+    return agentHub().create({ agent: agentText(i.agent, 20), message: agentMessage(i.message) });
+  },
+  agentSend: (id, input) => {
+    const i = agentPlain(input);
+    return agentHub().send(agentId(id), {
+      text: agentText(i.text, 20000),
+      action: agentText(i.action, 40) || null,
+      display: agentText(i.display, 20000) || null
+    });
+  },
+  agentStop: (id) => agentHub().stop(agentId(id)),
+  agentDecide: (id, itemId, choiceId) => agentHub().decide(agentId(id), agentId(itemId), agentId(choiceId)),
+  agentRemove: (id) => agentHub().remove(agentId(id)),
+  agentView: (state) => agentHub().view(agentPlain(state)),
+  agentUiReply: (requestId, ok, result) => agentHub().uiReply(agentId(requestId), ok === true, result === undefined ? null : result),
+  agentUndo: (id, itemId) => agentHub().undo(agentId(id), agentId(itemId)),
+  agentPatchItem: (id, itemId, patch) => {
+    const p = agentPlain(patch);
+    if (Object.keys(p).length !== 1 || typeof p.undone !== 'boolean') throw new Error('invalid');
+    return agentHub().patchItem(agentId(id), agentId(itemId), { undone: p.undone });
+  },
+  // Links in agent cards (sources, plan tasks). Besides what any link may open, an Obsidian note can open
+  // here; mail frames keep using openExternal, so a link in an email never starts an Obsidian action.
+  openAgentLink: (url) => {
+    const u = agentText(url, 2000).trim();
+    if (/^obsidian:\/\/(open|search)\b/i.test(u)) return shell.openExternal(u);
+    return openUrl(u);
+  }
+});
+// ---- /agents ----
+
 // Calls that act on the window that makes them.
 const windowApi = {
   composeInit: (sender) => {
@@ -570,6 +649,26 @@ app.whenReady().then(() => {
     if (engine.settings.badge === 'unread') refreshBadge();
   });
   engine.on('new-mail', notify);
+  // ---- agents ----
+  // Starts in the background: the panel shows "starting" until the first 'agents' status event.
+  hub = new AgentHub({
+    engine,
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    secrets,
+    deps: {
+      unsubscribe: (id) => api.unsubscribe(id),
+      // A mailto-only unsubscribe opens a filled-in compose window; the user sends it.
+      openMailto: (url) => openUrl(url),
+      appVersion: app.getVersion(),
+      clipboard,
+      hasWindow: () => Boolean(win && !win.isDestroyed()),
+      workspace: path.join(app.getPath('userData'), 'agent-workspace')
+    }
+  });
+  hub.on('event', (payload) => send('agent', payload));
+  if (process.env.SEM_HIDDEN) global.__semAgents = hub;
+  hub.start().catch((err) => console.error('[agents] start failed:', err));
+  // ---- /agents ----
   nativeTheme.on('updated', () => {
     applyTheme();
     broadcast('theme');
@@ -586,3 +685,18 @@ app.on('before-quit', () => {
   clearInterval(syncTimer);
   if (engine) engine.flush();
 });
+
+// ---- agents ----
+// dispose() stops turns, kills agent processes and flushes the conversations synchronously before its first
+// await. The rest is network: Clark's runs only end with a stop request, which a process that exits right away
+// never sends. So the quit waits once, until dispose is done or 2.5 s have passed.
+let agentsDisposed = false;
+app.on('before-quit', (event) => {
+  if (!hub || agentsDisposed) return;
+  agentsDisposed = true;
+  event.preventDefault();
+  Promise.race([hub.dispose(), new Promise((resolve) => setTimeout(resolve, 2500))])
+    .catch(() => {})
+    .finally(() => app.quit());
+});
+// ---- /agents ----

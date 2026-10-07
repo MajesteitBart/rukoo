@@ -21,6 +21,802 @@
     "message": "··· excluded",
     "description": "Composer: collapsed previous-message pill when the quoted email is excluded from sending."
   },
+  "agent.actions.brief.description": {
+    "message": "Who this is and what you should know",
+    "description": "Chat panel slash command menu: one-line description of the brief quick action."
+  },
+  "agent.actions.brief.label": {
+    "message": "Brief me",
+    "description": "Chat panel quick action chip: the agent explains who the sender is and what to know before replying."
+  },
+  "agent.actions.reply.description": {
+    "message": "Write a reply in the composer",
+    "description": "Chat panel slash command menu: one-line description of the reply quick action."
+  },
+  "agent.actions.reply.label": {
+    "message": "Draft a reply",
+    "description": "Chat panel quick action chip and slash command label: the agent writes a reply into the composer."
+  },
+  "agent.actions.summary.description": {
+    "message": "The email and its thread in three bullets",
+    "description": "Chat panel slash command menu: one-line description of the summary quick action."
+  },
+  "agent.actions.summary.label": {
+    "message": "Summarize",
+    "description": "Chat panel quick action chip: the agent summarizes the email and its thread."
+  },
+  "agent.actions.tasks.description": {
+    "message": "Turn the email into tasks",
+    "description": "Chat panel slash command menu: one-line description of the follow-ups quick action."
+  },
+  "agent.actions.tasks.label": {
+    "message": "Plan follow-ups",
+    "description": "Chat panel quick action chip: the agent turns the email into follow-up tasks."
+  },
+  "agent.actions.team.description": {
+    "message": "Share the key points with your team",
+    "description": "Chat panel slash command menu: one-line description of the tell-the-team quick action."
+  },
+  "agent.actions.team.label": {
+    "message": "Tell the team",
+    "description": "Chat panel quick action chip: the agent writes a short message for the team instead of forwarding."
+  },
+  "agent.actions.triage.description": {
+    "message": "Go through the inbox, most urgent first",
+    "description": "Chat panel slash command menu: one-line description of the inbox overview quick action."
+  },
+  "agent.actions.triage.label": {
+    "message": "What needs me today?",
+    "description": "Chat panel quick action chip when no email is open: the agent goes through the inbox."
+  },
+  "agent.actions.unsubscribe.description": {
+    "message": "Stop mail from this sender",
+    "description": "Chat panel slash command menu: one-line description of the unsubscribe quick action."
+  },
+  "agent.actions.unsubscribe.label": {
+    "message": "Unsubscribe",
+    "description": "Chat panel quick action chip, shown for newsletters: the agent unsubscribes after approval."
+  },
+  "agent.actions.update.description": {
+    "message": "Record it in your CRM, notes or tasks",
+    "description": "Chat panel slash command menu: one-line description of the update-systems quick action."
+  },
+  "agent.actions.update.label": {
+    "message": "Update systems",
+    "description": "Chat panel quick action chip: the agent records the email in CRM, notes or task systems."
+  },
+  "agent.approval.changeFiles": {
+    "message": "{name} wants to change files",
+    "description": "Chat transcript approval card title: the agent asks to write or edit files. name: agent name."
+  },
+  "agent.approval.command": {
+    "message": "{name} wants to run a command",
+    "description": "Chat transcript approval card title: the agent asks to run a shell command. name: agent name."
+  },
+  "agent.approval.permissions": {
+    "message": "{name} wants more permissions",
+    "description": "Chat transcript approval card title: the agent asks for extra sandbox permissions (network, writing files). name: agent name."
+  },
+  "agent.approval.readFile": {
+    "message": "{name} wants to read a file",
+    "description": "Chat transcript approval card title: the agent asks to read a file on this computer. name: agent name."
+  },
+  "agent.approval.tool": {
+    "message": "{name} wants to use {tool}",
+    "description": "Chat transcript approval card title for any other tool. name: agent name; tool: the tool, for example \"todoist · add_task\"."
+  },
+  "agent.approval.web": {
+    "message": "{name} wants to open a web page",
+    "description": "Chat transcript approval card title: the agent asks to fetch a web page. name: agent name."
+  },
+  "agent.approval.field.after": {
+    "message": "New text",
+    "description": "Chat transcript approval card field label: the text an edit puts in."
+  },
+  "agent.approval.field.before": {
+    "message": "Old text",
+    "description": "Chat transcript approval card field label: the text an edit replaces."
+  },
+  "agent.approval.field.command": {
+    "message": "Command",
+    "description": "Chat transcript approval card field label: the shell command to run."
+  },
+  "agent.approval.field.content": {
+    "message": "Content",
+    "description": "Chat transcript approval card field label: what the agent writes into a file."
+  },
+  "agent.approval.field.diff": {
+    "message": "Changes",
+    "description": "Chat transcript approval card field label: the diff of a file change."
+  },
+  "agent.approval.field.file": {
+    "message": "File",
+    "description": "Chat transcript approval card field label: the file the agent wants to read or change."
+  },
+  "agent.approval.field.folder": {
+    "message": "Folder",
+    "description": "Chat transcript approval card field label: the folder a command runs in."
+  },
+  "agent.approval.field.path": {
+    "message": "Path",
+    "description": "Chat transcript approval card field label: a file or folder path."
+  },
+  "agent.approval.field.pattern": {
+    "message": "Pattern",
+    "description": "Chat transcript approval card field label: the search pattern of a file search."
+  },
+  "agent.approval.field.query": {
+    "message": "Search",
+    "description": "Chat transcript approval card field label: what the agent wants to search for."
+  },
+  "agent.approval.field.reason": {
+    "message": "Reason",
+    "description": "Chat transcript approval card field label: why the agent asks."
+  },
+  "agent.approval.field.url": {
+    "message": "Web address",
+    "description": "Chat transcript approval card field label: the web page the agent wants to open."
+  },
+  "agent.approval.showAll": {
+    "message": "Show all",
+    "description": "Chat transcript approval card: unfolds a long command or file content."
+  },
+  "agent.approval.showLess": {
+    "message": "Show less",
+    "description": "Chat transcript approval card: folds a long value again."
+  },
+  "agent.approval.truncated": {
+    "message": { "one": "{shown} more character not shown", "other": "{shown} more characters not shown" },
+    "description": "Chat transcript approval card, under a value Rukoo had to shorten (over 20,000 characters). shown: the number, formatted."
+  },
+  "agent.choices.accept": {
+    "message": "Allow",
+    "description": "Chat transcript approval button: allow this command or change."
+  },
+  "agent.choices.acceptForSession": {
+    "message": "Allow for this chat",
+    "description": "Chat transcript approval button: allow similar requests for the rest of this chat."
+  },
+  "agent.choices.allow": {
+    "message": "Allow",
+    "description": "Chat transcript approval button: let the agent do it."
+  },
+  "agent.choices.always": {
+    "message": "Always allow",
+    "description": "Chat transcript approval button: allow this from now on."
+  },
+  "agent.choices.approve": {
+    "message": "Approve",
+    "description": "Chat transcript approval button for a proposed action."
+  },
+  "agent.choices.cancel": {
+    "message": "Cancel",
+    "description": "Chat transcript approval button: cancel the request."
+  },
+  "agent.choices.decline": {
+    "message": "Decline",
+    "description": "Chat transcript approval button that turns down a proposed action."
+  },
+  "agent.choices.deny": {
+    "message": "Deny",
+    "description": "Chat transcript approval button: do not let the agent do it."
+  },
+  "agent.choices.once": {
+    "message": "Allow once",
+    "description": "Chat transcript approval button: allow this one time."
+  },
+  "agent.choices.session": {
+    "message": "Allow for this turn",
+    "description": "Chat transcript approval button: allow until the agent finishes this answer."
+  },
+  "agent.draft.forward": {
+    "message": "Wrote a forward",
+    "description": "Chat transcript draft card title: the agent wrote a forwarded email."
+  },
+  "agent.draft.gone": {
+    "message": "That draft is no longer open.",
+    "description": "Toast when you use Show or Undo on a draft card but the composer was closed."
+  },
+  "agent.draft.cannotUndo": {
+    "message": "Can't undo this draft anymore",
+    "description": "Tooltip on the disabled Undo button of a draft card: its composer closed or the agent wrote again after your edits."
+  },
+  "agent.draft.new": {
+    "message": "Wrote a new email",
+    "description": "Chat transcript draft card title: the agent wrote a new email."
+  },
+  "agent.draft.reply": {
+    "message": "Wrote a reply",
+    "description": "Chat transcript draft card title: the agent wrote a reply in the composer."
+  },
+  "agent.draft.replyAll": {
+    "message": "Wrote a reply to all",
+    "description": "Chat transcript draft card title: the agent wrote a reply to all."
+  },
+  "agent.draft.show": {
+    "message": "Show",
+    "description": "Chat transcript draft card button that shows the draft in the composer."
+  },
+  "agent.draft.undone": {
+    "message": "Undone",
+    "description": "Chat transcript draft card: state after you undid the draft."
+  },
+  "agent.empty.body": {
+    "message": "Looks things up and writes the draft. Sending stays with you.",
+    "description": "Chat panel empty state line under the heading while an email is open."
+  },
+  "agent.empty.bodyNoEmail": {
+    "message": "Open an email to work on it, or start with what needs you today.",
+    "description": "Chat panel empty state line under the heading without an open email."
+  },
+  "agent.empty.setupBody": {
+    "message": "Rukoo needs a few details before it can reach {name}.",
+    "description": "Chat panel empty state line when the agent is not set up; the setup link is below."
+  },
+  "agent.empty.setupTitle": {
+    "message": "Set up {name} to start",
+    "description": "Chat panel empty state heading when the agent is not set up or installed."
+  },
+  "agent.empty.title": {
+    "message": "What should {name} do with this email?",
+    "description": "Chat panel empty state heading while an email is open; name is the agent."
+  },
+  "agent.empty.titleNoEmail": {
+    "message": "Ask {name} about your mail",
+    "description": "Chat panel empty state heading without an open email; name is the agent."
+  },
+  "agent.errors.busy": {
+    "message": "{name} is still working on the last message.",
+    "description": "Chat panel error: a message was sent while the agent was still busy."
+  },
+  "agent.errors.disabled": {
+    "message": "{name} is turned off in Settings.",
+    "description": "Chat panel error: the agent is switched off."
+  },
+  "agent.errors.not-configured": {
+    "message": "{name} isn't set up yet.",
+    "description": "Chat panel error: the agent has no address or key."
+  },
+  "agent.errors.not-installed": {
+    "message": "{name} isn't installed on this computer.",
+    "description": "Chat panel error: the agent program was not found."
+  },
+  "agent.errors.offline": {
+    "message": "Can't reach {name}.",
+    "description": "Chat panel error: the agent server or program did not answer; name is the agent."
+  },
+  "agent.errors.protocol": {
+    "message": "{name} sent something Rukoo didn't understand.",
+    "description": "Chat panel error: unexpected response from the agent."
+  },
+  "agent.errors.rate-limited": {
+    "message": "{name} is getting too many requests. Try again in a moment.",
+    "description": "Chat panel error: the agent answered with a rate limit."
+  },
+  "agent.errors.spawn-failed": {
+    "message": "{name} didn't start.",
+    "description": "Chat panel error: the agent program could not be started or stopped unexpectedly."
+  },
+  "agent.errors.stopped": {
+    "message": "Stopped.",
+    "description": "Chat panel: shown when the turn was stopped."
+  },
+  "agent.errors.timeout": {
+    "message": "{name} took too long to answer.",
+    "description": "Chat panel error: the agent did not answer in time."
+  },
+  "agent.errors.unauthorized": {
+    "message": "{name} didn't accept the key or token.",
+    "description": "Chat panel error: authentication with the agent failed."
+  },
+  "agent.errors.unknown": {
+    "message": "Something went wrong.",
+    "description": "Chat panel error: fallback when the cause is not known."
+  },
+  "agent.notices.kept-approval": {
+    "message": "Not done yet: {title}. {name} hears about your approval with your next message.",
+    "description": "Chat transcript info line: you approved a proposal, but the follow-up turn could not start (for example the app quit). title is the proposal, name the agent."
+  },
+  "agent.notices.new-session": {
+    "message": "{name} started a new session",
+    "description": "Chat panel info line: Claude Code no longer had this chat's session, so it started a fresh one without the earlier messages. name is the agent name."
+  },
+  "agent.notices.new-thread": {
+    "message": "{name} started a new thread",
+    "description": "Chat panel info line: Codex could not reopen this chat's thread, so it started a fresh one without the earlier messages. name is the agent name."
+  },
+  "agent.errors.window": {
+    "message": "Rukoo's main window is closed.",
+    "description": "Chat panel error: an agent needed the main window, which was closed."
+  },
+  "agent.items.approved": {
+    "message": "Approved",
+    "description": "Chat transcript approval card: state after you approved."
+  },
+  "agent.items.denied": {
+    "message": "Declined",
+    "description": "Chat transcript approval card: state after you declined or denied."
+  },
+  "agent.items.emailSource": {
+    "message": "Email",
+    "description": "Chat transcript: label on a source card that points to an email in Rukoo."
+  },
+  "agent.items.plan": {
+    "message": "Plan",
+    "description": "Chat transcript: heading of a plan card when the agent gave it no title."
+  },
+  "agent.items.sources": {
+    "message": "Sources",
+    "description": "Chat transcript: heading of the sources card when the agent gave it no title."
+  },
+  "agent.items.expired": {
+    "message": "Expired",
+    "description": "Chat transcript approval card: the request ended before you answered."
+  },
+  "agent.items.thinking": {
+    "message": "Thinking",
+    "description": "Chat transcript: shimmering label while the agent reasons."
+  },
+  "agent.items.thoughtFor": {
+    "message": "Thought for {count}s",
+    "description": "Chat transcript: label after the agent reasoned; count is seconds."
+  },
+  "agent.items.waiting": {
+    "message": "Waiting for you",
+    "description": "Chat transcript approval card: state while the agent waits for your answer."
+  },
+  "agent.items.working": {
+    "message": "{name} is working on it...",
+    "description": "Chat transcript: shown after you send a message, before the agent responds."
+  },
+  "agent.items.youApproved": {
+    "message": "You approved",
+    "description": "Chat transcript: compact line before the title of something you approved."
+  },
+  "agent.items.youDeclined": {
+    "message": "You declined",
+    "description": "Chat transcript: compact line before the title of something you declined."
+  },
+  "agent.mail.unsubscribeEmailMany": {
+    "message": "Opened {count} unsubscribe emails. Send them to finish.",
+    "description": "Chat transcript notice: senders only offer unsubscribing by email, so Rukoo opened that many prepared emails for you to send."
+  },
+  "agent.mail.unsubscribeEmailOne": {
+    "message": "Opened an unsubscribe email to {address}. Send it to finish.",
+    "description": "Chat transcript notice: the sender only offers unsubscribing by email; Rukoo opened a prepared email to address for you to send."
+  },
+  "agent.mail.archive": {
+    "message": { "one": "Archived {count} email", "other": "Archived {count} emails" },
+    "description": "Chat transcript notice after Rukoo archived mail for an agent; count is the number of emails."
+  },
+  "agent.mail.mark_read": {
+    "message": { "one": "Marked {count} email as read", "other": "Marked {count} emails as read" },
+    "description": "Chat transcript notice after Rukoo marked mail as read for an agent."
+  },
+  "agent.mail.mark_unread": {
+    "message": { "one": "Marked {count} email as unread", "other": "Marked {count} emails as unread" },
+    "description": "Chat transcript notice after Rukoo marked mail as unread for an agent."
+  },
+  "agent.mail.move": {
+    "message": { "one": "Moved {count} email to {folder}", "other": "Moved {count} emails to {folder}" },
+    "description": "Chat transcript notice after Rukoo moved mail for an agent; folder is the folder path."
+  },
+  "agent.mail.star": {
+    "message": { "one": "Starred {count} email", "other": "Starred {count} emails" },
+    "description": "Chat transcript notice after Rukoo added a star to mail for an agent."
+  },
+  "agent.mail.trash": {
+    "message": { "one": "Moved {count} email to Trash", "other": "Moved {count} emails to Trash" },
+    "description": "Chat transcript notice after Rukoo deleted mail for an agent (moved to the trash)."
+  },
+  "agent.mail.undo": {
+    "message": { "one": "Put {count} email back", "other": "Put {count} emails back" },
+    "description": "Chat transcript notice after you undid a mail action from the chat."
+  },
+  "agent.mail.unstar": {
+    "message": { "one": "Removed the star from {count} email", "other": "Removed the star from {count} emails" },
+    "description": "Chat transcript notice after Rukoo removed stars for an agent."
+  },
+  "agent.panel.ask": {
+    "message": "Ask an agent about this email (Ctrl+J)",
+    "description": "Reader toolbar button tooltip that opens or closes the chat panel."
+  },
+  "agent.panel.close": {
+    "message": "Close chat",
+    "description": "Chat panel header: tooltip of the button that closes the panel."
+  },
+  "agent.panel.history": {
+    "message": "Recent chats",
+    "description": "Chat panel header: tooltip of the clock button that lists earlier conversations."
+  },
+  "agent.panel.jump": {
+    "message": "Go to the latest message",
+    "description": "Chat panel: tooltip of the arrow that scrolls back down after you scrolled up."
+  },
+  "agent.panel.label": {
+    "message": "Agent chat",
+    "description": "Chat panel: accessible name of the side panel where you chat with an agent."
+  },
+  "agent.panel.needsEmail": {
+    "message": "Open an email first.",
+    "description": "Chat panel toast: an email quick action was picked while no email is attached."
+  },
+  "agent.panel.needsYou": {
+    "message": "An agent is waiting for your approval",
+    "description": "Toast when an agent asks for approval in a chat that is not on screen."
+  },
+  "agent.panel.draftBlocked": {
+    "message": "{name} has a draft for you. Finish or close the email you're writing first.",
+    "description": "Toast when a chat that is not on screen wants to write a draft while you are writing another email. name: agent name."
+  },
+  "agent.panel.new": {
+    "message": "New chat",
+    "description": "Chat panel header: tooltip of the plus button that starts a new conversation."
+  },
+  "agent.panel.newChat": {
+    "message": "New chat",
+    "description": "Chat panel header: title line for a conversation without a title yet, and history fallback."
+  },
+  "agent.panel.noHistory": {
+    "message": "No chats yet",
+    "description": "Chat panel history menu: shown when there are no earlier conversations."
+  },
+  "agent.panel.noMatches": {
+    "message": "No matching commands",
+    "description": "Chat panel slash command menu: shown when no command matches what you typed."
+  },
+  "agent.panel.pickAgent": {
+    "message": "Choose agent",
+    "description": "Chat panel input: label of the agent picker (Hermes, Claude Code, Codex)."
+  },
+  "agent.panel.placeholder": {
+    "message": "Ask {name}...",
+    "description": "Chat panel input placeholder without an email; name is the agent name."
+  },
+  "agent.panel.placeholderEmail": {
+    "message": "Ask {name} about this email...",
+    "description": "Chat panel input placeholder while an email is attached; name is the agent name."
+  },
+  "agent.panel.removeContext": {
+    "message": "Leave this email out",
+    "description": "Chat panel input: tooltip of the x on the email chip; the next chat starts without the email."
+  },
+  "agent.panel.send": {
+    "message": "Send",
+    "description": "Chat panel input: label of the button that sends your chat message (not an email)."
+  },
+  "agent.panel.setUp": {
+    "message": "Set up {name}",
+    "description": "Chat panel: link-style button that opens Settings, Agents; name is the agent name."
+  },
+  "agent.panel.show": {
+    "message": "Show",
+    "description": "Toast action that opens the chat with the waiting approval."
+  },
+  "agent.panel.stop": {
+    "message": "Stop",
+    "description": "Chat panel input: label of the button that stops the agent while it works."
+  },
+  "agent.panel.toggle": {
+    "message": "Chat with an agent (Ctrl+J)",
+    "description": "Title bar button tooltip that opens or closes the chat panel."
+  },
+  "agent.panel.transcript": {
+    "message": "Conversation",
+    "description": "Chat panel: accessible name of the list of messages in the conversation."
+  },
+  "agent.panel.width": {
+    "message": "Chat panel width",
+    "description": "Chat panel: accessible name of the divider that resizes the panel."
+  },
+  "agent.plan.done": {
+    "message": "Done",
+    "description": "Chat transcript plan rows: status of a finished step."
+  },
+  "agent.plan.failed": {
+    "message": "Failed",
+    "description": "Chat transcript plan rows: status of a step that did not work."
+  },
+  "agent.plan.proposed": {
+    "message": "Proposed",
+    "description": "Chat transcript plan rows: status of a proposed step."
+  },
+  "agent.plan.running": {
+    "message": "In progress",
+    "description": "Chat transcript plan rows: status of a step the agent is working on."
+  },
+  "agent.plan.skipped": {
+    "message": "Skipped",
+    "description": "Chat transcript plan rows: status of a step the agent skipped."
+  },
+  "agent.plan.todo": {
+    "message": "To do",
+    "description": "Chat transcript plan rows: status of a step that is planned."
+  },
+  "agent.setup.disabled": {
+    "message": "{name} is turned off.",
+    "description": "Chat panel, above the disabled input: the agent is switched off in Settings."
+  },
+  "agent.setup.missing": {
+    "message": "{name} isn't installed on this computer.",
+    "description": "Chat panel, above the disabled input: the agent program was not found."
+  },
+  "agent.setup.unauthorized": {
+    "message": "{name} didn't accept the API key.",
+    "description": "Chat panel, above the disabled input: the agent rejected the key."
+  },
+  "agent.setup.unconfigured": {
+    "message": "{name} isn't set up yet.",
+    "description": "Chat panel, above the disabled input: the agent needs an address or key; name is the agent."
+  },
+  "agent.status.disabled": {
+    "message": "Turned off",
+    "description": "Chat panel and Settings: agent status when it is switched off in Settings."
+  },
+  "agent.status.missing": {
+    "message": "Not installed",
+    "description": "Chat panel and Settings: agent status when its program is not found on this computer."
+  },
+  "agent.status.offline": {
+    "message": "Can't be reached",
+    "description": "Chat panel and Settings: agent status when its server or program does not answer."
+  },
+  "agent.status.ready": {
+    "message": "Ready",
+    "description": "Chat panel and Settings: agent status when it can take a message."
+  },
+  "agent.status.starting": {
+    "message": "Starting...",
+    "description": "Chat panel and Settings: agent status while Rukoo connects to the agents."
+  },
+  "agent.status.unauthorized": {
+    "message": "Key not accepted",
+    "description": "Chat panel and Settings: agent status when the agent rejects the API key or token."
+  },
+  "agent.status.unavailable": {
+    "message": "Agents aren't available",
+    "description": "Chat panel header and input: shown when this build has no agent support."
+  },
+  "agent.status.unconfigured": {
+    "message": "Not set up",
+    "description": "Chat panel and Settings: agent status when the address or key is missing."
+  },
+  "agent.status.unknown": {
+    "message": "Status unknown",
+    "description": "Chat panel and Settings: agent status when Rukoo cannot tell."
+  },
+  "agent.tools.generic.command": {
+    "message": "Ran a command",
+    "description": "Chat transcript tool chip: the agent ran a shell or terminal command."
+  },
+  "agent.tools.generic.code": {
+    "message": "Ran code",
+    "description": "Chat transcript tool chip: the agent ran a piece of code."
+  },
+  "agent.tools.generic.webSearch": {
+    "message": "Searched the web",
+    "description": "Chat transcript tool chip: the agent ran a web search."
+  },
+  "agent.tools.generic.webPage": {
+    "message": "Opened a web page",
+    "description": "Chat transcript tool chip: the agent fetched or read a web page."
+  },
+  "agent.tools.generic.browser": {
+    "message": "Used the browser",
+    "description": "Chat transcript tool chip: the agent clicked or navigated in a browser."
+  },
+  "agent.tools.generic.readFile": {
+    "message": "Read a file",
+    "description": "Chat transcript tool chip: the agent read a file on its own machine."
+  },
+  "agent.tools.generic.changeFiles": {
+    "message": "Changed files",
+    "description": "Chat transcript tool chip: the agent wrote or edited files."
+  },
+  "agent.tools.generic.subagent": {
+    "message": "Ran a subagent",
+    "description": "Chat transcript tool chip: the agent handed part of the work to a helper agent."
+  },
+  "agent.tools.generic.findFiles": {
+    "message": "Looked through files",
+    "description": "Chat transcript tool chip: the agent searched or listed files."
+  },
+  "agent.tools.generic.todo": {
+    "message": "Updated its to-do list",
+    "description": "Chat transcript tool chip: the agent updated its own internal to-do list."
+  },
+  "agent.tools.generic.lookupTools": {
+    "message": "Looked up its tools",
+    "description": "Chat transcript tool chip: the agent looked up which tools it has."
+  },
+  "agent.tools.generic.memory": {
+    "message": "Checked its memory",
+    "description": "Chat transcript tool chip: the agent read or searched its long-term memory."
+  },
+  "agent.tools.generic.skill": {
+    "message": "Read a skill",
+    "description": "Chat transcript tool chip: the agent read one of its skills (instructions it keeps)."
+  },
+  "agent.tools.generic.pastChats": {
+    "message": "Searched past chats",
+    "description": "Chat transcript tool chip: the agent searched its earlier conversations."
+  },
+  "agent.tools.generic.schedule": {
+    "message": "Scheduled a job",
+    "description": "Chat transcript tool chip: the agent created or changed a scheduled job."
+  },
+  "agent.tools.generic.sendMessage": {
+    "message": "Sent a message",
+    "description": "Chat transcript tool chip: the agent sent a message on another channel such as WhatsApp or Slack."
+  },
+  "agent.tools.generic.image": {
+    "message": "Made an image",
+    "description": "Chat transcript tool chip: the agent generated an image."
+  },
+  "agent.tools.generic.vision": {
+    "message": "Looked at an image",
+    "description": "Chat transcript tool chip: the agent analysed an image."
+  },
+  "agent.tools.get_context": {
+    "message": "Looked at your screen",
+    "description": "Chat transcript tool chip: the agent read what Rukoo shows (open email, selection, draft)."
+  },
+  "agent.tools.get_draft": {
+    "message": "Checked the draft",
+    "description": "Chat transcript tool chip: the agent read the composer."
+  },
+  "agent.tools.mail_action": {
+    "message": "Proposed a mail action",
+    "description": "Chat transcript tool chip: the agent asked Rukoo to archive, move or mark mail."
+  },
+  "agent.tools.propose_action": {
+    "message": "Asked for approval",
+    "description": "Chat transcript tool chip: the agent proposed an action and waits for you."
+  },
+  "agent.tools.read_attachment": {
+    "message": "Read an attachment",
+    "description": "Chat transcript tool chip: the agent opened an attachment."
+  },
+  "agent.tools.read_message": {
+    "message": "Read an email",
+    "description": "Chat transcript tool chip: the agent read a full email."
+  },
+  "agent.tools.search_mail": {
+    "message": "Searched your mail",
+    "description": "Chat transcript tool chip: the agent searched your mailboxes."
+  },
+  "agent.tools.show_plan": {
+    "message": "Made a plan",
+    "description": "Chat transcript tool chip: the agent showed a plan of steps."
+  },
+  "agent.tools.show_sources": {
+    "message": "Gathered sources",
+    "description": "Chat transcript tool chip: the agent showed the sources it used."
+  },
+  "agent.tools.unknown": {
+    "message": "Used a tool",
+    "description": "Chat transcript tool chip: fallback when the tool has no name."
+  },
+  "agent.tools.write_draft": {
+    "message": "Wrote the draft",
+    "description": "Chat transcript tool chip: the agent wrote into the composer."
+  },
+  "agent.tools.running.get_context": {
+    "message": "Looking at your screen...",
+    "description": "Chat transcript tool chip while it runs: the agent reads what is on screen. Present tense; the done form is agent.tools.get_context."
+  },
+  "agent.tools.running.get_draft": {
+    "message": "Checking the draft...",
+    "description": "Chat transcript tool chip while it runs: the agent reads the composer. Present tense; the done form is agent.tools.get_draft."
+  },
+  "agent.tools.running.mail_action": {
+    "message": "Proposing a mail action...",
+    "description": "Chat transcript tool chip while it runs: the agent asks to archive, move or mark mail. Present tense; the done form is agent.tools.mail_action."
+  },
+  "agent.tools.running.propose_action": {
+    "message": "Asking for approval...",
+    "description": "Chat transcript tool chip while it runs: the agent proposes an action. Present tense; the done form is agent.tools.propose_action."
+  },
+  "agent.tools.running.read_attachment": {
+    "message": "Reading an attachment...",
+    "description": "Chat transcript tool chip while it runs: the agent reads an attachment. Present tense; the done form is agent.tools.read_attachment."
+  },
+  "agent.tools.running.read_message": {
+    "message": "Reading an email...",
+    "description": "Chat transcript tool chip while it runs: the agent reads an email. Present tense; the done form is agent.tools.read_message."
+  },
+  "agent.tools.running.search_mail": {
+    "message": "Searching your mail...",
+    "description": "Chat transcript tool chip while it runs: the agent searches your mail. Present tense; the done form is agent.tools.search_mail."
+  },
+  "agent.tools.running.show_plan": {
+    "message": "Making a plan...",
+    "description": "Chat transcript tool chip while it runs: the agent shows a plan. Present tense; the done form is agent.tools.show_plan."
+  },
+  "agent.tools.running.show_sources": {
+    "message": "Gathering sources...",
+    "description": "Chat transcript tool chip while it runs: the agent shows its sources. Present tense; the done form is agent.tools.show_sources."
+  },
+  "agent.tools.running.unknown": {
+    "message": "Using a tool...",
+    "description": "Chat transcript tool chip while it runs: a tool without a name. Present tense; the done form is agent.tools.unknown."
+  },
+  "agent.tools.running.write_draft": {
+    "message": "Writing the draft...",
+    "description": "Chat transcript tool chip while it runs: the agent writes into the composer. Present tense; the done form is agent.tools.write_draft."
+  },
+  "agent.tools.running.generic.command": {
+    "message": "Running a command...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: a shell command. Present tense; the done form is agent.tools.generic.command."
+  },
+  "agent.tools.running.generic.code": {
+    "message": "Running code...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: code execution. Present tense; the done form is agent.tools.generic.code."
+  },
+  "agent.tools.running.generic.webSearch": {
+    "message": "Searching the web...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: a web search. Present tense; the done form is agent.tools.generic.webSearch."
+  },
+  "agent.tools.running.generic.webPage": {
+    "message": "Opening a web page...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: fetching a web page. Present tense; the done form is agent.tools.generic.webPage."
+  },
+  "agent.tools.running.generic.browser": {
+    "message": "Using the browser...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: browser automation. Present tense; the done form is agent.tools.generic.browser."
+  },
+  "agent.tools.running.generic.readFile": {
+    "message": "Reading a file...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: reading a file. Present tense; the done form is agent.tools.generic.readFile."
+  },
+  "agent.tools.running.generic.changeFiles": {
+    "message": "Changing files...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: writing or editing files. Present tense; the done form is agent.tools.generic.changeFiles."
+  },
+  "agent.tools.running.generic.subagent": {
+    "message": "Running a subagent...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: a subagent. Present tense; the done form is agent.tools.generic.subagent."
+  },
+  "agent.tools.running.generic.findFiles": {
+    "message": "Looking through files...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: a file search. Present tense; the done form is agent.tools.generic.findFiles."
+  },
+  "agent.tools.running.generic.todo": {
+    "message": "Updating its to-do list...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: the agent's own to-do list. Present tense; the done form is agent.tools.generic.todo."
+  },
+  "agent.tools.running.generic.lookupTools": {
+    "message": "Looking up its tools...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: the agent looks up which tools it has. Present tense; the done form is agent.tools.generic.lookupTools."
+  },
+  "agent.tools.running.generic.memory": {
+    "message": "Checking its memory...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: the agent's memory. Present tense; the done form is agent.tools.generic.memory."
+  },
+  "agent.tools.running.generic.skill": {
+    "message": "Reading a skill...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: the agent reads one of its skills. Present tense; the done form is agent.tools.generic.skill."
+  },
+  "agent.tools.running.generic.pastChats": {
+    "message": "Searching past chats...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: the agent searches its past conversations. Present tense; the done form is agent.tools.generic.pastChats."
+  },
+  "agent.tools.running.generic.schedule": {
+    "message": "Scheduling a job...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: a scheduled job. Present tense; the done form is agent.tools.generic.schedule."
+  },
+  "agent.tools.running.generic.sendMessage": {
+    "message": "Sending a message...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: a message to another channel. Present tense; the done form is agent.tools.generic.sendMessage."
+  },
+  "agent.tools.running.generic.image": {
+    "message": "Making an image...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: image generation. Present tense; the done form is agent.tools.generic.image."
+  },
+  "agent.tools.running.generic.vision": {
+    "message": "Looking at an image...",
+    "description": "Chat transcript tool chip while the agent's own tool runs: image analysis. Present tense; the done form is agent.tools.generic.vision."
+  },
   "common.actions.add": {
     "message": "Add",
     "description": "common > actions. src/renderer/app.js (messageMenu); src/renderer/settings.js (render)"
@@ -132,6 +928,30 @@
   "composer.actions.sendShortcut": {
     "message": "Send (Ctrl+Enter)",
     "description": "composer > actions. src/renderer/composer.js (template)"
+  },
+  "composer.agent.drafted": {
+    "message": "Drafted by {name}",
+    "description": "Composer bar mark after an agent wrote the draft; name is the agent."
+  },
+  "composer.agent.draftedEdited": {
+    "message": "Drafted by {name} · edited",
+    "description": "Composer bar mark after an agent wrote the draft and you changed it."
+  },
+  "composer.agent.someone": {
+    "message": "an agent",
+    "description": "Composer bar mark: fallback when the agent has no name (\"Drafted by an agent\")."
+  },
+  "composer.agent.undo": {
+    "message": "Undo",
+    "description": "Composer bar link that restores what was there before the agent's draft."
+  },
+  "composer.agent.undoHelp": {
+    "message": "Your own changes since then are undone too.",
+    "description": "Composer confirmation text when undoing an agent draft you already edited."
+  },
+  "composer.agent.undoTitle": {
+    "message": "Undo {name}'s draft?",
+    "description": "Composer confirmation title when undoing an agent draft you already edited."
   },
   "composer.attachments.image": {
     "message": "Insert image",
@@ -1427,6 +2247,186 @@
     "message": "Click to remove",
     "description": "settings > addresses. src/renderer/settings.js (render)"
   },
+  "settings.agents.access": {
+    "message": "Access",
+    "description": "Settings, Agents page: row that sets what the agent may do without asking."
+  },
+  "settings.agents.accessAsk": {
+    "message": "Ask before actions",
+    "description": "Settings, Agents page: access choice where commands wait for approval."
+  },
+  "settings.agents.accessAskHint": {
+    "message": "Commands and file changes wait for your approval in the chat",
+    "description": "Settings, Agents page: explanation of the ask-first access choice."
+  },
+  "settings.agents.accessFull": {
+    "message": "Full access",
+    "description": "Settings, Agents page: access choice where the agent runs commands without asking."
+  },
+  "settings.agents.accessFullHint": {
+    "message": "Runs commands without asking. Only for agents you trust completely.",
+    "description": "Settings, Agents page: warning under the full access choice."
+  },
+  "settings.agents.autoMail": {
+    "message": "Let agents archive, move and mark mail without asking",
+    "description": "Settings, Agents page: toggle for mail actions without an approval card."
+  },
+  "settings.agents.autoMailHelp": {
+    "message": "Deleting and unsubscribing always ask first.",
+    "description": "Settings, Agents page: note under the mail actions toggle."
+  },
+  "settings.agents.configDir": {
+    "message": "Claude config folder (optional)",
+    "description": "Settings, Agents page: field for the Claude Code configuration folder."
+  },
+  "settings.agents.configDirHint": {
+    "message": "The default folder",
+    "description": "Settings, Agents page: placeholder of the Claude config folder field."
+  },
+  "settings.agents.copied": {
+    "message": "Copied. Paste it into ~/.hermes/config.yaml on {name}'s machine.",
+    "description": "Settings, Agents page: toast after copying the Hermes setup."
+  },
+  "settings.agents.copySetup": {
+    "message": "Copy Hermes setup",
+    "description": "Settings, Agents page: row that copies the config block for Hermes."
+  },
+  "settings.agents.copySetupHelp": {
+    "message": "The block for {name}'s config.yaml, with its access token",
+    "description": "Settings, Agents page: description of the copy setup row."
+  },
+  "settings.agents.default": {
+    "message": "Default agent",
+    "description": "Settings, Agents page: which agent a new chat goes to."
+  },
+  "settings.agents.enabled": {
+    "message": "Use {name}",
+    "description": "Settings, Agents page: toggle that turns an agent on or off; name is the agent."
+  },
+  "settings.agents.exe": {
+    "message": "Program path",
+    "description": "Settings, Agents page: field for the Claude Code or Codex program."
+  },
+  "settings.agents.exeHint": {
+    "message": "Found automatically ({exe})",
+    "description": "Settings, Agents page: placeholder of the program path field."
+  },
+  "settings.agents.help": {
+    "message": "Agents keep their own tools and memory. Rukoo only adds this chat and lets them read mail and write drafts here.",
+    "description": "Settings, Agents page: short explanation at the top."
+  },
+  "settings.agents.key": {
+    "message": "API key",
+    "description": "Settings, Agents page: label of the Hermes API key field."
+  },
+  "settings.agents.keyHide": {
+    "message": "Hide key",
+    "description": "Settings, Agents page: tooltip of the eye button while the key is visible."
+  },
+  "settings.agents.keyPlaceholder": {
+    "message": "Paste the API server key",
+    "description": "Settings, Agents page: placeholder of the API key field."
+  },
+  "settings.agents.keyReplace": {
+    "message": "Replace",
+    "description": "Settings, Agents page: link to enter a new API key."
+  },
+  "settings.agents.keySave": {
+    "message": "Save key",
+    "description": "Settings, Agents page: button that stores the API key."
+  },
+  "settings.agents.keySaved": {
+    "message": "Key saved",
+    "description": "Settings, Agents page: shown instead of the key once it is stored."
+  },
+  "settings.agents.keyShow": {
+    "message": "Show key",
+    "description": "Settings, Agents page: tooltip of the eye button on the key field."
+  },
+  "settings.agents.keyStored": {
+    "message": "Key saved. Rukoo keeps it encrypted on this computer.",
+    "description": "Settings, Agents page: toast after the API key was stored."
+  },
+  "settings.agents.model": {
+    "message": "Model (optional)",
+    "description": "Settings, Agents page: field for the model the agent uses."
+  },
+  "settings.agents.modelHint": {
+    "message": "Empty for the default, for example {example}",
+    "description": "Settings, Agents page: placeholder of the Claude model field; example is a model name."
+  },
+  "settings.agents.name": {
+    "message": "Name",
+    "description": "Settings, Agents page: field for the name of the Hermes agent."
+  },
+  "settings.agents.noAddress": {
+    "message": "No Tailscale address found on this computer",
+    "description": "Settings, Agents page: shown under the remote toggle when Tailscale is not running."
+  },
+  "settings.agents.optional": {
+    "message": "Empty for the default",
+    "description": "Settings, Agents page: placeholder of an optional field."
+  },
+  "settings.agents.remote": {
+    "message": "Let {name} use Rukoo",
+    "description": "Settings, Agents page: toggle that lets the remote Hermes agent call Rukoo over Tailscale."
+  },
+  "settings.agents.rotate": {
+    "message": "New token",
+    "description": "Settings, Agents page: row and confirm button that replace the access token."
+  },
+  "settings.agents.rotateHelp": {
+    "message": "{name} can't reach Rukoo until you copy the new Hermes setup to its machine.",
+    "description": "Settings, Agents page: confirmation text before replacing the token."
+  },
+  "settings.agents.rotateHint": {
+    "message": "The current setup stops working",
+    "description": "Settings, Agents page: description of the new token row."
+  },
+  "settings.agents.rotateTitle": {
+    "message": "Make a new token?",
+    "description": "Settings, Agents page: confirmation title before replacing the token."
+  },
+  "settings.agents.rotated": {
+    "message": "New token made. Copy the Hermes setup again.",
+    "description": "Settings, Agents page: toast after the token was replaced."
+  },
+  "settings.agents.rowDesc": {
+    "message": "Default: {name} · {status}",
+    "description": "Settings overview row description: default agent and its status."
+  },
+  "settings.agents.rowTitle": {
+    "message": "{name}, Claude Code and Codex",
+    "description": "Settings overview row that opens the agents page; name is the Hermes agent name."
+  },
+  "settings.agents.saved": {
+    "message": "Saved",
+    "description": "Settings, Agents page: short toast after a field was saved."
+  },
+  "settings.agents.test": {
+    "message": "Test",
+    "description": "Settings, Agents page: button that checks whether Claude Code or Codex can be started."
+  },
+  "settings.agents.testConnection": {
+    "message": "Test connection",
+    "description": "Settings, Agents page: button that checks the connection to Hermes."
+  },
+  "settings.agents.testing": {
+    "message": "Testing...",
+    "description": "Settings, Agents page: status line while a test runs."
+  },
+  "settings.agents.title": {
+    "message": "Agents",
+    "description": "Settings: title of the page where you set up Hermes, Claude Code and Codex."
+  },
+  "settings.agents.unavailable": {
+    "message": "Agents aren't available in this version.",
+    "description": "Settings: shown when this build has no agent support."
+  },
+  "settings.agents.url": {
+    "message": "Server URL",
+    "description": "Settings, Agents page: field for the Hermes API server address."
+  },
   "settings.aliases.add": {
     "message": "Add alias",
     "description": "settings > aliases. src/renderer/settings.js (render); src/renderer/settings.js (openSettings)"
@@ -1628,6 +2628,10 @@
   "settings.groups.accounts": {
     "message": "Accounts",
     "description": "settings > groups. src/renderer/settings.js (render)"
+  },
+  "settings.groups.agents": {
+    "message": "Agents",
+    "description": "Settings overview: heading of the group with the chat agents."
   },
   "settings.groups.general": {
     "message": "General",
