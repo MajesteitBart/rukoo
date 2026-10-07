@@ -1,7 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="src/renderer/assets/rukoo-logo-dark.svg">
-  <img src="src/renderer/assets/rukoo-logo.svg" alt="Rukoo Mail" width="240">
-</picture>
+![Rukoo Mail: the inbox next to an open message in dark mode](docs/hero.png)
 
 # Rukoo Mail
 
@@ -37,7 +34,7 @@ Keyboard in the main window: `Ctrl+N` new mail, `Ctrl+R` reply, `Ctrl+Shift+R` r
 
 ## Screenshots
 
-These use the English interface and English demo emails. The same screens in dark mode are in [docs/screenshots/dark](docs/screenshots/dark). The top one shows the inbox with the newest message opened by itself; "+3" marks three more messages from the same sender folded into one row. To take them again, run `npm run screenshots`. The capture script always uses English with a fresh demo profile.
+These use the English interface and English demo emails. The same screens in dark mode are in [docs/screenshots/dark](docs/screenshots/dark). The inbox screenshot under the introduction shows the newest message opened by itself; "+3" marks three more messages from the same sender folded into one row. To take them again, run `npm run screenshots`. The capture script always uses English with a fresh demo profile.
 
 Scrolled down, the subject moves into the toolbar.
 
