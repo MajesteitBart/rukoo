@@ -12,6 +12,8 @@ const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, ta
 
 const EXE_TTL = 30000;
 const STOP_WAIT = 10000;
+// A turn that needs a restarted app-server waits this long at most for the other Codex turns to finish.
+const IDLE_WAIT_MS = 10 * 60 * 1000;
 const ESCALATE =
   'When the sandbox blocks a command you need (writing files, network access), request escalated permissions so the user can approve it in Rukoo.';
 
@@ -245,6 +247,8 @@ class CodexAdapter {
     if (!exe) throw new AgentError('not-installed', s.exe ? `Not found: ${clip(s.exe, 150)}` : 'Codex is not installed');
     if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
     const server = await this.ensureServer(exe, turn, s);
+    // Stopped while it waited for another Codex turn to finish.
+    if (!server || (turn.signal && turn.signal.aborted)) return { status: 'stopped' };
     this.busy++;
     try {
       const threadId = await this.ensureThread(server, turn, s);
@@ -326,8 +330,12 @@ class CodexAdapter {
     if (this.starting) await this.starting.catch(() => {});
     const server = this.server && !this.server.exited ? this.server : null;
     if (server && server.exe === exe && !this.reloadNeeded(server, turn, s)) return server;
-    // A new program path, or a reload, waits until no Codex turn is in flight.
-    if (server && this.busy > 0) return server;
+    // A new program path, or a reload, waits until no Codex turn is in flight: this turn must not run on the
+    // old server, whose threads still have the old model or point at a closed Rukoo listener.
+    if (server && this.busy > 0) {
+      if (!(await this.whenIdle(turn.signal))) return null;
+      return this.ensureServer(exe, turn, this.settings());
+    }
     if (server) server.close();
     if (!this.starting) {
       this.starting = this.startServer(exe, turn).finally(() => {
@@ -335,6 +343,18 @@ class CodexAdapter {
       });
     }
     return this.starting;
+  }
+
+  // Resolves true once no Codex turn runs, false when the waiting turn is stopped first. Gives up after
+  // ten minutes, so a stuck turn elsewhere cannot hold this one forever.
+  async whenIdle(signal, limitMs = IDLE_WAIT_MS) {
+    const end = Date.now() + limitMs;
+    while (this.busy > 0) {
+      if (signal && signal.aborted) return false;
+      if (Date.now() > end) throw new AgentError('busy', 'Codex restarts with the new settings once the other Codex chat finishes. Try again then.');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return !(signal && signal.aborted);
   }
 
   async startServer(exe, turn) {

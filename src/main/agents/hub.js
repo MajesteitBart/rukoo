@@ -495,11 +495,14 @@ class AgentHub extends EventEmitter {
   findFor(ref = {}) {
     const want = normId(ref.messageId);
     const id = ref.id ? String(ref.id) : '';
+    // The same email can arrive in two accounts; each copy has its own chats. A saved copy has no account.
+    const account = ref.accountId || tools.accountOfId(id);
     let best = null;
     for (const c of this.conversations.values()) {
       const m = c.message;
       if (!m) continue;
-      const hit = want && m.messageId ? normId(m.messageId) === want : Boolean(id) && m.id === id;
+      const own = m.accountId || tools.accountOfId(m.id);
+      const hit = want && m.messageId ? normId(m.messageId) === want && !(account && own && own !== account) : Boolean(id) && m.id === id;
       if (hit && (!best || c.updatedAt > best.updatedAt)) best = c;
     }
     return best;
@@ -629,7 +632,8 @@ class AgentHub extends EventEmitter {
     const cached = tools.cacheMessage(this.engine, ref.id);
     if (cached && (!ref.messageId || !cached.messageId || normId(cached.messageId) === normId(ref.messageId))) return ref.id;
     if (String(ref.id).startsWith('saved:')) return ref.id;
-    const found = ref.messageId ? tools.findByMessageId(this.engine, ref.messageId) : null;
+    // Mail moves within its account; a copy in another account belongs to another chat.
+    const found = ref.messageId ? tools.findByMessageId(this.engine, ref.messageId, ref.accountId || tools.accountOfId(ref.id)) : null;
     if (found && found !== ref.id) {
       ref.id = found;
       this.touch(c);
@@ -974,20 +978,27 @@ class AgentHub extends EventEmitter {
       .slice(0, 6)
       .map((ch) => ({ id: clip(ch.id, 60), label: clip(ch.label || ch.id, 60), kind: ['primary', 'danger', 'default'].includes(ch.kind) ? ch.kind : 'default' }));
     const cleanTool = approvalTool(tool);
+    const shownChoices = cleanChoices.length
+      ? cleanChoices
+      : [
+          { id: 'allow', label: 'Allow', kind: 'primary' },
+          { id: 'deny', label: 'Deny', kind: 'danger' }
+        ];
+    const shownFields = foldFields((Array.isArray(fields) ? fields : []).filter(isObj)).map(approvalField);
+    // Allow passes on the whole input, so a card that cannot show all of it is declined without asking.
+    // The adapter gets its own deny choice: cancel would end a Codex turn and leave Hermes unanswered.
+    const refusal = shownFields.some((f) => f.truncated)
+      ? shownChoices.find((ch) => ch.id !== 'cancel' && DENY_IDS.has(ch.id)) || shownChoices.find((ch) => ch.kind === 'danger') || { id: 'cancel' }
+      : null;
     const item = this.addItem(c, {
       type: 'approval',
       title: clip(title || 'Approval needed', 200),
       detail: clip(detail, 2000),
-      fields: foldFields((Array.isArray(fields) ? fields : []).filter(isObj)).map(approvalField),
+      fields: shownFields,
       ...(cleanTool ? { tool: cleanTool } : {}),
-      choices: cleanChoices.length
-        ? cleanChoices
-        : [
-            { id: 'allow', label: 'Allow', kind: 'primary' },
-            { id: 'deny', label: 'Deny', kind: 'danger' }
-          ],
-      status: 'pending',
-      decision: null,
+      choices: shownChoices,
+      status: refusal ? 'denied' : 'pending',
+      decision: refusal ? refusal.id : null,
       source,
       kind,
       ...(mail ? { mail } : {})
@@ -996,6 +1007,14 @@ class AgentHub extends EventEmitter {
     if (turn) {
       turn.items.add(item.id);
       turn.reached = true;
+    }
+    if (refusal) {
+      this.addItem(c, { type: 'notice', text: `Declined without asking: ${item.title}. Its input is too long to show here in full.`, tone: 'info', code: 'approval-too-long', params: { title: item.title }, undo: null });
+      // A runtime request gets the denial as its answer; a proposal or mail action is told with the next message.
+      if (kind !== 'runtime') c.notes.push(`Rukoo declined ${kind === 'mail' ? context.unsafeInline(item.title, 'mail action') : `"${oneLine(item.title)}"`} without asking the user: its input was too long to show in full. Ask again with shorter input.`);
+      const declined = Promise.resolve(refusal.id);
+      declined.itemId = item.id;
+      return declined;
     }
     let resolve;
     const promise = new Promise((r) => {

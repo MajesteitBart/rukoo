@@ -533,7 +533,7 @@ Object.assign(api, {
   agentGet: (id) => agentHub().get(agentId(id)),
   agentFindFor: (ref) => {
     const r = agentPlain(ref);
-    return agentHub().findFor({ id: agentText(r.id, 2000), messageId: agentText(r.messageId, 1000) });
+    return agentHub().findFor({ id: agentText(r.id, 2000), messageId: agentText(r.messageId, 1000), accountId: agentText(r.accountId, 200) || null });
   },
   agentCreate: (input) => {
     const i = agentPlain(input);
@@ -690,13 +690,17 @@ app.on('before-quit', () => {
 // dispose() stops turns, kills agent processes and flushes the conversations synchronously before its first
 // await. The rest is network: Clark's runs only end with a stop request, which a process that exits right away
 // never sends. So the quit waits once, until dispose is done or 2.5 s have passed.
+// will-quit, not before-quit: a window can still cancel the quit after before-quit (a pop-out composer that
+// asks to save), and the agents must keep running then. will-quit comes once every window has closed.
 let agentsDisposed = false;
-app.on('before-quit', (event) => {
+app.on('will-quit', (event) => {
   if (!hub || agentsDisposed) return;
   agentsDisposed = true;
   event.preventDefault();
+  // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
+  // will-quit does not finish quitting.
   Promise.race([hub.dispose(), new Promise((resolve) => setTimeout(resolve, 2500))])
     .catch(() => {})
-    .finally(() => app.quit());
+    .finally(() => app.exit(0));
 });
 // ---- /agents ----

@@ -378,7 +378,7 @@ export function mountAgentPanel(ctx) {
     const look = ++lookups;
     let found = null;
     try {
-      found = await api('agentFindFor', { id: m.id, messageId: m.messageId || null });
+      found = await api('agentFindFor', { id: m.id, messageId: m.messageId || null, accountId: m.accountId || null });
     } catch (_) {
       found = null;
     }
@@ -710,7 +710,7 @@ export function mountAgentPanel(ctx) {
   // Notices from main are English; errors and mail results carry a code or counts we can translate.
   function localizeNotice(item) {
     if (item.code && hasKey(`agent.notices.${item.code}`)) {
-      const params = item.code === 'kept-approval' ? { title: String((item.params && item.params.title) || '') } : {};
+      const params = item.code === 'kept-approval' || item.code === 'approval-too-long' ? { title: String((item.params && item.params.title) || '') } : {};
       return { ...item, text: t(`agent.notices.${item.code}`, { name: agentName(P.conv ? P.conv.agent : currentAgent()), ...params }) };
     }
     if (item.code && (CODES.has(item.code) || item.tone === 'error')) return { ...item, text: describeError({ code: item.code }, agentName(P.conv ? P.conv.agent : currentAgent())).text };

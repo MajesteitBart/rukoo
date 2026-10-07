@@ -390,12 +390,25 @@ function accountOf(engine, accountId) {
   return engine.accounts.find((a) => a.id === accountId) || null;
 }
 
-// Finds the Rukoo id of a Message-ID header. Real folders win over Gmail's All Mail copies.
-function findByMessageId(engine, header) {
+// The account a live Rukoo id belongs to; saved copies have none.
+function accountOfId(id) {
+  const v = String(id || '');
+  if (!v.includes(':') || v.startsWith('saved:')) return null;
+  try {
+    return decodeId(v).accountId || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Finds the Rukoo id of a Message-ID header, within one account when accountId is given. Real folders win
+// over Gmail's All Mail copies.
+function findByMessageId(engine, header, accountId = null) {
   const want = normId(header);
   if (!want) return null;
   let fallback = null;
   for (const acc of engine.accounts) {
+    if (accountId && acc.id !== accountId) continue;
     const cache = engine.caches.get(acc.id);
     if (!cache) continue;
     for (const [folder, box] of Object.entries(cache.boxes)) {
@@ -1154,6 +1167,7 @@ module.exports = {
   bareName,
   validate,
   findByMessageId,
+  accountOfId,
   cacheMessage,
   summaryById,
   threadOf,

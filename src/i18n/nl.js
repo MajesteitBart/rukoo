@@ -79,6 +79,7 @@
   "agent.errors.timeout": "{name} deed er te lang over.",
   "agent.errors.unauthorized": "{name} accepteert de sleutel of het token niet.",
   "agent.errors.unknown": "Er ging iets mis.",
+  "agent.notices.approval-too-long": "Afgewezen zonder te vragen: {title}. Een deel is te lang om hier te tonen, dus je kon het niet controleren.",
   "agent.notices.kept-approval": "Nog niet gedaan: {title}. {name} hoort met je volgende bericht dat je akkoord gaf.",
   "agent.notices.new-session": "{name} is een nieuwe sessie begonnen",
   "agent.notices.new-thread": "{name} is een nieuwe thread begonnen",

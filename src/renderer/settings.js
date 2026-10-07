@@ -90,9 +90,9 @@ export function openSettings(ctx, { view: start } = {}) {
     const view = stack[stack.length - 1];
     if (type === 'updated' && (view === 'main' || view === 'account')) setTimeout(render, 80);
     // Agent status changes only touch the status lines, never the fields you are typing in.
-    if (type === 'agent' && payload && payload.kind === 'agents' && view === 'agents' && agentState) {
+    if (type === 'agent' && payload && payload.kind === 'agents' && (view === 'agents' || view === 'main') && agentState) {
       agentState.status = payload.status || agentState.status;
-      AGENT_IDS.forEach((id) => showAgentStatus(id));
+      showAgentStatuses(view);
     }
   });
 
@@ -133,10 +133,28 @@ export function openSettings(ctx, { view: start } = {}) {
   // { config, status } as shown on the agents page; config never holds secrets.
   let agentState = null;
   let keyEditing = false;
+  // The config is local and quick. Status can wait on the network (an offline Hermes server takes seconds),
+  // so pages draw with the last known status and refreshAgentStatus() fills it in afterwards.
   const loadAgents = () =>
-    Promise.all([api('agentConfig'), api('agentStatus')])
-      .then(([config, status]) => ({ config, status }))
+    api('agentConfig')
+      .then((config) => ({ config, status: (agentState && agentState.status) || null }))
       .catch(() => null);
+  const agentsRowDesc = () =>
+    t('settings.agents.rowDesc', { name: esc(agentName(agentState.config, agentState.config.defaultAgent)), status: t(`agent.status.${agentStateOf(agentState.status, agentState.config.defaultAgent)}`) });
+  const showAgentStatuses = (view) => {
+    if (!agentState) return;
+    if (view === 'agents') AGENT_IDS.forEach((id) => showAgentStatus(id));
+    const desc = view === 'main' && page.querySelector('[data-a="agents"] .desc');
+    if (desc) desc.innerHTML = agentsRowDesc();
+  };
+  const refreshAgentStatus = (view) =>
+    api('agentStatus')
+      .then((status) => {
+        if (!agentState || stack[stack.length - 1] !== view) return;
+        agentState.status = status;
+        showAgentStatuses(view);
+      })
+      .catch(() => {});
   // The agent's name appears in several labels; this span lets a rename update them in place.
   const nameSpan = (id) => `<span data-agent-name="${id}">${esc(agentName(agentState.config, id))}</span>`;
 
@@ -428,9 +446,7 @@ export function openSettings(ctx, { view: start } = {}) {
         <div class="settings-group-title" data-i18n="settings.groups.agents">${esc(t('settings.groups.agents'))}</div>
         <div class="card">${row({
           title: agentState ? t('settings.agents.rowTitle', { name: esc(agentName(agentState.config, 'clark')) }) : t('settings.agents.title'),
-          desc: agentState
-            ? t('settings.agents.rowDesc', { name: esc(agentName(agentState.config, agentState.config.defaultAgent)), status: t(`agent.status.${agentStateOf(agentState.status, agentState.config.defaultAgent)}`) })
-            : t('settings.agents.unavailable'),
+          desc: agentState ? agentsRowDesc() : t('settings.agents.unavailable'),
           action: 'agents'
         })}</div>
         <div class="settings-group-title" data-i18n="settings.groups.about">${esc(t('settings.groups.about'))}</div>
@@ -530,6 +546,7 @@ export function openSettings(ctx, { view: start } = {}) {
       <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
     if (view === 'agents' && agentState) AGENT_IDS.forEach((id) => showAgentStatus(id));
+    if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
   }
 
   page.addEventListener('submit', async (e) => {

@@ -313,6 +313,10 @@
     "message": "Something went wrong.",
     "description": "Chat panel error: fallback when the cause is not known."
   },
+  "agent.notices.approval-too-long": {
+    "message": "Declined without asking: {title}. Part of it is too long to show here, so you could not check it.",
+    "description": "Chat transcript info line: Rukoo declined an approval request itself because a value was too long to show in full; title is the request."
+  },
   "agent.notices.kept-approval": {
     "message": "Not done yet: {title}. {name} hears about your approval with your next message.",
     "description": "Chat transcript info line: you approved a proposal, but the follow-up turn could not start (for example the app quit). title is the proposal, name the agent."

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Engine } = require('../src/main/engine');
+const { Engine, encodeId } = require('../src/main/engine');
 const { AgentHub, toolLabel, MAX_ITEMS, MAX_CONVERSATIONS } = require('../src/main/agents/hub');
 const { AgentConfig } = require('../src/main/agents/config');
 const { FakeAdapter, LONG_COMMAND, MARKDOWN_REPLY } = require('../src/main/agents/fake');
@@ -848,6 +848,23 @@ test('approval fields pass through whole up to 20,000 characters, with their key
     assert.deepEqual([item.fields[0].key, item.fields[0].value.length, item.fields[0].truncated], ['content', 20000, 5000]);
     assert.deepEqual(item.fields[1], { label: 'Other', value: 'y' });
     assert.deepEqual(item.tool, { name: 'mcp__todoist__add', kind: 'mcp', server: 'todoist', tool: 'add' });
+    // Allow would pass on the whole value, including the part the card cannot show: Rukoo declines it
+    // itself, with the adapter's own deny choice, and says why.
+    assert.deepEqual([item.status, item.decision], ['denied', 'deny']);
+    assert.equal(await waiting, 'deny');
+    const why = c.items.find((i) => i.type === 'notice' && i.code === 'approval-too-long');
+    assert.deepEqual(why.params, { title: 'Write a file' });
+    // Codex's choices: decline, never cancel (which would end the turn).
+    const codexStyle = hub.requestApproval(c.id, {
+      title: 'Run it',
+      fields: [{ key: 'command', label: 'Command', value: 'z'.repeat(20001) }],
+      choices: [
+        { id: 'accept', label: 'Allow', kind: 'primary' },
+        { id: 'acceptForSession', label: 'Allow for this chat', kind: 'default' },
+        { id: 'decline', label: 'Deny', kind: 'danger' }
+      ]
+    });
+    assert.equal(await codexStyle, 'decline');
     const plain = hub.requestApproval(c.id, { title: 'x', tool: { name: 'Thing', kind: 'teleport' } });
     assert.deepEqual(c.items.find((i) => i.id === plain.itemId).tool, { name: 'Thing', kind: 'other' });
     hub.stop(c.id);
@@ -1069,6 +1086,36 @@ test('an approved follow-up stopped while its email loads keeps the approval', a
     assert.ok(c.items.some((i) => i.type === 'notice' && i.code === 'kept-approval'));
   } finally {
     env.engine.getMessage = realGet;
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('the same email in two accounts has its own chats, and recovery after a move stays in its account', async () => {
+  const env = await demo();
+  // A second account that received the same mail: a copy of the first one's cache under another id.
+  const second = { ...env.engine.accounts[0], id: 'acc-two', email: 'other@example.com' };
+  env.engine.accounts.push(second);
+  env.engine.caches.set(second.id, structuredClone(env.engine.caches.get(env.acc.id)));
+  const { hub } = fakeHub(env);
+  await hub.start();
+  try {
+    const copies = env.engine.listMessages({ scope: 'all', view: 'inbox' }).filter((m) => m.subject === 'Call on Thursday');
+    const a = copies.find((m) => m.accountId === env.acc.id);
+    const b = copies.find((m) => m.accountId === second.id);
+    assert.ok(a && b, 'both accounts have the email');
+    const header = (await env.engine.getMessage(a.id)).messageId;
+    assert.equal((await env.engine.getMessage(b.id)).messageId, header, 'one Message-ID, two copies');
+
+    const chat = hub.create({ agent: 'claude', message: { id: b.id } });
+    assert.equal(hub.findFor({ id: b.id, messageId: header }).id, chat.id);
+    assert.equal(hub.findFor({ id: a.id, messageId: header }), null, "the other account's copy has no chat yet");
+    assert.equal(hub.findFor({ id: a.id, messageId: header, accountId: env.acc.id }), null);
+
+    // The chat's own id went stale (the email moved): Rukoo looks for it again, in that account only.
+    chat.message.id = encodeId(second.id, 'INBOX', 999999);
+    assert.equal(hub.currentMessageId(chat), b.id);
+  } finally {
     await hub.dispose();
     await env.engine.close();
   }

@@ -665,3 +665,17 @@ test('a reopened reply-all draft with only a new To still drops the old Cc', asy
   await expect(editor()).toContainText('Just you.');
   await expect(win.locator('.composer [data-rfield="cc"] .recipient')).toHaveCount(0);
 });
+
+test('Settings opens at once while agent status is slow, and fills it in when it comes', async () => {
+  // A Hermes server that does not answer: status takes seconds.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    const real = hub.status.bind(hub);
+    hub.status = (...args) => new Promise((resolve) => setTimeout(() => resolve(real(...args)), 6000));
+  });
+  const opened = Date.now();
+  await win.click('[data-action="settings"]');
+  await expect(win.locator('.settings [data-a="agents"]')).toBeVisible({ timeout: 1500 });
+  expect(Date.now() - opened).toBeLessThan(3000);
+  await expect(win.locator('.settings [data-a="agents"] .desc')).toContainText('Ready', { timeout: 10000 });
+});

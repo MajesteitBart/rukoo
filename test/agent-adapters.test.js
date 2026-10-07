@@ -1042,3 +1042,29 @@ test('hermes: Stop during the session lookup submits no run', async () => {
     h.server.close();
   }
 });
+
+test('codex: a turn that needs a restarted app-server waits for the other Codex turn instead of using stale settings', async (t) => {
+  const { adapter, sent } = codexAdapter();
+  t.after(() => adapter.dispose());
+  const mcp = { url: 'http://127.0.0.1:47999/mcp', token: 'tok-123' };
+  // Chat X has a thread loaded with the old Rukoo address.
+  const x = conv();
+  assert.deepEqual(await adapter.runTurn(fakeTurn(x, 'hello', { mcp })), { status: 'done' });
+  // Chat Y is busy.
+  const busy = fakeTurn(conv(), 'slow please', { mcp });
+  const running = adapter.runTurn(busy);
+  await waitFor(() => texts(busy).length > 3);
+  // Rukoo's MCP port changed: X's loaded thread needs a fresh app-server, which has to wait for Y.
+  const moved = { url: 'http://127.0.0.1:48001/mcp', token: 'tok-123' };
+  let xDone = false;
+  const again = adapter.runTurn(fakeTurn(x, 'hello', { mcp: moved })).then((r) => ((xDone = true), r));
+  await sleep(400);
+  assert.equal(xDone, false, 'it waits');
+  assert.equal(sent('initialize').length, 1, 'no restart while the other turn runs');
+  assert.equal(sent('turn/start').length, 2, 'and no turn on the old server with the old address');
+  busy.controller.abort();
+  assert.deepEqual(await running, { status: 'stopped' });
+  assert.deepEqual(await again, { status: 'done' });
+  assert.equal(sent('initialize').length, 2, 'then the server restarts');
+  assert.equal(sent('thread/resume').at(-1).params.config.mcp_servers.rukoo.url, moved.url);
+});
