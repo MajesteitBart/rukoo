@@ -1068,3 +1068,27 @@ test('codex: a turn that needs a restarted app-server waits for the other Codex 
   assert.equal(sent('initialize').length, 2, 'then the server restarts');
   assert.equal(sent('thread/resume').at(-1).params.config.mcp_servers.rukoo.url, moved.url);
 });
+
+test('hermes: a run answers its approval on the server it started on, even after Settings change', async () => {
+  const h = await hermesServer();
+  const other = await hermesServer();
+  try {
+    const cfg = { name: 'Clark', url: h.url, key: h.key };
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ ...cfg }) });
+    // While the card waits, the user points Settings at another server with another key.
+    const turn = fakeTurn(conv(), 'approve this', {
+      approve: () => {
+        cfg.url = other.url;
+        cfg.key = 'another-key';
+        return 'once';
+      }
+    });
+    assert.deepEqual(await adapter.runTurn(turn), { status: 'done' });
+    assert.deepEqual(h.state.approvals, [{ choice: 'once', request_id: 'abc123' }], 'the answer reached the run');
+    assert.equal(other.state.requests.length, 0, 'nothing went to the new server');
+    assert.equal(texts(turn), 'choice=once');
+  } finally {
+    h.server.close();
+    other.server.close();
+  }
+});

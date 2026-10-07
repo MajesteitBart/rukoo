@@ -1204,8 +1204,12 @@ class AgentHub extends EventEmitter {
     const open = this.openMessageId();
     const m = open ? tools.cacheMessage(this.engine, open) : null;
     const since = Date.now() - EXTERNAL_REUSE_MS;
+    // The same email can sit in two accounts; a chat about one copy is not about the other.
+    const account = tools.accountOfId(open);
     const about = (c) => {
       if (!m || !c.message) return !m && !c.message;
+      const own = c.message.accountId || tools.accountOfId(c.message.id);
+      if (account && own && own !== account) return false;
       if (m.messageId && c.message.messageId) return normId(m.messageId) === normId(c.message.messageId);
       return c.message.id === open;
     };

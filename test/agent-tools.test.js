@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Engine } = require('../src/main/engine');
+const { Engine, encodeId, decodeId } = require('../src/main/engine');
 const { AgentHub } = require('../src/main/agents/hub');
 
 async function setup({ auto = false, deps = {} } = {}) {
@@ -647,6 +647,32 @@ test('auto mail actions also ask before a move into Trash, by name or by role', 
     // A move elsewhere still runs at once.
     const moved = data(await t.hub.callTool(local(c.id), 'mail_action', { action: 'move', folder: 'Archive', message_ids: [t.find('Sign in to Bencompare').id] }));
     assert.equal(moved.status, 'done');
+  } finally {
+    await t.done();
+  }
+});
+
+test('an external agent gets a separate conversation for the same email in another account', async () => {
+  const t = await setup();
+  try {
+    // A second account that received the same mail: a copy of the first one's cache under another id.
+    const second = { ...t.engine.accounts[0], id: 'acc-two', email: 'other@example.com' };
+    t.engine.accounts.push(second);
+    t.engine.caches.set(second.id, structuredClone(t.engine.caches.get(t.acc.id)));
+    const a = t.find('Call on Thursday');
+    const { folder, uid } = decodeId(a.id);
+    const b = encodeId(second.id, folder, uid);
+
+    t.hub.view({ openMessageId: a.id });
+    const first = data(await t.hub.callTool(clarkRemote, 'show_sources', { sources: [{ title: 'x' }] }));
+    t.hub.view({ openMessageId: b });
+    const other = data(await t.hub.callTool(clarkRemote, 'show_sources', { sources: [{ title: 'y' }] }));
+    assert.notEqual(other.conversation_id, first.conversation_id, "the other account's copy gets its own chat");
+    assert.equal(t.hub.get(other.conversation_id).message.id, b);
+    // Back on the first copy: its own chat again.
+    t.hub.view({ openMessageId: a.id });
+    const again = data(await t.hub.callTool(clarkRemote, 'show_sources', { sources: [{ title: 'z' }] }));
+    assert.equal(again.conversation_id, first.conversation_id);
   } finally {
     await t.done();
   }

@@ -87,9 +87,9 @@ class HermesAdapter {
     };
   }
 
-  // The configured server with an optional path prefix (Hermes serves profiles under /p/<name>/).
-  base() {
-    const { url } = this.settings();
+  // A server with an optional path prefix (Hermes serves profiles under /p/<name>/). Without a URL: the
+  // configured one.
+  base(url = this.settings().url) {
     let parsed;
     try {
       parsed = new URL(url);
@@ -100,16 +100,18 @@ class HermesAdapter {
     return { origin: parsed.origin, prefix: parsed.pathname.replace(/\/+$/, ''), host: parsed.host };
   }
 
-  endpoint(path) {
-    const { origin, prefix } = this.base();
+  endpoint(path, serverUrl) {
+    const { origin, prefix } = this.base(serverUrl);
     const url = new URL(prefix + path, origin);
     if (url.origin !== origin) throw new AgentError('protocol', 'Refusing a request outside the configured server');
     return url;
   }
 
-  async request(method, path, { body, headers, auth = true, timeout = CONNECT_TIMEOUT, signal } = {}) {
-    const { key } = this.settings();
-    const { host } = this.base();
+  // server: {url, key} of the run a request belongs to; without it, the configured server. A run keeps the
+  // server it started on, even when Settings change while it runs.
+  async request(method, path, { body, headers, auth = true, timeout = CONNECT_TIMEOUT, signal, server } = {}) {
+    const { key, url } = server || this.settings();
+    const { host } = this.base(url);
     const h = { Accept: 'application/json', ...headers };
     if (auth) h.Authorization = `Bearer ${key}`;
     if (body !== undefined) h['Content-Type'] = 'application/json';
@@ -117,7 +119,7 @@ class HermesAdapter {
     if (signal) signals.push(signal);
     let res;
     try {
-      res = await fetch(this.endpoint(path), {
+      res = await fetch(this.endpoint(path, url), {
         method,
         headers: h,
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -208,8 +210,10 @@ class HermesAdapter {
     if (!s.url || !s.key) throw new AgentError('not-configured', !s.url ? 'No server URL' : 'No API key');
     this.base();
     if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
+    // The whole turn talks to this server, so a changed URL or key cannot split a run between two.
+    const server = { url: s.url, key: s.key };
 
-    const sessionId = await this.session(turn);
+    const sessionId = await this.session(turn, server);
     // Stop can arrive while the session lookup is in flight; nothing has been submitted to Hermes yet.
     if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
     const body = { input: turn.input, session_id: sessionId };
@@ -217,20 +221,20 @@ class HermesAdapter {
     if (s.model) body.model = s.model;
     // A retried POST (lost response) must not start the same turn twice.
     const idem = String(turn.id || '').replace(/[^\x21-\x7e]/g, '').slice(0, 200) || crypto.randomUUID();
-    const started = await this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-${idem}` }, timeout: 20000 });
+    const started = await this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-${idem}` }, timeout: 20000, server });
     if (started.status !== 202 && started.status !== 200) throw httpError(started);
     const runId = started.data && started.data.run_id;
     if (!runId) throw new AgentError('protocol', 'The server did not return a run id');
     this.invalidate();
-    return this.follow(turn, runId);
+    return this.follow(turn, runId, server);
   }
 
   // The Hermes session behind a conversation: reused while it exists, recreated when it was deleted.
-  async session(turn) {
+  async session(turn, server) {
     const conversation = turn.conversation || {};
     const known = conversation.provider && conversation.provider.sessionId;
     if (known) {
-      const res = await this.request('GET', `/api/sessions/${encodeURIComponent(known)}`, { signal: turn.signal });
+      const res = await this.request('GET', `/api/sessions/${encodeURIComponent(known)}`, { signal: turn.signal, server });
       if (res.ok) return known;
       if (res.status !== 404) throw httpError(res);
       this.log(`hermes: session ${known} is gone, starting a new one`);
@@ -239,7 +243,7 @@ class HermesAdapter {
     const title = clip(`Rukoo: ${conversation.title || 'Chat'}`, 100);
     const titles = [title, clip(`${title.slice(0, 85)} (${String(conversation.id || '').slice(-6) || Date.now().toString(36)})`, 100), null];
     for (const t of titles) {
-      const res = await this.request('POST', '/api/sessions', { body: t ? { title: t } : {}, signal: turn.signal });
+      const res = await this.request('POST', '/api/sessions', { body: t ? { title: t } : {}, signal: turn.signal, server });
       const id = res.ok && res.data && res.data.session && res.data.session.id;
       if (id) {
         turn.setProvider({ sessionId: id });
@@ -251,10 +255,11 @@ class HermesAdapter {
   }
 
   // Streams one run's events into the turn until it ends, reconnecting where the stream left off.
-  async follow(turn, runId) {
+  async follow(turn, runId, server = { url: this.settings().url, key: this.settings().key }) {
     const name = this.settings().name;
     const state = {
       runId,
+      server,
       lastSeq: -1,
       terminal: null,
       streamed: false,
@@ -311,8 +316,8 @@ class HermesAdapter {
 
   // One connection to the run's event stream. Resolves 'end' | 'idle' | 'aborted' | 'gone'.
   async stream(turn, state, name) {
-    const { key } = this.settings();
-    const { host } = this.base();
+    const { key, url } = state.server;
+    const { host } = this.base(url);
     const headers = { Authorization: `Bearer ${key}`, Accept: 'text/event-stream' };
     let path = `/v1/runs/${encodeURIComponent(state.runId)}/events`;
     if (state.lastSeq >= 0) {
@@ -324,7 +329,7 @@ class HermesAdapter {
     const timer = setTimeout(() => connect.abort(), CONNECT_TIMEOUT);
     let res;
     try {
-      res = await fetch(this.endpoint(path), { headers, redirect: 'error', signal: AbortSignal.any([connect.signal, state.controller.signal]) });
+      res = await fetch(this.endpoint(path, url), { headers, redirect: 'error', signal: AbortSignal.any([connect.signal, state.controller.signal]) });
     } catch (err) {
       if (state.controller.signal.aborted) return 'aborted';
       throw networkError(err, host);
@@ -348,7 +353,7 @@ class HermesAdapter {
   }
 
   async poll(state) {
-    const res = await this.request('GET', `/v1/runs/${encodeURIComponent(state.runId)}`);
+    const res = await this.request('GET', `/v1/runs/${encodeURIComponent(state.runId)}`, { server: state.server });
     if (!res.ok || !res.data) return null;
     const d = res.data;
     if (d.status === 'completed') return { status: 'done', output: d.output || '' };
@@ -519,7 +524,7 @@ class HermesAdapter {
     if (!choice || choice === 'cancel' || pending.expired || state.terminal) return;
     const body = { choice };
     if (requestId) body.request_id = requestId;
-    const res = await this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/approval`, { body });
+    const res = await this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/approval`, { body, server: state.server });
     // 409: the run ended or Hermes already gave up waiting; nothing left to answer.
     if (!res.ok && res.status !== 409) {
       const e = httpError(res);
@@ -537,7 +542,7 @@ class HermesAdapter {
   stopRun(state) {
     if (state.stopping) return;
     state.stopping = true;
-    this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`).catch((err) => this.log('hermes: stop failed', err.detail || err));
+    this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`, { server: state.server }).catch((err) => this.log('hermes: stop failed', err.detail || err));
     // The cancelled event normally follows within a second; do not wait on a server that went away.
     state.stopTimer = setTimeout(() => state.controller.abort(), STOP_WAIT);
   }
@@ -549,7 +554,7 @@ class HermesAdapter {
     const stops = runs.map((state) => {
       state.stopping = true;
       state.controller.abort();
-      return this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`, { timeout: 2000 }).catch(() => {});
+      return this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/stop`, { timeout: 2000, server: state.server }).catch(() => {});
     });
     await Promise.all(stops);
   }
