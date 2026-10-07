@@ -1,5 +1,7 @@
 'use strict';
 
+const { t } = require('../i18n');
+
 // Outbound requests the app makes on its own behalf (sender logos, one-click unsubscribe). Their URLs
 // come from mail, so they only go to public addresses over https, follow a few checked redirects at
 // most, and stop reading at a size limit.
@@ -66,7 +68,7 @@ function publicLookup(hostname, options, callback) {
   dns.lookup(hostname, { all: true }, (err, addresses) => {
     if (err) return callback(err);
     if (!addresses.length || !addresses.every((a) => isPublicAddress(a.address))) {
-      return callback(Object.assign(new Error(`${hostname} is geen openbaar adres`), { code: 'ENOTPUBLIC' }));
+      return callback(Object.assign(new Error(t('errors.network.privateHost', { hostname: hostname })), { code: 'ENOTPUBLIC' }));
     }
     if (options && options.all) return callback(null, addresses);
     callback(null, addresses[0].address, addresses[0].family);

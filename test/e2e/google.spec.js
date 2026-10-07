@@ -29,9 +29,9 @@ test('Google tile starts browser sign-in and reports a denied consent', async ()
       };
     });
     await win.click('[data-provider="google"]');
-    await expect(win.locator('.login-head h2')).toHaveText('Aanmelden bij Google');
+    await expect(win.locator('.login-head h2')).toHaveText('Sign in to Google');
     await win.click('[data-s="google"]');
-    await expect(win.locator('[data-error]')).toHaveText('Je hebt geen toegang gegeven.', { timeout: 10000 });
+    await expect(win.locator('[data-error]')).toHaveText('You did not grant access.', { timeout: 10000 });
     const opened = await app.evaluate(() => global.__opened);
     const u = new URL(opened[0]);
     expect(u.origin).toBe('https://accounts.google.com');

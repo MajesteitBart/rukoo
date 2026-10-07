@@ -3,14 +3,15 @@
 const libqp = require('libqp');
 const iconv = require('iconv-lite');
 const { convert } = require('html-to-text');
+const { t } = require('../i18n');
 
 const ROLE_NAMES = {
-  inbox: 'Postvak IN',
-  sent: 'Verzonden',
-  drafts: 'Concepten',
-  trash: 'Prullenbak',
-  junk: 'Spam',
-  archive: 'Archief'
+  get inbox() { return t('mailbox.folders.inbox'); },
+  get sent() { return t('mailbox.folders.sent'); },
+  get drafts() { return t('mailbox.folders.drafts'); },
+  get trash() { return t('mailbox.folders.trash'); },
+  get junk() { return t('mailbox.folders.junk'); },
+  get archive() { return t('mailbox.folders.archive'); }
 };
 
 const SPECIAL_USE = {

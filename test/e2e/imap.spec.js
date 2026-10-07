@@ -15,7 +15,7 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
   }
   // Seed one message so the inbox has something to show.
   const transport = nodemailer.createTransport({ ...eth.smtp, auth: { user: eth.user, pass: eth.pass } });
-  await transport.sendMail({ from: eth.user, to: eth.user, subject: 'Welkom in je echte inbox', text: 'Dit bericht kwam via SMTP binnen.' });
+  await transport.sendMail({ from: eth.user, to: eth.user, subject: 'Welcome to your real inbox', text: 'This message arrived via SMTP.' });
   transport.close();
 
   const env = { ...process.env, SEM_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-imap-')), SEM_HIDDEN: '1' };
@@ -25,7 +25,7 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
     const win = await app.firstWindow();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
     await win.click('[data-provider="other"]');
-    await expect(win.locator('.login-head h2')).toHaveText('Aanmelden bij Overige');
+    await expect(win.locator('.login-head h2')).toHaveText('Sign in to Other');
 
     await win.fill('[name=email]', eth.user);
     await win.fill('[name=password]', 'verkeerd');
@@ -36,16 +36,16 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
     await win.fill('[name=smtpPort]', String(eth.smtp.port));
     await win.locator('[name=smtpSecure]').setChecked(eth.smtp.secure);
     await win.click('button[type=submit]');
-    await expect(win.locator('[data-error]')).toContainText('Aanmelden mislukt', { timeout: 30000 });
+    await expect(win.locator('[data-error]')).toContainText('Sign-in failed', { timeout: 30000 });
 
     await win.fill('[name=password]', eth.pass);
     await win.click('button[type=submit]');
     await expect(win.locator('.list-title .sub')).toContainText(eth.user, { timeout: 30000 });
-    const row = win.locator('.item', { hasText: 'Welkom in je echte inbox' });
+    const row = win.locator('.item', { hasText: 'Welcome to your real inbox' });
     await expect(row).toBeVisible({ timeout: 30000 });
     await row.click();
-    await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('via SMTP binnen', { timeout: 30000 });
-    await expect(win.locator('.sync-status')).toContainText(/bijgewerkt/i);
+    await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('arrived via SMTP', { timeout: 30000 });
+    await expect(win.locator('.sync-status')).toContainText(/updated/i);
   } finally {
     await app.close();
   }

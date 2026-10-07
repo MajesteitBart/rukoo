@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="nl">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; font-src * data:; media-src * data:; connect-src 'none'; frame-src 'self' about: data:; object-src 'none'"
     />
-    <title>Nieuw bericht</title>
+    <title>New message</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="compose-window">
@@ -14,11 +14,14 @@
       <div class="titlebar-brand">
         <img class="titlebar-icon brand-dark" src="assets/rukoo-icon-dark.svg" alt="" />
         <img class="titlebar-icon brand-light" src="assets/rukoo-icon.svg" alt="" />
-        <span class="titlebar-name" id="compose-title">Nieuw bericht</span>
+        <span class="titlebar-name" id="compose-title">New message</span>
       </div>
     </div>
     <div id="app"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="compose.js"></script>
+    <script src="../i18n/en.js"></script>
+    <script src="../i18n/nl.js"></script>
+    <script src="../i18n/index.js"></script>
+    <script type="module" src="bootstrap.js"></script>
   </body>
 </html>

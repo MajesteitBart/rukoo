@@ -1,5 +1,7 @@
 'use strict';
 
+const { t, setLanguage, normalizeLanguage, getLocale } = require('../i18n');
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -22,6 +24,7 @@ const UNDO_MS = 10 * 60 * 1000;
 const SYSTEM_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 
 const DEFAULT_SETTINGS = {
+  language: 'en',
   theme: 'system',
   swipeActions: true,
   fitContent: true,
@@ -101,6 +104,8 @@ class Engine extends EventEmitter {
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.accounts = readJson(this.file('accounts.json'), []);
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.file('settings.json'), {}) };
+    this.settings.language = normalizeLanguage(this.settings.language);
+    setLanguage(this.settings.language);
     // Once only, so a user who sets this signature again keeps it.
     if (!this.settings.signatureOptIn) {
       if (this.settings.signature === OLD_DEFAULT_SIGNATURE) this.settings.signature = '';
@@ -153,7 +158,7 @@ class Engine extends EventEmitter {
 
   account(id) {
     const acc = this.accounts.find((a) => a.id === id);
-    if (!acc) throw new Error('Account niet gevonden.');
+    if (!acc) throw new Error(t('errors.account.missing'));
     return acc;
   }
 
@@ -175,7 +180,7 @@ class Engine extends EventEmitter {
     const cached = this.tokens.get(acc.id);
     if (cached && cached.accessToken && cached.expiresAt - Date.now() > 60000) return Promise.resolve(cached.accessToken);
     if (cached && cached.refreshing) return cached.refreshing;
-    if (!this.google) return Promise.reject(new Error('Google-aanmelding is niet beschikbaar.'));
+    if (!this.google) return Promise.reject(new Error(t('errors.google.unavailable')));
     const refreshing = this.google
       .refresh(this.secrets.decrypt(acc.secret))
       .then((t) => {
@@ -196,7 +201,7 @@ class Engine extends EventEmitter {
     if (reauthId) {
       const acc = this.account(reauthId);
       if (acc.email.toLowerCase() !== email) {
-        throw new Error(`Je hebt je aangemeld als ${grant.email}, maar dit account is ${acc.email}.`);
+        throw new Error(t('errors.google.wrongAccount', { signedInEmail: grant.email, accountEmail: acc.email }));
       }
       acc.auth = 'oauth2';
       acc.secret = this.secrets.encrypt(grant.refreshToken);
@@ -246,7 +251,7 @@ class Engine extends EventEmitter {
   // Reads verified "Send mail as" addresses from Gmail. The https://mail.google.com/ scope covers this call.
   async fetchGmailAliases(id) {
     const acc = this.account(id);
-    if (acc.auth !== 'oauth2') throw new Error('Alleen beschikbaar voor accounts met Google-aanmelding.');
+    if (acc.auth !== 'oauth2') throw new Error(t('errors.google.aliasesAuth'));
     const token = await this.accessToken(acc);
     let res;
     try {
@@ -255,9 +260,9 @@ class Engine extends EventEmitter {
         redirect: 'error'
       });
     } catch (_) {
-      throw new Error('Kan Gmail niet bereiken.');
+      throw new Error(t('errors.google.unreachable'));
     }
-    if (!res.ok) throw new Error(`Gmail gaf de aliassen niet terug (${res.status}).`);
+    if (!res.ok) throw new Error(t('errors.google.aliases', { status: res.status }));
     const body = await res.json();
     const usable = (body.sendAs || []).filter((s) => s.isPrimary || s.verificationStatus === 'accepted');
     acc.aliases = usable
@@ -319,7 +324,7 @@ class Engine extends EventEmitter {
   async addAccount(input) {
     const email = String(input.email || '').trim();
     if (input.type !== 'demo' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-      throw new Error('Voer een geldig e-mailadres in.');
+      throw new Error(t('errors.account.invalidEmail'));
     }
     const finalEmail = input.type === 'demo' ? DEMO_EMAIL : email;
     const defaults = serverDefaults(input.provider || 'other', finalEmail);
@@ -328,7 +333,7 @@ class Engine extends EventEmitter {
       type: input.type === 'demo' ? 'demo' : 'imap',
       provider: input.type === 'demo' ? 'demo' : input.provider || 'other',
       email: finalEmail,
-      name: input.name || (input.type === 'demo' ? 'Demo Gebruiker' : finalEmail.split('@')[0]),
+      name: input.name || (input.type === 'demo' ? t('setup.demo.name') : finalEmail.split('@')[0]),
       label: finalEmail,
       color: COLORS[this.accounts.length % COLORS.length],
       signature: null,
@@ -337,13 +342,13 @@ class Engine extends EventEmitter {
       secret: input.type === 'demo' ? null : this.secrets.encrypt(String(input.password || '')),
       createdAt: Date.now()
     };
-    if (acc.type === 'imap' && !input.password) throw new Error('Voer je wachtwoord in.');
+    if (acc.type === 'imap' && !input.password) throw new Error(t('errors.account.password'));
     return this.finishAdd(acc);
   }
 
   async finishAdd(acc) {
     if (this.accounts.some((a) => a.email.toLowerCase() === acc.email.toLowerCase())) {
-      throw new Error('Dit account is al toegevoegd.');
+      throw new Error(t('errors.account.duplicate'));
     }
     const session = this.session(acc);
     try {
@@ -377,7 +382,7 @@ class Engine extends EventEmitter {
       const next = [];
       for (const a of patch.aliases) {
         const address = String(a.address || '').trim().toLowerCase();
-        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) throw new Error(`Ongeldig e-mailadres: ${a.address}`);
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));
         if (seen.has(address)) continue;
         seen.add(address);
         next.push({ address, name: a.name || '' });
@@ -386,7 +391,7 @@ class Engine extends EventEmitter {
       if (acc.defaultFrom && !this.identity(acc, acc.defaultFrom)) acc.defaultFrom = null;
     }
     if (patch.defaultFrom !== undefined) {
-      if (patch.defaultFrom && !this.identity(acc, patch.defaultFrom)) throw new Error('Dit adres hoort niet bij dit account.');
+      if (patch.defaultFrom && !this.identity(acc, patch.defaultFrom)) throw new Error(t('errors.account.identity'));
       acc.defaultFrom = patch.defaultFrom ? patch.defaultFrom.toLowerCase() : null;
     }
     if (patch.makeDefault) {
@@ -436,6 +441,8 @@ class Engine extends EventEmitter {
 
   updateSettings(patch) {
     this.settings = { ...this.settings, ...patch };
+    this.settings.language = normalizeLanguage(this.settings.language);
+    setLanguage(this.settings.language);
     this.persistSettings();
     this.emit('updated');
     return this.settings;
@@ -694,7 +701,7 @@ class Engine extends EventEmitter {
     if (order === 'date-asc') list.sort((a, b) => a.date - b.date);
     else if (order === 'unread') list.sort((a, b) => Number(b.unread) - Number(a.unread) || byDate(a, b));
     else if (order === 'sender') {
-      list.sort((a, b) => (a.from.name || a.from.address).localeCompare(b.from.name || b.from.address, 'nl') || byDate(a, b));
+      list.sort((a, b) => (a.from.name || a.from.address).localeCompare(b.from.name || b.from.address, getLocale()) || byDate(a, b));
     } else list.sort(byDate);
     return list;
   }
@@ -737,14 +744,14 @@ class Engine extends EventEmitter {
     const cache = this.caches.get(accountId);
     const box = cache.boxes[folder];
     const msg = box && box.messages.find((m) => m.uid === uid);
-    if (!msg) throw new Error('Bericht niet gevonden.');
+    if (!msg) throw new Error(t('errors.message.missing'));
     return { acc, cache, box, msg, folder, uid };
   }
 
   async rawSource(id) {
     if (String(id).startsWith('saved:')) {
       const item = this.saved.find((s) => s.id === id);
-      if (!item) throw new Error('Opgeslagen e-mail niet gevonden.');
+      if (!item) throw new Error(t('errors.message.savedMissing'));
       return fs.readFileSync(this.file('saved', item.file));
     }
     const { acc, box, folder, uid } = this.locate(id);
@@ -785,7 +792,7 @@ class Engine extends EventEmitter {
       attachments: (parsed.attachments || [])
         .map((a, index) => ({
           index,
-          filename: a.filename || `bijlage-${index + 1}`,
+          filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }),
           contentType: a.contentType,
           size: a.size,
           related: Boolean(a.related || (a.contentDisposition === 'inline' && a.cid))
@@ -797,8 +804,8 @@ class Engine extends EventEmitter {
   async attachment(id, index) {
     const parsed = await simpleParser(await this.rawSource(id));
     const a = (parsed.attachments || [])[index];
-    if (!a) throw new Error('Bijlage niet gevonden.');
-    return { filename: a.filename || `bijlage-${index + 1}`, content: a.content, contentType: a.contentType };
+    if (!a) throw new Error(t('errors.attachment.missing'));
+    return { filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }), content: a.content, contentType: a.contentType };
   }
 
   async setFlags(id, flags) {
@@ -872,7 +879,7 @@ class Engine extends EventEmitter {
   async undoMove(id) {
     const rec = this.undoable.get(id);
     this.undoable.delete(id);
-    if (!rec || Date.now() - rec.at > UNDO_MS) throw new Error('Dit kan niet meer ongedaan worden gemaakt.');
+    if (!rec || Date.now() - rec.at > UNDO_MS) throw new Error(t('errors.undo.expired'));
     const acc = this.account(rec.accountId);
     this.removeFromCache(acc, rec.destination, rec.uid);
     this.changed(acc.id);
@@ -884,7 +891,7 @@ class Engine extends EventEmitter {
       uid = back && back.uid;
     } catch (err) {
       if (this.caches.get(acc.id).boxes[rec.destination]) this.syncFolderAndNotify(acc, rec.destination).catch(() => {});
-      if (err && err.code === 'UIDVALIDITY') throw new Error('Dit kan niet meer ongedaan worden gemaakt: de map is op de server opnieuw opgebouwd.');
+      if (err && err.code === 'UIDVALIDITY') throw new Error(t('errors.undo.rebuilt'));
       throw new Error(friendlyError(err));
     }
     // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
@@ -906,11 +913,11 @@ class Engine extends EventEmitter {
 
   async createFolder(accountId, name) {
     const clean = String(name || '').trim();
-    if (!clean) throw new Error('Geef de map een naam.');
-    if (clean.length > 100 || /[\\/%*]/.test(clean)) throw new Error('Een mapnaam mag geen / \\ % of * bevatten.');
+    if (!clean) throw new Error(t('errors.folder.nameRequired'));
+    if (clean.length > 100 || /[\\/%*]/.test(clean)) throw new Error(t('errors.folder.invalidName'));
     const acc = this.account(accountId);
     const cache = this.caches.get(acc.id);
-    if (cache.folders.some((f) => (f.name || '').toLowerCase() === clean.toLowerCase())) throw new Error('Er is al een map met die naam.');
+    if (cache.folders.some((f) => (f.name || '').toLowerCase() === clean.toLowerCase())) throw new Error(t('errors.folder.duplicate'));
     const created = await this.session(acc).createFolder(clean);
     cache.folders = await this.session(acc).listFolders();
     this.changed(acc.id);
@@ -920,7 +927,7 @@ class Engine extends EventEmitter {
   async archive(id) {
     const { acc } = this.locate(id);
     const target = this.archiveFolder(acc.id);
-    if (!target) throw new Error('Dit account heeft geen archiefmap.');
+    if (!target) throw new Error(t('errors.folder.noArchive'));
     await this.move(id, target.path);
   }
 
@@ -997,7 +1004,7 @@ class Engine extends EventEmitter {
         .map((a) => (typeof a === 'string' ? { name: '', address: a.trim() } : a))
         .filter((a) => a.address);
     const from = this.identity(acc, payload.from || null);
-    if (!from) throw new Error(`Je kunt niet verzenden als ${payload.from} vanaf dit account.`);
+    if (!from) throw new Error(t('errors.send.identity', { address: payload.from }));
     return {
       from: { name: from.name || acc.name || '', address: from.address },
       to: addrs(payload.to),
@@ -1061,9 +1068,9 @@ class Engine extends EventEmitter {
   async send(payload) {
     const acc = this.account(payload.accountId);
     const mail = await this.buildMail(acc, payload);
-    if (!mail.to.length && !mail.cc.length && !mail.bcc.length) throw new Error('Voeg minstens één ontvanger toe.');
+    if (!mail.to.length && !mail.cc.length && !mail.bcc.length) throw new Error(t('errors.send.noRecipients'));
     for (const a of [...mail.to, ...mail.cc, ...mail.bcc]) {
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(`Ongeldig e-mailadres: ${a.address}`);
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));
     }
     const session = this.session(acc);
     const raw = await session.send(mail);
@@ -1083,7 +1090,7 @@ class Engine extends EventEmitter {
   async saveDraft(payload) {
     const acc = this.account(payload.accountId);
     const drafts = this.folderByRole(acc.id, 'drafts');
-    if (!drafts) throw new Error('Deze account heeft geen map Concepten.');
+    if (!drafts) throw new Error(t('errors.folder.noDrafts'));
     const mail = await this.buildMail(acc, payload);
     // A Message-ID of our own finds the stored draft again on servers that do not report its uid.
     mail.messageId = `<${crypto.randomUUID()}@${mail.from.address.split('@')[1] || 'rukoo.invalid'}>`;

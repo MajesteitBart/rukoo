@@ -1,5 +1,7 @@
 'use strict';
 
+const { t } = require('../i18n');
+
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -148,7 +150,7 @@ function notify(messages) {
     n.show();
   }
   if (messages.length > list.length) {
-    new Notification({ title: 'Rukoo Mail', body: `${messages.length} nieuwe e-mails` }).show();
+    new Notification({ title: 'Rukoo Mail', body: t('native.notifications.newCount', { count: messages.length }) }).show();
   }
 }
 
@@ -261,7 +263,7 @@ function openComposeWindow(input) {
     minWidth: 560,
     minHeight: 460,
     show: false,
-    title: 'Nieuw bericht',
+    title: t('composer.titles.new'),
     icon: fs.existsSync(ICON) ? ICON : undefined,
     backgroundColor: background,
     titleBarStyle: 'hidden',
@@ -283,7 +285,7 @@ async function saveAllAttachments(id) {
   const list = full.attachments || [];
   if (!list.length) return 0;
   const res = await dialog.showOpenDialog(win, {
-    title: 'Bijlagen opslaan in',
+    title: t('native.attachments.directory'),
     defaultPath: app.getPath('downloads'),
     properties: ['openDirectory', 'createDirectory']
   });
@@ -338,7 +340,7 @@ const api = {
   saveToDevice: (id) => engine.saveToDevice(id),
   send: async (payload) => {
     await engine.send(payload);
-    send('toast', 'E-mail verzonden');
+    send('toast', t('composer.status.sent'));
     return true;
   },
   openCompose: (opts) => openComposeWindow(opts),
@@ -359,6 +361,7 @@ const api = {
   updateSettings: (patch) => {
     const s = engine.updateSettings(patch);
     if ('theme' in patch) applyTheme();
+    if ('language' in patch) broadcast('language');
     if ('syncInterval' in patch) scheduleSync();
     if ('badge' in patch) refreshBadge();
     return s;
@@ -366,15 +369,15 @@ const api = {
   sync: (accountId) => (accountId ? engine.syncAccount(accountId) : engine.syncAll()).then(() => true),
   openFolder: (accountId, folder) => engine.openFolder(accountId, folder),
   pickFiles: async () => {
-    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: 'Bestanden bijvoegen' });
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: t('composer.attachments.pick') });
     if (res.canceled) return [];
     return res.filePaths.map((p) => ({ path: p, filename: path.basename(p), size: fs.statSync(p).size }));
   },
   pickImage: async () => {
     const res = await dialog.showOpenDialog(win, {
       properties: ['openFile'],
-      title: 'Afbeelding invoegen',
-      filters: [{ name: 'Afbeeldingen', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
+      title: t('composer.attachments.image'),
+      filters: [{ name: t('native.attachments.images'), extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
     });
     if (res.canceled || !res.filePaths[0]) return null;
     const file = res.filePaths[0];
@@ -386,10 +389,10 @@ const api = {
     if (RISKY.test(safeName(a.filename))) {
       const res = await dialog.showMessageBox(win, {
         type: 'warning',
-        title: 'Bijlage openen',
-        message: `${safeName(a.filename)} kan een programma starten.`,
-        detail: 'Dit type bestand wordt niet vanuit e-mail geopend. Sla het op en open het alleen als je de afzender vertrouwt.',
-        buttons: ['Annuleren', 'Opslaan...'],
+        title: t('native.attachments.open'),
+        message: t('native.attachments.riskyTitle', { filename: safeName(a.filename) }),
+        detail: t('native.attachments.riskyHelp'),
+        buttons: [t('common.actions.cancel'), t('native.attachments.save')],
         defaultId: 0,
         cancelId: 0
       });
@@ -420,7 +423,7 @@ const api = {
   unsubscribe: async (id) => {
     const m = await engine.getMessage(id);
     const u = m.unsubscribe;
-    if (!u) throw new Error('Deze e-mail heeft geen afmeldlink.');
+    if (!u) throw new Error(t('errors.unsubscribe.missing'));
     const acc = engine.messageAccount(id);
     if (acc && acc.type === 'demo') return { done: true };
     // Only a 2xx from the endpoint itself counts; a redirect or failure falls back to the page in the browser.
@@ -447,7 +450,7 @@ const api = {
   },
   exportEml: async (id) => {
     const full = await engine.getMessage(id);
-    const name = `${(full.subject || 'bericht').replace(/[<>:"/\\|?*]/g, '_').slice(0, 80)}.eml`;
+    const name = `${(full.subject || t('native.export.defaultName')).replace(/[<>:"/\\|?*]/g, '_').slice(0, 80)}.eml`;
     const res = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('documents'), name) });
     if (res.canceled || !res.filePath) return false;
     fs.writeFileSync(res.filePath, await engine.rawSource(id));
@@ -458,7 +461,7 @@ const api = {
   setBadge: (dataUrl, count) => {
     if (!win || process.platform !== 'win32') return;
     if (!dataUrl || !count) win.setOverlayIcon(null, '');
-    else win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), count === 1 ? '1 nieuwe e-mail' : `${count} nieuwe e-mails`);
+    else win.setOverlayIcon(nativeImage.createFromDataURL(dataUrl), t('native.notifications.newCount', { count }));
   },
   googleSignIn: async () => {
     const grant = await google.signIn();
@@ -474,7 +477,7 @@ const api = {
   fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),
   googleImportClient: async () => {
     const res = await dialog.showOpenDialog(win, {
-      title: 'Google OAuth-client importeren',
+      title: t('setup.google.import'),
       properties: ['openFile'],
       filters: [{ name: 'JSON', extensions: ['json'] }]
     });

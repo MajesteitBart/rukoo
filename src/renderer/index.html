@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="nl">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta
@@ -15,11 +15,14 @@
         <img class="titlebar-icon brand-dark" src="assets/rukoo-icon-dark.svg" alt="" />
         <img class="titlebar-icon brand-light" src="assets/rukoo-icon.svg" alt="" />
       </div>
-      <div class="titlebar-search" role="search" title="Zoeken (Ctrl+E)"></div>
+      <div class="titlebar-search" role="search" title="Search (Ctrl+E)"></div>
     </div>
     <div id="app"></div>
     <div id="overlays"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js"></script>
+    <script src="../i18n/en.js"></script>
+    <script src="../i18n/nl.js"></script>
+    <script src="../i18n/index.js"></script>
+    <script type="module" src="bootstrap.js"></script>
   </body>
 </html>

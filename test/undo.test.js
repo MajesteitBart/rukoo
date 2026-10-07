@@ -19,7 +19,7 @@ const inbox = (engine, acc) => engine.listMessages({ scope: acc.id, view: 'inbox
 
 test('a delete can be undone and the message keeps its flags', async () => {
   const { engine, acc } = await freshEngine();
-  const target = inbox(engine, acc).find((m) => m.subject === 'Inloggen Bencompare');
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
   await engine.setFlags(target.id, { starred: true });
   assert.equal(await engine.remove(target.id), 'trash');
   assert.ok(engine.canUndo(target.id));
@@ -35,7 +35,7 @@ test('a delete can be undone and the message keeps its flags', async () => {
   assert.equal(inbox(engine, acc).filter((m) => m.subject === target.subject).length, 1);
   assert.ok(!engine.listMessages({ scope: acc.id, view: 'trash' }).some((m) => m.subject === target.subject));
   assert.equal(newMail.length, 0, 'a restored message is not reported as new mail');
-  await assert.rejects(engine.undoMove(target.id), /niet meer ongedaan/);
+  await assert.rejects(engine.undoMove(target.id), /no longer be undone/);
   await engine.close();
 });
 
@@ -75,14 +75,14 @@ test('the old default signature is dropped, a custom one is kept', () => {
 
 test('undo refuses a mailbox whose uids were reassigned and moves nothing', async () => {
   const { engine, acc } = await freshEngine();
-  const target = inbox(engine, acc).find((m) => m.subject === 'Inloggen Bencompare');
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
   await engine.remove(target.id);
   // The server rebuilt Prullenbak: same uids, different messages.
   const demo = engine.session(engine.account(acc.id));
   demo.box('Trash').uidValidity = '99';
   demo.persist();
   const before = inbox(engine, acc).length;
-  await assert.rejects(engine.undoMove(target.id), /opnieuw opgebouwd/);
+  await assert.rejects(engine.undoMove(target.id), /rebuilt/);
   await engine.syncAccount(acc.id);
   assert.equal(inbox(engine, acc).length, before);
   assert.ok(engine.listMessages({ scope: acc.id, view: 'trash' }).some((m) => m.subject === target.subject));
@@ -126,12 +126,12 @@ test("Gmail's All Mail serves as the archive, without showing mail twice", async
 
   const pub = engine.state().accounts[0];
   assert.equal(pub.archive, 'Archive');
-  assert.deepEqual(pub.folders.find((f) => f.path === 'Archive'), { path: 'Archive', name: 'Archief', role: 'archive' });
+  assert.deepEqual(pub.folders.find((f) => f.path === 'Archive'), { path: 'Archive', name: 'Archive', role: 'archive' });
   const everything = () => engine.listMessages({ scope: acc.id, view: 'everything' });
   assert.equal(everything().filter((m) => m.subject === copy.subject).length, 1, 'the All Mail copy is hidden');
   assert.ok(!engine.listMessages({ scope: acc.id, view: 'archive' }).some((m) => m.subject === copy.subject));
 
-  const target = inbox(engine, acc).find((m) => m.subject === 'Inloggen Bencompare');
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
   await engine.archive(target.id);
   await engine.syncAccount(acc.id);
   assert.ok(engine.listMessages({ scope: acc.id, view: 'archive' }).some((m) => m.subject === target.subject));
@@ -150,11 +150,11 @@ test('a draft saved on a server without UIDPLUS can still be found and replaced'
     await append(...args);
     return null;
   };
-  const first = await engine.saveDraft({ accountId: acc.id, to: ['a@voorbeeld.nl'], subject: 'Zonder uid', html: '<p>1</p>' });
+  const first = await engine.saveDraft({ accountId: acc.id, to: ['a@example.com'], subject: 'Without a UID', html: '<p>1</p>' });
   assert.ok(first, 'the draft gets an id anyway');
-  const second = await engine.saveDraft({ accountId: acc.id, to: ['a@voorbeeld.nl'], subject: 'Zonder uid', html: '<p>2</p>', draftId: first });
+  const second = await engine.saveDraft({ accountId: acc.id, to: ['a@example.com'], subject: 'Without a UID', html: '<p>2</p>', draftId: first });
   assert.ok(second && second !== first);
-  assert.equal(engine.listMessages({ scope: acc.id, view: 'drafts' }).filter((m) => m.subject === 'Zonder uid').length, 1);
+  assert.equal(engine.listMessages({ scope: acc.id, view: 'drafts' }).filter((m) => m.subject === 'Without a UID').length, 1);
   await engine.close();
 });
 
@@ -164,13 +164,13 @@ test('archived Gmail mail that also has a label stays in the archive, and shows 
   const list = demo.listFolders.bind(demo);
   demo.listFolders = async () => (await list()).map((f) => (f.role === 'archive' ? { ...f, name: 'All Mail', role: 'all' } : f));
   await engine.syncAccount(acc.id);
-  const target = inbox(engine, acc).find((m) => m.subject === 'Inloggen Bencompare');
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
   await engine.archive(target.id);
   // The same message also carries a user label (a cached user folder).
   const archived = demo.box('Archive').messages.find((m) => m.subject === target.subject);
-  demo.box('Facturen').messages.push({ ...archived, uid: demo.state.nextUid++ });
+  demo.box('Invoices').messages.push({ ...archived, uid: demo.state.nextUid++ });
   demo.persist();
-  await engine.openFolder(acc.id, 'Facturen');
+  await engine.openFolder(acc.id, 'Invoices');
   await engine.syncAccount(acc.id);
   assert.ok(engine.listMessages({ scope: acc.id, view: 'archive' }).some((m) => m.subject === target.subject));
   assert.equal(engine.listMessages({ scope: acc.id, view: 'everything' }).filter((m) => m.subject === target.subject).length, 1);

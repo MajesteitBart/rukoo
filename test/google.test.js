@@ -76,7 +76,7 @@ test('sign-in: loopback redirect, PKCE, offline access and Gmail scope', async (
   assert.equal(u.searchParams.get('login_hint'), 'bart@example.com');
   assert.ok(u.searchParams.get('scope').split(' ').includes('https://mail.google.com/'));
   for (let i = 0; i < 50 && !g.seen.page; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.match(g.seen.page, /Je bent aangemeld/);
+  assert.match(g.seen.page, /You are signed in/);
 });
 
 test('sign-in: forged state is ignored, denial and missing Gmail scope are reported', async () => {
@@ -84,27 +84,27 @@ test('sign-in: forged state is ignored, denial and missing Gmail scope are repor
   const auth1 = new GoogleAuth({ configPath: configFile(), openBrowser: forged.browser({ badState: true }), fetchImpl: forged.fetchImpl });
   const pending = auth1.signIn();
   await new Promise((r) => setTimeout(r, 200));
-  assert.match(forged.seen.page, /Ongeldige aanvraag/);
+  assert.match(forged.seen.page, /Invalid request/);
   assert.equal(forged.seen.tokenForms.length, 0, 'no token exchange for a forged redirect');
   auth1.cancel();
-  await assert.rejects(pending, /geannuleerd/);
+  await assert.rejects(pending, /cancelled/);
 
   const denied = fakeGoogle();
   const auth2 = new GoogleAuth({ configPath: configFile(), openBrowser: denied.browser({ deny: true }), fetchImpl: denied.fetchImpl });
-  await assert.rejects(auth2.signIn(), /geen toegang/);
+  await assert.rejects(auth2.signIn(), /did not grant access/);
 
   const noScope = fakeGoogle({ scope: 'openid email' });
   const auth3 = new GoogleAuth({ configPath: configFile(), openBrowser: noScope.browser(), fetchImpl: noScope.fetchImpl });
-  await assert.rejects(auth3.signIn(), /toegang tot Gmail/);
+  await assert.rejects(auth3.signIn(), /access Gmail/);
 });
 
 test('refresh: revoked grants give a clear message; missing config disables Google', async () => {
   const g = fakeGoogle({ refreshError: 'invalid_grant' });
   const auth = new GoogleAuth({ configPath: configFile(), openBrowser: g.browser(), fetchImpl: g.fetchImpl });
-  await assert.rejects(auth.refresh('old'), /opnieuw aan/);
+  await assert.rejects(auth.refresh('old'), /Sign in again/);
   const none = new GoogleAuth({ configPath: path.join(os.tmpdir(), 'does-not-exist.json'), openBrowser: () => {} });
   assert.equal(none.available(), false);
-  await assert.rejects(none.signIn(), /niet ingesteld/);
+  await assert.rejects(none.signIn(), /not configured/);
 });
 
 test('importClient accepts the Google Cloud download format', () => {

@@ -2424,6 +2424,21 @@ body:has(.page) .titlebar-search {
 }
 
 /* setup */
+.setup-language {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 24px;
+}
+.setup-language select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
 .setup {
   display: grid;
   place-items: center;

@@ -1,5 +1,7 @@
 'use strict';
 
+const { t } = require('../i18n');
+
 const { ImapFlow } = require('imapflow');
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
@@ -13,14 +15,14 @@ const AUTO_SENT_HOSTS = /(gmail\.com|googlemail\.com|office365\.com|outlook\.com
 function friendlyError(err) {
   const msg = String((err && (err.responseText || err.response || err.message)) || err);
   if (err && err.oauth) return msg;
-  if (err && err.authenticationFailed) return 'Aanmelden mislukt. Controleer je e-mailadres en (app-)wachtwoord.';
+  if (err && err.authenticationFailed) return t('errors.connection.auth');
   if (/AUTHENTICATIONFAILED|Invalid credentials|authentication failed|535|Username and Password not accepted/i.test(msg)) {
-    return 'Aanmelden mislukt. Controleer je e-mailadres en (app-)wachtwoord.';
+    return t('errors.connection.auth');
   }
-  if (/ENOTFOUND|EAI_AGAIN/i.test(msg)) return 'Server niet gevonden. Controleer de servernaam.';
-  if (/ECONNREFUSED/i.test(msg)) return 'Verbinding geweigerd. Controleer de server en poort.';
-  if (/ETIMEDOUT|timeout/i.test(msg)) return 'Er is een time-out opgetreden bij het verbinden met de server.';
-  if (/certificate|self.signed|CERT_/i.test(msg)) return 'Het certificaat van de server is niet vertrouwd.';
+  if (/ENOTFOUND|EAI_AGAIN/i.test(msg)) return t('errors.connection.host');
+  if (/ECONNREFUSED/i.test(msg)) return t('errors.connection.refused');
+  if (/ETIMEDOUT|timeout/i.test(msg)) return t('errors.connection.timeout');
+  if (/certificate|self.signed|CERT_/i.test(msg)) return t('errors.connection.certificate');
   return msg;
 }
 
@@ -234,7 +236,7 @@ class ImapAccount {
       const lock = await client.getMailboxLock(path, { readOnly: true });
       try {
         const msg = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
-        if (!msg || !msg.source) throw new Error('Bericht niet gevonden op de server.');
+        if (!msg || !msg.source) throw new Error(t('errors.message.serverMissing'));
         return msg.source;
       } finally {
         lock.release();
@@ -266,7 +268,7 @@ class ImapAccount {
       const lock = await client.getMailboxLock(path);
       try {
         if (expectUidValidity && String(client.mailbox.uidValidity) !== String(expectUidValidity)) {
-          throw Object.assign(new Error('De map is op de server opnieuw opgebouwd.'), { code: 'UIDVALIDITY' });
+          throw Object.assign(new Error(t('errors.folder.rebuilt')), { code: 'UIDVALIDITY' });
         }
         const res = await client.messageMove(String(uid), destination, { uid: true });
         return {

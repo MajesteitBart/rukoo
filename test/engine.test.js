@@ -19,10 +19,10 @@ test('demo account syncs folders and inbox', async () => {
   const { engine, acc } = await freshEngine();
   const state = engine.state();
   assert.equal(state.accounts.length, 1);
-  assert.ok(state.accounts[0].folders.some((f) => f.role === 'inbox' && f.name === 'Postvak IN'));
+  assert.ok(state.accounts[0].folders.some((f) => f.role === 'inbox' && f.name === 'Inbox'));
   const inbox = engine.listMessages({ scope: acc.id, view: 'inbox' });
   assert.ok(inbox.length >= 10);
-  assert.equal(inbox[0].from.name, 'ANWB Nieuwsbrief');
+  assert.equal(inbox[0].from.name, 'ANWB Newsletter');
   assert.ok(inbox[0].preview.length > 0, 'preview is filled');
   const counts = engine.counts(acc.id);
   assert.equal(counts.views.inbox, inbox.filter((m) => m.unread).length);
@@ -37,7 +37,7 @@ test('opening a message returns sanitized html and attachments', async () => {
   const withAttachment = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.hasAttachments);
   const full = await engine.getMessage(withAttachment.id);
   assert.equal(full.attachments.length, 1);
-  assert.equal(full.attachments[0].filename, 'Contractbevestiging.pdf');
+  assert.equal(full.attachments[0].filename, 'Contract-confirmation.pdf');
   const att = await engine.attachment(withAttachment.id, full.attachments[0].index);
   assert.ok(att.content.toString('latin1').startsWith('%PDF'));
   assert.ok(full.html.includes('2434702'));
@@ -68,21 +68,21 @@ test('flags, delete to trash and permanent delete', async () => {
 
 test('send to self lands in inbox and sent; drafts round trip', async () => {
   const { engine, acc } = await freshEngine();
-  await engine.send({ accountId: acc.id, to: ['demo@voorbeeld.nl'], subject: 'Testbericht', html: '<p>Hallo <b>wereld</b></p>' });
+  await engine.send({ accountId: acc.id, to: ['demo@example.com'], subject: 'Test message', html: '<p>Hello <b>world</b></p>' });
   await engine.syncAccount(acc.id);
   const inbox = engine.listMessages({ scope: acc.id, view: 'inbox' });
-  assert.equal(inbox[0].subject, 'Testbericht');
+  assert.equal(inbox[0].subject, 'Test message');
   assert.ok(inbox[0].unread);
-  assert.ok(engine.listMessages({ scope: acc.id, view: 'sent' }).some((m) => m.subject === 'Testbericht'));
+  assert.ok(engine.listMessages({ scope: acc.id, view: 'sent' }).some((m) => m.subject === 'Test message'));
 
-  const draftId = await engine.saveDraft({ accountId: acc.id, to: ['a@b.nl'], subject: 'Concepttest', html: '<p>x</p>' });
+  const draftId = await engine.saveDraft({ accountId: acc.id, to: ['a@b.nl'], subject: 'Draft test', html: '<p>x</p>' });
   assert.ok(draftId);
   assert.equal(engine.counts(acc.id).views.drafts, 4);
-  const newer = await engine.saveDraft({ accountId: acc.id, to: ['a@b.nl'], subject: 'Concepttest 2', html: '<p>y</p>', draftId });
+  const newer = await engine.saveDraft({ accountId: acc.id, to: ['a@b.nl'], subject: 'Draft test 2', html: '<p>y</p>', draftId });
   assert.ok(newer);
   assert.equal(engine.counts(acc.id).views.drafts, 4, 'replacing a draft keeps the count');
-  await assert.rejects(engine.send({ accountId: acc.id, to: [], subject: 'x' }), /ontvanger/);
-  await assert.rejects(engine.send({ accountId: acc.id, to: ['geen-adres'], subject: 'x' }), /Ongeldig/);
+  await assert.rejects(engine.send({ accountId: acc.id, to: [], subject: 'x' }), /recipient/);
+  await assert.rejects(engine.send({ accountId: acc.id, to: ['geen-adres'], subject: 'x' }), /Invalid/);
   await engine.close();
 });
 
@@ -92,16 +92,16 @@ test('new-mail event fires only for mail after the first sync', async () => {
   engine.on('new-mail', (list) => events.push(...list));
   await engine.syncAccount(acc.id);
   assert.equal(events.length, 0);
-  await engine.send({ accountId: acc.id, to: ['demo@voorbeeld.nl'], subject: 'Nieuw!', text: 'hoi' });
+  await engine.send({ accountId: acc.id, to: ['demo@example.com'], subject: 'New!', text: 'hi' });
   await engine.syncAccount(acc.id);
-  assert.ok(events.some((m) => m.subject === 'Nieuw!'));
+  assert.ok(events.some((m) => m.subject === 'New!'));
   await engine.close();
 });
 
 test('vip, spam, search, saved and persistence across restarts', async () => {
   const { engine, acc, dir } = await freshEngine();
-  assert.equal(engine.toggleVip('sanne@voorbeeld.nl'), true);
-  assert.ok(engine.listMessages({ scope: acc.id, view: 'vip' }).every((m) => m.from.address === 'sanne@voorbeeld.nl'));
+  assert.equal(engine.toggleVip('sanne@example.com'), true);
+  assert.ok(engine.listMessages({ scope: acc.id, view: 'vip' }).every((m) => m.from.address === 'sanne@example.com'));
   assert.equal(engine.listMessages({ scope: 'all', view: 'inbox', query: 'vandebron' }).length, 6);
 
   const bencompare = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.from.name === 'Bencompare');
@@ -119,7 +119,7 @@ test('vip, spam, search, saved and persistence across restarts', async () => {
   const reopened = new Engine({ dataDir: dir }).init();
   assert.equal(reopened.accounts.length, 1);
   assert.ok(reopened.listMessages({ scope: 'all', view: 'inbox' }).length > 5, 'cache survives restart');
-  assert.deepEqual(reopened.settings.vips, ['sanne@voorbeeld.nl']);
+  assert.deepEqual(reopened.settings.vips, ['sanne@example.com']);
   await reopened.removeAccount(acc.id);
   assert.equal(reopened.accounts.length, 0);
   assert.equal(reopened.listMessages({ scope: 'all', view: 'inbox' }).length, 0);
@@ -127,12 +127,12 @@ test('vip, spam, search, saved and persistence across restarts', async () => {
 
 test('user folders sync on open', async () => {
   const { engine, acc } = await freshEngine();
-  const folder = engine.state().accounts[0].folders.find((f) => f.path === 'Facturen');
+  const folder = engine.state().accounts[0].folders.find((f) => f.path === 'Invoices');
   assert.ok(folder);
-  assert.equal(engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Facturen' }).length, 0);
-  await engine.openFolder(acc.id, 'Facturen');
-  const list = engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Facturen' });
+  assert.equal(engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Invoices' }).length, 0);
+  await engine.openFolder(acc.id, 'Invoices');
+  const list = engine.listMessages({ scope: acc.id, view: 'folder', folder: 'Invoices' });
   assert.equal(list.length, 1);
-  assert.equal(decodeId(list[0].id).folder, 'Facturen');
+  assert.equal(decodeId(list[0].id).folder, 'Invoices');
   await engine.close();
 });

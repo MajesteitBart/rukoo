@@ -1,46 +1,47 @@
+import { t, languages, setLanguage, localize } from './i18n.js';
 import { icons } from './icons.js';
 import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm } from './ui.js';
 
 const THEMES = [
-  { value: 'system', label: 'Systeeminstelling volgen' },
-  { value: 'light', label: 'Licht' },
-  { value: 'dark', label: 'Donker' }
+  { value: 'system', get label() { return t('settings.theme.system'); } },
+  { value: 'light', get label() { return t('settings.theme.light'); } },
+  { value: 'dark', get label() { return t('settings.theme.dark'); } }
 ];
 const DENSITY = [
-  { value: 'standard', label: 'Standaard', hint: 'Afzender, onderwerp en voorbeeldtekst' },
-  { value: 'compact', label: 'Compact', hint: 'Eén regel per e-mail' }
+  { value: 'standard', get label() { return t('settings.density.standard'); }, get hint() { return t('settings.density.standardHint'); } },
+  { value: 'compact', get label() { return t('settings.density.compact'); }, get hint() { return t('settings.density.compactHint'); } }
 ];
 const BADGES = [
-  { value: 'new', label: 'Nieuwe e-mails' },
-  { value: 'unread', label: 'Ongelezen e-mails' },
-  { value: 'none', label: 'Geen' }
+  { value: 'new', get label() { return t('settings.badge.new'); } },
+  { value: 'unread', get label() { return t('settings.badge.unread'); } },
+  { value: 'none', get label() { return t('common.values.none'); } }
 ];
 const INTERVALS = [
-  { value: 0, label: 'Handmatig' },
-  { value: 1, label: 'Elke minuut' },
-  { value: 5, label: 'Elke 5 minuten' },
-  { value: 15, label: 'Elke 15 minuten' },
-  { value: 30, label: 'Elke 30 minuten' },
-  { value: 60, label: 'Elk uur' }
+  { value: 0, get label() { return t('settings.sync.manual'); } },
+  { value: 1, get label() { return t('settings.sync.minute'); } },
+  { value: 5, get label() { return t('settings.sync.fiveMinutes'); } },
+  { value: 15, get label() { return t('settings.sync.fifteenMinutes'); } },
+  { value: 30, get label() { return t('settings.sync.thirtyMinutes'); } },
+  { value: 60, get label() { return t('settings.sync.hour'); } }
 ];
 const COLORS = [
-  { value: '#2fd6c0', label: 'Turquoise' },
-  { value: '#4a7dff', label: 'Blauw' },
-  { value: '#ff8a3d', label: 'Oranje' },
-  { value: '#c56cf0', label: 'Paars' },
-  { value: '#f5c542', label: 'Geel' },
-  { value: '#ff5d73', label: 'Rood' },
-  { value: '#5ec2ff', label: 'Lichtblauw' }
+  { value: '#2fd6c0', get label() { return t('settings.colors.turquoise'); } },
+  { value: '#4a7dff', get label() { return t('settings.colors.blue'); } },
+  { value: '#ff8a3d', get label() { return t('settings.colors.orange'); } },
+  { value: '#c56cf0', get label() { return t('settings.colors.purple'); } },
+  { value: '#f5c542', get label() { return t('settings.colors.yellow'); } },
+  { value: '#ff5d73', get label() { return t('settings.colors.red'); } },
+  { value: '#5ec2ff', get label() { return t('settings.colors.lightBlue'); } }
 ];
-const HIDEABLE = [
-  ['vip', "VIP's"],
-  ['starred', 'Sterren'],
-  ['saved', 'Opgeslagen e-mails'],
-  ['drafts', 'Concepten'],
-  ['sent', 'Verzonden'],
-  ['trash', 'Prullenbak'],
-  ['junk', 'Spam'],
-  ['archive', 'Archief']
+const hideableViews = () => [
+  ['vip', t('mailbox.folders.vip')],
+  ['starred', t('mailbox.folders.starred')],
+  ['saved', t('mailbox.folders.saved')],
+  ['drafts', t('mailbox.folders.drafts')],
+  ['sent', t('mailbox.folders.sent')],
+  ['trash', t('mailbox.folders.trash')],
+  ['junk', t('mailbox.folders.junk')],
+  ['archive', t('mailbox.folders.archive')]
 ];
 
 const labelOf = (list, value) => (list.find((x) => x.value === value) || list[0]).label;
@@ -49,8 +50,8 @@ export function promptDialog(title, value = '', { multiline = false, placeholder
   return dialog({
     title,
     buttons: [
-      { label: 'Annuleren', value: null },
-      { label: 'Opslaan', value: (scrim) => scrim.querySelector('.form-input').value }
+      { get label() { return t('common.actions.cancel'); }, value: null },
+      { get label() { return t('common.actions.save'); }, value: (scrim) => scrim.querySelector('.form-input').value }
     ],
     render(body) {
       body.innerHTML = `<div class="form" style="padding:0">${
@@ -111,22 +112,24 @@ export function openSettings(ctx) {
     const state = await api('state');
     ctx.S.data = state;
     const s = state.settings;
+    setLanguage(s.language);
+    localize();
     const view = stack[stack.length - 1];
-    let title = 'E-mailinstellingen';
+    let title = t('settings.title');
     let body = '';
 
     if (view === 'main') {
       const accounts = state.accounts
         .map((a) => {
           const status = a.syncing
-            ? 'Synchroniseren...'
+            ? t('mailbox.sync.syncing')
             : a.error
               ? `<span class="error">${esc(a.error)}</span>`
               : a.lastSync
-                ? `Laatst gesynchroniseerd op ${numericDate(a.lastSync)}  ${hhmm(a.lastSync)}`
-                : 'Nog niet gesynchroniseerd';
+                ? t('settings.account.lastSync', { date: numericDate(a.lastSync), time: hhmm(a.lastSync) })
+                : t('mailbox.sync.never');
           return row({
-            title: `${esc(a.email)}${a.isDefault ? ' (standaard)' : ''}`,
+            title: `${esc(a.email)}${a.isDefault ? t('settings.account.defaultSuffix') : ''}`,
             desc: status,
             action: `account:${a.id}`,
             cls: 'indent',
@@ -135,28 +138,29 @@ export function openSettings(ctx) {
         })
         .join('');
       body = `
-        <div class="settings-group-title">Accounts</div>
+        <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
-          ${row({ title: 'Account toevoegen', action: 'add', cls: 'indent', lead: `<span class="add-ic">${icons.plus}</span>` })}
+          ${row({ title: t('settings.accounts.add'), action: 'add', cls: 'indent', lead: `<span class="add-ic">${icons.plus}</span>` })}
         </div>
-        <div class="settings-group-title">Algemeen</div>
+        <div class="settings-group-title" data-i18n="settings.groups.general">${esc(t('settings.groups.general'))}</div>
         <div class="card">
-          ${row({ title: 'Mappen beheren', desc: 'Geef uw e-mailmappen weer of verberg ze.', action: 'folders' })}
-          ${row({ title: 'Lijstweergave', value: labelOf(DENSITY, s.density), action: 'density' })}
-          ${row({ title: 'Thema', value: labelOf(THEMES, s.theme), action: 'theme' })}
-          ${row({ title: 'E-mails donker weergeven', desc: 'Pas de kleuren van HTML-e-mails aan in de donkere stand.', action: 'toggle:darkEmails', toggle: s.darkEmails })}
-          ${row({ title: 'Vegen op aanraakschermen', desc: 'Veeg naar rechts om als (on)gelezen te markeren en naar links om te wissen.', action: 'toggle:swipeActions', toggle: s.swipeActions })}
-          ${row({ title: 'Inhoud passend maken', desc: 'Maak e-mailinhoud kleiner zodat deze in het venster past.', action: 'toggle:fitContent', toggle: s.fitContent })}
-          ${row({ title: "Afzenderlogo's", desc: 'Toont het logo van bedrijven die je mailen. Rukoo Mail haalt het één keer op van hun website.', action: 'toggle:senderLogos', toggle: s.senderLogos !== false })}
-          ${row({ title: 'Meldingen', desc: 'Toon een Windows-melding bij nieuwe e-mails.', action: 'toggle:notifications', toggle: s.notifications })}
-          ${row({ title: 'Tellingen app-pictogrambadge', value: labelOf(BADGES, s.badge), action: 'badge' })}
-          ${row({ title: 'Synchronisatieschema', value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
-          ${row({ title: 'Handtekening', value: esc(s.signature || 'Geen'), action: 'signature' })}
-          ${row({ title: 'Spamadressen', desc: 'Bewerk uw lijst met spamafzenders.', action: 'spam' })}
-          ${row({ title: "VIP's", desc: "E-mails van VIP's verschijnen in de map VIP's.", action: 'vips' })}
+          ${row({ title: t('settings.general.language'), desc: t('settings.general.languageHelp'), value: languages.find((language) => language.code === s.language)?.name || 'English', action: 'language' })}
+          ${row({ title: t('settings.general.folders'), desc: t('settings.general.foldersHelp'), action: 'folders' })}
+          ${row({ title: t('settings.general.density'), value: labelOf(DENSITY, s.density), action: 'density' })}
+          ${row({ title: t('settings.general.theme'), value: labelOf(THEMES, s.theme), action: 'theme' })}
+          ${row({ title: t('settings.general.darkEmails'), desc: t('settings.general.darkEmailsHelp'), action: 'toggle:darkEmails', toggle: s.darkEmails })}
+          ${row({ title: t('settings.general.swipe'), desc: t('settings.general.swipeHelp'), action: 'toggle:swipeActions', toggle: s.swipeActions })}
+          ${row({ title: t('settings.general.fit'), desc: t('settings.general.fitHelp'), action: 'toggle:fitContent', toggle: s.fitContent })}
+          ${row({ title: t('settings.general.logos'), desc: t('settings.general.logosHelp'), action: 'toggle:senderLogos', toggle: s.senderLogos !== false })}
+          ${row({ title: t('settings.general.notifications'), desc: t('settings.general.notificationsHelp'), action: 'toggle:notifications', toggle: s.notifications })}
+          ${row({ title: t('settings.general.badge'), value: labelOf(BADGES, s.badge), action: 'badge' })}
+          ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
+          ${row({ title: t('settings.general.signature'), value: esc(s.signature || t('common.values.none')), action: 'signature' })}
+          ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
+          ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
-        <div class="settings-group-title">Over</div>
-        <div class="card">${row({ title: 'Over Rukoo Mail', desc: 'Versie en opslaglocatie', action: 'about' })}</div>`;
+        <div class="settings-group-title" data-i18n="settings.groups.about">${esc(t('settings.groups.about'))}</div>
+        <div class="card">${row({ title: t('settings.about.title'), desc: t('settings.about.help'), action: 'about' })}</div>`;
     }
 
     if (view === 'account') {
@@ -164,86 +168,86 @@ export function openSettings(ctx) {
       if (!a) return back();
       title = a.email;
       body = `
-        <div class="settings-group-title">Account</div>
+        <div class="settings-group-title" data-i18n="settings.groups.account">${esc(t('settings.groups.account'))}</div>
         <div class="card">
-          ${row({ title: 'Weergavenaam', value: esc(a.name || ''), action: 'acc-name' })}
-          ${row({ title: 'Handtekening', value: esc(a.signature ?? `Algemeen: ${s.signature || 'geen'}`), action: 'acc-signature' })}
-          ${row({ title: 'Accountkleur', value: labelOf(COLORS, a.color), action: 'acc-color' })}
-          ${row({ title: 'Standaard afzender', value: esc(a.defaultFrom), action: 'acc-from' })}
-          ${row({ title: 'Afzenderadressen', desc: a.identities.length > 1 ? `${a.identities.length - 1} ${a.identities.length === 2 ? 'alias' : 'aliassen'}` : 'Alleen het accountadres', action: 'acc-aliases' })}
-          ${a.isDefault ? '' : row({ title: 'Instellen als standaardaccount', desc: 'Nieuwe e-mails worden vanaf dit account verzonden.', action: 'acc-default' })}
-          ${row({ title: 'Nu synchroniseren', desc: a.lastSync ? `Laatst gesynchroniseerd op ${numericDate(a.lastSync)}  ${hhmm(a.lastSync)}` : '', action: 'acc-sync' })}
-          ${a.provider === 'google' && s && state.googleAvailable ? row({ title: a.auth === 'oauth2' ? 'Opnieuw aanmelden bij Google' : 'Overschakelen naar Google-aanmelding', desc: a.auth === 'oauth2' ? 'Gebruik dit als Google de toegang heeft ingetrokken.' : 'Meld je aan via je browser in plaats van met een app-wachtwoord.', action: 'acc-google' }) : ''}
-          ${a.type === 'imap' ? row({ title: 'Serverinstellingen', desc: `${esc(a.imap.host)} / ${esc(a.smtp.host)}`, action: 'acc-server' }) : ''}
+          ${row({ title: t('settings.account.name'), value: esc(a.name || ''), action: 'acc-name' })}
+          ${row({ title: t('settings.general.signature'), value: esc(a.signature ?? t('settings.signature.generalValue', { signature: s.signature || t('common.values.noneLower') })), action: 'acc-signature' })}
+          ${row({ title: t('settings.account.color'), value: labelOf(COLORS, a.color), action: 'acc-color' })}
+          ${row({ title: t('settings.account.from'), value: esc(a.defaultFrom), action: 'acc-from' })}
+          ${row({ title: t('settings.account.identities'), desc: a.identities.length > 1 ? t('settings.aliases.count', { count: a.identities.length - 1 }) : t('settings.account.noAliases'), action: 'acc-aliases' })}
+          ${a.isDefault ? '' : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' })}
+          ${row({ title: t('settings.account.sync'), desc: a.lastSync ? t('settings.account.lastSync', { date: numericDate(a.lastSync), time: hhmm(a.lastSync) }) : '', action: 'acc-sync' })}
+          ${a.provider === 'google' && s && state.googleAvailable ? row({ title: a.auth === 'oauth2' ? t('settings.account.googleReauth') : t('settings.account.googleSwitch'), desc: a.auth === 'oauth2' ? t('settings.account.googleReauthHelp') : t('settings.account.googleSwitchHelp'), action: 'acc-google' }) : ''}
+          ${a.type === 'imap' ? row({ title: t('settings.account.server'), desc: `${esc(a.imap.host)} / ${esc(a.smtp.host)}`, action: 'acc-server' }) : ''}
         </div>
         <div class="settings-group-title"></div>
-        <div class="card">${row({ title: 'Account verwijderen', action: 'acc-remove', cls: 'danger' })}</div>`;
+        <div class="card">${row({ title: t('settings.account.remove'), action: 'acc-remove', cls: 'danger' })}</div>`;
     }
 
     if (view === 'server') {
       const a = state.accounts.find((x) => x.id === params.id);
       if (!a) return back();
-      title = 'Serverinstellingen';
+      title = t('settings.account.server');
       body = `<div class="card"><form class="form" data-form="server">
-        <label>Gebruikersnaam<input type="text" name="user" value="${esc(a.imap.user || a.email)}"/></label>
-        ${a.auth === 'oauth2' ? '' : `<label>Wachtwoord<input type="password" name="password" placeholder="Laat leeg om het huidige wachtwoord te houden"/></label>`}
-        <div class="two"><label>IMAP-server<input type="text" name="imapHost" value="${esc(a.imap.host)}"/></label>
-          <label>Poort<input type="number" name="imapPort" value="${a.imap.port}"/></label>
+        <label data-i18n="setup.fields.username">${esc(t('setup.fields.username'))}<input type="text" name="user" value="${esc(a.imap.user || a.email)}"/></label>
+        ${a.auth === 'oauth2' ? '' : `<label data-i18n="setup.fields.password">${esc(t('setup.fields.password'))}<input type="password" name="password" data-i18n-placeholder="settings.server.passwordHint" placeholder="${esc(t('settings.server.passwordHint'))}"/></label>`}
+        <div class="two"><label data-i18n="setup.fields.imap">${esc(t('setup.fields.imap'))}<input type="text" name="imapHost" value="${esc(a.imap.host)}"/></label>
+          <label data-i18n="setup.fields.port">${esc(t('setup.fields.port'))}<input type="number" name="imapPort" value="${a.imap.port}"/></label>
           <label class="inline"><input type="checkbox" name="imapSecure" ${a.imap.secure ? 'checked' : ''}/> SSL/TLS</label></div>
-        <div class="two"><label>SMTP-server<input type="text" name="smtpHost" value="${esc(a.smtp.host)}"/></label>
-          <label>Poort<input type="number" name="smtpPort" value="${a.smtp.port}"/></label>
+        <div class="two"><label data-i18n="setup.fields.smtp">${esc(t('setup.fields.smtp'))}<input type="text" name="smtpHost" value="${esc(a.smtp.host)}"/></label>
+          <label data-i18n="setup.fields.port">${esc(t('setup.fields.port'))}<input type="number" name="smtpPort" value="${a.smtp.port}"/></label>
           <label class="inline"><input type="checkbox" name="smtpSecure" ${a.smtp.secure ? 'checked' : ''}/> SSL/TLS</label></div>
         <div class="error" data-error></div>
-        <div><button class="btn" type="submit">Opslaan</button></div>
+        <div><button class="btn" type="submit" data-i18n="common.actions.save">${esc(t('common.actions.save'))}</button></div>
       </form></div>`;
     }
 
     if (view === 'aliases') {
       const a = state.accounts.find((x) => x.id === params.id);
       if (!a) return back();
-      title = 'Afzenderadressen';
+      title = t('settings.account.identities');
       body = `
-        <div class="settings-group-title">Verzenden als</div>
+        <div class="settings-group-title" data-i18n="settings.aliases.sendAs">${esc(t('settings.aliases.sendAs'))}</div>
         <div class="card">
           ${a.identities
             .map((i) =>
               row({
-                title: `${esc(i.address)}${i.address === a.defaultFrom ? ' (standaard)' : ''}`,
-                desc: i.primary ? 'Accountadres' : 'Klik om als standaard in te stellen of te verwijderen',
+                title: `${esc(i.address)}${i.address === a.defaultFrom ? t('settings.account.defaultSuffix') : ''}`,
+                desc: i.primary ? t('settings.aliases.primary') : t('settings.aliases.manageHint'),
                 action: i.primary ? `alias-default:${encodeURIComponent(i.address)}` : `alias:${encodeURIComponent(i.address)}`
               })
             )
             .join('')}
-          ${row({ title: 'Alias toevoegen', action: 'alias-add', lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}
-          ${a.auth === 'oauth2' ? row({ title: 'Ophalen uit Gmail', desc: 'Neemt de geverifieerde adressen over uit "Verzenden als" in Gmail.', action: 'alias-gmail' }) : ''}
+          ${row({ title: t('settings.aliases.add'), action: 'alias-add', lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}
+          ${a.auth === 'oauth2' ? row({ title: t('settings.aliases.fetch'), desc: t('settings.aliases.fetchHelp'), action: 'alias-gmail' }) : ''}
         </div>
-        <p class="empty" style="padding:24px 40px;text-align:left">De server moet verzenden als dit adres toestaan. In Gmail staat dat onder Instellingen &gt; Accounts &gt; Verzenden als.</p>`;
+        <p class="empty" style="padding:24px 40px;text-align:left" data-i18n="settings.aliases.help">${esc(t('settings.aliases.help'))}</p>`;
     }
 
     if (view === 'folders') {
-      title = 'Mappen beheren';
+      title = t('settings.general.folders');
       const hidden = new Set(s.hiddenViews || []);
       const folderRows = state.accounts.flatMap((a) =>
         a.folders.filter((f) => !f.role).map((f) => [`folder:${f.path}`, `${f.name} (${a.email})`])
       );
-      body = `<div class="settings-group-title">Weergeven in het menu</div><div class="card">${[...HIDEABLE, ...folderRows]
+      body = `<div class="settings-group-title" data-i18n="settings.folders.show">${esc(t('settings.folders.show'))}</div><div class="card">${[...hideableViews(), ...folderRows]
         .map(([id, label]) => row({ title: esc(label), action: `hide:${id}`, toggle: !hidden.has(id) }))
         .join('')}</div>`;
     }
 
     if (view === 'spam' || view === 'vips') {
       const key = view === 'spam' ? 'spam' : 'vips';
-      title = view === 'spam' ? 'Spamadressen' : "VIP's";
+      title = view === 'spam' ? t('settings.general.spam') : t('mailbox.folders.vip');
       const list = s[key] || [];
       body = `<div class="card">
-        ${row({ title: 'Toevoegen', action: `list-add:${key}`, lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}
-        ${list.map((addr) => row({ title: esc(addr), desc: 'Klik om te verwijderen', action: `list-remove:${key}:${encodeURIComponent(addr)}` })).join('')}
+        ${row({ title: t('common.actions.add'), action: `list-add:${key}`, lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}
+        ${list.map((addr) => row({ title: esc(addr), desc: t('settings.addresses.removeHint'), action: `list-remove:${key}:${encodeURIComponent(addr)}` })).join('')}
       </div>
-      ${list.length ? '' : `<p class="empty">${view === 'spam' ? 'Geen spamadressen' : "Nog geen VIP's. Voeg een afzender toe via Meer in een e-mail."}</p>`}`;
+      ${list.length ? '' : `<p class="empty">${view === 'spam' ? t('settings.spam.empty') : t('settings.vip.empty')}</p>`}`;
     }
 
     page.innerHTML = `
-      <div class="page-bar"><button class="icon-btn" data-a="back" title="Terug">${icons.back}</button><h1>${title}</h1></div>
+      <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
   }
 
@@ -254,7 +258,7 @@ export function openSettings(ctx) {
     const err = form.querySelector('[data-error]');
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Controleren...';
+    btn.innerHTML = `<span class="spinner"></span>${esc(t('settings.server.checking'))}`;
     err.textContent = '';
     try {
       await api('updateAccount', params.id, {
@@ -262,12 +266,12 @@ export function openSettings(ctx) {
         smtp: { host: f.get('smtpHost').trim(), port: Number(f.get('smtpPort')), secure: f.get('smtpSecure') === 'on', user: f.get('user').trim() },
         password: f.get('password') || undefined
       });
-      toast('Serverinstellingen opgeslagen');
+      toast(t('settings.server.saved'));
       back();
     } catch (ex) {
       err.textContent = ex.message;
       btn.disabled = false;
-      btn.textContent = 'Opslaan';
+      btn.textContent = t('common.actions.save');
     }
   });
 
@@ -308,9 +312,9 @@ export function openSettings(ctx) {
         choice = await dialog({
           title: address,
           buttons: [
-            { label: 'Verwijderen', value: 'remove', danger: true },
-            { label: 'Annuleren', value: null },
-            { label: 'Standaard maken', value: 'default' }
+            { get label() { return t('common.actions.delete'); }, value: 'remove', danger: true },
+            { get label() { return t('common.actions.cancel'); }, value: null },
+            { get label() { return t('settings.aliases.makeDefault'); }, value: 'default' }
           ]
         });
       }
@@ -328,10 +332,10 @@ export function openSettings(ctx) {
     }
     if (a.startsWith('list-add:')) {
       const key = a.slice(9);
-      const v = await promptDialog(key === 'spam' ? 'Spamadres toevoegen' : 'VIP toevoegen', '', { placeholder: 'naam@voorbeeld.nl' });
+      const v = await promptDialog(key === 'spam' ? t('settings.spam.add') : t('settings.vip.add'), '', { placeholder: t('setup.fields.emailExample') });
       const addr = String(v || '').trim().toLowerCase();
       if (!addr) return;
-      if (!/^[^@\s]+@[^@\s]+$/.test(addr)) return toast('Ongeldig e-mailadres');
+      if (!/^[^@\s]+@[^@\s]+$/.test(addr)) return toast(t('common.errors.invalidEmail'));
       return set({ [key]: [...new Set([...(s[key] || []), addr])] });
     }
     if (a.startsWith('list-remove:')) {
@@ -340,39 +344,44 @@ export function openSettings(ctx) {
       return set({ [key]: (s[key] || []).filter((x) => x !== addr) });
     }
     switch (a) {
+      case 'language': {
+        const value = await choiceDialog(t('settings.general.language'), languages.map((language) => ({ value: language.code, label: language.name })), s.language);
+        if (value) await set({ language: value });
+        return;
+      }
       case 'folders':
       case 'spam':
       case 'vips':
         return go(a);
       case 'density': {
-        const v = await choiceDialog('Lijstweergave', DENSITY, s.density);
+        const v = await choiceDialog(t('settings.general.density'), DENSITY, s.density);
         if (v) set({ density: v });
         return;
       }
       case 'theme': {
-        const v = await choiceDialog('Thema', THEMES, s.theme);
+        const v = await choiceDialog(t('settings.general.theme'), THEMES, s.theme);
         if (v) set({ theme: v });
         return;
       }
       case 'badge': {
-        const v = await choiceDialog('Tellingen app-pictogrambadge', BADGES, s.badge);
+        const v = await choiceDialog(t('settings.general.badge'), BADGES, s.badge);
         if (v) set({ badge: v });
         return;
       }
       case 'interval': {
-        const v = await choiceDialog('Synchronisatieschema', INTERVALS, Number(s.syncInterval));
+        const v = await choiceDialog(t('settings.general.sync'), INTERVALS, Number(s.syncInterval));
         if (v !== null && v !== undefined) set({ syncInterval: v });
         return;
       }
       case 'signature': {
-        const v = await promptDialog('Handtekening', s.signature || '', { multiline: true });
+        const v = await promptDialog(t('settings.general.signature'), s.signature || '', { multiline: true });
         if (v !== null) set({ signature: v });
         return;
       }
       case 'about': {
         const info = await api('appInfo');
         return dialog({
-          body: `${brandLogo('about-logo')}<p>Versie ${esc(info.version)}</p><p>Een e-mailprogramma voor Windows, gebouwd met Electron. Gegevens staan in:<br><code style="user-select:text">${esc(info.dataDir)}</code></p>`
+          body: `${brandLogo('about-logo')}<p>${esc(t('settings.about.version', { version: info.version }))}</p><p data-i18n="settings.about.description">${esc(t('settings.about.description'))}<br><code style="user-select:text">${esc(info.dataDir)}</code></p>`
         });
       }
     }
@@ -389,17 +398,17 @@ export function openSettings(ctx) {
     };
     switch (a) {
       case 'acc-name': {
-        const v = await promptDialog('Weergavenaam', acc.name || '');
+        const v = await promptDialog(t('settings.account.name'), acc.name || '');
         if (v !== null) update({ name: v.trim() });
         return;
       }
       case 'acc-signature': {
         const v = await dialog({
-          title: 'Handtekening',
+          title: t('settings.general.signature'),
           buttons: [
-            { label: 'Algemene gebruiken', value: { reset: true } },
-            { label: 'Annuleren', value: null },
-            { label: 'Opslaan', value: (scrim) => ({ text: scrim.querySelector('textarea').value }) }
+            { get label() { return t('settings.signature.useGeneral'); }, value: { reset: true } },
+            { get label() { return t('common.actions.cancel'); }, value: null },
+            { get label() { return t('common.actions.save'); }, value: (scrim) => ({ text: scrim.querySelector('textarea').value }) }
           ],
           render(body) {
             body.innerHTML = `<div class="form" style="padding:0"><textarea>${esc(acc.signature ?? s.signature ?? '')}</textarea></div>`;
@@ -410,17 +419,17 @@ export function openSettings(ctx) {
         return;
       }
       case 'acc-color': {
-        const v = await choiceDialog('Accountkleur', COLORS, acc.color);
+        const v = await choiceDialog(t('settings.account.color'), COLORS, acc.color);
         if (v) update({ color: v });
         return;
       }
       case 'acc-default':
         return update({ makeDefault: true });
       case 'acc-sync':
-        toast('Synchroniseren...');
+        toast(t('mailbox.sync.syncing'));
         try {
           await api('sync', acc.id);
-          toast('Gesynchroniseerd');
+          toast(t('mailbox.sync.done'));
         } catch (err) {
           toast(err.message, 5000);
         }
@@ -431,7 +440,7 @@ export function openSettings(ctx) {
         return go('aliases', { id: acc.id });
       case 'acc-from': {
         const v = await choiceDialog(
-          'Standaard afzender',
+          t('settings.account.from'),
           acc.identities.map((i) => ({ value: i.address, label: i.address })),
           acc.defaultFrom
         );
@@ -439,7 +448,7 @@ export function openSettings(ctx) {
         return;
       }
       case 'alias-add': {
-        const v = await promptDialog('Alias toevoegen', '', { placeholder: 'naam@voorbeeld.nl' });
+        const v = await promptDialog(t('settings.aliases.add'), '', { placeholder: t('setup.fields.emailExample') });
         if (!v || !v.trim()) return;
         const aliases = acc.identities.filter((i) => !i.primary).map((i) => ({ address: i.address, name: i.name }));
         update({ aliases: [...aliases, { address: v.trim(), name: acc.name }] });
@@ -448,25 +457,25 @@ export function openSettings(ctx) {
       case 'alias-gmail':
         try {
           const updated = await api('fetchGmailAliases', acc.id);
-          toast(`${updated.identities.length - 1} aliassen opgehaald uit Gmail`);
+          toast(t('settings.aliases.fetched', { count: updated.identities.length - 1 }));
         } catch (err) {
           toast(err.message, 6000);
         }
         return render();
       case 'acc-google':
-        toast('Meld je aan in je browser...', 60000);
+        toast(t('setup.google.waitToast'), 60000);
         try {
           await api('googleReauth', acc.id);
-          toast('Aangemeld bij Google');
+          toast(t('setup.google.signedIn'));
         } catch (err) {
           toast(err.message, 6000);
         }
         return render();
       case 'acc-remove': {
-        const ok = await confirmDialog('Account verwijderen?', `${acc.email} en alle lokaal opgeslagen e-mails van dit account worden van deze pc verwijderd. Op de server blijft alles bewaard.`, 'Verwijderen', true);
+        const ok = await confirmDialog(t('settings.account.removeTitle'), t('settings.account.removeHelp', { email: acc.email }), t('common.actions.delete'), true);
         if (!ok) return;
         await api('removeAccount', acc.id);
-        toast('Account verwijderd');
+        toast(t('settings.account.removed'));
         if (ctx.S.scope === acc.id) ctx.S.scope = 'all';
         ctx.closeReader();
         await ctx.refresh();

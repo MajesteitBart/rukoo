@@ -9,6 +9,9 @@ let win;
 
 test.beforeEach(async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-'));
+  // Keep the existing Dutch interaction suite as coverage for the supported Dutch locale.
+  fs.mkdirSync(path.join(dataDir, 'data'));
+  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'nl' }));
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
@@ -57,30 +60,30 @@ const calls = (method) => app.evaluate((_, m) => (global.__calls || {})[m] || 0,
 
 test('first run shows the demo inbox with the newest message open, still unread', async () => {
   await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
-  await expect(win.locator('.list-title .sub')).toContainText('demo@voorbeeld.nl');
-  await expect(win.locator('.reader-subject')).toHaveText('Dit kost een verkeersboete in 2027');
-  await expect(item('ANWB Nieuwsbrief')).toHaveClass(/unread/);
+  await expect(win.locator('.list-title .sub')).toContainText('demo@example.com');
+  await expect(win.locator('.reader-subject')).toHaveText('Traffic fines in 2027: what you will pay');
+  await expect(item('ANWB Newsletter')).toHaveClass(/unread/);
   await expect(win.locator('.nav-item.active .count')).toHaveText('7');
   await expect(win.locator('.group-head').first()).toContainText('Vandaag');
   await expect(win.locator('.sync-status')).toContainText('bijgewerkt');
 });
 
 test('opening a message renders it and marks it read', async () => {
-  await item('ANWB Nieuwsbrief').click();
-  await expect(win.frameLocator('.mail-frame').locator('h1')).toContainText('laagstaande zon');
-  await expect(item('ANWB Nieuwsbrief')).not.toHaveClass(/unread/);
-  await expect(item('ANWB Nieuwsbrief')).toHaveClass(/selected/);
+  await item('ANWB Newsletter').click();
+  await expect(win.frameLocator('.mail-frame').locator('h1')).toContainText('low sun');
+  await expect(item('ANWB Newsletter')).not.toHaveClass(/unread/);
+  await expect(item('ANWB Newsletter')).toHaveClass(/selected/);
   await expect(win.locator('.nav-item.active .count')).toHaveText('6');
-  await expect(win.locator('.msg-from')).toContainText('nieuwsbrieven@anwb.nl');
+  await expect(win.locator('.msg-from')).toContainText('newsletter@anwb.nl');
   await expect(win.locator('.to-summary')).toHaveText('aan mij');
   await win.click('[data-reader="next"]');
   await expect(win.locator('.reader-subject')).toContainText('music industry');
 });
 
 test('previews skip "view in browser" lines and greetings', async () => {
-  await expect(item('ANWB Nieuwsbrief').locator('.preview')).not.toContainText('Bekijk e-mail in browser');
-  await expect(item('Vandebron').locator('.preview')).toContainText('Klantnummer');
-  await expect(item('Vandebron').locator('.preview')).not.toContainText('Beste');
+  await expect(item('ANWB Newsletter').locator('.preview')).not.toContainText('View email in browser');
+  await expect(item('Vandebron').locator('.preview')).toContainText('Customer number');
+  await expect(item('Vandebron').locator('.preview')).not.toContainText('Dear');
 });
 
 test('the header summarises recipients and shows the details on request', async () => {
@@ -88,31 +91,31 @@ test('the header summarises recipients and shows the details on request', async 
   await expect(win.locator('.to-summary')).toHaveText('aan mij, Joris Bakker');
   await expect(win.locator('.details')).toHaveCount(0);
   await win.click('.to-summary');
-  await expect(win.locator('.details')).toContainText('joris@voorbeeld.nl');
+  await expect(win.locator('.details')).toContainText('joris@example.com');
   await expect(win.locator('[data-reader="unsubscribe"]')).toHaveCount(0);
 });
 
 test('newsletters can be unsubscribed from in one click', async () => {
-  await expect(win.locator('.reader-subject')).toHaveText('Dit kost een verkeersboete in 2027');
+  await expect(win.locator('.reader-subject')).toHaveText('Traffic fines in 2027: what you will pay');
   await win.click('[data-reader="unsubscribe"]');
-  await expect(win.locator('.scrim')).toContainText('Uitschrijven bij ANWB Nieuwsbrief?');
+  await expect(win.locator('.scrim')).toContainText('Uitschrijven bij ANWB Newsletter?');
   await win.click('.scrim .buttons button:text-is("Uitschrijven")');
-  await expect(win.locator('#toast')).toContainText('Uitgeschreven bij ANWB Nieuwsbrief');
+  await expect(win.locator('#toast')).toContainText('Uitgeschreven bij ANWB Newsletter');
 });
 
 test('a run of mail from one sender folds into a stack', async () => {
-  const head = item('Je wachtwoord is gewijzigd');
+  const head = item('Your password has changed');
   await expect(head.locator('.stack-btn')).toHaveText('+3');
-  await expect(win.locator('.item', { hasText: 'Je inloggegevens zijn bijgewerkt' })).toHaveCount(0);
+  await expect(win.locator('.item', { hasText: 'Your sign-in details have been updated' })).toHaveCount(0);
   await head.locator('.stack-btn').click();
-  await expect(item('Je inloggegevens zijn bijgewerkt')).toBeVisible();
-  await item('Je wachtwoord is gewijzigd').locator('.stack-btn').click();
-  await expect(win.locator('.item', { hasText: 'Je inloggegevens zijn bijgewerkt' })).toHaveCount(0);
+  await expect(item('Your sign-in details have been updated')).toBeVisible();
+  await item('Your password has changed').locator('.stack-btn').click();
+  await expect(win.locator('.item', { hasText: 'Your sign-in details have been updated' })).toHaveCount(0);
 });
 
 test('attachments are listed for messages that have them', async () => {
   await item('Vandebron').click();
-  await expect(win.locator('.att-name')).toHaveText('Contractbevestiging.pdf');
+  await expect(win.locator('.att-name')).toHaveText('Contract-confirmation.pdf');
   await expect(win.locator('.att .ftype')).toHaveText('PDF');
   await expect(win.locator('.atts-head')).toHaveCount(0);
 });
@@ -136,7 +139,7 @@ test('delete moves to Prullenbak and can be undone', async () => {
   await win.click('#toast button:has-text("Ongedaan maken")');
   await expect(win.locator('#toast')).toContainText('Teruggezet');
   await expect(item('Bencompare')).toBeVisible();
-  await expect(win.locator('.reader-subject')).toHaveText('Inloggen Bencompare');
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
   await win.click('[data-reader="delete"]');
   await win.click('[data-view="trash"]');
   await expect(item('Bencompare')).toBeVisible();
@@ -154,7 +157,7 @@ test('archive from the toolbar, undo with Ctrl+Z', async () => {
 
 test('Ctrl+click selects several messages for one action', async () => {
   await item('Bencompare').click();
-  await item('Je hebt een deel van je Google-accountgegevens bijgewerkt').click({ modifiers: ['Control'] });
+  await item('You updated some of your Google Account details').click({ modifiers: ['Control'] });
   await expect(win.locator('.list-tools.selecting .sel-count')).toHaveText('2 geselecteerd');
   await expect(win.locator('.reader .multi .t')).toHaveText('2 e-mails geselecteerd');
   await win.click('.list-tools [data-bulk="delete"]');
@@ -163,57 +166,57 @@ test('Ctrl+click selects several messages for one action', async () => {
   await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
   await win.click('#toast button');
   await expect(item('Bencompare')).toBeVisible();
-  await expect(item('Je hebt een deel van je Google-accountgegevens bijgewerkt')).toBeVisible();
+  await expect(item('You updated some of your Google Account details')).toBeVisible();
 });
 
 test('dragging a message onto a folder moves it', async () => {
   const dt = await win.evaluateHandle(() => new DataTransfer());
   await item('Bencompare').dispatchEvent('dragstart', { dataTransfer: dt });
-  const target = win.locator('[data-folder="Facturen"]');
+  const target = win.locator('[data-folder="Invoices"]');
   await target.dispatchEvent('dragover', { dataTransfer: dt });
   await target.dispatchEvent('drop', { dataTransfer: dt });
-  await expect(win.locator('#toast')).toContainText('Verplaatst naar Facturen');
+  await expect(win.locator('#toast')).toContainText('Verplaatst naar Invoices');
   await expect(win.locator('.item', { hasText: 'Bencompare' })).toHaveCount(0);
-  await win.click('[data-folder="Facturen"]');
+  await win.click('[data-folder="Invoices"]');
   await expect(item('Bencompare')).toBeVisible();
 });
 
 test('a new folder can be made from the sidebar', async () => {
   await win.click('[data-action="new-folder"]');
-  await win.fill('.scrim .form-input', 'Projecten');
+  await win.fill('.scrim .form-input', 'Projects');
   await win.click('.scrim .buttons button:text-is("Opslaan")');
-  await expect(win.locator('#toast')).toContainText('Map Projecten aangemaakt');
-  await expect(win.locator('.list-title h1')).toHaveText('Projecten');
-  await expect(win.locator('[data-folder="Projecten"]')).toBeVisible();
+  await expect(win.locator('#toast')).toContainText('Map Projects aangemaakt');
+  await expect(win.locator('.list-title h1')).toHaveText('Projects');
+  await expect(win.locator('[data-folder="Projects"]')).toBeVisible();
 });
 
 // ---------- writing ----------
 
 test('compose and send to self delivers to the inbox and Verzonden', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await expect(c.locator('.composer .from-static')).toContainText('demo@voorbeeld.nl');
-  await c.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
+  await expect(c.locator('.composer .from-static')).toContainText('demo@example.com');
+  await c.fill('[data-rinput="to"]', 'demo@example.com');
   await c.keyboard.press('Enter');
   await expect(c.locator('[data-rfield="to"] .recipient')).toHaveCount(1);
-  await c.fill('[data-field="subject"]', 'Hallo vanaf Windows');
+  await c.fill('[data-field="subject"]', 'Hello from Windows');
   await c.click('.editor');
-  await c.keyboard.type('Dit is een test.');
+  await c.keyboard.type('This is a test.');
   await c.click('[data-c="send"]');
   await composerGone();
   await expect(win.locator('#toast')).toContainText('verzonden');
-  await expect(item('Hallo vanaf Windows')).toBeVisible({ timeout: 10000 });
-  await item('Hallo vanaf Windows').click();
-  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Dit is een test.');
+  await expect(item('Hello from Windows')).toBeVisible({ timeout: 10000 });
+  await item('Hello from Windows').click();
+  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('This is a test.');
   await expect(win.frameLocator('.mail-frame').locator('body')).not.toContainText('Verzonden vanaf mijn pc');
   await win.click('[data-view="sent"]');
-  await expect(item('Hallo vanaf Windows')).toBeVisible();
+  await expect(item('Hello from Windows')).toBeVisible();
 });
 
 test('reply all prefills recipients and subject; earlier mail waits behind the pill', async () => {
   await item('Sanne de Vries').click();
-  await expect(win.locator('.reader-subject')).toHaveText('Afspraak donderdag');
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
   const c = await composer(() => win.click('[data-reader="replyAll"]'));
-  await expect(c.locator('[data-field="subject"]')).toHaveValue('Re: Afspraak donderdag');
+  await expect(c.locator('[data-field="subject"]')).toHaveValue('Re: Call on Thursday');
   await expect(c.locator('[data-rfield="to"] .recipient')).toHaveText(['Sanne de Vries']);
   await expect(c.locator('[data-rfield="cc"] .recipient')).toHaveText(['Joris Bakker']);
   await expect(c.locator('.quote')).toBeHidden();
@@ -226,7 +229,7 @@ test('reply all prefills recipients and subject; earlier mail waits behind the p
 test('selected text gets a floating formatting bar', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
   await c.click('.editor');
-  await c.keyboard.type('Belangrijk');
+  await c.keyboard.type('Important');
   await expect(c.locator('.float-bar')).toBeHidden();
   await c.keyboard.press('Shift+Home');
   await expect(c.locator('.float-bar')).toBeVisible();
@@ -236,32 +239,32 @@ test('selected text gets a floating formatting bar', async () => {
 
 test('forward keeps the original attachment', async () => {
   await item('Sanne de Vries').click();
-  await expect(win.locator('.att-name')).toHaveText('Voorstel-v3.pdf');
+  await expect(win.locator('.att-name')).toHaveText('Proposal-v3.pdf');
   const c = await composer(() => win.click('[data-reader="forward"]'));
-  await expect(c.locator('[data-field="subject"]')).toHaveValue('Fwd: Afspraak donderdag');
-  await expect(c.locator('.compose-attachments')).toContainText('Voorstel-v3.pdf');
-  await c.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
+  await expect(c.locator('[data-field="subject"]')).toHaveValue('Fwd: Call on Thursday');
+  await expect(c.locator('.compose-attachments')).toContainText('Proposal-v3.pdf');
+  await c.fill('[data-rinput="to"]', 'demo@example.com');
   await c.click('[data-c="send"]');
   await composerGone();
-  await item('Fwd: Afspraak donderdag').click();
-  await expect(win.locator('.att-name')).toHaveText('Voorstel-v3.pdf');
+  await item('Fwd: Call on Thursday').click();
+  await expect(win.locator('.att-name')).toHaveText('Proposal-v3.pdf');
 });
 
 test('closing a dirty editor asks and can save to Concepten', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-field="subject"]', 'Half af');
+  await c.fill('[data-field="subject"]', 'Half finished');
   await c.keyboard.press('Escape');
   await c.click('.scrim .buttons button:text-is("Opslaan")');
   await composerGone();
   await expect(win.locator('#toast')).toContainText('Concepten');
   await win.click('[data-view="drafts"]');
-  await expect(item('Half af')).toBeVisible();
+  await expect(item('Half finished')).toBeVisible();
   await expect(win.locator('[data-view="drafts"] .count')).toHaveText('4');
 });
 
 test('Ctrl+S saves a draft; closing afterwards keeps it without asking', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-field="subject"]', 'Tussendoor bewaard');
+  await c.fill('[data-field="subject"]', 'Saved along the way');
   await expect(c.locator('.save-state')).toHaveText('');
   await c.keyboard.press('Control+s');
   await expect(c.locator('.save-state')).toHaveText('Concept opgeslagen');
@@ -269,27 +272,27 @@ test('Ctrl+S saves a draft; closing afterwards keeps it without asking', async (
   await composerGone();
   await expect(win.locator('#toast')).toContainText('Concept bewaard');
   await win.click('[data-view="drafts"]');
-  await expect(item('Tussendoor bewaard')).toBeVisible();
+  await expect(item('Saved along the way')).toBeVisible();
 });
 
 test('opening another message keeps what you wrote as a draft', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-field="subject"]', 'Even weg');
+  await c.fill('[data-field="subject"]', 'Away for a moment');
   await item('Bencompare').click();
   await composerGone();
-  await expect(win.locator('.reader-subject')).toHaveText('Inloggen Bencompare');
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
   await expect(win.locator('#toast')).toContainText('Concept opgeslagen');
   await win.click('[data-view="drafts"]');
-  await expect(item('Even weg')).toBeVisible();
+  await expect(item('Away for a moment')).toBeVisible();
 });
 
 test('the editor can move into a window of its own', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-field="subject"]', 'Los venster');
+  await c.fill('[data-field="subject"]', 'Separate window');
   const [popped] = await Promise.all([app.waitForEvent('window'), c.click('[data-c="popout"]')]);
   await popped.waitForSelector('.compose .editor');
-  await expect(popped.locator('[data-field="subject"]')).toHaveValue('Los venster');
-  await expect(popped.locator('#compose-title')).toHaveText('Los venster');
+  await expect(popped.locator('[data-field="subject"]')).toHaveValue('Separate window');
+  await expect(popped.locator('#compose-title')).toHaveText('Separate window');
   await composerGone();
 });
 
@@ -308,17 +311,17 @@ test('a reopened draft cannot restyle or cover the app', async () => {
     (accountId) =>
       window.mail.call('saveDraft', {
         accountId,
-        to: ['a@voorbeeld.nl'],
-        subject: 'Kwaadaardig concept',
-        html: '<sty<style></style>le>body{display:none}</style><div class="page scrim" style="position:fixed;inset:0;background:red">X</div><p>tekst</p>'
+        to: ['a@example.com'],
+        subject: 'Malicious draft',
+        html: '<sty<style></style>le>body{display:none}</style><div class="page scrim" style="position:fixed;inset:0;background:red">X</div><p>text</p>'
       }),
     state.accounts[0].id
   );
   await win.click('[data-view="drafts"]');
-  await item('Kwaadaardig concept').click();
+  await item('Malicious draft').click();
   await expect(win.locator('[data-reader="edit"]')).toBeVisible();
   const c = await composer(() => win.click('[data-reader="edit"]'));
-  await expect(c.locator('.compose .editor')).toContainText('tekst');
+  await expect(c.locator('.compose .editor')).toContainText('text');
   await expect(c.locator('.compose .editor style')).toHaveCount(0);
   await expect(c.locator('.compose .editor .scrim')).toHaveCount(0);
   const fixed = await c.locator('.compose .editor div').first().evaluate((el) => getComputedStyle(el).position);
@@ -330,7 +333,7 @@ test('a reopened draft cannot restyle or cover the app', async () => {
 test('a reopened draft keeps its attachment', async () => {
   await item('Sanne de Vries').click();
   const c = await composer(() => win.click('[data-reader="forward"]'));
-  await c.fill('[data-rinput="to"]', 'joris@voorbeeld.nl');
+  await c.fill('[data-rinput="to"]', 'joris@example.com');
   // Enter commits the address; Escape would first close the suggestions.
   await c.keyboard.press('Enter');
   await expect(c.locator('[data-rfield="to"] .recipient')).toHaveCount(1);
@@ -338,15 +341,15 @@ test('a reopened draft keeps its attachment', async () => {
   await c.click('.scrim .buttons button:text-is("Opslaan")');
   await composerGone();
   await win.click('[data-view="drafts"]');
-  await item('Fwd: Afspraak donderdag').click();
+  await item('Fwd: Call on Thursday').click();
   const again = await composer(() => win.click('[data-reader="edit"]'));
-  await expect(again.locator('.compose-attachments')).toContainText('Voorstel-v3.pdf');
+  await expect(again.locator('.compose-attachments')).toContainText('Proposal-v3.pdf');
 });
 
 test('default sender: add an alias, make it default, compose and send from it', async () => {
   await win.click('[data-action="settings"]');
-  await win.click('.row:has-text("demo@voorbeeld.nl")');
-  await expect(win.locator('[data-a="acc-from"] .value')).toHaveText('demo@voorbeeld.nl');
+  await win.click('.row:has-text("demo@example.com")');
+  await expect(win.locator('[data-a="acc-from"] .value')).toHaveText('demo@example.com');
   await win.click('[data-a="acc-aliases"]');
   await expect(win.locator('.settings h1')).toHaveText('Afzenderadressen');
   await win.click('[data-a="alias-add"]');
@@ -365,11 +368,11 @@ test('default sender: add an alias, make it default, compose and send from it', 
   const from = c.locator('[data-field="account"]');
   await expect(from).toBeVisible();
   expect(await from.evaluate((s) => s.selectedOptions[0].textContent)).toContain('bart@bvdm.ai');
-  await c.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
-  await c.fill('[data-field="subject"]', 'Van mijn alias');
+  await c.fill('[data-rinput="to"]', 'demo@example.com');
+  await c.fill('[data-field="subject"]', 'From my alias');
   await c.click('[data-c="send"]');
   await composerGone();
-  await item('Van mijn alias').click();
+  await item('From my alias').click();
   await expect(win.locator('.msg-head')).toContainText('bart@bvdm.ai');
 
   // Replying to mail that came from one of your own addresses keeps that address.
@@ -380,7 +383,7 @@ test('default sender: add an alias, make it default, compose and send from it', 
 // ---------- finding and layout ----------
 
 test('search filters the list; Escape clears it', async () => {
-  await win.fill('#search', 'wachtwoord');
+  await win.fill('#search', 'password');
   await expect(win.locator('.item')).toHaveCount(3);
   await expect(win.locator('.list-title h1')).toHaveText('Zoekresultaten');
   await win.keyboard.press('Escape');
@@ -388,7 +391,7 @@ test('search filters the list; Escape clears it', async () => {
 });
 
 test('search can cover all folders', async () => {
-  await win.fill('#search', 'offerte');
+  await win.fill('#search', 'quote');
   await expect(win.locator('.empty')).toContainText('Niets gevonden');
   await win.click('.search-scope');
   await win.click('.menu button:has-text("Alle mappen")');
@@ -397,8 +400,8 @@ test('search can cover all folders', async () => {
 });
 
 test('user folders load on demand', async () => {
-  await win.click('[data-folder="Facturen"]');
-  await expect(win.locator('.list-title h1')).toHaveText('Facturen');
+  await win.click('[data-folder="Invoices"]');
+  await expect(win.locator('.list-title h1')).toHaveText('Invoices');
   await expect(item('Ziggo')).toBeVisible();
 });
 
@@ -428,15 +431,15 @@ test('settings: theme switch and account page', async () => {
   await win.click('[data-a="theme"]');
   await win.click('.radio-row:has-text("Donker")');
   await expect(win.locator('html')).not.toHaveClass(/light/);
-  await win.click('.row:has-text("demo@voorbeeld.nl")');
-  await expect(win.locator('.settings h1')).toHaveText('demo@voorbeeld.nl');
+  await win.click('.row:has-text("demo@example.com")');
+  await expect(win.locator('.settings h1')).toHaveText('demo@example.com');
   await win.click('[data-a="back"]');
   await win.click('[data-a="back"]');
   await expect(win.locator('.settings')).toHaveCount(0);
 });
 
 test('swipe on a touch screen toggles read and deletes', async () => {
-  const row = () => item('Je wachtwoord is gewijzigd');
+  const row = () => item('Your password has changed');
   const swipe = async (from, to) => {
     await expect(row()).toBeVisible();
     // The list may re-render after a sync; wait for a stable row.
@@ -454,7 +457,7 @@ test('swipe on a touch screen toggles read and deletes', async () => {
   await swipe(60, 240);
   await expect(row()).not.toHaveClass(/unread/);
   await swipe(300, 60);
-  await expect(win.locator('.item', { hasText: 'Je wachtwoord is gewijzigd' })).toHaveCount(0);
+  await expect(win.locator('.item', { hasText: 'Your password has changed' })).toHaveCount(0);
   await expect(win.locator('#toast')).toContainText('Prullenbak');
 });
 
@@ -463,7 +466,7 @@ test('keyboard: arrows navigate, Ctrl+N composes, Escape closes', async () => {
   await win.keyboard.press('ArrowDown');
   await expect(win.locator('.reader-subject')).toContainText('music industry');
   await win.keyboard.press('ArrowUp');
-  await expect(win.locator('.reader-subject')).toHaveText('Dit kost een verkeersboete in 2027');
+  await expect(win.locator('.reader-subject')).toHaveText('Traffic fines in 2027: what you will pay');
   await win.keyboard.press('Shift+ArrowDown');
   await expect(win.locator('.sel-count')).toHaveText('2 geselecteerd');
   await win.keyboard.press('Escape');
@@ -481,10 +484,10 @@ test('after Shift+Down and Escape, Delete removes the message on screen', async 
   await win.keyboard.press('Shift+ArrowDown');
   await expect(win.locator('.sel-count')).toHaveText('2 geselecteerd');
   await win.keyboard.press('Escape');
-  await expect(win.locator('.reader-subject')).toHaveText('Inloggen Bencompare');
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
   await win.keyboard.press('Delete');
   await expect(win.locator('.item', { hasText: 'Bencompare' })).toHaveCount(0);
-  await expect(item('Je hebt een deel van je Google-accountgegevens bijgewerkt')).toBeVisible();
+  await expect(item('You updated some of your Google Account details')).toBeVisible();
 });
 
 test('shrinking a selection to one message leaves the multi-message panel', async () => {
@@ -495,14 +498,14 @@ test('shrinking a selection to one message leaves the multi-message panel', asyn
   await win.keyboard.press('Shift+ArrowUp');
   await expect(win.locator('.sel-count')).toHaveText('1 geselecteerd');
   await expect(win.locator('.reader .multi')).toHaveCount(0);
-  await expect(win.locator('.reader-subject')).toHaveText('Inloggen Bencompare');
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
 });
 
 test('clicking Send twice during a save sends once', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
+  await c.fill('[data-rinput="to"]', 'demo@example.com');
   await c.keyboard.press('Enter');
-  await c.fill('[data-field="subject"]', 'Eén keer');
+  await c.fill('[data-field="subject"]', 'Only once');
   await slowDown('saveDraft', 1500);
   await slowDown('send', 0);
   await c.keyboard.press('Control+s');
@@ -514,9 +517,9 @@ test('clicking Send twice during a save sends once', async () => {
 
 test('removing a recipient during a save keeps the editor dirty', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-rinput="to"]', 'a@voorbeeld.nl, b@voorbeeld.nl,');
+  await c.fill('[data-rinput="to"]', 'a@example.com, b@example.com,');
   await expect(c.locator('[data-rfield="to"] .recipient')).toHaveCount(2);
-  await c.fill('[data-field="subject"]', 'Ontvangers');
+  await c.fill('[data-field="subject"]', 'Recipients');
   await slowDown('saveDraft', 1200);
   await c.keyboard.press('Control+s');
   await expect(c.locator('.save-state')).toHaveText('Opslaan...');
@@ -545,7 +548,7 @@ test('an attachment removed during a save stays removed', async () => {
 test('a failed read-back after saving is retried before sending', async () => {
   await item('Sanne de Vries').click();
   const c = await composer(() => win.click('[data-reader="forward"]'));
-  await c.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
+  await c.fill('[data-rinput="to"]', 'demo@example.com');
   await c.keyboard.press('Enter');
   // The first read of the new draft fails, as on a dropped connection.
   await app.evaluate(() => {
@@ -564,15 +567,15 @@ test('a failed read-back after saving is retried before sending', async () => {
   await expect(c.locator('.save-state')).toHaveText('Concept opgeslagen');
   await c.click('[data-c="send"]');
   await composerGone();
-  await item('Fwd: Afspraak donderdag').click();
-  await expect(win.locator('.att-name')).toHaveText('Voorstel-v3.pdf');
+  await item('Fwd: Call on Thursday').click();
+  await expect(win.locator('.att-name')).toHaveText('Proposal-v3.pdf');
 });
 
 test('the window cannot be closed while the editor is sending', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
+  await c.fill('[data-rinput="to"]', 'demo@example.com');
   await c.keyboard.press('Enter');
-  await c.fill('[data-field="subject"]', 'Niet sluiten');
+  await c.fill('[data-field="subject"]', 'Do not close');
   await c.keyboard.press('Control+s');
   await expect(c.locator('.save-state')).toHaveText('Concept opgeslagen');
   await slowDown('send', 1500);
@@ -591,22 +594,22 @@ test('the window cannot be closed while the editor is sending', async () => {
 
 test('saving before closing locks the editor until the save is done', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-field="subject"]', 'Laatste versie');
+  await c.fill('[data-field="subject"]', 'Latest version');
   await c.click('.editor');
-  await c.keyboard.type('eerste regel');
+  await c.keyboard.type('first line');
   await c.keyboard.press('Escape');
   await slowDown('saveDraft', 1200);
   await c.click('.scrim .buttons button:text-is("Opslaan")');
   expect(await c.evaluate(() => document.querySelector('.compose').inert)).toBe(true);
   await composerGone();
   await win.click('[data-view="drafts"]');
-  await item('Laatste versie').click();
-  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('eerste regel');
+  await item('Latest version').click();
+  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('first line');
 });
 
 test('Ctrl+Enter during save-and-close sends nothing and keeps the editor locked', async () => {
   const c = await composer(() => win.click('[data-action="compose"]'));
-  await c.fill('[data-field="subject"]', 'Geen ontvanger');
+  await c.fill('[data-field="subject"]', 'No recipient');
   await c.keyboard.press('Escape');
   await slowDown('saveDraft', 1200);
   await slowDown('send', 0);
@@ -646,7 +649,7 @@ test('a mail frame settles at its content height and keeps the scroll position',
     expect(await height()).toBe(a);
     return a;
   };
-  await item('ANWB Nieuwsbrief').click();
+  await item('ANWB Newsletter').click();
   await win.waitForSelector('.mail-frame');
   const h = await settled();
   expect(await win.frameLocator('.mail-frame').locator('html').evaluate((d) => d.scrollHeight)).toBeLessThanOrEqual(h);
@@ -657,14 +660,14 @@ test('a mail frame settles at its content height and keeps the scroll position',
     (accountId) =>
       window.mail.call('saveDraft', {
         accountId,
-        to: ['a@voorbeeld.nl'],
-        subject: 'Venstervullend',
-        html: '<table height="100%" width="100%"><tr><td>a</td></tr></table><div style="min-height:100vh">b</div><p id="voet" style="height:50px">voet</p>'
+        to: ['a@example.com'],
+        subject: 'Full window',
+        html: '<table height="100%" width="100%"><tr><td>a</td></tr></table><div style="min-height:100vh">b</div><p id="footer" style="height:50px">footer</p>'
       }),
     state.accounts[0].id
   );
   await win.click('[data-view="drafts"]');
-  await item('Venstervullend').click();
+  await item('Full window').click();
   await win.waitForSelector('.mail-frame');
   const frameHeight = await settled();
   expect(frameHeight).toBeLessThan(400);
@@ -678,7 +681,7 @@ test('a mail frame settles at its content height and keeps the scroll position',
   // Resizing the window refits the mail without moving the reader's scroll position.
   await win.click('[data-view="inbox"]');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 600));
-  await item('ANWB Nieuwsbrief').click();
+  await item('ANWB Newsletter').click();
   await win.waitForSelector('.mail-frame');
   await settled();
   await win.locator('.reader-scroll').evaluate((s) => (s.scrollTop = 300));
@@ -698,41 +701,41 @@ test('a reopened reply keeps the earlier mail behind the pill, and still sends i
   await item('Sanne de Vries').click();
   const c = await composer(() => win.click('[data-reader="reply"]'));
   await c.click('.editor');
-  await c.keyboard.type('Tot donderdag!');
+  await c.keyboard.type('See you on Thursday!');
   await c.keyboard.press('Escape');
   await c.click('.scrim .buttons button:text-is("Opslaan")');
   await composerGone();
   await win.click('[data-view="drafts"]');
-  await item('Re: Afspraak donderdag').click();
+  await item('Re: Call on Thursday').click();
   await composer(() => win.click('[data-reader="edit"]'));
-  await expect(win.locator('.composer .editor')).toContainText('Tot donderdag!');
+  await expect(win.locator('.composer .editor')).toContainText('See you on Thursday!');
   await expect(win.locator('.composer .editor')).not.toContainText('Oorspronkelijk bericht');
   await expect(win.locator('.quote-pill')).toBeVisible();
   await win.click('.quote-pill');
   await expect(win.locator('.quote-head')).toContainText('Van: Sanne de Vries');
-  await win.fill('[data-rinput="to"]', 'demo@voorbeeld.nl');
+  await win.fill('[data-rinput="to"]', 'demo@example.com');
   await win.keyboard.press('Enter');
   await win.click('[data-c="send"]');
   await composerGone();
   await win.click('[data-view="inbox"]');
-  await item('Re: Afspraak donderdag').click();
+  await item('Re: Call on Thursday').click();
   await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Oorspronkelijk bericht');
-  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Zullen we donderdag');
+  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Shall we have a call on Thursday');
 });
 
 // ---------- regressions from the critique review ----------
 
 test('a reply that is still loading cannot replace a new message', async () => {
   await item('Sanne de Vries').click();
-  await expect(win.locator('.reader-subject')).toHaveText('Afspraak donderdag');
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
   await slowDown('getMessage', 1500);
   await win.click('[data-reader="reply"]');
   await composer(() => win.click('[data-action="compose"]'));
-  await win.fill('[data-field="subject"]', 'Nog niet opgeslagen');
+  await win.fill('[data-field="subject"]', 'Not saved yet');
   await win.waitForTimeout(2000);
   await expect(win.locator('.composer')).toHaveCount(1);
   await expect(win.locator('.composer-title')).toHaveText('Nieuw bericht');
-  await expect(win.locator('[data-field="subject"]')).toHaveValue('Nog niet opgeslagen');
+  await expect(win.locator('[data-field="subject"]')).toHaveValue('Not saved yet');
 });
 
 test('a draft open in its own window is not opened again inline', async () => {
@@ -750,12 +753,12 @@ test('a draft open in its own window is not opened again inline', async () => {
 });
 
 test('while writing, Delete in the list does not touch the hidden message', async () => {
-  await expect(win.locator('.reader-subject')).toHaveText('Dit kost een verkeersboete in 2027');
+  await expect(win.locator('.reader-subject')).toHaveText('Traffic fines in 2027: what you will pay');
   await composer(() => win.click('[data-action="compose"]'));
   await win.locator('.list-scroll').focus();
   await win.keyboard.press('Delete');
   await win.waitForTimeout(400);
-  await expect(item('ANWB Nieuwsbrief')).toBeVisible();
+  await expect(item('ANWB Newsletter')).toBeVisible();
   await expect(win.locator('.composer')).toHaveCount(1);
 });
 
@@ -763,16 +766,16 @@ test('the newest message opens even when the list is sorted oldest first', async
   await win.evaluate(() => window.mail.call('updateSettings', { sort: 'date-asc' }));
   await win.click('[data-view="drafts"]');
   await win.click('[data-view="inbox"]');
-  await expect(win.locator('.reader-subject')).toHaveText('Dit kost een verkeersboete in 2027');
+  await expect(win.locator('.reader-subject')).toHaveText('Traffic fines in 2027: what you will pay');
 });
 
 test('the newest message opens even when it is folded into a stack', async () => {
   const state = await win.evaluate(() => window.mail.call('state'));
-  for (const subject of ['Stapel 1', 'Stapel 2', 'Stapel 3']) {
+  for (const subject of ['Stack 1', 'Stack 2', 'Stack 3']) {
     // A Date header counts whole seconds; apart, the three have a clear newest.
-    if (subject !== 'Stapel 1') await win.waitForTimeout(1100);
+    if (subject !== 'Stack 1') await win.waitForTimeout(1100);
     await win.evaluate(
-      ([accountId, subject]) => window.mail.call('send', { accountId, to: ['demo@voorbeeld.nl'], subject, html: '<p>x</p>' }),
+      ([accountId, subject]) => window.mail.call('send', { accountId, to: ['demo@example.com'], subject, html: '<p>x</p>' }),
       [state.accounts[0].id, subject]
     );
   }
@@ -780,6 +783,6 @@ test('the newest message opens even when it is folded into a stack', async () =>
   await win.evaluate(() => window.mail.call('updateSettings', { sort: 'date-asc' }));
   await win.click('[data-view="drafts"]');
   await win.click('[data-view="inbox"]');
-  await expect(win.locator('.reader-subject')).toHaveText('Stapel 3');
-  await expect(item('Stapel 3')).toHaveClass(/selected/);
+  await expect(win.locator('.reader-subject')).toHaveText('Stack 3');
+  await expect(item('Stack 3')).toHaveClass(/selected/);
 });
