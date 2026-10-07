@@ -691,11 +691,15 @@ app.on('before-quit', () => {
 });
 
 // ---- agents ----
-// dispose() stops turns, kills agent processes and flushes the conversations synchronously before its first
-// await. The rest is network: Clark's runs only end with a stop request, which a process that exits right away
-// never sends. So the quit waits once, until dispose is done or 2.5 s have passed.
+// dispose() stops turns and flushes the conversations before its first await, and starts the kills of the
+// agent processes right after, before any timer can fire; none of that blocks. A kill only finishes while
+// Rukoo runs: Node puts its child processes, taskkill included, in a job that Windows ends together with
+// Rukoo, and that would leave the agents' own commands running. Clark's runs only end with a stop request
+// (each with a 2 s timeout), which a process that exits right away never sends. So the quit waits once,
+// until dispose is done or QUIT_WAIT has passed, the time each taskkill had when it still blocked.
 // will-quit, not before-quit: a window can still cancel the quit after before-quit (a pop-out composer that
 // asks to save), and the agents must keep running then. will-quit comes once every window has closed.
+const QUIT_WAIT = 5000;
 let agentsDisposed = false;
 app.on('will-quit', (event) => {
   if (!hub || agentsDisposed) return;
@@ -703,7 +707,7 @@ app.on('will-quit', (event) => {
   event.preventDefault();
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
-  Promise.race([hub.dispose(), new Promise((resolve) => setTimeout(resolve, 2500))])
+  Promise.race([hub.dispose(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))])
     .catch(() => {})
     .finally(() => app.exit(0));
 });

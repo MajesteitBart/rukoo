@@ -599,7 +599,7 @@ async function getContext(hub, args, call) {
   const view = hub.viewState;
   const c = call.conversation;
   const openId = view.openMessageId && (cacheMessage(engine, view.openMessageId) || String(view.openMessageId).startsWith('saved:')) ? view.openMessageId : null;
-  const boundId = c && c.message ? hub.currentMessageId(c) : null;
+  const boundId = c && c.message ? await hub.currentMessageId(c) : null;
   const [open, bound] = await Promise.all([
     openId ? loadMessage(engine, openId) : null,
     boundId && boundId !== openId ? loadMessage(engine, boundId) : null
@@ -788,7 +788,9 @@ async function writeDraft(hub, args, call) {
   else if (mode !== 'new') {
     if (bound && bound.message) {
       // Never fall back to whatever email is open: the reply would go to someone else.
-      messageId = hub.currentMessageId(bound);
+      messageId = await hub.currentMessageId(bound);
+      // Finding a moved email can sync a folder first; the user may have deleted the chat meanwhile.
+      if (hub.conversations.get(bound.id) !== bound) throw new ToolError('This chat was deleted, so Rukoo did not write the draft.');
       if (!messageId) {
         throw new ToolError(
           'Rukoo cannot find the email this chat is about any more (it may have moved to another folder or been deleted). Pass message_id: search_mail with its folder finds the current id.'
@@ -1099,6 +1101,9 @@ async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
   const done = [];
   const failed = [];
   const undo = [];
+  // Unsubscribes by what Rukoo could do: done (one-click), the page opened in the browser, or an email opened
+  // to send (its address). Only the first is finished; the others wait for the user.
+  const unsubscribed = [];
   const opened = [];
   const mailed = [];
   for (const [i, id] of ids.entries()) {
@@ -1134,7 +1139,7 @@ async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
           if (!to || !hub.deps.openMailto) throw new Error('This sender only takes unsubscribe requests by email.');
           await hub.deps.openMailto(String(r.mailto));
           mailed.push(to);
-        }
+        } else unsubscribed.push(id);
       }
       done.push(id);
       if (MOVES.has(action) && engine.canUndo(id)) undo.push(id);
@@ -1143,13 +1148,23 @@ async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
     }
   }
   let text;
-  if (action === 'unsubscribe' && mailed.length && mailed.length === done.length) {
-    text = mailed.length === 1 ? `Opened an unsubscribe email to ${mailed[0]}. Send it to finish` : `Opened ${mailed.length} unsubscribe emails. Send them to finish`;
-  } else if (action === 'unsubscribe') {
-    const senders = [...new Set(done.map((id) => senderName(engine, id)))];
-    text = senders.length === 1 ? `Unsubscribed from ${senders[0]}` : `Unsubscribed from ${senders.length} senders`;
-    if (opened.length) text += ' (the unsubscribe page opened in the browser)';
-    if (mailed.length) text += `. Opened ${mailed.length === 1 ? 'an unsubscribe email' : `${mailed.length} unsubscribe emails`} to send`;
+  if (action === 'unsubscribe') {
+    // Only a one-click unsubscribe is done. A page in the browser may still ask to confirm or sign in, and
+    // Rukoo cannot see whether it worked.
+    const parts = [];
+    if (unsubscribed.length) {
+      const senders = [...new Set(unsubscribed.map((id) => senderName(engine, id)))];
+      parts.push(senders.length === 1 ? `Unsubscribed from ${senders[0]}` : `Unsubscribed from ${senders.length} senders`);
+    }
+    if (opened.length) {
+      parts.push(
+        opened.length === 1
+          ? `Opened the unsubscribe page for ${senderName(engine, opened[0])} in the browser. Finish there; Rukoo cannot tell whether it worked`
+          : `Opened ${opened.length} unsubscribe pages in the browser. Finish there; Rukoo cannot tell whether they worked`
+      );
+    }
+    if (mailed.length) parts.push(mailed.length === 1 ? `Opened an unsubscribe email to ${mailed[0]}. Send it to finish` : `Opened ${mailed.length} unsubscribe emails. Send them to finish`);
+    text = parts.join('. ');
   } else if (action === 'move') text = `Moved ${emails(done.length)} to ${folder}`;
   else text = `${VERBS[action][1]} ${emails(done.length)}`;
   if (!done.length) text = `Could not ${VERBS[action][0].toLowerCase()} ${emails(ids.length)}`;
@@ -1160,8 +1175,18 @@ async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
     tone: done.length ? 'success' : 'error',
     code: null,
     undo: undo.length ? { kind: 'move', ids: undo } : null,
-    // An unsubscribe that still needs sending is not "Unsubscribed"; the renderer shows this text as is.
-    mail: { action: mailed.length ? 'unsubscribe_email' : action, count: done.length, failed: failed.length, folder: folder || null, mailed: mailed.length, to: mailed.length === 1 ? String(mailed[0]).slice(0, 320) : null }
+    // An unsubscribe that still needs sending, or finishing in the browser, is not "Unsubscribed": the renderer
+    // translates a result of only one kind and shows a mixed one as it is.
+    mail: {
+      action: mailed.length ? 'unsubscribe_email' : opened.length ? 'unsubscribe_page' : action,
+      count: done.length,
+      failed: failed.length,
+      folder: folder || null,
+      mailed: mailed.length,
+      to: mailed.length === 1 ? String(mailed[0]).slice(0, 320) : null,
+      opened: opened.length,
+      sender: opened.length === 1 ? senderName(engine, opened[0]) : null
+    }
   });
   return { done, failed, undo, text };
 }

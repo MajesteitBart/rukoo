@@ -268,16 +268,18 @@ class ClaudeAdapter {
     return session;
   }
 
-  closeSession(session, { sync = false } = {}) {
+  // now: kill the process at once (quitting) instead of letting an idle one exit on its own. Resolves once
+  // the process is gone or its kill is done.
+  closeSession(session, { now = false } = {}) {
     if (this.sessions.get(session.cid) === session) this.sessions.delete(session.cid);
-    if (session.child && !session.exited && !sync) {
+    if (session.child && !session.exited && !now) {
       const gone = new Promise((resolve) => session.child.once('exit', resolve));
       this.exiting.set(session.cid, gone);
       gone.then(() => {
         if (this.exiting.get(session.cid) === gone) this.exiting.delete(session.cid);
       });
     }
-    session.close({ sync });
+    return session.close({ now });
   }
 
   // The hub calls this when a conversation is removed. The transcript stays with Claude Code.
@@ -287,7 +289,7 @@ class ClaudeAdapter {
   }
 
   async dispose() {
-    for (const session of [...this.sessions.values()]) this.closeSession(session, { sync: true });
+    await Promise.all([...this.sessions.values()].map((session) => this.closeSession(session, { now: true })));
   }
 }
 
@@ -385,11 +387,11 @@ class Session {
     }, STOP_WAIT);
   }
 
-  close({ sync = false } = {}) {
+  close({ now = false } = {}) {
     clearTimeout(this.idleTimer);
-    if (!this.child || this.exited) return;
+    if (!this.child || this.exited) return Promise.resolve();
     this.closing = true;
-    if (sync || this.current) return killTree(this.child, { sync });
+    if (now || this.current) return killTree(this.child);
     // Idle: let it exit on its own once stdin closes, and make sure after a few seconds.
     try {
       this.child.stdin.end();

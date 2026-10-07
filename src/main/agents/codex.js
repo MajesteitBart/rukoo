@@ -456,8 +456,9 @@ class CodexAdapter {
 
   async dispose() {
     for (const run of [...this.runs.values()]) run.finish({ status: 'stopped' });
-    if (this.server) this.server.close({ sync: true });
+    const closing = this.server ? this.server.close() : null;
     this.server = null;
+    await closing;
   }
 }
 
@@ -583,13 +584,14 @@ class AppServer {
     killTree(this.child);
   }
 
-  close({ sync = false } = {}) {
-    if (!this.child || this.exited) return;
+  // Resolves once the kill is done.
+  close() {
+    if (!this.child || this.exited) return Promise.resolve();
     // Closing stdin ends app-server cleanly; the tree kill takes any command it was still running.
     try {
       this.child.stdin.end();
     } catch {}
-    killTree(this.child, { sync });
+    return killTree(this.child);
   }
 }
 

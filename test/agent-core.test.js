@@ -507,7 +507,7 @@ test('findFor matches on the Message-ID header, so it survives a move', async ()
     await env.engine.archive(call.id);
     const moved = env.engine.listMessages({ view: 'archive' }).find((m) => m.subject === 'Call on Thursday');
     assert.equal(hub.findFor({ id: moved.id, messageId: '<demo-13@example.com>' }).id, newer.id);
-    assert.equal(hub.currentMessageId(older), moved.id, 'the bound id follows the message');
+    assert.equal(await hub.currentMessageId(older), moved.id, 'the bound id follows the message');
     assert.equal(older.message.id, moved.id);
   } finally {
     await hub.dispose();
@@ -1081,7 +1081,7 @@ test('an approved follow-up stopped while its email loads keeps the approval', a
     await until(() => Boolean(release));
     assert.equal(hub.stop(c.id), true);
     release();
-    await new Promise((r) => setTimeout(r, 20));
+    await until(() => c.notes.length > 0);
     assert.match(c.notes.join('\n'), /The user approved: Book a table\./);
     assert.ok(c.items.some((i) => i.type === 'notice' && i.code === 'kept-approval'));
   } finally {
@@ -1114,7 +1114,7 @@ test('the same email in two accounts has its own chats, and recovery after a mov
 
     // The chat's own id went stale (the email moved): Rukoo looks for it again, in that account only.
     chat.message.id = encodeId(second.id, 'INBOX', 999999);
-    assert.equal(hub.currentMessageId(chat), b.id);
+    assert.equal(await hub.currentMessageId(chat), b.id);
   } finally {
     await hub.dispose();
     await env.engine.close();

@@ -389,6 +389,14 @@
     "message": "Opened an unsubscribe email to {address}. Send it to finish.",
     "description": "Chat transcript notice: the sender only offers unsubscribing by email; Rukoo opened a prepared email to address for you to send."
   },
+  "agent.mail.unsubscribePageMany": {
+    "message": "Opened {count} unsubscribe pages in your browser. Finish there; Rukoo Mail can't tell whether they worked.",
+    "description": "Chat transcript notice: the senders' unsubscribe links are web pages, so Rukoo opened that many in the browser; the user may still have to confirm on each."
+  },
+  "agent.mail.unsubscribePageOne": {
+    "message": "Opened the unsubscribe page for {name} in your browser. Finish there; Rukoo Mail can't tell whether it worked.",
+    "description": "Chat transcript notice: the sender's unsubscribe link is a web page, so Rukoo opened it in the browser; the user may still have to confirm there. name is the sender's name or address."
+  },
   "agent.mail.archive": {
     "message": { "one": "Archived {count} email", "other": "Archived {count} emails" },
     "description": "Chat transcript notice after Rukoo archived mail for an agent; count is the number of emails."

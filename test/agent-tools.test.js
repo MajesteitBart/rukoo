@@ -540,7 +540,11 @@ test('write_draft for a chat whose email is gone fails instead of replying to th
   try {
     const call = t.find('Call on Thursday');
     const c = t.hub.create({ agent: 'claude', message: { id: call.id } });
-    await t.engine.move(call.id, 'Invoices');
+    // Another mail client moved it into a folder Rukoo never opened: Rukoo has no record of where it went.
+    const { folder, uid } = decodeId(call.id);
+    await t.engine.session(t.engine.account(t.acc.id)).move(folder, uid, 'Invoices');
+    await t.engine.syncAccount(t.acc.id);
+    assert.equal(t.find('Call on Thursday'), undefined);
     t.hub.view({ openMessageId: t.find('Your parcel is on its way').id });
     const res = await t.hub.callTool(local(c.id), 'write_draft', { body: 'Hi Sanne' });
     assert.equal(res.isError, true);
@@ -660,6 +664,38 @@ test('unsubscribing from a sender that only takes email opens a filled-in email 
   }
 });
 
+test('an unsubscribe page opened in the browser is not reported as unsubscribed', async () => {
+  let anwb = null;
+  const t = await setup({ deps: { unsubscribe: async (id) => (id === anwb ? { opened: true } : { done: true }) } });
+  try {
+    anwb = t.find('Traffic fines in 2027: what you will pay').id;
+    const other = t.find("The music industry can't agree on AI").id;
+    const approve = async (c, ids) => {
+      const res = data(await t.hub.callTool(local(c.id), 'mail_action', { action: 'unsubscribe', message_ids: ids }));
+      t.hub.decide(c.id, res.proposal_id, 'approve');
+      for (let i = 0; i < 50 && !c.items.some((x) => x.type === 'notice'); i++) await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 10));
+      return c.items.find((x) => x.type === 'notice');
+    };
+    // One done by one-click, one only opened: each told as what it is.
+    const both = t.hub.create({ agent: 'claude', message: null });
+    const mixed = await approve(both, [other, anwb]);
+    assert.equal(mixed.text, 'Unsubscribed from Forward Future (Matthew Berman). Opened the unsubscribe page for ANWB Newsletter in the browser. Finish there; Rukoo cannot tell whether it worked');
+    assert.equal(mixed.mail.action, 'unsubscribe_page');
+    assert.equal(mixed.mail.opened, 1);
+    assert.equal(mixed.mail.count, 2, 'a mixed result is shown as it is');
+    // Only the page: nothing says unsubscribed, to the user or to the agent.
+    const page = t.hub.create({ agent: 'claude', message: null });
+    const opened = await approve(page, [anwb]);
+    assert.equal(opened.text, 'Opened the unsubscribe page for ANWB Newsletter in the browser. Finish there; Rukoo cannot tell whether it worked');
+    assert.deepEqual([opened.mail.action, opened.mail.opened, opened.mail.count, opened.mail.sender], ['unsubscribe_page', 1, 1, 'ANWB Newsletter']);
+    assert.doesNotMatch(page.notes.at(-1), /Unsubscribed/);
+    assert.match(page.notes.at(-1), /Finish there/);
+  } finally {
+    await t.done();
+  }
+});
+
 test('auto mail actions also ask before a move into Trash, by name or by role', async () => {
   const t = await setup({ auto: true });
   try {
@@ -750,6 +786,48 @@ test('a source card finds its email in a folder that was never opened, after Ruk
     // Another account never finds this account's move.
     assert.equal(await t.hub.locate({ ...ref, accountId: 'acc-other' }), null);
   } finally {
+    await t.done();
+  }
+});
+
+test('a chat finds its own email after Rukoo moved it into a folder that was never opened', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    const c = t.hub.create({ agent: 'claude', message: { id: call.id } });
+    await t.engine.move(call.id, 'Travel');
+    assert.equal(t.engine.caches.get(t.acc.id).boxes.Travel, undefined);
+    const ctx = data(await t.hub.callTool(local(c.id), 'get_context', {}));
+    assert.equal(ctx.chat_message_missing, undefined, 'not reported as missing');
+    assert.equal(ctx.chat_message.subject, 'Call on Thursday');
+    assert.equal(decodeId(c.message.id).folder, 'Travel', 'the chat keeps the id it found');
+    data(await t.hub.callTool(local(c.id), 'write_draft', { body: 'Thursday works.' }));
+    assert.equal(t.ui.at(-1).args.messageId, c.message.id, 'the reply answers the moved email');
+  } finally {
+    await t.done();
+  }
+});
+
+test('write_draft writes nothing for a chat deleted while its moved email was looked up', async () => {
+  const t = await setup();
+  const realOpen = t.engine.openFolder.bind(t.engine);
+  try {
+    const call = t.find('Call on Thursday');
+    const c = t.hub.create({ agent: 'claude', message: { id: call.id } });
+    await t.engine.move(call.id, 'Travel');
+    let release;
+    t.engine.openFolder = (...args) => new Promise((resolve) => (release = () => resolve(realOpen(...args))));
+    const pending = t.hub.callTool(local(c.id), 'write_draft', { body: 'Thursday works.' });
+    for (let i = 0; i < 100 && !release; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(release, 'the lookup syncs Travel');
+    t.hub.remove(c.id);
+    release();
+    const res = await pending;
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /chat was deleted/);
+    assert.equal(t.ui.length, 0, 'nothing reached the composer');
+  } finally {
+    t.engine.openFolder = realOpen;
     await t.done();
   }
 });

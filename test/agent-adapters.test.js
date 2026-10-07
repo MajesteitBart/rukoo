@@ -701,6 +701,27 @@ test('claude: full access bypasses prompts; a stuck process is killed on stop', 
   assert.deepEqual(await done, { status: 'stopped' });
 });
 
+// A blocking kill (taskkill through spawnSync) would settle dispose() before it returns and hold up the event
+// loop, and with it the quit's own deadline.
+async function disposeWaitsForKill(adapter, child) {
+  const gone = new Promise((resolve) => child.once('exit', resolve));
+  let settled = false;
+  const disposing = adapter.dispose().then(() => (settled = true));
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(settled, false, 'dispose waits for the kill instead of blocking until it is done');
+  await disposing;
+  await gone;
+  assert.ok(child.exitCode !== null || child.signalCode !== null, 'the process is gone');
+}
+
+test('claude: quitting kills a running session without blocking, and waits for the kill', async () => {
+  const { adapter, read } = claudeAdapter({ access: 'full', model: '' });
+  const done = adapter.runTurn(fakeTurn(conv(), 'hang forever'));
+  await waitFor(() => read().some((e) => e.stdin));
+  await disposeWaitsForKill(adapter, [...adapter.sessions.values()][0].child);
+  await done;
+});
+
 test('claude: tool previews', () => {
   assert.equal(toolDetail({ command: 'ls -la\n  /tmp', description: 'List' }), 'ls -la /tmp');
   assert.equal(toolDetail({ file_path: 'C:\\a.txt', content: 'x' }), 'C:\\a.txt');
@@ -721,6 +742,12 @@ function codexAdapter(extra = {}, hubExtra = {}, options = {}) {
   const sent = (method) => read().filter((e) => e.in && e.in.method === method).map((e) => e.in);
   return { adapter, cfg, hub, read, sent };
 }
+
+test('codex: quitting kills the app-server without blocking, and waits for the kill', async () => {
+  const { adapter } = codexAdapter();
+  assert.deepEqual(await adapter.runTurn(fakeTurn(conv(), 'hello')), { status: 'done' });
+  await disposeWaitsForKill(adapter, adapter.server.child);
+});
 
 test('codex: initialize, thread/start with the Rukoo MCP block, and a recorded turn', async (t) => {
   const { adapter, hub, read, sent } = codexAdapter();

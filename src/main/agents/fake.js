@@ -121,7 +121,7 @@ class FakeRun {
     return name.split(/[\s@]/)[0];
   }
 
-  messageId() {
+  async messageId() {
     // A chat about an email never falls back to another open email, like write_draft.
     const c = this.turn.conversation;
     return c.message ? this.hub.currentMessageId(c) : this.hub.openMessageId();
@@ -221,7 +221,7 @@ class FakeRun {
   }
 
   async unsubscribe() {
-    const id = this.messageId();
+    const id = await this.messageId();
     if (!id) return this.say('Open the newsletter first, then ask again.');
     const res = await this.tool('mail_action', { action: 'unsubscribe', message_ids: [id] });
     if (res.error) return this.say(`That did not work: ${res.error}`);

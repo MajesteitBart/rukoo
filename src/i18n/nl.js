@@ -98,6 +98,8 @@
   "agent.items.youDeclined": "Afgewezen",
   "agent.mail.unsubscribeEmailMany": "{count} uitschrijfmails geopend. Verstuur ze om je af te melden.",
   "agent.mail.unsubscribeEmailOne": "Uitschrijfmail aan {address} geopend. Verstuur hem om je af te melden.",
+  "agent.mail.unsubscribePageMany": "{count} uitschrijfpagina's geopend in je browser. Rond het daar af; Rukoo Mail kan niet zien of het gelukt is.",
+  "agent.mail.unsubscribePageOne": "Uitschrijfpagina van {name} geopend in je browser. Rond het daar af; Rukoo Mail kan niet zien of het gelukt is.",
   "agent.mail.archive": { "one": "{count} e-mail gearchiveerd", "other": "{count} e-mails gearchiveerd" },
   "agent.mail.mark_read": { "one": "{count} e-mail als gelezen gemarkeerd", "other": "{count} e-mails als gelezen gemarkeerd" },
   "agent.mail.mark_unread": { "one": "{count} e-mail als ongelezen gemarkeerd", "other": "{count} e-mails als ongelezen gemarkeerd" },

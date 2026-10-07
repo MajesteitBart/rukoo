@@ -646,16 +646,15 @@ class AgentHub extends EventEmitter {
     return id && tools.cacheMessage(this.engine, id) ? id : null;
   }
 
-  // The live id of a conversation's email. Ids change when mail moves; the Message-ID header does not.
-  currentMessageId(c) {
+  // The live id of a conversation's email, found like a source card's (locate): ids change when mail moves,
+  // the Message-ID header does not, and a copy in another account belongs to another chat. The chat keeps
+  // the id it finds.
+  async currentMessageId(c) {
     const ref = c && c.message;
     if (!ref) return null;
-    const cached = tools.cacheMessage(this.engine, ref.id);
-    if (cached && (!ref.messageId || !cached.messageId || normId(cached.messageId) === normId(ref.messageId))) return ref.id;
-    if (String(ref.id).startsWith('saved:')) return ref.id;
-    // Mail moves within its account; a copy in another account belongs to another chat.
-    const found = ref.messageId ? tools.findByMessageId(this.engine, ref.messageId, ref.accountId || tools.accountOfId(ref.id)) : null;
-    if (found && found !== ref.id) {
+    const found = await this.locate({ id: ref.id, messageHeader: ref.messageId, accountId: ref.accountId });
+    // The chat may have been deleted while a folder synced.
+    if (found && found !== ref.id && this.conversations.get(c.id) === c) {
       ref.id = found;
       this.touch(c);
     }
@@ -704,7 +703,7 @@ class AgentHub extends EventEmitter {
       if (!adapter) throw new AgentError('unknown', this.adapterErrors.get(c.agent) || `${c.agent} adapter not available`);
       let message = null;
       if (firstTurn && c.message) {
-        const liveId = this.currentMessageId(c);
+        const liveId = await this.currentMessageId(c);
         const full = liveId ? await this.engine.getMessage(liveId).catch(() => null) : null;
         // Stopped while the email was loading: stop() already closed the turn, and a newer turn may own the
         // notes by now. Touch nothing.

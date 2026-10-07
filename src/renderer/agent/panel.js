@@ -731,6 +731,10 @@ export function mountAgentPanel(ctx) {
     if (m && m.action === 'unsubscribe_email' && m.mailed > 0 && m.mailed === m.count && !m.failed) {
       return { ...item, text: m.mailed === 1 && m.to ? t('agent.mail.unsubscribeEmailOne', { address: m.to }) : t('agent.mail.unsubscribeEmailMany', { count: m.mailed }) };
     }
+    // Only unsubscribe pages were opened: the user finishes in the browser.
+    if (m && m.action === 'unsubscribe_page' && m.opened > 0 && m.opened === m.count && !m.failed) {
+      return { ...item, text: m.opened === 1 && m.sender ? t('agent.mail.unsubscribePageOne', { name: m.sender }) : t('agent.mail.unsubscribePageMany', { count: m.opened }) };
+    }
     if (m && MAIL_RESULTS.has(m.action) && m.count > 0 && !m.failed && (m.action !== 'move' || m.folder)) {
       return { ...item, text: t(`agent.mail.${m.action}`, { count: m.count, folder: m.folder || '' }) };
     }

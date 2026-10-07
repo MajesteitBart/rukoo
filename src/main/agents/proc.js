@@ -3,7 +3,7 @@
 // Child process helpers shared by the CLI adapters: finding the program, a clean environment,
 // reading JSON lines, and killing a process with everything it started.
 const fs = require('fs');
-const { spawn, spawnSync, execFile } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 
 const WINDOWS = process.platform === 'win32';
@@ -151,31 +151,39 @@ function tail(stream, max = 20) {
 }
 
 // Ends a process and everything it started. A plain kill on Windows is TerminateProcess on the parent
-// only, which leaves the agent's shell commands running; taskkill /T takes the whole tree.
-// sync: true for quit, when the event loop may not get another turn.
-function killTree(child, { sync = false } = {}) {
-  if (!child || child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+// only, which leaves the agent's shell commands running; taskkill /T takes the whole tree. Never blocks:
+// taskkill is a process of its own. Resolves once the kill is done. A quit has to wait for that: taskkill
+// is in the job Node puts its child processes in, which Windows ends together with Rukoo.
+function killTree(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null || !child.pid) return Promise.resolve();
   if (WINDOWS) {
-    const args = ['/PID', String(child.pid), '/T', '/F'];
-    if (sync) {
-      spawnSync('taskkill', args, { windowsHide: true, stdio: 'ignore', timeout: 5000 });
-    } else {
-      const killer = spawn('taskkill', args, { windowsHide: true, stdio: 'ignore' });
-      killer.on('error', () => child.kill());
-    }
-    return;
+    return new Promise((resolve) => {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.on('error', () => {
+        try {
+          child.kill();
+        } catch {}
+        resolve();
+      });
+      killer.on('exit', () => resolve());
+    });
   }
   try {
     child.kill('SIGTERM');
   } catch {
-    return;
+    return Promise.resolve();
   }
-  if (!sync) {
+  return new Promise((resolve) => {
     const timer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      resolve();
     }, 3000);
     timer.unref();
-  }
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 // Writes one JSON line; false when the pipe is already gone.
