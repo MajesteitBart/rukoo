@@ -245,6 +245,10 @@
     "message": "Looks things up and writes the draft. Sending stays with you.",
     "description": "Chat panel empty state line under the heading while an email is open."
   },
+  "agent.empty.bodyLeftOut": {
+    "message": "Add the email to work on it, or start with what needs you today.",
+    "description": "Chat panel empty state line after you left the open email out of the new chat; Add this email is the chip above the input (renderEmpty in agent/panel.js)."
+  },
   "agent.empty.bodyNoEmail": {
     "message": "Open an email to work on it, or start with what needs you today.",
     "description": "Chat panel empty state line under the heading without an open email."
@@ -429,6 +433,10 @@
     "message": { "one": "Removed the star from {count} email", "other": "Removed the star from {count} emails" },
     "description": "Chat transcript notice after Rukoo removed stars for an agent."
   },
+  "agent.panel.addContext": {
+    "message": "Add this email",
+    "description": "Chat panel input: dashed chip in the email chip's place after you left the email out of a new chat; clicking it puts the email back (contextChip and attach in agent/panel.js)."
+  },
   "agent.panel.ask": {
     "message": "Ask an agent about this email (Ctrl+J)",
     "description": "Reader toolbar button tooltip that opens or closes the chat panel."
@@ -491,7 +499,7 @@
   },
   "agent.panel.removeContext": {
     "message": "Leave this email out",
-    "description": "Chat panel input: tooltip of the x on the email chip; the next chat starts without the email."
+    "description": "Chat panel input: tooltip of the x on the email chip of a chat that has not started yet; the chat then starts without the email (contextChip and detach in agent/panel.js)."
   },
   "agent.panel.send": {
     "message": "Send",

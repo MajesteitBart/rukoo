@@ -128,6 +128,11 @@ export function entityChip({ label, sub, monogram: mono, onRemove, removeLabel }
   return el;
 }
 
+// A dashed entity chip that is a button: an empty place to put something (back) into.
+export function addChip({ label, title, onClick } = {}) {
+  return h('button', { type: 'button', class: 'bui-entity bui-entity--add', title: title || null, onClick }, icon('plus', 11, 2.4), h('span', { class: 'bui-entity__name', text: label }));
+}
+
 export function shimmer(text) {
   return h('span', { class: 'bui-shimmer', text });
 }

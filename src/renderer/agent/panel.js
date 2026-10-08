@@ -157,7 +157,8 @@ export function mountAgentPanel(ctx) {
     // The email the panel last followed, and whether it had fully loaded.
     emailId: null,
     emailKey: undefined,
-    // The user took the email off the chat: the next one starts without it.
+    // The user left the email out of the chat that has not started yet: it starts without it, unless the
+    // add chip puts it back. Another email or New chat ends this.
     detached: false,
     // An email opened from the panel itself (a source, a draft): the chat stays as it is.
     keepFor: null
@@ -270,25 +271,46 @@ export function mountAgentPanel(ctx) {
     const name = agentName(currentAgent());
     return contextEmail() ? t('agent.panel.placeholderEmail', { name }) : t('agent.panel.placeholder', { name });
   };
-  // The email the next message is about; its x leaves the email out.
-  const contextChip = () => {
+  // The email the chat is about. Until the chat starts, its x leaves the email out and a dashed chip in its
+  // place puts it back. A chat that has started keeps its email: New chat starts one without.
+  const contextState = () => {
     const m = contextEmail();
-    if (!m) return null;
+    if (m) return { m, fixed: Boolean(P.conv) };
+    const open = !P.conv && P.detached ? currentEmail() : null;
+    return open ? { m: open, add: true } : null;
+  };
+  const contextKey = (s) => (s ? [s.add ? 'add' : s.fixed ? 'fixed' : 'open', s.m.id, s.m.subject, person(s.m.from)].join('\n') : '');
+  const contextChip = (s) => {
+    if (!s) return null;
+    const m = s.m;
+    const subject = m.subject || t('mailbox.message.noSubject');
+    if (s.add) return elOf(B.addChip({ label: t('agent.panel.addContext'), title: subject, onClick: () => attach() }));
     const from = person(m.from);
     return elOf(
       B.entityChip({
-        label: m.subject || t('mailbox.message.noSubject'),
+        label: subject,
         sub: from,
         monogram: { label: from || '?', hue: hue((m.from && m.from.address) || from) },
-        onRemove: () => detach(),
+        onRemove: s.fixed ? null : () => detach(),
         removeLabel: t('agent.panel.removeContext')
       })
     );
   };
+  // Drawn again only when it changes, so its button keeps the keyboard focus through a status update.
+  let shownContext = null;
+  function showContext() {
+    const s = contextState();
+    const key = contextKey(s);
+    if (key === shownContext) return;
+    shownContext = key;
+    chat.setContext(contextChip(s));
+  }
 
   function buildComposer() {
     const value = chat ? chat.getValue() : '';
     if (chat) chat.el.remove();
+    const context = contextState();
+    shownContext = contextKey(context);
     chat = B.chatComposer(
       {
         placeholder: placeholder(),
@@ -302,7 +324,7 @@ export function mountAgentPanel(ctx) {
         agents: agentRows(),
         agentId: currentAgent(),
         commands: commandsFor(slashEmail()),
-        context: contextChip()
+        context: contextChip(context)
       },
       {
         onSend: (text) => send(text),
@@ -340,7 +362,7 @@ export function mountAgentPanel(ctx) {
     if (!chat) return;
     const id = currentAgent();
     chat.setAgents(agentRows(), id);
-    chat.setContext(contextChip());
+    showContext();
     chat.setCommands(commandsFor(slashEmail()));
     chat.setRunning(Boolean(P.conv && P.conv.status === 'running'));
     chat.setPlaceholder(placeholder());
@@ -437,8 +459,16 @@ export function mountAgentPanel(ctx) {
     refreshComposer();
   }
 
+  // Only before the chat starts: the email went to the agent with the first message, so a chat keeps it.
   function detach() {
+    if (P.conv) return;
     P.detached = true;
+    showEmpty();
+    chat.focus();
+  }
+
+  function attach() {
+    P.detached = false;
     showEmpty();
     chat.focus();
   }
@@ -834,6 +864,8 @@ export function mountAgentPanel(ctx) {
     const id = currentAgent();
     const name = agentName(id);
     const m = contextEmail();
+    // An email is on screen, but the user left it out: the add chip brings it back.
+    const leftOut = !m && P.detached && Boolean(currentEmail());
     const state = stateOf(id);
     const box = document.createElement('div');
     box.className = 'ap-empty';
@@ -842,7 +874,7 @@ export function mountAgentPanel(ctx) {
       {
         eyebrow: name,
         title: blocked ? t('agent.empty.setupTitle', { name }) : m ? t('agent.empty.title', { name }) : t('agent.empty.titleNoEmail', { name }),
-        body: blocked ? t('agent.empty.setupBody', { name }) : m ? t('agent.empty.body', { name }) : t('agent.empty.bodyNoEmail', { name }),
+        body: blocked ? t('agent.empty.setupBody', { name }) : m ? t('agent.empty.body', { name }) : leftOut ? t('agent.empty.bodyLeftOut') : t('agent.empty.bodyNoEmail', { name }),
         actions: [],
         icon: B.icon('sparkle', 11)
       },
