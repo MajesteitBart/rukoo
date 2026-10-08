@@ -23,6 +23,7 @@ const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
+const { nextZoom, zoomKey } = require('./zoom');
 // ---- agents ----
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
@@ -221,6 +222,32 @@ function harden(w) {
   });
 }
 
+// One zoom level for the main window and every compose window. Settings follows it through the 'zoom' event;
+// nothing else in the windows depends on it, so it is saved without the 'updated' redraw.
+function setZoom(level) {
+  if (level === engine.settings.zoomLevel) return level;
+  const { zoomLevel } = engine.updateSettings({ zoomLevel: level }, { quiet: true });
+  for (const w of windows()) w.webContents.setZoomFactor(zoomLevel / 100);
+  send('zoom', zoomLevel);
+  return zoomLevel;
+}
+
+// The main process sees the zoom keys before the page does, also with the focus inside an email's frame,
+// whose keydown events never reach the page's own handler. Stopping them here keeps them from the page.
+// Ctrl+mouse wheel only raises zoom-changed: Electron doesn't zoom by itself. A page starts at the zoom
+// Chromium keeps for its file, so the stored level is applied once the page commits.
+function watchZoom(w) {
+  const contents = w.webContents;
+  contents.on('before-input-event', (event, input) => {
+    const action = zoomKey(input);
+    if (!action) return;
+    event.preventDefault();
+    setZoom(nextZoom(engine.settings.zoomLevel, action));
+  });
+  contents.on('zoom-changed', (_event, direction) => setZoom(nextZoom(engine.settings.zoomLevel, direction)));
+  contents.on('did-navigate', () => contents.setZoomFactor(engine.settings.zoomLevel / 100));
+}
+
 // Test mode: a never-shown window does not paint, so park it off-screen without focus.
 function reveal(w, maximized = false) {
   w.once('ready-to-show', () => {
@@ -284,6 +311,7 @@ function openComposeWindow(input) {
   composeWindows.set(id, { win: w, opts, draftId: opts.mode === 'draft' ? opts.id : null });
   w.on('closed', () => composeWindows.delete(id));
   harden(w);
+  watchZoom(w);
   if (!process.env.SEM_HIDDEN) windowState.track('compose', w);
   reveal(w);
   w.loadFile(path.join(RENDERER, 'compose.html'));
@@ -387,6 +415,8 @@ const api = {
     if ('badge' in patch) refreshBadge();
     return s;
   },
+  // Settings → General resets it; the keys and the wheel go through watchZoom.
+  setZoom: (level) => setZoom(level),
   sync: (accountId) => (accountId ? engine.syncAccount(accountId) : engine.syncAll()).then(() => true),
   openFolder: (accountId, folder) => engine.openFolder(accountId, folder),
   pickFiles: async () => {
@@ -646,6 +676,7 @@ function createWindow() {
   });
   Menu.setApplicationMenu(null);
   harden(win);
+  watchZoom(win);
   win.on('focus', () => {
     newSinceFocus = 0;
     refreshBadge();

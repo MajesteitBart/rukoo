@@ -2621,6 +2621,22 @@
     "message": "Emails from VIPs appear in the VIPs folder.",
     "description": "settings > general. src/renderer/settings.js (render)"
   },
+  "settings.general.zoom": {
+    "message": "Zoom",
+    "description": "settings > general. Settings > General: title of the zoom row, which shows the zoom level of the main window and the compose windows. src/renderer/settings.js (zoomRow)"
+  },
+  "settings.general.zoomHelp": {
+    "message": "Use Ctrl+Plus and Ctrl+Minus, or Ctrl with the mouse wheel. Ctrl+0 goes back to 100%.",
+    "description": "settings > general. Settings > General: explanation below Zoom, naming the keyboard shortcuts and the mouse wheel. src/renderer/settings.js (zoomRow)"
+  },
+  "settings.general.zoomReset": {
+    "message": "Reset to 100%",
+    "description": "settings > general. Settings > General: button in the zoom row that sets the zoom back to 100%; disabled at 100%. src/renderer/settings.js (zoomRow)"
+  },
+  "settings.general.zoomValue": {
+    "message": "{percent}%",
+    "description": "settings > general. Settings > General: current zoom level in the zoom row; percent is a whole number such as 125. src/renderer/settings.js (zoomRow, showZoom)"
+  },
   "settings.groups.about": {
     "message": "About",
     "description": "settings > groups. src/renderer/settings.js (render)"
