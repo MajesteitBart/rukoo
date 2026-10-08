@@ -16,6 +16,7 @@ const { ClaudeAdapter, toolDetail, approvalFields } = require('../src/main/agent
 const { CodexAdapter, stripShell } = require('../src/main/agents/codex');
 const { McpServer } = require('../src/main/agents/mcp');
 const { AgentHub } = require('../src/main/agents/hub');
+const { Engine } = require('../src/main/engine');
 const { remoteTokenFor } = require('../src/main/agents/config');
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'agents');
@@ -66,6 +67,16 @@ function fakeTurn(conversation, input, { approve, mcp } = {}) {
 }
 
 const conv = (id = 'c_test_1', provider = {}) => ({ id, agent: 'x', title: 'Call on Thursday', provider, items: [] });
+// The hub's startOver(), recorded: the input it builds for a new session.
+function startingOver(turn) {
+  turn.startedOver = 0;
+  turn.startOver = async () => {
+    turn.startedOver++;
+    turn.input = `${turn.input}, with the email and a recap`;
+    return turn.input;
+  };
+  return turn;
+}
 const texts = (turn) => turn.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
 const ofType = (turn, type) => turn.events.filter((e) => e.type === type);
 async function waitFor(check, ms = 5000) {
@@ -448,13 +459,19 @@ test('hermes: a turn creates a session, starts a run and maps the recorded tool 
     ]);
 
     // The next turn checks the session still exists and reuses it; a deleted one is replaced.
-    const again = fakeTurn(c, 'hello');
+    const again = startingOver(fakeTurn(c, 'hello'));
     assert.deepEqual(await adapter.runTurn(again), { status: 'done' });
     assert.equal(c.provider.sessionId, 'api_1');
+    assert.deepEqual([ofType(again, 'notice'), again.startedOver], [[], 0]);
     h.state.sessions.delete('api_1');
-    const third = fakeTurn(c, 'hello');
+    const third = startingOver(fakeTurn(c, 'hello'));
     assert.deepEqual(await adapter.runTurn(third), { status: 'done' });
     assert.equal(c.provider.sessionId, 'api_2');
+    // Like the other agents it says so, and the new session's run gets the input Rukoo rebuilt for it.
+    assert.deepEqual(ofType(third, 'notice'), [{ type: 'notice', tone: 'info', code: 'new-session', text: 'Clark started a new session' }]);
+    assert.equal(third.startedOver, 1);
+    const runs = h.state.requests.filter((r) => r.path === '/v1/runs');
+    assert.deepEqual(runs.at(-1).body, { input: 'hello, with the email and a recap', session_id: 'api_2', instructions: third.instructions, model: 'gpt-x' });
     // Another chat about the same email: Hermes wants unique titles, so the chat id goes in.
     const other = conv('c_test_2');
     assert.deepEqual(await adapter.runTurn(fakeTurn(other, 'hello')), { status: 'done' });
@@ -787,15 +804,19 @@ test('claude: errors, a crash and a lost session', async (t) => {
   assert.equal(crashed.error.code, 'protocol');
   assert.equal(crashed.error.detail, 'Error: boom');
 
-  // The CLI has no transcript for the stored session: Rukoo starts a fresh one and says so.
+  // The CLI has no transcript for the stored session: Rukoo starts a fresh one, says so, and the fresh one gets
+  // the input Rukoo rebuilt for it, once.
   const c = conv('c_lost', { sessionId: '00000000-0000-4000-8000-000000000000' });
-  const lost = fakeTurn(c, 'hello');
+  const lost = startingOver(fakeTurn(c, 'hello'));
   assert.deepEqual(await adapter.runTurn(lost), { status: 'done' });
   assert.notEqual(c.provider.sessionId, '00000000-0000-4000-8000-000000000000');
   assert.deepEqual(ofType(lost, 'notice'), [{ type: 'notice', tone: 'info', code: 'new-session', text: 'Claude started a new session' }]);
+  assert.equal(lost.startedOver, 1);
   const spawns = read().filter((e) => e.argv);
   assert.ok(spawns.some((s) => s.argv.includes('--resume=00000000-0000-4000-8000-000000000000')));
   assert.ok(spawns.at(-1).argv.some((a) => a.startsWith('--session-id=')));
+  const inputs = read().filter((e) => e.stdin).map((e) => JSON.parse(e.stdin)).filter((m) => m.type === 'user').map((m) => m.message.content[0].text);
+  assert.deepEqual(inputs.filter((text) => /hello/.test(text)), ['hello, with the email and a recap']);
 
   const missing = new ClaudeAdapter({ config: () => ({ exe: path.join(os.tmpdir(), 'no-such-claude.exe') }) });
   assert.equal((await missing.status()).state, 'missing');
@@ -1113,12 +1134,16 @@ test('codex: a crash fails the turn, the next turn restarts the server and resum
   assert.ok(resume.config.mcp_servers.rukoo, 'the MCP block is sent again on resume');
   assert.equal(c.provider.threadId, threadId);
 
-  // A thread Codex cannot resume is replaced, with a notice.
+  // A thread Codex cannot resume is replaced, with a notice, and the new thread gets the rebuilt input.
   const lost = conv('c_lost', { threadId: 'missing-thread' });
-  const turn = fakeTurn(lost, 'hello');
+  const turn = startingOver(fakeTurn(lost, 'hello'));
   assert.deepEqual(await adapter.runTurn(turn), { status: 'done' });
   assert.notEqual(lost.provider.threadId, 'missing-thread');
   assert.deepEqual(ofType(turn, 'notice'), [{ type: 'notice', tone: 'info', code: 'new-thread', text: 'Codex started a new thread' }]);
+  assert.equal(turn.startedOver, 1);
+  const start = sent('turn/start').at(-1).params;
+  assert.equal(start.threadId, lost.provider.threadId);
+  assert.equal(start.input[0].text, 'hello, with the email and a recap');
 });
 
 test('codex: full access and a changed access setting', async (t) => {
@@ -1731,4 +1756,73 @@ test('hermes: the final output fills in what the stream missed, without repeatin
   assert.equal(missingText('Let me check.', 'Let me check.', 'Thursday works.', true), '\n\nThursday works.');
   assert.equal(missingText('The answer ', 'The answer ', 'The answer is 42.', true), 'is 42.');
   assert.equal(missingText('The answer is 42. More', 'The answer is 42. More', 'The answer is 42.', true), '', 'already shown');
+});
+
+// ---------- a lost session, through the hub ----------
+
+// A chat the agent answered in a session it no longer has. The next message goes through the hub and the real
+// adapter, against the scripted CLI or the test Hermes server.
+async function afterLostSession(agent, adapter, provider) {
+  const dir = tmp('hub');
+  const engine = new Engine({ dataDir: dir }).init();
+  const acc = await engine.addAccount({ type: 'demo' });
+  await engine.syncAccount(acc.id);
+  const hub = new AgentHub({ engine, dataDir: dir, deps: { appVersion: '1.0.0' }, adapters: { [agent]: adapter }, listen: false });
+  await hub.start();
+  try {
+    const call = engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+    const c = hub.create({ agent, message: { id: call.id } });
+    hub.addItem(c, { type: 'user', text: 'Summarize this', action: null });
+    hub.addItem(c, { type: 'assistant', text: 'Sanne asks for a call on Thursday at 10:00.', status: 'done', interim: false });
+    Object.assign(c, { delivered: true, provider });
+    hub.send(c.id, { text: 'Make it shorter' });
+    await waitFor(() => !hub.turns.has(c.id), 15000);
+    return { c, notices: c.items.filter((i) => i.type === 'notice') };
+  } finally {
+    await hub.dispose();
+    await engine.close();
+  }
+}
+
+function assertStartedOver(c, input) {
+  assert.equal(c.status, 'idle');
+  assert.equal(c.needsRecap, false);
+  assert.ok(input.includes('message_id="<demo-13@example.com>" account="demo@example.com" folder="INBOX">\nFrom: Sanne de Vries <sanne@example.com>'), 'the email');
+  assert.ok(input.includes('<unsafe_content source="earlier chat">\nUser: Summarize this\nYou: Sanne asks for a call on Thursday at 10:00.\n</unsafe_content>'), 'the recap');
+  assert.ok(input.endsWith('\n\nMake it shorter'));
+}
+
+test('hub and claude: after a lost session the new one gets the email and a recap, once', async () => {
+  const { adapter, read } = claudeAdapter();
+  const { c, notices } = await afterLostSession('claude', adapter, { sessionId: '00000000-0000-4000-8000-000000000000' });
+  assert.deepEqual(notices.map((n) => [n.code, n.text]), [['new-session', 'Claude started a new session']]);
+  const inputs = read().filter((e) => e.stdin).map((e) => JSON.parse(e.stdin)).filter((m) => m.type === 'user').map((m) => m.message.content[0].text);
+  assert.equal(inputs.length, 1);
+  assertStartedOver(c, inputs[0]);
+});
+
+test('hub and codex: after a lost thread the new one gets the email and a recap, once', async () => {
+  const { adapter, sent } = codexAdapter();
+  const { c, notices } = await afterLostSession('codex', adapter, { threadId: 'missing-thread' });
+  assert.deepEqual(notices.map((n) => [n.code, n.text]), [['new-thread', 'Codex started a new thread']]);
+  const starts = sent('turn/start');
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].params.threadId, c.provider.threadId);
+  assertStartedOver(c, starts[0].params.input[0].text);
+});
+
+test('hub and hermes: after a lost session the new one gets the email and a recap, once', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }) });
+    const { c, notices } = await afterLostSession('clark', adapter, { sessionId: 'api_gone' });
+    assert.deepEqual(notices.map((n) => [n.code, n.text]), [['new-session', 'Clark started a new session']]);
+    const runs = h.state.requests.filter((r) => r.path === '/v1/runs');
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].body.session_id, c.provider.sessionId);
+    assert.equal(c.provider.sessionId, 'api_1');
+    assertStartedOver(c, runs[0].body.input);
+  } finally {
+    h.server.close();
+  }
 });

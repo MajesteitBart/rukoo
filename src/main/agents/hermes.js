@@ -375,6 +375,11 @@ class HermesAdapter {
       const id = res.ok && res.data && res.data.session && res.data.session.id;
       if (id) {
         turn.setProvider({ sessionId: id });
+        if (known) {
+          // The new session knows nothing of the chat: the turn's input gets the email and a recap before the run.
+          turn.emit({ type: 'notice', tone: 'info', code: 'new-session', text: `${this.settings().name} started a new session` });
+          if (typeof turn.startOver === 'function') await turn.startOver();
+        }
         return id;
       }
       if (res.status !== 400) throw httpError(res);
