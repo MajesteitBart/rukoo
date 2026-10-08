@@ -11,7 +11,7 @@ Neither direction uses SSH.
 
 Hermes could reach Rukoo's MCP endpoint directly over HTTP. But after a few failed reconnects Hermes parks an HTTP server: it drops the tools and only probes again every five minutes. Rukoo is a desktop app that is closed or asleep for half the day, so the tools would keep disappearing. And a direct connection points at one machine, while you may use Rukoo on several.
 
-`rukoo_bridge.py` is a small stdio MCP server that Hermes starts on its own machine. It answers the MCP handshake itself, serves the tool list from a cache while Rukoo is away, and forwards tool calls to Rukoo. When Rukoo can't be reached, the agent gets a normal tool error it can pass on, such as "Rukoo Mail isn't open on any of the user's devices, or can't be reached over Tailscale. Ask the user to open it. Checked: laptop, desk-pc." It needs Python 3.8 or newer and only the standard library. It never uses a proxy from the environment, because a proxy would see the token and can't reach a 100.x address anyway.
+`rukoo_bridge.py` is a small stdio MCP server that Hermes starts on its own machine. It answers the MCP handshake itself, serves the tool list from a cache while Rukoo is away, and forwards tool calls to Rukoo. The cache also keeps Rukoo's instructions, which list your [skills](../../docs/agents.md#skills), for the next handshake. When Rukoo can't be reached, the agent gets a normal tool error it can pass on, such as "Rukoo Mail isn't open on any of the user's devices, or can't be reached over Tailscale. Ask the user to open it. Checked: laptop, desk-pc." It needs Python 3.8 or newer and only the standard library. It never uses a proxy from the environment, because a proxy would see the token and can't reach a 100.x address anyway.
 
 It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
 
@@ -45,13 +45,13 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
    - `RUKOO_URL`: more Rukoo addresses to try, such as `http://desk.example.ts.net:47800/mcp`, separated by commas. The bridge looks up a host name and connects to its IPv4 address.
    - `RUKOO_DISCOVER`: `0` turns the Tailscale lookup off, so only `RUKOO_URL` is tried.
    - `RUKOO_TAILSCALE`: the `tailscale` command, when it isn't on the PATH.
-   - `RUKOO_CACHE`: where the bridge keeps the last tool list (default: `rukoo_tools.json` next to the script).
+   - `RUKOO_CACHE`: where the bridge keeps the last tool list and Rukoo's instructions (default: `rukoo_tools.json` next to the script).
 4. **Wait a minute.** The gateway runs a reconcile tick every 60 seconds. It starts a newly added, enabled `mcp_servers` entry within about a minute, with no restart needed. The tools show up as `mcp__rukoo__get_context` and so on.
 5. **Check it,** with Rukoo open on one of your devices:
    ```sh
    hermes mcp test rukoo
    ```
-   It should list Rukoo's ten tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 10 tool(s)`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
+   It should list Rukoo's eleven tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 11 tool(s)`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
 
 The first `tools/list` has to reach Rukoo once to fill the cache. After that, Hermes keeps the tools even when Rukoo is closed.
 

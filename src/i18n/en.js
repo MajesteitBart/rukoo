@@ -457,6 +457,10 @@
     "message": "Open an email first.",
     "description": "Chat panel toast: an email quick action was picked while no email is attached."
   },
+  "agent.panel.skillMissing": {
+    "message": "Rukoo can't find the skill /{name} anymore.",
+    "description": "Chat panel toast (panel.js send): you picked a skill from the slash command menu, but its folder is gone or no longer valid. name is the skill name."
+  },
   "agent.panel.needsYou": {
     "message": "An agent is waiting for your approval",
     "description": "Toast when an agent asks for approval in a chat that is not on screen."
@@ -697,6 +701,10 @@
     "message": "Read an attachment",
     "description": "Chat transcript tool chip: the agent opened an attachment."
   },
+  "agent.tools.read_skill": {
+    "message": "Read a skill",
+    "description": "Chat transcript tool chip (panel.js toolProps): the agent read one of Rukoo's skills with read_skill."
+  },
   "agent.tools.read_message": {
     "message": "Read an email",
     "description": "Chat transcript tool chip: the agent read a full email."
@@ -740,6 +748,10 @@
   "agent.tools.running.read_attachment": {
     "message": "Reading an attachment...",
     "description": "Chat transcript tool chip while it runs: the agent reads an attachment. Present tense; the done form is agent.tools.read_attachment."
+  },
+  "agent.tools.running.read_skill": {
+    "message": "Reading a skill...",
+    "description": "Chat transcript tool chip while it runs (panel.js toolProps): the agent reads one of Rukoo's skills. Present tense; the done form is agent.tools.read_skill."
   },
   "agent.tools.running.read_message": {
     "message": "Reading an email...",

@@ -596,9 +596,11 @@ Object.assign(api, {
     return agentHub().send(agentId(id), {
       text: agentText(i.text, 20000),
       action: agentText(i.action, 40) || null,
-      display: agentText(i.display, 20000) || null
+      display: agentText(i.display, 20000) || null,
+      skill: agentText(i.skill, 64) || null
     });
   },
+  agentSkills: () => agentHub().skillList(),
   agentStop: (id) => agentHub().stop(agentId(id)),
   agentDecide: (id, itemId, choiceId) => agentHub().decide(agentId(id), agentId(itemId), agentId(choiceId)),
   agentRemove: (id) => agentHub().remove(agentId(id)),
@@ -728,7 +730,9 @@ app.whenReady().then(() => {
       // With Rukoo open on several devices, Clark's bridge picks the one the user touched last.
       idleSeconds: () => powerMonitor.getSystemIdleTime(),
       hasWindow: () => Boolean(win && !win.isDestroyed()),
-      workspace: path.join(app.getPath('userData'), 'agent-workspace')
+      workspace: path.join(app.getPath('userData'), 'agent-workspace'),
+      // Rukoo's own skills ship inside the app (package.json build.files); the user's own replace them by name.
+      skills: { bundled: path.join(app.getAppPath(), 'skills'), user: path.join(app.getPath('userData'), 'skills') }
     }
   });
   agentGate = new PanelGate((payload) => send('agent', payload));

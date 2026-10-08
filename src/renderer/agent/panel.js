@@ -5,7 +5,7 @@ import { t, getLocale } from '../i18n.js';
 import { icons } from '../icons.js';
 import { api, $, toast, listTime, person, hue } from '../ui.js';
 import * as B from './bui.js';
-import { actionByKey, actionsFor, commandsFor } from './actions.js';
+import { actionByKey, actionsFor, commandsFor, skillCommands } from './actions.js';
 import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
 
@@ -27,7 +27,8 @@ const RUKOO_TOOLS = {
   show_sources: 'sources',
   propose_action: 'approval',
   mail_action: 'approval',
-  read_attachment: 'file'
+  read_attachment: 'file',
+  read_skill: 'file'
 };
 const CHOICES = new Set(['allow', 'deny', 'once', 'session', 'always', 'approve', 'decline', 'accept', 'acceptForSession', 'cancel']);
 // Main and the adapters label approval buttons in English. Those standard labels are matched back to
@@ -161,7 +162,9 @@ export function mountAgentPanel(ctx) {
     // add chip puts it back. Another email or New chat ends this.
     detached: false,
     // An email opened from the panel itself (a source, a draft): the chat stays as it is.
-    keepFor: null
+    keepFor: null,
+    // Rukoo's skills and the user's, for the slash commands: [{name, description, source}].
+    skills: []
   };
 
   pane.innerHTML = `
@@ -267,6 +270,32 @@ export function mountAgentPanel(ctx) {
     const open = currentEmail();
     return m && open && open.id === m.id ? open : m;
   };
+  // The quick actions for the email, then the skills.
+  const commands = () => [...commandsFor(slashEmail()), ...skillCommands(P.skills)];
+  // Main reads the skills folders on every call, so a skill the user just added shows up the next time they type /.
+  let skillsLoading = null;
+  let skillsAgain = false;
+  function loadSkills() {
+    // A load already under way may have read the folders before the latest change: read them once more after it.
+    if (skillsLoading) {
+      skillsAgain = true;
+      return skillsLoading;
+    }
+    skillsLoading = api('agentSkills')
+      .then((list) => {
+        P.skills = Array.isArray(list) ? list : [];
+        if (chat) chat.setCommands(commands());
+      })
+      .catch(() => {})
+      .finally(() => {
+        skillsLoading = null;
+        if (skillsAgain) {
+          skillsAgain = false;
+          loadSkills();
+        }
+      });
+    return skillsLoading;
+  }
   const placeholder = () => {
     const name = agentName(currentAgent());
     return contextEmail() ? t('agent.panel.placeholderEmail', { name }) : t('agent.panel.placeholder', { name });
@@ -323,14 +352,15 @@ export function mountAgentPanel(ctx) {
         },
         agents: agentRows(),
         agentId: currentAgent(),
-        commands: commandsFor(slashEmail()),
+        commands: commands(),
         context: contextChip(context)
       },
       {
-        onSend: (text) => send(text),
+        onSend: (text) => submit(text),
         onStop: () => P.conv && api('agentStop', P.conv.id).catch((err) => showError(err)),
         onAgent: (id) => pickAgent(id),
         onCommand: (name) => runAction(name),
+        onSlash: () => loadSkills(),
         onRemoveContext: () => detach()
       }
     );
@@ -363,7 +393,7 @@ export function mountAgentPanel(ctx) {
     const id = currentAgent();
     chat.setAgents(agentRows(), id);
     showContext();
-    chat.setCommands(commandsFor(slashEmail()));
+    chat.setCommands(commands());
     chat.setRunning(Boolean(P.conv && P.conv.status === 'running'));
     chat.setPlaceholder(placeholder());
     const state = stateOf(id);
@@ -493,29 +523,48 @@ export function mountAgentPanel(ctx) {
     return P.conv;
   }
 
+  // skill: the name of a skill to start. Main writes that message from the skill itself.
   let sending = false;
-  async function send(text, action = null) {
+  async function send(text, action = null, skill = null) {
     const body = String(text || '').trim();
     if (!body || sending) return;
     sending = true;
     clearTurnError();
     try {
       const conv = await ensureConversation();
-      await api('agentSend', conv.id, action ? { text: action.prompt, action: action.key, display: action.label } : { text: body });
+      await api('agentSend', conv.id, action ? { text: action.prompt, action: action.key, display: action.label } : skill ? { skill } : { text: body });
       follow(true);
     } catch (err) {
-      if (!action && chat && !chat.getValue()) chat.setValue(body);
+      if (skill && /skill-missing/.test(String((err && err.message) || ''))) {
+        toast(t('agent.panel.skillMissing', { name: skill }), 6000);
+        loadSkills();
+        return;
+      }
+      if (!action && !skill && chat && !chat.getValue()) chat.setValue(body);
       showError(err);
     } finally {
       sending = false;
     }
   }
 
+  // A quick action, or a skill: a quick action keeps its command when a skill has the same name.
   function runAction(name) {
     const action = actionByKey(name);
-    if (!action) return;
-    if (action.needsEmail && !contextEmail()) return toast(t('agent.panel.needsEmail'));
-    send(action.label, action);
+    if (action) {
+      if (action.needsEmail && !contextEmail()) return toast(t('agent.panel.needsEmail'));
+      return send(action.label, action);
+    }
+    const skill = P.skills.find((s) => s.name === name);
+    if (skill) send(`/${skill.name}`, null, skill.name);
+  }
+
+  // What the input sends with Enter or the Send button. A message that is just one of the offered commands
+  // ("/summary", "/shared-name") runs it, the same as picking it from the menu; anything else is chat text.
+  function submit(text) {
+    const m = /^\/([\w-]+)$/.exec(String(text || '').trim());
+    const cmd = m && commands().find((c) => String(c.name).toLowerCase() === m[1].toLowerCase());
+    if (cmd) return runAction(cmd.name);
+    return send(text);
   }
 
   function showError(err) {
@@ -1352,6 +1401,7 @@ export function mountAgentPanel(ctx) {
   renderEmpty();
   refreshComposer();
   loadAgents();
+  loadSkills();
   // Open since the last session: follow the email that is already on screen.
   if (ctx.agentOpen()) sync();
 
@@ -1359,6 +1409,7 @@ export function mountAgentPanel(ctx) {
     // The panel became visible: catch up with the email on screen.
     opened({ focus = false } = {}) {
       sync();
+      loadSkills();
       if (focus) chat.focus();
       follow(true);
     },

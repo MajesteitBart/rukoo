@@ -1280,6 +1280,8 @@ export function chatComposer(opts = {}, handlers = {}) {
     if (!menu) {
       menu = h('div', { class: 'bui-pb__menu', role: 'listbox' });
       el.prepend(menu);
+      // The owner may refresh the commands now (skills are read from disk); setCommands redraws the open menu.
+      if (handlers.onSlash) handlers.onSlash();
     }
     hl = h('span', { class: 'bui-glide__hl', 'aria-hidden': 'true' });
     const list = h('div', { class: 'bui-pb__list' }, hl);
@@ -1340,6 +1342,9 @@ export function chatComposer(opts = {}, handlers = {}) {
   ta.addEventListener('blur', () => closeMenu());
   ta.addEventListener('click', () => refreshMenu());
   ta.addEventListener('keydown', (e) => {
+    // While an IME composes (Japanese, Chinese), Enter, Tab, the arrows and Escape are its keys: they must not
+    // pick a command or send.
+    if (e.isComposing || e.keyCode === 229) return;
     if (menu && state.rows.length) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -1347,6 +1352,7 @@ export function chatComposer(opts = {}, handlers = {}) {
         state.active = (state.active + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
         state.engaged = true;
         state.rows.forEach((r, i) => r.el.setAttribute('aria-selected', String(i === state.active)));
+        state.rows[state.active].el.scrollIntoView({ block: 'nearest' });
         highlight();
         return;
       }
@@ -1365,7 +1371,7 @@ export function chatComposer(opts = {}, handlers = {}) {
       }
       return;
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (!state.running) submit();
     }
