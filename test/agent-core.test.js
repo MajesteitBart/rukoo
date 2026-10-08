@@ -5,10 +5,11 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { Engine, encodeId } = require('../src/main/engine');
 const { AgentHub, toolLabel, MAX_ITEMS, MAX_CONVERSATIONS } = require('../src/main/agents/hub');
 const { executeMail } = require('../src/main/agents/tools');
-const { AgentConfig } = require('../src/main/agents/config');
+const { AgentConfig, remoteTokenFor } = require('../src/main/agents/config');
 const { McpServer } = require('../src/main/agents/mcp');
 const { FakeAdapter, LONG_COMMAND, MARKDOWN_REPLY } = require('../src/main/agents/fake');
 const context = require('../src/main/agents/context');
@@ -61,30 +62,34 @@ test('config: whitelisted, type-checked updates; secrets encrypted and never in 
   const stored = fs.readFileSync(file, 'utf8');
   assert.ok(!stored.includes('hermes-key'), 'the key is not on disk in the clear');
   assert.equal(cfg.get('clark').key, 'hermes-key');
+  // Clark's token comes from the API key, so every device with the same key accepts the same bridge.
   const token = cfg.remoteToken();
   assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(token, crypto.createHmac('sha256', 'hermes-key').update('rukoo-mcp-v1').digest('base64url'));
   assert.ok(!fs.readFileSync(file, 'utf8').includes(token));
-  assert.equal(new AgentConfig({ file, secrets }).load().remoteToken(), token, 'the token persists');
+  assert.equal(new AgentConfig({ file, secrets }).load().remoteToken(), token, 'the same on the next start');
+  assert.equal(remoteTokenFor(''), '');
 
   const view = cfg.publicView();
   const json = JSON.stringify(view);
   assert.ok(!json.includes('hermes-key') && !json.includes(token) && !json.includes('enc:'));
   assert.equal(view.clark.hasKey, true);
   assert.equal('key' in view.clark, false);
-  assert.equal(view.mcp.hasRemoteToken, true);
   assert.equal(view.mcp.address, '100.101.12.7', 'first Tailscale IPv4');
-  assert.equal('remoteToken' in cfg.get('mcp'), false);
 
+  // The setup holds no secret and no address: Hermes fills in the key, and the bridge finds the devices.
   const setup = cfg.hermesSetup();
   assert.match(setup, /args: \["\$\{userHome\}\/\.hermes\/rukoo_bridge\.py"\]/);
-  assert.match(setup, /RUKOO_URL: http:\/\/100\.101\.12\.7:47801\/mcp/);
-  assert.ok(setup.includes(`RUKOO_TOKEN: ${token}`));
-  const rotated = cfg.rotateRemoteToken();
-  assert.notEqual(rotated, token);
+  assert.match(setup, /RUKOO_KEY: \$\{API_SERVER_KEY\}/);
+  assert.match(setup, /RUKOO_PORT: "47801"/, 'a port other than 47800 is passed on');
+  assert.ok(!setup.includes(token) && !setup.includes('hermes-key') && !setup.includes('100.101.12.7'));
+  cfg.update({ mcp: { port: 47800 } });
+  assert.ok(!cfg.hermesSetup().includes('RUKOO_PORT'));
   cfg.update({ mcp: { remoteHost: 'desk.tail137b2d.ts.net' } });
   assert.equal(cfg.publicView().mcp.address, 'desk.tail137b2d.ts.net', 'remoteHost overrides detection');
   cfg.setSecret('clark', '');
   assert.equal(cfg.publicView().clark.hasKey, false);
+  assert.equal(cfg.remoteToken(), '', 'no key, no way in');
   assert.throws(() => cfg.setSecret('claude', 'x'), /invalid/);
 
   fs.writeFileSync(file, JSON.stringify({ defaultAgent: 'nope', clark: { enabled: 'yes', name: 7 }, mcp: { port: 5 } }));
@@ -1041,10 +1046,33 @@ test('status: disabled, broken and ready adapters; tokens and identities', async
     hub.revokeToken(token);
     assert.equal(hub.identify(token), null);
     assert.equal(hub.copyHermesSetup(), true);
+    // Without an API key nothing gets in over Tailscale, and there is nothing to prove.
+    assert.equal(hub.cfg.remoteToken(), '');
+    assert.equal(hub.proof('challenge-0123456789'), '');
+    hub.setSecret('clark', 'hermes-key');
     const remote = hub.cfg.remoteToken();
     assert.deepEqual(hub.identify(remote), { agent: 'clark', conversationId: null, remote: true });
-    hub.rotateToken();
-    assert.equal(hub.identify(remote), null, 'the old setup stops working');
+    // The proof Clark's bridge checks before it sends the token: tied to the challenge, and no use as a token.
+    const proof = hub.proof('challenge-0123456789');
+    const remoteHash = crypto.createHash('sha256').update(remote).digest();
+    assert.equal(proof, crypto.createHmac('sha256', remoteHash).update('rukoo-proof:challenge-0123456789').digest('base64url'));
+    assert.notEqual(hub.proof('challenge-9876543210'), proof);
+    assert.equal(hub.identify(proof), null);
+    // hello tells the bridge whether this Rukoo has the chat and how long the user has been away.
+    const mine = hub.create({ agent: 'clark', message: null });
+    hub.deps.idleSeconds = () => 42;
+    const hello = hub.hello({ agent: 'clark' }, { conversation_id: mine.id });
+    assert.equal(hello.owns, true);
+    assert.equal(hello.idle, 42);
+    assert.equal(hello.device, os.hostname());
+    assert.equal(hub.hello({ agent: 'clark' }, { conversation_id: c.id }).owns, false, "a Codex chat is not Clark's");
+    assert.equal(hub.hello({ agent: 'clark' }, { conversation_id: 'c_gone' }).owns, false);
+    hub.deps.idleSeconds = () => {
+      throw new Error('no idle time here');
+    };
+    assert.deepEqual({ ...hub.hello({ agent: 'clark' }), device: null, version: null }, { device: null, version: null, idle: null, owns: false });
+    hub.setSecret('clark', 'another-key');
+    assert.equal(hub.identify(remote), null, 'a new key locks the old bridge out');
 
     hub.mapThread('th-9', c.id);
     assert.equal(hub.resolveConversation({ agent: 'codex', conversationId: null }, {}, { threadId: 'th-9' }).id, c.id);

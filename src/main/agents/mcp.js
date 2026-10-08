@@ -9,6 +9,7 @@ const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const FALLBACK_PROTOCOL = '2025-06-18';
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_ABSURD = 64 * 1024 * 1024;
+const CHALLENGE = /^[A-Za-z0-9_-]{16,128}$/;
 
 const INSTRUCTIONS =
   "Rukoo Mail is the user's desktop email client. These tools read the user's mail across all their accounts " +
@@ -41,7 +42,7 @@ function bearer(req) {
 }
 
 class McpServer {
-  // hub: { identify(token), listTools(identity), callTool(identity, name, args, meta) }
+  // hub: { identify(token), listTools(identity), callTool(identity, name, args, meta), proof(challenge), hello(identity, params) }
   constructor({ hub, version = '0.0.0', log = () => {} }) {
     this.hub = hub;
     this.version = version;
@@ -122,7 +123,12 @@ class McpServer {
     if (pathname !== '/mcp') return this.reject(req, res, 404, { error: 'not found' });
     if (req.method !== 'POST') return this.reject(req, res, 405, { error: 'method not allowed' }, { Allow: 'POST' });
     const identity = this.hub.identify(bearer(req));
-    if (!identity || Boolean(identity.remote) !== entry.remote) return this.reject(req, res, 401, { error: 'unauthorized' });
+    if (!identity || Boolean(identity.remote) !== entry.remote) {
+      // Clark's bridge asks before it sends its token: Rukoo proves it has the same key, or says it has none.
+      const challenge = String(req.headers['x-rukoo-challenge'] || '');
+      const proof = entry.remote && CHALLENGE.test(challenge) ? { 'X-Rukoo-Proof': (this.hub.proof && this.hub.proof(challenge)) || 'none' } : {};
+      return this.reject(req, res, 401, { error: 'unauthorized' }, proof);
+    }
     const tooLarge = () => json(res, 413, rpcError(null, -32600, 'Request body too large'), { Connection: 'close' });
     const declared = Number(req.headers['content-length'] || 0);
     // A body nobody would send on purpose: no point reading it.
@@ -201,6 +207,9 @@ class McpServer {
       }
       case 'ping':
         return ok({});
+      // Rukoo's own method, for Clark's bridge: which device should get a call.
+      case 'rukoo/hello':
+        return ok(this.hub.hello ? this.hub.hello(identity, params) : {});
       case 'tools/list':
         return ok({ tools: await this.hub.listTools(identity) });
       case 'tools/call': {

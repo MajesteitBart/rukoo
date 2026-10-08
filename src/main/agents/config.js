@@ -16,8 +16,14 @@ const DEFAULTS = {
   clark: { enabled: true, name: 'Hermes', url: '', key: null, model: '' },
   claude: { enabled: true, exe: '', configDir: '', model: '', access: 'ask' },
   codex: { enabled: true, exe: '', model: '', access: 'ask' },
-  mcp: { port: 47800, remote: false, remoteHost: '', remoteToken: null }
+  mcp: { port: 47800, remote: false, remoteHost: '' }
 };
+
+// Clark's bridge signs in with a token made from the Hermes API key. Every Rukoo needs that key to chat with
+// Clark anyway, so one bridge setup reaches Rukoo on any of the user's devices.
+function remoteTokenFor(key) {
+  return key ? crypto.createHmac('sha256', key).update('rukoo-mcp-v1').digest('base64url') : '';
+}
 
 // Errors that reach the renderer carry a code from SPEC 4.6; the message is the bare code so the
 // renderer can localize it from Error.message after the IPC round trip.
@@ -150,10 +156,6 @@ class AgentConfig {
   // Raw section for main-process code, with the secret decrypted. Never send this to the renderer.
   get(section) {
     if (section === 'clark') return { ...this.data.clark, key: this.decrypt(this.data.clark.key) };
-    if (section === 'mcp') {
-      const { remoteToken, ...rest } = this.data.mcp;
-      return { ...rest, hasRemoteToken: Boolean(remoteToken) };
-    }
     if (this.data[section] && isObj(this.data[section])) return { ...this.data[section] };
     return null;
   }
@@ -182,7 +184,6 @@ class AgentConfig {
         port: d.mcp.port,
         remote: d.mcp.remote,
         remoteHost: d.mcp.remoteHost,
-        hasRemoteToken: Boolean(d.mcp.remoteToken),
         address: this.address(),
         localPort: this.runtime.localPort,
         remotePort: this.runtime.remotePort,
@@ -192,7 +193,7 @@ class AgentConfig {
   }
 
   // Applies a renderer patch. Unknown keys are ignored; known keys with bad values throw 'invalid'.
-  // Secrets never come in this way (setSecret, remoteToken).
+  // Secrets never come in this way (setSecret).
   update(patch) {
     if (!isObj(patch)) throw new AgentError('invalid', 'patch must be an object');
     const next = clone(this.data);
@@ -256,42 +257,34 @@ class AgentConfig {
     return this.publicView();
   }
 
-  // The token Clark's bridge sends. Created and stored on first use.
+  // The token Clark's bridge sends; empty until the API key is set.
   remoteToken() {
-    const stored = this.decrypt(this.data.mcp.remoteToken);
-    if (stored) return stored;
-    return this.rotateRemoteToken();
+    return remoteTokenFor(this.get('clark').key);
   }
 
-  rotateRemoteToken() {
-    const token = crypto.randomBytes(32).toString('base64url');
-    this.data.mcp.remoteToken = this.secrets.encrypt(token);
-    this.save();
-    return token;
-  }
-
-  // The block for ~/.hermes/config.yaml on Clark's machine. ${userHome} is a Hermes config variable.
+  // The block for ~/.hermes/config.yaml on Clark's machine. It holds no secret and is the same on every device:
+  // the bridge finds Rukoo over Tailscale and signs in with the API server key, which Hermes fills in from its
+  // .env. ${userHome} is a Hermes config variable.
   hermesSetup() {
-    const address = this.address() || '<tailscale-ip-of-this-pc>';
     const port = this.runtime.remotePort || this.data.mcp.port;
     const name = this.displayName('clark');
     return [
-      `# Rukoo Mail: lets ${name} read mail, write drafts and ask for approval in Rukoo.`,
+      `# Rukoo Mail: lets ${name} read mail, write drafts and ask for approval in Rukoo, on any of your devices.`,
       '# 1. Copy rukoo_bridge.py (Rukoo: integrations/hermes) to ~/.hermes/ on this machine.',
       '# 2. Merge this block into ~/.hermes/config.yaml (keep your other mcp_servers).',
       '# 3. Check it with: hermes mcp test rukoo',
-      '# In Rukoo, turn on Settings > Agents > "Let ' + name + ' use Rukoo".',
+      `# On each device, turn on Settings > Agents > "Let ${name} use Rukoo".`,
       'mcp_servers:',
       '  rukoo:',
       '    command: python3',
       '    args: ["${userHome}/.hermes/rukoo_bridge.py"]',
       '    env:',
-      `      RUKOO_URL: http://${address}:${port}/mcp`,
-      `      RUKOO_TOKEN: ${this.remoteToken()}`,
+      '      RUKOO_KEY: ${API_SERVER_KEY}',
+      ...(port !== DEFAULTS.mcp.port ? [`      RUKOO_PORT: "${port}"`] : []),
       '    timeout: 120',
       ''
     ].join('\n');
   }
 }
 
-module.exports = { AgentConfig, AgentError, AGENT_IDS, DEFAULTS, writeJsonAtomic, tailscaleAddress, isTailscale };
+module.exports = { AgentConfig, AgentError, AGENT_IDS, DEFAULTS, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor };

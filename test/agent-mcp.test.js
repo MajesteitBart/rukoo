@@ -161,6 +161,34 @@ test('a remote listener takes only remote tokens', async () => {
   }
 });
 
+test("the remote listener proves it has the key when asked, and tells the bridge about itself", async () => {
+  const hub = { ...fakeHub(), proof: (c) => `proof-of-${c}`, hello: (identity, params) => ({ owns: params.conversation_id === 'c1', idle: 5, agent: identity.agent }) };
+  const server = new McpServer({ hub });
+  const local = await server.listen({ host: '127.0.0.1', port: 0, remote: false });
+  const port = await server.listen({ host: '127.0.0.1', port: 0, remote: true });
+  const ask = (p, challenge) => request(p, { body: rpc(1, 'ping'), token: null, headers: { 'x-rukoo-challenge': challenge } });
+  try {
+    const challenge = 'abcdefghijklmnop_-12';
+    const asked = await ask(port, challenge);
+    assert.equal(asked.status, 401, 'a proof is no way in');
+    assert.deepEqual(asked.json, { error: 'unauthorized' });
+    assert.equal(asked.headers['x-rukoo-proof'], `proof-of-${challenge}`);
+    assert.equal((await ask(port, 'short')).headers['x-rukoo-proof'], undefined);
+    assert.equal((await ask(port, 'abcdefghijklmnop.%')).headers['x-rukoo-proof'], undefined);
+    assert.equal((await ask(port, 'x'.repeat(129))).headers['x-rukoo-proof'], undefined);
+    assert.equal((await ask(local, challenge)).headers['x-rukoo-proof'], undefined, 'only on the Tailscale listener');
+    hub.proof = () => '';
+    assert.equal((await ask(port, challenge)).headers['x-rukoo-proof'], 'none', 'Rukoo without an API key says so');
+
+    const hello = await request(port, { body: rpc(2, 'rukoo/hello', { conversation_id: 'c1' }), token: REMOTE });
+    assert.equal(hello.status, 200);
+    assert.deepEqual(hello.json.result, { owns: true, idle: 5, agent: 'clark' });
+    assert.equal((await request(port, { body: rpc(3, 'rukoo/hello'), token: null })).status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
 test('tools/list and tools/call: happy path, unknown tool and a throwing handler', () =>
   withServer(async (port, hub) => {
     const list = await request(port, { body: rpc(1, 'tools/list', { _meta: { progressToken: 0 } }) });
