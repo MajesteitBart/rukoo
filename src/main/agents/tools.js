@@ -11,7 +11,7 @@ const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
-const { unsafeBlock } = require('./context');
+const { unsafeBlock, unsafeValue, untag } = require('./context');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -25,18 +25,25 @@ class ToolError extends Error {}
 
 // ---------- schemas ----------
 
+// Marks a field that takes values agents copy from tool results (an address, a subject, a Message-ID): validate()
+// drops the <unsafe_content> tags those values come with. Text the agent writes itself, such as a draft body or
+// a proposal it asks the user to approve, keeps them, so email it quotes stays marked when Rukoo repeats it.
+// A symbol, so the mark stays out of the schemas agents get.
+const UNTAG = Symbol('untag');
+const copied = (spec) => ({ ...spec, [UNTAG]: true });
+
 const CONVERSATION = {
   type: 'string',
   description: 'The Rukoo conversation id from your context ("c_..."). Pass it whenever you have one.'
 };
-const MESSAGE_ID = {
+const MESSAGE_ID = copied({
   type: 'string',
   description: 'Rukoo message id: the "id" field from get_context or search_mail (not the Message-ID header).'
-};
+});
 const PERSON = {
   anyOf: [
-    { type: 'string', description: 'An address, or "Name <address>".' },
-    { type: 'object', properties: { name: { type: 'string' }, address: { type: 'string' } }, required: ['address'] }
+    copied({ type: 'string', description: 'An address, or "Name <address>".' }),
+    { type: 'object', properties: { name: copied({ type: 'string' }), address: copied({ type: 'string' }) }, required: ['address'] }
   ]
 };
 const PEOPLE = { type: 'array', items: PERSON, maxItems: 50 };
@@ -68,10 +75,10 @@ const TOOLS = [
     description:
       "Searches the user's mail in every account and folder Rukoo has synced (inbox, sent, archive, drafts, trash and opened folders). All words in query must match the subject, preview, sender or recipients. Newest first. Use read_message for the full text.",
     inputSchema: schema({
-      query: { type: 'string', description: 'Words that must all appear, e.g. "proposal thursday".', maxLength: 500 },
-      from: { type: 'string', description: 'Part of the sender name or address.', maxLength: 320 },
-      account: { type: 'string', description: 'Account id or email address, from get_context. Default: all accounts.', maxLength: 320 },
-      folder: { type: 'string', description: 'Folder path or name, or a role: inbox, sent, drafts, archive, trash, junk.', maxLength: 500 },
+      query: copied({ type: 'string', description: 'Words that must all appear, e.g. "proposal thursday".', maxLength: 500 }),
+      from: copied({ type: 'string', description: 'Part of the sender name or address.', maxLength: 320 }),
+      account: copied({ type: 'string', description: 'Account id or email address, from get_context. Default: all accounts.', maxLength: 320 }),
+      folder: copied({ type: 'string', description: 'Folder path or name, or a role: inbox, sent, drafts, archive, trash, junk.', maxLength: 500 }),
       unread: { type: 'boolean', description: 'Only unread (true) or only read (false) mail.' },
       limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Maximum results (default 15).' }
     }),
@@ -114,7 +121,7 @@ const TOOLS = [
         to: PEOPLE,
         cc: PEOPLE,
         bcc: PEOPLE,
-        subject: { type: 'string', maxLength: 1000 },
+        subject: copied({ type: 'string', maxLength: 1000 }),
         body: { type: 'string', description: 'The draft body.', maxLength: 100000 },
         format: { type: 'string', enum: ['markdown', 'text', 'html'], description: 'Default markdown.' }
       },
@@ -172,7 +179,7 @@ const TOOLS = [
       "Shows the sources you used as cards in Rukoo's chat panel: emails (pass message_id so the user can open them), notes, records or web pages (url).",
     inputSchema: schema(
       {
-        title: { type: 'string', maxLength: 200 },
+        title: copied({ type: 'string', maxLength: 200 }),
         sources: {
           type: 'array',
           minItems: 1,
@@ -180,9 +187,9 @@ const TOOLS = [
           items: {
             type: 'object',
             properties: {
-              title: { type: 'string', maxLength: 300 },
-              source: { type: 'string', description: 'Origin, e.g. Email, Obsidian, CRM, Web.', maxLength: 60 },
-              snippet: { type: 'string', maxLength: 600 },
+              title: copied({ type: 'string', maxLength: 300 }),
+              source: copied({ type: 'string', description: 'Origin, e.g. Email, Obsidian, CRM, Web.', maxLength: 60 }),
+              snippet: copied({ type: 'string', maxLength: 600 }),
               url: { type: 'string', maxLength: 2000 },
               message_id: MESSAGE_ID
             },
@@ -229,7 +236,7 @@ const TOOLS = [
       {
         action: { type: 'string', enum: MAIL_ACTIONS },
         message_ids: { type: 'array', items: MESSAGE_ID, minItems: 1, maxItems: 50 },
-        folder: { type: 'string', description: 'Destination folder for move (path or name).', maxLength: 500 }
+        folder: copied({ type: 'string', description: 'Destination folder for move (path or name).', maxLength: 500 })
       },
       ['action', 'message_ids']
     ),
@@ -258,7 +265,8 @@ function isRukooTool(name) {
 // ---------- argument validation ----------
 
 // A small JSON Schema subset, lenient where models commonly slip: numeric strings, "true"/"false",
-// a single value where a list is expected, and text longer than allowed (cut, not refused).
+// a single value where a list is expected, and text longer than allowed (cut, not refused). Fields marked with
+// copied() lose the <unsafe_content> tags of a value taken from a tool result, such as an address for write_draft.
 function validate(s, value, where) {
   if (s.anyOf) {
     let last = null;
@@ -288,6 +296,9 @@ function validate(s, value, where) {
     case 'string': {
       if (typeof value === 'number' || typeof value === 'boolean') value = String(value);
       if (typeof value !== 'string') throw new ToolError(`${where} must be a string.`);
+      // A copied value loses its tags here so lookups and the composer get the plain value. Errors that echo
+      // an argument tag it again with unsafeValue(), because it may still be a sender's text.
+      if (s[UNTAG]) value = untag(value);
       if (s.enum && !s.enum.includes(value)) throw new ToolError(`${where} must be one of: ${s.enum.join(', ')}.`);
       return s.maxLength ? value.slice(0, s.maxLength) : value;
     }
@@ -373,6 +384,24 @@ const normId = (v) => String(v || '').trim().replace(/^<|>$/g, '').toLowerCase()
 const lower = (v) => String(v || '').trim().toLowerCase();
 const iso = (ms) => (Number.isFinite(Number(ms)) && ms ? new Date(Number(ms)).toISOString() : null);
 const addr = (a) => ({ name: String((a && a.name) || ''), address: String((a && a.address) || '') });
+// A person as an email names them: the sender wrote both the name and the address.
+const emailAddr = (a) => ({ name: unsafeValue(a && a.name), address: unsafeValue(a && a.address) });
+// A Message-ID is a key agents pass on to link back to the email, so one in the usual <local@domain> form stays
+// plain. Anything else is text the sender wrote and is tagged like the rest, as are In-Reply-To and References:
+// mail parsers split a sentence there into one <word> per word, which would pass for a list of ids.
+const MESSAGE_ID_FORM = /^<[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+>$/;
+function headerId(v) {
+  const s = String(v || '').trim();
+  if (!s) return null;
+  return s.length <= 250 && MESSAGE_ID_FORM.test(s) ? s : unsafeValue(s);
+}
+// The MIME type a sender declared, without parameters, if it has the plain type/subtype form: for MCP image and
+// resource metadata. Anything else is passed on as what it is to Rukoo, unknown bytes.
+const MIME_FORM = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
+function mimeType(v) {
+  const s = String(v || '').split(';')[0].trim().toLowerCase();
+  return MIME_FORM.test(s) ? s : 'application/octet-stream';
+}
 // Gmail's All Mail is 'archive' to agents, as in get_context's folder list. Only the cache keeps 'all'.
 const agentRole = (role) => (role === 'all' ? 'archive' : role || null);
 const fold = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -439,29 +468,32 @@ function resolveId(hub, value, { allowSaved = true } = {}) {
   const { engine } = hub;
   if (v.startsWith('saved:')) {
     if (allowSaved && engine.saved.some((s) => s.id === v)) return v;
-    throw new ToolError(`"${v}" is a copy saved on this device; it cannot be changed with mail_action.`);
+    throw new ToolError(`${unsafeValue(v)} is a copy saved on this device; it cannot be changed with mail_action.`);
   }
   if (cacheMessage(engine, v)) return v;
   const byHeader = v.includes('@') ? findByMessageId(engine, v) : null;
   if (byHeader) return byHeader;
-  throw new ToolError(`No email with id "${v}". Ids change when mail moves; use search_mail or get_context for current ids.`);
+  throw new ToolError(`No email with id ${unsafeValue(v)}. Ids change when mail moves; use search_mail or get_context for current ids.`);
 }
 
+// An email as agents see it. What the sender wrote (people, subject, preview, attachment names) is inside
+// <unsafe_content> value by value; ids, account, folder, date and flags stay plain for agents to use, and so does
+// a Message-ID in the usual form (headerId).
 function summary(engine, m) {
   const out = { id: m.id };
   const cached = cacheMessage(engine, m.id);
-  if (cached && cached.messageId) out.messageId = cached.messageId;
+  if (cached && cached.messageId) out.messageId = headerId(cached.messageId);
   const acc = accountOf(engine, m.accountId);
   Object.assign(out, {
     account: acc ? acc.email : m.accountId || null,
     folder: m.folder || null,
     role: agentRole(m.role),
     date: iso(m.date),
-    from: addr(m.from),
-    to: (m.to || []).map(addr),
-    cc: (m.cc || []).map(addr),
-    subject: m.subject || '',
-    preview: m.preview || '',
+    from: emailAddr(m.from),
+    to: (m.to || []).map(emailAddr),
+    cc: (m.cc || []).map(emailAddr),
+    subject: unsafeValue(m.subject),
+    preview: unsafeValue(m.preview),
     unread: Boolean(m.unread),
     starred: Boolean(m.starred),
     has_attachments: Boolean(m.hasAttachments)
@@ -482,27 +514,33 @@ function fullView(engine, m, maxChars = TEXT_MAX) {
   const acc = accountOf(engine, m.accountId);
   const out = {
     id: m.id,
-    message_id_header: m.messageId || null,
+    message_id_header: headerId(m.messageId),
     account: acc ? acc.email : m.accountId || null,
     folder: m.folder || null,
     role: agentRole(m.role),
     date: iso(m.date),
-    from: addr(m.from),
-    to: (m.to || []).map(addr),
-    cc: (m.cc || []).map(addr),
-    reply_to: (m.replyTo || []).map(addr),
-    subject: m.subject || '',
-    in_reply_to: m.inReplyTo || null,
-    references: m.references || [],
+    from: emailAddr(m.from),
+    to: (m.to || []).map(emailAddr),
+    cc: (m.cc || []).map(emailAddr),
+    reply_to: (m.replyTo || []).map(emailAddr),
+    subject: unsafeValue(m.subject),
+    in_reply_to: unsafeValue(m.inReplyTo) || null,
+    references: [].concat(m.references || []).map(unsafeValue).filter(Boolean),
     unread: Boolean(m.unread),
     starred: Boolean(m.starred),
     // The body is third-party text: inside <unsafe_content>, like everything Rukoo passes on from email.
     text: unsafeBlock(text.slice(0, maxChars), { source: 'email', message_id: m.messageId || '' }),
     truncated: text.length > maxChars,
-    attachments: (m.attachments || []).map((a) => ({ index: a.index, filename: a.filename, content_type: a.contentType, size: a.size })),
+    // The sender names an attachment and declares its type; only the index and size are Rukoo's.
+    attachments: (m.attachments || []).map((a) => ({
+      index: a.index,
+      filename: unsafeValue(a.filename),
+      content_type: unsafeValue(a.contentType || 'application/octet-stream'),
+      size: a.size
+    })),
     unsubscribe: Boolean(m.unsubscribe)
   };
-  if ((m.bcc || []).length) out.bcc = m.bcc.map(addr);
+  if ((m.bcc || []).length) out.bcc = m.bcc.map(emailAddr);
   return out;
 }
 
@@ -560,7 +598,7 @@ function threadOf(engine, m, limit = 10) {
 function findAccount(engine, value) {
   const v = lower(value);
   const acc = engine.accounts.find((a) => a.id === value || lower(a.email) === v || lower(a.label) === v);
-  if (!acc) throw new ToolError(`Unknown account "${value}". Accounts: ${engine.accounts.map((a) => `${a.email} (id ${a.id})`).join(', ') || 'none'}.`);
+  if (!acc) throw new ToolError(`Unknown account ${unsafeValue(value)}. Accounts: ${engine.accounts.map((a) => `${a.email} (id ${a.id})`).join(', ') || 'none'}.`);
   return acc;
 }
 
@@ -625,7 +663,7 @@ async function getContext(hub, args, call) {
     open_message: open ? fullView(engine, open) : null,
     chat_message: bound ? fullView(engine, bound) : null,
     // The chat is about an email Rukoo cannot find right now (moved to an unsynced folder, or deleted).
-    ...(c && c.message && !boundId ? { chat_message_missing: true, chat_message_subject: c.message.subject || '' } : {}),
+    ...(c && c.message && !boundId ? { chat_message_missing: true, chat_message_subject: unsafeValue(c.message.subject) } : {}),
     thread: focus && focus.id && !String(focus.id).startsWith('saved:') ? threadOf(engine, focus) : [],
     selection: (view.checkedIds || []).slice(0, 20).map((id) => summaryById(engine, id)).filter(Boolean),
     composer,
@@ -644,12 +682,26 @@ async function searchMail(hub, args) {
   const { engine } = hub;
   const acc = args.account ? findAccount(engine, args.account) : null;
   let list;
+  const unloaded = [];
   if (args.folder) {
     const targets = acc ? [acc] : engine.accounts;
     const paths = targets.map((a) => [a, resolveFolder(engine, a, args.folder)]).filter(([, p]) => p);
-    if (!paths.length) throw new ToolError(`No folder "${args.folder}". Folders: ${folderList(engine, targets)}.`);
-    // User folders are only in the cache after they were opened once.
-    await Promise.all(paths.map(([a, p]) => engine.openFolder(a.id, p).catch(() => {})));
+    if (!paths.length) throw new ToolError(`No folder ${unsafeValue(args.folder)}. Folders: ${folderList(engine, targets)}.`);
+    // User folders are only in the cache after they were opened once. When opening fails (offline, signed
+    // out), a folder with an earlier copy is searched in that copy; one without has nothing to search, and
+    // the agent must not tell the user there is no such mail.
+    await Promise.all(
+      paths.map(([a, p]) =>
+        engine.openFolder(a.id, p).catch((err) => {
+          const cache = engine.caches.get(a.id);
+          if (!(cache && cache.boxes[p])) unloaded.push({ account: a.email, folder: p, error: (err && err.message) || String(err) });
+        })
+      )
+    );
+    if (unloaded.length === paths.length) {
+      const where = unloaded.map((u) => `"${u.folder}" in ${u.account} (${u.error})`).join(', ');
+      throw new ToolError(`Rukoo could not load ${where}, so it could not search there. Tell the user; this does not mean there is no such mail.`);
+    }
     list = paths.flatMap(([a, p]) => engine.listMessages({ scope: a.id, view: 'folder', folder: p, sort: 'date-desc' }));
   } else {
     list = engine.listMessages({ scope: acc ? acc.id : 'all', view: 'everything', sort: 'date-desc' });
@@ -665,7 +717,9 @@ async function searchMail(hub, args) {
     return words.every((w) => hay.includes(w));
   });
   hits.sort((a, b) => b.date - a.date);
-  return { results: hits.slice(0, args.limit || 15).map((m) => summary(engine, m)), total: hits.length };
+  const out = { results: hits.slice(0, args.limit || 15).map((m) => summary(engine, m)), total: hits.length };
+  if (unloaded.length) out.unloaded_folders = unloaded;
+  return out;
 }
 
 async function readMessage(hub, args) {
@@ -706,18 +760,21 @@ async function readAttachment(hub, args, call) {
   const full = await engine.getMessage(id);
   const meta = (full.attachments || []).find((a) => a.index === args.index);
   if (!meta) {
-    const have = (full.attachments || []).map((a) => `${a.index}: ${a.filename}`).join(', ') || 'none';
+    const have = (full.attachments || []).map((a) => `${a.index}: ${unsafeValue(a.filename)}`).join(', ') || 'none';
     throw new ToolError(`That email has no attachment with index ${args.index}. Attachments: ${have}.`);
   }
   const a = await engine.attachment(id, args.index);
   const name = safeName(a.filename);
-  const type = String(a.contentType || meta.contentType || 'application/octet-stream').toLowerCase();
+  const declared = String(a.contentType || meta.contentType || 'application/octet-stream').toLowerCase();
+  // What Rukoo goes by and hands to the MCP client as mimeType; the sender's own words only show, tagged.
+  const type = mimeType(declared);
   const bytes = a.content.length;
-  const info = { message_id: id, index: args.index, filename: name, content_type: type, size: bytes };
+  // The file name and type are the sender's text, so they are tagged; local_path stays plain for the agent to open.
+  const info = { message_id: id, index: args.index, filename: unsafeValue(name), content_type: unsafeValue(declared), size: bytes };
   if (RISKY.test(name)) {
     return { ...info, blocked: true, note: 'Rukoo does not hand out programs or scripts from email. Tell the user what it is instead.' };
   }
-  if (bytes > ATTACHMENT_MAX) throw new ToolError(`${name} is ${sizeText(bytes)}; Rukoo hands out attachments up to 10 MB.`);
+  if (bytes > ATTACHMENT_MAX) throw new ToolError(`${unsafeValue(name)} is ${sizeText(bytes)}; Rukoo hands out attachments up to 10 MB.`);
   const local = call.remote ? null : writeTemp(hub, name, a.content);
   if (local) info.local_path = local;
   if (TEXT_TYPES.test(type) || TEXT_EXT.test(name)) {
@@ -758,7 +815,7 @@ function people(list, field) {
         address = String(p.address || '').trim();
       }
       if (!address) continue;
-      if (!ADDRESS.test(address)) throw new ToolError(`${field}: "${address}" is not an email address.`);
+      if (!ADDRESS.test(address)) throw new ToolError(`${field}: ${unsafeValue(address)} is not an email address.`);
       out.push({ name: name.slice(0, 200), address: address.slice(0, 320) });
     }
   }
@@ -848,14 +905,18 @@ async function writeDraft(hub, args, call) {
   });
   // What the composer holds now, as the renderer read it back; the agent's own text only if it said nothing.
   const composerText = typeof shown.text === 'string' ? shown.text : bodyText;
+  // A reply's recipients and subject come from the email, so the agent gets them tagged; the card above keeps
+  // them plain for the user.
   return {
     ok: true,
     conversation_id: c.id,
-    draft: { mode: finalMode, to: shownTo, cc: shownCc, subject, body_text: composerText.slice(0, TEXT_MAX) },
+    draft: { mode: finalMode, to: shownTo.map(emailAddr), cc: shownCc.map(emailAddr), subject: unsafeValue(subject), body_text: composerText.slice(0, TEXT_MAX) },
     note: 'The draft is in the composer. The user reviews and sends it; you cannot send email.'
   };
 }
 
+// The composer as agents see it. A reply's recipients and subject are filled in from the email it answers, so
+// they are tagged like the email's own; from is one of the user's addresses and stays plain.
 function draftView(d) {
   if (!d || typeof d !== 'object') return null;
   const text = String(d.text || '');
@@ -863,10 +924,10 @@ function draftView(d) {
     open: true,
     mode: d.mode || null,
     from: d.from || null,
-    to: Array.isArray(d.to) ? d.to.map(addr) : [],
-    cc: Array.isArray(d.cc) ? d.cc.map(addr) : [],
-    bcc: Array.isArray(d.bcc) ? d.bcc.map(addr) : [],
-    subject: String(d.subject || ''),
+    to: Array.isArray(d.to) ? d.to.map(emailAddr) : [],
+    cc: Array.isArray(d.cc) ? d.cc.map(emailAddr) : [],
+    bcc: Array.isArray(d.bcc) ? d.bcc.map(emailAddr) : [],
+    subject: unsafeValue(d.subject),
     text: text.slice(0, TEXT_MAX),
     truncated: text.length > TEXT_MAX,
     agent: d.agent ? (typeof d.agent === 'object' ? d.agent.name || null : String(d.agent)) : null,
@@ -1044,12 +1105,12 @@ async function mailAction(hub, args, call) {
       bad.push(v);
     }
   }
-  if (bad.length) throw new ToolError(`Unknown message ids: ${bad.join(', ')}. Ids change when mail moves; use search_mail for current ids.`);
+  if (bad.length) throw new ToolError(`Unknown message ids: ${bad.map((b) => unsafeValue(b)).join(', ')}. Ids change when mail moves; use search_mail for current ids.`);
   const accounts = [...new Set(ids.map((id) => decodeId(id).accountId))].map((a) => accountOf(engine, a)).filter(Boolean);
   if (args.action === 'move') {
     if (!args.folder) throw new ToolError('folder is required for move.');
     const missing = accounts.filter((a) => !resolveFolder(engine, a, args.folder));
-    if (missing.length) throw new ToolError(`No folder "${args.folder}". Folders: ${folderList(engine, missing)}.`);
+    if (missing.length) throw new ToolError(`No folder ${unsafeValue(args.folder)}. Folders: ${folderList(engine, missing)}.`);
   }
   if (args.action === 'archive') {
     const none = accounts.filter((a) => !engine.archiveFolder(a.id));
@@ -1122,7 +1183,9 @@ async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
         }
       } else if (action === 'move') {
         const dest = resolveFolder(engine, acc, folder);
-        if (!dest) throw new Error(`No folder "${folder}" in ${acc.email}.`);
+        // The folder was there when the action was asked for. Its name came from the agent and may be a sender's
+        // text, and this message reaches the agent, so it does not repeat the name.
+        if (!dest) throw new Error(`The destination folder is no longer in ${acc.email}.`);
         await engine.move(id, dest);
       } else if (action === 'mark_read') await engine.setFlags(id, { unread: false });
       else if (action === 'mark_unread') await engine.setFlags(id, { unread: true });

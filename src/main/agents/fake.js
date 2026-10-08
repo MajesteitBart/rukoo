@@ -3,6 +3,8 @@
 // A deterministic stand-in for all three agents, used when SEM_AGENT_FAKE=1 (e2e tests, screenshots).
 // It calls Rukoo's real tool handlers through hub.callTool, the same code the MCP server runs.
 
+const { untag } = require('./context');
+
 const STEP_CHARS = 6;
 const STEP_MS = 30;
 
@@ -116,8 +118,9 @@ class FakeRun {
     return (ctx && (ctx.chat_message || ctx.open_message)) || null;
   }
 
+  // Names and subjects in tool results are tagged as email; like a real agent, the fake reads through the tags.
   firstName(m) {
-    const name = (m && m.from && (m.from.name || m.from.address)) || 'them';
+    const name = untag(m && m.from && (m.from.name || m.from.address)) || 'them';
     return name.split(/[\s@]/)[0];
   }
 
@@ -237,7 +240,7 @@ class FakeRun {
         sources: results.map((r) => ({ title: r.subject || '(no subject)', source: 'Email', snippet: r.preview, message_id: r.id }))
       });
     }
-    const lines = results.map((r, i) => `${i + 1}. ${r.subject} (${(r.from && (r.from.name || r.from.address)) || ''})`);
+    const lines = results.map((r, i) => `${i + 1}. ${untag(r.subject)} (${untag(r.from && (r.from.name || r.from.address))})`);
     return this.say(lines.length ? `Most urgent first:\n${lines.join('\n')}` : 'Nothing in your inbox needs you today.');
   }
 

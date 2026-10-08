@@ -254,9 +254,10 @@ test('end to end: a real hub on a demo engine answers initialize, tools/list and
     const ctx = await request(port, { token, body: rpc(2, 'tools/call', { name: 'get_context', arguments: {} }) });
     const data = JSON.parse(ctx.json.result.content[0].text);
     assert.equal(data.conversation_id, c.id, 'the per-conversation token resolves the conversation');
-    assert.equal(data.open_message.subject, 'Call on Thursday');
+    // Text from the email carries its tags in the JSON text too; the Message-ID stays usable as it is.
+    assert.equal(data.open_message.subject, '<unsafe_content>Call on Thursday</unsafe_content>');
     assert.equal(data.open_message.message_id_header, '<demo-13@example.com>');
-    assert.ok(data.thread.some((m) => m.subject === 'Re: Call on Thursday'));
+    assert.ok(data.thread.some((m) => m.subject === '<unsafe_content>Re: Call on Thursday</unsafe_content>'));
     hub.revokeToken(token);
     assert.equal((await request(port, { token, body: rpc(3, 'ping') })).status, 401);
   } finally {

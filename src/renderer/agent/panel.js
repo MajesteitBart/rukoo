@@ -55,6 +55,11 @@ const hasKey = (key) => Boolean(globalThis.RukooLocales && globalThis.RukooLocal
 const MAIL_RESULTS = new Set(['archive', 'trash', 'move', 'mark_read', 'mark_unread', 'star', 'unstar', 'undo']);
 
 const elOf = (x) => (x instanceof Node ? x : x && x.el);
+// Main marks text from email with <unsafe_content> tags for the agents. A proposal or a plan keeps the tags of
+// email text the agent quoted in it, so Rukoo can repeat it to the agent still marked; the user reads the text
+// without them. The same pattern as untag() in main's agents/context.js.
+const UNSAFE_TAG = /<\/?unsafe_content(?:\s(?:"[^"]*"|[^">])*)?>/gi;
+const untag = (v) => (typeof v === 'string' ? v.replace(UNSAFE_TAG, '') : v);
 const rukooTool = (name) => String(name || '').replace(/^(mcp__rukoo__|mcp_rukoo_|rukoo[._:])/i, '');
 // These tools put their own card in the transcript (the draft, the plan, the sources, the approval),
 // so once they succeed a chip saying the same thing is noise. Running and failed calls keep theirs.
@@ -663,7 +668,8 @@ export function mountAgentPanel(ctx) {
         };
       }
       case 'plan': {
-        const titled = (i) => ({ ...i, title: i.title || t('agent.items.plan') });
+        const shownTask = (task) => ({ ...task, title: untag(task.title), detail: untag(task.detail), system: untag(task.system), owner: untag(task.owner), due: untag(task.due) });
+        const titled = (i) => ({ ...i, title: untag(i.title) || t('agent.items.plan'), tasks: Array.isArray(i.tasks) ? i.tasks.map(shownTask) : i.tasks });
         const rows = B.taskRows(titled(item), {
           labels: { statuses: Object.fromEntries(['proposed', 'todo', 'running', 'done', 'failed', 'skipped'].map((s) => [s, t(`agent.plan.${s}`)])) },
           onOpen: (url) => openUrl(url)
@@ -689,22 +695,26 @@ export function mountAgentPanel(ctx) {
 
   // Main and the adapters write approvals in English; the kind of tool, the field keys and the standard
   // choices let the card say it in the interface language. What the user approves (the values) is shown
-  // exactly as the agent sent it.
+  // exactly as the agent sent it; only a proposal loses the tags main keeps for the agent (see untag).
   function localizeApproval(item) {
     const name = agentName(AGENTS.includes(item.source) ? item.source : P.conv ? P.conv.agent : currentAgent());
     const tool = item.tool && typeof item.tool === 'object' ? item.tool : null;
-    let title = item.title;
+    // A runtime approval shows a tool's input, which runs exactly as written, tags and all.
+    const shown = item.kind === 'proposal' ? untag : (v) => v;
+    let title = shown(item.title);
     if (tool && APPROVAL_TITLES.has(tool.kind)) title = t(`agent.approval.${tool.kind}`, { name });
     else if (tool && tool.kind === 'mcp' && (tool.server || tool.tool)) title = t('agent.approval.tool', { name, tool: [tool.server, tool.tool].filter(Boolean).join(' · ') });
     else if (tool && tool.name) title = t('agent.approval.tool', { name, tool: mcpLabel(tool.name) || tool.name });
-    const fields = (item.fields || []).map((f) => {
+    const fields = (item.fields || []).map((input) => {
+      const f = { ...input, label: shown(input.label), value: shown(input.value) };
       if (APPROVAL_FIELDS.has(f.key)) return { ...f, label: t(`agent.approval.field.${f.key}`) };
       // A raw parameter name ("output_mode") reads as words.
       const raw = String(f.label || '');
       return /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(raw) ? { ...f, label: (raw[0].toUpperCase() + raw.slice(1)).replace(/_/g, ' ') } : f;
     });
+    const itemDetail = shown(item.detail);
     // A detail that only repeats a field (Claude describes a Read by its path) is left out.
-    const detail = item.detail && fields.some((f) => String(f.value || '').trim() === String(item.detail).trim()) ? '' : item.detail;
+    const detail = itemDetail && fields.some((f) => String(f.value || '').trim() === String(itemDetail).trim()) ? '' : itemDetail;
     return {
       ...item,
       title,

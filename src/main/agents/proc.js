@@ -168,20 +168,68 @@ function killTree(child) {
       killer.on('exit', () => resolve());
     });
   }
+  // A plain kill on Linux and macOS signals the agent alone, and its process group is no help either:
+  // Claude Code starts its shell commands detached, in a group of their own. What ties a command to the
+  // agent is its parent link, and that is gone once the agent dies. So list the tree first, then signal all
+  // of it, and give whatever still runs after the grace period a SIGKILL.
+  return descendants(child.pid).then(
+    (pids) =>
+      new Promise((resolve) => {
+        const running = () => child.exitCode === null && child.signalCode === null;
+        if (running()) child.kill('SIGTERM');
+        for (const pid of pids) signal(pid, 'SIGTERM');
+        const deadline = Date.now() + 3000;
+        const check = () => {
+          const left = pids.filter((pid) => signal(pid, 0));
+          if (running() || left.length) {
+            if (Date.now() < deadline) return;
+            if (running()) child.kill('SIGKILL');
+            for (const pid of left) signal(pid, 'SIGKILL');
+          }
+          clearInterval(timer);
+          resolve();
+        };
+        // Not unref'd: the commands are no child processes of Rukoo, so nothing else keeps it waiting for
+        // them. The deadline ends it within seconds.
+        const timer = setInterval(check, 50);
+      })
+  );
+}
+
+// False when the process is gone (or not ours to signal). Signal 0 only asks whether it still exists.
+function signal(pid, sig) {
   try {
-    child.kill('SIGTERM');
+    process.kill(pid, sig);
+    return true;
   } catch {
-    return Promise.resolve();
+    return false;
   }
+}
+
+// Every process below pid, from one listing of the whole process table. Empty when ps fails or takes over a
+// second (a quit waits 5 s for the whole kill): the agent itself still gets killed then. Separate -o
+// options, because BSD ps reads "pid=,ppid=" as one header.
+function descendants(pid) {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-      resolve();
-    }, 3000);
-    timer.unref();
-    child.once('exit', () => {
-      clearTimeout(timer);
-      resolve();
+    execFile('ps', ['-A', '-o', 'pid=', '-o', 'ppid='], { timeout: 1000 }, (err, stdout) => {
+      if (err) return resolve([]);
+      const children = new Map();
+      for (const line of String(stdout).split('\n')) {
+        const [kid, parent] = line.trim().split(/\s+/).map(Number);
+        if (!kid || !parent) continue;
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(kid);
+      }
+      const found = [];
+      const queue = [pid];
+      while (queue.length) {
+        for (const kid of children.get(queue.shift()) || []) {
+          if (kid === pid || found.includes(kid)) continue;
+          found.push(kid);
+          queue.push(kid);
+        }
+      }
+      resolve(found);
     });
   });
 }

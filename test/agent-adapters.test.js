@@ -9,7 +9,7 @@ const path = require('path');
 const { PassThrough } = require('stream');
 
 const { SseParser, readSse } = require('../src/main/agents/sse');
-const { cleanEnv, readJsonLines } = require('../src/main/agents/proc');
+const { cleanEnv, readJsonLines, readLines, start, killTree } = require('../src/main/agents/proc');
 const { HermesAdapter } = require('../src/main/agents/hermes');
 const { ClaudeAdapter, toolDetail, approvalFields } = require('../src/main/agents/claude');
 const { CodexAdapter, stripShell } = require('../src/main/agents/codex');
@@ -140,6 +140,34 @@ test('readJsonLines keeps UTF-8 whole across chunks and reports junk lines', asy
   assert.deepEqual(junk, ['not json']);
 });
 
+// Claude Code starts its shell commands detached, in a process group of their own, so neither a kill of
+// the agent nor one of its group reaches them. On Windows taskkill /T takes them.
+test('killTree on Linux and macOS ends a command the agent started in a process group of its own', { skip: process.platform === 'win32' }, async () => {
+  const agent = `
+    const command = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    console.log(command.pid);
+    setInterval(() => {}, 1000);
+  `;
+  const child = start(process.execPath, ['-e', agent]);
+  const pid = await new Promise((resolve) => readLines(child.stdout, (line) => resolve(Number(line))));
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    assert.ok(alive(), 'the command runs');
+    await killTree(child);
+    assert.ok(child.exitCode !== null || child.signalCode !== null, 'the agent is gone');
+    assert.equal(alive(), false, 'the command is gone');
+  } finally {
+    if (alive()) process.kill(pid, 'SIGKILL');
+  }
+});
+
 // ---------- hermes.js ----------
 
 // A Hermes API server that replays event sequences recorded from Clark (Hermes 0.21.5).
@@ -211,6 +239,11 @@ function hermesServer() {
       if (/partial|unreachable|boundary/.test(run.input) && run.connects > 1) return json(res, 404, { error: { message: 'Run not found' } });
       // A passing outage: five reconnects in a row fail outright, the next one gets through.
       if (/flaky/.test(run.input) && run.connects > 1 && run.connects <= 6) return res.destroy();
+      // A server that answers the stream with an error: "hiccup" gets a gateway error, a rate limit and a timeout on
+      // its first three reconnects, "refused" a bad request and "revoked" an auth error from the start.
+      if (/hiccup/.test(run.input) && run.connects > 1 && run.connects <= 4) return json(res, [502, 429, 408][run.connects - 2], { error: { message: 'Not now' } });
+      if (/refused/.test(run.input)) return json(res, 400, { error: { message: 'Bad request' } });
+      if (/revoked/.test(run.input)) return json(res, 401, { error: { message: 'Invalid API key' } });
       const last = req.headers['last-event-id'] !== undefined ? Number(req.headers['last-event-id']) : -1;
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(': keepalive\n\n');
@@ -276,7 +309,7 @@ function hermesServer() {
     // The pause lets the delta reach Rukoo before the connection drops.
     if (/partial|unreachable/.test(input)) return [{ event: 'message.delta', delta: 'The answer ' }, async () => (await sleep(50), 'DROP')];
     // Commentary before a tool call, then the stream is lost: the tool and the final answer never come through it.
-    if (/flaky/.test(input)) {
+    if (/flaky|hiccup/.test(input)) {
       return [
         { event: 'message.delta', delta: 'one ' },
         async () => (run.connects === 1 ? (await sleep(50), 'DROP') : { event: 'message.delta', delta: 'two' }),
@@ -307,6 +340,30 @@ test('hermes: status distinguishes unconfigured, unauthorized, ready and offline
   } finally {
     h.server.close();
   }
+});
+
+test('hermes: a status check that answers late does not replace a newer one in the cache', async () => {
+  const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: 'http://127.0.0.1:1', key: 'k' }) });
+  // Each check waits until the test answers it, so the test decides which one finishes last.
+  const answer = [];
+  adapter.check = () => new Promise((resolve) => answer.push(resolve));
+  const older = adapter.status();
+  const newer = adapter.status({ force: true });
+  answer[1]({ state: 'ready', detail: 'Hermes' });
+  assert.equal((await newer).state, 'ready');
+  answer[0]({ state: 'offline', detail: 'late' });
+  assert.equal((await older).state, 'offline', 'its own caller still gets the late answer');
+  assert.equal((await adapter.status()).state, 'ready', 'the next refresh reads the newer answer from the cache');
+  assert.equal(answer.length, 2);
+  // A check that started before invalidate() does not fill the cache afterwards either.
+  const before = adapter.status({ force: true });
+  adapter.invalidate();
+  answer[2]({ state: 'offline', detail: 'stale' });
+  await before;
+  const fresh = adapter.status();
+  assert.equal(answer.length, 4, 'nothing stale was cached, so the next refresh checks again');
+  answer[3]({ state: 'ready', detail: 'Hermes' });
+  assert.equal((await fresh).state, 'ready');
 });
 
 test('hermes: a turn creates a session, starts a run and maps the recorded tool sequence', async () => {
@@ -1273,6 +1330,42 @@ test('hermes: after a passing outage the run is followed by its event stream aga
     assert.equal(run.polls, 1, 'one status check found the run still going');
     assert.equal(run.connects, 7, 'five failed reconnects, then the stream again, where it left off');
     assert.equal(texts(turn), 'one two');
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: a server error on the event stream is retried like a lost connection', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 5, pollEvery: 10, pollMisses: 3 } });
+    const turn = fakeTurn(conv(), 'hiccup on the line');
+    assert.deepEqual(await adapter.runTurn(turn), { status: 'done' });
+    const run = [...h.state.runs.values()][0];
+    assert.equal(run.connects, 5, 'a gateway error, a rate limit and a timeout, then the stream again, where it left off');
+    assert.equal(texts(turn), 'one two');
+    assert.equal(h.state.stops.length, 0);
+    assert.equal(adapter.runs.size, 0);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: a run Rukoo gives up on after an error from its event stream is stopped first', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 5, pollEvery: 10, pollMisses: 3, stopRetry: 60000 } });
+    const refused = await adapter.runTurn(fakeTurn(conv(), 'refused stream'));
+    assert.equal(refused.error.code, 'protocol');
+    assert.equal(h.state.stops.length, 1, 'the run was stopped, not abandoned');
+    assert.equal(adapter.unstopped.size, 0);
+    // A key the server no longer takes: the stop is refused too, so it is kept for another try.
+    const revoked = await adapter.runTurn(fakeTurn(conv('c_test_2'), 'revoked and locked'));
+    assert.equal(revoked.error.code, 'unauthorized');
+    assert.equal(adapter.unstopped.size, 1, 'the run is still held, so its stop can be sent again');
+    assert.equal(adapter.runs.size, 0);
+    await adapter.dispose();
+    assert.equal(adapter.unstopped.size, 0);
   } finally {
     h.server.close();
   }

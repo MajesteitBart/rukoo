@@ -13,6 +13,7 @@
 const crypto = require('crypto');
 const { SseParser, readSse } = require('./sse');
 const { AgentError, clip, logger, echoFree, approvalTitle } = require('./proc');
+const { untag } = require('./context');
 
 const STATUS_TTL = 30000;
 const CONNECT_TIMEOUT = 8000;
@@ -99,6 +100,9 @@ class HermesAdapter {
     this.paths = paths || {};
     this.cache = null;
     this.checking = null;
+    // Status checks in the order they started, and the newest one whose answer may be cached (see status()).
+    this.checks = 0;
+    this.cachedCheck = 0;
     // run id → live state, so dispose() can stop what is still running on the server.
     this.runs = new Map();
     // run id → state of a run Rukoo no longer follows whose stop Hermes has not taken yet (see keepStopping).
@@ -176,6 +180,8 @@ class HermesAdapter {
 
   invalidate() {
     this.cache = null;
+    // A check that started before this answers about the old state: it must not fill the cache again.
+    this.cachedCheck = this.checks;
   }
 
   configChanged() {
@@ -192,9 +198,14 @@ class HermesAdapter {
     const key = s.url + '\0' + crypto.createHash('sha256').update(s.key).digest('hex');
     if (!force && this.cache && this.cache.key === key && Date.now() - this.cache.at < STATUS_TTL) return this.cache.value;
     if (!force && this.checking && this.checking.key === key) return this.checking.promise;
+    const n = ++this.checks;
     const promise = this.check().then((value) => {
       if (this.checking && this.checking.promise === promise) this.checking = null;
-      this.cache = { key, at: Date.now(), value };
+      // Only the newest answer is cached: a check that started earlier and answers later is out of date.
+      if (n > this.cachedCheck) {
+        this.cachedCheck = n;
+        this.cache = { key, at: Date.now(), value };
+      }
       return value;
     });
     this.checking = { key, promise };
@@ -340,6 +351,14 @@ class HermesAdapter {
         }
         await sleep(Math.min(this.timing.backoff * 2 ** (failures - 1), 8 * this.timing.backoff), state.controller.signal);
       }
+    } catch (err) {
+      // Rukoo lets go of a run that may still be going: stop it first, so an approved action does not go on
+      // where Stop no longer reaches it. watch(), the Stop button and dispose() already sent their own stop.
+      if (!state.terminal && !state.stopping) {
+        state.stopping = true;
+        if (!(await this.sendStop(state))) this.keepStopping(state);
+      }
+      throw err;
     } finally {
       if (turn.signal) turn.signal.removeEventListener('abort', onAbort);
       clearTimeout(state.stopTimer);
@@ -392,7 +411,11 @@ class HermesAdapter {
       try {
         data = JSON.parse(text);
       } catch {}
-      throw httpError({ status: res.status, data });
+      const err = httpError({ status: res.status, data });
+      // A server or gateway error, a timeout or a rate limit can pass and says nothing about the run: like a
+      // dropped connection, the stream is tried again and the run then followed by its status.
+      if (res.status >= 500 || res.status === 408 || res.status === 429) throw new AgentError('offline', err.detail);
+      throw err;
     }
     const parser = new SseParser((frame) => this.onFrame(turn, state, name, frame));
     return readSse(res.body, parser, { idleMs: SILENCE, signal: state.controller.signal });
@@ -489,7 +512,7 @@ class HermesAdapter {
         const key = `${tool}#${n}`;
         (state.open[tool] = state.open[tool] || []).push(key);
         state.segment = '';
-        turn.emit({ type: 'tool-start', key, name: tool, detail: clip(data.preview || '', 200) });
+        turn.emit({ type: 'tool-start', key, name: tool, detail: clip(untag(data.preview || ''), 200) });
         return;
       }
       case 'tool.completed':

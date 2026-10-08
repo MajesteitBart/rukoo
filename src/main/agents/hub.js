@@ -115,12 +115,15 @@ class AgentHub extends EventEmitter {
     this.tempDirs = new Set();
     this.viewState = emptyView();
     this.statuses = {};
+    // Per agent, how many forced status probes have started; see probeStatus().
+    this.statusRound = new Map(AGENT_IDS.map((id) => [id, 0]));
     this.deltas = new Map();
     this.deltaTimer = null;
     this.saveTimer = null;
     this.mcp = null;
     this.remoteTimer = null;
     this.remoteStarting = false;
+    this.remoteQueue = Promise.resolve();
     this.started = false;
     this.disposed = false;
   }
@@ -249,10 +252,19 @@ class AgentHub extends EventEmitter {
     if (this.remoteTimer.unref) this.remoteTimer.unref();
   }
 
+  // One start at a time. A start still waiting for its listener (the retry timer, say) would otherwise add
+  // it after a later start had closed the remote listeners because the user turned remote access off.
+  startRemote() {
+    const run = this.remoteQueue.then(() => this.openRemote());
+    this.remoteQueue = run.catch(() => {});
+    return run;
+  }
+
   // The Tailscale listener, only when the user turned it on and this machine has an address.
-  async startRemote() {
-    if (!this.mcp) return;
-    await this.mcp.closeRemote();
+  async openRemote() {
+    const mcp = this.mcp;
+    if (!mcp || mcp.closed) return;
+    await mcp.closeRemote();
     this.cfg.runtime.remotePort = null;
     const { remote, remoteHost, port } = this.cfg.data.mcp;
     if (!remote) return;
@@ -267,20 +279,22 @@ class AgentHub extends EventEmitter {
     }
     const names = remoteHost && remoteHost !== host ? [remoteHost] : [];
     try {
-      await this.mcp.listen({ host, port, remote: true, hosts: names });
+      await mcp.listen({ host, port, remote: true, hosts: names });
     } catch (err) {
+      // dispose() or a port change closed this server meanwhile; the note belongs to the server that replaced it.
+      if (mcp.closed) return;
       if (err.code !== 'EADDRINUSE') {
         this.cfg.runtime.note = `Could not listen on ${host}:${port}: ${err.code || err.message}`;
         return;
       }
       try {
-        await this.mcp.listen({ host, port: this.mcp.ports().local || 0, remote: true, hosts: names });
+        await mcp.listen({ host, port: mcp.ports().local || 0, remote: true, hosts: names });
       } catch (err2) {
-        this.cfg.runtime.note = `Could not listen on ${host}: ${err2.code || err2.message}`;
+        if (!mcp.closed) this.cfg.runtime.note = `Could not listen on ${host}: ${err2.code || err2.message}`;
         return;
       }
     }
-    this.cfg.runtime.remotePort = this.mcp.ports().remote;
+    this.cfg.runtime.remotePort = mcp.ports().remote;
     if (this.cfg.runtime.remotePort !== port) this.cfg.runtime.note = `Port ${port} is in use on ${host}; Rukoo uses ${this.cfg.runtime.remotePort}.`;
   }
 
@@ -516,7 +530,9 @@ class AgentHub extends EventEmitter {
     const header = ref.messageHeader ? String(ref.messageHeader) : '';
     const cached = id ? tools.cacheMessage(this.engine, id) : null;
     if (cached && (!header || !cached.messageId || normId(cached.messageId) === normId(header))) return id;
-    if (id.startsWith('saved:')) return id;
+    // A saved copy is there until the user deletes it. After that its id is as stale as a moved email's:
+    // the Message-ID may still find the email in the mailbox, else it is gone.
+    if (id.startsWith('saved:') && this.engine.saved.some((s) => s.id === id)) return id;
     if (!header) return null;
     const account = ref.accountId || tools.accountOfId(id);
     const found = tools.findByMessageId(this.engine, header, account);
@@ -672,8 +688,11 @@ class AgentHub extends EventEmitter {
     if (!body.trim()) throw new AgentError('invalid', 'empty message');
     const firstTurn = !c.delivered;
     const shown = display ? clip(display, 20000) : body;
-    const userItem = this.addItem(c, { type: 'user', text: shown, action: action || null });
-    if (!c.title) c.title = clip(shown.replace(/\s+/g, ' ').trim(), 80);
+    // display can be an approved proposal's title. Email text the agent quoted in it keeps its <unsafe_content>
+    // tags for the agent (runTurn gets them); the user's line and the chat title show the text alone.
+    const line = display ? context.untag(shown) : shown;
+    const userItem = this.addItem(c, { type: 'user', text: line, action: action || null });
+    if (!c.title) c.title = clip(line.replace(/\s+/g, ' ').trim(), 80);
     const turn = {
       id: `t_${rand(10)}`,
       cid: c.id,
@@ -866,7 +885,7 @@ class AgentHub extends EventEmitter {
           type: 'tool',
           name,
           label: toolLabel(name),
-          detail: clip(oneLine(event.detail), 200),
+          detail: chipDetail(event.detail),
           status: 'running',
           startedAt: now,
           endedAt: null,
@@ -880,7 +899,7 @@ class AgentHub extends EventEmitter {
         if (!item || item.status !== 'running') return;
         item.status = event.error ? 'error' : 'done';
         item.endedAt = now;
-        if (event.detail) item.detail = clip(oneLine(event.detail), 200);
+        if (event.detail) item.detail = chipDetail(event.detail);
         this.updateItem(c, item);
         return;
       }
@@ -986,7 +1005,8 @@ class AgentHub extends EventEmitter {
   // the card's "Approved" does not pretend it was carried out.
   keepApproval(c, message) {
     c.notes.push(`The user approved: ${message.display}. You were not told until now, so it has not been done; check with the user before you carry it out.`);
-    this.addItem(c, { type: 'notice', text: `Not done yet: ${message.display}. ${this.agentName(c.agent)} hears about your approval with your next message.`, tone: 'info', code: 'kept-approval', params: { title: String(message.display || '').slice(0, 200) }, undo: null });
+    const title = context.untag(message.display);
+    this.addItem(c, { type: 'notice', text: `Not done yet: ${title}. ${this.agentName(c.agent)} hears about your approval with your next message.`, tone: 'info', code: 'kept-approval', params: { title: title.slice(0, 200) }, undo: null });
   }
 
   // ---------- approvals ----------
@@ -1029,7 +1049,8 @@ class AgentHub extends EventEmitter {
       turn.reached = true;
     }
     if (refusal) {
-      this.addItem(c, { type: 'notice', text: `Declined without asking: ${item.title}. Its input is too long to show here in full.`, tone: 'info', code: 'approval-too-long', params: { title: item.title }, undo: null });
+      const shownTitle = context.untag(item.title);
+      this.addItem(c, { type: 'notice', text: `Declined without asking: ${shownTitle}. Its input is too long to show here in full.`, tone: 'info', code: 'approval-too-long', params: { title: shownTitle }, undo: null });
       // A runtime request gets the denial as its answer; a proposal or mail action is told with the next message.
       if (kind !== 'runtime') c.notes.push(`Rukoo declined ${kind === 'mail' ? context.unsafeInline(item.title, 'mail action') : `"${oneLine(item.title)}"`} without asking the user: its input was too long to show in full. Ask again with shorter input.`);
       const declined = Promise.resolve(refusal.id);
@@ -1088,10 +1109,12 @@ class AgentHub extends EventEmitter {
     return item;
   }
 
+  // A proposal is the agent's text as it wrote it. Email text it quoted keeps its <unsafe_content> tags when Rukoo
+  // repeats the proposal, so it never reaches the agent as the user's words; the user's own line shows no tags.
   onProposal(c, item, approved) {
     if (!approved) {
       c.notes.push(`The user declined: ${item.title}.`);
-      this.addItem(c, { type: 'user', text: item.title, action: 'declined' });
+      this.addItem(c, { type: 'user', text: context.untag(item.title), action: 'declined' });
       return;
     }
     // The agent may not remember the proposal (another channel, a new session), so repeat what was approved.
@@ -1189,10 +1212,11 @@ class AgentHub extends EventEmitter {
       const c = typeof id === 'string' && id ? this.conversations.get(id) : null;
       return c && c.agent === identity.agent ? c : null;
     };
+    // A per-chat token speaks for its own chat only. A stale or forged conversation_id must not move its
+    // calls into another chat of the same agent; only tokens without a chat (Codex, Clark) are routed by it.
+    if (identity.conversationId) return own(identity.conversationId);
     const byArg = own(args && args.conversation_id);
     if (byArg) return byArg;
-    const bound = own(identity.conversationId);
-    if (bound) return bound;
     const codex = meta && isObj(meta['x-codex-turn-metadata']) ? meta['x-codex-turn-metadata'].thread_id : null;
     const threadId = (meta && meta.threadId) || codex;
     const mapped = threadId ? own(this.threads.get(String(threadId))) : null;
@@ -1350,17 +1374,24 @@ class AgentHub extends EventEmitter {
     }
   }
 
+  // Probes overlap: the startup check, a saved URL or key, Test. A forced probe asks with the settings as they
+  // are now, so an older probe of that agent that answers after it is dropped; it may have used the old URL
+  // or key. An unforced probe can answer from the adapter's cache, so it never drops a forced one.
+  // Returns whether the published status changed.
+  async probeStatus(id, force) {
+    if (force && this.statusRound.has(id)) this.statusRound.set(id, this.statusRound.get(id) + 1);
+    const round = this.statusRound.get(id);
+    const s = await this.agentStatus(id, force);
+    if (this.statusRound.get(id) !== round) return false;
+    const changed = JSON.stringify(s) !== JSON.stringify(this.statuses[id]);
+    this.statuses = { ...this.statuses, [id]: s };
+    return changed;
+  }
+
   async refreshStatus({ force = false } = {}) {
-    const next = {};
-    await Promise.all(
-      AGENT_IDS.map(async (id) => {
-        next[id] = await this.agentStatus(id, force);
-      })
-    );
-    const changed = JSON.stringify(next) !== JSON.stringify(this.statuses);
-    this.statuses = next;
-    if (changed || force) this.emitEvent({ kind: 'agents', status: next });
-    return next;
+    const changed = await Promise.all(AGENT_IDS.map((id) => this.probeStatus(id, force)));
+    if (changed.includes(true) || force) this.emitEvent({ kind: 'agents', status: this.statuses });
+    return this.statuses;
   }
 
   status() {
@@ -1368,15 +1399,27 @@ class AgentHub extends EventEmitter {
   }
 
   async test(agent) {
-    const s = await this.agentStatus(agent, true);
-    this.statuses = { ...this.statuses, [agent]: s };
+    await this.probeStatus(agent, true);
     this.emitEvent({ kind: 'agents', status: this.statuses });
-    return s;
+    return this.statuses[agent];
   }
 }
 
 function oneLine(v) {
   return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+}
+
+// A tool chip's detail comes from the arguments the agent passed, which may be values it copied from a tool
+// result with their <unsafe_content> tags. The tags are for the agent; the user sees the value.
+// Hermes clips its previews on the server, which can cut a tag in half, so a dangling piece of one at the end
+// goes too. Only with signs of a cut: an ellipsis at the end, or enough of the tag's name that it can't be a
+// value's own text; "price <" or "n <u" stay.
+const TAG_TAIL = /<\/?(u(?:n(?:s(?:a(?:f(?:e(?:_(?:c(?:o(?:n(?:t(?:e(?:n(?:t)?)?)?)?)?)?)?)?)?)?)?)?)?)?(?:\s(?:"[^"]*(?:"|$)|[^"<>])*)?(…|\.\.\.)?$/i;
+function chipDetail(v) {
+  let text = context.untag(v);
+  const tail = TAG_TAIL.exec(text);
+  if (tail && (tail[2] || (tail[1] || '').length >= 3)) text = text.slice(0, tail.index);
+  return clip(oneLine(text), 200);
 }
 
 // Untrusted text inside a note: one line, clipped, in JSON quotes so it cannot pose as Rukoo's own words.

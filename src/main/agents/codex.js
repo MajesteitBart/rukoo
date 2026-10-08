@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
+const { untag } = require('./context');
 const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, tail, killTree, writeJson, WINDOWS, humanize, fieldText, inputField, approvalTitle } = require('./proc');
 
 const EXE_TTL = 30000;
@@ -53,12 +54,12 @@ function commandText(actions, command) {
 }
 
 function argDetail(args) {
-  if (!args || typeof args !== 'object') return typeof args === 'string' ? clip(oneLine(args), 200) : '';
+  if (!args || typeof args !== 'object') return typeof args === 'string' ? clip(oneLine(untag(args)), 200) : '';
   for (const key of ['query', 'message_id', 'command', 'path', 'url', 'title', 'subject']) {
-    if (typeof args[key] === 'string' && args[key].trim()) return clip(oneLine(args[key]), 200);
+    if (typeof args[key] === 'string' && args[key].trim()) return clip(oneLine(untag(args[key])), 200);
   }
   // Rukoo's conversation id says nothing to the user, so it never becomes the preview.
-  for (const [key, value] of Object.entries(args)) if (key !== 'conversation_id' && typeof value === 'string' && value.trim()) return clip(oneLine(value), 200);
+  for (const [key, value] of Object.entries(args)) if (key !== 'conversation_id' && typeof value === 'string' && value.trim()) return clip(oneLine(untag(value)), 200);
   return '';
 }
 
@@ -883,4 +884,4 @@ class Run {
   }
 }
 
-module.exports = { CodexAdapter, stripShell, toolOf };
+module.exports = { CodexAdapter, stripShell, toolOf, argDetail };
