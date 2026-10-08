@@ -376,6 +376,73 @@ test('newsletters offer Unsubscribe, and without an email the inbox overview is 
   await shot('05-triage');
 });
 
+test('an email left out of a new chat comes back with one click, and goes with the first message', async () => {
+  await openChat('Call on Thursday');
+  const files = win.locator('.agentpane .bui-pb__files');
+  const email = files.locator('.bui-entity__name');
+  const remove = files.getByRole('button', { name: 'Leave this email out' });
+  const add = files.getByRole('button', { name: 'Add this email' });
+  const title = win.locator('.agentpane .bui-rec__title');
+  await expect(email).toHaveText('Call on Thursday');
+
+  // Left out: the chat is about your mail in general, and a dashed chip in its place offers the email back.
+  await remove.click();
+  await expect(title).toHaveText('Ask Hermes about your mail');
+  await expect(win.locator('.agentpane .bui-rec__body')).toHaveText('Add the email to work on it, or start with what needs you today.');
+  await expect(input()).toHaveAttribute('placeholder', 'Ask Hermes...');
+  await expect(add).toHaveAttribute('title', 'Call on Thursday');
+  await expect(remove).toHaveCount(0);
+  await shot('14-email-left-out');
+  await add.click();
+  await expect(add).toHaveCount(0);
+  await expect(email).toHaveText('Call on Thursday');
+  await expect(title).toHaveText('What should Hermes do with this email?');
+  await expect(input()).toBeFocused();
+
+  // By keyboard: the add chip sits just before the input.
+  await remove.click();
+  await expect(input()).toBeFocused();
+  await win.keyboard.press('Shift+Tab');
+  await expect(add).toBeFocused();
+  await win.keyboard.press('Enter');
+  await expect(remove).toBeVisible();
+  await expect(input()).toBeFocused();
+
+  // Leaving it out lasts while the email is on screen: after another email it is back.
+  await remove.click();
+  await item('Sign in to Bencompare').click();
+  await expect(email).toHaveText('Sign in to Bencompare');
+  await item('Call on Thursday').click();
+  await expect(email).toHaveText('Call on Thursday');
+  await expect(remove).toBeVisible();
+
+  // Put back before the first message, the email goes to the agent with it.
+  await remove.click();
+  await add.click();
+  await app.evaluate(() => {
+    const adapter = global.__semAgents.adapters.get('clark');
+    const real = adapter.runTurn.bind(adapter);
+    global.__inputs = [];
+    adapter.runTurn = (turn) => {
+      global.__inputs.push(turn.input);
+      return real(turn);
+    };
+  });
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked', { timeout: 10000 });
+  expect(await app.evaluate(() => global.__semAgents.list()[0].message.subject)).toBe('Call on Thursday');
+  const [first] = await app.evaluate(() => global.__inputs);
+  expect(first).toMatch(/<unsafe_content[^>]* source="email"/);
+  expect(first).toContain('Subject: Call on Thursday');
+
+  // The chat has the email now, so its chip has no x; New chat starts one that can leave it out.
+  await expect(email).toHaveText('Call on Thursday');
+  await expect(files.getByRole('button')).toHaveCount(0);
+  await shot('15-email-in-chat');
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(remove).toBeVisible();
+});
+
 test('the panel docks in wide windows, slides over the reader in narrower ones and fills narrow ones', async () => {
   await openChat('Call on Thursday');
   await expect(win.locator('.titlebar [data-agent-toggle]')).toHaveAttribute('aria-pressed', 'true');

@@ -10,6 +10,8 @@ Open the panel with the sparkle button in the title bar or the reading pane tool
 
 The panel offers quick actions for the open email. The same actions work as slash commands in the chat input, such as `/reply`. You can also type anything else.
 
+A new chat is about the open email. The email shows as a chip above the input and goes to the agent with your first message. To ask something without it, click the × on the chip. An "Add this email" chip takes its place; click it to put the email back. Once a chat has started it keeps its email, so the chip has no ×. Start a new chat to leave the email out.
+
 ### Hand it off
 
 - **Draft a reply** (`/reply`). The agent looks up earlier mail with the sender, its memory and your notes, then writes the reply into the composer in your voice and in the language of the email. You read it and press Send. Rukoo has no tool that sends mail, so an agent can't send one.

@@ -450,6 +450,37 @@
   background: color-mix(in oklab, var(--line) 70%, transparent);
   color: var(--ink);
 }
+/* The add chip: dashed and empty, a place to put the context (back) into. */
+.bui-entity--add {
+  gap: 5px;
+  padding: 0 10px 0 8px;
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink-2);
+  transition:
+    color 100ms var(--ease-default),
+    background-color 100ms var(--ease-default),
+    border-color 100ms var(--ease-default);
+}
+.bui-entity--add svg {
+  color: var(--ink-3);
+  transition: color 100ms var(--ease-default);
+}
+.bui-entity--add .bui-entity__name {
+  color: inherit;
+}
+.bui-entity--add:hover {
+  border-color: var(--ink-3);
+  background: var(--field);
+  color: var(--ink);
+}
+.bui-entity--add:hover svg {
+  color: var(--ink-2);
+}
+.bui-entity--add:active {
+  scale: 0.97;
+}
 
 /* Loading state: 3x3 pixel grid, shimmering label, live timer. */
 .bui-load {
