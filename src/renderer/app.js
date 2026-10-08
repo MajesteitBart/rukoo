@@ -339,7 +339,7 @@ function renderShell() {
   root.style.setProperty('--sidebar-w', `${collapsed ? RAIL_W : SIDEBAR_W}px`);
   root.style.setProperty('--list-w', `${listWidth()}px`);
   root.style.setProperty('--agent-w', `${agentWidth()}px`);
-  for (const b of $$('[data-agent-toggle], [data-reader="agent"]')) {
+  for (const b of $$('[data-agent-toggle]')) {
     b.classList.toggle('on', Boolean(prefs.agentOpen));
     b.setAttribute('aria-pressed', String(Boolean(prefs.agentOpen)));
   }
@@ -360,7 +360,7 @@ function loadAgentPanel() {
     .catch((err) => console.error('The chat panel did not load:', err));
 }
 
-// focus: move the keyboard to the chat input (Ctrl+J and the toolbar buttons do).
+// focus: move the keyboard to the chat input (Ctrl+J and the title bar button do).
 function setAgentOpen(open, { focus = false } = {}) {
   const rail = sidebarCollapsed();
   prefs.agentOpen = Boolean(open);
@@ -1788,8 +1788,7 @@ function readerBar(m) {
     <span class="spacer"></span>
     <button class="icon-btn" data-reader="prev" data-i18n-title="reader.navigation.previous" title="${esc(t('reader.navigation.previous'))}">${icons.up}</button>
     <button class="icon-btn" data-reader="next" data-i18n-title="reader.navigation.next" title="${esc(t('reader.navigation.next'))}">${icons.down}</button>
-    <button class="icon-btn wide-only" data-reader="expand" title="${S.expanded ? t('reader.navigation.showList') : t('reader.navigation.expand')}">${S.expanded ? icons.collapse : icons.expand}</button>
-    <button class="icon-btn ${prefs.agentOpen ? 'on' : ''}" data-reader="agent" data-i18n-title="agent.panel.ask" title="${esc(t('agent.panel.ask'))}" aria-pressed="${Boolean(prefs.agentOpen)}">${icons.sparkle}</button>`;
+    <button class="icon-btn wide-only" data-reader="expand" title="${S.expanded ? t('reader.navigation.showList') : t('reader.navigation.expand')}">${S.expanded ? icons.collapse : icons.expand}</button>`;
   const back = `<button class="icon-btn narrow-only" data-reader="back" data-i18n-title="reader.navigation.back" title="${esc(t('reader.navigation.back'))}">${icons.back}</button>`;
   if (draft) {
     return `<div class="reader-bar" role="toolbar" data-i18n-aria-label="reader.actions.label" aria-label="${esc(t('reader.actions.label'))}">${back}
@@ -2006,8 +2005,6 @@ function bindReader() {
         return removeMessages([item]);
       case 'more':
         return showMenu(btn, messageMenu(item));
-      case 'agent':
-        return toggleAgent();
     }
   });
 }

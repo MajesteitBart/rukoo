@@ -445,11 +445,22 @@ test('an email left out of a new chat comes back with one click, and goes with t
 
 test('the panel docks in wide windows, slides over the reader in narrower ones and fills narrow ones', async () => {
   await openChat('Call on Thursday');
-  await expect(win.locator('.titlebar [data-agent-toggle]')).toHaveAttribute('aria-pressed', 'true');
-  await expect(win.locator('[data-reader="agent"]')).toHaveClass(/\bon\b/);
+  // The title bar holds the only sparkle button; the reading pane toolbar has none.
+  const toggle = win.locator('.titlebar [data-agent-toggle]');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(toggle).toHaveClass(/\bon\b/);
+  await expect(win.locator('.reader-bar [data-reader="agent"]')).toHaveCount(0);
   await expect(win.locator('.agent-divider')).toBeVisible();
   const style = () => pane().evaluate((el) => ({ position: getComputedStyle(el).position, width: el.getBoundingClientRect().width }));
   expect(await style()).toEqual({ position: 'static', width: 380 });
+  // The title bar button closes and opens the panel, like Ctrl+J.
+  await toggle.click();
+  await expect(pane()).toBeHidden();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle).not.toHaveClass(/\bon\b/);
+  await toggle.click();
+  await expect(pane()).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1100, 800));
   await expect.poll(async () => (await style()).position).toBe('absolute');
@@ -475,7 +486,7 @@ test('the panel docks in wide windows, slides over the reader in narrower ones a
   await win.screenshot({ path: path.join(SHOTS, '08-narrow.png') });
   await win.click('.agentpane [data-ap="close"]');
   await expect(pane()).toBeHidden();
-  await expect(win.locator('.titlebar [data-agent-toggle]')).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('keys inside the panel do not reach the mailbox shortcuts', async () => {

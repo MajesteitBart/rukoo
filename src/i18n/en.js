@@ -437,10 +437,6 @@
     "message": "Add this email",
     "description": "Chat panel input: dashed chip in the email chip's place after you left the email out of a new chat; clicking it puts the email back (contextChip and attach in agent/panel.js)."
   },
-  "agent.panel.ask": {
-    "message": "Ask an agent about this email (Ctrl+J)",
-    "description": "Reader toolbar button tooltip that opens or closes the chat panel."
-  },
   "agent.panel.close": {
     "message": "Close chat",
     "description": "Chat panel header: tooltip of the button that closes the panel."
