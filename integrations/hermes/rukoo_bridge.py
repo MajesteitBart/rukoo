@@ -165,7 +165,8 @@ def expected_proof(challenge):
 
 def prove(url):
     """Asks whatever listens at url to prove it is Rukoo with the same key, without sending the token.
-    Returns "ok", "other-key" for a Rukoo with another key or none, or None for anything else."""
+    Returns "ok", "other-key" for a Rukoo with another key or none, "old" for a Rukoo too old to answer
+    the challenge, or None for anything else."""
     challenge = secrets.token_urlsafe(24)
     request = urllib.request.Request(
         url,
@@ -176,13 +177,19 @@ def prove(url):
     try:
         with OPENER.open(request, timeout=PROBE_TIMEOUT_SECONDS) as response:
             proof = response.headers.get("X-Rukoo-Proof")
+            body = b""
     except urllib.error.HTTPError as exc:
         proof = exc.headers.get("X-Rukoo-Proof") if exc.headers else None
+        try:
+            body = exc.read(100) if exc.code == 401 else b""
+        except Exception:  # noqa: BLE001 - only used to recognise an older Rukoo
+            body = b""
         exc.close()
     except Exception:  # noqa: BLE001 - nothing listening, a dropped connection or a timeout
         return None
     if proof is None:
-        return None
+        # Rukoo from before the challenge answers every request without a token like this.
+        return "old" if body == b'{"error":"unauthorized"}' else None
     same = TOKEN and hmac.compare_digest(proof.encode("utf-8"), expected_proof(challenge).encode("utf-8"))
     return "ok" if same else "other-key"
 
@@ -222,6 +229,7 @@ class Devices:
         self.searching = threading.Lock()
         self.found = {}  # url -> device name: Rukoo with the same key
         self.other_key = {}  # url -> device name: Rukoo with another key, or none
+        self.old = {}  # url -> device name: Rukoo too old to prove anything
         self.checked = []  # every device the last search tried
         self.searched_at = 0.0
 
@@ -236,6 +244,7 @@ class Devices:
                 before = set(self.found)
                 self.found = {url: name for (name, url), o in zip(devices, outcomes) if o == "ok"}
                 self.other_key = {url: name for (name, url), o in zip(devices, outcomes) if o == "other-key"}
+                self.old = {url: name for (name, url), o in zip(devices, outcomes) if o == "old"}
                 self.checked = [name for name, _ in devices]
                 self.searched_at = time.monotonic()
                 if set(self.found) != before:
@@ -300,9 +309,15 @@ class Devices:
             )
         with self.lock:
             other = sorted(set(self.other_key.values()))
+            old = sorted(set(self.old.values()))
             checked = sorted(set(self.checked))
         if other:
             return f"Rukoo Mail is open on {', '.join(other)}, but doesn't have your current API server key. {FIX_KEY}"
+        if old:
+            return (
+                f"Rukoo Mail is open on {', '.join(old)}, but that version is too old for this bridge. "
+                "Ask the user to install the latest Rukoo there."
+            )
         text = "Rukoo Mail isn't open on any of the user's devices, or can't be reached over Tailscale. Ask the user to open it."
         return text + (f" Checked: {', '.join(checked)}." if checked else "")
 

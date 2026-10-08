@@ -74,6 +74,7 @@ A new API server key locks out Rukoo and the bridge alike until both have it. En
 |---|---|
 | "Rukoo Mail isn't open on any of the user's devices" | Open Rukoo. Check that the device is on the tailnet and shows up in the "Checked" list, and that "Let Clark use Rukoo" is on. A device that isn't listed is offline in Tailscale, or not Windows or macOS: add it with `RUKOO_URL`. |
 | "Rukoo Mail is open on ..., but doesn't have your current API server key" | Enter the API server key from `~/.hermes/.env` in Rukoo under Settings > Agents on that device. |
+| "Rukoo Mail is open on ..., but that version is too old for this bridge" | That device runs a Rukoo from before this bridge, which can't prove it has the key. Install the latest Rukoo there. |
 | "Rukoo Mail on ... refused the key" | The key changed in Rukoo while the bridge was using it. Same fix as above. |
 | "The Rukoo bridge has no key" | Add `RUKOO_KEY: ${API_SERVER_KEY}` under the entry's `env:` and check that `API_SERVER_KEY` is in `~/.hermes/.env`, then `/reload-mcp`. |
 | `hermes mcp test rukoo` lists no tools and the bridge logs "no tool list is cached yet" | Rukoo has never been reachable from this machine. Open it on one of your devices, then test again. |

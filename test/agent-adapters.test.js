@@ -1210,24 +1210,30 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   const python = findPython();
   if (!python) return t.skip('no Python 3.8+ on PATH');
   const { spawn } = require('child_process');
-  // The laptop has the chat and the desktop was used last. One device has another key, and one isn't Rukoo.
+  // The laptop has the chat and the desktop was used last. One device has another key, one runs a Rukoo from
+  // before the challenge, and one isn't Rukoo.
   const laptop = await fakeRukoo({ key: 'hermes-key', idle: 300, chats: ['c_laptop'] });
   const desktop = await fakeRukoo({ key: 'hermes-key', idle: 5 });
   const other = await fakeRukoo({ key: 'another-key' });
-  const strangerAuth = [];
-  const stranger = http.createServer((req, res) => {
-    strangerAuth.push(req.headers.authorization || null);
-    req.resume();
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end('{"error":"unauthorized"}');
-  });
-  await new Promise((r) => stranger.listen(0, '127.0.0.1', r));
+  const plain = async (status, body) => {
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push(req.headers.authorization || null);
+      req.resume();
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(body);
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return { server, seen, url: `http://127.0.0.1:${server.address().port}/mcp` };
+  };
+  const outdated = await plain(401, '{"error":"unauthorized"}');
+  const stranger = await plain(404, '{"error":"not found"}');
   // Also when an assertion fails before the test closes them on purpose.
   t.after(async () => {
     for (const rukoo of [laptop, desktop, other]) await rukoo.close();
-    if (stranger.listening) stranger.close();
+    for (const { server } of [outdated, stranger]) if (server.listening) server.close();
   });
-  const urls = [laptop.url, desktop.url, other.url, `http://127.0.0.1:${stranger.address().port}/mcp`, `${await closedPort()}/mcp`];
+  const urls = [laptop.url, desktop.url, other.url, outdated.url, stranger.url, `${await closedPort()}/mcp`];
   const cache = path.join(tmp('bridge'), 'tools.json');
   const start = (key) => {
     const child = spawn(python, [path.join(__dirname, '..', 'integrations', 'hermes', 'rukoo_bridge.py')], {
@@ -1264,7 +1270,8 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   const bearer = `Bearer ${remoteTokenFor('hermes-key')}`;
   assert.ok(laptop.seen.includes(bearer) && desktop.seen.includes(bearer));
   assert.deepEqual([...new Set(other.seen)], [null], 'the Rukoo with another key only got the challenge');
-  assert.deepEqual([...new Set(strangerAuth)], [null]);
+  assert.deepEqual([...new Set(outdated.seen)], [null]);
+  assert.deepEqual([...new Set(stranger.seen)], [null]);
 
   // Two calls at once: the quick one does not wait for the slow one before it.
   const before = b.replies.length;
@@ -1293,12 +1300,18 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   const nokey = await keyless.ask({ id: 31, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
   assert.match(nokey.result.content[0].text, /has no key.*RUKOO_KEY: \$\{API_SERVER_KEY\}/);
 
-  // Rukoo closes everywhere: the tools come from the cache, and a call says Rukoo isn't open.
+  // Only the outdated Rukoo is left: the tools come from the cache, and a call says it needs updating.
   for (const rukoo of [laptop, desktop, other]) await rukoo.close();
   assert.equal((await b.ask({ id: 7, method: 'tools/list' })).result.tools[0].name, 'get_context', 'served from the cache');
-  const away = await b.ask({ id: 8, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+  const outdatedOnly = await b.ask({ id: 8, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+  assert.equal(outdatedOnly.result.isError, true);
+  assert.match(outdatedOnly.result.content[0].text, /open on 127\.0\.0\.1, but that version is too old.*install the latest Rukoo/);
+  // Rukoo closes everywhere.
+  await new Promise((r) => outdated.server.close(r));
+  const away = await b.ask({ id: 9, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
   assert.equal(away.result.isError, true);
   assert.match(away.result.content[0].text, /isn't open on any of the user's devices.*Checked: 127\.0\.0\.1\./);
+  assert.deepEqual([...new Set(outdated.seen)], [null], 'no token for an outdated Rukoo either');
 });
 
 test('hermes bridge: looks for Rukoo only on online Windows and Mac devices of the tailnet', (t) => {
