@@ -226,7 +226,10 @@ function hermesServer() {
       let m = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
       if (m) return state.sessions.has(m[1]) ? json(res, 200, { session: { id: m[1] } }) : json(res, 404, { error: { message: 'not found' } });
       if (url.pathname === '/v1/runs' && req.method === 'POST') {
-        if (state.failRuns) return json(res, state.failRuns, { error: { message: 'Too many concurrent runs' } });
+        if (state.failRuns) {
+          state.refusedPosts = (state.refusedPosts || 0) + 1;
+          return json(res, state.failRuns, { error: { message: 'Too many concurrent runs' } });
+        }
         state.posts = (state.posts || 0) + 1;
         // Hermes keys a run on its Idempotency-Key: the same key again gets the run it already started.
         const key = req.headers['idempotency-key'];
@@ -1442,6 +1445,23 @@ test('hermes: an approval answer that does not arrive is sent again, and one tha
     assert.equal(h.state.approvalAttempts, 3, 'three tries');
     assert.equal(h.state.stops.length, 1, 'then the run is stopped instead of left waiting');
     assert.match(ofType(lost, 'error').map((e) => e.detail).join(' '), /Your answer did not reach Hermes, so Rukoo is asking it to stop the run\./);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: Stop during a retried run start sends no further start', { timeout: 15000 }, async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 300 } });
+    // The start fails with a server error, and the user presses Stop during the wait before the retry. The first
+    // POST may never have reached Hermes, so a retry would start a run the user just stopped.
+    h.state.failRuns = 503;
+    const turn = fakeTurn(conv(), 'hello');
+    setTimeout(() => turn.controller.abort(), 100);
+    assert.deepEqual(await adapter.runTurn(turn), { status: 'stopped' });
+    assert.equal(h.state.refusedPosts, 1, 'no start after Stop');
+    assert.equal(h.state.runs.size, 0);
   } finally {
     h.server.close();
   }

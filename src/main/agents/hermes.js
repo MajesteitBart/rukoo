@@ -287,7 +287,7 @@ class HermesAdapter {
     if (s.model) body.model = s.model;
     // A retried POST (lost response) must not start the same turn twice.
     const idem = String(turn.id || '').replace(/[^\x21-\x7e]/g, '').slice(0, 200) || crypto.randomUUID();
-    const started = await this.submit(body, `rukoo-${idem}`, server);
+    const started = await this.submit(body, `rukoo-${idem}`, server, turn.signal);
     const runId = started.data && started.data.run_id;
     if (!runId) throw new AgentError('protocol', 'The server did not return a run id');
     // Hermes has the message now: even a run stopped before its first event used up this turn's email and
@@ -301,10 +301,15 @@ class HermesAdapter {
   // POST, and a run it took but Rukoo never heard of can neither be followed nor stopped. So the POST is sent
   // again with the same Idempotency-Key, for which Hermes returns the run it already started. A rate limit
   // (429) is a refusal: nothing started, and the user hears it at once.
-  async submit(body, key, server) {
+  // Stop ends the retries: the earlier POST may never have reached Hermes, and a retry would start a run the user
+  // just stopped. A POST already on its way is not cut off, so follow() can stop the run it reports.
+  async submit(body, key, server, signal) {
     let failure;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt) await sleep(this.timing.backoff * 2 ** (attempt - 1));
+      if (attempt) {
+        await sleep(this.timing.backoff * 2 ** (attempt - 1), signal);
+        if (signal && signal.aborted) throw new AgentError('stopped', 'Stopped');
+      }
       let res;
       try {
         res = await this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': key }, timeout: 20000, server });

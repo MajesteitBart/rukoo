@@ -1284,7 +1284,8 @@ class AgentHub extends EventEmitter {
         reject(new AgentError('timeout', `the window did not answer ${action}`));
       }, timeoutMs);
       this.uiPending.set(requestId, { resolve, reject, timer });
-      this.emitEvent({ kind: 'ui', requestId, action, args });
+      // The deadline lets a window that only gets the request late (its panel was still loading) skip it.
+      this.emitEvent({ kind: 'ui', requestId, action, args, deadline: Date.now() + timeoutMs });
     });
   }
 

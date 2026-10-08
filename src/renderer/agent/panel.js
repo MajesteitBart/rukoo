@@ -7,6 +7,7 @@ import { api, $, toast, listTime, person, hue } from '../ui.js';
 import * as B from './bui.js';
 import { actionByKey, actionsFor, commandsFor } from './actions.js';
 import { replyEnvelope } from '../composer.js';
+import { expired } from './backlog.js';
 
 const AGENTS = ['clark', 'claude', 'codex'];
 // Product names, not translated.
@@ -1263,7 +1264,10 @@ export function mountAgentPanel(ctx) {
     return { ok: true, draft: { key: writeKey, mode: d.mode, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, text: d.text } };
   }
 
-  async function bridge({ requestId, action, args }) {
+  async function bridge(request) {
+    // Main gave up on a request the panel only gets now (it was still loading): leave the composer as it is.
+    if (expired(request)) return;
+    const { requestId, action, args } = request;
     let ok = true;
     let result = null;
     try {
@@ -1281,7 +1285,7 @@ export function mountAgentPanel(ctx) {
     api('agentUiReply', requestId, ok, result).catch(() => {});
   }
 
-  window.mail.on(({ type, payload }) => {
+  const onEvent = ({ type, payload }) => {
     if (type !== 'agent' || !payload) return;
     switch (payload.kind) {
       case 'conversation':
@@ -1302,7 +1306,8 @@ export function mountAgentPanel(ctx) {
       case 'reveal':
         return reveal(payload.conversationId);
     }
-  });
+  };
+  window.mail.on(onEvent);
 
   // ---------- start ----------
 
@@ -1316,6 +1321,8 @@ export function mountAgentPanel(ctx) {
   if (ctx.agentOpen()) sync();
 
   return {
+    // Agent events that came before the panel loaded; app.js hands them over once.
+    event: onEvent,
     // The panel became visible: catch up with the email on screen.
     opened({ focus = false } = {}) {
       sync();

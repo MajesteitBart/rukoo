@@ -464,6 +464,77 @@ test('a long copied value never leaves half a tag in a tool chip', async () => {
   }
 });
 
+test('agent events that come before the chat panel has loaded reach it in order once it listens', async () => {
+  // A browser module in a CommonJS package: Node takes it as ESM from a data: URL.
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/agent/backlog.js'), 'utf8');
+  const { holdEvents, heldAgentEvent } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+  const listeners = new Set();
+  const on = (fn) => (listeners.add(fn), () => listeners.delete(fn));
+  const emit = (e) => listeners.forEach((fn) => fn(e));
+  const agent = (payload) => ({ type: 'agent', payload });
+  // What is worth holding: a reveal, an approval that waits, a composer request; not what concerns an open chat.
+  assert.equal(heldAgentEvent(agent({ kind: 'reveal', conversationId: 'c1' })), true);
+  assert.equal(heldAgentEvent(agent({ kind: 'ui', requestId: 'u1' })), true);
+  assert.equal(heldAgentEvent(agent({ kind: 'item', item: { type: 'approval', status: 'pending' } })), true);
+  assert.equal(heldAgentEvent(agent({ kind: 'item', item: { type: 'approval', status: 'approved' } })), false);
+  assert.equal(heldAgentEvent(agent({ kind: 'item', item: { type: 'text' } })), false);
+  for (const kind of ['delta', 'status', 'trim', 'conversation', 'agents']) assert.equal(heldAgentEvent(agent({ kind })), false, kind);
+  assert.equal(heldAgentEvent({ type: 'mail', payload: { kind: 'reveal' } }), false);
+  // A remote agent's proposal at startup: the reveal and the approval card come before the panel module loads,
+  // after a long streamed answer whose deltas are no use to a panel with no chat open yet.
+  const held = holdEvents(on, heldAgentEvent, 3);
+  for (let i = 0; i < 600; i++) emit(agent({ kind: 'delta', conversationId: 'c0', itemId: 'm1', text: 'x' }));
+  emit(agent({ kind: 'status', conversationId: 'c0', status: 'running' }));
+  emit({ type: 'mail', payload: { kind: 'sync' } });
+  emit(agent({ kind: 'item', conversationId: 'c1', item: { id: 'i0', type: 'text' } }));
+  emit(agent({ kind: 'reveal', conversationId: 'c1' }));
+  emit(agent({ kind: 'item', conversationId: 'c1', item: { id: 'i1', type: 'approval', status: 'pending' } }));
+  emit(agent({ kind: 'ui', requestId: 'u1', action: 'getDraft' }));
+  const got = [];
+  held.release((e) => got.push(e.payload.kind));
+  assert.deepEqual(got, ['reveal', 'item', 'ui'], 'the reveal, the waiting approval and the composer request');
+  assert.equal(listeners.size, 0, 'the panel listens itself from now on');
+  emit(agent({ kind: 'reveal', conversationId: 'c2' }));
+  assert.deepEqual(got, ['reveal', 'item', 'ui'], 'nothing is handed over twice');
+  // At the limit the oldest goes, so the newest reveal and approval stay.
+  const full = holdEvents(on, heldAgentEvent, 2);
+  emit(agent({ kind: 'reveal', conversationId: 'old' }));
+  emit(agent({ kind: 'reveal', conversationId: 'c3' }));
+  emit(agent({ kind: 'item', conversationId: 'c3', item: { id: 'i3', type: 'approval', status: 'pending' } }));
+  const kept = [];
+  full.release((e) => kept.push(e.payload.conversationId));
+  assert.deepEqual(kept, ['c3', 'c3']);
+  // A panel that failed to load: the held events go, and so does the listener.
+  const dropped = holdEvents(on, () => true);
+  emit(agent({ kind: 'reveal' }));
+  dropped.drop();
+  assert.equal(listeners.size, 0);
+});
+
+test('a request for the composer carries its deadline, and one the panel only gets after it is skipped', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/agent/backlog.js'), 'utf8');
+  const { expired } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+  const env = await demo();
+  const { hub } = fakeHub(env, {});
+  await hub.start();
+  try {
+    const seen = [];
+    hub.on('event', (e) => e.kind === 'ui' && seen.push(e));
+    const before = Date.now();
+    const pending = hub.ui('getDraft', {}, 5000);
+    const request = seen[0];
+    assert.ok(request.deadline >= before + 5000 && request.deadline <= Date.now() + 5000);
+    hub.uiReply(request.requestId, true, null);
+    await pending;
+    assert.equal(expired(request), false);
+    assert.equal(expired(request, request.deadline + 1), true);
+    assert.equal(expired({ requestId: 'u_old' }), false, 'a request without a deadline is answered as before');
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
 test('turn input: first turn carries the email and notes; later turns only what changed', async () => {
   const env = await demo();
   const inputs = [];
