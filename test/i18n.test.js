@@ -43,7 +43,8 @@ test('registered catalogs have all keys, context, plural forms, and matching nam
 
 test('all source translation references and persistent DOM labels exist in the English catalog', () => {
   for (const directory of ['main', 'renderer']) {
-    for (const filename of fs.readdirSync(path.join(__dirname, '../src', directory))) {
+    // Subfolders too: the agent panel lives in renderer/agent and its main side in main/agents.
+    for (const filename of fs.readdirSync(path.join(__dirname, '../src', directory), { recursive: true })) {
       if (!/\.(js|html)$/.test(filename)) continue;
       const source = fs.readFileSync(path.join(__dirname, '../src', directory, filename), 'utf8');
       for (const match of source.matchAll(/\bt\(['"]([^'"]+)['"]|data-i18n(?:-[\w-]+)?="([\w.]+)"/g)) {

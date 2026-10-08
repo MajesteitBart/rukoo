@@ -4,6 +4,7 @@ import { t, localize } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, $, toast, dialog, confirmDialog, showMenu, person, formatAddress, quoteDate, fileSize, hhmm, isLight } from './ui.js';
 import { fillFrame } from './mailframe.js';
+import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
 
 const EMAIL_RE = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
 // Autosave this long after the last change.
@@ -34,16 +35,28 @@ function uniq(list) {
   });
 }
 
+// Recipients from an agent: { name, address } objects or "Name <address>" strings.
+function toAddress(a) {
+  if (typeof a === 'string') {
+    const m = a.match(/^(.*)<([^>]+)>\s*$/);
+    return m ? { name: m[1].trim().replace(/^"|"$/g, ''), address: m[2].trim() } : { name: '', address: a.trim() };
+  }
+  return { name: String((a && a.name) || '').slice(0, 200), address: String((a && a.address) || '').trim().slice(0, 320) };
+}
+
+const addressList = (list) => (Array.isArray(list) ? uniq(list.slice(0, 100).map(toAddress)) : []);
+
 // A reopened draft goes into this document itself, so it is parsed in an inert
-// document and reduced to plain content: no style sheets, scripts, app class names
-// or fixed positioning that could cover the editor.
+// document and reduced to plain content: no style sheets, scripts, form controls,
+// app class names, data attributes (the composer acts on those) or fixed positioning
+// that could cover the editor.
 function cleanDraftHtml(html) {
   const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-  doc.querySelectorAll('style, link, meta, script, noscript, iframe, frame, object, embed, base, form, title, template').forEach((n) => n.remove());
+  doc.querySelectorAll('style, link, meta, script, noscript, iframe, frame, object, embed, base, form, title, template, button, input, select, textarea').forEach((n) => n.remove());
   for (const el of doc.body.querySelectorAll('*')) {
     for (const attr of [...el.attributes]) {
       const name = attr.name.toLowerCase();
-      if (name.startsWith('on') || name === 'id' || name === 'contenteditable' || name === 'tabindex') el.removeAttribute(attr.name);
+      if (name.startsWith('on') || name.startsWith('data-') || name === 'id' || name === 'contenteditable' || name === 'tabindex') el.removeAttribute(attr.name);
       else if (name === 'class' && attr.value !== 'signature') el.removeAttribute(attr.name);
       else if ((name === 'href' || name === 'src') && /^\s*(javascript|vbscript|data:text\/html)/i.test(attr.value)) el.removeAttribute(attr.name);
     }
@@ -79,7 +92,19 @@ function splitQuote(html) {
   return { body: html, quoted: null };
 }
 
+// Cc, Bcc and a rich body can be seeded too (by an agent); they come on top of what the mode filled in.
 function initialState(data, opts, m) {
+  const s = modeState(data, opts, m);
+  for (const [field, show] of [['cc', 'showCc'], ['bcc', 'showBcc']]) {
+    const list = addressList(opts[field]);
+    if (!list.length) continue;
+    s[field] = list;
+    s[show] = true;
+  }
+  return s;
+}
+
+function modeState(data, opts, m) {
   const accounts = data.accounts;
   const defaultAcc = accounts.find((a) => a.isDefault) || accounts[0];
   const acc = (m && accounts.find((a) => a.id === m.accountId)) || (opts.accountId && accounts.find((a) => a.id === opts.accountId)) || defaultAcc;
@@ -110,7 +135,8 @@ function initialState(data, opts, m) {
   };
   const signature = acc.signature ?? data.settings.signature ?? '';
   const sigHtml = signature ? `<div><br></div><div class="signature">${esc(signature).replace(/\n/g, '<br>')}</div>` : '';
-  s.bodyHtml = `<div>${esc(opts.body || '').replace(/\n/g, '<br>') || '<br>'}</div>${sigHtml}`;
+  const body = opts.html != null ? sanitizeAgentHtml(opts.html) || '<div><br></div>' : `<div>${esc(opts.body || '').replace(/\n/g, '<br>') || '<br>'}</div>`;
+  s.bodyHtml = `${body}${sigHtml}`;
 
   if (!m) return s;
   const own = (address) => acc.identities.some((i) => sameAddress(i.address, address));
@@ -137,13 +163,10 @@ function initialState(data, opts, m) {
   }
   s.original = m;
   if (opts.mode === 'reply' || opts.mode === 'replyAll') {
-    const target = (m.replyTo && m.replyTo.length ? m.replyTo : [m.from]).filter(Boolean);
-    const fromSelf = own(m.from && m.from.address);
-    s.to = fromSelf ? [...(m.to || [])] : target;
+    const envelope = replyEnvelope(acc, m, opts.mode);
+    s.to = envelope.to;
     if (opts.mode === 'replyAll') {
-      const extra = fromSelf ? [] : (m.to || []).filter((a) => !own(a.address));
-      s.to = uniq([...s.to, ...extra]);
-      s.cc = uniq((m.cc || []).filter((a) => !own(a.address) && !s.to.some((t) => sameAddress(t.address, a.address))));
+      s.cc = envelope.cc;
       s.showCc = s.cc.length > 0;
     }
     s.subject = prefixed(m.subject, 'Re');
@@ -159,6 +182,21 @@ function initialState(data, opts, m) {
     s.attachments = (m.attachments || []).map((a) => keyed({ forwardIndex: a.index, filename: a.filename, size: a.size }));
   }
   return s;
+}
+
+// To and Cc of a reply to m: the sender (or its Reply-To), and for reply-all everyone else except you.
+// Mail you sent yourself is answered to its original recipients.
+export function replyEnvelope(acc, m, mode) {
+  const own = (address) => acc.identities.some((i) => sameAddress(i.address, address));
+  const fromSelf = own(m.from && m.from.address);
+  let to = fromSelf ? [...(m.to || [])] : (m.replyTo && m.replyTo.length ? m.replyTo : [m.from]).filter(Boolean);
+  let cc = [];
+  if (mode === 'replyAll') {
+    const extra = fromSelf ? [] : (m.to || []).filter((a) => !own(a.address));
+    to = uniq([...to, ...extra]);
+    cc = uniq((m.cc || []).filter((a) => !own(a.address) && !to.some((x) => sameAddress(x.address, a.address))));
+  }
+  return { to, cc };
 }
 
 // Answer from the address the mail was sent to, so mail to an alias is answered from that alias.
@@ -276,6 +314,7 @@ function template(data, st, inline) {
       <button class="icon-btn" data-c="discard" data-i18n-title="composer.actions.discard" title="${esc(t('composer.actions.discard'))}">${icons.trash}</button>
       <button class="icon-btn" data-c="more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>
       <span class="spacer"></span>
+      <span class="agent-mark" hidden>${icons.sparkle}<span class="agent-mark-text"></span><button class="link-btn" data-c="agent-undo" data-i18n="composer.agent.undo">${esc(t('composer.agent.undo'))}</button></span>
       <span class="save-state" aria-live="polite"></span>
       <button class="btn primary send-btn" data-c="send" data-i18n-title="composer.actions.sendShortcut" title="${esc(t('composer.actions.sendShortcut'))}"><span data-i18n="composer.actions.send">${esc(t('composer.actions.send'))}</span>${icons.send}</button>
     </div>
@@ -287,6 +326,10 @@ function template(data, st, inline) {
 // options: { data, opts, message, inline, onDone(), onPopOut(opts), onTitle(text) }
 export function mountComposer(host, { data, opts, message, inline, onDone, onPopOut, onTitle }) {
   const st = initialState(data, opts, message);
+  // Stable for the life of this composer: the chat panel ties an agent's draft card to it.
+  const key = crypto.randomUUID();
+  // Set once the draft is deleted or sent, so nothing points at a stored draft that is gone.
+  let gone = false;
   const page = document.createElement('div');
   page.className = `compose composer ${inline ? 'inline' : ''}`;
   page.setAttribute('role', inline ? 'region' : 'main');
@@ -363,9 +406,34 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     clearTimeout(autosaveTimer);
     if (autosave) autosaveTimer = setTimeout(() => saveDraft({ auto: true }), AUTOSAVE_MS);
   };
-  const changed = () => {
+
+  // "Drafted by Clark" while an agent's text is in the editor, "· edited" once you change it.
+  // st.agent: { name, conversationId, edited } or null. agentBefore: the content its Undo link restores;
+  // covered: the agent writes (ids from the chat panel) that one Undo takes back.
+  st.agent = null;
+  let agentBefore = null;
+  let covered = new Set();
+  const agentMark = $('.agent-mark', page);
+  const describeAgent = () => {
+    agentMark.hidden = !st.agent;
+    if (!st.agent) return;
+    const text = t(st.agent.edited ? 'composer.agent.draftedEdited' : 'composer.agent.drafted', { name: st.agent.name });
+    $('.agent-mark-text', page).textContent = text;
+    agentMark.title = text;
+    $('[data-c="agent-undo"]', page).hidden = !agentBefore;
+  };
+
+  // by: { name } when an agent made the change; anything else is the user's own edit.
+  const changed = ({ by } = {}) => {
     editCount++;
     st.dirty = true;
+    if (by) st.agent = { name: String(by.name || '').trim().slice(0, 60) || t('composer.agent.someone'), conversationId: by.conversationId ? String(by.conversationId) : null, edited: false };
+    else {
+      // Counted apart from dirty: autosave clears dirty, but the words are still the user's.
+      st.userEdits = (st.userEdits || 0) + 1;
+      if (st.agent) st.agent.edited = true;
+    }
+    describeAgent();
     describeSaved();
     armAutosave();
   };
@@ -422,6 +490,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
 
   page.addEventListener('input', (e) => {
     const t = e.target;
+    // A field that somehow ended up inside the text is text, not one of the composer's own fields.
+    if (t !== editor && editor.contains(t)) return changed();
     if (t.dataset.rinput) {
       if (/[,;]/.test(t.value)) {
         commit(t.dataset.rinput, t.value);
@@ -441,6 +511,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   });
   page.addEventListener('change', (e) => {
     const t = e.target;
+    if (editor.contains(t)) return;
     if (t.dataset.field === 'account') {
       const [accountId, ...rest] = t.value.split('|');
       st.accountId = accountId;
@@ -606,7 +677,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (field && !e.target.closest('button') && !e.target.closest('.suggest')) field.querySelector('input')?.focus();
     if (e.target.closest('.compose-body') && !e.target.closest('.editor, .quote-zone, button') && e.target === $('.compose-body', page)) editor.focus();
     const b = e.target.closest('button');
-    if (!b) return;
+    // A button inside the text (from a pasted or agent-written body) is never one of the composer's controls.
+    if (!b || editor.contains(b)) return;
     if (b.dataset.remove !== undefined) {
       const f = b.closest('[data-rfield]').dataset.rfield;
       st[f].splice(Number(b.dataset.remove), 1);
@@ -680,6 +752,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return;
       case 'discard':
         return discard();
+      case 'agent-undo':
+        return undoAgent();
       case 'close':
         return close();
       case 'popout':
@@ -893,6 +967,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       await settleAttachments();
       await api('send', payload());
       done = true;
+      gone = true;
       finish(inline ? t('composer.status.sent') : null);
     } catch (err) {
       await dialog({ title: t('composer.errors.send'), body: `<p>${esc(err.message)}</p>` });
@@ -917,6 +992,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     }
     clearTimeout(autosaveTimer);
     closed = true;
+    gone = true;
     await saving;
     if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
     finish(st.draftId ? t('composer.status.deleted') : null);
@@ -941,6 +1017,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (choice === 'save') return saveAndFinish(t('composer.status.savedToDrafts'));
     if (choice === 'discard') {
       closed = true;
+      gone = true;
       await saving;
       if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
       finish(st.draftId ? t('composer.status.deleted') : null);
@@ -986,6 +1063,136 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     onPopOut && onPopOut(opts);
   }
 
+  // ----- agent writes -----
+
+  const showField = (field, on) => {
+    st[field === 'cc' ? 'showCc' : 'showBcc'] = on;
+    $(`[data-rfield="${field}"]`, page).hidden = !on;
+    $(`[data-c="${field}"]`, page).hidden = on;
+  };
+  const setSubject = (subject) => {
+    st.subject = subject;
+    $('[data-field="subject"]', page).value = subject;
+    title();
+  };
+  const snapshot = () => ({ html: editor.innerHTML, to: [...st.to], cc: [...st.cc], bcc: [...st.bcc], subject: st.subject, showCc: st.showCc, showBcc: st.showBcc });
+  // Agent text goes above the signature and the empty line before it.
+  const signatureStart = () => {
+    const sig = editor.querySelector(':scope > .signature');
+    const spacer = sig && sig.previousElementSibling;
+    return spacer && !spacer.textContent.trim() && !spacer.querySelector('img') ? spacer : sig;
+  };
+
+  // content: { to, cc, bcc, subject, html | text }. A field left out stays as it is; an empty list clears it.
+  // writeId: the chat panel's id for this write, so its draft card can tell whether Undo still takes it back.
+  // Never sends: the user reviews and sends. The quote stays outside the editor and is added on save.
+  function setContent(content = {}, { mode = 'replace', by = null, writeId = null } = {}) {
+    // Technical detail for the agent, so not translated.
+    if (sending || closing || closed || asking || page.inert) throw Object.assign(new Error('The composer is busy sending, saving or closing.'), { code: 'busy' });
+    // Several writes in a row keep the snapshot from before the first; after your own edit a new one is taken.
+    if (!agentBefore || !st.agent || st.agent.edited) {
+      agentBefore = snapshot();
+      covered = new Set();
+    }
+    if (writeId) covered.add(String(writeId));
+    for (const field of ['to', 'cc', 'bcc']) {
+      if (!Array.isArray(content[field])) continue;
+      const list = addressList(content[field]);
+      st[field] = list;
+      if (field !== 'to') showField(field, list.length > 0);
+      renderRecipients(field);
+    }
+    if (content.subject != null) setSubject(String(content.subject).slice(0, 1000));
+    if (content.html != null || content.text != null) {
+      const clean = content.html != null ? sanitizeAgentHtml(content.html) : textToEditorHtml(content.text);
+      const stop = signatureStart();
+      if (mode === 'replace') while (editor.firstChild && editor.firstChild !== stop) editor.firstChild.remove();
+      // Parsed as an inert template, then moved in.
+      const tpl = document.createElement('template');
+      tpl.innerHTML = clean || '<div><br></div>';
+      editor.insertBefore(tpl.content, stop || null);
+    }
+    changed({ by: by || {} });
+    return getDraft();
+  }
+
+  // What is in the composer now, for the agent and the chat panel. Reads only; changes nothing.
+  function getDraft() {
+    const typed = (field) => ($(`[data-rinput="${field}"]`, page)?.value || '').trim();
+    const people = (list) => list.map((a) => ({ name: a.name || '', address: a.address }));
+    return {
+      key,
+      mode: st.mode,
+      messageRef: st.mode !== 'draft' && opts.id ? opts.id : null,
+      accountId: st.accountId,
+      from: st.from,
+      to: people(st.to),
+      cc: people(st.cc),
+      bcc: people(st.bcc),
+      subject: st.subject,
+      html: editor.innerHTML,
+      text: editor.innerText,
+      pendingRecipients: { to: typed('to'), cc: typed('cc'), bcc: typed('bcc') },
+      quote: st.original
+        ? { from: st.original.from || null, date: st.original.date || null, subject: st.original.subject || '' }
+        : st.quoted
+          ? { head: st.quoted.head }
+          : null,
+      includeQuote: st.include,
+      attachments: st.attachments.map(({ filename, size }) => ({ filename, size: size || 0 })),
+      draftId: st.draftId,
+      replyToId: st.replyToId,
+      inReplyTo: st.inReplyTo,
+      dirty: st.dirty,
+      // Any edit of the user's own since this composer opened, saved or not; and a counter that moves on
+      // every change, so a caller that waited can tell whether the draft changed under it.
+      userEdited: Boolean(st.userEdits),
+      revision: editCount,
+      saving: Boolean(st.saving),
+      sending,
+      savedAt: st.savedAt,
+      agent: st.agent ? { name: st.agent.name, conversationId: st.agent.conversationId, edited: st.agent.edited } : null
+    };
+  }
+
+  // Whether Undo still takes back this write (or, without an id, any agent write).
+  const canUndoAgent = (writeId) => Boolean(agentBefore) && (writeId == null || covered.has(String(writeId)));
+
+  // Puts back what was there before the agent wrote. After your own edits it asks first.
+  // writeId: only when that write is what Undo takes back now.
+  async function undoAgent(writeId) {
+    if (!canUndoAgent(writeId) || sending || closing || closed || asking) return false;
+    const target = agentBefore;
+    if (st.agent && st.agent.edited) {
+      // Agent writes wait while the question is open, so the answer applies to the snapshot it was asked about.
+      asking = true;
+      let ok = false;
+      try {
+        ok = await confirmDialog(t('composer.agent.undoTitle', { name: st.agent.name }), t('composer.agent.undoHelp'), t('composer.agent.undo'));
+      } finally {
+        asking = false;
+      }
+      if (!ok || agentBefore !== target || sending || closing || closed) return false;
+    }
+    const before = agentBefore;
+    const writeIds = [...covered];
+    agentBefore = null;
+    covered = new Set();
+    st.agent = null;
+    editor.innerHTML = before.html;
+    for (const field of ['to', 'cc', 'bcc']) {
+      st[field] = before[field];
+      renderRecipients(field);
+    }
+    showField('cc', before.showCc);
+    showField('bcc', before.showBcc);
+    setSubject(before.subject);
+    changed();
+    // The chat panel marks the draft cards of these writes as undone.
+    page.dispatchEvent(new CustomEvent('agent-undo', { bubbles: true, detail: { key, writeIds } }));
+    return true;
+  }
+
   if (!inline) {
     // The window's close button: keep the window open while there are unsaved changes and ask instead.
     listen(window, 'beforeunload', (e) => {
@@ -1006,7 +1213,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     });
   }
 
-  editor.addEventListener('input', changed);
+  editor.addEventListener('input', () => changed());
   const focusStart = () => {
     if (st.mode === 'forward' || !st.to.length) return $('[data-rinput="to"]', page).focus();
     editor.focus();
@@ -1016,7 +1223,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     window.getSelection().removeAllRanges();
     window.getSelection().addRange(range);
   };
-  focusStart();
+  // A composer an agent opens while you type in the chat leaves the focus where it is.
+  if (opts.focus !== false) focusStart();
+  // Seeded by an agent: dirty from the start, so closing or moving on keeps it as a draft.
+  if (opts.agent) changed({ by: opts.agent });
 
   return {
     el: page,
@@ -1026,9 +1236,18 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     },
     isDirty: () => st.dirty,
     isBusy: () => sending || closing || asking,
+    key,
+    // The stored draft this composer leaves behind, or null once it was sent or deleted.
+    get savedDraftId() {
+      return gone ? null : st.draftId;
+    },
     leave,
     close,
     focus: focusStart,
+    setContent,
+    getDraft,
+    undoAgent,
+    canUndoAgent,
     retheme(next) {
       if (next) data = next;
       localize(page);
@@ -1037,6 +1256,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       if (heading) heading.textContent = COMPOSE_TITLES[st.mode] || t('composer.titles.new');
       title();
       describeSaved();
+      describeAgent();
       renderAttachments();
       page.querySelector('[data-c="quote"]')?.setAttribute('title', t(st.quoteOpen ? 'composer.quote.hide' : 'composer.quote.show'));
       const include = page.querySelector('[data-c="include"]');

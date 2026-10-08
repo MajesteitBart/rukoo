@@ -70,7 +70,11 @@ export const icons = {
   ban: p('<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>'),
   textFormat: p('<path d="M3.5 18 8 6h1.2l4.5 12M5.3 14h6.6"/><path d="M16 12.3c.6-.5 1.4-.8 2.2-.8 1.6 0 2.3.9 2.3 2.4V18M20.5 15c-3-.3-5 .3-5 1.6 0 1.8 3.8 1.7 5-.4"/>'),
   unsubscribe: p('<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4 7 8 6 8-6"/><path d="M15.5 16.5h6" stroke-width="2"/>', 'class="ic-unsub"'),
-  keyboard: p('<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7.5 14h9"/>')
+  keyboard: p('<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7.5 14h9"/>'),
+  // The chat panel and anything an agent did.
+  sparkle: p('<path d="M10.5 4.5Q11.2 12.3 19 13 11.2 13.7 10.5 21.5 9.8 13.7 2 13 9.8 12.3 10.5 4.5z"/><path d="M18.5 3v4.5M16.25 5.25h4.5"/>'),
+  clock: p('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+  panelRight: p('<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M14.5 4.5v15"/>')
 };
 
 // Provider tiles on the setup screen.

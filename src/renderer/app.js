@@ -57,6 +57,10 @@ const LIST_MIN = 300;
 const LIST_MAX = 640;
 const SIDEBAR_W = 236;
 const RAIL_W = 60;
+// The chat panel docks beside the reader in wide windows and slides over it in narrower ones.
+const AGENT_MIN = 320;
+const AGENT_MAX = 560;
+const AGENT_DOCK = 1240;
 
 export const S = {
   data: null,
@@ -87,7 +91,7 @@ export const S = {
 };
 
 // Layout preferences live in the renderer; they only matter to this window.
-const prefs = { listWidth: 400, sidebarCollapsed: false, ...readPrefs() };
+const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, ...readPrefs() };
 function readPrefs() {
   try {
     return JSON.parse(localStorage.getItem('rukoo.layout') || '{}');
@@ -144,6 +148,7 @@ async function refreshOnce() {
   if (languageChanged) {
     if (S.message) renderReader();
     S.composer?.retheme(data);
+    agentPanel?.relocalize();
   }
   // With one account, "Alle accounts" would just repeat it; show the account itself.
   if (data.accounts.length === 1) S.scope = data.accounts[0].id;
@@ -157,7 +162,14 @@ async function refreshOnce() {
   S.counts = counts;
   const ids = new Set(list.map((m) => m.id));
   for (const id of S.checked) if (!ids.has(id)) S.checked.delete(id);
+  const wasLight = isLight();
   applyTheme(data.settings.theme);
+  // A theme picked in Settings lands here, after main's 'theme' event redrew with the old one:
+  // redraw the mail and the editor's quote in the theme the page now has.
+  if (isLight() !== wasLight && !languageChanged) {
+    if (S.message) renderReader();
+    S.composer?.retheme(data);
+  }
   renderShell();
   if (!data.accounts.length) {
     if (!document.querySelector('.page.setup')) openSetup(ctx, { first: true });
@@ -261,12 +273,31 @@ function cursor() {
 
 // ---------- shell ----------
 
+function agentDocked() {
+  return Boolean(prefs.agentOpen) && window.innerWidth >= AGENT_DOCK;
+}
+
+// Docked, the panel gives way so the list keeps its minimum and the reader its 420 px (4 px: the workspace's
+// two borders and the two dividers). The chosen width comes back when the window is wider again.
+function agentWidth() {
+  let max = AGENT_MAX;
+  if (agentDocked()) max = Math.min(max, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - LIST_MIN - 420 - 4);
+  return Math.round(Math.max(AGENT_MIN, Math.min(max, Number(prefs.agentWidth) || 380)));
+}
+
+// With the chat open the folders shrink to the rail, so the screen shows three columns instead of four.
+// The rail button can bring them back for as long as the chat is open; below 1440 px a docked chat
+// needs the room, so the rail stays.
 function sidebarCollapsed() {
-  return prefs.sidebarCollapsed || window.innerWidth < 1100;
+  if (window.innerWidth < 1100) return true;
+  if (prefs.agentOpen) return !prefs.sidebarWithAgent || (agentDocked() && window.innerWidth < 1440);
+  return prefs.sidebarCollapsed;
 }
 
 function listWidth() {
-  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - 420));
+  // The docked chat plus its handle and the workspace's right edge.
+  const agent = agentDocked() ? agentWidth() + 2 : 0;
+  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - agent - 420));
   return Math.round(Math.max(LIST_MIN, Math.min(max, prefs.listWidth)));
 }
 
@@ -284,12 +315,18 @@ function renderShell() {
         <div class="divider" role="separator" aria-orientation="vertical" data-i18n-aria-label="mailbox.layout.listWidth" aria-label="${esc(t('mailbox.layout.listWidth'))}" tabindex="0"></div>
         <section class="reader" data-i18n-aria-label="mailbox.layout.message" aria-label="${esc(t('mailbox.layout.message'))}"></section>
       </div>
+      <div class="agent-divider" role="separator" aria-orientation="vertical" data-i18n-aria-label="agent.panel.width" aria-label="${esc(t('agent.panel.width'))}" tabindex="0"></div>
+      <aside class="agentpane bui" data-i18n-aria-label="agent.panel.label" aria-label="${esc(t('agent.panel.label'))}"></aside>
     </div>`;
+    $('.titlebar-actions').innerHTML = `<button class="icon-btn sm" data-agent-toggle data-i18n-title="agent.panel.toggle" title="${esc(t('agent.panel.toggle'))}" aria-pressed="false">${icons.sparkle}</button>`;
+    $('.titlebar-actions [data-agent-toggle]').addEventListener('click', () => toggleAgent());
     bindSidebar();
     bindList();
     bindDivider();
+    bindAgentDivider();
     bindReader();
     renderReader();
+    loadAgentPanel();
   }
   const shell = app.querySelector('.shell');
   const collapsed = sidebarCollapsed();
@@ -298,10 +335,102 @@ function renderShell() {
   shell.classList.toggle('has-message', Boolean(S.selectedId) || S.checked.size > 1 || Boolean(S.composer));
   shell.classList.toggle('compact', S.data?.settings.density === 'compact');
   shell.classList.toggle('selecting', S.checked.size > 0);
+  shell.classList.toggle('agent-open', Boolean(prefs.agentOpen));
   root.style.setProperty('--sidebar-w', `${collapsed ? RAIL_W : SIDEBAR_W}px`);
   root.style.setProperty('--list-w', `${listWidth()}px`);
+  root.style.setProperty('--agent-w', `${agentWidth()}px`);
+  for (const b of $$('[data-agent-toggle], [data-reader="agent"]')) {
+    b.classList.toggle('on', Boolean(prefs.agentOpen));
+    b.setAttribute('aria-pressed', String(Boolean(prefs.agentOpen)));
+  }
   document.body.classList.toggle('no-accounts', !S.data?.accounts.length);
   document.body.classList.toggle('collapsed-sidebar', collapsed);
+}
+
+// ---------- chat panel ----------
+
+// The panel loads on its own, so a fault in it can never keep the mailbox from opening. Main holds the agent
+// events it must not miss until the panel says it listens (see agents/gate.js).
+let agentPanel = null;
+function loadAgentPanel() {
+  import('./agent/panel.js')
+    .then((m) => {
+      agentPanel = m.mountAgentPanel(ctx);
+    })
+    .catch((err) => console.error('The chat panel did not load:', err));
+}
+
+// focus: move the keyboard to the chat input (Ctrl+J and the toolbar buttons do).
+function setAgentOpen(open, { focus = false } = {}) {
+  const rail = sidebarCollapsed();
+  prefs.agentOpen = Boolean(open);
+  savePrefs();
+  renderShell();
+  // The folders become a rail while the chat is open; the rail button's label follows.
+  if (sidebarCollapsed() !== rail) renderSidebar();
+  if (prefs.agentOpen) agentPanel?.opened({ focus });
+  else if ($('.agentpane')?.contains(document.activeElement)) document.activeElement.blur();
+}
+
+function toggleAgent() {
+  setAgentOpen(!prefs.agentOpen, { focus: !prefs.agentOpen });
+}
+
+// Main keeps track of what is on screen so agents can see it too; the panel follows the open email.
+let viewTimer = null;
+function agentViewChanged() {
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => {
+    const c = S.composer;
+    api('agentView', {
+      openMessageId: S.selectedId || null,
+      checkedIds: [...S.checked].slice(0, 50),
+      scope: S.scope,
+      view: S.view,
+      folder: S.folder,
+      composer: c ? { mode: c.opts.mode, replyToId: c.opts.mode !== 'draft' ? c.opts.id || null : null, draftId: c.draftId || null } : null
+    }).catch(() => {});
+    agentPanel?.sync();
+  }, 150);
+}
+
+function bindAgentDivider() {
+  const div = $('.agent-divider');
+  const set = (w) => {
+    prefs.agentWidth = Math.round(w);
+    root.style.setProperty('--agent-w', `${agentWidth()}px`);
+    root.style.setProperty('--list-w', `${listWidth()}px`);
+  };
+  div.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    div.setPointerCapture(e.pointerId);
+    div.classList.add('dragging');
+    const right = $('.shell').getBoundingClientRect().right;
+    const move = (ev) => set(right - ev.clientX);
+    const up = () => {
+      div.classList.remove('dragging');
+      div.removeEventListener('pointermove', move);
+      div.removeEventListener('pointerup', up);
+      prefs.agentWidth = agentWidth();
+      savePrefs();
+      renderShell();
+    };
+    div.addEventListener('pointermove', move);
+    div.addEventListener('pointerup', up);
+  });
+  div.addEventListener('dblclick', () => {
+    set(380);
+    savePrefs();
+    renderShell();
+  });
+  div.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    set(agentWidth() + (e.key === 'ArrowLeft' ? 24 : -24));
+    prefs.agentWidth = agentWidth();
+    savePrefs();
+    renderShell();
+  });
 }
 
 // ---------- search (in the title bar) ----------
@@ -515,7 +644,8 @@ function bindSidebar() {
       case 'sync':
         return syncNow();
       case 'collapse':
-        prefs.sidebarCollapsed = !sidebarCollapsed();
+        if (prefs.agentOpen) prefs.sidebarWithAgent = sidebarCollapsed();
+        else prefs.sidebarCollapsed = !sidebarCollapsed();
         savePrefs();
         renderShell();
         return renderSidebar();
@@ -873,6 +1003,7 @@ function selectionChanged() {
   renderShell();
   // The reader shows the selection while it holds several messages, and the open message otherwise.
   if (S.checked.size > 1 || $('.reader .multi')) renderReader();
+  agentViewChanged();
 }
 
 function toggleCheck(id) {
@@ -1446,6 +1577,8 @@ async function printMessage(id) {
 // Writing happens in the reading pane; the pop-out button moves it to a window of its own.
 // Each request to write (or to open a message) takes a number; a request that a newer one overtook
 // while it waited stops, so a slow reply can never replace the message you started after it.
+// still: the caller's check after each wait that its reason to write holds (the agent panel: whether its chat is
+// still on screen); without it the request stops.
 let composeTurn = 0;
 
 async function compose(opts) {
@@ -1456,7 +1589,9 @@ async function compose(opts) {
   if (opts.mode === 'draft' && (await api('draftWindow', opts.id).catch(() => false))) return;
   if (turn !== composeTurn) return;
   const accountId = S.scope !== 'all' ? S.scope : null;
-  const full = { accountId, ...opts };
+  const { still, ...rest } = opts;
+  const full = { accountId, ...rest };
+  const holds = () => !still || still();
   let message = null;
   if (full.id) {
     try {
@@ -1467,25 +1602,32 @@ async function compose(opts) {
     }
     if (turn !== composeTurn) return;
   }
+  if (!holds()) return;
   // Whatever is being written now is kept as a draft before the new message takes its place.
   if (S.composer && !(await S.composer.leave())) return;
-  if (turn !== composeTurn || S.composer) return;
+  if (turn !== composeTurn || S.composer || !holds()) return;
   const host = $('.reader');
   host.innerHTML = '';
   S.expanded = false;
-  S.composer = mountComposer(host, {
+  let mounted = null;
+  S.composer = mounted = mountComposer(host, {
     data: S.data,
     opts: full,
     message,
     inline: true,
     onDone: () => {
       S.composer = null;
+      // The chat's draft cards remember which stored draft this composer left behind.
+      agentPanel?.composerClosed(mounted);
       renderShell();
       renderReader();
+      agentViewChanged();
     },
     onPopOut: (o) => api('openCompose', { accountId, ...o }).catch((err) => toast(err.message, 5000))
   });
   renderShell();
+  agentViewChanged();
+  return S.composer;
 }
 
 // ---------- reader ----------
@@ -1507,6 +1649,7 @@ export async function openMessage(id, { auto = false } = {}) {
   revealRow(id);
   renderShell();
   renderReader();
+  agentViewChanged();
   try {
     const full = await api('get', id);
     if (S.selectedId !== id) return;
@@ -1518,6 +1661,8 @@ export async function openMessage(id, { auto = false } = {}) {
     if (S.selectedId === id) S.loading = false;
   }
   renderReader();
+  // Again with the full message: the panel needs its Message-ID and whether it can unsubscribe.
+  agentViewChanged();
   if (m && m.unread && m.role !== 'drafts' && !auto) setUnread([m], false);
 }
 
@@ -1528,6 +1673,7 @@ export function closeReader() {
   renderShell();
   renderReader();
   syncRowClasses();
+  agentViewChanged();
 }
 
 function renderReaderNav() {
@@ -1642,7 +1788,8 @@ function readerBar(m) {
     <span class="spacer"></span>
     <button class="icon-btn" data-reader="prev" data-i18n-title="reader.navigation.previous" title="${esc(t('reader.navigation.previous'))}">${icons.up}</button>
     <button class="icon-btn" data-reader="next" data-i18n-title="reader.navigation.next" title="${esc(t('reader.navigation.next'))}">${icons.down}</button>
-    <button class="icon-btn wide-only" data-reader="expand" title="${S.expanded ? t('reader.navigation.showList') : t('reader.navigation.expand')}">${S.expanded ? icons.collapse : icons.expand}</button>`;
+    <button class="icon-btn wide-only" data-reader="expand" title="${S.expanded ? t('reader.navigation.showList') : t('reader.navigation.expand')}">${S.expanded ? icons.collapse : icons.expand}</button>
+    <button class="icon-btn ${prefs.agentOpen ? 'on' : ''}" data-reader="agent" data-i18n-title="agent.panel.ask" title="${esc(t('agent.panel.ask'))}" aria-pressed="${Boolean(prefs.agentOpen)}">${icons.sparkle}</button>`;
   const back = `<button class="icon-btn narrow-only" data-reader="back" data-i18n-title="reader.navigation.back" title="${esc(t('reader.navigation.back'))}">${icons.back}</button>`;
   if (draft) {
     return `<div class="reader-bar" role="toolbar" data-i18n-aria-label="reader.actions.label" aria-label="${esc(t('reader.actions.label'))}">${back}
@@ -1859,6 +2006,8 @@ function bindReader() {
         return removeMessages([item]);
       case 'more':
         return showMenu(btn, messageMenu(item));
+      case 'agent':
+        return toggleAgent();
     }
   });
 }
@@ -1910,10 +2059,21 @@ function editing(e) {
 document.addEventListener('keydown', (e) => {
   if (menuOpen()) return;
   if (document.querySelector('.page, .scrim')) return;
-  if (e.target.closest && e.target.closest('.composer')) return;
-  if (!S.data || !S.data.accounts.length) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
+  // Ctrl+J works everywhere, the editor included: it opens the chat and puts you in its input,
+  // or closes it again from an empty input. Without it, J would also step to the next message.
+  if (ctrl && key === 'j' && !e.shiftKey && !e.altKey && S.data && S.data.accounts.length) {
+    e.preventDefault();
+    // While the agent is not set up the input is hidden, so there is nothing to focus: Ctrl+J just closes.
+    if (prefs.agentOpen && agentPanel && (agentPanel.inputFocused() || !agentPanel.inputAvailable())) {
+      if (!agentPanel.inputAvailable() || !agentPanel.inputValue().trim()) setAgentOpen(false);
+      return;
+    }
+    return setAgentOpen(true, { focus: true });
+  }
+  if (e.target.closest && e.target.closest('.composer')) return;
+  if (!S.data || !S.data.accounts.length) return;
   if (ctrl && key === 'n') {
     e.preventDefault();
     return compose({ mode: 'new' });
@@ -1926,6 +2086,9 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     return syncNow();
   }
+  // Keys in the chat panel stay there: Delete on one of its buttons must not delete the open email.
+  // Its menus (agent picker, history) live on the body, outside the panel.
+  if (e.target.closest?.('.agentpane, .bui-menu')) return;
   if (editing(e)) return;
   if (ctrl && key === 'z') {
     if (runToastAction()) e.preventDefault();
@@ -2072,15 +2235,21 @@ document.addEventListener(
   true
 );
 
-// Context shared with the settings and setup pages.
+// Context shared with the settings and setup pages and the chat panel.
 export const ctx = {
   S,
   refresh,
   account,
   openMessage,
   closeReader,
+  compose,
   openSetup: (opts) => openSetup(ctx, opts),
-  openSettings: () => openSettings(ctx)
+  // view: open straight on one page, such as 'agents'.
+  openSettings: (view) => openSettings(ctx, { view }),
+  revealAgent: () => setAgentOpen(true),
+  closeAgent: () => setAgentOpen(false),
+  agentOpen: () => Boolean(prefs.agentOpen),
+  agentOverlay: () => Boolean(prefs.agentOpen) && window.innerWidth < AGENT_DOCK
 };
 
 refresh().catch((err) => toast(err.message, 6000));

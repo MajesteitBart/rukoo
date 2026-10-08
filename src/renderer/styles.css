@@ -475,6 +475,20 @@ body.no-accounts .titlebar-search,
 body:has(.page) .titlebar-search {
   display: none;
 }
+/* Right of the search, left of the room kept for the window buttons. */
+.titlebar-actions {
+  -webkit-app-region: no-drag;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+}
+.titlebar-actions:empty,
+body.no-accounts .titlebar-actions,
+body:has(.page) .titlebar-actions {
+  display: none;
+}
 
 /* The logo comes in a light and a dark colourway; show the one that matches the theme. */
 :root.light .brand-dark,
@@ -494,8 +508,9 @@ body:has(.page) .titlebar-search {
   height: 100%;
 }
 
-/* List and reader share one surface; hairlines divide them. */
+/* List and reader share one surface; hairlines divide them. Positioned for the chat panel's overlay mode. */
 .workspace {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -2950,4 +2965,382 @@ body.compose-window {
   color: var(--accent);
   pointer-events: none;
   z-index: 50;
+}
+
+/* ---------- chat panel ---------- */
+
+/* Docked beside the workspace in wide windows, on the canvas like the folders, so the list and the email
+   stay one white card in the middle. The divider is only a resize handle; the card's edge is the line.
+   No width transition while docked: the mail frame refits on every resize. */
+.shell.agent-open .workspace {
+  border-right: 1px solid var(--border);
+  border-top-right-radius: 12px;
+}
+.agent-divider {
+  display: none;
+  width: 1px;
+  flex: none;
+  background: transparent;
+  position: relative;
+  cursor: col-resize;
+  z-index: 3;
+}
+.agent-divider::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+.agent-divider:hover,
+.agent-divider.dragging,
+.agent-divider:focus-visible {
+  background: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.agentpane {
+  display: none;
+  flex: none;
+  width: var(--agent-w, 380px);
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--bg);
+  container-type: inline-size;
+  container-name: agent;
+}
+.shell.agent-open .agent-divider {
+  display: block;
+}
+.shell.agent-open .agentpane {
+  display: flex;
+}
+/* Narrower windows: the panel slides over the reader instead of squeezing it. */
+@media (max-width: 1239px) {
+  .shell.agent-open .agent-divider {
+    display: none;
+  }
+  .shell.agent-open .workspace {
+    border-right: 0;
+    border-top-right-radius: 0;
+  }
+  .agentpane {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow);
+  }
+  .shell.agent-open .agentpane {
+    animation: agent-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+/* Narrow windows: one pane at a time, the chat included. */
+@media (max-width: 860px) {
+  .agentpane {
+    /* The rail stays visible; the chat covers the workspace. */
+    left: var(--sidebar-w);
+    width: auto;
+    border-left: 0;
+    box-shadow: none;
+  }
+}
+@keyframes agent-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell.agent-open .agentpane {
+    animation: none;
+  }
+}
+
+/* Same height as the reader toolbar, so the hairlines line up. */
+.agentpane .ap-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 50px;
+  padding: 0 8px 0 14px;
+  flex: none;
+}
+.agentpane .ap-mono {
+  display: flex;
+  flex: none;
+  margin-right: 8px;
+}
+.agentpane .ap-who {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+.agentpane .ap-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.agentpane .ap-agent {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agentpane .ap-title {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agentpane .ap-dot,
+.agent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-3);
+  opacity: 0.7;
+}
+.agentpane .ap-dot[data-state='ready'],
+.agent-dot[data-state='ready'] {
+  background: var(--ok);
+  opacity: 1;
+}
+.agentpane .ap-dot[data-state='offline'],
+.agent-dot[data-state='offline'] {
+  background: var(--danger);
+  opacity: 1;
+}
+.agentpane .ap-dot[data-state='starting'],
+.agent-dot[data-state='starting'] {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.agentpane .ap-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.agentpane .ap-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 20px;
+  outline: none;
+  user-select: text;
+}
+.agentpane .ap-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agentpane .ap-item {
+  min-width: 0;
+}
+.agentpane .ap-item.is-stopped {
+  opacity: 0.75;
+}
+.agentpane .ap-jump {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  width: 28px;
+  height: 28px;
+  margin-left: -14px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--raised);
+  color: var(--text-2);
+  box-shadow: var(--shadow-sm);
+  animation: pop 120ms ease;
+}
+.agentpane .ap-jump:hover {
+  color: var(--text);
+}
+.agentpane .ap-jump svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+}
+.agentpane .ap-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+.agentpane .ap-actions {
+  flex-wrap: wrap;
+}
+.agentpane .ap-foot {
+  flex: none;
+  padding: 0 10px 10px;
+}
+/* In the input while the agent cannot take a message: why, and the way to Settings. */
+.agentpane .ap-setup {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  color: var(--text-2);
+}
+.agentpane .ap-setup .link-btn {
+  font-size: inherit;
+  padding: 1px 2px;
+}
+/* The technical cause of an error, small, under the sentence that explains it. */
+.agentpane .ap-detail {
+  margin: 1px 0 0 24px;
+  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+/* The components' scoped reset squares off buttons; the panel's own chrome keeps Rukoo's shapes. */
+.agentpane .icon-btn {
+  border-radius: var(--radius);
+}
+.agentpane .icon-btn:disabled {
+  opacity: 0.35;
+}
+.agentpane .link-btn {
+  border-radius: 6px;
+}
+
+/* ---------- agent drafts in the composer ---------- */
+
+.agent-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-right: 10px;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.agent-mark svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  stroke-width: 1.7;
+  color: var(--accent);
+}
+.agent-mark-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-mark .link-btn {
+  font-size: 12px;
+  padding: 1px 3px;
+}
+@container reader (max-width: 440px) {
+  .agent-mark-text {
+    display: none;
+  }
+}
+
+/* ---------- settings: agents ---------- */
+
+.settings-intro {
+  margin: 8px 4px 2px;
+  max-width: 580px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.settings-group-title.agent-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.agent-product {
+  font-weight: 500;
+  color: var(--text-3);
+  opacity: 0.75;
+}
+.agent-status .agent-dot {
+  width: 8px;
+  height: 8px;
+  margin: 0 3px 0 2px;
+}
+.row.static {
+  cursor: default;
+}
+.row .agent-detail {
+  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+.row .agent-detail:empty {
+  display: none;
+}
+/* Main's note under the address, e.g. that the chosen port was taken. */
+.row .agent-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.agent-card .agent-form {
+  position: relative;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+.agent-card .agent-form::before,
+.agent-card .agent-form + .row::before {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 0;
+  border-top: 1px solid var(--border);
+}
+.agent-form .pw input {
+  padding-right: 38px;
+}
+.agent-form .pw .icon-btn {
+  top: 2px;
+}
+.agent-key-box {
+  display: grid;
+  gap: 8px;
+}
+.agent-key {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.agent-key-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+}
+.agent-key-saved svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
+  color: var(--ok);
+}
+.agent-key-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }

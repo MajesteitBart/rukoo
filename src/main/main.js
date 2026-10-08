@@ -23,6 +23,11 @@ const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
+// ---- agents ----
+const { clipboard } = require('electron');
+const { AgentHub } = require('./agents');
+const { PanelGate } = require('./agents/gate');
+// ---- /agents ----
 
 const APP_ID = 'nl.bvdm.rukoo-mail';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
@@ -66,6 +71,11 @@ let engine = null;
 let google = null;
 let syncTimer = null;
 let newSinceFocus = 0;
+// ---- agents ----
+let hub = null;
+// Holds the agent events the chat panel must not miss until it listens; see agents/gate.js.
+let agentGate = null;
+// ---- /agents ----
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -340,6 +350,8 @@ const api = {
   saveToDevice: (id) => engine.saveToDevice(id),
   send: async (payload) => {
     await engine.send(payload);
+    // Sending removed the draft; an agent's draft cards that pointed at it keep none.
+    if (hub && payload && payload.draftId) hub.draftMoved(String(payload.draftId), null);
     send('toast', t('composer.status.sent'));
     return true;
   },
@@ -353,8 +365,17 @@ const api = {
     return true;
   },
   toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
-  saveDraft: (payload) => engine.saveDraft(payload),
-  discardDraft: (id) => engine.discardDraft(id),
+  // A save replaces the stored draft; an agent's draft cards follow it, also from a compose window.
+  saveDraft: async (payload) => {
+    const id = await engine.saveDraft(payload);
+    if (hub && payload && payload.draftId && id) hub.draftMoved(String(payload.draftId), id);
+    return id;
+  },
+  discardDraft: async (id) => {
+    const result = await engine.discardDraft(id);
+    if (hub && id) hub.draftMoved(String(id), null);
+    return result;
+  },
   addAccount: (input) => engine.addAccount(input),
   updateAccount: (id, patch) => engine.updateAccount(id, patch),
   removeAccount: (id) => engine.removeAccount(id),
@@ -489,6 +510,92 @@ const api = {
   appInfo: () => ({ version: app.getVersion(), dataDir: app.getPath('userData') })
 };
 
+// ---- agents ----
+// The chat panel's calls. Arguments are checked here; the hub checks structure and values again.
+const agentText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+const agentId = (v) => {
+  if (typeof v !== 'string' || !v || v.length > 200) throw new Error('invalid');
+  return v;
+};
+// A mail id carries its folder path URI-encoded, so it can be far longer than a chat or item id.
+const agentMailId = (v) => {
+  if (typeof v !== 'string' || !v || v.length > 4000) throw new Error('invalid');
+  return v;
+};
+const agentPlain = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+function agentHub() {
+  if (!hub) throw new Error('unknown');
+  return hub;
+}
+function agentMessage(m) {
+  if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !m.id) return null;
+  const from = m.from && typeof m.from === 'object' ? { name: agentText(m.from.name, 200), address: agentText(m.from.address, 320) } : null;
+  return {
+    id: m.id.slice(0, 2000),
+    messageId: agentText(m.messageId, 1000) || null,
+    accountId: agentText(m.accountId, 200) || null,
+    subject: agentText(m.subject, 1000),
+    from,
+    date: Number(m.date) || null,
+    unsubscribe: m.unsubscribe === true
+  };
+}
+Object.assign(api, {
+  agentConfig: () => agentHub().config(),
+  agentUpdateConfig: (patch) => agentHub().updateConfig(agentPlain(patch)),
+  agentSetSecret: (agent, value) => agentHub().setSecret(agentId(agent), agentText(value, 4000)),
+  agentTest: (agent) => agentHub().test(agentId(agent)),
+  agentStatus: () => agentHub().status(),
+  agentCopyHermesSetup: () => agentHub().copyHermesSetup(),
+  agentRotateToken: () => agentHub().rotateToken(),
+  agentList: () => agentHub().list(),
+  agentGet: (id) => agentHub().get(agentId(id)),
+  agentFindFor: (ref) => {
+    const r = agentPlain(ref);
+    return agentHub().findFor({ id: agentText(r.id, 2000), messageId: agentText(r.messageId, 1000), accountId: agentText(r.accountId, 200) || null });
+  },
+  agentLocate: (ref) => {
+    const r = agentPlain(ref);
+    return agentHub().locate({ id: agentText(r.id, 2000), messageHeader: agentText(r.messageHeader, 1000), accountId: agentText(r.accountId, 200) || null });
+  },
+  agentCreate: (input) => {
+    const i = agentPlain(input);
+    return agentHub().create({ agent: agentText(i.agent, 20), message: agentMessage(i.message) });
+  },
+  agentSend: (id, input) => {
+    const i = agentPlain(input);
+    return agentHub().send(agentId(id), {
+      text: agentText(i.text, 20000),
+      action: agentText(i.action, 40) || null,
+      display: agentText(i.display, 20000) || null
+    });
+  },
+  agentStop: (id) => agentHub().stop(agentId(id)),
+  agentDecide: (id, itemId, choiceId) => agentHub().decide(agentId(id), agentId(itemId), agentId(choiceId)),
+  agentRemove: (id) => agentHub().remove(agentId(id)),
+  agentView: (state) => agentHub().view(agentPlain(state)),
+  agentUiReply: (requestId, ok, result) => agentHub().uiReply(agentId(requestId), ok === true, result === undefined ? null : result),
+  agentPanelReady: () => {
+    if (agentGate) agentGate.open();
+  },
+  agentUndo: (id, itemId) => agentHub().undo(agentId(id), agentId(itemId)),
+  agentKeepDraft: (composerKey, draftId, was) =>
+    agentHub().keepDraft(agentId(composerKey), draftId == null ? null : agentMailId(draftId), was == null ? null : agentMailId(was)),
+  agentPatchItem: (id, itemId, patch) => {
+    const p = agentPlain(patch);
+    if (Object.keys(p).length !== 1 || typeof p.undone !== 'boolean') throw new Error('invalid');
+    return agentHub().patchItem(agentId(id), agentId(itemId), { undone: p.undone });
+  },
+  // Links in agent cards (sources, plan tasks). Besides what any link may open, an Obsidian note can open
+  // here; mail frames keep using openExternal, so a link in an email never starts an Obsidian action.
+  openAgentLink: (url) => {
+    const u = agentText(url, 2000).trim();
+    if (/^obsidian:\/\/(open|search)\b/i.test(u)) return shell.openExternal(u);
+    return openUrl(u);
+  }
+});
+// ---- /agents ----
+
 // Calls that act on the window that makes them.
 const windowApi = {
   composeInit: (sender) => {
@@ -546,6 +653,12 @@ function createWindow() {
   });
   win.on('closed', () => {
     win = null;
+    if (agentGate) agentGate.close();
+  });
+  // A reload starts a new panel, which says again when it listens. Only the page itself counts: an email's frame
+  // loads too, and the panel that opened it keeps listening.
+  win.webContents.on('did-start-navigation', (details) => {
+    if (agentGate && details && details.isMainFrame && !details.isSameDocument) agentGate.close();
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
   reveal(win, b.maximized);
@@ -570,6 +683,27 @@ app.whenReady().then(() => {
     if (engine.settings.badge === 'unread') refreshBadge();
   });
   engine.on('new-mail', notify);
+  // ---- agents ----
+  // Starts in the background: the panel shows "starting" until the first 'agents' status event.
+  hub = new AgentHub({
+    engine,
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    secrets,
+    deps: {
+      unsubscribe: (id) => api.unsubscribe(id),
+      // A mailto-only unsubscribe opens a filled-in compose window; the user sends it.
+      openMailto: (url) => openUrl(url),
+      appVersion: app.getVersion(),
+      clipboard,
+      hasWindow: () => Boolean(win && !win.isDestroyed()),
+      workspace: path.join(app.getPath('userData'), 'agent-workspace')
+    }
+  });
+  agentGate = new PanelGate((payload) => send('agent', payload));
+  hub.on('event', (payload) => agentGate.event(payload));
+  if (process.env.SEM_HIDDEN) global.__semAgents = hub;
+  hub.start().catch((err) => console.error('[agents] start failed:', err));
+  // ---- /agents ----
   nativeTheme.on('updated', () => {
     applyTheme();
     broadcast('theme');
@@ -586,3 +720,26 @@ app.on('before-quit', () => {
   clearInterval(syncTimer);
   if (engine) engine.flush();
 });
+
+// ---- agents ----
+// dispose() stops turns and flushes the conversations before its first await, and starts the kills of the
+// agent processes right after, before any timer can fire; none of that blocks. A kill only finishes while
+// Rukoo runs: Node puts its child processes, taskkill included, in a job that Windows ends together with
+// Rukoo, and that would leave the agents' own commands running. Clark's runs only end with a stop request
+// (each with a 2 s timeout), which a process that exits right away never sends. So the quit waits once,
+// until dispose is done or QUIT_WAIT has passed, the time each taskkill had when it still blocked.
+// will-quit, not before-quit: a window can still cancel the quit after before-quit (a pop-out composer that
+// asks to save), and the agents must keep running then. will-quit comes once every window has closed.
+const QUIT_WAIT = 5000;
+let agentsDisposed = false;
+app.on('will-quit', (event) => {
+  if (!hub || agentsDisposed) return;
+  agentsDisposed = true;
+  event.preventDefault();
+  // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
+  // will-quit does not finish quitting.
+  Promise.race([hub.dispose(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))])
+    .catch(() => {})
+    .finally(() => app.exit(0));
+});
+// ---- /agents ----

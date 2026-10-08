@@ -4,6 +4,8 @@
 
 Rukoo Mail is an email client for Windows, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. The interface uses Inter and supports English (the default) and Dutch. Choose a language during setup or in Settings → General → Language; the preference applies to every window and is saved.
 
+A chat panel next to the email lets you hand it to an agent: a Hermes Agent such as Clark, Claude Code or Codex. The agent drafts the reply in the composer, plans follow-ups, looks things up in its own tools and asks you before it acts. See [Agents](docs/agents.md).
+
 Translation labels have descriptive keys and screen context in the [English source catalog](src/i18n/en.js). See [the translation guide](docs/translations.md) for adding a language or finding a label.
 
 ![Inbox and reading pane](docs/screenshots/light/02-inbox.png)
@@ -27,6 +29,7 @@ Translation labels have descriptive keys and screen context in the [English sour
 - The app remembers the list width, the sidebar state and where the windows were. The list has a standard and a compact density.
 - Swipe actions on touch screens: right marks read or unread, left deletes.
 - Sorting, mark all as read, empty Trash, and new folders from the "+" next to Folders.
+- A chat panel (`Ctrl+J`) for Hermes Agent, Claude Code and Codex. Quick actions draft a reply, brief you on the sender, plan follow-ups, tell the team, update other systems, unsubscribe and summarize. Agents read mail and write drafts through Rukoo's own MCP server and never send mail; anything other people will see waits for your approval. Works the same for every provider. See [Agents](docs/agents.md).
 - Settings: language, theme, list density, swipe actions, fit content to the window, sender logos, notifications, taskbar badge, sync interval, signature (none by default), spam addresses, VIPs and folder visibility.
 - Windows notifications for new mail and a count badge on the taskbar icon.
 
@@ -71,6 +74,14 @@ The first run.
 Settings.
 
 ![Settings](docs/screenshots/light/10-settings.png)
+
+Clark drafted a reply to Sanne into the composer; the chat shows what it looked at.
+
+![Clark drafted a reply in the chat panel](docs/screenshots/light/11-agent-reply.png)
+
+Planned follow-ups, and an approval card before anything goes to Todoist.
+
+![Follow-ups and an approval card](docs/screenshots/light/12-agent-plan.png)
 ## Limits
 
 Google sign-in needs an OAuth client of type "Desktop app" from Google Cloud. The client is not in this repository. The app looks for it in this order:
@@ -109,7 +120,7 @@ npm run dist
 
 ```bash
 npm test          # unit tests for the engine and mail parsing, plus a live IMAP test
-npm run test:e2e  # Playwright drives the real Electron app
+npm run test:e2e  # Playwright drives the real Electron app; chat tests use scripted agents (SEM_AGENT_FAKE=1)
 ```
 
 The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.email) and skip themselves when it is unreachable.
@@ -128,6 +139,9 @@ The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.em
 | `src/renderer/app.js` | The main window: sidebar, list, reading pane, selection, undo |
 | `src/renderer/composer.js` | The editor, inline or in a window, with autosave |
 | `src/renderer/compose.js` | The compose window around the editor |
+| `src/main/agents/` | The chat panel's main side: conversations and approvals (`hub.js`), Rukoo's MCP server and tools (`mcp.js`, `tools.js`), and the Hermes, Claude Code and Codex adapters |
+| `src/renderer/agent/` | The chat panel (`panel.js`), its quick actions, and the components ported from Beautiful UI (`bui.js`, `agent.css`) |
+| `integrations/hermes/` | The stdio bridge that lets a Hermes agent on another machine reach Rukoo's tools over Tailscale |
 | `src/renderer/` | Plain HTML, CSS and ES modules, no framework or bundler |
 
 The renderer runs sandboxed with context isolation. It can only call the methods in the IPC table in `main.js`.

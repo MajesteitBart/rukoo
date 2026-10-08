@@ -48,5 +48,6 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
     await expect(win.locator('.sync-status')).toContainText(/updated/i);
   } finally {
     await app.close();
+    fs.rmSync(env.SEM_DATA_DIR, { recursive: true, force: true });
   }
 });

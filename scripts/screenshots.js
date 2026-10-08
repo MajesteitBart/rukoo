@@ -11,7 +11,9 @@ async function capture(theme, out) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-shot-'));
   fs.mkdirSync(path.join(dataDir, 'data'));
   fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'en', theme }));
-  const env = (({ ELECTRON_RUN_AS_NODE, ...rest }) => ({ ...rest, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_LOGOS: '1' }))(process.env);
+  // The chat screenshots use the scripted test agents, under the name of a Hermes agent.
+  fs.writeFileSync(path.join(dataDir, 'data', 'agents.json'), JSON.stringify({ version: 1, clark: { name: 'Clark' } }));
+  const env = (({ ELECTRON_RUN_AS_NODE, ...rest }) => ({ ...rest, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_LOGOS: '1', SEM_AGENT_FAKE: '1' }))(process.env);
   const app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..'), env });
   try {
     const win = await app.firstWindow();
@@ -78,6 +80,23 @@ async function capture(theme, out) {
     await shot('09-reply-quote.png');
     await win.click('.composer [data-c="close"]');
     if (await win.$('.scrim')) await win.getByRole('button', { name: "Don't save", exact: true }).click();
+    await win.waitForTimeout(300);
+
+    // The chat panel: Clark drafts the reply to Sanne, then plans the follow-ups and asks before adding tasks.
+    const chip = (label) => win.locator('.agentpane .bui-sugg__chip', { hasText: label });
+    await item('Call on Thursday').click();
+    await win.waitForSelector('.reader-subject:text-is("Call on Thursday")');
+    await win.keyboard.press('Control+j');
+    await chip('Draft a reply').click();
+    await expect(win.locator('.agentpane .ap-transcript')).toContainText('Done. The draft is in the composer.', { timeout: 20000 });
+    await shot('11-agent-reply.png', 1200);
+    await win.click('.composer [data-c="close"]');
+    if (await win.$('.scrim')) await win.getByRole('button', { name: "Don't save", exact: true }).click();
+    await win.click('.agentpane [data-ap="new"]');
+    await chip('Plan follow-ups').click();
+    await expect(win.locator('.agentpane .bui-approval')).toContainText('Waiting for you', { timeout: 20000 });
+    await shot('12-agent-plan.png', 1200);
+    await win.click('.agentpane [data-ap="close"]');
     await win.waitForTimeout(300);
 
     await win.click('[data-action="settings"]');

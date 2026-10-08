@@ -46,6 +46,20 @@ const hideableViews = () => [
 
 const labelOf = (list, value) => (list.find((x) => x.value === value) || list[0]).label;
 
+const AGENT_IDS = ['clark', 'claude', 'codex'];
+const AGENT_PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex' };
+const AGENT_STATES = ['starting', 'ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'unknown'];
+const ACCESS = [
+  { value: 'ask', get label() { return t('settings.agents.accessAsk'); }, get hint() { return t('settings.agents.accessAskHint'); } },
+  { value: 'full', get label() { return t('settings.agents.accessFull'); }, get hint() { return t('settings.agents.accessFullHint'); } }
+];
+const agentName = (config, id) => (id === 'clark' ? (config && config.clark && config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : 'Codex');
+const agentStateOf = (status, id) => {
+  const s = status && status[id] ? status[id].state : 'starting';
+  return AGENT_STATES.includes(s) ? s : 'unknown';
+};
+const agentDot = (state) => (state === 'ready' ? 'ready' : state === 'offline' || state === 'unauthorized' ? 'offline' : state === 'starting' ? 'starting' : 'unconfigured');
+
 export function promptDialog(title, value = '', { multiline = false, placeholder = '' } = {}) {
   return dialog({
     title,
@@ -63,17 +77,23 @@ export function promptDialog(title, value = '', { multiline = false, placeholder
   });
 }
 
-export function openSettings(ctx) {
+// view: open straight on one page (the chat panel opens 'agents'); Back still leads to the overview.
+export function openSettings(ctx, { view: start } = {}) {
   const page = document.createElement('div');
   page.className = 'page settings';
   document.getElementById('overlays').appendChild(page);
-  const stack = ['main'];
+  const stack = start ? ['main', start] : ['main'];
   let params = {};
 
   // Live status (sync times, errors) matters on the overview pages; forms must not be reset under the user.
-  const unsubscribe = window.mail.on(({ type }) => {
+  const unsubscribe = window.mail.on(({ type, payload }) => {
     const view = stack[stack.length - 1];
     if (type === 'updated' && (view === 'main' || view === 'account')) setTimeout(render, 80);
+    // Agent status changes only touch the status lines, never the fields you are typing in.
+    if (type === 'agent' && payload && payload.kind === 'agents' && (view === 'agents' || view === 'main') && agentState) {
+      agentState.status = payload.status || agentState.status;
+      showAgentStatuses(view);
+    }
   });
 
   const close = () => {
@@ -108,6 +128,266 @@ export function openSettings(ctx) {
       ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
     </button>`;
 
+  // ----- agents -----
+
+  // { config, status } as shown on the agents page; config never holds secrets.
+  let agentState = null;
+  let keyEditing = false;
+  // The config is local and quick. Status can wait on the network (an offline Hermes server takes seconds),
+  // so pages draw with the last known status and refreshAgentStatus() fills it in afterwards.
+  const loadAgents = () =>
+    api('agentConfig')
+      .then((config) => ({ config, status: (agentState && agentState.status) || null }))
+      .catch(() => null);
+  const agentsRowDesc = () =>
+    t('settings.agents.rowDesc', { name: esc(agentName(agentState.config, agentState.config.defaultAgent)), status: t(`agent.status.${agentStateOf(agentState.status, agentState.config.defaultAgent)}`) });
+  const showAgentStatuses = (view) => {
+    if (!agentState) return;
+    if (view === 'agents') AGENT_IDS.forEach((id) => showAgentStatus(id));
+    const desc = view === 'main' && page.querySelector('[data-a="agents"] .desc');
+    if (desc) desc.innerHTML = agentsRowDesc();
+  };
+  const refreshAgentStatus = (view) =>
+    api('agentStatus')
+      .then((status) => {
+        if (!agentState || stack[stack.length - 1] !== view) return;
+        agentState.status = status;
+        showAgentStatuses(view);
+      })
+      .catch(() => {});
+  // The agent's name appears in several labels; this span lets a rename update them in place.
+  const nameSpan = (id) => `<span data-agent-name="${id}">${esc(agentName(agentState.config, id))}</span>`;
+
+  const statusRow = (id) => `
+    <div class="row static agent-status" data-agent-status="${id}">
+      <span class="agent-dot" aria-hidden="true"></span>
+      <div class="text"><div class="title"></div><div class="desc agent-detail"></div></div>
+      ${id === 'clark'
+        ? `<button class="btn sm secondary" data-a="agent-test:${id}" data-i18n="settings.agents.testConnection">${esc(t('settings.agents.testConnection'))}</button>`
+        : `<button class="btn sm secondary" data-a="agent-test:${id}" data-i18n="settings.agents.test">${esc(t('settings.agents.test'))}</button>`}
+    </div>`;
+  function showAgentStatus(id, override) {
+    const el = page.querySelector(`[data-agent-status="${id}"]`);
+    if (!el || !agentState) return;
+    const s = override || (agentState.status && agentState.status[id]) || {};
+    const state = override && override.testing ? 'testing' : agentStateOf(agentState.status, id);
+    el.querySelector('.agent-dot').dataset.state = state === 'testing' ? 'starting' : agentDot(state);
+    el.querySelector('.title').textContent = state === 'testing' ? t('settings.agents.testing') : t(`agent.status.${state}`);
+    el.querySelector('.agent-detail').textContent = state === 'testing' ? '' : String(s.detail || '');
+    el.querySelector('button').disabled = state === 'testing';
+  }
+
+  const agentField = (id, key, label, value, placeholder) =>
+    `<label>${esc(label)}<input type="text" data-agent-field="${id}.${key}" value="${esc(value || '')}" placeholder="${esc(placeholder || '')}" spellcheck="false" autocomplete="off"/></label>`;
+  // Where the program was found, when main says so; otherwise what it looks for.
+  const exeHint = (id, exe) => {
+    const detail = String((agentState.status && agentState.status[id] && agentState.status[id].detail) || '');
+    const found = agentState.config[id].detectedExe || (/[\\/].+\.exe$/i.test(detail) ? detail : '');
+    return found || t('settings.agents.exeHint', { exe });
+  };
+  const keyHtml = () => {
+    const saved = agentState.config.clark.hasKey;
+    if (saved && !keyEditing) {
+      return `<div class="agent-key"><span class="agent-key-label">${esc(t('settings.agents.key'))}</span>
+        <span class="agent-key-saved">${icons.check}<span>${esc(t('settings.agents.keySaved'))}</span></span>
+        <button class="link-btn" data-a="agent-key-replace">${esc(t('settings.agents.keyReplace'))}</button></div>`;
+    }
+    return `<label>${esc(t('settings.agents.key'))}<span class="pw"><input type="password" data-agent-key autocomplete="off" spellcheck="false" placeholder="${esc(t('settings.agents.keyPlaceholder'))}"/><button class="icon-btn sm" data-a="agent-key-reveal" title="${esc(t('settings.agents.keyShow'))}">${icons.eye}</button></span></label>
+      <div class="agent-key-actions"><button class="btn sm" data-a="agent-key-save">${esc(t('settings.agents.keySave'))}</button>${saved ? `<button class="link-btn" data-a="agent-key-cancel">${esc(t('common.actions.cancel'))}</button>` : ''}</div>`;
+  };
+  // The port the remote listener really got (it moves when the chosen one is taken), the same as in the
+  // copied Hermes setup, with main's note about the move.
+  const remoteDesc = () => {
+    const mcp = agentState.config.mcp || {};
+    const url = mcp.address ? esc(`http://${mcp.address}:${mcp.remotePort || mcp.port || mcp.localPort}/mcp`) : esc(t('settings.agents.noAddress'));
+    return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
+  };
+
+  function agentsHtml() {
+    const c = agentState.config;
+    const accessRow = (id) => row({ title: t('settings.agents.access'), value: esc(labelOf(ACCESS, c[id].access)), action: `agent-access:${id}` });
+    // The product beside the name ("Clark  Hermes Agent"), unless they are the same word.
+    const head = (id) =>
+      `<div class="settings-group-title agent-group">${nameSpan(id)}${AGENT_PRODUCTS[id] !== agentName(c, id) ? `<span class="agent-product">${esc(AGENT_PRODUCTS[id])}</span>` : ''}</div>`;
+    return `
+      <p class="settings-intro" data-i18n="settings.agents.help">${esc(t('settings.agents.help'))}</p>
+      <div class="card">
+        ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(agentName(c, c.defaultAgent))}</span>`, action: 'agent-default' })}
+        ${row({ title: t('settings.agents.autoMail'), desc: t('settings.agents.autoMailHelp'), action: 'agent-auto', toggle: Boolean(c.autoMailActions) })}
+      </div>
+      ${head('clark')}
+      <div class="card agent-card">
+        ${statusRow('clark')}
+        ${row({ title: t('settings.agents.enabled', { name: nameSpan('clark') }), action: 'agent-enabled:clark', toggle: c.clark.enabled !== false })}
+        <div class="form agent-form">
+          ${agentField('clark', 'name', t('settings.agents.name'), c.clark.name, 'Hermes')}
+          ${agentField('clark', 'url', t('settings.agents.url'), c.clark.url, 'http://100.64.0.1:8642')}
+          <div class="agent-key-box">${keyHtml()}</div>
+        </div>
+        ${row({ title: t('settings.agents.remote', { name: nameSpan('clark') }), desc: `<span data-agent-address>${remoteDesc()}</span>`, action: 'agent-remote', toggle: Boolean(c.mcp && c.mcp.remote) })}
+        ${row({ title: t('settings.agents.copySetup'), desc: t('settings.agents.copySetupHelp', { name: nameSpan('clark') }), action: 'agent-copy-setup' })}
+        ${row({ title: t('settings.agents.rotate'), desc: t('settings.agents.rotateHint'), action: 'agent-rotate' })}
+      </div>
+      ${head('claude')}
+      <div class="card agent-card">
+        ${statusRow('claude')}
+        ${row({ title: t('settings.agents.enabled', { name: 'Claude' }), action: 'agent-enabled:claude', toggle: c.claude.enabled !== false })}
+        <div class="form agent-form">
+          ${agentField('claude', 'exe', t('settings.agents.exe'), c.claude.exe, exeHint('claude', 'claude.exe'))}
+          ${agentField('claude', 'configDir', t('settings.agents.configDir'), c.claude.configDir, t('settings.agents.configDirHint'))}
+          ${agentField('claude', 'model', t('settings.agents.model'), c.claude.model, t('settings.agents.modelHint', { example: 'opus' }))}
+        </div>
+        ${accessRow('claude')}
+      </div>
+      ${head('codex')}
+      <div class="card agent-card">
+        ${statusRow('codex')}
+        ${row({ title: t('settings.agents.enabled', { name: 'Codex' }), action: 'agent-enabled:codex', toggle: c.codex.enabled !== false })}
+        <div class="form agent-form">
+          ${agentField('codex', 'exe', t('settings.agents.exe'), c.codex.exe, exeHint('codex', 'codex.exe'))}
+          ${agentField('codex', 'model', t('settings.agents.model'), c.codex.model, t('settings.agents.optional'))}
+        </div>
+        ${accessRow('codex')}
+      </div>`;
+  }
+
+  // Saves a patch and reads the config back, so the page shows what main accepted.
+  async function updateAgents(patch) {
+    try {
+      await api('agentUpdateConfig', patch);
+      agentState.config = await api('agentConfig');
+      return true;
+    } catch (err) {
+      toast(err.message, 5000);
+      return false;
+    }
+  }
+  const flip = (b, on) => {
+    const sw = b.querySelector('.switch');
+    sw.classList.toggle('on', on);
+    sw.setAttribute('aria-checked', String(on));
+  };
+
+  async function testAgent(id) {
+    showAgentStatus(id, { testing: true });
+    try {
+      const result = await api('agentTest', id);
+      agentState.status = { ...(agentState.status || {}), [id]: result };
+    } catch (err) {
+      agentState.status = { ...(agentState.status || {}), [id]: { state: 'unknown', detail: err.message } };
+    }
+    showAgentStatus(id);
+  }
+
+  async function agentAction(action, b) {
+    if (!agentState) return;
+    const [name, id] = action.split(':');
+    const c = agentState.config;
+    switch (name) {
+      case 'agent-default': {
+        const v = await choiceDialog(t('settings.agents.default'), AGENT_IDS.map((x) => ({ value: x, label: agentName(c, x), hint: AGENT_PRODUCTS[x] })), c.defaultAgent);
+        if (v && (await updateAgents({ defaultAgent: v }))) b.querySelector('[data-agent-default]').textContent = agentName(agentState.config, v);
+        return;
+      }
+      case 'agent-auto':
+        if (await updateAgents({ autoMailActions: !c.autoMailActions })) flip(b, Boolean(agentState.config.autoMailActions));
+        return;
+      case 'agent-enabled':
+        if (await updateAgents({ [id]: { enabled: c[id].enabled === false } })) flip(b, agentState.config[id].enabled !== false);
+        return;
+      case 'agent-access': {
+        const v = await choiceDialog(t('settings.agents.access'), ACCESS, c[id].access);
+        if (v && (await updateAgents({ [id]: { access: v } }))) b.querySelector('.value').textContent = labelOf(ACCESS, v);
+        return;
+      }
+      case 'agent-remote':
+        if (await updateAgents({ mcp: { remote: !(c.mcp && c.mcp.remote) } })) {
+          flip(b, Boolean(agentState.config.mcp.remote));
+          b.querySelector('[data-agent-address]').innerHTML = remoteDesc();
+        }
+        return;
+      case 'agent-test':
+        return testAgent(id);
+      case 'agent-copy-setup':
+        try {
+          await api('agentCopyHermesSetup');
+          toast(t('settings.agents.copied', { name: agentName(c, 'clark') }), 6000);
+        } catch (err) {
+          toast(err.message, 5000);
+        }
+        return;
+      case 'agent-rotate': {
+        const ok = await confirmDialog(t('settings.agents.rotateTitle'), t('settings.agents.rotateHelp', { name: agentName(c, 'clark') }), t('settings.agents.rotate'), true);
+        if (!ok) return;
+        try {
+          await api('agentRotateToken');
+          toast(t('settings.agents.rotated'), 5000);
+        } catch (err) {
+          toast(err.message, 5000);
+        }
+        return;
+      }
+      case 'agent-key-replace':
+      case 'agent-key-cancel':
+        keyEditing = name === 'agent-key-replace';
+        page.querySelector('.agent-key-box').innerHTML = keyHtml();
+        page.querySelector('[data-agent-key]')?.focus();
+        return;
+      case 'agent-key-reveal': {
+        const input = page.querySelector('[data-agent-key]');
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        b.innerHTML = show ? icons.eyeOff : icons.eye;
+        b.title = show ? t('settings.agents.keyHide') : t('settings.agents.keyShow');
+        return;
+      }
+      case 'agent-key-save': {
+        const input = page.querySelector('[data-agent-key]');
+        const value = input.value.trim();
+        if (!value) return input.focus();
+        try {
+          await api('agentSetSecret', 'clark', value);
+          agentState.config = await api('agentConfig');
+        } catch (err) {
+          return toast(err.message, 5000);
+        }
+        keyEditing = false;
+        page.querySelector('.agent-key-box').innerHTML = keyHtml();
+        toast(t('settings.agents.keyStored'));
+        return testAgent('clark');
+      }
+    }
+  }
+
+  async function saveAgentField(input) {
+    if (!agentState) return;
+    const [id, key] = input.dataset.agentField.split('.');
+    const value = input.value.trim();
+    if (String(agentState.config[id][key] || '') === value) return;
+    if (!(await updateAgents({ [id]: { [key]: value } }))) {
+      input.value = agentState.config[id][key] || '';
+      return;
+    }
+    input.value = agentState.config[id][key] || '';
+    toast(t('settings.agents.saved'), 1400);
+    if (id === 'clark' && key === 'name') {
+      page.querySelectorAll('[data-agent-name="clark"]').forEach((el) => (el.textContent = agentName(agentState.config, 'clark')));
+      const def = page.querySelector('[data-agent-default]');
+      if (def) def.textContent = agentName(agentState.config, agentState.config.defaultAgent);
+    }
+    if (key === 'url' || key === 'exe') testAgent(id);
+  }
+
+  page.addEventListener('change', (e) => {
+    const input = e.target.closest && e.target.closest('[data-agent-field]');
+    if (input) saveAgentField(input);
+  });
+  page.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.target.matches && e.target.matches('[data-agent-field]')) e.target.blur();
+    if (e.target.matches && e.target.matches('[data-agent-key]')) page.querySelector('[data-a="agent-key-save"]')?.click();
+  });
+
   async function render() {
     const state = await api('state');
     ctx.S.data = state;
@@ -117,6 +397,10 @@ export function openSettings(ctx) {
     const view = stack[stack.length - 1];
     let title = t('settings.title');
     let body = '';
+    if (view === 'main' || view === 'agents') {
+      agentState = await loadAgents();
+      if (stack[stack.length - 1] !== view) return;
+    }
 
     if (view === 'main') {
       const accounts = state.accounts
@@ -159,6 +443,12 @@ export function openSettings(ctx) {
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
+        <div class="settings-group-title" data-i18n="settings.groups.agents">${esc(t('settings.groups.agents'))}</div>
+        <div class="card">${row({
+          title: agentState ? t('settings.agents.rowTitle', { name: esc(agentName(agentState.config, 'clark')) }) : t('settings.agents.title'),
+          desc: agentState ? agentsRowDesc() : t('settings.agents.unavailable'),
+          action: 'agents'
+        })}</div>
         <div class="settings-group-title" data-i18n="settings.groups.about">${esc(t('settings.groups.about'))}</div>
         <div class="card">${row({ title: t('settings.about.title'), desc: t('settings.about.help'), action: 'about' })}</div>`;
     }
@@ -246,9 +536,17 @@ export function openSettings(ctx) {
       ${list.length ? '' : `<p class="empty">${view === 'spam' ? t('settings.spam.empty') : t('settings.vip.empty')}</p>`}`;
     }
 
+    if (view === 'agents') {
+      title = t('settings.agents.title');
+      keyEditing = false;
+      body = agentState ? agentsHtml() : `<p class="empty">${esc(t('settings.agents.unavailable'))}</p>`;
+    }
+
     page.innerHTML = `
       <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
+    if (view === 'agents' && agentState) AGENT_IDS.forEach((id) => showAgentStatus(id));
+    if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
   }
 
   page.addEventListener('submit', async (e) => {
@@ -286,6 +584,8 @@ export function openSettings(ctx) {
       ctx.refresh();
     };
     if (a === 'back') return back();
+    if (a === 'agents') return go('agents');
+    if (a.startsWith('agent-')) return agentAction(a, b);
     if (a === 'add') {
       close();
       return ctx.openSetup({ first: false });
