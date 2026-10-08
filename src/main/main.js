@@ -506,6 +506,11 @@ const agentId = (v) => {
   if (typeof v !== 'string' || !v || v.length > 200) throw new Error('invalid');
   return v;
 };
+// A mail id carries its folder path URI-encoded, so it can be far longer than a chat or item id.
+const agentMailId = (v) => {
+  if (typeof v !== 'string' || !v || v.length > 4000) throw new Error('invalid');
+  return v;
+};
 const agentPlain = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 function agentHub() {
   if (!hub) throw new Error('unknown');
@@ -563,6 +568,8 @@ Object.assign(api, {
     if (agentGate) agentGate.open();
   },
   agentUndo: (id, itemId) => agentHub().undo(agentId(id), agentId(itemId)),
+  agentKeepDraft: (composerKey, draftId, was) =>
+    agentHub().keepDraft(agentId(composerKey), draftId == null ? null : agentMailId(draftId), was == null ? null : agentMailId(was)),
   agentPatchItem: (id, itemId, patch) => {
     const p = agentPlain(patch);
     if (Object.keys(p).length !== 1 || typeof p.undone !== 'boolean') throw new Error('invalid');

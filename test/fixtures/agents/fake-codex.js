@@ -183,8 +183,9 @@ function handle(msg) {
       if (!threads.has(p.threadId)) return send({ id: msg.id, error: { code: -32600, message: 'thread not found' } });
       const turnId = crypto.randomUUID();
       turns.set(turnId, { interrupted: false });
-      send({ id: msg.id, result: { turn: { id: turnId, items: [], status: 'inProgress', error: null } } });
       const text = (p.input || []).map((i) => i.text).join('');
+      // "mute": the turn starts, but the answer to turn/start never comes.
+      if (!/mute/.test(text)) send({ id: msg.id, result: { turn: { id: turnId, items: [], status: 'inProgress', error: null } } });
       return void runTurn(p.threadId, turnId, text);
     }
     case 'turn/interrupt': {

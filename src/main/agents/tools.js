@@ -31,6 +31,10 @@ class ToolError extends Error {}
 // A symbol, so the mark stays out of the schemas agents get.
 const UNTAG = Symbol('untag');
 const copied = (spec) => ({ ...spec, [UNTAG]: true });
+// What the user approves: past maxLength the call fails instead of the value being cut, because an agent that
+// still has the whole value could carry out more than the card showed.
+const WHOLE = Symbol('whole');
+const whole = (spec) => ({ ...spec, [WHOLE]: true });
 
 const CONVERSATION = {
   type: 'string',
@@ -209,18 +213,18 @@ const TOOLS = [
       'Shows an approval card in Rukoo for something you want to do elsewhere (send a message, create a task, update a record). Returns at once; stop and wait. When the user approves you get a new message saying so, then do it. If they decline you will be told.',
     inputSchema: schema(
       {
-        title: { type: 'string', description: 'What you will do, e.g. "Add 2 tasks to Todoist".', maxLength: 120 },
-        detail: { type: 'string', description: 'The exact content, e.g. the message text.', maxLength: 2000 },
+        title: whole({ type: 'string', description: 'What you will do, e.g. "Add 2 tasks to Todoist".', maxLength: 120 }),
+        detail: whole({ type: 'string', description: 'The exact content, e.g. the message text.', maxLength: 2000 }),
         fields: {
           type: 'array',
           maxItems: 8,
           items: {
             type: 'object',
-            properties: { label: { type: 'string', maxLength: 60 }, value: { type: 'string', maxLength: 500 } },
+            properties: { label: whole({ type: 'string', maxLength: 60 }), value: whole({ type: 'string', maxLength: 500 }) },
             required: ['label', 'value']
           }
         },
-        confirm_label: { type: 'string', description: 'Approve button text, e.g. "Send".', maxLength: 30 }
+        confirm_label: whole({ type: 'string', description: 'Approve button text, e.g. "Send".', maxLength: 30 })
       },
       ['title']
     ),
@@ -300,6 +304,9 @@ function validate(s, value, where) {
       // an argument tag it again with unsafeValue(), because it may still be a sender's text.
       if (s[UNTAG]) value = untag(value);
       if (s.enum && !s.enum.includes(value)) throw new ToolError(`${where} must be one of: ${s.enum.join(', ')}.`);
+      if (s[WHOLE] && value.length > s.maxLength) {
+        throw new ToolError(`${where} is ${value.length} characters; at most ${s.maxLength}. The user approves what the card shows, so it is not cut: make it shorter.`);
+      }
       // A value that kept its tags is cut without splitting one; see clipTagged().
       return s.maxLength ? clipTagged(value, s.maxLength) : value;
     }
@@ -462,6 +469,24 @@ function findByMessageId(engine, header, accountId = null) {
   return fallback ? fallback.id : null;
 }
 
+// Every cached copy of a Message-ID header, in every account and folder.
+function copiesOf(engine, header) {
+  const want = normId(header);
+  const out = [];
+  if (!want) return out;
+  for (const acc of engine.accounts) {
+    const cache = engine.caches.get(acc.id);
+    if (!cache) continue;
+    for (const [folder, box] of Object.entries(cache.boxes)) {
+      const role = (cache.folders.find((f) => f.path === folder) || {}).role;
+      for (const m of box.messages) {
+        if (m.messageId && normId(m.messageId) === want) out.push({ acc, folder, role, id: encodeId(acc.id, folder, m.uid) });
+      }
+    }
+  }
+  return out;
+}
+
 // Turns what an agent passes as message_id into a current Rukoo id: a live id, a saved copy or a Message-ID header.
 function resolveId(hub, value, { allowSaved = true } = {}) {
   const v = String(value || '').trim();
@@ -473,15 +498,20 @@ function resolveId(hub, value, { allowSaved = true } = {}) {
   }
   if (cacheMessage(engine, v)) return v;
   if (v.includes('@')) {
-    // The same email can be in several accounts (mail between your own addresses, a forward to yourself). A
-    // header names no account, so with more than one copy only the Rukoo id says which one is meant.
-    const hits = engine.accounts.map((acc) => ({ acc, id: findByMessageId(engine, v, acc.id) })).filter((h) => h.id);
-    if (hits.length > 1) {
-      const err = new ToolError(`More than one account has the email with Message-ID ${unsafeValue(v)} (${hits.map((h) => h.acc.email).join(', ')}). Pass the Rukoo id of the copy you mean; search_mail and get_context list them.`);
+    // The same email can have several live copies: in two accounts (mail between your own addresses), or in two
+    // folders of one (Inbox and Sent of a mail to yourself, two Gmail labels). A header names none of them, so
+    // with more than one only the Rukoo id says which is meant. Gmail's All Mail copy only counts when it is the
+    // only one: it is the same message as the copy under a label.
+    const copies = copiesOf(engine, v);
+    const live = copies.filter((h) => h.role !== 'all');
+    const accounts = new Set(copies.map((h) => h.acc.id));
+    if (live.length > 1 || accounts.size > 1) {
+      const where = (live.length ? live : copies).map((h) => `${h.acc.email} in ${h.folder}`).join(', ');
+      const err = new ToolError(`More than one copy of the email with Message-ID ${unsafeValue(v)} is here: ${where}. Pass the Rukoo id of the copy you mean; search_mail and get_context list them.`);
       err.ambiguous = true;
       throw err;
     }
-    if (hits.length) return hits[0].id;
+    if (copies.length) return (live[0] || copies[0]).id;
   }
   throw new ToolError(`No email with id ${unsafeValue(v)}. Ids change when mail moves; use search_mail or get_context for current ids.`);
 }
@@ -512,6 +542,11 @@ function summary(engine, m) {
 }
 
 function summaryById(engine, id) {
+  // A copy saved on this device has no folder cache: the saved list keeps what a summary needs.
+  if (String(id).startsWith('saved:')) {
+    const saved = engine.saved.find((s) => s.id === id);
+    return saved ? summary(engine, { ...saved, unread: false }) : null;
+  }
   const cached = cacheMessage(engine, id);
   if (!cached) return null;
   const { accountId, folder } = decodeId(id);

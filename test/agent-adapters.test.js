@@ -1012,6 +1012,33 @@ test('codex: a turn that ignores the interrupt is killed with its process, and i
   assert.equal(hub.revoked.length, 1);
 });
 
+test('codex: a turn whose start gets no answer ends the app-server with what it runs, so nothing goes on unseen', async (t) => {
+  const { adapter, hub, sent } = codexAdapter({}, {}, { startWait: 300 });
+  t.after(() => adapter.dispose());
+  const other = fakeTurn(conv('c_other'), 'slow');
+  const otherDone = adapter.runTurn(other);
+  await waitFor(() => texts(other).length > 10);
+  const pid = adapter.server.child.pid;
+  // Codex starts this turn and goes on with it, but its answer to turn/start never comes.
+  const result = await adapter.runTurn(fakeTurn(conv('c_mute'), 'mute slow'));
+  assert.equal(result.status, 'error');
+  assert.equal(result.error.code, 'timeout');
+  assert.deepEqual(hub.revoked, ['codex-token'], 'the token goes at once');
+  const otherResult = await otherDone;
+  assert.equal(otherResult.status, 'error');
+  assert.match(otherResult.error.detail, /did not start in time/);
+  await waitFor(() => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.deepEqual(await adapter.runTurn(fakeTurn(conv('c_next'), 'hello')), { status: 'done' });
+  assert.equal(sent('initialize').length, 2, 'the next turn gets a fresh app-server');
+});
+
 test('codex: a new MCP address or a cleared model reloads the thread in a fresh app-server', async (t) => {
   const { adapter, cfg, sent } = codexAdapter({ model: 'gpt-6-astra' });
   t.after(() => adapter.dispose());

@@ -1699,6 +1699,56 @@ test('an approved follow-up stopped while its email loads keeps the approval', a
   }
 });
 
+test('draft cards keep the draft their composer left behind, and follow it when it is saved again', async () => {
+  const env = await demo();
+  const first = fakeHub(env, {}).hub;
+  await first.start();
+  const c = first.create({ agent: 'claude', message: null });
+  const a = first.addItem(c, { type: 'draft', composerKey: 'k1:1', mode: 'reply', undone: false });
+  const b = first.addItem(c, { type: 'draft', composerKey: 'k1:2', mode: 'reply', undone: false });
+  const other = first.addItem(c, { type: 'draft', composerKey: 'k2:1', mode: 'new', undone: false });
+  first.keepDraft('k1', 'acc:Drafts:1');
+  assert.deepEqual([a.draftId, b.draftId, other.draftId], ['acc:Drafts:1', 'acc:Drafts:1', undefined]);
+  await first.dispose();
+  const { hub } = fakeHub(env, {});
+  await hub.start();
+  try {
+    const items = () => hub.conversations.get(c.id).items.filter((i) => i.type === 'draft').map((i) => i.draftId || null);
+    assert.deepEqual(items(), ['acc:Drafts:1', 'acc:Drafts:1', null], 'after a restart');
+    // The draft was reopened in another composer and saved again under a new id.
+    hub.keepDraft('k9', 'acc:Drafts:2', 'acc:Drafts:1');
+    assert.deepEqual(items(), ['acc:Drafts:2', 'acc:Drafts:2', null]);
+    // Its first composer closed without a draft (discarded): its cards keep none.
+    hub.keepDraft('k1', null);
+    assert.deepEqual(items(), [null, null, null]);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('a mail notice loses its Undo after a restart, since the engine only kept it in memory', async () => {
+  const env = await demo();
+  const first = fakeHub(env, {}).hub;
+  await first.start();
+  const c = first.create({ agent: 'claude', message: null });
+  const call = env.engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+  first.cfg.data.autoMailActions = true;
+  await first.callTool({ agent: 'claude', conversationId: c.id, remote: false }, 'mail_action', { action: 'archive', message_ids: [call.id] });
+  assert.ok(c.items.find((i) => i.type === 'notice').undo, 'Undo works while the app runs');
+  await first.dispose();
+  const { hub } = fakeHub(env, {});
+  await hub.start();
+  try {
+    const notice = hub.conversations.get(c.id).items.find((i) => i.type === 'notice');
+    assert.equal(notice.text, 'Archived 1 email');
+    assert.equal(notice.undo, null);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
 test('quitting before a turn reaches the agent keeps what it took: the approval while it waits for mail work, the notes while the agent starts', async () => {
   const env = await demo();
   let started;
@@ -1784,7 +1834,7 @@ test('the same email in two accounts has its own chats, and recovery after a mov
     ]) {
       const res = await hub.callTool(local, name, args);
       assert.equal(res.isError, true, name);
-      assert.match(res.content[0].text, /More than one account has the email .*other@example\.com.*Pass the Rukoo id/s);
+      assert.match(res.content[0].text, /More than one copy of the email .* is here: .* in INBOX, other@example\.com in INBOX\. Pass the Rukoo id/s);
     }
     assert.equal(chat.items.filter((i) => i.type === 'approval').length, 0);
     assert.ok(env.engine.listMessages({ scope: 'all', view: 'inbox' }).filter((m) => m.subject === 'Call on Thursday').length === 2);

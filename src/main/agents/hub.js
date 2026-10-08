@@ -380,6 +380,8 @@ class AgentHub extends EventEmitter {
         if (item.type === 'thinking' && item.status === 'running') Object.assign(item, { status: 'done', endedAt: item.endedAt || c.updatedAt });
         if (item.type === 'tool' && item.status === 'running') Object.assign(item, { status: 'done', endedAt: item.endedAt || c.updatedAt });
         if (item.type === 'approval' && item.status === 'pending' && item.kind === 'runtime') item.status = 'expired';
+        // The engine keeps what Undo needs in memory only, so a mail notice's Undo ends with the app as well.
+        if (item.type === 'notice' && item.undo) item.undo = null;
       }
       this.conversations.set(c.id, c);
       if (c.provider.threadId) this.threads.set(String(c.provider.threadId), c.id);
@@ -1210,6 +1212,23 @@ class AgentHub extends EventEmitter {
     }
     item.undone = patch.undone;
     return this.updateItem(c, item);
+  }
+
+  // A composer an agent wrote in closed. Its draft cards keep the draft it left behind, or none, so Show still
+  // opens it after a restart. A reopened draft that is saved again gets a new id (was is the old one): cards that
+  // pointed at the old one follow it.
+  keepDraft(composerKey, draftId, was = null) {
+    const next = draftId || null;
+    for (const c of this.conversations.values()) {
+      for (const item of c.items) {
+        if (item.type !== 'draft') continue;
+        const mine = String(item.composerKey || '').split(':')[0] === composerKey;
+        if (!mine && !(was && item.draftId === was)) continue;
+        if ((item.draftId || null) === next) continue;
+        item.draftId = next;
+        this.updateItem(c, item);
+      }
+    }
   }
 
   async undo(cid, itemId) {

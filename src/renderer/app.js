@@ -1577,6 +1577,8 @@ async function printMessage(id) {
 // Writing happens in the reading pane; the pop-out button moves it to a window of its own.
 // Each request to write (or to open a message) takes a number; a request that a newer one overtook
 // while it waited stops, so a slow reply can never replace the message you started after it.
+// still: the caller's check after each wait that its reason to write holds (the agent panel: whether its chat is
+// still on screen); without it the request stops.
 let composeTurn = 0;
 
 async function compose(opts) {
@@ -1587,7 +1589,9 @@ async function compose(opts) {
   if (opts.mode === 'draft' && (await api('draftWindow', opts.id).catch(() => false))) return;
   if (turn !== composeTurn) return;
   const accountId = S.scope !== 'all' ? S.scope : null;
-  const full = { accountId, ...opts };
+  const { still, ...rest } = opts;
+  const full = { accountId, ...rest };
+  const holds = () => !still || still();
   let message = null;
   if (full.id) {
     try {
@@ -1598,9 +1602,10 @@ async function compose(opts) {
     }
     if (turn !== composeTurn) return;
   }
+  if (!holds()) return;
   // Whatever is being written now is kept as a draft before the new message takes its place.
   if (S.composer && !(await S.composer.leave())) return;
-  if (turn !== composeTurn || S.composer) return;
+  if (turn !== composeTurn || S.composer || !holds()) return;
   const host = $('.reader');
   host.innerHTML = '';
   S.expanded = false;

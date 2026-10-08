@@ -901,7 +901,7 @@ export function mountAgentPanel(ctx) {
 
   // A draft card belongs to one write into one composer: its composerKey is "<composer key>:<write>".
   // Show and Undo act on that composer only. Composers that closed leave a stored draft behind; this
-  // remembers which one, so Show can still open it in this session.
+  // remembers which one for this session, and main keeps it on the cards (draftId) for later ones.
   const keptDrafts = new Map();
   // write key -> conversation id, so an Undo in the composer reaches a card that is not on screen.
   const writes = new Map();
@@ -938,6 +938,7 @@ export function mountAgentPanel(ctx) {
     }
     if (id) keptDrafts.set(c.key, id);
     else keptDrafts.delete(c.key);
+    api('agentKeepDraft', c.key, id || null, was).catch(() => {});
     refreshDrafts();
   }
 
@@ -945,7 +946,8 @@ export function mountAgentPanel(ctx) {
     const c = openComposerFor(item);
     if (action === 'show') {
       if (c) return c.focus();
-      const stored = item.composerKey && keptDrafts.get(composerOf(item.composerKey));
+      const key = item.composerKey && composerOf(item.composerKey);
+      const stored = key && keptDrafts.has(key) ? keptDrafts.get(key) : item.draftId;
       if (stored) return ctx.compose({ mode: 'draft', id: stored });
       if (item.messageRef) {
         P.keepFor = item.messageRef;
@@ -1202,7 +1204,8 @@ export function mountAgentPanel(ctx) {
     const conv = P.conv && P.conv.id === cid ? P.conv : null;
     const name = String(args.agentName || agentName(conv ? conv.agent : currentAgent()));
     // A chat that is not on screen, or one an agent started from elsewhere, never closes what the user is writing.
-    const isBackground = () => !conv || !ctx.agentOpen() || conv.origin === 'external';
+    // Asked again after each wait, so it sees the user close the panel or switch to another chat meanwhile.
+    const isBackground = () => !(P.conv && P.conv.id === cid) || !ctx.agentOpen() || P.conv.origin === 'external';
     const background = isBackground();
     const blocked = () => {
       if (background) toast(t('agent.panel.draftBlocked', { name }), { action: { label: t('agent.panel.show'), run: () => reveal(cid) } });
@@ -1248,8 +1251,13 @@ export function mountAgentPanel(ctx) {
       }
     }
     if (!c) {
-      // Keeps the chat input focused; a composer with changes is saved as a draft first.
-      c = await ctx.compose({ mode, id, focus: false });
+      // Keeps the chat input focused; a composer with changes is saved as a draft first. The email loads first:
+      // if the chat went on or off screen meanwhile, nothing opens and the write is decided again.
+      c = await ctx.compose({ mode, id, focus: false, still: () => isBackground() === background });
+      if (isBackground() !== background) {
+        if (attempt < 2) return writeDraft(args, attempt + 1);
+        throw busy();
+      }
       if (!c || c !== S.composer) throw Object.assign(new Error('The composer did not open.'), { code: 'busy' });
     }
     const writeKey = `${c.key}:${++writeCount}`;

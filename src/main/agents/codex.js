@@ -13,6 +13,8 @@ const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, ta
 
 const EXE_TTL = 30000;
 const STOP_WAIT = 10000;
+// How long turn/start may take to answer before the turn counts as lost.
+const START_WAIT = 30000;
 // A turn that needs a restarted app-server waits this long at most for the other Codex turns to finish.
 const IDLE_WAIT_MS = 10 * 60 * 1000;
 const ESCALATE =
@@ -136,8 +138,9 @@ const APPROVE_CHOICES = [
 
 class CodexAdapter {
   // launchArgs: tests run a fake app-server script through node (process.execPath + script).
-  // stopWait: how long a stopped turn gets to end before the app-server is killed (tests shorten it).
-  constructor({ id = 'codex', config, hub, log, paths, launchArgs = [], stopWait = STOP_WAIT } = {}) {
+  // stopWait: how long a stopped turn gets to end before the app-server is killed; startWait: how long turn/start
+  // may take to answer (tests shorten both).
+  constructor({ id = 'codex', config, hub, log, paths, launchArgs = [], stopWait = STOP_WAIT, startWait = START_WAIT } = {}) {
     this.id = id;
     this.config = typeof config === 'function' ? config : () => config || {};
     this.hub = hub || null;
@@ -145,6 +148,7 @@ class CodexAdapter {
     this.paths = paths || {};
     this.launchArgs = launchArgs;
     this.stopWait = stopWait;
+    this.startWait = startWait;
     this.server = null;
     this.starting = null;
     this.exeCache = null;
@@ -267,9 +271,19 @@ class CodexAdapter {
           server.threads.set(threadId, { ...loaded, access: s.access, model: s.model || loaded.model });
         }
         server
-          .request('turn/start', params, 30000)
+          .request('turn/start', params, this.startWait)
           .then((res) => run.started(res && res.turn && res.turn.id))
-          .catch((err) => run.finish({ status: 'error', error: { code: 'protocol', detail: clip(err.message, 200) } }));
+          .catch((err) => {
+            if (run.ended) return;
+            const detail = clip(err.message, 200);
+            // No answer in time: Codex may have started the turn anyway, where Rukoo cannot follow or stop it.
+            // End the app-server with whatever it runs, as for a stop that does not end in time.
+            if (err.code === 'timeout' && !server.exited) {
+              this.log('codex: turn/start got no answer; ending the app-server');
+              return this.endServer(run, run.stopping ? { status: 'stopped' } : { status: 'error', error: { code: 'timeout', detail } }, 'Codex was restarted because another chat did not start in time');
+            }
+            run.finish({ status: 'error', error: { code: 'protocol', detail } });
+          });
         return await run.done;
       } finally {
         if (this.runs.get(threadId) === run) this.runs.delete(threadId);
@@ -443,13 +457,18 @@ class CodexAdapter {
   // Rukoo's tools while the process dies. Other chats on the same process end too, and say why.
   forceStop(run) {
     if (run.ended) return;
-    const server = run.server;
     this.log('codex: a stopped turn did not end in time; ending the app-server');
-    run.finish({ status: 'stopped' });
+    this.endServer(run, { status: 'stopped' }, 'Codex was restarted to stop another chat');
+  }
+
+  // Ends run with outcome and kills its app-server; other chats on it end with why.
+  endServer(run, outcome, why) {
+    const server = run.server;
+    run.finish(outcome);
     if (server.exited) return;
     for (const other of [...this.runs.values()]) {
       if (other.server === server && !other.ended) {
-        other.finish(other.stopping ? { status: 'stopped' } : { status: 'error', error: { code: 'unknown', detail: 'Codex was restarted to stop another chat' } });
+        other.finish(other.stopping ? { status: 'stopped' } : { status: 'error', error: { code: 'unknown', detail: why } });
       }
     }
     server.kill();

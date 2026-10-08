@@ -694,6 +694,58 @@ test('the panel takes a new default agent at once, before slow status probes ans
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude', { timeout: 1500 });
 });
 
+test('a draft card opens the draft it left behind, also after a restart', async () => {
+  await openChat('Call on Thursday');
+  await chip('Draft a reply').click();
+  await expect(editor()).toContainText('Thursday at 10:00 works for me.', { timeout: 10000 });
+  await expect(transcript()).toContainText('Done. The draft is in the composer.', { timeout: 10000 });
+  await editor().click();
+  await win.keyboard.press('Control+s');
+  await expect(win.locator('.composer .save-state')).toHaveText('Draft saved');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.composer')).toHaveCount(0);
+  // A restart empties what the panel remembered; the card itself knows its draft.
+  await win.reload();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await item('Call on Thursday').click();
+  await expect(pane()).toBeVisible();
+  await transcript().locator('.bui-draft').getByRole('button', { name: 'Show' }).click();
+  await expect(composerTitle()).toHaveText('Draft');
+  await expect(editor()).toContainText('Thursday at 10:00 works for me.');
+  // A draft in a folder with a long or non-Latin name has a long id; main takes it.
+  const long = `demo:${encodeURIComponent('Концепты'.repeat(8))}:1`;
+  expect(long.length).toBeGreaterThan(200);
+  expect(await win.evaluate((id) => window.mail.call('agentKeepDraft', 'k-long', id, null).then(() => 'ok', (e) => e.message), long)).toBe('ok');
+});
+
+for (const [how, away] of [
+  ['the panel closes', () => win.click('.agentpane [data-ap="close"]')],
+  ['another chat opens', () => win.click('.agentpane [data-ap="new"]')]
+]) {
+  test(`a chat that goes off screen while its email loads leaves the open composer alone: ${how}`, async () => {
+    await openChat('Call on Thursday');
+    await say('Hello there');
+    await expect(transcript()).toContainText('You asked', { timeout: 10000 });
+    const cid = await conversationId();
+    // An untouched new message: the chat on screen may put its reply in its place.
+    await win.click('[data-action="compose"]');
+    await expect(composerTitle()).toHaveText('New message');
+    await app.evaluate(() => {
+      const engine = global.__semEngine;
+      const real = engine.getMessage.bind(engine);
+      engine.getMessage = (id) => new Promise((resolve) => setTimeout(() => resolve(real(id)), 1500));
+    });
+    const pending = tool(cid, 'write_draft', { body: 'Agent text.' });
+    // The user looks away from the chat while the email loads.
+    await win.waitForTimeout(400);
+    await away();
+    const res = await pending;
+    expect(res.error).toContain('writing another email');
+    await expect(composerTitle()).toHaveText('New message');
+    await expect(editor()).not.toContainText('Agent text.');
+  });
+}
+
 test('a chat that is not on screen leaves a reply alone while you are still typing an address', async () => {
   await openChat('Call on Thursday');
   await say('Hello there');

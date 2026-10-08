@@ -185,6 +185,23 @@ test('read_attachment hands a PDF out as a resource, with a local file only for 
   }
 });
 
+test('get_context lists checked emails in the Saved view too', async () => {
+  const t = await setup();
+  try {
+    const savedId = await t.engine.saveToDevice(t.find('Call on Thursday').id);
+    const c = t.hub.create({ agent: 'claude', message: null });
+    t.hub.view({ openMessageId: null, checkedIds: [savedId, 'saved:gone'], scope: 'all', view: 'saved', folder: null });
+    const ctx = data(await t.hub.callTool(local(c.id), 'get_context', {}));
+    assert.equal(ctx.selection.length, 1);
+    assert.equal(ctx.selection[0].id, savedId);
+    assert.equal(ctx.selection[0].subject, tagged('Call on Thursday'));
+    assert.equal(ctx.selection[0].role, 'saved');
+    assert.equal(ctx.selection[0].account, 'demo@example.com');
+  } finally {
+    await t.done();
+  }
+});
+
 test('get_context shows the open email, its thread, the selection and the composer draft', async () => {
   const t = await setup();
   try {
@@ -595,18 +612,59 @@ test('auto mail actions run at once (archive stays undoable); unsubscribe still 
   }
 });
 
-test('a proposal title over its length limit is cut without splitting a tag', async () => {
+test('a Message-ID with two live copies in one account is refused, and All Mail alone does not make two', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    const header = (await t.engine.getMessage(call.id)).messageId;
+    const cache = t.engine.caches.get(t.acc.id);
+    const { folder, uid } = decodeId(call.id);
+    const original = cache.boxes[folder].messages.find((m) => m.uid === uid);
+    // Gmail: the same message in All Mail. Still one live copy, so the header finds the Inbox one.
+    cache.folders.push({ path: 'All Mail', role: 'all' });
+    cache.boxes['All Mail'] = { messages: [{ ...structuredClone(original), uid: 999002 }] };
+    assert.equal(data(await t.hub.callTool(local(), 'read_message', { message_id: header })).id, call.id);
+    // A mail to yourself: a copy in Sent too. Neither is read or changed.
+    cache.boxes.Sent.messages.push({ ...structuredClone(original), uid: 999001 });
+    for (const [name, args] of [
+      ['read_message', { message_id: header }],
+      ['mail_action', { action: 'archive', message_ids: [header] }]
+    ]) {
+      const res = await t.hub.callTool(local(), name, args);
+      assert.equal(res.isError, true, name);
+      assert.match(res.content[0].text, /More than one copy of the email .* is here: \S+ in INBOX, \S+ in Sent\. Pass the Rukoo id/);
+    }
+    assert.ok(t.find('Call on Thursday'), 'still in the inbox');
+  } finally {
+    await t.done();
+  }
+});
+
+test('a proposal over a length limit is refused, not cut, so the card shows all the user approves', async () => {
   const t = await setup();
   try {
     const call = t.find('Call on Thursday');
     const c = t.hub.create({ agent: 'claude', message: { id: call.id } });
-    // A tagged 100-character subject in a title of 120: cutting the text where it stands would split the closing
-    // tag and leave the subject an open block when Rukoo repeats the proposal to the agent.
-    const subject = 'S'.repeat(100);
-    const res = data(await t.hub.callTool(local(c.id), 'propose_action', { title: `Post <unsafe_content>${subject}</unsafe_content>` }));
+    for (const args of [
+      { title: `Post <unsafe_content>${'S'.repeat(100)}</unsafe_content>` },
+      { title: 'Send', detail: 'x'.repeat(2001) },
+      { title: 'Send', fields: [{ label: 'To', value: 'y'.repeat(501) }] },
+      { title: 'Send', fields: [{ label: 'L'.repeat(61), value: 'y' }] },
+      { title: 'Send', confirm_label: 'C'.repeat(31) }
+    ]) {
+      const res = await t.hub.callTool(local(c.id), 'propose_action', args);
+      assert.equal(res.isError, true, JSON.stringify(args).slice(0, 60));
+      assert.match(res.content[0].text, /is \d+ characters; at most \d+\. The user approves what the card shows, so it is not cut/);
+    }
+    assert.equal(c.items.filter((i) => i.type === 'approval').length, 0, 'no card for any of them');
+    // At the limit everything arrives whole, a tagged subject with its tags.
+    const title = `Post <unsafe_content>${'S'.repeat(82)}</unsafe_content>`;
+    assert.equal(title.length, 120);
+    const res = data(await t.hub.callTool(local(c.id), 'propose_action', { title, detail: 'x'.repeat(2000), fields: [{ label: 'To', value: 'y'.repeat(500) }] }));
     const card = c.items.find((i) => i.id === res.proposal_id);
-    assert.ok(card.title.length <= 120, 'still within the limit');
-    assert.match(card.title, /^Post <unsafe_content>S+<\/unsafe_content>$/);
+    assert.equal(card.title, title);
+    assert.equal(card.detail.length, 2000);
+    assert.equal(card.fields[0].value.length, 500);
   } finally {
     await t.done();
   }
