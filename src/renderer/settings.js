@@ -94,6 +94,8 @@ export function openSettings(ctx, { view: start } = {}) {
       agentState.status = payload.status || agentState.status;
       showAgentStatuses(view);
     }
+    // Zoom keys and the wheel work with Settings open; only the zoom row changes.
+    if (type === 'zoom') showZoom(payload);
   });
 
   const close = () => {
@@ -127,6 +129,21 @@ export function openSettings(ctx, { view: start } = {}) {
       ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}</div>
       ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
     </button>`;
+
+  // A static row, because the reset button can't sit inside a row button.
+  const zoomRow = (level) => `
+    <div class="row static" data-zoom>
+      <div class="text"><div class="title">${esc(t('settings.general.zoom'))}</div>
+        <div class="desc">${esc(t('settings.general.zoomHelp'))}</div>
+        <div class="value" data-zoom-value>${esc(t('settings.general.zoomValue', { percent: level }))}</div></div>
+      <button class="btn sm secondary" data-a="zoom-reset" ${level === 100 ? 'disabled' : ''}>${esc(t('settings.general.zoomReset'))}</button>
+    </div>`;
+  const showZoom = (level) => {
+    const value = page.querySelector('[data-zoom-value]');
+    if (!value || typeof level !== 'number') return;
+    value.textContent = t('settings.general.zoomValue', { percent: level });
+    page.querySelector('[data-a="zoom-reset"]').disabled = level === 100;
+  };
 
   // ----- agents -----
 
@@ -423,6 +440,7 @@ export function openSettings(ctx, { view: start } = {}) {
           ${row({ title: t('settings.general.folders'), desc: t('settings.general.foldersHelp'), action: 'folders' })}
           ${row({ title: t('settings.general.density'), value: labelOf(DENSITY, s.density), action: 'density' })}
           ${row({ title: t('settings.general.theme'), value: labelOf(THEMES, s.theme), action: 'theme' })}
+          ${zoomRow(s.zoomLevel)}
           ${row({ title: t('settings.general.darkEmails'), desc: t('settings.general.darkEmailsHelp'), action: 'toggle:darkEmails', toggle: s.darkEmails })}
           ${row({ title: t('settings.general.swipe'), desc: t('settings.general.swipeHelp'), action: 'toggle:swipeActions', toggle: s.swipeActions })}
           ${row({ title: t('settings.general.fit'), desc: t('settings.general.fitHelp'), action: 'toggle:fitContent', toggle: s.fitContent })}
@@ -575,6 +593,8 @@ export function openSettings(ctx, { view: start } = {}) {
       ctx.refresh();
     };
     if (a === 'back') return back();
+    // Main answers with a 'zoom' event, which updates the row.
+    if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'agents') return go('agents');
     if (a.startsWith('agent-')) return agentAction(a, b);
     if (a === 'add') {

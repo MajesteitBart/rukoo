@@ -11,6 +11,7 @@ const { ImapAccount, friendlyError } = require('./imap');
 const { DemoAccount, DEMO_EMAIL } = require('./demo');
 const { serverDefaults, publicProviders } = require('./providers');
 const util = require('./mailutil');
+const { normalizeZoom } = require('./zoom');
 
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
@@ -43,7 +44,9 @@ const DEFAULT_SETTINGS = {
   spam: [],
   defaultAccountId: null,
   signature: '',
-  senderLogos: true
+  senderLogos: true,
+  // Percent, shared by the main window and the compose windows; see zoom.js.
+  zoomLevel: 100
 };
 
 function readJson(file, fallback) {
@@ -114,6 +117,7 @@ class Engine extends EventEmitter {
     this.accounts = readJson(this.file('accounts.json'), []);
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.file('settings.json'), {}) };
     this.settings.language = normalizeLanguage(this.settings.language);
+    this.settings.zoomLevel = normalizeZoom(this.settings.zoomLevel);
     setLanguage(this.settings.language);
     // Once only, so a user who sets this signature again keeps it.
     if (!this.settings.signatureOptIn) {
@@ -448,12 +452,14 @@ class Engine extends EventEmitter {
     this.emit('updated');
   }
 
-  updateSettings(patch) {
+  // quiet: save without 'updated', for a change no list or count depends on (zoom), so the windows don't redraw.
+  updateSettings(patch, { quiet = false } = {}) {
     this.settings = { ...this.settings, ...patch };
     this.settings.language = normalizeLanguage(this.settings.language);
+    this.settings.zoomLevel = normalizeZoom(this.settings.zoomLevel);
     setLanguage(this.settings.language);
     this.persistSettings();
-    this.emit('updated');
+    if (!quiet) this.emit('updated');
     return this.settings;
   }
 
