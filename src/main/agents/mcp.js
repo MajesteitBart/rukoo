@@ -42,7 +42,8 @@ function bearer(req) {
 }
 
 class McpServer {
-  // hub: { identify(token), listTools(identity), callTool(identity, name, args, meta), proof(challenge, endpoint), hello(identity, params) }
+  // hub: { identify(token), listTools(identity), callTool(identity, name, args, meta), proof(challenge, endpoint), hello(identity, params),
+  //        skillInstructions() }
   constructor({ hub, version = '0.0.0', log = () => {} }) {
     this.hub = hub;
     this.version = version;
@@ -185,6 +186,17 @@ class McpServer {
     return json(res, status, body, extra);
   }
 
+  // The fixed text plus the skills there are now. A skills folder that can't be read leaves the fixed text.
+  instructions() {
+    let extra = '';
+    try {
+      extra = this.hub.skillInstructions ? this.hub.skillInstructions() : '';
+    } catch (err) {
+      this.log('mcp skills failed', err && err.message);
+    }
+    return extra ? `${INSTRUCTIONS}\n\n${extra}` : INSTRUCTIONS;
+  }
+
   // Returns the JSON-RPC response object, or null for notifications and client responses (HTTP 202).
   async dispatch(identity, msg) {
     if (!msg || typeof msg !== 'object') return rpcError(null, -32600, 'Invalid request');
@@ -204,7 +216,7 @@ class McpServer {
           protocolVersion: PROTOCOLS.includes(asked) ? asked : FALLBACK_PROTOCOL,
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: 'rukoo', title: 'Rukoo Mail', version: this.version },
-          instructions: INSTRUCTIONS
+          instructions: this.instructions()
         });
       }
       case 'ping':

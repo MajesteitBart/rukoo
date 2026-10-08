@@ -8,7 +8,7 @@ Open the panel with the sparkle button in the title bar or with `Ctrl+J`. While 
 
 ## What you can ask
 
-The panel offers quick actions for the open email. The same actions work as slash commands in the chat input, such as `/reply`. You can also type anything else.
+The panel offers quick actions for the open email. The same actions work as slash commands in the chat input, such as `/reply`. [Skills](#skills) are slash commands too. You can also type anything else.
 
 A new chat is about the open email. The email shows as a chip above the input and goes to the agent with your first message. To ask something without it, click the × on the chip. An "Add this email" chip takes its place; click it to put the email back. Once a chat has started it keeps its email, so the chip has no ×. Start a new chat to leave the email out.
 
@@ -66,8 +66,57 @@ Sometimes the agent no longer has the session. By default, Claude Code deletes t
 | `show_sources` | Cards for the sources the agent used. Email sources open the email |
 | `propose_action` | An approval card for something other people will see or that changes another system |
 | `mail_action` | Archive, delete, move, mark read or unread, star, or unsubscribe. Rukoo asks you first |
+| `read_skill` | One of the [skills](#skills), with the text files next to it. Without a name, the list of skills |
 
 The MCP server is stateless. Each request carries a bearer token, and Rukoo knows from the token which agent and chat it belongs to.
+
+## Skills
+
+A skill is a set of instructions for one kind of email task. Rukoo uses the [Agent Skills](https://agentskills.io) format, which Claude Code, Codex and Hermes also read: a folder with a `SKILL.md` that starts with a `name` and a `description`, followed by the instructions. Files next to `SKILL.md`, such as `scripts/` and `references/`, are part of the skill. [skills/README.md](../skills/README.md) has an example.
+
+Rukoo reads skills from two folders:
+
+- `skills/` in this repository. Rukoo ships these with the app.
+- `%APPDATA%\Rukoo Mail\skills`, for your own. Create the folder if it isn't there. A skill here replaces Rukoo's skill with the same name.
+
+Rukoo reads both folders again each time an agent connects to its MCP server or calls `read_skill`, and each time you open the chat panel or type `/`. A new or changed skill works without restarting Rukoo.
+
+### How agents get them
+
+Rukoo offers the skills through its MCP server, so Hermes, Claude Code and Codex get them the same way, and nothing has to be installed on the agent's side.
+
+- Rukoo's MCP instructions list each skill's name and description. The description of `read_skill` lists them as well, because not every agent shows MCP instructions to its model. Claude Code keeps 2048 characters of each. With many or long skills, Rukoo shortens the descriptions in these lists, and ends a list with the number of skills left out when even short ones don't fit. `read_skill` without a name has them all, in full.
+- `read_skill` returns a skill's `SKILL.md` and the text files next to it. Without a name it lists the skills, and the ones Rukoo skipped with the reason, so you can ask the agent why a skill is missing.
+- Clark's bridge answers the MCP handshake itself, before it has found Rukoo. It uses the instructions it got with the last tool list, so a new skill reaches Clark's instructions the next time Hermes connects. `read_skill` always has the current skills. A bridge copied before skills existed passes `read_skill` on as well; copy the new `rukoo_bridge.py` to the Hermes machine to get the skills into the instructions.
+
+### Starting a skill
+
+Type `/` and the skill's name in the chat input, then pick it from the suggestions or press Enter or Send. The suggestions show the skills after the quick actions, each with its description. Rukoo then sends the agent a line that names the skill, followed by the instructions from `SKILL.md`. The agent gets the other files with `read_skill` when the instructions point to them.
+
+A quick action keeps its command. A skill named `reply` doesn't replace `/reply` and isn't offered as a slash command. Agents can still use it through `read_skill`. Rename the folder and the `name` to start it from the chat input.
+
+Skills are instructions from Rukoo or from you, so Rukoo doesn't put them inside `<unsafe_content>`. Rukoo never takes a skill from an email.
+
+### Rules and limits
+
+Rukoo skips a skill that breaks these rules. It logs the reason, and `read_skill` without a name reports it.
+
+- The `name` is the name of the skill's folder: lowercase letters, digits and single hyphens, at most 64 characters.
+- The frontmatter parses and has a `description` of at most 1024 characters. Agents choose a skill by its description, so say what it does and when to use it.
+- `SKILL.md` is UTF-8 text of at most 64 KB.
+- `read_skill` returns text files of up to 32 KB each and 64 KB together, `SKILL.md` included, and lists what it left out and why. The agent can ask for a left-out text file by its path, up to 64 KB.
+- Rukoo reads only files inside the skill's folder and never follows a link or junction inside it. Names that start with a dot, such as `.git`, are left out. The skill folder itself may be a link, to a git checkout for example.
+- The message that starts a skill carries up to 16,000 characters of instructions. For a longer skill, Rukoo tells the agent to read it with `read_skill`.
+
+### Using the skills outside Rukoo
+
+The skills are plain Agent Skills, so you can install them into an agent directly. You don't need this inside Rukoo, which already offers them. A skill that uses Rukoo's tools, such as `write_draft` or `mail_action`, only works where the agent can reach Rukoo's MCP server.
+
+- **Hermes:** `hermes skills install MajesteitBart/rukoo/skills/<name>` installs one skill from GitHub. `hermes skills tap add MajesteitBart/rukoo` follows the repository.
+- **Claude Code:** `claude --plugin-dir <path to a Rukoo checkout>` loads the skills in `skills/` for one session. To keep a skill, copy its folder into `~/.claude/skills`.
+- **Codex:** copy a skill folder into `~/.agents/skills`, or into `.agents/skills` in the project you work in.
+
+Rukoo starts Claude Code and Codex with your own settings, so in Rukoo they also load the skills you installed for them. A skill installed there that Rukoo offers too shows up twice.
 
 ## Approvals
 

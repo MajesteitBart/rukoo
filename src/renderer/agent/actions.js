@@ -80,3 +80,10 @@ export const actionsFor = (message) => ACTIONS.filter((a) => applies(a, message)
 // Slash commands (/reply, /brief, ...): the same actions; the inbox overview is always available.
 export const commandsFor = (message) =>
   ACTIONS.filter((a) => a.key === 'triage' || applies(a, message)).map((a) => ({ name: a.key, label: a.label, description: a.description, icon: a.icon }));
+
+// Skills as slash commands, after the quick actions. A quick action keeps its command: a skill with the same name
+// is not offered here, though the agent can still read it with read_skill (docs/agents.md, "Skills").
+export const skillCommands = (skills) =>
+  (Array.isArray(skills) ? skills : [])
+    .filter((s) => s && typeof s.name === 'string' && !actionByKey(s.name))
+    .map((s) => ({ name: s.name, label: s.description, description: s.description, icon: 'file', skill: true }));

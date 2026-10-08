@@ -38,6 +38,8 @@ class FakeAdapter {
     this.hub = hub;
     const env = process.env.SEM_AGENT_FAKE_SCALE ? Number(process.env.SEM_AGENT_FAKE_SCALE) : NaN;
     this.scale = Number.isFinite(scale) ? scale : Number.isFinite(env) ? env : 1;
+    // What each turn handed the agent, newest last, so tests can check the exact text.
+    this.received = [];
   }
 
   async status() {
@@ -47,6 +49,8 @@ class FakeAdapter {
   async dispose() {}
 
   async runTurn(turn) {
+    this.received.push({ input: turn.input, text: turn.text, action: turn.action, instructions: turn.instructions });
+    if (this.received.length > 20) this.received.shift();
     const run = new FakeRun(this, turn);
     try {
       return (await run.play()) || { status: 'done' };
@@ -137,6 +141,7 @@ class FakeRun {
     if (action === 'approved' || /^approved:/i.test(text)) return this.followUp();
     const byAction = { reply: 'reply', brief: 'brief', tasks: 'tasks', team: 'team', unsubscribe: 'unsubscribe', triage: 'triage', summary: 'summary', update: 'update' };
     if (byAction[action]) return this[byAction[action]]();
+    if (action === 'skill') return this.skill(text);
     if (/\blost session\b/.test(lower)) return this.lostSession();
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
     if (/\bmarkdown\b/.test(lower)) return this.markdown();
@@ -243,6 +248,16 @@ class FakeRun {
     }
     const lines = results.map((r, i) => `${i + 1}. ${untag(r.subject)} (${untag(r.from && (r.from.name || r.from.address))})`);
     return this.say(lines.length ? `Most urgent first:\n${lines.join('\n')}` : 'Nothing in your inbox needs you today.');
+  }
+
+  // A skill the user started: read it like a real agent would, then say which one and how it starts.
+  async skill(text) {
+    const name = (/^\[The user started the skill "([a-z0-9-]+)"/.exec(text) || [])[1];
+    if (!name) return this.say('I did not get a skill name.');
+    const res = await this.tool('read_skill', { name });
+    if (res.error) return this.say(`I could not read the skill: ${res.error}`);
+    const first = String(res.skill_md || '').split('---').slice(2).join('---').trim().split('\n')[0] || '';
+    return this.say(`Following the skill ${name}. It starts with: ${first}`);
   }
 
   async summary() {

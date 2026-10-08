@@ -38,6 +38,7 @@
     },
     "files": [
       "src/**/*",
+      "skills/**/*",
       "build/icon.png",
       "package.json"
     ],

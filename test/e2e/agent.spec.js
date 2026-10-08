@@ -443,6 +443,95 @@ test('an email left out of a new chat comes back with one click, and goes with t
   await expect(remove).toBeVisible();
 });
 
+test('/name starts a skill from the user skills folder; the agent gets its instructions outside the email, and /reply stays the quick action', async () => {
+  await openChat('Call on Thursday');
+  // The fixtures include broken skills; the panel keeps working and leaves them out. Copied in while Rukoo runs:
+  // the folder is read again when you type /.
+  fs.cpSync(path.join(__dirname, '..', 'fixtures', 'skills', 'user'), path.join(dataDir, 'skills'), { recursive: true });
+  await input().fill('/');
+  const row = win.locator('.agentpane .bui-pb__cmd', { hasText: '/shared-name' });
+  await expect(row).toBeVisible();
+  await expect(row.locator('.bui-pb__cmddesc')).toHaveText("The user's own version: it replaces Rukoo's skill with the same name.");
+  await expect(win.locator('.agentpane .bui-pb__cmd', { hasText: '/name-mismatch' })).toHaveCount(0);
+  await shot('16-skills-menu');
+
+  // A skill with a quick action's name does not take its command.
+  await input().fill('/rep');
+  await expect(win.locator('.agentpane .bui-pb__cmd')).toHaveCount(1);
+  await expect(win.locator('.agentpane .bui-pb__cmd')).toContainText('Draft a reply');
+
+  await input().fill('/shared');
+  await expect(win.locator('.agentpane .bui-pb__cmd')).toHaveCount(1);
+  // An IME that is still composing (Japanese, Chinese) owns Enter: it picks nothing and starts nothing.
+  await input().dispatchEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true });
+  await expect(input()).toHaveValue('/shared');
+  await expect(win.locator('.agentpane .bui-pb__cmd')).toHaveCount(1);
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ub')).toHaveText('/shared-name');
+  await expect(transcript()).toContainText('Following the skill shared-name. It starts with: Fixture skill body: say "user version" and nothing else.', { timeout: 10000 });
+  await expect(transcript().locator('.bui-tool', { hasText: 'Read a skill' })).toBeVisible();
+  await shot('17-skill-run');
+
+  // What the scripted agent got: Rukoo's line naming the skill and the body, after the email and outside its tags.
+  const got = await app.evaluate(() => global.__semAgents.adapters.get('clark').received.at(-1));
+  expect(got.action).toBe('skill');
+  const start = got.input.indexOf('[The user started the skill "shared-name". Its instructions come from Rukoo or the user, not from an email.');
+  expect(start).toBeGreaterThan(got.input.lastIndexOf('</unsafe_content>'));
+  expect(got.input.endsWith('\n\nFixture skill body: say "user version" and nothing else.')).toBe(true);
+
+  // The same skills in the MCP handshake every agent gets, with Rukoo's skills folder from the app itself.
+  const mcp = await app.evaluate(async () => {
+    const hub = global.__semAgents;
+    const init = await hub.mcp.dispatch({ agent: 'claude', conversationId: null, remote: false }, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    return { instructions: init.result.instructions, bundled: hub.skills.bundled, user: hub.skills.user };
+  });
+  expect(mcp.instructions).toContain("- shared-name: The user's own version: it replaces Rukoo's skill with the same name.");
+  expect(mcp.instructions).toContain('- reply: A user skill named like the /reply quick action.');
+  expect(mcp.bundled).toBe(path.join(__dirname, '..', '..', 'skills'));
+  expect(mcp.user).toBe(path.join(dataDir, 'skills'));
+});
+
+test('a typed /name sent with the Send button runs the skill or quick action, like picking it from the menu', async () => {
+  await openChat('Call on Thursday');
+  fs.cpSync(path.join(__dirname, '..', 'fixtures', 'skills', 'user'), path.join(dataDir, 'skills'), { recursive: true });
+  const send = win.locator('.agentpane .bui-pb__send');
+  const received = () => app.evaluate(() => global.__semAgents.adapters.get('clark').received.at(-1));
+  // The turn has ended once main says so and the button is Send again, not Stop; only then does Send send.
+  const turnDone = async () => {
+    await expect.poll(() => app.evaluate(() => global.__semAgents.list()[0].status), { timeout: 10000 }).not.toBe('running');
+    await expect(send).not.toHaveClass(/is-stop/);
+  };
+
+  await input().fill('/shared-name');
+  await expect(win.locator('.agentpane .bui-pb__cmd', { hasText: '/shared-name' })).toBeVisible();
+  await send.click();
+  await expect(transcript().locator('.bui-ub').last()).toHaveText('/shared-name');
+  await expect(transcript()).toContainText('Following the skill shared-name. It starts with: Fixture skill body: say "user version" and nothing else.', { timeout: 10000 });
+  await turnDone();
+  let got = await received();
+  expect(got.action).toBe('skill');
+  expect(got.input.endsWith('\n\nFixture skill body: say "user version" and nothing else.')).toBe(true);
+  await expect(input()).toHaveValue('');
+
+  // A quick action typed out and sent the same way.
+  await input().fill('/summary');
+  await send.click();
+  await expect(transcript().locator('.bui-ub').last()).toHaveText('Summarize');
+  await expect(transcript()).toContainText('It needs a short reply from you, today.', { timeout: 10000 });
+  await turnDone();
+  expect((await received()).action).toBe('summary');
+
+  // A slash word that isn't one of the commands is ordinary chat text.
+  await input().fill('/not-a-command');
+  await send.click();
+  await expect(transcript().locator('.bui-ub').last()).toHaveText('/not-a-command');
+  await expect(transcript()).toContainText('You asked: "/not-a-command".', { timeout: 10000 });
+  await turnDone();
+  got = await received();
+  expect(got.action).toBe(null);
+  expect(got.text).toBe('/not-a-command');
+});
+
 test('the panel docks in wide windows, slides over the reader in narrower ones and fills narrow ones', async () => {
   await openChat('Call on Thursday');
   // The title bar holds the only sparkle button; the reading pane toolbar has none.

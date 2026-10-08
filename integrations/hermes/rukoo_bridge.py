@@ -5,7 +5,8 @@ Hermes could reach Rukoo's MCP endpoint directly, but after a few failed reconne
 server, drops its tools and only probes again every five minutes. Rukoo is a desktop app that is closed
 or asleep half the day, so the tools would keep vanishing. This bridge never goes down from Hermes' side:
 it answers the handshake itself, serves the tool list from a cache while Rukoo is away, and turns an
-unreachable Rukoo into a tool error the agent can pass on.
+unreachable Rukoo into a tool error the agent can pass on. The cache also keeps Rukoo's instructions,
+which list the user's skills, for the next handshake.
 
 It finds Rukoo by itself. It asks Tailscale which of the user's Windows and Mac devices are online and
 tries Rukoo's port on each. A device has to prove that it has the same key before the bridge sends its
@@ -19,7 +20,7 @@ Environment (set under mcp_servers.rukoo.env in ~/.hermes/config.yaml; Rukoo's S
   RUKOO_URL        optional; more Rukoo addresses to try, like http://host:47800/mcp, separated by commas
   RUKOO_DISCOVER   optional; 0 turns the Tailscale lookup off, so only RUKOO_URL is tried
   RUKOO_TAILSCALE  optional; the tailscale command, when it isn't on the PATH
-  RUKOO_CACHE      optional; where the last tool list is kept (default: next to this file)
+  RUKOO_CACHE      optional; where the last tool list and instructions are kept (default: next to this file)
 
 Python 3.8+, standard library only.
 """
@@ -82,6 +83,8 @@ SEARCH_AGAIN_SECONDS = 60
 # Straight to Rukoo: a proxy from the environment would get the token and can't reach 100.x anyway.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+# Rukoo's fixed instructions (mcp.js), for a handshake before the bridge ever reached Rukoo. Rukoo's own add
+# the user's skills; the bridge keeps the last ones it got in the cache.
 INSTRUCTIONS = (
     "Rukoo Mail is the user's desktop email client. These tools read the user's mail across all their "
     "accounts and change what is on their screen in Rukoo: the reply draft in the composer, and plans, "
@@ -359,12 +362,28 @@ def describe_failure(exc, url, name):
     return f"Rukoo Mail on {name} stopped answering. Ask the user to check that it's still open."
 
 
-def save_cache(tools):
+def load_cache():
+    """(tools, instructions) from the cache, either one None when it isn't there. A bridge from before
+    skills cached the bare tool list."""
+    try:
+        cached = json.loads(CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    if isinstance(cached, list):
+        return cached, None
+    if not isinstance(cached, dict):
+        return None, None
+    tools = cached.get("tools") if isinstance(cached.get("tools"), list) else None
+    instructions = cached.get("instructions") if isinstance(cached.get("instructions"), str) else None
+    return tools, instructions
+
+
+def save_cache(tools, instructions):
     """Replaces the cache in one step, so a failed or concurrent write never leaves half a file behind."""
     temp = CACHE.with_name(f"{CACHE.name}.{os.getpid()}.tmp")
     try:
         with open(temp, "w", encoding="utf-8") as handle:
-            json.dump(tools, handle)
+            json.dump({"tools": tools, "instructions": instructions}, handle)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, CACHE)
@@ -374,6 +393,23 @@ def save_cache(tools):
             temp.unlink()
         except OSError:
             pass
+
+
+def fetch_instructions(url):
+    """Rukoo's instructions with the user's current skills, or None. Rukoo's MCP server keeps no sessions, so
+    an initialize of its own is just a question."""
+    hello = {
+        "jsonrpc": "2.0",
+        "id": "instructions",
+        "method": "initialize",
+        "params": {"protocolVersion": PROTOCOL_VERSIONS[0], "capabilities": {}, "clientInfo": {"name": "rukoo-bridge", "version": "3"}},
+    }
+    try:
+        reply = post(url, hello, LIST_TIMEOUT_SECONDS)
+        text = reply["result"]["instructions"]
+    except Exception:  # noqa: BLE001 - the instructions from before stay
+        return None
+    return text if isinstance(text, str) and text else None
 
 
 def list_tools(message):
@@ -387,12 +423,14 @@ def list_tools(message):
         except Exception as exc:  # noqa: BLE001 - any failure falls back to the cache
             log(f"tools/list from {target[1]} failed, using the cache: {exc}")
         else:
-            save_cache(tools)
+            # Hermes reads the instructions at the handshake, before Rukoo may be found, so they are kept
+            # for the next one.
+            save_cache(tools, fetch_instructions(target[0]) or load_cache()[1])
             return reply
-    try:
-        return result(message.get("id"), {"tools": json.loads(CACHE.read_text(encoding="utf-8"))})
-    except (OSError, ValueError):
+    tools, _ = load_cache()
+    if tools is None:
         return error(message.get("id"), -32603, "Rukoo Mail isn't reachable and no tool list is cached yet.")
+    return result(message.get("id"), {"tools": tools})
 
 
 def call_tool(message):
@@ -427,8 +465,9 @@ def handle(message):
         return result(msg_id, {
             "protocolVersion": requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "rukoo", "title": "Rukoo Mail", "version": "bridge-2"},
-            "instructions": INSTRUCTIONS,
+            "serverInfo": {"name": "rukoo", "title": "Rukoo Mail", "version": "bridge-3"},
+            # The handshake never waits for Rukoo: the instructions are the ones from the last tool list.
+            "instructions": load_cache()[1] or INSTRUCTIONS,
         })
     if method == "ping":
         return result(msg_id, {})

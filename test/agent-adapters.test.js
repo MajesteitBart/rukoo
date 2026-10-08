@@ -1214,6 +1214,7 @@ async function fakeRukoo({ key, idle = 0, chats = [] }) {
       return AgentHub.prototype.hello.call(this, identity, params);
     },
     listTools: () => [{ name: 'get_context', inputSchema: { type: 'object' } }],
+    skillInstructions: () => 'Rukoo has skills:\n- fixture-skill: A skill for the bridge test.',
     async callTool(identity, name, args) {
       calls.push({ name, args });
       // A mail action that takes Rukoo a while.
@@ -1274,9 +1275,9 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   });
   const urls = [laptop.url, desktop.url, other.url, outdated.url, stranger.url, `http://127.0.0.1:${relay.address().port}/mcp`, `${await closedPort()}/mcp`];
   const cache = path.join(tmp('bridge'), 'tools.json');
-  const start = (key) => {
+  const start = (key, env = {}) => {
     const child = spawn(python, [path.join(__dirname, '..', 'integrations', 'hermes', 'rukoo_bridge.py')], {
-      env: { ...process.env, RUKOO_KEY: key, RUKOO_URL: urls.join(', '), RUKOO_DISCOVER: '0', RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, RUKOO_KEY: key, RUKOO_URL: urls.join(', '), RUKOO_DISCOVER: '0', RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8', ...env },
       windowsHide: true
     });
     const replies = [];
@@ -1294,9 +1295,18 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   const init = await b.ask({ id: 0, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
   assert.equal(init.result.protocolVersion, '2025-11-25');
   assert.equal(init.result.serverInfo.name, 'rukoo');
+  // The handshake never waits for Rukoo: before the bridge ever reached it, the instructions are its own.
+  assert.match(init.result.instructions, /^Rukoo Mail is the user's desktop email client\./);
+  assert.ok(!init.result.instructions.includes('fixture-skill'));
   b.tell({ method: 'notifications/initialized' });
   assert.deepEqual((await b.ask({ id: 1, method: 'ping' })).result, {});
   assert.equal((await b.ask({ id: 2, method: 'tools/list' })).result.tools[0].name, 'get_context');
+  // The tool list brought Rukoo's instructions with the user's skills along, for the next handshake.
+  const again = start('hermes-key');
+  t.after(() => again.child.kill());
+  const reinit = await again.ask({ id: 0, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
+  assert.match(reinit.result.instructions, /^Rukoo Mail is the user's desktop email client\..*\n\nRukoo has skills:\n- fixture-skill: A skill for the bridge test\.$/s);
+  again.child.stdin.end();
   const onLaptop = await b.ask({ id: 3, method: 'tools/call', params: { name: 'get_context', arguments: { conversation_id: 'c_laptop' } } });
   assert.equal(onLaptop.result.content[0].text, 'ok get_context één');
   assert.deepEqual(laptop.calls.map((c) => c.args.conversation_id), ['c_laptop'], 'a call about a chat goes to the device that has it');
@@ -1328,7 +1338,17 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   closing.child.stdin.end();
   await exited;
   assert.deepEqual(closing.replies.map((r) => r.id), [20]);
-  assert.ok(JSON.parse(fs.readFileSync(cache, 'utf8'))[0].name === 'get_context');
+  const cached = JSON.parse(fs.readFileSync(cache, 'utf8'));
+  assert.equal(cached.tools[0].name, 'get_context');
+  assert.match(cached.instructions, /- fixture-skill: A skill for the bridge test\./);
+  // A cache from the bridge before skills holds the bare tool list: still served, with the bridge's own instructions.
+  const oldCache = path.join(tmp('bridge-old'), 'tools.json');
+  fs.writeFileSync(oldCache, JSON.stringify([{ name: 'get_context', inputSchema: { type: 'object' } }]));
+  const legacy = start('hermes-key', { RUKOO_URL: `${await closedPort()}/mcp`, RUKOO_CACHE: oldCache });
+  t.after(() => legacy.child.kill());
+  assert.match((await legacy.ask({ id: 40, method: 'initialize', params: {} })).result.instructions, /^Rukoo Mail is the user's desktop email client\.[^\n]*$/);
+  assert.equal((await legacy.ask({ id: 41, method: 'tools/list' })).result.tools[0].name, 'get_context', 'served from the old cache');
+  legacy.child.stdin.end();
 
   // A bridge with an old key or none finds no Rukoo it can use, and the agent hears why.
   const old = start('old-key');

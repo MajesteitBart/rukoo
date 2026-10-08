@@ -12,6 +12,7 @@ const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
 const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged } = require('./context');
+const { SkillError, toolDescription } = require('./skills');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -246,14 +247,37 @@ const TOOLS = [
     ),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     run: mailAction
+  },
+  {
+    name: 'read_skill',
+    title: 'Read a skill',
+    description: toolDescription([]),
+    // The description lists the skills there are now; see list().
+    describe: (hub) => toolDescription(hub && hub.skills ? hub.skills.list() : []),
+    inputSchema: schema({
+      name: { type: 'string', description: 'The skill, e.g. "data-deletion-request". Leave it out to list the skills.', maxLength: 64 },
+      file: { type: 'string', description: 'One file of the skill by its path, as read_skill lists it, e.g. "references/forms.md".', maxLength: 500 }
+    }),
+    annotations: READ,
+    run: readSkill
   }
 ];
 
 const BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 const TOOL_NAMES = TOOLS.map((t) => t.name);
 
-function list() {
-  return TOOLS.map(({ name, title, description, inputSchema, annotations }) => ({ name, title, description, inputSchema, annotations }));
+function list(hub = null) {
+  return TOOLS.map(({ name, title, description, describe, inputSchema, annotations }) => {
+    let text = description;
+    if (describe) {
+      try {
+        text = describe(hub);
+      } catch (_) {
+        // A skills folder that can't be read must not cost the agent its tools.
+      }
+    }
+    return { name, title, description: text, inputSchema, annotations };
+  });
 }
 
 // Accepts bare names and the prefixed forms agents report (mcp__rukoo__x, mcp_rukoo_x).
@@ -1368,6 +1392,20 @@ async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
     }
   });
   return { done, failed, undo, text };
+}
+
+// ---------- skills ----------
+
+// Skills come from Rukoo's skills folder and the user's, never from an email, so nothing here is tagged.
+function readSkill(hub, args) {
+  if (args.file && !args.name) throw new ToolError('Pass the name of the skill the file belongs to.');
+  if (!hub.skills) return { skills: [] };
+  try {
+    return hub.skills.read({ name: args.name || '', file: args.file || '' });
+  } catch (err) {
+    if (err instanceof SkillError) throw new ToolError(err.message);
+    throw err;
+  }
 }
 
 // The first address of a mailto: link, or null.

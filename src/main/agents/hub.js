@@ -6,10 +6,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { AgentConfig, AgentError, AGENT_IDS, writeJsonAtomic, tailscaleAddress } = require('./config');
-const { McpServer } = require('./mcp');
+const { McpServer, INSTRUCTIONS: MCP_INSTRUCTIONS } = require('./mcp');
 const { decodeId } = require('../engine');
 const tools = require('./tools');
 const context = require('./context');
+const skills = require('./skills');
 
 const MAX_CONVERSATIONS = 150;
 // Conversations an agent opened from outside the panel (Clark on WhatsApp) have their own, smaller cap.
@@ -100,6 +101,14 @@ class AgentHub extends EventEmitter {
     this.cfg = new AgentConfig({ file: path.join(dataDir, 'agents.json'), secrets, interfaces: deps.interfaces });
     this.file = path.join(dataDir, 'conversations.json');
     this.workspace = deps.workspace || path.join(path.dirname(dataDir), 'agent-workspace');
+    // Rukoo's own skills ship in skills/ next to src/; the user's sit next to the data folder. Tests pass both.
+    const skillDirs = deps.skills || {};
+    this.skills = new skills.Skills({
+      bundled: skillDirs.bundled !== undefined ? skillDirs.bundled : path.join(__dirname, '..', '..', '..', 'skills'),
+      user: skillDirs.user !== undefined ? skillDirs.user : path.join(path.dirname(dataDir), 'skills'),
+      // A skill the user wrote that Rukoo skips should be easy to find out about, so this logs without SEM_AGENT_LOG.
+      log: deps.skillLog || ((line) => console.warn(`[agent:skills] ${line}`))
+    });
     this.injectedAdapters = adapters;
     this.adapters = new Map();
     this.adapterErrors = new Map();
@@ -724,11 +733,20 @@ class AgentHub extends EventEmitter {
 
   // ---------- turns ----------
 
-  send(id, { text, action = null, display = null } = {}) {
+  // skill: the name of a skill the user started with /name. Rukoo writes that turn itself, from the skill as it is
+  // on disk now.
+  send(id, { text, action = null, display = null, skill = null } = {}) {
     const c = this.mustGet(id);
     if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
     if (this.turns.has(c.id)) throw new AgentError('busy', 'a turn is running');
     if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
+    if (skill) {
+      const s = this.skills.get(skill);
+      if (!s) throw new AgentError('skill-missing', `no skill named ${clip(skill, 80)}`);
+      text = context.skillTurn(s);
+      action = 'skill';
+      display = `/${s.name}`;
+    }
     const body = clip(text, 20000);
     if (!body.trim()) throw new AgentError('invalid', 'empty message');
     const firstTurn = !c.delivered;
@@ -1454,7 +1472,18 @@ class AgentHub extends EventEmitter {
   }
 
   listTools() {
-    return tools.list();
+    return tools.list(this);
+  }
+
+  // The skills part of Rukoo's MCP instructions, read from disk for every initialize. It fits in what is left of
+  // the 2048 characters Claude Code keeps after the fixed text and the blank line before it.
+  skillInstructions() {
+    return skills.instructions(this.skills.list(), skills.MCP_TEXT_MAX - MCP_INSTRUCTIONS.length - 2);
+  }
+
+  // For the panel's slash commands.
+  skillList() {
+    return this.skills.list().map(({ name, description, source }) => ({ name, description, source }));
   }
 
   callTool(identity, name, args, meta) {
@@ -1659,7 +1688,8 @@ const RUKOO_LABELS = {
   show_sources: 'Showed sources',
   propose_action: 'Asked for approval',
   mail_action: 'Proposed a mail action',
-  read_attachment: 'Read an attachment'
+  read_attachment: 'Read an attachment',
+  read_skill: 'Read a skill'
 };
 const COMMANDS = /^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$/i;
 const BUILTINS = [

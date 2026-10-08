@@ -649,6 +649,10 @@ async function check() {
   cp.setValue('/ta');
   input(ta);
   ok(cp.el.querySelectorAll('.bui-pb__cmd').length === 1 && cp.el.querySelector('.bui-pb__cmdname').textContent === '/tasks', 'slash menu filters commands');
+  key(ta, 'Enter', { isComposing: true });
+  key(ta, 'Tab', { isComposing: true });
+  key(ta, 'Enter', { keyCode: 229 });
+  ok(got.commands.length === 0 && cp.getValue() === '/ta' && cp.el.querySelector('.bui-pb__menu'), 'Enter and Tab during IME composition pick nothing from the slash menu');
   key(ta, 'Enter');
   ok(got.commands[0] === 'tasks' && cp.getValue() === '' && !cp.el.querySelector('.bui-pb__menu'), 'Enter picks the command, strips the token and sends nothing');
   ok(got.sent.length === 1, 'picking a command does not send text');
