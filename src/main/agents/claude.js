@@ -215,9 +215,11 @@ class ClaudeAdapter {
     }
     const outcome = await session.run(turn);
     if (outcome.lostSession && !fresh) {
-      // The CLI no longer has this session (its transcript was deleted): start a fresh one.
+      // The CLI no longer has this session (its transcript was deleted): start a fresh one, which gets the email
+      // and a recap of the chat instead. The lost one never read the input, so it goes out once.
       this.closeSession(session);
       turn.emit({ type: 'notice', tone: 'info', code: 'new-session', text: 'Claude started a new session' });
+      if (typeof turn.startOver === 'function') await turn.startOver();
       return this.turn(turn, true);
     }
     return outcome.result;

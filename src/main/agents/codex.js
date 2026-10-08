@@ -433,7 +433,11 @@ class CodexAdapter {
     server.threads.set(threadId, this.threadState(turn, s));
     turn.setProvider({ threadId });
     map(threadId);
-    if (lost) turn.emit({ type: 'notice', tone: 'info', code: 'new-thread', text: 'Codex started a new thread' });
+    if (lost) {
+      // The new thread knows nothing of the chat: the turn's input gets the email and a recap before it goes out.
+      turn.emit({ type: 'notice', tone: 'info', code: 'new-thread', text: 'Codex started a new thread' });
+      if (typeof turn.startOver === 'function') await turn.startOver();
+    }
     return threadId;
   }
 

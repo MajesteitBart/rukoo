@@ -137,6 +137,7 @@ class FakeRun {
     if (action === 'approved' || /^approved:/i.test(text)) return this.followUp();
     const byAction = { reply: 'reply', brief: 'brief', tasks: 'tasks', team: 'team', unsubscribe: 'unsubscribe', triage: 'triage', summary: 'summary', update: 'update' };
     if (byAction[action]) return this[byAction[action]]();
+    if (/\blost session\b/.test(lower)) return this.lostSession();
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
     if (/\bmarkdown\b/.test(lower)) return this.markdown();
     if (/\bapproval\b/.test(lower)) return this.approval();
@@ -272,6 +273,18 @@ class FakeRun {
   async markdown() {
     await this.think('Putting the plan in order.', 200);
     return this.say(MARKDOWN_REPLY);
+  }
+
+  // "lost session": the agent no longer has the chat's session, like Claude Code after it deleted an old
+  // transcript. Rukoo sends the email and a recap again; the answer says which of the two came along.
+  async lostSession() {
+    this.turn.emit({ type: 'notice', tone: 'info', code: 'new-session', text: `${this.hub.agentName(this.adapter.id)} started a new session` });
+    const input = typeof this.turn.startOver === 'function' ? await this.turn.startOver() : this.turn.input;
+    this.check();
+    const got = [];
+    if (String(input).includes('<unsafe_content source="email"')) got.push('the email');
+    if (String(input).includes('<unsafe_content source="earlier chat">')) got.push('a recap of our chat');
+    return this.say(got.length ? `I started a new session. Rukoo sent me ${got.join(' and ')}.` : 'I started a new session.');
   }
 
   async error() {

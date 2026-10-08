@@ -327,11 +327,11 @@
   },
   "agent.notices.new-session": {
     "message": "{name} started a new session",
-    "description": "Chat panel info line: Claude Code no longer had this chat's session, so it started a fresh one without the earlier messages. name is the agent name."
+    "description": "Chat panel info line (agent/panel.js localizeNotice): Claude Code or Hermes no longer had this chat's session, so it started a new one (claude.js ClaudeAdapter.turn, hermes.js HermesAdapter.session). Rukoo sends that session the email and a recap of the chat. name is the agent name."
   },
   "agent.notices.new-thread": {
     "message": "{name} started a new thread",
-    "description": "Chat panel info line: Codex could not reopen this chat's thread, so it started a fresh one without the earlier messages. name is the agent name."
+    "description": "Chat panel info line (agent/panel.js localizeNotice): Codex could not reopen this chat's thread, so it started a new one (codex.js CodexAdapter.ensureThread). Rukoo sends that thread the email and a recap of the chat. name is the agent name."
   },
   "agent.errors.window": {
     "message": "Rukoo's main window is closed.",

@@ -373,6 +373,7 @@ class AgentHub extends EventEmitter {
       c.notes = Array.isArray(c.notes) ? c.notes.filter((n) => typeof n === 'string') : [];
       // Saved before Rukoo tracked this: a chat with a message the agent answered has had its first turn.
       if (typeof c.delivered !== 'boolean') c.delivered = c.items.some((i) => i.type === 'assistant');
+      c.needsRecap = c.needsRecap === true;
       // A turn cannot survive a restart: close whatever was still open.
       for (const item of c.items) {
         if (item.type === 'assistant' && item.status === 'streaming') item.status = 'stopped';
@@ -622,6 +623,9 @@ class AgentHub extends EventEmitter {
       notes: [],
       // Set once a turn reached the agent; until then every message is a first turn with the email attached.
       delivered: false,
+      // Set when the agent lost its session and started a new one; until a turn reaches that one, every message
+      // carries the email and a recap of the chat (see startOver()).
+      needsRecap: false,
       items: []
     };
     this.conversations.set(c.id, c);
@@ -728,6 +732,8 @@ class AgentHub extends EventEmitter {
     const body = clip(text, 20000);
     if (!body.trim()) throw new AgentError('invalid', 'empty message');
     const firstTurn = !c.delivered;
+    // The agent's new session has not had the chat yet: the email and a recap go along again.
+    const recap = !firstTurn && c.needsRecap === true;
     const shown = display ? clip(display, 20000) : body;
     // display can be an approved proposal's title. Email text the agent quoted in it keeps its <unsafe_content>
     // tags for the agent (runTurn gets them); the user's line and the chat title show the text alone.
@@ -737,6 +743,8 @@ class AgentHub extends EventEmitter {
     const turn = {
       id: `t_${rand(10)}`,
       cid: c.id,
+      // Where this turn starts in the transcript; a recap covers what came before it.
+      userItem: userItem.id,
       controller: new AbortController(),
       items: new Set(),
       tools: new Map(),
@@ -751,11 +759,11 @@ class AgentHub extends EventEmitter {
     };
     this.turns.set(c.id, turn);
     this.setStatus(c, 'running');
-    this.runTurn(c, turn, { text: body, action, firstTurn, display: shown }).catch((err) => this.finishTurn(turn, { status: 'error', error: toError(err) }));
+    this.runTurn(c, turn, { text: body, action, firstTurn, recap, display: shown }).catch((err) => this.finishTurn(turn, { status: 'error', error: toError(err) }));
     return { conversationId: c.id, itemId: userItem.id };
   }
 
-  async runTurn(c, turn, { text, action, firstTurn, display = '' }) {
+  async runTurn(c, turn, { text, action, firstTurn, recap = false, display = '' }) {
     const adapter = this.adapters.get(c.agent);
     let result;
     if (action === 'approved') turn.approval = { display: display || text };
@@ -771,9 +779,8 @@ class AgentHub extends EventEmitter {
         }
       }
       let message = null;
-      if (firstTurn && c.message) {
-        const liveId = await this.currentMessageId(c);
-        const full = liveId ? await this.engine.getMessage(liveId).catch(() => null) : null;
+      if ((firstTurn || recap) && c.message) {
+        message = await this.loadEmail(c);
         // Stopped while the email was loading: stop() already closed the turn, and a newer turn may own the
         // notes by now. Touch nothing.
         if (turn.closed || turn.controller.signal.aborted) {
@@ -781,10 +788,6 @@ class AgentHub extends EventEmitter {
           // are not taken yet, so nothing else changes).
           this.giveBack(c, turn);
           return this.finishTurn(turn, { status: 'stopped' });
-        }
-        if (full) {
-          const acc = this.engine.accounts.find((a) => a.id === full.accountId);
-          message = { full, account: acc ? acc.email : '', folder: full.folder || '' };
         }
       }
       let openMessage = null;
@@ -796,7 +799,7 @@ class AgentHub extends EventEmitter {
       }
       const notes = c.notes.splice(0);
       turn.notes = notes;
-      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage });
+      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, earlier: recap ? this.earlier(c, turn) : null });
       const port = this.mcp ? this.mcp.ports().local : null;
       const handle = {
         id: turn.id,
@@ -819,6 +822,9 @@ class AgentHub extends EventEmitter {
         accepted: () => {
           turn.reached = true;
         },
+        // Optional for adapters: the agent no longer has this chat's session, and the adapter starts a new one.
+        // Await it before sending input, which then carries the email and a recap of the chat.
+        startOver: () => this.startOver(c, turn, handle, { text, openMessage, ready: firstTurn || recap }),
         signal: turn.controller.signal
       };
       const forced = new Promise((resolve) => {
@@ -833,12 +839,51 @@ class AgentHub extends EventEmitter {
     // A turn that never reached the agent (offline, not installed, stopped early) uses up nothing: the next
     // message is still a first turn with the email, and the notes go along with it.
     if (turn.reached || (result && result.status === 'done')) {
-      if (!c.delivered) {
+      if (!c.delivered || c.needsRecap) {
         c.delivered = true;
+        c.needsRecap = false;
         this.touch(c);
       }
     } else this.giveBack(c, turn);
     this.finishTurn(turn, result || { status: 'error', error: { code: 'protocol', detail: 'the adapter returned nothing' } });
+  }
+
+  // The chat's own email in full, found again if it moved; null when it is gone or does not load. Never the email
+  // that happens to be open now.
+  async loadEmail(c) {
+    const liveId = await this.currentMessageId(c);
+    const full = liveId ? await this.engine.getMessage(liveId).catch(() => null) : null;
+    if (!full) return null;
+    const acc = this.engine.accounts.find((a) => a.id === full.accountId);
+    return { full, account: acc ? acc.email : '', folder: full.folder || '' };
+  }
+
+  // The transcript before this turn's own message.
+  earlier(c, turn) {
+    const at = c.items.findIndex((i) => i.id === turn.userItem);
+    return at < 0 ? c.items.slice() : c.items.slice(0, at);
+  }
+
+  // The agent lost the chat's session (Claude Code deletes old transcripts, say), and the adapter starts a new
+  // one that knows nothing of the chat. Before the adapter sends anything, input becomes a first turn with the
+  // chat's email and a recap of the chat. A turn that has the email already (ready) stays as it is: a first turn
+  // has nothing to recap. Never throws, so a lost session costs the adapter one await.
+  async startOver(c, turn, handle, { text, openMessage, ready }) {
+    if (ready || turn.startedOver) return handle.input;
+    turn.startedOver = true;
+    // Kept until a turn reaches the new session, so a turn that fails on the way does not leave it without the email.
+    c.needsRecap = true;
+    this.touch(c);
+    let message = null;
+    try {
+      message = c.message ? await this.loadEmail(c) : null;
+    } catch (err) {
+      this.log('hub', 'loading the email for a new session failed:', err && err.message);
+    }
+    // Stopped meanwhile: the adapter sees the abort and sends nothing.
+    if (turn.closed || turn.controller.signal.aborted) return handle.input;
+    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, earlier: this.earlier(c, turn) });
+    return handle.input;
   }
 
   tokenFor(c) {
@@ -1095,6 +1140,8 @@ class AgentHub extends EventEmitter {
       choices: shownChoices,
       status: refusal ? 'denied' : 'pending',
       decision: refusal ? refusal.id : null,
+      // Rukoo's decision, not the user's; a recap of the chat says so (context.recap).
+      ...(refusal ? { declinedBy: 'rukoo' } : {}),
       source,
       kind,
       ...(mail ? { mail } : {})

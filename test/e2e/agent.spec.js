@@ -573,6 +573,25 @@ test('conversations come back after a reload', async () => {
   await expect(win.locator('.bui-menu .bui-menu__row')).toContainText(['Call on Thursday']);
 });
 
+test('after a restart, an agent that lost its session says so and gets the email and a recap', async () => {
+  await openChat('Call on Thursday');
+  await chip('Summarize').click();
+  await expect(transcript()).toContainText('It needs a short reply from you, today.', { timeout: 10000 });
+  // Rukoo quits and starts again with the same data folder; the chat comes back from conversations.json.
+  await app.close();
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await item('Call on Thursday').click();
+  if (!(await pane().isVisible())) await win.keyboard.press('Control+j');
+  await expect(transcript()).toContainText('It needs a short reply from you, today.');
+  // The fake agent's "lost session" finds its session gone, like Claude Code after it deleted an old transcript.
+  await say('Did you keep a lost session?');
+  await expect(transcript().locator('.bui-notice__text', { hasText: 'started a new session' })).toHaveText('Hermes started a new session', { timeout: 10000 });
+  await expect(transcript()).toContainText('I started a new session. Rukoo sent me the email and a recap of our chat.', { timeout: 10000 });
+  await settled();
+  await shot('lost-session');
+});
+
 test('the panel follows a language change, the open conversation included', async () => {
   await openChat('Call on Thursday');
   await chip('Plan follow-ups').click();
