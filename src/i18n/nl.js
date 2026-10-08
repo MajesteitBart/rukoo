@@ -684,7 +684,7 @@
   "settings.general.darkEmailsHelp": "Pas de kleuren van HTML-e-mails aan in de donkere stand.",
   "settings.general.density": "Lijstweergave",
   "settings.general.fit": "Inhoud passend maken",
-  "settings.general.fitHelp": "Maak e-mailinhoud kleiner zodat deze in het venster past.",
+  "settings.general.fitHelp": "Maak brede e-mail kleiner zodat die in het venster past, tot 80%. Wat dan nog te breed is, kun je opzij scrollen.",
   "settings.general.folders": "Mappen beheren",
   "settings.general.foldersHelp": "Geef uw e-mailmappen weer of verberg ze.",
   "settings.general.language": "Taal",

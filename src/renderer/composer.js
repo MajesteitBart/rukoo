@@ -356,7 +356,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const drawQuote = () => {
     if (!quoteFrame || !st.quoteOpen) return;
     quoteDrawn = true;
-    fillFrame(quoteFrame, st.original || { html: st.quoted.html, isHtml: true }, { light: isLight(), darkEmails: data.settings.darkEmails !== false, forQuote: true });
+    fillFrame(quoteFrame, st.original || { html: st.quoted.html, isHtml: true }, { light: isLight(), darkEmails: data.settings.darkEmails !== false });
   };
 
   // ----- save status -----

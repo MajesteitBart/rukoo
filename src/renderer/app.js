@@ -2246,7 +2246,12 @@ export const ctx = {
   revealAgent: () => setAgentOpen(true),
   closeAgent: () => setAgentOpen(false),
   agentOpen: () => Boolean(prefs.agentOpen),
-  agentOverlay: () => Boolean(prefs.agentOpen) && window.innerWidth < AGENT_DOCK
+  agentOverlay: () => Boolean(prefs.agentOpen) && window.innerWidth < AGENT_DOCK,
+  // For settings that change how mail is drawn: the open mail and the editor's quote.
+  redrawMail: () => {
+    if (S.message) renderReader();
+    S.composer?.retheme(S.data);
+  }
 };
 
 refresh().catch((err) => toast(err.message, 6000));

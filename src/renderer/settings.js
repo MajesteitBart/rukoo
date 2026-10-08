@@ -604,7 +604,9 @@ export function openSettings(ctx, { view: start } = {}) {
     if (a.startsWith('account:')) return go('account', { id: a.slice(8) });
     if (a.startsWith('toggle:')) {
       const key = a.slice(7);
-      return set({ [key]: !s[key] });
+      await set({ [key]: !s[key] });
+      if (key === 'fitContent' || key === 'darkEmails') ctx.redrawMail();
+      return;
     }
     if (a.startsWith('hide:')) {
       const id = a.slice(5);

@@ -2554,8 +2554,8 @@
     "description": "settings > general. src/renderer/settings.js (render)"
   },
   "settings.general.fitHelp": {
-    "message": "Scale email content to fit the window.",
-    "description": "settings > general. src/renderer/settings.js (render)"
+    "message": "Shrink wide email to fit the window, down to 80%. Anything still too wide scrolls sideways.",
+    "description": "settings > general, help under the \"Fit content to window\" toggle. 80% is MIN_ZOOM in src/renderer/mailframe.js (fillFrame). src/renderer/settings.js (render)"
   },
   "settings.general.folders": {
     "message": "Manage folders",
