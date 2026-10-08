@@ -31,6 +31,8 @@ const POLL_MISSES = 20;
 // A stop Hermes did not take is sent again after this long, then after twice as long each time, up to ten
 // times this (five minutes).
 const STOP_RETRY = 30000;
+// How long a quit waits for the answer to a run start that is still out.
+const QUIT_ANSWER_MS = 1000;
 
 const CHOICES = {
   once: { id: 'once', label: 'Allow once', kind: 'primary' },
@@ -119,7 +121,7 @@ class HermesAdapter {
   // timing: test-only overrides of {backoff, pollEvery, pollMisses, stopRetry}.
   constructor({ id = 'clark', config, hub, log, paths, timing } = {}) {
     this.id = id;
-    this.timing = { backoff: 1000, pollEvery: POLL_EVERY, pollMisses: POLL_MISSES, stopRetry: STOP_RETRY, errorBody: ERROR_BODY_MS, ...(timing || {}) };
+    this.timing = { backoff: 1000, pollEvery: POLL_EVERY, pollMisses: POLL_MISSES, stopRetry: STOP_RETRY, errorBody: ERROR_BODY_MS, quitAnswer: QUIT_ANSWER_MS, ...(timing || {}) };
     this.config = typeof config === 'function' ? config : () => config || {};
     this.hub = hub || null;
     this.log = logger(log);
@@ -131,6 +133,8 @@ class HermesAdapter {
     this.cachedCheck = 0;
     // run id → live state, so dispose() can stop what is still running on the server.
     this.runs = new Map();
+    // Run starts whose answer is not in yet; see submit() and dispose().
+    this.submitting = new Set();
     // run id → state of a run Rukoo no longer follows whose stop Hermes has not taken yet (see keepStopping).
     this.unstopped = new Map();
   }
@@ -303,26 +307,54 @@ class HermesAdapter {
   // (429) is a refusal: nothing started, and the user hears it at once.
   // Stop ends the retries: the earlier POST may never have reached Hermes, and a retry would start a run the user
   // just stopped. A POST already on its way is not cut off, so follow() can stop the run it reports.
+  // dispose() knows the start while its answer is out, so a quit can still find and stop a run Hermes took.
   async submit(body, key, server, signal) {
-    let failure;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt) {
-        await sleep(this.timing.backoff * 2 ** (attempt - 1), signal);
-        if (signal && signal.aborted) throw new AgentError('stopped', 'Stopped');
+    const entry = { body, key, server, pending: null };
+    this.submitting.add(entry);
+    try {
+      let failure;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) {
+          await sleep(this.timing.backoff * 2 ** (attempt - 1), signal);
+          if (signal && signal.aborted) throw new AgentError('stopped', 'Stopped');
+        }
+        let res;
+        try {
+          entry.pending = this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': key }, timeout: 20000, server });
+          res = await entry.pending;
+        } catch (err) {
+          if (!(err instanceof AgentError) || err.code !== 'offline') throw err;
+          failure = err;
+          continue;
+        }
+        if (res.status === 202 || res.status === 200) return res;
+        failure = httpError(res);
+        if (!(res.status >= 500 || res.status === 408)) throw failure;
       }
-      let res;
-      try {
-        res = await this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': key }, timeout: 20000, server });
-      } catch (err) {
-        if (!(err instanceof AgentError) || err.code !== 'offline') throw err;
-        failure = err;
-        continue;
-      }
-      if (res.status === 202 || res.status === 200) return res;
-      failure = httpError(res);
-      if (!(res.status >= 500 || res.status === 408)) throw failure;
+      throw failure;
+    } finally {
+      this.submitting.delete(entry);
     }
-    throw failure;
+  }
+
+  // Quitting while a run start is out: Hermes may have taken it, and the app is gone before the answer would
+  // arrive. The answer gets a moment; without it the start goes again with the same Idempotency-Key, for which
+  // Hermes names the run it took (or starts it now). Either way that run is stopped.
+  async stopSubmitted(entry) {
+    const runOf = (res) => (res && (res.status === 200 || res.status === 202) && res.data && res.data.run_id) || null;
+    let runId = null;
+    if (entry.pending) {
+      const late = new Promise((resolve) => setTimeout(resolve, this.timing.quitAnswer, null));
+      runId = runOf(await Promise.race([entry.pending.catch(() => null), late]));
+    }
+    if (!runId) {
+      try {
+        runId = runOf(await this.request('POST', '/v1/runs', { body: entry.body, headers: { 'Idempotency-Key': entry.key }, timeout: 1500, server: entry.server }));
+      } catch (err) {
+        this.log(`hermes: asking for a run being started failed: ${err.detail || describe(err)}`);
+      }
+    }
+    if (runId) await this.sendStop({ runId, server: entry.server }, 1500);
   }
 
   // The Hermes session behind a conversation: reused while it exists, recreated when it was deleted.
@@ -774,6 +806,9 @@ class HermesAdapter {
       state.controller.abort();
       return this.sendStop(state, 2000);
     });
+    // Runs still being started: within main's 5 seconds for a quit, at most an answer wait and two short requests.
+    for (const entry of this.submitting) stops.push(this.stopSubmitted(entry));
+    this.submitting.clear();
     await Promise.all(stops);
   }
 }

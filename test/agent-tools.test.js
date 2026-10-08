@@ -185,6 +185,42 @@ test('read_attachment hands a PDF out as a resource, with a local file only for 
   }
 });
 
+test('a saved email on screen is the open email: a chat an outside agent starts is about it, and a draft answers it', async () => {
+  const t = await setup();
+  try {
+    const savedId = await t.engine.saveToDevice(t.find('Call on Thursday').id);
+    t.hub.view({ openMessageId: savedId, checkedIds: [], scope: 'all', view: 'saved', folder: null });
+    assert.equal(t.hub.openMessageId(), savedId);
+    const clark = { agent: 'clark', conversationId: null, remote: true };
+    const first = data(await t.hub.callTool(clark, 'propose_action', { title: 'Add a task' }));
+    const c = t.hub.get(first.conversation_id);
+    assert.equal(c.message.id, savedId);
+    assert.equal(c.message.subject, 'Call on Thursday');
+    assert.equal(c.message.accountId, t.acc.id);
+    // A second call from that agent stays in that chat.
+    const again = data(await t.hub.callTool(clark, 'propose_action', { title: 'Add another task' }));
+    assert.equal(again.conversation_id, c.id);
+    data(await t.hub.callTool({ agent: 'claude', conversationId: null, remote: false }, 'write_draft', { body: 'Thursday works.' }));
+    const write = t.ui.find((u) => u.action === 'writeDraft');
+    assert.equal(write.args.messageId, savedId);
+    assert.equal(write.args.mode, 'reply');
+    // A recent chat of that agent about the same email in another account is not this one.
+    const entry = t.engine.saved.find((x) => x.id === savedId);
+    entry.messageId = '<demo-13@example.com>';
+    c.message.messageId = entry.messageId;
+    const other = t.hub.create({ agent: 'clark', message: { id: 'acc-two:INBOX:1', messageId: entry.messageId, accountId: 'acc-two' }, origin: 'external' });
+    c.updatedAt = 0;
+    assert.equal(t.hub.externalFor('clark'), null, 'not the chat about the other account');
+    other.message.accountId = t.acc.id;
+    assert.equal(t.hub.externalFor('clark'), other, 'the same account and email: reused');
+    // Once deleted, it is no longer the open email.
+    t.engine.deleteSaved(savedId);
+    assert.equal(t.hub.openMessageId(), null);
+  } finally {
+    await t.done();
+  }
+});
+
 test('get_context lists checked emails in the Saved view too', async () => {
   const t = await setup();
   try {
@@ -607,6 +643,39 @@ test('auto mail actions run at once (archive stays undoable); unsubscribe still 
     assert.deepEqual(t.unsubscribed, [news.id]);
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(c.items.at(-1).text, 'Unsubscribed from ANWB Newsletter');
+  } finally {
+    await t.done();
+  }
+});
+
+test('a folder name two folders share is refused for search and move, and the full path works', async () => {
+  const t = await setup();
+  try {
+    const cache = t.engine.caches.get(t.acc.id);
+    cache.folders.push({ path: 'Projects/2026', name: '2026', delimiter: '/' }, { path: 'Archive/2026', name: '2026', delimiter: '/' });
+    const target = t.find('Sign in to Bencompare');
+    const c = t.hub.create({ agent: 'claude', message: null });
+    for (const [name, args] of [
+      ['search_mail', { query: 'x', folder: '2026' }],
+      ['mail_action', { action: 'move', message_ids: [target.id], folder: '2026' }]
+    ]) {
+      const res = await t.hub.callTool(local(c.id), name, args);
+      assert.equal(res.isError, true, name);
+      assert.match(res.content[0].text, /More than one folder in demo@example\.com is called <unsafe_content>2026<\/unsafe_content>: Projects\/2026, Archive\/2026\. Pass the full path\./);
+    }
+    assert.equal(c.items.filter((i) => i.type === 'approval').length, 0);
+    const res = data(await t.hub.callTool(local(c.id), 'mail_action', { action: 'move', message_ids: [target.id], folder: 'Projects/2026' }));
+    assert.equal(res.status, 'waiting_for_user');
+    // Asked for by name while it was the only one; another folder got that name before the user approved.
+    cache.folders.pop();
+    const card = data(await t.hub.callTool(local(c.id), 'mail_action', { action: 'move', message_ids: [target.id], folder: '2026' }));
+    cache.folders.push({ path: 'Archive/2026', name: '2026', delimiter: '/' });
+    t.hub.decide(c.id, card.proposal_id, 'approve');
+    await t.hub.mailSettling.get(c.id);
+    const notice = c.items.filter((i) => i.type === 'notice').at(-1);
+    assert.match(notice.text, /More than one folder in demo@example\.com has the destination's name now/);
+    assert.ok(!notice.text.includes('unsafe_content'));
+    assert.ok(t.find('Sign in to Bencompare'), 'nothing moved');
   } finally {
     await t.done();
   }

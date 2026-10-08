@@ -900,9 +900,8 @@ export function mountAgentPanel(ctx) {
   // ---------- draft cards ----------
 
   // A draft card belongs to one write into one composer: its composerKey is "<composer key>:<write>".
-  // Show and Undo act on that composer only. Composers that closed leave a stored draft behind; this
-  // remembers which one for this session, and main keeps it on the cards (draftId) for later ones.
-  const keptDrafts = new Map();
+  // Show and Undo act on that composer only. A composer that closed leaves a stored draft behind; main keeps
+  // which one on its cards (draftId), and follows it when it is saved again, sent or discarded in any window.
   // write key -> conversation id, so an Undo in the composer reaches a card that is not on screen.
   const writes = new Map();
   let writeCount = 0;
@@ -928,17 +927,9 @@ export function mountAgentPanel(ctx) {
   // app.js reports every inline composer that closes.
   function composerClosed(c) {
     if (!c || !c.key) return;
-    const id = c.savedDraftId;
     // A reopened draft that is saved again gets a new id; cards that pointed at the old one follow it.
     const was = c.opts && c.opts.mode === 'draft' ? c.opts.id : null;
-    for (const [key, draftId] of keptDrafts) {
-      if (!was || draftId !== was) continue;
-      if (id) keptDrafts.set(key, id);
-      else keptDrafts.delete(key);
-    }
-    if (id) keptDrafts.set(c.key, id);
-    else keptDrafts.delete(c.key);
-    api('agentKeepDraft', c.key, id || null, was).catch(() => {});
+    api('agentKeepDraft', c.key, c.savedDraftId || null, was).catch(() => {});
     refreshDrafts();
   }
 
@@ -946,9 +937,7 @@ export function mountAgentPanel(ctx) {
     const c = openComposerFor(item);
     if (action === 'show') {
       if (c) return c.focus();
-      const key = item.composerKey && composerOf(item.composerKey);
-      const stored = key && keptDrafts.has(key) ? keptDrafts.get(key) : item.draftId;
-      if (stored) return ctx.compose({ mode: 'draft', id: stored });
+      if (item.draftId) return ctx.compose({ mode: 'draft', id: item.draftId });
       if (item.messageRef) {
         P.keepFor = item.messageRef;
         return ctx.openMessage(item.messageRef);

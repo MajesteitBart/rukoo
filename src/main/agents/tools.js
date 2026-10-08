@@ -649,15 +649,23 @@ function findAccount(engine, value) {
 
 const ROLE_WORDS = { inbox: 'inbox', sent: 'sent', drafts: 'drafts', draft: 'drafts', archive: 'archive', trash: 'trash', deleted: 'trash', bin: 'trash', junk: 'junk', spam: 'junk' };
 
+// The exact path wins. A name, or a path in another case, must belong to one folder only: "2026" can be both
+// Projects/2026 and Archive/2026, and then the call fails and asks for the path.
 function resolveFolder(engine, acc, value) {
   const v = String(value || '').trim();
   const lv = v.toLowerCase();
   const folders = engine.publicAccount(acc).folders;
-  const hit =
-    folders.find((f) => f.path === v) ||
-    folders.find((f) => f.path.toLowerCase() === lv) ||
-    folders.find((f) => String(f.name || '').toLowerCase() === lv);
-  if (hit) return hit.path;
+  const exact = folders.find((f) => f.path === v);
+  if (exact) return exact.path;
+  for (const same of [(f) => f.path.toLowerCase() === lv, (f) => String(f.name || '').toLowerCase() === lv]) {
+    const hits = folders.filter(same);
+    if (hits.length > 1) {
+      const err = new ToolError(`More than one folder in ${acc.email} is called ${unsafeValue(v)}: ${hits.map((f) => f.path).join(', ')}. Pass the full path.`);
+      err.ambiguous = true;
+      throw err;
+    }
+    if (hits.length) return hits[0].path;
+  }
   const role = ROLE_WORDS[lv];
   const byRole = role && folders.find((f) => f.role === role);
   return byRole ? byRole.path : null;
@@ -1281,9 +1289,14 @@ async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
           if (r === 'confirm') throw new Error(`${acc.email} has no Trash folder.`);
         }
       } else if (action === 'move') {
-        const dest = resolveFolder(engine, acc, folder);
         // The folder was there when the action was asked for. Its name came from the agent and may be a sender's
         // text, and this message reaches the agent, so it does not repeat the name.
+        let dest;
+        try {
+          dest = resolveFolder(engine, acc, folder);
+        } catch (_) {
+          throw new Error(`More than one folder in ${acc.email} has the destination's name now. Ask again with its full path.`);
+        }
         if (!dest) throw new Error(`The destination folder is no longer in ${acc.email}.`);
         await engine.move(id, dest);
       } else if (action === 'mark_read') await engine.setFlags(id, { unread: false });

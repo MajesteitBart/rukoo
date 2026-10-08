@@ -718,6 +718,32 @@ test('a draft card opens the draft it left behind, also after a restart', async 
   expect(await win.evaluate((id) => window.mail.call('agentKeepDraft', 'k-long', id, null).then(() => 'ok', (e) => e.message), long)).toBe('ok');
 });
 
+test('a draft card follows its draft into a window of its own: saved again there, then sent', async () => {
+  await openChat('Call on Thursday');
+  await chip('Draft a reply').click();
+  await expect(editor()).toContainText('Thursday at 10:00 works for me.', { timeout: 10000 });
+  await expect(transcript()).toContainText('Done. The draft is in the composer.', { timeout: 10000 });
+  const cid = await conversationId();
+  const draftOf = () => app.evaluate((_e, cid) => global.__semAgents.conversations.get(cid).items.find((i) => i.type === 'draft').draftId || null, cid);
+  const [popped] = await Promise.all([app.waitForEvent('window'), win.click('.composer [data-c="popout"]')]);
+  await popped.waitForSelector('.compose .editor');
+  await expect.poll(draftOf).not.toBeNull();
+  const first = await draftOf();
+  // Saved again in the window: a new stored draft, and the card points at it.
+  await popped.click('.compose .editor');
+  await popped.keyboard.press('End');
+  await popped.keyboard.type(' See you then.');
+  await popped.keyboard.press('Control+s');
+  await expect.poll(draftOf).not.toBe(first);
+  expect(await draftOf()).not.toBeNull();
+  // Sent from the window: the card has no draft left, so Show opens the email it answered.
+  await Promise.all([popped.waitForEvent('close'), popped.click('[data-c="send"]')]);
+  await expect.poll(draftOf).toBeNull();
+  await transcript().locator('.bui-draft').getByRole('button', { name: 'Show' }).click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(win.locator('.composer')).toHaveCount(0);
+});
+
 for (const [how, away] of [
   ['the panel closes', () => win.click('.agentpane [data-ap="close"]')],
   ['another chat opens', () => win.click('.agentpane [data-ap="new"]')]

@@ -350,6 +350,8 @@ const api = {
   saveToDevice: (id) => engine.saveToDevice(id),
   send: async (payload) => {
     await engine.send(payload);
+    // Sending removed the draft; an agent's draft cards that pointed at it keep none.
+    if (hub && payload && payload.draftId) hub.draftMoved(String(payload.draftId), null);
     send('toast', t('composer.status.sent'));
     return true;
   },
@@ -363,8 +365,17 @@ const api = {
     return true;
   },
   toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
-  saveDraft: (payload) => engine.saveDraft(payload),
-  discardDraft: (id) => engine.discardDraft(id),
+  // A save replaces the stored draft; an agent's draft cards follow it, also from a compose window.
+  saveDraft: async (payload) => {
+    const id = await engine.saveDraft(payload);
+    if (hub && payload && payload.draftId && id) hub.draftMoved(String(payload.draftId), id);
+    return id;
+  },
+  discardDraft: async (id) => {
+    const result = await engine.discardDraft(id);
+    if (hub && id) hub.draftMoved(String(id), null);
+    return result;
+  },
   addAccount: (input) => engine.addAccount(input),
   updateAccount: (id, patch) => engine.updateAccount(id, patch),
   removeAccount: (id) => engine.removeAccount(id),

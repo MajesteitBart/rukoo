@@ -578,14 +578,15 @@ class AgentHub extends EventEmitter {
       // Keeps the /unsubscribe command for the chat once the email is no longer on screen.
       unsubscribe: input.unsubscribe === true
     };
-    const cached = tools.cacheMessage(this.engine, id);
+    const cached = this.liveMessage(id);
     if (cached) {
       if (!ref.unsubscribe && cached.unsubscribe) ref.unsubscribe = true;
       if (!ref.messageId && cached.messageId) ref.messageId = cached.messageId;
       if (!ref.subject) ref.subject = cached.subject || '';
       if (!ref.from && cached.from) ref.from = { name: cached.from.name || '', address: cached.from.address || '' };
       if (!ref.date) ref.date = cached.date || null;
-      if (!ref.accountId) ref.accountId = id.split(':').map(decodeURIComponent)[0];
+      // A saved copy's id names no account; its entry does.
+      if (!ref.accountId) ref.accountId = id.startsWith('saved:') ? cached.accountId || null : id.split(':').map(decodeURIComponent)[0];
     }
     return ref;
   }
@@ -678,7 +679,15 @@ class AgentHub extends EventEmitter {
 
   openMessageId() {
     const id = this.viewState.openMessageId;
-    return id && tools.cacheMessage(this.engine, id) ? id : null;
+    return id && this.liveMessage(id) ? id : null;
+  }
+
+  // What Rukoo has on an email that is there now: its folder cache entry, or for a copy saved on this device the
+  // saved list's entry.
+  liveMessage(id) {
+    if (!id) return null;
+    if (String(id).startsWith('saved:')) return this.engine.saved.find((s) => s.id === id) || null;
+    return tools.cacheMessage(this.engine, id);
   }
 
   // The live id of a conversation's email, found like a source card's (locate): ids change when mail moves,
@@ -769,7 +778,7 @@ class AgentHub extends EventEmitter {
       const openId = this.openMessageId();
       const boundId = c.message ? c.message.id : null;
       if (!firstTurn && openId && openId !== boundId) {
-        const m = tools.cacheMessage(this.engine, openId);
+        const m = this.liveMessage(openId);
         openMessage = { id: openId, subject: m ? m.subject : '' };
       }
       const notes = c.notes.splice(0);
@@ -1222,13 +1231,19 @@ class AgentHub extends EventEmitter {
     for (const c of this.conversations.values()) {
       for (const item of c.items) {
         if (item.type !== 'draft') continue;
-        const mine = String(item.composerKey || '').split(':')[0] === composerKey;
+        const mine = composerKey != null && String(item.composerKey || '').split(':')[0] === composerKey;
         if (!mine && !(was && item.draftId === was)) continue;
         if ((item.draftId || null) === next) continue;
         item.draftId = next;
         this.updateItem(c, item);
       }
     }
+  }
+
+  // A stored draft was saved again under a new id, or is gone (sent or discarded: draftId null), in whichever
+  // window that happened. Cards that pointed at it follow.
+  draftMoved(was, draftId) {
+    if (was) this.keepDraft(null, draftId, was);
   }
 
   async undo(cid, itemId) {
@@ -1333,10 +1348,10 @@ class AgentHub extends EventEmitter {
   // The agent's recent external conversation about the email that is open now (or about no email), if any.
   externalFor(agent) {
     const open = this.openMessageId();
-    const m = open ? tools.cacheMessage(this.engine, open) : null;
+    const m = open ? this.liveMessage(open) : null;
     const since = Date.now() - EXTERNAL_REUSE_MS;
     // The same email can sit in two accounts; a chat about one copy is not about the other.
-    const account = tools.accountOfId(open);
+    const account = tools.accountOfId(open) || (m && m.accountId) || null;
     const about = (c) => {
       if (!m || !c.message) return !m && !c.message;
       const own = c.message.accountId || tools.accountOfId(c.message.id);

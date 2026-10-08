@@ -240,6 +240,9 @@ function hermesServer() {
         if (key) state.keys.set(key, id);
         // "lost reply": Hermes takes the run, but its answer never reaches Rukoo.
         if (/lost reply/.test(data.input) && state.posts === 1) return res.destroy();
+        // "slow answer" and "late answer": Hermes takes the run and answers after 1.5 s or 150 ms.
+        const delay = /slow answer/.test(data.input) ? 1500 : /late answer/.test(data.input) ? 150 : 0;
+        if (delay) return void setTimeout(() => json(res, 202, { run_id: id, status: 'started', replayed: false }), delay);
         return json(res, 202, { run_id: id, status: 'started', replayed: false });
       }
       // The run's status, as Hermes reports it while its event stream is gone.
@@ -1451,6 +1454,36 @@ test('hermes: a run whose start went unanswered is asked for again with the same
     assert.equal(h.state.posts, 2, 'the start was sent again');
     assert.equal(h.state.runs.size, 1, 'and Hermes kept one run');
     assert.equal(texts(turn), 'OK');
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: quitting while a run start is unanswered stops the run Hermes took', { timeout: 15000 }, async () => {
+  const h = await hermesServer();
+  try {
+    // The answer comes while the quit waits for it.
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 5, quitAnswer: 1000 } });
+    const late = fakeTurn(conv('c_late'), 'late answer');
+    const lateDone = adapter.runTurn(late);
+    await waitFor(() => h.state.runs.size === 1);
+    late.controller.abort();
+    await adapter.dispose();
+    assert.ok(h.state.stops.includes('run_1'), 'stopped');
+    assert.equal(h.state.posts, 1, 'no second start');
+    await lateDone;
+
+    // It does not: the start goes again with the same key, and the run Hermes names is stopped.
+    const quick = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 5, quitAnswer: 50 } });
+    const slow = fakeTurn(conv('c_slow'), 'slow answer');
+    const slowDone = quick.runTurn(slow);
+    await waitFor(() => h.state.runs.size === 2);
+    slow.controller.abort();
+    await quick.dispose();
+    assert.ok(h.state.stops.includes('run_2'), 'stopped');
+    assert.equal(h.state.posts, 3, 'asked once more, with the same key');
+    assert.equal(h.state.runs.size, 2, 'and Hermes kept one run for it');
+    await slowDone;
   } finally {
     h.server.close();
   }
