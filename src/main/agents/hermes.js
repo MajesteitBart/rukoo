@@ -21,6 +21,9 @@ const CONNECT_TIMEOUT = 8000;
 const SILENCE = 45000;
 const RECONNECTS = 5;
 const STOP_WAIT = 10000;
+// How long a failed response's body may take: an error text is short, and a server that answers 5xx and then
+// trickles its body must not hold the turn.
+const ERROR_BODY_MS = 2000;
 // Without an event stream a run is followed by its status: this often, and given up (after asking Hermes to
 // stop it) once that many polls in a row got no answer, about a minute.
 const POLL_EVERY = 3000;
@@ -74,6 +77,29 @@ function networkError(err, host) {
   return new AgentError('offline', clip(describe(err), 200));
 }
 
+// Up to limit bytes of a response body, for at most ms; then the rest is cancelled.
+async function readCapped(res, ms, limit = 8192) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  const timer = setTimeout(() => reader.cancel().catch(() => {}), ms);
+  try {
+    while (size < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.length;
+    }
+  } catch {
+    // A body that broke off: what came is enough for an error text.
+  } finally {
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks).subarray(0, limit).toString('utf8');
+}
+
 function errorText(data) {
   if (!data) return '';
   if (typeof data === 'string') return clip(data.trim(), 200);
@@ -93,7 +119,7 @@ class HermesAdapter {
   // timing: test-only overrides of {backoff, pollEvery, pollMisses, stopRetry}.
   constructor({ id = 'clark', config, hub, log, paths, timing } = {}) {
     this.id = id;
-    this.timing = { backoff: 1000, pollEvery: POLL_EVERY, pollMisses: POLL_MISSES, stopRetry: STOP_RETRY, ...(timing || {}) };
+    this.timing = { backoff: 1000, pollEvery: POLL_EVERY, pollMisses: POLL_MISSES, stopRetry: STOP_RETRY, errorBody: ERROR_BODY_MS, ...(timing || {}) };
     this.config = typeof config === 'function' ? config : () => config || {};
     this.hub = hub || null;
     this.log = logger(log);
@@ -261,8 +287,7 @@ class HermesAdapter {
     if (s.model) body.model = s.model;
     // A retried POST (lost response) must not start the same turn twice.
     const idem = String(turn.id || '').replace(/[^\x21-\x7e]/g, '').slice(0, 200) || crypto.randomUUID();
-    const started = await this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': `rukoo-${idem}` }, timeout: 20000, server });
-    if (started.status !== 202 && started.status !== 200) throw httpError(started);
+    const started = await this.submit(body, `rukoo-${idem}`, server);
     const runId = started.data && started.data.run_id;
     if (!runId) throw new AgentError('protocol', 'The server did not return a run id');
     // Hermes has the message now: even a run stopped before its first event used up this turn's email and
@@ -270,6 +295,29 @@ class HermesAdapter {
     if (typeof turn.accepted === 'function') turn.accepted();
     this.invalidate();
     return this.follow(turn, runId, server);
+  }
+
+  // Starts the run. No answer, a timeout or a passing server error says nothing about whether Hermes took the
+  // POST, and a run it took but Rukoo never heard of can neither be followed nor stopped. So the POST is sent
+  // again with the same Idempotency-Key, for which Hermes returns the run it already started. A rate limit
+  // (429) is a refusal: nothing started, and the user hears it at once.
+  async submit(body, key, server) {
+    let failure;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await sleep(this.timing.backoff * 2 ** (attempt - 1));
+      let res;
+      try {
+        res = await this.request('POST', '/v1/runs', { body, headers: { 'Idempotency-Key': key }, timeout: 20000, server });
+      } catch (err) {
+        if (!(err instanceof AgentError) || err.code !== 'offline') throw err;
+        failure = err;
+        continue;
+      }
+      if (res.status === 202 || res.status === 200) return res;
+      failure = httpError(res);
+      if (!(res.status >= 500 || res.status === 408)) throw failure;
+    }
+    throw failure;
   }
 
   // The Hermes session behind a conversation: reused while it exists, recreated when it was deleted.
@@ -406,7 +454,8 @@ class HermesAdapter {
       return 'gone';
     }
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
+      // The connect deadline is over once the headers are in, so the body gets a deadline of its own.
+      const text = await readCapped(res, this.timing.errorBody);
       let data = text;
       try {
         data = JSON.parse(text);
@@ -619,12 +668,35 @@ class HermesAdapter {
     if (!choice || choice === 'cancel' || pending.expired || state.terminal) return;
     const body = { choice };
     if (requestId) body.request_id = requestId;
-    const res = await this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/approval`, { body, server: state.server });
-    // 409: the run ended or Hermes already gave up waiting; nothing left to answer.
-    if (!res.ok && res.status !== 409) {
-      const e = httpError(res);
-      turn.emit({ type: 'error', code: e.code, detail: e.detail });
+    await this.answer(turn, state, body);
+  }
+
+  // The user's choice for an approval. The card is gone once the user chose, so a lost answer would leave the run
+  // waiting for a choice nobody can make again: no answer or a passing server error is sent again, with the same
+  // request_id. An answer that still does not get through stops the run instead.
+  async answer(turn, state, body) {
+    let failure;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await sleep(this.timing.backoff * 2 ** (attempt - 1), state.controller.signal);
+      // Stop wins: an answer sent after the user stopped would let the waiting command go on.
+      if (state.terminal || state.stopping || state.controller.signal.aborted) return;
+      let res;
+      try {
+        res = await this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/approval`, { body, server: state.server });
+      } catch (err) {
+        if (!(err instanceof AgentError) || err.code !== 'offline') throw err;
+        failure = err;
+        continue;
+      }
+      // 409: the run ended or Hermes already gave up waiting; nothing left to answer.
+      if (res.ok || res.status === 409) return;
+      failure = httpError(res);
+      if (!(res.status >= 500 || res.status === 408 || res.status === 429)) break;
     }
+    if (state.terminal || state.stopping) return;
+    // Whether Hermes takes the stop is not known yet; stopRun() keeps asking until it does.
+    turn.emit({ type: 'error', code: failure.code, detail: `${failure.detail ? `${failure.detail}. ` : ''}Your answer did not reach Hermes, so Rukoo is asking it to stop the run.` });
+    this.stopRun(state);
   }
 
   expire(turn, pending) {

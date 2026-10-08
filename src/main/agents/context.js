@@ -92,6 +92,25 @@ function untag(text) {
   return String(text == null ? '' : text).replace(TAG, '');
 }
 
+// A value that keeps its tags (a proposal title, a plan step) has a length limit on what the agent sent, tags
+// included. Cutting it there can split a closing tag and leave a block open, so the cut drops a half tag and
+// closes what is still open, within the same limit.
+const CLOSE = '</unsafe_content>';
+const HALF_TAG = /<(?:\/?u(?:n(?:s(?:a(?:f(?:e(?:_(?:c(?:o(?:n(?:t(?:e(?:n(?:t)?)?)?)?)?)?)?)?)?)?)?)?)?(?:\s(?:"[^"]*(?:"|$)|[^"<>])*)?|\/)?$/i;
+function clipTagged(text, max) {
+  const value = String(text == null ? '' : text);
+  if (value.length <= max) return value;
+  for (let budget = max; budget > 0; ) {
+    const cut = value.slice(0, budget).replace(HALF_TAG, '');
+    let open = 0;
+    for (const [tag] of cut.matchAll(TAG)) open += tag.startsWith('</') ? (open > 0 ? -1 : 0) : 1;
+    const out = cut + CLOSE.repeat(open);
+    if (out.length <= max) return out;
+    budget -= out.length - max;
+  }
+  return '';
+}
+
 // message: the full message from engine.getMessage. extras: {account (email), folder}.
 function emailBlock(message, { account = '', folder = '' } = {}) {
   const m = message || {};
@@ -147,4 +166,4 @@ function turnText({ conversation, text, firstTurn, notes = [], message = null, o
   return out.join('\n');
 }
 
-module.exports = { instructions, turnText, emailBlock, unsafeBlock, unsafeInline, unsafeValue, untag, longDate, INSTRUCTIONS, EMAIL_TEXT_MAX };
+module.exports = { instructions, turnText, emailBlock, unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, longDate, INSTRUCTIONS, EMAIL_TEXT_MAX };

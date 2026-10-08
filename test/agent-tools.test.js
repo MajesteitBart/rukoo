@@ -595,6 +595,23 @@ test('auto mail actions run at once (archive stays undoable); unsubscribe still 
   }
 });
 
+test('a proposal title over its length limit is cut without splitting a tag', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    const c = t.hub.create({ agent: 'claude', message: { id: call.id } });
+    // A tagged 100-character subject in a title of 120: cutting the text where it stands would split the closing
+    // tag and leave the subject an open block when Rukoo repeats the proposal to the agent.
+    const subject = 'S'.repeat(100);
+    const res = data(await t.hub.callTool(local(c.id), 'propose_action', { title: `Post <unsafe_content>${subject}</unsafe_content>` }));
+    const card = c.items.find((i) => i.id === res.proposal_id);
+    assert.ok(card.title.length <= 120, 'still within the limit');
+    assert.match(card.title, /^Post <unsafe_content>S+<\/unsafe_content>$/);
+  } finally {
+    await t.done();
+  }
+});
+
 test('display tools without a conversation open an external one and ask the renderer to reveal it', async () => {
   const t = await setup();
   try {

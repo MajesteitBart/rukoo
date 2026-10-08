@@ -11,7 +11,7 @@ const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
-const { unsafeBlock, unsafeValue, untag } = require('./context');
+const { unsafeBlock, unsafeValue, untag, clipTagged } = require('./context');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -300,7 +300,8 @@ function validate(s, value, where) {
       // an argument tag it again with unsafeValue(), because it may still be a sender's text.
       if (s[UNTAG]) value = untag(value);
       if (s.enum && !s.enum.includes(value)) throw new ToolError(`${where} must be one of: ${s.enum.join(', ')}.`);
-      return s.maxLength ? value.slice(0, s.maxLength) : value;
+      // A value that kept its tags is cut without splitting one; see clipTagged().
+      return s.maxLength ? clipTagged(value, s.maxLength) : value;
     }
     case 'integer': {
       const n = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value) : value;

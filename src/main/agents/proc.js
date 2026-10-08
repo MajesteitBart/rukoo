@@ -170,30 +170,57 @@ function killTree(child) {
   }
   // A plain kill on Linux and macOS signals the agent alone, and its process group is no help either:
   // Claude Code starts its shell commands detached, in a group of their own. What ties a command to the
-  // agent is its parent link, and that is gone once the agent dies. So list the tree first, then signal all
-  // of it, and give whatever still runs after the grace period a SIGKILL.
-  return descendants(child.pid).then(
-    (pids) =>
-      new Promise((resolve) => {
-        const running = () => child.exitCode === null && child.signalCode === null;
-        if (running()) child.kill('SIGTERM');
-        for (const pid of pids) signal(pid, 'SIGTERM');
-        const deadline = Date.now() + 3000;
-        const check = () => {
-          const left = pids.filter((pid) => signal(pid, 0));
-          if (running() || left.length) {
-            if (Date.now() < deadline) return;
-            if (running()) child.kill('SIGKILL');
-            for (const pid of left) signal(pid, 'SIGKILL');
-          }
-          clearInterval(timer);
-          resolve();
-        };
-        // Not unref'd: the commands are no child processes of Rukoo, so nothing else keeps it waiting for
-        // them. The deadline ends it within seconds.
-        const timer = setInterval(check, 50);
-      })
-  );
+  // agent is its parent link, and that is gone once the agent dies. So list the tree first and end it from
+  // the leaves up: while a parent still runs it reaps the child that exits, so nothing is reparented before
+  // its signal or left as a zombie under a PID 1 that never reaps (a container). The agent goes last, and
+  // whatever still runs at the deadline gets a SIGKILL.
+  return descendants(child.pid).then(async (levels) => {
+    const running = () => child.exitCode === null && child.signalCode === null;
+    const deadline = Date.now() + 3000;
+    // One depth at a time, deepest first, each waited for while the level above still runs to reap it. Half the
+    // deadline goes to the descendants; then the agent, and the rest of the deadline for everything still there.
+    const budget = deadline - 1500;
+    let left = [];
+    for (const level of [...levels].reverse()) {
+      for (const pid of level) signal(pid, 'SIGTERM');
+      // Once the descendants' half is spent the rest are signalled without waiting, so a deep tree or a slow ps
+      // cannot push the agent past the quit's 5 s.
+      if (Date.now() >= budget) {
+        left.push(...level);
+        continue;
+      }
+      let still = await living(level, 0, budget);
+      while (still.length && Date.now() < budget) still = await living(still, 50, budget);
+      left.push(...still);
+    }
+    if (running()) child.kill('SIGTERM');
+    while ((running() || left.length) && Date.now() < deadline) left = await living(left, 50, deadline);
+    if (running()) child.kill('SIGKILL');
+    for (const pid of left) signal(pid, 'SIGKILL');
+  });
+}
+
+// Which of pids still run, after waiting ms. A zombie has ended, though signal 0 still reaches it, so the
+// states come from one ps listing, which may not run past until; signal 0 alone when ps fails or there is
+// no time left for it.
+function living(pids, ms = 0, until = Infinity) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      if (!pids.length) return resolve([]);
+      const quick = () => resolve(pids.filter((pid) => signal(pid, 0)));
+      const time = until - Date.now();
+      if (time < 100) return quick();
+      execFile('ps', ['-A', '-o', 'pid=', '-o', 'stat='], { timeout: Math.min(1000, time) }, (err, stdout) => {
+        if (err) return quick();
+        const states = new Map();
+        for (const line of String(stdout).split('\n')) {
+          const [pid, stat] = line.trim().split(/\s+/);
+          if (pid) states.set(Number(pid), stat || '');
+        }
+        resolve(pids.filter((pid) => states.has(pid) && !states.get(pid).startsWith('Z')));
+      });
+    }, ms);
+  });
 }
 
 // False when the process is gone (or not ours to signal). Signal 0 only asks whether it still exists.
@@ -206,9 +233,9 @@ function signal(pid, sig) {
   }
 }
 
-// Every process below pid, from one listing of the whole process table. Empty when ps fails or takes over a
-// second (a quit waits 5 s for the whole kill): the agent itself still gets killed then. Separate -o
-// options, because BSD ps reads "pid=,ppid=" as one header.
+// Every process below pid, by depth (children, grandchildren, ...), from one listing of the whole process table.
+// Empty when ps fails or takes over a second (a quit waits 5 s for the whole kill): the agent itself still gets
+// killed then. Separate -o options, because BSD ps reads "pid=,ppid=" as one header.
 function descendants(pid) {
   return new Promise((resolve) => {
     execFile('ps', ['-A', '-o', 'pid=', '-o', 'ppid='], { timeout: 1000 }, (err, stdout) => {
@@ -220,16 +247,21 @@ function descendants(pid) {
         if (!children.has(parent)) children.set(parent, []);
         children.get(parent).push(kid);
       }
-      const found = [];
-      const queue = [pid];
-      while (queue.length) {
-        for (const kid of children.get(queue.shift()) || []) {
-          if (kid === pid || found.includes(kid)) continue;
-          found.push(kid);
-          queue.push(kid);
+      const seen = new Set([pid]);
+      const levels = [];
+      for (let level = [pid]; level.length; ) {
+        const next = [];
+        for (const parent of level) {
+          for (const kid of children.get(parent) || []) {
+            if (seen.has(kid)) continue;
+            seen.add(kid);
+            next.push(kid);
+          }
         }
+        if (next.length) levels.push(next);
+        level = next;
       }
-      resolve(found);
+      resolve(levels);
     });
   });
 }

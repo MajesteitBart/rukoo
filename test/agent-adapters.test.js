@@ -168,6 +168,33 @@ test('killTree on Linux and macOS ends a command the agent started in a process 
   }
 });
 
+test('killTree on Linux and macOS ends a deeper tree from the leaves up, so nothing is left a zombie', { skip: process.platform === 'win32' }, async () => {
+  // Agent, a detached command, and a grandchild that takes 200 ms to exit on SIGTERM. Its parent has to outlive
+  // it to reap it; under a PID 1 that never reaps (a container), a reparented one would stay a zombie.
+  const grandchild = "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 200)); console.log(process.pid); setInterval(() => {}, 1000);";
+  const forward = "x.stdout.on('data', (d) => process.stdout.write(d)); setInterval(() => {}, 1000);";
+  const command = `const x = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: ['ignore', 'pipe', 'ignore'] }); ${forward}`;
+  const agent = `const x = require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(command)}], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }); ${forward}`;
+  const child = start(process.execPath, ['-e', agent]);
+  const pid = await new Promise((resolve) => readLines(child.stdout, (line) => resolve(Number(line))));
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    assert.ok(alive(), 'the grandchild runs');
+    await killTree(child);
+    assert.ok(child.exitCode !== null || child.signalCode !== null, 'the agent is gone');
+    assert.equal(alive(), false, 'the grandchild is gone, reaped rather than left a zombie');
+  } finally {
+    if (alive()) process.kill(pid, 'SIGKILL');
+  }
+});
+
 // ---------- hermes.js ----------
 
 // A Hermes API server that replays event sequences recorded from Clark (Hermes 0.21.5).
@@ -200,8 +227,16 @@ function hermesServer() {
       if (m) return state.sessions.has(m[1]) ? json(res, 200, { session: { id: m[1] } }) : json(res, 404, { error: { message: 'not found' } });
       if (url.pathname === '/v1/runs' && req.method === 'POST') {
         if (state.failRuns) return json(res, state.failRuns, { error: { message: 'Too many concurrent runs' } });
+        state.posts = (state.posts || 0) + 1;
+        // Hermes keys a run on its Idempotency-Key: the same key again gets the run it already started.
+        const key = req.headers['idempotency-key'];
+        state.keys = state.keys || new Map();
+        if (key && state.keys.has(key)) return json(res, 202, { run_id: state.keys.get(key), status: 'started', replayed: true });
         const id = `run_${state.nextRun++}`;
         state.runs.set(id, { input: data.input, session: data.session_id, stopped: false, approval: null, connects: 0, polls: 0 });
+        if (key) state.keys.set(key, id);
+        // "lost reply": Hermes takes the run, but its answer never reaches Rukoo.
+        if (/lost reply/.test(data.input) && state.posts === 1) return res.destroy();
         return json(res, 202, { run_id: id, status: 'started', replayed: false });
       }
       // The run's status, as Hermes reports it while its event stream is gone.
@@ -227,9 +262,13 @@ function hermesServer() {
         if (/locked/.test(run.input)) return json(res, 401, { error: { message: 'Invalid API key' } });
         state.stops.push(m[1]);
         run.stopped = true;
+        if (run.onStop) run.onStop();
         return json(res, 200, { run_id: m[1], status: 'stopping' });
       }
       if (m[2] === 'approval') {
+        // An answer that does not get through: "flaky answer" fails twice, "lost answer" every time.
+        state.approvalAttempts = (state.approvalAttempts || 0) + 1;
+        if (/lost answer/.test(run.input) || (/flaky answer/.test(run.input) && state.approvalAttempts <= 2)) return json(res, 503, { error: { message: 'Unavailable' } });
         state.approvals.push(data);
         if (run.approval) run.approval(data.choice);
         return json(res, 200, { object: 'hermes.run.approval_response', run_id: m[1], choice: data.choice, resolved: 1 });
@@ -242,6 +281,11 @@ function hermesServer() {
       // A server that answers the stream with an error: "hiccup" gets a gateway error, a rate limit and a timeout on
       // its first three reconnects, "refused" a bad request and "revoked" an auth error from the start.
       if (/hiccup/.test(run.input) && run.connects > 1 && run.connects <= 4) return json(res, [502, 429, 408][run.connects - 2], { error: { message: 'Not now' } });
+      // "trickle" gets an error whose body never ends on its first reconnect.
+      if (/trickle/.test(run.input) && run.connects === 2) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        return res.write('{"error": {"message": "Unavai');
+      }
       if (/refused/.test(run.input)) return json(res, 400, { error: { message: 'Bad request' } });
       if (/revoked/.test(run.input)) return json(res, 401, { error: { message: 'Invalid API key' } });
       const last = req.headers['last-event-id'] !== undefined ? Number(req.headers['last-event-id']) : -1;
@@ -285,7 +329,11 @@ function hermesServer() {
           request_id: 'abc123',
           choices: ['once', 'session', 'always', 'deny']
         },
-        () => new Promise((resolve) => (run.approval = (choice) => ((run.choice = choice), resolve({ event: 'message.delta', delta: `choice=${choice}` })))),
+        () =>
+          new Promise((resolve) => {
+            run.approval = (choice) => ((run.choice = choice), resolve({ event: 'message.delta', delta: `choice=${choice}` }));
+            run.onStop = () => resolve({ event: 'run.cancelled', completed: false, interrupted: true });
+          }),
         { event: 'tool.completed', tool: 'terminal', duration: 1, error: false, preview: '' },
         // Hermes ends a run with the final answer it streamed.
         () => ({ event: 'run.completed', output: `choice=${run.choice}`, completed: true })
@@ -309,7 +357,7 @@ function hermesServer() {
     // The pause lets the delta reach Rukoo before the connection drops.
     if (/partial|unreachable/.test(input)) return [{ event: 'message.delta', delta: 'The answer ' }, async () => (await sleep(50), 'DROP')];
     // Commentary before a tool call, then the stream is lost: the tool and the final answer never come through it.
-    if (/flaky|hiccup/.test(input)) {
+    if (/flaky|hiccup|trickle/.test(input)) {
       return [
         { event: 'message.delta', delta: 'one ' },
         async () => (run.connects === 1 ? (await sleep(50), 'DROP') : { event: 'message.delta', delta: 'two' }),
@@ -1346,6 +1394,71 @@ test('hermes: a server error on the event stream is retried like a lost connecti
     assert.equal(texts(turn), 'one two');
     assert.equal(h.state.stops.length, 0);
     assert.equal(adapter.runs.size, 0);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: an error on the event stream whose body never ends is retried', { timeout: 15000 }, async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 5, pollEvery: 10, pollMisses: 3, errorBody: 50 } });
+    const turn = fakeTurn(conv(), 'trickle on the line');
+    assert.deepEqual(await adapter.runTurn(turn), { status: 'done' });
+    assert.equal(texts(turn), 'one two');
+    assert.equal(h.state.stops.length, 0);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: a run whose start went unanswered is asked for again with the same key, not started twice', { timeout: 15000 }, async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 5 } });
+    const turn = fakeTurn(conv(), 'lost reply');
+    assert.deepEqual(await adapter.runTurn(turn), { status: 'done' });
+    assert.equal(h.state.posts, 2, 'the start was sent again');
+    assert.equal(h.state.runs.size, 1, 'and Hermes kept one run');
+    assert.equal(texts(turn), 'OK');
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: an approval answer that does not arrive is sent again, and one that never arrives stops the run', { timeout: 15000 }, async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 5, stopRetry: 60000 } });
+    const flaky = fakeTurn(conv(), 'approve flaky answer', { approve: () => 'once' });
+    assert.deepEqual(await adapter.runTurn(flaky), { status: 'done' });
+    assert.equal(h.state.approvalAttempts, 3, 'two deliveries failed, the third got through');
+    assert.deepEqual(h.state.approvals, [{ choice: 'once', request_id: 'abc123' }]);
+    assert.equal(texts(flaky), 'choice=once');
+
+    h.state.approvalAttempts = 0;
+    const lost = fakeTurn(conv('c_lost'), 'approve lost answer', { approve: () => 'once' });
+    await adapter.runTurn(lost);
+    assert.equal(h.state.approvalAttempts, 3, 'three tries');
+    assert.equal(h.state.stops.length, 1, 'then the run is stopped instead of left waiting');
+    assert.match(ofType(lost, 'error').map((e) => e.detail).join(' '), /Your answer did not reach Hermes, so Rukoo is asking it to stop the run\./);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: an approval answer is not sent again after the user stopped the run', { timeout: 15000 }, async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { backoff: 200, stopRetry: 300 } });
+    // The first answer fails, and the user presses Stop before the retry. Hermes refuses the first two stops, so the
+    // run is still waiting when the retry would go out: the answer must not be sent after all.
+    const turn = fakeTurn(conv(), 'approve flaky answer, deaf to stops', { approve: () => (setTimeout(() => turn.controller.abort(), 100), 'once') });
+    await adapter.runTurn(turn);
+    assert.equal(h.state.approvalAttempts, 1, 'no second try after Stop');
+    assert.deepEqual(h.state.approvals, []);
+    assert.equal(h.state.stops.length, 1, 'the third stop got through');
+    await adapter.dispose();
   } finally {
     h.server.close();
   }
