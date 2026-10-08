@@ -677,7 +677,7 @@ test('a mail frame settles at its content height and keeps the scroll position',
   // Such mail has no height that fits, so it scrolls inside the frame and its end stays reachable.
   const reach = await win.frameLocator('.mail-frame').locator('html').evaluate((d) => ({
     overflow: d.scrollHeight > d.clientHeight + 1,
-    scrollable: getComputedStyle(d.ownerDocument.body).overflowY === 'auto'
+    scrollable: getComputedStyle(d).overflowY === 'auto'
   }));
   expect(!reach.overflow || reach.scrollable).toBe(true);
 
@@ -693,11 +693,131 @@ test('a mail frame settles at its content height and keeps the scroll position',
   expect(await win.locator('.reader-scroll').evaluate((s) => s.scrollTop)).toBe(300);
 });
 
+test('wide mail shrinks to no less than 80% and scrolls sideways, also with fitting off', async () => {
+  // The reader swaps in a new frame when it redraws; a read before the new one is fitted tries again.
+  const look = () =>
+    win
+      .locator('.mail-frame')
+      .evaluate((f) => {
+        const d = f.contentDocument;
+        if (!d || !d.body || !f.style.height) return null;
+        const root = d.documentElement;
+        return {
+          width: f.clientWidth,
+          zoom: Number(d.body.style.zoom || 1),
+          wide: root.scrollWidth > root.clientWidth,
+          sideways: getComputedStyle(root).overflowX === 'auto',
+          // The sideways scrollbar must not take the last line's place.
+          cutOff: root.scrollHeight > root.clientHeight
+        };
+      })
+      .catch(() => null);
+  // The user's wheel, not a script, has to reach the right edge. Returns how far that is, once there.
+  const scrollRight = async () => {
+    const box = await win.locator('.mail-frame').boundingBox().catch(() => null);
+    if (!box) return 0;
+    await win.mouse.move(box.x + 100, box.y + 20);
+    await win.mouse.wheel(2000, 0);
+    return win
+      .locator('.mail-frame')
+      .evaluate((f) => {
+        const s = f.contentDocument && f.contentDocument.scrollingElement;
+        // Offsets can be fractional on a scaled display.
+        return s && s.scrollLeft >= s.scrollWidth - s.clientWidth - 1 ? Math.round(s.scrollLeft) : 0;
+      })
+      .catch(() => 0);
+  };
+
+  // A newsletter that fits the reading pane keeps its size.
+  await item('ANWB Newsletter').click();
+  await expect.poll(look).toMatchObject({ zoom: 1, wide: false, cutOff: false });
+
+  // A newsletter built on a 1000 px table, in a reading pane about 550 px wide.
+  const state = await win.evaluate(() => window.mail.call('state'));
+  await win.evaluate(
+    (accountId) =>
+      window.mail.call('saveDraft', {
+        accountId,
+        to: ['a@example.com'],
+        subject: 'Wide newsletter',
+        html: '<table width="1000" style="width:1000px"><tr><td>Weekly digest</td><td style="width:300px">end of the row</td></tr></table><p style="font-size:11px">Small print, the last line.</p>'
+      }),
+    state.accounts[0].id
+  );
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1244, 950));
+  await win.click('[data-view="drafts"]');
+  await item('Wide newsletter').click();
+  await expect.poll(look).toMatchObject({ zoom: 0.8, wide: true, sideways: true, cutOff: false });
+  await expect.poll(async () => (await look())?.width).toBeGreaterThan(530);
+  await expect.poll(async () => (await look())?.width).toBeLessThan(570);
+  await expect.poll(scrollRight).toBeGreaterThan(200);
+
+  // With "Fit content to window" off the mail keeps its size, and still nothing is cut off.
+  await win.click('[data-action="settings"]');
+  await win.click('[data-a="toggle:fitContent"]');
+  await win.click('[data-a="back"]');
+  await expect.poll(look).toMatchObject({ zoom: 1, wide: true, sideways: true, cutOff: false });
+  await expect.poll(scrollRight).toBeGreaterThan(400);
+
+  // A few pixels over is no reason for a scrollbar.
+  await win.evaluate(
+    (accountId) =>
+      window.mail.call('saveDraft', {
+        accountId,
+        to: ['a@example.com'],
+        subject: 'Nearly fits',
+        html: '<div style="width:calc(100vw + 1px)">A border too far.</div>'
+      }),
+    state.accounts[0].id
+  );
+  await item('Nearly fits').click();
+  await expect.poll(look).toMatchObject({ zoom: 1, wide: true, sideways: false, cutOff: false });
+});
+
 test('newsletter canvases are cleared so the mail sits on the reader', async () => {
   await win.waitForSelector('.mail-frame');
   await expect
     .poll(() => win.frameLocator('.mail-frame').locator('body').evaluate((b) => getComputedStyle(b).backgroundColor))
     .toBe('rgba(0, 0, 0, 0)');
+});
+
+test('in dark mode a cleared newsletter canvas keeps its text recoloured', async () => {
+  // Clearing a white "background" shorthand makes Chromium write "background-image: initial" into the
+  // style attribute. That must not count as an image, which would turn the text back to dark.
+  await win.click('[data-action="settings"]');
+  await win.click('[data-a="theme"]');
+  await win.click('.radio-row:has-text("Donker")');
+  await expect(win.locator('html')).not.toHaveClass(/light/);
+  await win.click('[data-a="back"]');
+  await expect(win.locator('.settings')).toHaveCount(0);
+  const state = await win.evaluate(() => window.mail.call('state'));
+  await win.evaluate(
+    (accountId) =>
+      window.mail.call('saveDraft', {
+        accountId,
+        to: ['a@example.com'],
+        subject: 'White canvas',
+        html:
+          '<table width="100%" style="width:100%;background:#ffffff"><tr><td style="color:#222222">Dark text on white.' +
+          '<div id="pointer" style="cursor:url(hand.cur),auto;color:#222222">A custom pointer is no image.</div>' +
+          '<div id="photo" style="background-image:url(data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==);height:20px"></div>' +
+          '</td></tr></table>'
+      }),
+    state.accounts[0].id
+  );
+  await win.click('[data-view="drafts"]');
+  await item('White canvas').click();
+  const look = (selector) =>
+    win
+      .frameLocator('.mail-frame')
+      .locator(selector)
+      .evaluate((el) => ({ background: getComputedStyle(el).backgroundColor, filter: getComputedStyle(el).filter }))
+      .catch(() => null);
+  await expect.poll(() => look('table')).toEqual({ background: 'rgba(0, 0, 0, 0)', filter: 'none' });
+  expect(await win.frameLocator('.mail-frame').locator('html').evaluate((h) => getComputedStyle(h).filter)).toBe('invert(1) hue-rotate(180deg)');
+  // A url() in another property is no image either; a real background image is still turned back.
+  expect((await look('#pointer')).filter).toBe('none');
+  expect((await look('#photo')).filter).toBe('invert(1) hue-rotate(180deg)');
 });
 
 test('a reopened reply keeps the earlier mail behind the pill, and still sends it', async () => {
