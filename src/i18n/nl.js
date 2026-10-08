@@ -110,7 +110,6 @@
   "agent.mail.undo": { "one": "{count} e-mail teruggezet", "other": "{count} e-mails teruggezet" },
   "agent.mail.unstar": { "one": "Ster weggehaald bij {count} e-mail", "other": "Ster weggehaald bij {count} e-mails" },
   "agent.panel.addContext": "Deze e-mail toevoegen",
-  "agent.panel.ask": "Een agent iets vragen over deze e-mail (Ctrl+J)",
   "agent.panel.close": "Chat sluiten",
   "agent.panel.history": "Recente chats",
   "agent.panel.jump": "Naar het nieuwste bericht",
