@@ -82,6 +82,9 @@ test('config: whitelisted, type-checked updates; secrets encrypted and never in 
   assert.match(setup, /args: \["\$\{userHome\}\/\.hermes\/rukoo_bridge\.py"\]/);
   assert.match(setup, /RUKOO_KEY: \$\{API_SERVER_KEY\}/);
   assert.match(setup, /RUKOO_PORT: "47801"/, 'a port other than 47800 is passed on');
+  cfg.runtime.remotePort = 47999;
+  assert.ok(!cfg.hermesSetup().includes('47999'), "a port only this device fell back to isn't everyone's");
+  cfg.runtime.remotePort = null;
   assert.ok(!setup.includes(token) && !setup.includes('hermes-key') && !setup.includes('100.101.12.7'));
   cfg.update({ mcp: { port: 47800 } });
   assert.ok(!cfg.hermesSetup().includes('RUKOO_PORT'));
@@ -1048,15 +1051,18 @@ test('status: disabled, broken and ready adapters; tokens and identities', async
     assert.equal(hub.copyHermesSetup(), true);
     // Without an API key nothing gets in over Tailscale, and there is nothing to prove.
     assert.equal(hub.cfg.remoteToken(), '');
-    assert.equal(hub.proof('challenge-0123456789'), '');
+    assert.equal(hub.proof('challenge-0123456789', '100.64.0.3:47800'), '');
     hub.setSecret('clark', 'hermes-key');
     const remote = hub.cfg.remoteToken();
     assert.deepEqual(hub.identify(remote), { agent: 'clark', conversationId: null, remote: true });
-    // The proof Clark's bridge checks before it sends the token: tied to the challenge, and no use as a token.
-    const proof = hub.proof('challenge-0123456789');
+    // The proof Clark's bridge checks before it sends the token: tied to the challenge and to the address Rukoo took
+    // the connection on, and no use as a token.
+    const proof = hub.proof('challenge-0123456789', '100.64.0.3:47800');
     const remoteHash = crypto.createHash('sha256').update(remote).digest();
-    assert.equal(proof, crypto.createHmac('sha256', remoteHash).update('rukoo-proof:challenge-0123456789').digest('base64url'));
-    assert.notEqual(hub.proof('challenge-9876543210'), proof);
+    assert.equal(proof, crypto.createHmac('sha256', remoteHash).update('rukoo-proof:100.64.0.3:47800:challenge-0123456789').digest('base64url'));
+    assert.notEqual(hub.proof('challenge-9876543210', '100.64.0.3:47800'), proof);
+    assert.notEqual(hub.proof('challenge-0123456789', '100.64.0.4:47800'), proof, 'another address, another proof');
+    assert.equal(hub.proof('challenge-0123456789', ''), '');
     assert.equal(hub.identify(proof), null);
     // hello tells the bridge whether this Rukoo has the chat and how long the user has been away.
     const mine = hub.create({ agent: 'clark', message: null });

@@ -32,6 +32,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -66,7 +67,8 @@ CACHE = Path(os.environ.get("RUKOO_CACHE") or Path(__file__).with_name("rukoo_to
 # Rukoo runs on these; the user's servers and phones are left alone.
 DEVICE_OS = {"windows", "macOS"}
 
-# Tool calls can wait on the desktop (writing a draft waits for the composer), so allow a minute.
+# Tool calls can wait on the desktop (writing a draft waits for the composer). The time it takes to find the
+# device counts toward CALL_TIMEOUT_SECONDS.
 # Listing tools is quick; a slow answer there means Rukoo is not really there.
 # Hermes gives a call to this server 120 s (timeout: 120); Rukoo answers mail actions within 90 s. Waiting less
 # than Hermes would report a failure while Rukoo still finishes the call.
@@ -157,10 +159,31 @@ def each(function, items):
     return results
 
 
-def expected_proof(challenge):
-    """What a Rukoo with the same key answers to the challenge (proof() in Rukoo's agents/hub.js)."""
+def endpoint(url):
+    """ip:port the url connects to, as Rukoo sees it on its own socket."""
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.hostname}:{parts.port or 80}"
+
+
+def expected_proof(challenge, url):
+    """What a Rukoo with the same key, listening at url, answers to the challenge (proof() in Rukoo's
+    agents/hub.js). Rukoo signs the address it took the connection on. A listener that relays the challenge
+    to a genuine Rukoo elsewhere gets a proof for that Rukoo's address, which doesn't match its own. Tailscale
+    makes sure an address belongs to one device."""
     key = hashlib.sha256(TOKEN.encode("utf-8")).digest()
-    return b64url(hmac.new(key, f"rukoo-proof:{challenge}".encode("utf-8"), hashlib.sha256).digest())
+    return b64url(hmac.new(key, f"rukoo-proof:{endpoint(url)}:{challenge}".encode("utf-8"), hashlib.sha256).digest())
+
+
+def numeric(url):
+    """The url with its host name replaced by an IPv4 address, or None when the name doesn't resolve. The
+    proof covers the address, and Rukoo only accepts its own address in the Host header."""
+    parts = urllib.parse.urlsplit(url)
+    try:
+        ip = socket.getaddrinfo(parts.hostname, None, socket.AF_INET)[0][4][0]
+    except (OSError, UnicodeError, TypeError):
+        log(f"could not look up {parts.hostname}")
+        return None
+    return urllib.parse.urlunsplit(parts._replace(netloc=f"{ip}:{parts.port or 80}"))
 
 
 def prove(url):
@@ -190,15 +213,15 @@ def prove(url):
     if proof is None:
         # Rukoo from before the challenge answers every request without a token like this.
         return "old" if body == b'{"error":"unauthorized"}' else None
-    same = TOKEN and hmac.compare_digest(proof.encode("utf-8"), expected_proof(challenge).encode("utf-8"))
+    same = TOKEN and hmac.compare_digest(proof.encode("utf-8"), expected_proof(challenge, url).encode("utf-8"))
     return "ok" if same else "other-key"
 
 
 def tailnet_devices(status):
-    """(name, url) for each online Windows or Mac device in `tailscale status --json`. Tagged devices are
-    servers, and shared ones belong to someone else."""
+    """(name, url) for each online Windows or Mac device in `tailscale status --json`, this one included when
+    Hermes runs on the same computer as Rukoo. Tagged devices are servers, and shared ones belong to someone else."""
     devices = []
-    for peer in (status.get("Peer") or {}).values():
+    for peer in [status.get("Self") or {}, *(status.get("Peer") or {}).values()]:
         if not peer.get("Online") or peer.get("Tags") or peer.get("ShareeNode") or peer.get("OS") not in DEVICE_OS:
             continue
         ip = next((a for a in peer.get("TailscaleIPs") or [] if "." in a), None)
@@ -208,7 +231,7 @@ def tailnet_devices(status):
 
 
 def candidates():
-    devices = [(urllib.parse.urlsplit(url).hostname or url, url) for url in URLS]
+    devices = [(urllib.parse.urlsplit(url).hostname or url, numeric(url)) for url in URLS]
     if DISCOVER:
         try:
             out = subprocess.run([TAILSCALE, "status", "--json"], capture_output=True, timeout=10, check=True).stdout
@@ -217,7 +240,8 @@ def candidates():
             log(f"could not get the device list from Tailscale: {exc}")
     unique = {}
     for name, url in devices:
-        unique.setdefault(url, name)
+        if url:
+            unique.setdefault(url, name)
     return [(name, url) for url, name in unique.items()]
 
 
@@ -375,13 +399,16 @@ def call_tool(message):
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
     conversation_id = args.get("conversation_id") if isinstance(args.get("conversation_id"), str) else None
+    started = time.monotonic()
     target = DEVICES.pick(conversation_id)
     if target is None:
         log("tools/call: Rukoo isn't open anywhere")
         return tool_error(message.get("id"), DEVICES.unreachable())
     url, name = target
+    # Finding the device counts against the same deadline, so the answer still comes before Hermes gives up.
+    timeout = max(10, CALL_TIMEOUT_SECONDS - (time.monotonic() - started))
     try:
-        reply = post(url, message, CALL_TIMEOUT_SECONDS)
+        reply = post(url, message, timeout)
     except Exception as exc:  # noqa: BLE001 - the agent gets every failure as a tool error
         log(f"tools/call to {name} failed: {exc}")
         return tool_error(message.get("id"), describe_failure(exc, url, name))

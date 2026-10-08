@@ -162,7 +162,7 @@ test('a remote listener takes only remote tokens', async () => {
 });
 
 test("the remote listener proves it has the key when asked, and tells the bridge about itself", async () => {
-  const hub = { ...fakeHub(), proof: (c) => `proof-of-${c}`, hello: (identity, params) => ({ owns: params.conversation_id === 'c1', idle: 5, agent: identity.agent }) };
+  const hub = { ...fakeHub(), proof: (c, endpoint) => `proof-of-${endpoint}-${c}`, hello: (identity, params) => ({ owns: params.conversation_id === 'c1', idle: 5, agent: identity.agent }) };
   const server = new McpServer({ hub });
   const local = await server.listen({ host: '127.0.0.1', port: 0, remote: false });
   const port = await server.listen({ host: '127.0.0.1', port: 0, remote: true });
@@ -172,7 +172,7 @@ test("the remote listener proves it has the key when asked, and tells the bridge
     const asked = await ask(port, challenge);
     assert.equal(asked.status, 401, 'a proof is no way in');
     assert.deepEqual(asked.json, { error: 'unauthorized' });
-    assert.equal(asked.headers['x-rukoo-proof'], `proof-of-${challenge}`);
+    assert.equal(asked.headers['x-rukoo-proof'], `proof-of-127.0.0.1:${port}-${challenge}`, 'for the address the socket took the connection on');
     assert.equal((await ask(port, 'short')).headers['x-rukoo-proof'], undefined);
     assert.equal((await ask(port, 'abcdefghijklmnop.%')).headers['x-rukoo-proof'], undefined);
     assert.equal((await ask(port, 'x'.repeat(129))).headers['x-rukoo-proof'], undefined);

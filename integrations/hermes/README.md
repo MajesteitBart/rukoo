@@ -17,9 +17,9 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
 
 ## How it finds Rukoo
 
-- **Which devices.** The bridge runs `tailscale status --json` and tries port 47800 on every online Windows and Mac device. It skips Linux machines, phones, tagged devices and devices shared from another tailnet. `RUKOO_URL` adds addresses it should try as well.
+- **Which devices.** The bridge runs `tailscale status --json` and tries port 47800 on every online Windows and Mac device, the Hermes machine itself included. It skips Linux machines, phones, tagged devices and devices shared from another tailnet. `RUKOO_URL` adds addresses it should try as well.
 - **Which key.** Every Rukoo stores the Hermes API key, because it needs the key to chat. The bridge gets the same key from Hermes' `.env` as `RUKOO_KEY`. Both make the MCP token from it, so there is no token to copy, and one setup works for every device.
-- **Proof first.** The bridge doesn't send the token to whatever answers on port 47800. It sends a random challenge, and Rukoo answers with a value only a holder of the same key can compute. The token goes only to devices that get it right.
+- **Proof first.** The bridge doesn't send the token to whatever answers on port 47800. It sends a random challenge, and Rukoo answers with a value only a holder of the same key can compute. That value also covers the address Rukoo took the connection on, so a device that passes the challenge on to a real Rukoo elsewhere gets a proof for the wrong address. Tailscale makes sure each address belongs to one device. The token goes only to devices that get it right.
 - **Which device gets a call.** The bridge asks every Rukoo it found whether it has the chat the call is about (`conversation_id`). That device gets the call. A call without a chat, from WhatsApp for instance, goes to the device you used last: the one with the shortest time since its last keyboard or mouse input.
 - **When it looks.** At start, and in the background once a minute while calls come in. When no known Rukoo answers, it looks again before giving up.
 
@@ -42,7 +42,7 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
    ```
    Hermes fills in `${API_SERVER_KEY}` from `~/.hermes/.env`, so the key isn't written into `config.yaml`. Optional settings:
    - `RUKOO_PORT`: the port Rukoo listens on, when it isn't 47800. "Copy Hermes setup" adds it when needed.
-   - `RUKOO_URL`: more Rukoo addresses to try, such as `http://desk.example.ts.net:47800/mcp`, separated by commas.
+   - `RUKOO_URL`: more Rukoo addresses to try, such as `http://desk.example.ts.net:47800/mcp`, separated by commas. The bridge looks up a host name and connects to its IPv4 address.
    - `RUKOO_DISCOVER`: `0` turns the Tailscale lookup off, so only `RUKOO_URL` is tried.
    - `RUKOO_TAILSCALE`: the `tailscale` command, when it isn't on the PATH.
    - `RUKOO_CACHE`: where the bridge keeps the last tool list (default: `rukoo_tools.json` next to the script).
@@ -63,7 +63,7 @@ A new API server key locks out Rukoo and the bridge alike until both have it. En
 
 ## Timeouts and approvals
 
-- The bridge waits up to 115 seconds for a tool call. `write_draft` waits for Rukoo's composer, which takes at most 20 seconds. Mail actions answer within 90 seconds. Everything else answers in well under a second.
+- The bridge waits up to 115 seconds for a tool call, including the time it takes to find the device. `write_draft` waits for Rukoo's composer, which takes at most 20 seconds. Mail actions answer within 90 seconds. Everything else answers in well under a second.
 - Choosing a device adds one short request per open Rukoo to each call. Looking for devices takes up to 4 seconds, because a Windows PC without Rukoo drops the connection without answering. That happens in the background, except when no known Rukoo answers.
 - `timeout: 120` is Hermes' own limit for a call to this server.
 - Rukoo's tools don't block while they wait for the user. `propose_action` and `mail_action` put an approval card in Rukoo and return right away. When the user approves, Rukoo sends Clark a new message. So the entry doesn't need `trust: untrusted`, and Hermes' approval timeout doesn't come into play.

@@ -266,7 +266,8 @@ class AgentConfig {
   // the bridge finds Rukoo over Tailscale and signs in with the API server key, which Hermes fills in from its
   // .env. ${userHome} is a Hermes config variable.
   hermesSetup() {
-    const port = this.runtime.remotePort || this.data.mcp.port;
+    // The configured port, which other devices share. A port this device fell back to applies to it alone.
+    const port = this.data.mcp.port;
     const name = this.displayName('clark');
     return [
       `# Rukoo Mail: lets ${name} read mail, write drafts and ask for approval in Rukoo, on any of your devices.`,

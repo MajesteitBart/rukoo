@@ -1318,10 +1318,12 @@ class AgentHub extends EventEmitter {
   }
 
   // Clark's bridge looks for Rukoo on every device in the tailnet and only sends its token to one that proves it
-  // has the same key. Keyed with the token's hash and its own prefix, the proof never gives the token away.
-  proof(challenge) {
-    if (!this.remoteHash) return '';
-    return crypto.createHmac('sha256', this.remoteHash).update(`rukoo-proof:${challenge}`).digest('base64url');
+  // has the same key. Keyed with the token's hash and its own prefix, the proof never gives the token away. It
+  // covers the address this Rukoo took the connection on, so a listener elsewhere that relays the challenge here
+  // gets a proof for this address, not its own.
+  proof(challenge, endpoint) {
+    if (!this.remoteHash || !endpoint) return '';
+    return crypto.createHmac('sha256', this.remoteHash).update(`rukoo-proof:${endpoint}:${challenge}`).digest('base64url');
   }
 
   // What the bridge needs to pick a device: whether this Rukoo has the chat, and how long the user has been away.

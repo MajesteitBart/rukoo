@@ -42,7 +42,7 @@ function bearer(req) {
 }
 
 class McpServer {
-  // hub: { identify(token), listTools(identity), callTool(identity, name, args, meta), proof(challenge), hello(identity, params) }
+  // hub: { identify(token), listTools(identity), callTool(identity, name, args, meta), proof(challenge, endpoint), hello(identity, params) }
   constructor({ hub, version = '0.0.0', log = () => {} }) {
     this.hub = hub;
     this.version = version;
@@ -126,7 +126,9 @@ class McpServer {
     if (!identity || Boolean(identity.remote) !== entry.remote) {
       // Clark's bridge asks before it sends its token: Rukoo proves it has the same key, or says it has none.
       const challenge = String(req.headers['x-rukoo-challenge'] || '');
-      const proof = entry.remote && CHALLENGE.test(challenge) ? { 'X-Rukoo-Proof': (this.hub.proof && this.hub.proof(challenge)) || 'none' } : {};
+      // The address from the socket, not from a header: the one the bridge connected to if nothing relayed it.
+      const endpoint = `${String(req.socket.localAddress || '').replace(/^::ffff:/, '')}:${req.socket.localPort}`;
+      const proof = entry.remote && CHALLENGE.test(challenge) ? { 'X-Rukoo-Proof': (this.hub.proof && this.hub.proof(challenge, endpoint)) || 'none' } : {};
       return this.reject(req, res, 401, { error: 'unauthorized' }, proof);
     }
     const tooLarge = () => json(res, 413, rpcError(null, -32600, 'Request body too large'), { Connection: 'close' });

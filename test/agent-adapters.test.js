@@ -1182,8 +1182,8 @@ async function fakeRukoo({ key, idle = 0, chats = [] }) {
     identify(t) {
       return AgentHub.prototype.identify.call(this, t);
     },
-    proof(challenge) {
-      return AgentHub.prototype.proof.call(this, challenge);
+    proof(challenge, endpoint) {
+      return AgentHub.prototype.proof.call(this, challenge, endpoint);
     },
     hello(identity, params) {
       return AgentHub.prototype.hello.call(this, identity, params);
@@ -1227,13 +1227,27 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
     return { server, seen, url: `http://127.0.0.1:${server.address().port}/mcp` };
   };
   const outdated = await plain(401, '{"error":"unauthorized"}');
+  // A listener that passes each challenge on to the genuine desktop Rukoo and returns its proof.
+  const relayAuth = [];
+  const relay = http.createServer((req, res) => {
+    relayAuth.push(req.headers.authorization || null);
+    req.resume();
+    const forward = http.request(desktop.url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-rukoo-challenge': req.headers['x-rukoo-challenge'] || '' } }, (answer) => {
+      answer.resume();
+      res.writeHead(401, { 'Content-Type': 'application/json', ...(answer.headers['x-rukoo-proof'] ? { 'X-Rukoo-Proof': answer.headers['x-rukoo-proof'] } : {}) });
+      res.end('{"error":"unauthorized"}');
+    });
+    forward.on('error', () => res.end());
+    forward.end('{"jsonrpc":"2.0","id":0,"method":"ping"}');
+  });
+  await new Promise((r) => relay.listen(0, '127.0.0.1', r));
   const stranger = await plain(404, '{"error":"not found"}');
   // Also when an assertion fails before the test closes them on purpose.
   t.after(async () => {
     for (const rukoo of [laptop, desktop, other]) await rukoo.close();
-    for (const { server } of [outdated, stranger]) if (server.listening) server.close();
+    for (const server of [outdated.server, stranger.server, relay]) if (server.listening) server.close();
   });
-  const urls = [laptop.url, desktop.url, other.url, outdated.url, stranger.url, `${await closedPort()}/mcp`];
+  const urls = [laptop.url, desktop.url, other.url, outdated.url, stranger.url, `http://127.0.0.1:${relay.address().port}/mcp`, `${await closedPort()}/mcp`];
   const cache = path.join(tmp('bridge'), 'tools.json');
   const start = (key) => {
     const child = spawn(python, [path.join(__dirname, '..', 'integrations', 'hermes', 'rukoo_bridge.py')], {
@@ -1272,6 +1286,8 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   assert.deepEqual([...new Set(other.seen)], [null], 'the Rukoo with another key only got the challenge');
   assert.deepEqual([...new Set(outdated.seen)], [null]);
   assert.deepEqual([...new Set(stranger.seen)], [null]);
+  assert.ok(relayAuth.length > 0, 'the relay was tried');
+  assert.deepEqual([...new Set(relayAuth)], [null], 'a relayed proof gets no token');
 
   // Two calls at once: the quick one does not wait for the slow one before it.
   const before = b.replies.length;
@@ -1320,7 +1336,7 @@ test('hermes bridge: looks for Rukoo only on online Windows and Mac devices of t
   const { spawnSync } = require('child_process');
   const peer = (HostName, OS, TailscaleIPs, extra = {}) => ({ HostName, OS, TailscaleIPs, Online: true, ...extra });
   const status = {
-    Self: peer('hermes-box', 'linux', ['100.64.0.2']),
+    Self: peer('this-pc', 'windows', ['100.64.0.2']),
     Peer: {
       a: peer('laptop', 'windows', ['100.64.0.3', 'fd7a:115c:a1e0::1']),
       b: peer('desk-pc', 'windows', ['100.64.0.4'], { Online: false }),
@@ -1341,6 +1357,7 @@ test('hermes bridge: looks for Rukoo only on online Windows and Mac devices of t
   });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), [
+    ['this-pc', 'http://100.64.0.2:47801/mcp'],
     ['laptop', 'http://100.64.0.3:47801/mcp'],
     ['MacBook', 'http://100.64.0.9:47801/mcp']
   ]);
