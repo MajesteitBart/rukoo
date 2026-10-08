@@ -111,6 +111,10 @@ class AgentHub extends EventEmitter {
     this.remoteHash = null;
     this.threads = new Map();
     this.uiPending = new Map();
+    // Per conversation, the chain of mail work whose outcome goes into the notes, and what on it still runs; see
+    // settleMail().
+    this.mailSettling = new Map();
+    this.mailRunning = new Map();
     // Attachment copies written for local agents (read_attachment local_path), removed on dispose.
     this.tempDirs = new Set();
     this.viewState = emptyView();
@@ -303,6 +307,10 @@ class AgentHub extends EventEmitter {
     this.disposed = true;
     clearInterval(this.remoteTimer);
     for (const turn of [...this.turns.values()]) {
+      // runTurn() would give these back only after the flush below, so a turn the agent does not have yet gives
+      // them back now.
+      const c = this.conversations.get(turn.cid);
+      if (c && !turn.reached) this.giveBack(c, turn);
       turn.controller.abort();
       this.finishTurn(turn, { status: 'stopped' });
     }
@@ -317,6 +325,15 @@ class AgentHub extends EventEmitter {
       if (c) for (const message of queue) this.keepApproval(c, message);
     }
     this.followUps.clear();
+    // Mail work still running or queued: its outcome would come too late to be saved, so the agent hears that it is
+    // not known.
+    for (const [cid, running] of this.mailRunning) {
+      const c = this.conversations.get(cid);
+      if (!c) continue;
+      for (const { label } of running) {
+        c.notes.push(`Rukoo closed while ${context.unsafeInline(label || 'a mail action', 'mail action')} was still running, so its outcome is not known. Check the mail before you act on it again.`);
+      }
+    }
     clearTimeout(this.deltaTimer);
     this.deltas.clear();
     // Synchronous, so a quit that does not wait for this promise still keeps the transcript.
@@ -717,9 +734,18 @@ class AgentHub extends EventEmitter {
   async runTurn(c, turn, { text, action, firstTurn, display = '' }) {
     const adapter = this.adapters.get(c.agent);
     let result;
-    let notes = [];
+    if (action === 'approved') turn.approval = { display: display || text };
     try {
       if (!adapter) throw new AgentError('unknown', this.adapterErrors.get(c.agent) || `${c.agent} adapter not available`);
+      // Mail work that still runs reports into the notes this turn takes: wait for all of it first, also for
+      // what is decided while this waits.
+      if (this.mailSettling.has(c.id)) {
+        for (let work = this.mailSettling.get(c.id); work; work = this.mailSettling.get(c.id)) await work;
+        if (turn.closed || turn.controller.signal.aborted) {
+          this.giveBack(c, turn);
+          return this.finishTurn(turn, { status: 'stopped' });
+        }
+      }
       let message = null;
       if (firstTurn && c.message) {
         const liveId = await this.currentMessageId(c);
@@ -729,7 +755,7 @@ class AgentHub extends EventEmitter {
         if (turn.closed || turn.controller.signal.aborted) {
           // An approved follow-up stopped this early never reached the agent; keep the approval (the notes
           // are not taken yet, so nothing else changes).
-          if (action === 'approved') this.keepApproval(c, { display: display || text });
+          this.giveBack(c, turn);
           return this.finishTurn(turn, { status: 'stopped' });
         }
         if (full) {
@@ -744,7 +770,8 @@ class AgentHub extends EventEmitter {
         const m = tools.cacheMessage(this.engine, openId);
         openMessage = { id: openId, subject: m ? m.subject : '' };
       }
-      notes = c.notes.splice(0);
+      const notes = c.notes.splice(0);
+      turn.notes = notes;
       const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage });
       const port = this.mcp ? this.mcp.ports().local : null;
       const handle = {
@@ -786,15 +813,7 @@ class AgentHub extends EventEmitter {
         c.delivered = true;
         this.touch(c);
       }
-    } else {
-      if (notes.length) {
-        c.notes.unshift(...notes);
-        this.touch(c);
-      }
-      // An approved follow-up that never reached the agent (offline, failed to start, stopped first): the
-      // approval is kept, so the next message still tells the agent what the user said yes to.
-      if (action === 'approved') this.keepApproval(c, { display: display || text });
-    }
+    } else this.giveBack(c, turn);
     this.finishTurn(turn, result || { status: 'error', error: { code: 'protocol', detail: 'the adapter returned nothing' } });
   }
 
@@ -1001,6 +1020,19 @@ class AgentHub extends EventEmitter {
     }
   }
 
+  // A turn that never reached the agent (offline, failed to start, stopped first) uses up nothing: the notes it
+  // took go back, and an approved follow-up's approval is kept, so the next message still tells the agent what
+  // the user said yes to. Once per turn, from runTurn() or from dispose(), whichever comes first.
+  giveBack(c, turn) {
+    if (turn.givenBack) return;
+    turn.givenBack = true;
+    if (turn.notes && turn.notes.length) {
+      c.notes.unshift(...turn.notes);
+      this.touch(c);
+    }
+    if (turn.approval) this.keepApproval(c, turn.approval);
+  }
+
   // An approval whose follow-up turn could not start. The agent hears about it with the next message, and
   // the card's "Approved" does not pretend it was carried out.
   keepApproval(c, message) {
@@ -1101,12 +1133,37 @@ class AgentHub extends EventEmitter {
     if (waiter) waiter.resolve(choice.id);
     if (item.kind === 'proposal') this.onProposal(c, item, !denied);
     if (item.kind === 'mail') {
-      this.onMailDecision(c, item, !denied).catch((err) => {
-        const e = toError(err);
-        this.addItem(c, { type: 'notice', text: ERROR_TEXT[e.code], detail: e.detail, tone: 'error', code: e.code, undo: null });
-      });
+      this.settleMail(c, () => this.onMailDecision(c, item, !denied), item.title);
     }
     return item;
+  }
+
+  // Mail work whose outcome goes into the notes of the agent's next message: a decision on a mail action, or an
+  // action that ran without asking and outlasted its tool call. One chain per conversation, in order; runTurn()
+  // waits until the chain is done.
+  // label names the work for a note when Rukoo quits before it is done (see dispose()).
+  settleMail(c, work, label = '') {
+    const before = this.mailSettling.get(c.id);
+    // Nothing queued: start at once, so a decision's own note is there when decide() returns.
+    const started = before ? before.then(work) : new Promise((resolve) => resolve(work()));
+    const running = this.mailRunning.get(c.id) || new Set();
+    const entry = { label };
+    running.add(entry);
+    this.mailRunning.set(c.id, running);
+    const op = started
+      .catch((err) => {
+        const e = toError(err);
+        this.addItem(c, { type: 'notice', text: ERROR_TEXT[e.code], detail: e.detail, tone: 'error', code: e.code, undo: null });
+      })
+      .finally(() => {
+        running.delete(entry);
+        if (!running.size && this.mailRunning.get(c.id) === running) this.mailRunning.delete(c.id);
+      });
+    this.mailSettling.set(c.id, op);
+    op.then(() => {
+      if (this.mailSettling.get(c.id) === op) this.mailSettling.delete(c.id);
+    });
+    return op;
   }
 
   // A proposal is the agent's text as it wrote it. Email text it quoted keeps its <unsafe_content> tags when Rukoo

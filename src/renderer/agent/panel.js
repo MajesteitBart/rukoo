@@ -7,7 +7,7 @@ import { api, $, toast, listTime, person, hue } from '../ui.js';
 import * as B from './bui.js';
 import { actionByKey, actionsFor, commandsFor } from './actions.js';
 import { replyEnvelope } from '../composer.js';
-import { expired } from './backlog.js';
+import { expired } from './expired.js';
 
 const AGENTS = ['clark', 'claude', 'codex'];
 // Product names, not translated.
@@ -1308,6 +1308,8 @@ export function mountAgentPanel(ctx) {
     }
   };
   window.mail.on(onEvent);
+  // Main held a reveal, a waiting approval or a composer request that came before this; it sends them now.
+  api('agentPanelReady').catch(() => {});
 
   // ---------- start ----------
 
@@ -1321,8 +1323,6 @@ export function mountAgentPanel(ctx) {
   if (ctx.agentOpen()) sync();
 
   return {
-    // Agent events that came before the panel loaded; app.js hands them over once.
-    event: onEvent,
     // The panel became visible: catch up with the email on screen.
     opened({ focus = false } = {}) {
       sync();

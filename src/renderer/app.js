@@ -33,7 +33,6 @@ import { fillFrame } from './mailframe.js';
 import { mountComposer } from './composer.js';
 import { openSettings, promptDialog } from './settings.js';
 import { openSetup } from './setup.js';
-import { holdEvents, heldAgentEvent } from './agent/backlog.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -350,21 +349,15 @@ function renderShell() {
 
 // ---------- chat panel ----------
 
-// The panel loads on its own, so a fault in it can never keep the mailbox from opening. A remote agent can call
-// in before it has loaded (a proposal reveals its chat at once), so agent events wait until it listens.
+// The panel loads on its own, so a fault in it can never keep the mailbox from opening. Main holds the agent
+// events it must not miss until the panel says it listens (see agents/gate.js).
 let agentPanel = null;
-let heldAgentEvents = null;
 function loadAgentPanel() {
-  heldAgentEvents = holdEvents(window.mail.on, heldAgentEvent);
   import('./agent/panel.js')
     .then((m) => {
       agentPanel = m.mountAgentPanel(ctx);
-      heldAgentEvents.release((e) => agentPanel.event(e));
     })
-    .catch((err) => {
-      heldAgentEvents.drop();
-      console.error('The chat panel did not load:', err);
-    });
+    .catch((err) => console.error('The chat panel did not load:', err));
 }
 
 // focus: move the keyboard to the chat input (Ctrl+J and the toolbar buttons do).

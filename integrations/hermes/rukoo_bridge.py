@@ -29,7 +29,9 @@ CACHE = Path(os.environ.get("RUKOO_CACHE") or Path(__file__).with_name("rukoo_to
 
 # Tool calls can wait on the desktop (writing a draft waits for the composer), so allow a minute.
 # Listing tools is quick; a slow answer there means Rukoo is not really there.
-CALL_TIMEOUT_SECONDS = 60
+# Hermes gives a call to this server 120 s (timeout: 120); Rukoo answers mail actions within 90 s. Waiting less
+# than Hermes would report a failure while Rukoo still finishes the call.
+CALL_TIMEOUT_SECONDS = 115
 LIST_TIMEOUT_SECONDS = 8
 # Straight to the desktop: a proxy from the environment would get the token and can't reach 100.x anyway.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))

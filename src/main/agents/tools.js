@@ -11,7 +11,7 @@ const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
-const { unsafeBlock, unsafeValue, untag, clipTagged } = require('./context');
+const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged } = require('./context');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -1129,7 +1129,55 @@ async function mailAction(hub, args, call) {
       return engine.publicAccount(a).folders.some((f) => f.path === target && f.role === 'trash');
     });
   if (hub.cfg.data.autoMailActions && spec.action !== 'unsubscribe' && spec.action !== 'trash' && !intoTrash) {
-    const result = await executeMail(hub, c, spec);
+    // The agent's call waits for this, but its client gives up after 120 s, and a slow IMAP server can take longer.
+    // Then the call answers that the work goes on, and the outcome comes with the agent's next message, which
+    // waits for it, the same way an approved action reports.
+    // The actions run on the conversation's mail chain, after earlier mail work, so they happen in the order they
+    // were asked for. Whichever comes first decides: the work ends (the call answers with the result) or the wait
+    // does (the call says the work goes on, and the outcome becomes a note).
+    let late = false;
+    let finished = false;
+    let answer;
+    const first = new Promise((resolve) => (answer = resolve));
+    const timer = setTimeout(() => {
+      if (finished) return;
+      late = true;
+      answer(null);
+    }, hub.mailWait || AUTO_MAIL_WAIT_MS);
+    hub.settleMail(
+      c,
+      async () => {
+        let result = null;
+        let error = null;
+        try {
+          result = await executeMail(hub, c, spec);
+        } catch (err) {
+          error = err;
+        }
+        finished = true;
+        clearTimeout(timer);
+        if (!late) return answer({ result, error });
+        const action = unsafeInline(title, 'mail action');
+        c.notes.push(
+          error
+            ? `Rukoo could not finish ${action}: ${unsafeInline((error && (error.detail || error.message)) || String(error), 'mail result')}. Part of it may be done; check the mail before you try again.`
+            : `Rukoo finished ${action}: ${unsafeInline(result.text, 'mail result')}.`
+        );
+        hub.touch(c);
+        if (error) throw error;
+      },
+      title
+    );
+    const outcome = await first;
+    if (!outcome) {
+      return {
+        conversation_id: c.id,
+        status: 'in_progress',
+        note: 'Rukoo is still doing this. You will be told the outcome in your next message; do not repeat the request.'
+      };
+    }
+    if (outcome.error) throw outcome.error;
+    const result = outcome.result;
     return { conversation_id: c.id, status: 'done', done: result.done.length, failed: result.failed, undoable: result.undo.length > 0, summary: result.text };
   }
   const fields = ids.slice(0, 6).map((id) => {
@@ -1158,6 +1206,10 @@ async function mailAction(hub, args, call) {
 }
 
 // Runs an approved (or auto-approved) mail action, adds a notice to the conversation and returns what happened.
+// How long a mail_action call waits for actions that run without asking: a client gives up on a tool call after
+// 120 s. Past this the call answers that the work goes on; see mailAction().
+const AUTO_MAIL_WAIT_MS = 90000;
+
 async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
   const { engine } = hub;
   const done = [];

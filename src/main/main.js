@@ -26,6 +26,7 @@ const { oneClickUnsubscribe } = require('./net');
 // ---- agents ----
 const { clipboard } = require('electron');
 const { AgentHub } = require('./agents');
+const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
 
 const APP_ID = 'nl.bvdm.rukoo-mail';
@@ -72,6 +73,8 @@ let syncTimer = null;
 let newSinceFocus = 0;
 // ---- agents ----
 let hub = null;
+// Holds the agent events the chat panel must not miss until it listens; see agents/gate.js.
+let agentGate = null;
 // ---- /agents ----
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
@@ -556,6 +559,9 @@ Object.assign(api, {
   agentRemove: (id) => agentHub().remove(agentId(id)),
   agentView: (state) => agentHub().view(agentPlain(state)),
   agentUiReply: (requestId, ok, result) => agentHub().uiReply(agentId(requestId), ok === true, result === undefined ? null : result),
+  agentPanelReady: () => {
+    if (agentGate) agentGate.open();
+  },
   agentUndo: (id, itemId) => agentHub().undo(agentId(id), agentId(itemId)),
   agentPatchItem: (id, itemId, patch) => {
     const p = agentPlain(patch);
@@ -629,6 +635,12 @@ function createWindow() {
   });
   win.on('closed', () => {
     win = null;
+    if (agentGate) agentGate.close();
+  });
+  // A reload starts a new panel, which says again when it listens. Only the page itself counts: an email's frame
+  // loads too, and the panel that opened it keeps listening.
+  win.webContents.on('did-start-navigation', (details) => {
+    if (agentGate && details && details.isMainFrame && !details.isSameDocument) agentGate.close();
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
   reveal(win, b.maximized);
@@ -669,7 +681,8 @@ app.whenReady().then(() => {
       workspace: path.join(app.getPath('userData'), 'agent-workspace')
     }
   });
-  hub.on('event', (payload) => send('agent', payload));
+  agentGate = new PanelGate((payload) => send('agent', payload));
+  hub.on('event', (payload) => agentGate.event(payload));
   if (process.env.SEM_HIDDEN) global.__semAgents = hub;
   hub.start().catch((err) => console.error('[agents] start failed:', err));
   // ---- /agents ----
