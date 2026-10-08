@@ -2308,7 +2308,7 @@
     "description": "Settings, Agents page: row that copies the config block for Hermes."
   },
   "settings.agents.copySetupHelp": {
-    "message": "The block for {name}'s config.yaml, with its access token",
+    "message": "The block for {name}'s config.yaml. It's the same for all your devices.",
     "description": "Settings, Agents page: description of the copy setup row."
   },
   "settings.agents.default": {
@@ -2387,25 +2387,9 @@
     "message": "Let {name} use Rukoo",
     "description": "Settings, Agents page: toggle that lets the remote Hermes agent call Rukoo over Tailscale."
   },
-  "settings.agents.rotate": {
-    "message": "New token",
-    "description": "Settings, Agents page: row and confirm button that replace the access token."
-  },
-  "settings.agents.rotateHelp": {
-    "message": "{name} can't reach Rukoo until you copy the new Hermes setup to its machine.",
-    "description": "Settings, Agents page: confirmation text before replacing the token."
-  },
-  "settings.agents.rotateHint": {
-    "message": "The current setup stops working",
-    "description": "Settings, Agents page: description of the new token row."
-  },
-  "settings.agents.rotateTitle": {
-    "message": "Make a new token?",
-    "description": "Settings, Agents page: confirmation title before replacing the token."
-  },
-  "settings.agents.rotated": {
-    "message": "New token made. Copy the Hermes setup again.",
-    "description": "Settings, Agents page: toast after the token was replaced."
+  "settings.agents.remoteNeedsKey": {
+    "message": "{name} signs in with the API key above. Enter it first.",
+    "description": "Settings, Agents page: note under the remote access toggle when it is on but no Hermes API key is saved; name is the agent."
   },
   "settings.agents.rowDesc": {
     "message": "Default: {name} · {status}",

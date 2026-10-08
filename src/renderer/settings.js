@@ -196,11 +196,12 @@ export function openSettings(ctx, { view: start } = {}) {
       <div class="agent-key-actions"><button class="btn sm" data-a="agent-key-save">${esc(t('settings.agents.keySave'))}</button>${saved ? `<button class="link-btn" data-a="agent-key-cancel">${esc(t('common.actions.cancel'))}</button>` : ''}</div>`;
   };
   // The port the remote listener really got (it moves when the chosen one is taken), the same as in the
-  // copied Hermes setup, with main's note about the move.
+  // copied Hermes setup, with main's note about the move. Clark signs in with the API key, so without one it can't.
   const remoteDesc = () => {
-    const mcp = agentState.config.mcp || {};
+    const { mcp = {}, clark = {} } = agentState.config;
     const url = mcp.address ? esc(`http://${mcp.address}:${mcp.remotePort || mcp.port || mcp.localPort}/mcp`) : esc(t('settings.agents.noAddress'));
-    return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
+    const note = mcp.remote && !clark.hasKey ? t('settings.agents.remoteNeedsKey', { name: agentName(agentState.config, 'clark') }) : mcp.note;
+    return note ? `${url}<span class="agent-note">${esc(note)}</span>` : url;
   };
 
   function agentsHtml() {
@@ -226,7 +227,6 @@ export function openSettings(ctx, { view: start } = {}) {
         </div>
         ${row({ title: t('settings.agents.remote', { name: nameSpan('clark') }), desc: `<span data-agent-address>${remoteDesc()}</span>`, action: 'agent-remote', toggle: Boolean(c.mcp && c.mcp.remote) })}
         ${row({ title: t('settings.agents.copySetup'), desc: t('settings.agents.copySetupHelp', { name: nameSpan('clark') }), action: 'agent-copy-setup' })}
-        ${row({ title: t('settings.agents.rotate'), desc: t('settings.agents.rotateHint'), action: 'agent-rotate' })}
       </div>
       ${head('claude')}
       <div class="card agent-card">
@@ -316,17 +316,6 @@ export function openSettings(ctx, { view: start } = {}) {
           toast(err.message, 5000);
         }
         return;
-      case 'agent-rotate': {
-        const ok = await confirmDialog(t('settings.agents.rotateTitle'), t('settings.agents.rotateHelp', { name: agentName(c, 'clark') }), t('settings.agents.rotate'), true);
-        if (!ok) return;
-        try {
-          await api('agentRotateToken');
-          toast(t('settings.agents.rotated'), 5000);
-        } catch (err) {
-          toast(err.message, 5000);
-        }
-        return;
-      }
       case 'agent-key-replace':
       case 'agent-key-cancel':
         keyEditing = name === 'agent-key-replace';
@@ -353,6 +342,8 @@ export function openSettings(ctx, { view: start } = {}) {
         }
         keyEditing = false;
         page.querySelector('.agent-key-box').innerHTML = keyHtml();
+        const address = page.querySelector('[data-agent-address]');
+        if (address) address.innerHTML = remoteDesc();
         toast(t('settings.agents.keyStored'));
         return testAgent('clark');
       }

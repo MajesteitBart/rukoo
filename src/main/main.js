@@ -24,7 +24,7 @@ const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
 // ---- agents ----
-const { clipboard } = require('electron');
+const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
@@ -547,7 +547,6 @@ Object.assign(api, {
   agentTest: (agent) => agentHub().test(agentId(agent)),
   agentStatus: () => agentHub().status(),
   agentCopyHermesSetup: () => agentHub().copyHermesSetup(),
-  agentRotateToken: () => agentHub().rotateToken(),
   agentList: () => agentHub().list(),
   agentGet: (id) => agentHub().get(agentId(id)),
   agentFindFor: (ref) => {
@@ -695,6 +694,8 @@ app.whenReady().then(() => {
       openMailto: (url) => openUrl(url),
       appVersion: app.getVersion(),
       clipboard,
+      // With Rukoo open on several devices, Clark's bridge picks the one the user touched last.
+      idleSeconds: () => powerMonitor.getSystemIdleTime(),
       hasWindow: () => Boolean(win && !win.isDestroyed()),
       workspace: path.join(app.getPath('userData'), 'agent-workspace')
     }

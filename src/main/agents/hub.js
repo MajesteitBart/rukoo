@@ -142,7 +142,7 @@ class AgentHub extends EventEmitter {
     this.started = true;
     this.cfg.load();
     this.load();
-    if (this.cfg.data.mcp.remoteToken) this.remoteHash = sha256(this.cfg.remoteToken());
+    this.refreshRemoteHash();
     this.sweepTemp();
     this.registerAdapters();
     try {
@@ -273,8 +273,6 @@ class AgentHub extends EventEmitter {
     this.cfg.runtime.remotePort = null;
     const { remote, remoteHost, port } = this.cfg.data.mcp;
     if (!remote) return;
-    this.cfg.remoteToken();
-    this.remoteHash = sha256(this.cfg.remoteToken());
     const detected = tailscaleAddress(this.cfg.interfaces);
     const literal = /^\d+\.\d+\.\d+\.\d+$/.test(remoteHost);
     const host = literal ? remoteHost : detected || remoteHost;
@@ -1319,6 +1317,33 @@ class AgentHub extends EventEmitter {
     return found ? { ...found } : null;
   }
 
+  // Clark's bridge looks for Rukoo on every device in the tailnet and only sends its token to one that proves it
+  // has the same key. Keyed with the token's hash and its own prefix, the proof never gives the token away. It
+  // covers the address this Rukoo took the connection on, so a listener elsewhere that relays the challenge here
+  // gets a proof for this address, not its own.
+  proof(challenge, endpoint) {
+    if (!this.remoteHash || !endpoint) return '';
+    return crypto.createHmac('sha256', this.remoteHash).update(`rukoo-proof:${endpoint}:${challenge}`).digest('base64url');
+  }
+
+  // What the bridge needs to pick a device: whether this Rukoo has the chat, and how long the user has been away.
+  hello(identity, params = {}) {
+    const id = typeof params.conversation_id === 'string' ? params.conversation_id : '';
+    const c = id ? this.conversations.get(id) : null;
+    let idle = null;
+    try {
+      idle = this.deps.idleSeconds ? Number(this.deps.idleSeconds()) : null;
+    } catch (_) {
+      idle = null;
+    }
+    return {
+      device: os.hostname(),
+      version: this.deps.appVersion || '0.0.0',
+      idle: Number.isFinite(idle) ? idle : null,
+      owns: Boolean(c && identity && c.agent === identity.agent)
+    };
+  }
+
   mapThread(threadId, cid) {
     if (threadId && this.conversations.has(cid)) this.threads.set(String(threadId), cid);
   }
@@ -1453,20 +1478,19 @@ class AgentHub extends EventEmitter {
 
   setSecret(agent, value) {
     this.cfg.setSecret(agent, value);
+    // A new key means a new token for Clark's bridge, and the old one stops working.
+    this.refreshRemoteHash();
     this.configChanged();
     return this.config();
   }
 
-  rotateToken() {
-    const token = this.cfg.rotateRemoteToken();
-    this.remoteHash = sha256(token);
-    return this.config();
+  refreshRemoteHash() {
+    const token = this.cfg.remoteToken();
+    this.remoteHash = token ? sha256(token) : null;
   }
 
   copyHermesSetup() {
-    const text = this.cfg.hermesSetup();
-    this.remoteHash = sha256(this.cfg.remoteToken());
-    if (this.deps.clipboard) this.deps.clipboard.writeText(text);
+    if (this.deps.clipboard) this.deps.clipboard.writeText(this.cfg.hermesSetup());
     return true;
   }
 

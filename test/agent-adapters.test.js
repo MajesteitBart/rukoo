@@ -6,6 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { PassThrough } = require('stream');
 
 const { SseParser, readSse } = require('../src/main/agents/sse');
@@ -13,6 +14,9 @@ const { cleanEnv, readJsonLines, readLines, start, killTree } = require('../src/
 const { HermesAdapter } = require('../src/main/agents/hermes');
 const { ClaudeAdapter, toolDetail, approvalFields } = require('../src/main/agents/claude');
 const { CodexAdapter, stripShell } = require('../src/main/agents/codex');
+const { McpServer } = require('../src/main/agents/mcp');
+const { AgentHub } = require('../src/main/agents/hub');
+const { remoteTokenFor } = require('../src/main/agents/config');
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'agents');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1165,34 +1169,89 @@ function findPython() {
   return null;
 }
 
-test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo is away', async (t) => {
+// A Rukoo on one device: the real MCP server, with the hub's own code for signing in, the proof and hello.
+async function fakeRukoo({ key, idle = 0, chats = [] }) {
+  const token = remoteTokenFor(key);
+  const seen = [];
+  const calls = [];
+  const hub = {
+    tokens: [],
+    remoteHash: token ? crypto.createHash('sha256').update(token).digest() : null,
+    conversations: new Map(chats.map((id) => [id, { id, agent: 'clark' }])),
+    deps: { idleSeconds: () => idle },
+    identify(t) {
+      return AgentHub.prototype.identify.call(this, t);
+    },
+    proof(challenge, endpoint) {
+      return AgentHub.prototype.proof.call(this, challenge, endpoint);
+    },
+    hello(identity, params) {
+      return AgentHub.prototype.hello.call(this, identity, params);
+    },
+    listTools: () => [{ name: 'get_context', inputSchema: { type: 'object' } }],
+    async callTool(identity, name, args) {
+      calls.push({ name, args });
+      // A mail action that takes Rukoo a while.
+      if (name === 'mail_action') await sleep(1500);
+      return { content: [{ type: 'text', text: `ok ${name} één` }] };
+    }
+  };
+  const server = new McpServer({ hub });
+  const handle = server.handle.bind(server);
+  server.handle = (entry, req, res) => {
+    seen.push(req.headers.authorization || null);
+    return handle(entry, req, res);
+  };
+  const port = await server.listen({ host: '127.0.0.1', port: 0, remote: true });
+  return { url: `http://127.0.0.1:${port}/mcp`, seen, calls, close: () => server.close() };
+}
+
+test('hermes bridge: picks the right device, sends the token only to Rukoo with the key, and copes when Rukoo is away', async (t) => {
   const python = findPython();
   if (!python) return t.skip('no Python 3.8+ on PATH');
   const { spawn } = require('child_process');
-  const calls = [];
-  const rukoo = http.createServer((req, res) => {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', () => {
-      const msg = JSON.parse(body);
-      calls.push({ auth: req.headers.authorization, msg });
-      res.writeHead(req.headers.authorization === 'Bearer good' ? 200 : 401, { 'Content-Type': 'application/json' });
-      if (req.headers.authorization !== 'Bearer good') return res.end('{"error":"unauthorized"}');
-      if (msg.method === 'tools/list') return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'get_context', inputSchema: { type: 'object' } }] } }));
-      const reply = () => res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `ok ${msg.params.name} één` }] } }));
-      // A mail action that takes Rukoo a while.
-      if (msg.params.name === 'mail_action') return void setTimeout(reply, 1500);
-      reply();
+  // The laptop has the chat and the desktop was used last. One device has another key, one runs a Rukoo from
+  // before the challenge, and one isn't Rukoo.
+  const laptop = await fakeRukoo({ key: 'hermes-key', idle: 300, chats: ['c_laptop'] });
+  const desktop = await fakeRukoo({ key: 'hermes-key', idle: 5 });
+  const other = await fakeRukoo({ key: 'another-key' });
+  const plain = async (status, body) => {
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push(req.headers.authorization || null);
+      req.resume();
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(body);
     });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return { server, seen, url: `http://127.0.0.1:${server.address().port}/mcp` };
+  };
+  const outdated = await plain(401, '{"error":"unauthorized"}');
+  // A listener that passes each challenge on to the genuine desktop Rukoo and returns its proof.
+  const relayAuth = [];
+  const relay = http.createServer((req, res) => {
+    relayAuth.push(req.headers.authorization || null);
+    req.resume();
+    const forward = http.request(desktop.url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-rukoo-challenge': req.headers['x-rukoo-challenge'] || '' } }, (answer) => {
+      answer.resume();
+      res.writeHead(401, { 'Content-Type': 'application/json', ...(answer.headers['x-rukoo-proof'] ? { 'X-Rukoo-Proof': answer.headers['x-rukoo-proof'] } : {}) });
+      res.end('{"error":"unauthorized"}');
+    });
+    forward.on('error', () => res.end());
+    forward.end('{"jsonrpc":"2.0","id":0,"method":"ping"}');
   });
-  await new Promise((r) => rukoo.listen(0, '127.0.0.1', r));
-  // Also when an assertion fails before the test closes it on purpose.
-  t.after(() => rukoo.listening && (rukoo.closeAllConnections(), rukoo.close()));
-  const url = `http://127.0.0.1:${rukoo.address().port}/mcp`;
+  await new Promise((r) => relay.listen(0, '127.0.0.1', r));
+  const stranger = await plain(404, '{"error":"not found"}');
+  // Also when an assertion fails before the test closes them on purpose.
+  t.after(async () => {
+    for (const rukoo of [laptop, desktop, other]) await rukoo.close();
+    for (const server of [outdated.server, stranger.server, relay]) if (server.listening) server.close();
+  });
+  const urls = [laptop.url, desktop.url, other.url, outdated.url, stranger.url, `http://127.0.0.1:${relay.address().port}/mcp`, `${await closedPort()}/mcp`];
   const cache = path.join(tmp('bridge'), 'tools.json');
-  const start = (token) => {
+  const start = (key) => {
     const child = spawn(python, [path.join(__dirname, '..', 'integrations', 'hermes', 'rukoo_bridge.py')], {
-      env: { ...process.env, RUKOO_URL: url, RUKOO_TOKEN: token, RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, RUKOO_KEY: key, RUKOO_URL: urls.join(', '), RUKOO_DISCOVER: '0', RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8' },
       windowsHide: true
     });
     const replies = [];
@@ -1205,7 +1264,7 @@ test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo i
     };
     return { child, ask, replies, tell: (msg) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n') };
   };
-  const b = start('good');
+  const b = start('hermes-key');
   t.after(() => b.child.kill());
   const init = await b.ask({ id: 0, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
   assert.equal(init.result.protocolVersion, '2025-11-25');
@@ -1213,11 +1272,23 @@ test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo i
   b.tell({ method: 'notifications/initialized' });
   assert.deepEqual((await b.ask({ id: 1, method: 'ping' })).result, {});
   assert.equal((await b.ask({ id: 2, method: 'tools/list' })).result.tools[0].name, 'get_context');
-  const call = await b.ask({ id: 3, method: 'tools/call', params: { name: 'get_context', arguments: { conversation_id: 'c_1' } } });
-  assert.equal(call.result.content[0].text, 'ok get_context één');
-  assert.equal((await b.ask({ id: 4, method: 'resources/list' })).error.code, -32601);
-  // Only the two real requests reached Rukoo; the handshake and ping were answered locally.
-  assert.deepEqual(calls.map((c) => c.msg.method), ['tools/list', 'tools/call']);
+  const onLaptop = await b.ask({ id: 3, method: 'tools/call', params: { name: 'get_context', arguments: { conversation_id: 'c_laptop' } } });
+  assert.equal(onLaptop.result.content[0].text, 'ok get_context één');
+  assert.deepEqual(laptop.calls.map((c) => c.args.conversation_id), ['c_laptop'], 'a call about a chat goes to the device that has it');
+  await b.ask({ id: 4, method: 'tools/call', params: { name: 'search_mail', arguments: {} } });
+  await b.ask({ id: 5, method: 'tools/call', params: { name: 'show_plan', arguments: { conversation_id: 'c_gone' } } });
+  assert.deepEqual(desktop.calls.map((c) => c.name), ['search_mail', 'show_plan'], 'anything else goes to the device used last');
+  assert.equal(laptop.calls.length, 1);
+  assert.equal((await b.ask({ id: 6, method: 'resources/list' })).error.code, -32601);
+  // The token only went to the Rukoos that proved they have the key.
+  const bearer = `Bearer ${remoteTokenFor('hermes-key')}`;
+  assert.ok(laptop.seen.includes(bearer) && desktop.seen.includes(bearer));
+  assert.deepEqual([...new Set(other.seen)], [null], 'the Rukoo with another key only got the challenge');
+  assert.deepEqual([...new Set(outdated.seen)], [null]);
+  assert.deepEqual([...new Set(stranger.seen)], [null]);
+  assert.ok(relayAuth.length > 0, 'the relay was tried');
+  assert.deepEqual([...new Set(relayAuth)], [null], 'a relayed proof gets no token');
+
   // Two calls at once: the quick one does not wait for the slow one before it.
   const before = b.replies.length;
   b.tell({ id: 10, method: 'tools/call', params: { name: 'mail_action', arguments: {} } });
@@ -1225,7 +1296,7 @@ test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo i
   await waitFor(() => b.replies.length >= before + 2, 15000);
   assert.deepEqual(b.replies.slice(before).map((r) => r.id), [11, 10]);
   // Hermes closes stdin while a call is under way: the call still gets its answer before the bridge exits.
-  const closing = start('good');
+  const closing = start('hermes-key');
   t.after(() => closing.child.kill());
   const exited = new Promise((r) => closing.child.on('exit', r));
   closing.tell({ id: 20, method: 'tools/call', params: { name: 'mail_action', arguments: {} } });
@@ -1234,11 +1305,62 @@ test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo i
   assert.deepEqual(closing.replies.map((r) => r.id), [20]);
   assert.ok(JSON.parse(fs.readFileSync(cache, 'utf8'))[0].name === 'get_context');
 
-  await new Promise((r) => (rukoo.closeAllConnections(), rukoo.close(r)));
-  assert.equal((await b.ask({ id: 5, method: 'tools/list' })).result.tools[0].name, 'get_context', 'served from the cache');
-  const away = await b.ask({ id: 6, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+  // A bridge with an old key or none finds no Rukoo it can use, and the agent hears why.
+  const old = start('old-key');
+  t.after(() => old.child.kill());
+  const refused = await old.ask({ id: 30, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+  assert.equal(refused.result.isError, true);
+  assert.match(refused.result.content[0].text, /open on 127\.0\.0\.1, but doesn't have your current API server key/);
+  const keyless = start('');
+  t.after(() => keyless.child.kill());
+  const nokey = await keyless.ask({ id: 31, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+  assert.match(nokey.result.content[0].text, /has no key.*RUKOO_KEY: \$\{API_SERVER_KEY\}/);
+
+  // Only the outdated Rukoo is left: the tools come from the cache, and a call says it needs updating.
+  for (const rukoo of [laptop, desktop, other]) await rukoo.close();
+  assert.equal((await b.ask({ id: 7, method: 'tools/list' })).result.tools[0].name, 'get_context', 'served from the cache');
+  const outdatedOnly = await b.ask({ id: 8, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+  assert.equal(outdatedOnly.result.isError, true);
+  assert.match(outdatedOnly.result.content[0].text, /open on 127\.0\.0\.1, but that version is too old.*install the latest Rukoo/);
+  // Rukoo closes everywhere.
+  await new Promise((r) => outdated.server.close(r));
+  const away = await b.ask({ id: 9, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
   assert.equal(away.result.isError, true);
-  assert.match(away.result.content[0].text, /isn't running on the desktop/);
+  assert.match(away.result.content[0].text, /isn't open on any of the user's devices.*Checked: 127\.0\.0\.1\./);
+  assert.deepEqual([...new Set(outdated.seen)], [null], 'no token for an outdated Rukoo either');
+});
+
+test('hermes bridge: looks for Rukoo only on online Windows and Mac devices of the tailnet', (t) => {
+  const python = findPython();
+  if (!python) return t.skip('no Python 3.8+ on PATH');
+  const { spawnSync } = require('child_process');
+  const peer = (HostName, OS, TailscaleIPs, extra = {}) => ({ HostName, OS, TailscaleIPs, Online: true, ...extra });
+  const status = {
+    Self: peer('this-pc', 'windows', ['100.64.0.2']),
+    Peer: {
+      a: peer('laptop', 'windows', ['100.64.0.3', 'fd7a:115c:a1e0::1']),
+      b: peer('desk-pc', 'windows', ['100.64.0.4'], { Online: false }),
+      c: peer('MacBook', 'macOS', ['fd7a:115c:a1e0::2', '100.64.0.9']),
+      d: peer('mail-server', 'linux', ['100.64.0.5']),
+      e: peer('phone', 'android', ['100.64.0.6']),
+      f: peer('funnel-ingress-node', '', ['fd7a:115c:a1e0::3'], { Tags: ['tag:ingress'] }),
+      g: peer('build-box', 'windows', ['100.64.0.10'], { Tags: ['tag:server'] }),
+      h: peer('friends-pc', 'windows', ['100.64.0.11'], { ShareeNode: true })
+    }
+  };
+  const code = 'import json, sys; sys.path.insert(0, sys.argv[1]); import rukoo_bridge as b; print(json.dumps(b.tailnet_devices(json.load(sys.stdin))))';
+  const r = spawnSync(python, ['-c', code, path.join(__dirname, '..', 'integrations', 'hermes')], {
+    input: JSON.stringify(status),
+    encoding: 'utf8',
+    env: { ...process.env, RUKOO_PORT: '47801', PYTHONDONTWRITEBYTECODE: '1' },
+    windowsHide: true
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), [
+    ['this-pc', 'http://100.64.0.2:47801/mcp'],
+    ['laptop', 'http://100.64.0.3:47801/mcp'],
+    ['MacBook', 'http://100.64.0.9:47801/mcp']
+  ]);
 });
 
 test('hermes: Stop during the session lookup submits no run', async () => {
