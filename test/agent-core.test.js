@@ -498,6 +498,32 @@ test('agent events the chat panel must not miss wait in main until it listens, i
   assert.deepEqual(sent.map((p) => p.conversationId || p.requestId), ['c3', 'c3', 'u3']);
 });
 
+test('an approval that waits in main for the panel is replaced by its update, or dropped once it no longer waits', () => {
+  const { PanelGate } = require('../src/main/agents/gate');
+  const sent = [];
+  const gate = new PanelGate((p) => sent.push(p));
+  const approval = (id, status, title = 'Run a command') => ({ kind: 'item', conversationId: 'c1', item: { id, type: 'approval', status, title } });
+  gate.event(approval('a1', 'pending'));
+  gate.event(approval('a2', 'pending'));
+  gate.event({ kind: 'reveal', conversationId: 'c1' });
+  // a1 expires before the panel listens; a2 changes and still waits; a3 in another chat has the same id as nothing.
+  gate.event(approval('a1', 'expired'));
+  gate.event(approval('a2', 'pending', 'Run another command'));
+  gate.event({ ...approval('a1', 'pending'), conversationId: 'c2' });
+  assert.deepEqual(sent.map((p) => p.item.status), ['expired'], 'the update itself goes out as before');
+  sent.length = 0;
+  gate.open();
+  assert.deepEqual(
+    sent.map((p) => [p.kind, p.conversationId, p.item && p.item.id, p.item && p.item.title]),
+    [
+      ['item', 'c1', 'a2', 'Run another command'],
+      ['reveal', 'c1', undefined, undefined],
+      ['item', 'c2', 'a1', 'Run a command']
+    ],
+    'no stale request for the user, and the newer version in the place of the older'
+  );
+});
+
 test('a request for the composer carries its deadline, and one the panel only gets after it is skipped', async () => {
   // A browser module in a CommonJS package: Node takes it as ESM from a data: URL.
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/agent/expired.js'), 'utf8');
@@ -629,6 +655,48 @@ test('every mail decision reaches the next message, also one made while it waits
     assert.equal((input.match(/The user approved: /g) || []).length, 2);
     assert.equal((input.match(/The user declined: /g) || []).length, 1);
     assert.equal((input.match(/Archived 1 email/g) || []).length, 2);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('undo waits its turn on the mail chain, and the next message waits for it', async () => {
+  const env = await demo();
+  const inputs = [];
+  const adapter = {
+    async status() {
+      return { state: 'ready' };
+    },
+    async runTurn(turn) {
+      inputs.push(turn.input);
+      return { status: 'done' };
+    },
+    async dispose() {}
+  };
+  const { hub } = fakeHub(env, { adapters: { claude: adapter } });
+  await hub.start();
+  try {
+    hub.cfg.data.autoMailActions = true;
+    const c = hub.create({ agent: 'claude', message: null });
+    const local = { agent: 'claude', conversationId: c.id, remote: false };
+    const [a, b] = env.engine.listMessages({ view: 'inbox' }).slice(0, 2);
+    await hub.callTool(local, 'mail_action', { action: 'archive', message_ids: [a.id] });
+    const notice = c.items.find((i) => i.type === 'notice' && i.undo);
+    const log = [];
+    const archive = env.engine.archive.bind(env.engine);
+    const undoMove = env.engine.undoMove.bind(env.engine);
+    env.engine.archive = async (id) => (log.push('archive'), await new Promise((r) => setTimeout(r, 150)), archive(id));
+    env.engine.undoMove = async (id) => (log.push('undo'), await new Promise((r) => setTimeout(r, 150)), undoMove(id));
+    // An archive still runs when the user clicks Undo on the earlier one, then writes at once.
+    const later = hub.callTool(local, 'mail_action', { action: 'archive', message_ids: [b.id] });
+    const undone = hub.undo(c.id, notice.id);
+    hub.send(c.id, { text: 'What now?' });
+    await idle(hub, c.id);
+    assert.deepEqual(log, ['archive', 'undo'], 'one after the other, in the order asked');
+    assert.match(inputs.at(-1), /The user undid .*Archived 1 email.*Restored 1 email/s);
+    assert.deepEqual(await undone, { restored: 1, failed: 0 });
+    await later;
   } finally {
     await hub.dispose();
     await env.engine.close();
@@ -1490,6 +1558,22 @@ test('context: email text on Rukoo lines is tagged unsafe and one line, so it ca
   ]);
 });
 
+test('context: a long note is cut without leaving an unsafe block open, and two quoted values fit whole', () => {
+  const action = context.unsafeInline('a'.repeat(400), 'mail action');
+  const result = context.unsafeInline('b'.repeat(400), 'mail result');
+  const twice = `The user approved: ${action}. Rukoo: ${result}.`;
+  const third = `${twice} Then: ${context.unsafeInline('c'.repeat(400), 'mail result')}.`;
+  const text = context.turnText({ conversation: { id: 'c_1', message: null }, text: 'Next', firstTurn: false, notes: [twice, third] });
+  const [, whole, cut] = text.split('\n');
+  assert.equal(whole, `Since your last turn: ${twice}`);
+  const opens = (s) => (s.match(/<unsafe_content[\s>]/g) || []).length;
+  const closes = (s) => (s.match(/<\/unsafe_content>/g) || []).length;
+  assert.ok(cut.length < `Since your last turn: ${third}`.length, 'the third value does not fit');
+  assert.equal(opens(cut), closes(cut), cut.slice(-80));
+  assert.ok(cut.endsWith('</unsafe_content>'));
+  assert.equal(text.split('\n').at(-1), 'Next');
+});
+
 // ---------- labels and markdown ----------
 
 test('tool labels: Rukoo tools, other MCP servers, commands and raw names', () => {
@@ -1691,6 +1775,19 @@ test('the same email in two accounts has its own chats, and recovery after a mov
     // The chat's own id went stale (the email moved): Rukoo looks for it again, in that account only.
     chat.message.id = encodeId(second.id, 'INBOX', 999999);
     assert.equal(await hub.currentMessageId(chat), b.id);
+
+    // An agent that passes the header names no account, so neither copy is read or changed.
+    const local = { agent: 'claude', conversationId: chat.id, remote: false };
+    for (const [name, args] of [
+      ['read_message', { message_id: header }],
+      ['mail_action', { action: 'archive', message_ids: [header] }]
+    ]) {
+      const res = await hub.callTool(local, name, args);
+      assert.equal(res.isError, true, name);
+      assert.match(res.content[0].text, /More than one account has the email .*other@example\.com.*Pass the Rukoo id/s);
+    }
+    assert.equal(chat.items.filter((i) => i.type === 'approval').length, 0);
+    assert.ok(env.engine.listMessages({ scope: 'all', view: 'inbox' }).filter((m) => m.subject === 'Call on Thursday').length === 2);
   } finally {
     await hub.dispose();
     await env.engine.close();

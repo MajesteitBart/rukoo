@@ -472,8 +472,17 @@ function resolveId(hub, value, { allowSaved = true } = {}) {
     throw new ToolError(`${unsafeValue(v)} is a copy saved on this device; it cannot be changed with mail_action.`);
   }
   if (cacheMessage(engine, v)) return v;
-  const byHeader = v.includes('@') ? findByMessageId(engine, v) : null;
-  if (byHeader) return byHeader;
+  if (v.includes('@')) {
+    // The same email can be in several accounts (mail between your own addresses, a forward to yourself). A
+    // header names no account, so with more than one copy only the Rukoo id says which one is meant.
+    const hits = engine.accounts.map((acc) => ({ acc, id: findByMessageId(engine, v, acc.id) })).filter((h) => h.id);
+    if (hits.length > 1) {
+      const err = new ToolError(`More than one account has the email with Message-ID ${unsafeValue(v)} (${hits.map((h) => h.acc.email).join(', ')}). Pass the Rukoo id of the copy you mean; search_mail and get_context list them.`);
+      err.ambiguous = true;
+      throw err;
+    }
+    if (hits.length) return hits[0].id;
+  }
   throw new ToolError(`No email with id ${unsafeValue(v)}. Ids change when mail moves; use search_mail or get_context for current ids.`);
 }
 
@@ -1102,7 +1111,9 @@ async function mailAction(hub, args, call) {
   for (const v of [...new Set(args.message_ids)]) {
     try {
       ids.push(resolveId(hub, v, { allowSaved: false }));
-    } catch (_) {
+    } catch (err) {
+      // An email in more than one account is not unknown: say which accounts have it.
+      if (err && err.ambiguous) throw err;
       bad.push(v);
     }
   }

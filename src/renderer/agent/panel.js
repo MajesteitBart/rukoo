@@ -1215,8 +1215,10 @@ export function mountAgentPanel(ctx) {
       // This chat's agent wrote what is there, even if the user changed it since.
       const mine = Boolean(d.agent && (cid && d.agent.conversationId ? d.agent.conversationId === cid : d.agent.name === name));
       // The user's own words, saved or not: what they typed since the composer opened, a draft they reopened,
-      // or an agent draft they changed since.
-      const theirs = d.agent ? Boolean(d.agent.edited) : Boolean(d.userEdited || d.mode === 'draft');
+      // or an agent draft they changed since. An address they are still typing counts too, though it is no
+      // recipient yet (and no edit until they finish it).
+      const typing = Object.values(d.pendingRecipients || {}).some(Boolean);
+      const theirs = typing || (d.agent ? Boolean(d.agent.edited) : Boolean(d.userEdited || d.mode === 'draft'));
       const fit = await fits(d, id, mode, args, mine, theirs);
       // A reopened draft keeps no record of whether it was a reply or a reply-all, so recipients the agent
       // left out are set for the mode it asked for: a private reply never keeps the old Cc.
@@ -1228,7 +1230,9 @@ export function mountAgentPanel(ctx) {
       }
       // Everything above may have waited. If the composer, its contents or the panel changed in the
       // meantime, decide again; nothing below waits before the write.
-      if (S.composer !== c || c.getDraft().revision !== d.revision || isBackground() !== background) {
+      const now = S.composer === c ? c.getDraft() : null;
+      const pending = (x) => JSON.stringify(x.pendingRecipients || {});
+      if (!now || now.revision !== d.revision || pending(now) !== pending(d) || isBackground() !== background) {
         if (attempt < 2) return writeDraft(args, attempt + 1);
         throw busy();
       }

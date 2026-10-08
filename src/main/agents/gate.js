@@ -11,6 +11,13 @@ function held(payload) {
   return kind === 'reveal' || kind === 'ui' || (kind === 'item' && Boolean(item) && item.type === 'approval' && item.status === 'pending');
 }
 
+// Where an earlier version of this approval waits, or -1.
+function approvalAt(waiting, payload) {
+  const item = payload && payload.kind === 'item' ? payload.item : null;
+  if (!item || item.type !== 'approval') return -1;
+  return waiting.findIndex((p) => p.kind === 'item' && p.conversationId === payload.conversationId && p.item && p.item.id === item.id);
+}
+
 class PanelGate {
   constructor(send, max = 500) {
     this.send = send;
@@ -20,7 +27,15 @@ class PanelGate {
   }
 
   event(payload) {
-    if (this.listening || !held(payload)) return this.send(payload);
+    if (this.listening) return this.send(payload);
+    // A later update of an approval that waits here takes its place: still pending, it waits as the newer
+    // version; answered, expired or withdrawn, it no longer waits, so the panel is not told it needs the user.
+    const at = approvalAt(this.waiting, payload);
+    if (at >= 0) {
+      if (held(payload)) return void (this.waiting[at] = payload);
+      this.waiting.splice(at, 1);
+    }
+    if (!held(payload)) return this.send(payload);
     if (this.waiting.length >= this.max) this.waiting.shift();
     this.waiting.push(payload);
   }

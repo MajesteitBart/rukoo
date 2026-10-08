@@ -1219,22 +1219,33 @@ class AgentHub extends EventEmitter {
     const ids = item.undo.ids || [];
     item.undo = null;
     this.updateItem(c, item);
-    let restored = 0;
-    const failed = [];
-    for (const id of ids) {
-      try {
-        await this.engine.undoMove(id);
-        restored++;
-      } catch (err) {
-        failed.push(err.message);
-      }
-    }
-    const text = failed.length
-      ? `Restored ${restored} of ${ids.length} email${ids.length === 1 ? '' : 's'}. ${failed[0]}`
-      : `Restored ${restored} email${restored === 1 ? '' : 's'}`;
-    this.addItem(c, { type: 'notice', text, tone: failed.length && !restored ? 'error' : 'info', code: null, undo: null, mail: { action: 'undo', count: restored, failed: failed.length, folder: null } });
-    c.notes.push(`The user undid ${context.unsafeInline(item.text, 'mail result')}. ${text}.`);
-    return { restored, failed: failed.length };
+    // On the mail chain like any other mail work: after what was asked for before it, and the next message
+    // waits for it, so the agent hears about the undo before it looks at the mail again.
+    let out = { restored: 0, failed: ids.length };
+    await this.settleMail(
+      c,
+      async () => {
+        let restored = 0;
+        const failed = [];
+        for (const id of ids) {
+          try {
+            await this.engine.undoMove(id);
+            restored++;
+          } catch (err) {
+            failed.push(err.message);
+          }
+        }
+        const text = failed.length
+          ? `Restored ${restored} of ${ids.length} email${ids.length === 1 ? '' : 's'}. ${failed[0]}`
+          : `Restored ${restored} email${restored === 1 ? '' : 's'}`;
+        this.addItem(c, { type: 'notice', text, tone: failed.length && !restored ? 'error' : 'info', code: null, undo: null, mail: { action: 'undo', count: restored, failed: failed.length, folder: null } });
+        c.notes.push(`The user undid ${context.unsafeInline(item.text, 'mail result')}. ${text}.`);
+        this.touch(c);
+        out = { restored, failed: failed.length };
+      },
+      `Undo: ${item.text}`
+    );
+    return out;
   }
 
   // ---------- tokens and identities ----------

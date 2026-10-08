@@ -694,6 +694,26 @@ test('the panel takes a new default agent at once, before slow status probes ans
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude', { timeout: 1500 });
 });
 
+test('a chat that is not on screen leaves a reply alone while you are still typing an address', async () => {
+  await openChat('Call on Thursday');
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked', { timeout: 10000 });
+  const cid = await conversationId();
+  await win.keyboard.press('Control+j');
+  await expect(pane()).toBeHidden();
+  // The reply this chat would fit, untouched but for an address that is not finished yet.
+  await win.click('[data-reader="reply"]');
+  const to = win.locator('.composer [data-rinput="to"]');
+  await to.click();
+  await win.keyboard.type('pieter@exa');
+  const res = await tool(cid, 'write_draft', { to: ['joris@example.com'], body: 'Agent text.' });
+  expect(res.error).toContain('writing another email');
+  await expect(to).toHaveValue('pieter@exa');
+  await expect(to).toBeFocused();
+  await expect(win.locator('.composer [data-rfield="to"] .recipient')).toHaveText(['Sanne de Vries']);
+  await expect(editor()).not.toContainText('Agent text.');
+});
+
 test('a chat that is not on screen leaves an unrelated reply alone, even an empty one', async () => {
   await openChat('Call on Thursday');
   await say('Hello there');

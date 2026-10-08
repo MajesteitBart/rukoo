@@ -111,6 +111,9 @@ function clipTagged(text, max) {
   return '';
 }
 
+// A note can quote two values of up to 300 characters each (an action and its result) with their tags.
+const NOTE_MAX = 1000;
+
 // message: the full message from engine.getMessage. extras: {account (email), folder}.
 function emailBlock(message, { account = '', folder = '' } = {}) {
   const m = message || {};
@@ -143,8 +146,9 @@ function turnText({ conversation, text, firstTurn, notes = [], message = null, o
   const id = conversation.id;
   const out = [];
   // Notes are Rukoo's own lines; what they quote from email is already inside <unsafe_content> where the note
-  // is made. One line each, so none can forge another.
-  const noteLines = (notes || []).filter(Boolean).map((n) => `Since your last turn: ${String(n).replace(/[\r\n]+/g, ' ').slice(0, 600)}`);
+  // is made. One line each, so none can forge another, and cut without leaving a block open, so what follows a
+  // note is never read as email.
+  const noteLines = (notes || []).filter(Boolean).map((n) => `Since your last turn: ${clipTagged(String(n).replace(/[\r\n]+/g, ' '), NOTE_MAX)}`);
   if (firstTurn) {
     out.push(`[Rukoo conversation ${id}. Pass conversation_id "${id}" to rukoo tools.]`);
     out.push(`[Today is ${longDate(now)} local time.]`);
