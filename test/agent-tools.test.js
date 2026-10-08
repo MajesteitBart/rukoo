@@ -1149,7 +1149,7 @@ test('a source card finds its email in a folder that was never opened, after Ruk
     assert.equal(decodeId(later).folder, 'Invoices');
     const back = await t.engine.undoMove(now);
     assert.equal(decodeId(back).folder, 'Travel');
-    assert.deepEqual(cache.moves.filter((m) => m.id === 'demo-13@example.com'), [{ id: 'demo-13@example.com', folder: 'Travel' }]);
+    assert.deepEqual(cache.moves.filter((m) => m.id === 'demo-13@example.com'), [{ id: 'demo-13@example.com', folder: 'Travel', past: ['INBOX', 'Invoices'] }]);
     assert.equal(await t.hub.locate(ref), back);
     // Another account never finds this account's move.
     assert.equal(await t.hub.locate({ ...ref, accountId: 'acc-other' }), null);
@@ -1176,18 +1176,25 @@ test('a chat finds its own email after Rukoo moved it into a folder that was nev
   }
 });
 
-test('a saved copy the user deleted is reported as gone to its source card and its chat', async () => {
+test('a source card for a deleted saved copy finds the email in the mailbox; a chat without its header reports it gone', async () => {
   const t = await setup();
   try {
     const call = t.find('Call on Thursday');
     const savedId = await t.engine.saveToDevice(call.id);
+    const entry = t.engine.saved.find((s) => s.id === savedId);
+    assert.equal(entry.messageId, '<demo-13@example.com>', 'the saved list keeps the header');
+    // A copy saved before Rukoo kept the header: the card reads it from the file; the chat cannot know it.
+    delete entry.messageId;
     const c = t.hub.create({ agent: 'claude', message: { id: savedId, subject: 'Call on Thursday' } });
     data(await t.hub.callTool(local(c.id), 'show_sources', { sources: [{ title: 'Sanne', message_id: savedId }] }));
     const source = c.items.find((i) => i.type === 'sources').sources[0];
+    assert.equal(source.messageHeader, '<demo-13@example.com>');
+    assert.equal(source.accountId, t.acc.id);
     const ref = { id: source.messageId, messageHeader: source.messageHeader, accountId: source.accountId };
     assert.equal(await t.hub.locate(ref), savedId);
     t.engine.deleteSaved(savedId);
-    assert.equal(await t.hub.locate(ref), null, 'the card says the email is gone instead of opening a stale id');
+    assert.equal(await t.hub.locate(ref), call.id, 'the card finds the email in the mailbox, as after a move');
+    // The chat has no header to look for: it says the email is gone instead of opening a stale id.
     const ctx = data(await t.hub.callTool(local(c.id), 'get_context', {}));
     assert.equal(ctx.chat_message, null);
     assert.equal(ctx.chat_message_missing, true);
@@ -1199,6 +1206,64 @@ test('a saved copy the user deleted is reported as gone to its source card and i
     // A chat that knows the Message-ID finds the email in its account's mailbox, as after a move.
     const known = t.hub.create({ agent: 'claude', message: { id: savedId, messageId: '<demo-13@example.com>', accountId: t.acc.id } });
     assert.equal(await t.hub.currentMessageId(known), call.id);
+    // A copy saved now keeps the header, so a chat started on it knows it too.
+    const again = await t.engine.saveToDevice(call.id);
+    const fresh = t.hub.create({ agent: 'claude', message: { id: again } });
+    assert.equal(fresh.message.messageId, '<demo-13@example.com>');
+    t.engine.deleteSaved(again);
+    assert.equal(await t.hub.currentMessageId(fresh), call.id);
+  } finally {
+    await t.done();
+  }
+});
+
+test('a stale reference to an email with two live copies is not moved to either at random', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    const header = '<demo-13@example.com>';
+    const cache = t.engine.caches.get(t.acc.id);
+    const { folder, uid } = decodeId(call.id);
+    const original = cache.boxes[folder].messages.find((m) => m.uid === uid);
+    // A mail to yourself: a copy in Sent too.
+    cache.boxes.Sent.messages.push({ ...structuredClone(original), uid: 999001 });
+    const sentId = encodeId(t.acc.id, 'Sent', 999001);
+    const ref = (f) => ({ id: encodeId(t.acc.id, f, 777777), messageHeader: header, accountId: t.acc.id });
+    assert.equal(await t.hub.locate(ref('Sent')), sentId, 'the copy in the folder the stale id named');
+    assert.equal(await t.hub.locate(ref('INBOX')), call.id);
+    assert.equal(await t.hub.locate(ref('Travel')), null, 'neither folder: not clear which, so none');
+    // Rukoo moved the copy that was in Travel to Sent: that is where it is.
+    t.engine.noteMove(t.acc.id, header, 'Sent', 'Travel');
+    assert.equal(await t.hub.locate(ref('Travel')), sentId);
+    // A move of the Inbox copy says nothing about where the Sent copy went.
+    t.engine.noteMove(t.acc.id, header, 'Invoices', 'INBOX');
+    assert.equal(await t.engine.findMoved(t.acc.id, header, 'Sent'), null);
+    assert.equal(await t.hub.locate(ref('Sent')), sentId, 'the Sent copy, not where the Inbox copy went');
+  } finally {
+    await t.done();
+  }
+});
+
+test('a stale reference does not follow a move Rukoo made of another copy of the same email', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    const header = '<demo-13@example.com>';
+    const cache = t.engine.caches.get(t.acc.id);
+    const { folder, uid } = decodeId(call.id);
+    const original = cache.boxes[folder].messages.find((m) => m.uid === uid);
+    // A mail to yourself: a copy in Sent too.
+    cache.boxes.Sent.messages.push({ ...structuredClone(original), uid: 999001 });
+    const sent = { id: encodeId(t.acc.id, 'Sent', 999001), messageHeader: header, accountId: t.acc.id };
+    // Rukoo moves the Inbox copy into a folder it never opened, and another mail client takes the Sent copy away.
+    await t.engine.move(call.id, 'Travel');
+    cache.boxes.Sent.messages = cache.boxes.Sent.messages.filter((m) => m.uid !== 999001);
+    assert.equal(cache.boxes.Travel, undefined);
+    assert.equal(await t.engine.findMoved(t.acc.id, header, 'Sent'), null, 'that move was of the Inbox copy');
+    assert.equal(await t.hub.locate(sent), null, 'the Sent copy is gone; the Inbox copy is another email to act on');
+    // The Inbox copy's own reference still follows it.
+    const now = await t.hub.locate({ id: call.id, messageHeader: header, accountId: t.acc.id });
+    assert.equal(decodeId(now).folder, 'Travel');
   } finally {
     await t.done();
   }
@@ -1236,7 +1301,7 @@ test('the folder a message was moved to is kept with the account cache, for the 
     const { moves } = t.engine.caches.get(t.acc.id);
     assert.equal(moves.length, 500);
     assert.equal(moves[0].id, 'm6@example.com', 'the oldest go first');
-    assert.deepEqual(moves[moves.length - 1], { id: 'm3@example.com', folder: 'Invoices' }, 'one entry per Message-ID, the latest move');
+    assert.deepEqual(moves[moves.length - 1], { id: 'm3@example.com', folder: 'Invoices', past: [] }, 'one entry per Message-ID, the latest move');
     // Without a Message-ID there is nothing to find it by.
     t.engine.noteMove(t.acc.id, '', 'Travel');
     assert.equal(t.engine.caches.get(t.acc.id).moves.length, 500);

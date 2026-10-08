@@ -19,6 +19,7 @@ Python 3.8+, standard library only.
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -53,6 +54,22 @@ UNREACHABLE = (
 
 def log(text):
     print(f"rukoo-bridge: {text}", file=sys.stderr, flush=True)
+
+
+# Calls are answered from their own threads; one line at a time goes out.
+WRITE = threading.Lock()
+
+
+def send(reply):
+    with WRITE:
+        sys.stdout.write(json.dumps(reply) + "\n")
+        sys.stdout.flush()
+
+
+def answer(message):
+    reply = handle(message)
+    if reply is not None:
+        send(reply)
 
 
 def result(msg_id, value):
@@ -175,12 +192,18 @@ def main():
         try:
             message = json.loads(line)
         except ValueError:
-            reply = error(None, -32700, "Parse error")
-        else:
-            reply = handle(message) if isinstance(message, dict) else error(None, -32600, "Invalid request")
-        if reply is not None:
-            sys.stdout.write(json.dumps(reply) + "\n")
-            sys.stdout.flush()
+            send(error(None, -32700, "Parse error"))
+            continue
+        if not isinstance(message, dict):
+            send(error(None, -32600, "Invalid request"))
+            continue
+        # Hermes can send several calls at once, and one can take Rukoo up to 90 seconds (a mail action). Each
+        # gets its own thread, so a call never waits behind another and runs past Hermes' 120 s for it.
+        # Not daemon threads: when Hermes closes stdin, the calls already under way still get their answer.
+        if message.get("method") == "tools/call" and "id" in message:
+            threading.Thread(target=answer, args=(message,)).start()
+            continue
+        answer(message)
 
 
 if __name__ == "__main__":

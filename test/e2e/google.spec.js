@@ -42,5 +42,6 @@ test('Google tile starts browser sign-in and reports a denied consent', async ()
     await expect(win.locator('[name=password]')).toBeVisible();
   } finally {
     await app.close();
+    fs.rmSync(env.SEM_DATA_DIR, { recursive: true, force: true });
   }
 });

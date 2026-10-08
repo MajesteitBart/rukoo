@@ -22,6 +22,8 @@ const OLD_DEFAULT_SIGNATURE = 'Verzonden vanaf mijn pc';
 const UNDO_MS = 10 * 60 * 1000;
 // How many moves per account are remembered by Message-ID, so a reference can find the mail again.
 const MOVES_KEPT = 500;
+// How many earlier folders a move record keeps for its copy.
+const MOVE_PAST = 5;
 // Folders whose mail is not archived, even though Gmail's All Mail also holds it.
 const SYSTEM_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 
@@ -869,7 +871,7 @@ class Engine extends EventEmitter {
     if (moved && moved.uid && moved.uidValidity) {
       this.rememberMove(id, { accountId: acc.id, folder, destination, uid: moved.uid, uidValidity: moved.uidValidity, msg });
     }
-    this.noteMove(acc.id, msg.messageId, destination);
+    this.noteMove(acc.id, msg.messageId, destination, folder);
     if (this.caches.get(acc.id).boxes[destination]) {
       this.syncFolderAndNotify(acc, destination).catch(() => {});
     }
@@ -887,22 +889,31 @@ class Engine extends EventEmitter {
 
   // Where a message went, by its Message-ID, kept with the account's cache. Rukoo only syncs folders it has
   // opened, so this is how a reference to the message (an agent's source card) finds it in any other folder.
-  noteMove(accountId, messageId, folder) {
+  // One Message-ID can have several copies (a mail to yourself in Inbox and Sent), so each record is one copy:
+  // where it is now and the folders it came through (past, the last few). A move without its source folder
+  // replaces whatever was known for that Message-ID.
+  noteMove(accountId, messageId, folder, source = null) {
     const key = messageKey(messageId);
     const cache = this.caches.get(accountId);
     if (!key || !cache) return;
-    const moves = (Array.isArray(cache.moves) ? cache.moves : []).filter((m) => m.id !== key);
-    moves.push({ id: key, folder });
-    cache.moves = moves.slice(-MOVES_KEPT);
+    const moves = Array.isArray(cache.moves) ? cache.moves : [];
+    const prev = moves.filter((m) => m.id === key && (source == null || m.folder === source)).pop();
+    const past = [...((prev && prev.past) || []), ...(source ? [source] : [])].filter((f) => f !== folder).slice(-MOVE_PAST);
+    const rest = moves.filter((m) => !(m.id === key && (source == null || m === prev)));
+    rest.push({ id: key, folder, past });
+    cache.moves = rest.slice(-MOVES_KEPT);
     this.persistCache(accountId);
   }
 
   // The current id of a message Rukoo moved, found by its Message-ID in the folder it was moved to. That folder
-  // is synced first when it is not in the cache yet. null when Rukoo did not move it or it is no longer there.
-  async findMoved(accountId, messageId) {
+  // is synced first when it is not in the cache yet. from: the folder the reference had it in, so a move of
+  // another copy does not count; without one, the latest move of any copy. null when Rukoo did not move it or
+  // it is no longer there.
+  async findMoved(accountId, messageId, from = null) {
     const key = messageKey(messageId);
     const cache = this.caches.get(accountId);
-    const last = key && cache && Array.isArray(cache.moves) ? cache.moves.find((m) => m.id === key) : null;
+    const mine = key && cache && Array.isArray(cache.moves) ? cache.moves.filter((m) => m.id === key && (from == null || (m.past || []).includes(from))) : [];
+    const last = mine[mine.length - 1];
     if (!last || !cache.folders.some((f) => f.path === last.folder)) return null;
     let uid = this.uidByMessageId(accountId, last.folder, messageId);
     if (!uid) {
@@ -935,7 +946,7 @@ class Engine extends EventEmitter {
     // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
     const box = this.caches.get(acc.id).boxes[rec.folder];
     if (box && uid && !box.messages.some((m) => m.uid === uid)) box.messages.push({ ...rec.msg, uid });
-    this.noteMove(acc.id, rec.msg.messageId, rec.folder);
+    this.noteMove(acc.id, rec.msg.messageId, rec.folder, rec.destination);
     this.changed(acc.id);
     if (box) this.syncFolderAndNotify(acc, rec.folder).catch(() => {});
     return uid ? encodeId(acc.id, rec.folder, uid) : null;
@@ -1020,7 +1031,8 @@ class Engine extends EventEmitter {
     const file = `${savedId.slice(6)}.eml`;
     fs.mkdirSync(this.file('saved'), { recursive: true });
     fs.writeFileSync(this.file('saved', file), raw);
-    this.saved.push({ ...pub, id: savedId, file, role: 'saved', folder: null, starred: false, unread: false });
+    // The Message-ID lets a reference to the copy find the email in the mailbox once the copy is deleted.
+    this.saved.push({ ...pub, messageId: msg.messageId || null, id: savedId, file, role: 'saved', folder: null, starred: false, unread: false });
     writeJson(this.file('saved.json'), this.saved);
     this.emit('updated');
     return savedId;

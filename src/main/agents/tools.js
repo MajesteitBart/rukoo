@@ -1046,9 +1046,10 @@ function showPlan(hub, args, call) {
   return { conversation_id: c.id, plan_id: item.planId, tasks: item.tasks.map(({ id, title, status }) => ({ id, title, status })) };
 }
 
-function showSources(hub, args, call) {
+async function showSources(hub, args, call) {
   const c = hub.ensureConversation(call);
-  const sources = args.sources.map((s) => {
+  const sources = [];
+  for (const s of args.sources) {
     let messageId = null;
     if (s.message_id) {
       try {
@@ -1057,13 +1058,16 @@ function showSources(hub, args, call) {
         messageId = null;
       }
     }
-    // Rukoo ids change when mail moves; the Message-ID header and the account let the card find the email
-    // again later (hub.locate).
-    const cached = messageId ? cacheMessage(hub.engine, messageId) : null;
-    const messageHeader = cached && cached.messageId ? String(cached.messageId).slice(0, 1000) : null;
-    const accountId = messageId ? accountOfId(messageId) : null;
-    return { title: s.title, source: s.source || (messageId ? 'Email' : ''), snippet: s.snippet || '', url: safeUrl(s.url), messageId, messageHeader, accountId };
-  });
+    // Rukoo ids change when mail moves, and a saved copy can be deleted; the Message-ID header and the account
+    // let the card find the email again later (hub.locate). A copy saved before Rukoo kept its header has it in
+    // its file.
+    const known = messageId ? hub.liveMessage(messageId) : null;
+    let header = known && known.messageId;
+    if (!header && messageId && messageId.startsWith('saved:')) header = ((await loadMessage(hub.engine, messageId)) || {}).messageId;
+    const messageHeader = header ? String(header).slice(0, 1000) : null;
+    const accountId = messageId ? accountOfId(messageId) || (known && known.accountId) || null : null;
+    sources.push({ title: s.title, source: s.source || (messageId ? 'Email' : ''), snippet: s.snippet || '', url: safeUrl(s.url), messageId, messageHeader, accountId });
+  }
   hub.addItem(c, { type: 'sources', title: args.title || '', sources });
   return { ok: true, conversation_id: c.id, shown: sources.length };
 }
@@ -1388,6 +1392,7 @@ module.exports = {
   bareName,
   validate,
   findByMessageId,
+  copiesOf,
   accountOfId,
   cacheMessage,
   summaryById,

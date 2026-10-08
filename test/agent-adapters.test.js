@@ -1179,10 +1179,15 @@ test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo i
       res.writeHead(req.headers.authorization === 'Bearer good' ? 200 : 401, { 'Content-Type': 'application/json' });
       if (req.headers.authorization !== 'Bearer good') return res.end('{"error":"unauthorized"}');
       if (msg.method === 'tools/list') return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'get_context', inputSchema: { type: 'object' } }] } }));
-      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `ok ${msg.params.name} één` }] } }));
+      const reply = () => res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `ok ${msg.params.name} één` }] } }));
+      // A mail action that takes Rukoo a while.
+      if (msg.params.name === 'mail_action') return void setTimeout(reply, 1500);
+      reply();
     });
   });
   await new Promise((r) => rukoo.listen(0, '127.0.0.1', r));
+  // Also when an assertion fails before the test closes it on purpose.
+  t.after(() => rukoo.listening && (rukoo.closeAllConnections(), rukoo.close()));
   const url = `http://127.0.0.1:${rukoo.address().port}/mcp`;
   const cache = path.join(tmp('bridge'), 'tools.json');
   const start = (token) => {
@@ -1198,7 +1203,7 @@ test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo i
       await waitFor(() => replies.length > n, 15000);
       return replies[n];
     };
-    return { child, ask, tell: (msg) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n') };
+    return { child, ask, replies, tell: (msg) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n') };
   };
   const b = start('good');
   t.after(() => b.child.kill());
@@ -1213,6 +1218,20 @@ test('hermes bridge: handshake, forwarding, cached tools and errors when Rukoo i
   assert.equal((await b.ask({ id: 4, method: 'resources/list' })).error.code, -32601);
   // Only the two real requests reached Rukoo; the handshake and ping were answered locally.
   assert.deepEqual(calls.map((c) => c.msg.method), ['tools/list', 'tools/call']);
+  // Two calls at once: the quick one does not wait for the slow one before it.
+  const before = b.replies.length;
+  b.tell({ id: 10, method: 'tools/call', params: { name: 'mail_action', arguments: {} } });
+  b.tell({ id: 11, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+  await waitFor(() => b.replies.length >= before + 2, 15000);
+  assert.deepEqual(b.replies.slice(before).map((r) => r.id), [11, 10]);
+  // Hermes closes stdin while a call is under way: the call still gets its answer before the bridge exits.
+  const closing = start('good');
+  t.after(() => closing.child.kill());
+  const exited = new Promise((r) => closing.child.on('exit', r));
+  closing.tell({ id: 20, method: 'tools/call', params: { name: 'mail_action', arguments: {} } });
+  closing.child.stdin.end();
+  await exited;
+  assert.deepEqual(closing.replies.map((r) => r.id), [20]);
   assert.ok(JSON.parse(fs.readFileSync(cache, 'utf8'))[0].name === 'get_context');
 
   await new Promise((r) => (rukoo.closeAllConnections(), rukoo.close(r)));

@@ -6,9 +6,10 @@ const path = require('path');
 
 let app;
 let win;
+let dataDir;
 
 test.beforeEach(async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-'));
   // Keep the existing Dutch interaction suite as coverage for the supported Dutch locale.
   fs.mkdirSync(path.join(dataDir, 'data'));
   fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'nl' }));
@@ -26,6 +27,8 @@ test.afterEach(async () => {
   // An editor with unsaved changes keeps its window open and asks first; skip that in tests.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
   await app.close();
+  // Each profile is a few MB; a full run would otherwise leave them all in the temp folder.
+  fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
 const item = (text) => win.locator('.item', { hasText: text }).first();

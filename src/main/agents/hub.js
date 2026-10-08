@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { AgentConfig, AgentError, AGENT_IDS, writeJsonAtomic, tailscaleAddress } = require('./config');
 const { McpServer } = require('./mcp');
+const { decodeId } = require('../engine');
 const tools = require('./tools');
 const context = require('./context');
 
@@ -541,9 +542,11 @@ class AgentHub extends EventEmitter {
     return best;
   }
 
-  // The current Rukoo id of an email a card points at: the stored id while it still holds that email, else
-  // the same Message-ID within the same account (mail moves within its account), first in the folders Rukoo
-  // has synced, then in the folder Rukoo last moved it to. null when it is gone.
+  // The current Rukoo id of an email a card points at: the stored id while it still holds that email, else the
+  // same Message-ID within the same account (mail moves within its account). One Message-ID can be several
+  // emails to act on (Inbox and Sent of a mail to yourself, two Gmail labels), so in this order: the one copy in
+  // the folder the stale id named (a new UID), where Rukoo moved the copy from that folder, the one live copy
+  // in the synced folders. Several there and none of these: not clear which, so none. null when it is gone.
   async locate(ref = {}) {
     const id = ref.id ? String(ref.id) : '';
     const header = ref.messageHeader ? String(ref.messageHeader) : '';
@@ -554,14 +557,26 @@ class AgentHub extends EventEmitter {
     if (id.startsWith('saved:') && this.engine.saved.some((s) => s.id === id)) return id;
     if (!header) return null;
     const account = ref.accountId || tools.accountOfId(id);
-    const found = tools.findByMessageId(this.engine, header, account);
-    if (found || !account) return found || null;
+    let folder = null;
     try {
-      return (await this.engine.findMoved(account, header)) || null;
-    } catch (err) {
-      this.log('hub', 'finding a moved email failed:', err.message);
-      return null;
+      folder = id && !id.startsWith('saved:') ? decodeId(id).folder : null;
+    } catch (_) {
+      folder = null;
     }
+    const copies = tools.copiesOf(this.engine, header).filter((h) => !account || h.acc.id === account);
+    const live = copies.filter((h) => h.role !== 'all');
+    const same = live.filter((h) => h.folder === folder);
+    if (same.length === 1) return same[0].id;
+    if (account) {
+      try {
+        const moved = await this.engine.findMoved(account, header, folder);
+        if (moved) return moved;
+      } catch (err) {
+        this.log('hub', 'finding a moved email failed:', err.message);
+      }
+    }
+    if (live.length > 1) return null;
+    return (live[0] || copies[0] || {}).id || null;
   }
 
   // Normalizes the email reference the renderer sends, filling gaps from the engine cache.
