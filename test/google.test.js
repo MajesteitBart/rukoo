@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { GoogleAuth } = require('../src/main/google');
+const { GoogleAuth, CALENDAR_SCOPES } = require('../src/main/google');
 const { Engine } = require('../src/main/engine');
 const { ImapAccount } = require('../src/main/imap');
 
@@ -75,8 +75,84 @@ test('sign-in: loopback redirect, PKCE, offline access and Gmail scope', async (
   assert.equal(u.searchParams.get('code_challenge_method'), 'S256');
   assert.equal(u.searchParams.get('login_hint'), 'bart@example.com');
   assert.ok(u.searchParams.get('scope').split(' ').includes('https://mail.google.com/'));
+  for (const scope of CALENDAR_SCOPES) assert.ok(u.searchParams.get('scope').split(' ').includes(scope), scope);
+  // Signing in again for the calendar keeps what the account granted before.
+  assert.equal(u.searchParams.get('include_granted_scopes'), 'true');
+  assert.deepEqual(grant.scopes, ['openid', 'email', 'profile', 'https://mail.google.com/']);
   for (let i = 0; i < 50 && !g.seen.page; i++) await new Promise((r) => setTimeout(r, 10));
   assert.match(g.seen.page, /You are signed in/);
+});
+
+test('sign-in keeps the granted scopes with the account; a refresh updates them', async () => {
+  const granted = ['openid', 'email', 'https://mail.google.com/', ...CALENDAR_SCOPES];
+  const g = fakeGoogle({ scope: granted.join(' ') });
+  const auth = new GoogleAuth({ configPath: configFile(), openBrowser: g.browser(), fetchImpl: g.fetchImpl });
+  const grant = await auth.signIn();
+  assert.deepEqual(grant.scopes, granted);
+
+  let refreshScopes = null;
+  const google = { available: () => true, refresh: async () => ({ accessToken: 'access-2', expiresAt: Date.now() + 3600000, ...(refreshScopes ? { scopes: refreshScopes } : {}) }) };
+  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-gs-')), google }).init();
+  let added = null;
+  engine.finishAdd = async (acc) => (added = acc);
+  await engine.addGoogleAccount(grant);
+  assert.deepEqual(added.scopes, [...granted].sort());
+
+  // Signing in again replaces them: here without the calendar, which the user may leave out on Google's screen.
+  engine.accounts.push(added);
+  engine.syncAccount = async () => [];
+  await engine.addGoogleAccount({ ...grant, scopes: ['https://mail.google.com/'] }, { reauthId: added.id });
+  assert.deepEqual(added.scopes, ['https://mail.google.com/']);
+
+  // Access withdrawn in the Google account shows up at the next refresh, and is saved.
+  engine.tokens.clear();
+  refreshScopes = ['openid'];
+  await engine.accessToken(added);
+  assert.deepEqual(added.scopes, ['openid']);
+  const saved = JSON.parse(fs.readFileSync(path.join(engine.dataDir, 'accounts.json'), 'utf8'));
+  assert.deepEqual(saved.find((a) => a.id === added.id).scopes, ['openid']);
+});
+
+test('a token answer that stops halfway is a connection error, and the request has a deadline', async () => {
+  let signal = null;
+  const fetchImpl = async (url, opts) => {
+    signal = opts.signal;
+    return { ok: true, status: 200, json: async () => Promise.reject(new Error('aborted')) };
+  };
+  const auth = new GoogleAuth({ configPath: configFile(), openBrowser: () => {}, fetchImpl });
+  await assert.rejects(auth.refresh('rt'), (err) => err.oauth && err.code === 'network');
+  assert.ok(signal instanceof AbortSignal);
+});
+
+test('a token refresh from before signing in again does not overwrite the new grant', async () => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const google = {
+    available: () => true,
+    refresh: async () => {
+      await gate;
+      return { accessToken: 'old-access', expiresAt: Date.now() + 3600000, scopes: ['https://mail.google.com/'] };
+    }
+  };
+  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-gr-')), google }).init();
+  const acc = { id: 'a1', type: 'imap', provider: 'google', auth: 'oauth2', email: 'bart@example.com', secret: 'rt-1', scopes: ['https://mail.google.com/'] };
+  engine.accounts.push(acc);
+  engine.syncAccount = async () => [];
+  const old = engine.accessToken(acc);
+  const scopes = ['https://mail.google.com/', ...CALENDAR_SCOPES].sort();
+  await engine.addGoogleAccount({ email: 'bart@example.com', refreshToken: 'rt-2', accessToken: 'new-access', expiresAt: Date.now() + 3600000, scopes }, { reauthId: 'a1' });
+  assert.equal(engine.grant('a1'), 1);
+  release();
+  assert.equal(await old, 'old-access', 'the old caller still gets its answer');
+  assert.equal(await engine.accessToken(acc), 'new-access');
+  assert.deepEqual(acc.scopes, scopes);
+});
+
+test('refresh reports the scopes Google lists', async () => {
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ access_token: 'a', expires_in: 3599, scope: 'openid https://mail.google.com/' }) });
+  const auth = new GoogleAuth({ configPath: configFile(), openBrowser: () => {}, fetchImpl });
+  const grant = await auth.refresh('rt');
+  assert.deepEqual(grant.scopes, ['openid', 'https://mail.google.com/']);
 });
 
 test('sign-in: forged state is ignored, denial and missing Gmail scope are reported', async () => {

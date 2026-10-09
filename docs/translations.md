@@ -18,6 +18,7 @@ Keys describe the screen, feature, and purpose, rather than the displayed wordin
 | `mailbox.delete.*`, `mailbox.move.*`, `mailbox.undo.*` | Move/delete confirmations and notices |
 | `reader.*` | Reading pane, recipient summary, headers, attachments, unsubscribe |
 | `composer.*` | Inline and separate compose windows, formatting, drafts, quoted mail |
+| `calendar.*` | The Mail and Calendar switch, the calendar view, its sidebar, the event card and the event dialog |
 | `settings.*` | General settings, account settings, aliases, signatures, and About |
 | `native.*` | Windows file pickers, notifications, taskbar badge, default filenames |
 | `errors.*` | Application-owned account, server, Google, and mail errors |

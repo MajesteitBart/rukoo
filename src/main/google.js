@@ -8,12 +8,17 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 
-const SCOPES = ['openid', 'email', 'profile', 'https://mail.google.com/'];
+// The calendar needs both: the list of calendars and the events on them. Google's consent screen lets a user leave
+// these out, so the granted scopes are stored with the account and mail works without them.
+const CALENDAR_SCOPES = ['https://www.googleapis.com/auth/calendar.calendarlist.readonly', 'https://www.googleapis.com/auth/calendar.events'];
+const SCOPES = ['openid', 'email', 'profile', 'https://mail.google.com/', ...CALENDAR_SCOPES];
 const ENDPOINTS = {
   auth: 'https://accounts.google.com/o/oauth2/v2/auth',
   token: 'https://oauth2.googleapis.com/token'
 };
 const SIGN_IN_TIMEOUT = 5 * 60 * 1000;
+// A token request that hangs would hold up every sync of the account behind it.
+const TOKEN_TIMEOUT = 30000;
 
 function oauthError(message, code) {
   const err = new Error(message);
@@ -129,6 +134,8 @@ class GoogleAuth {
           scope: SCOPES.join(' '),
           access_type: 'offline',
           prompt: 'consent',
+          // Signing in again for the calendar keeps the mail access the account already has.
+          include_granted_scopes: 'true',
           code_challenge: challenge,
           code_challenge_method: 'S256',
           state
@@ -158,7 +165,8 @@ class GoogleAuth {
         name: profile.name || '',
         refreshToken: tokens.refresh_token,
         accessToken: tokens.access_token,
-        expiresAt: Date.now() + (Number(tokens.expires_in) || 3600) * 1000
+        expiresAt: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
+        scopes: granted.filter(Boolean)
       };
     } finally {
       this.pending = null;
@@ -176,7 +184,10 @@ class GoogleAuth {
       client_id: client.id,
       client_secret: client.secret
     });
-    return { accessToken: tokens.access_token, expiresAt: Date.now() + (Number(tokens.expires_in) || 3600) * 1000 };
+    const grant = { accessToken: tokens.access_token, expiresAt: Date.now() + (Number(tokens.expires_in) || 3600) * 1000 };
+    // Google reports what the refresh token still covers; access taken away in the Google account shows up here.
+    if (tokens.scope) grant.scopes = String(tokens.scope).split(' ').filter(Boolean);
+    return grant;
   }
 
   async tokenRequest(form) {
@@ -186,12 +197,19 @@ class GoogleAuth {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams(form).toString(),
-        redirect: 'error'
+        redirect: 'error',
+        signal: AbortSignal.timeout(TOKEN_TIMEOUT)
       });
     } catch (_) {
       throw oauthError(t('errors.google.connection'), 'network');
     }
-    const body = await res.json().catch(() => ({}));
+    let body = {};
+    try {
+      body = await res.json();
+    } catch (_) {
+      // An answer cut off halfway has no token in it.
+      if (res.ok) throw oauthError(t('errors.google.connection'), 'network');
+    }
     if (res.ok) return body;
     if (body.error === 'invalid_grant') {
       throw oauthError(t('errors.google.expired'), 'invalid_grant');
@@ -200,4 +218,4 @@ class GoogleAuth {
   }
 }
 
-module.exports = { GoogleAuth, SCOPES, decodeJwtPayload };
+module.exports = { GoogleAuth, SCOPES, CALENDAR_SCOPES, decodeJwtPayload };

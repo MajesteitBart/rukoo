@@ -933,6 +933,346 @@
     "message": "Looking at an image...",
     "description": "Chat transcript tool chip while the agent's own tool runs: image analysis. Present tense; the done form is agent.tools.generic.vision."
   },
+  "calendar.title": {
+    "message": "Calendar",
+    "description": "Calendar view: accessible name of the section that replaces the message list and reader. src/renderer/app.js (renderShell)"
+  },
+  "calendar.mode.label": {
+    "message": "Mail or calendar",
+    "description": "Sidebar: accessible name of the switch at the top that chooses between the mailbox and the calendar. src/renderer/app.js (renderModeSwitch)"
+  },
+  "calendar.mode.mail": {
+    "message": "Mail",
+    "description": "Sidebar switch at the top: the segment that shows the mailbox. Short; it shares a narrow sidebar with the Calendar segment. src/renderer/app.js (renderModeSwitch)"
+  },
+  "calendar.mode.mailShortcut": {
+    "message": "Mail (Ctrl+1)",
+    "description": "Tooltip of the Mail segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+  },
+  "calendar.mode.calendar": {
+    "message": "Calendar",
+    "description": "Sidebar switch at the top: the segment that shows the calendar. Short; it shares a narrow sidebar with the Mail segment. src/renderer/app.js (renderModeSwitch)"
+  },
+  "calendar.mode.calendarShortcut": {
+    "message": "Calendar (Ctrl+2)",
+    "description": "Tooltip of the Calendar segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+  },
+  "calendar.sidebar.calendars": {
+    "message": "Calendars",
+    "description": "Calendar sidebar: accessible name of the list of calendars, grouped by account, that can be shown or hidden. src/renderer/calendar.js (sidebarHtml)"
+  },
+  "calendar.nav.today": {
+    "message": "Today",
+    "description": "Calendar toolbar button that goes back to the current day or week. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.nav.todayShortcut": {
+    "message": "Today (T)",
+    "description": "Tooltip of the calendar's Today button, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.nav.prev.day": {
+    "message": "Previous day (←)",
+    "description": "Tooltip of the calendar toolbar's back arrow in the day view, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.nav.prev.week": {
+    "message": "Previous week (←)",
+    "description": "Tooltip of the calendar toolbar's back arrow in the week view, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.nav.next.day": {
+    "message": "Next day (→)",
+    "description": "Tooltip of the calendar toolbar's forward arrow in the day view, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.nav.next.week": {
+    "message": "Next week (→)",
+    "description": "Tooltip of the calendar toolbar's forward arrow in the week view, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.views.label": {
+    "message": "Calendar view",
+    "description": "Accessible name of the switch in the calendar toolbar that chooses between Day, Week and Upcoming. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.views.day": {
+    "message": "Day",
+    "description": "Calendar toolbar switch: one day at a time. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.views.dayShortcut": {
+    "message": "Day (D)",
+    "description": "Tooltip of the Day segment, with its keyboard shortcut. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.views.week": {
+    "message": "Week",
+    "description": "Calendar toolbar switch: a week at a time, the default. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.views.weekShortcut": {
+    "message": "Week (W)",
+    "description": "Tooltip of the Week segment, with its keyboard shortcut. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.views.upcoming": {
+    "message": "Upcoming",
+    "description": "Calendar toolbar switch and title: a list of the events in the coming weeks, grouped by day. src/renderer/calendar.js (viewSwitch, headHtml)"
+  },
+  "calendar.views.upcomingShortcut": {
+    "message": "Upcoming (U)",
+    "description": "Tooltip of the Upcoming segment, with its keyboard shortcut. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.views.more": {
+    "message": "Show more",
+    "description": "Button under the Upcoming list that adds the next 30 days. src/renderer/calendar.js (listHtml)"
+  },
+  "calendar.sync.shortcut": {
+    "message": "Sync calendars (F5)",
+    "description": "Tooltip of the sync button in the calendar toolbar, with its keyboard shortcut. src/renderer/calendar.js (render)"
+  },
+  "calendar.dates.tomorrow": {
+    "message": "Tomorrow",
+    "description": "Day heading in the Upcoming list for the day after today. src/renderer/calendar.js (listHtml)"
+  },
+  "calendar.empty.title": {
+    "message": "No calendars yet",
+    "description": "Calendar view when none of the accounts has a calendar Rukoo can show. src/renderer/calendar.js (render)"
+  },
+  "calendar.empty.help": {
+    "message": "Rukoo shows the calendars of Google accounts. Add one under Settings → Accounts.",
+    "description": "Calendar view, under calendar.empty.title: which accounts have a calendar and where to add one. src/renderer/calendar.js (render)"
+  },
+  "calendar.empty.upcoming": {
+    "message": { "one": "Nothing planned in the next {count} day", "other": "Nothing planned in the next {count} days" },
+    "description": "Upcoming list when no shown calendar has an event in the period; count is the number of days. src/renderer/calendar.js (listHtml)"
+  },
+  "calendar.connect.title": {
+    "message": "Show the calendar of {email}",
+    "description": "Notice above the calendar for a Google account that hasn't given Rukoo access to its calendar; email is the account's address. src/renderer/calendar.js (noticesHtml)"
+  },
+  "calendar.connect.help": {
+    "message": "Sign in to Google again and allow access to the calendar. Access to your mail stays as it is.",
+    "description": "Notice above the calendar, under calendar.connect.title: what reconnecting does. src/renderer/calendar.js (noticesHtml)"
+  },
+  "calendar.connect.action": {
+    "message": "Connect calendar",
+    "description": "Button in the calendar notice and row in the calendar sidebar that starts the Google sign-in for calendar access. src/renderer/calendar.js (noticesHtml, sidebarHtml)"
+  },
+  "calendar.connect.later": {
+    "message": "Not now",
+    "description": "Button in the calendar notice that hides it for this account; the sidebar still offers calendar.connect.action. src/renderer/calendar.js (noticesHtml)"
+  },
+  "calendar.errors.openCloud": {
+    "message": "Open Google Cloud",
+    "description": "Button in the calendar notice when the Google Calendar API is turned off for the user's OAuth client; it opens the page that turns it on. src/renderer/calendar.js (noticesHtml)"
+  },
+  "calendar.errors.noWritable": {
+    "message": "None of your calendars takes new events.",
+    "description": "Toast when the user wants to create an event but every shown calendar is read-only. src/renderer/calendar.js (eventDialog)"
+  },
+  "calendar.event.new": {
+    "message": "New event",
+    "description": "Calendar sidebar button that opens the dialog for a new event. src/renderer/calendar.js (sidebarHtml)"
+  },
+  "calendar.event.newShortcut": {
+    "message": "New event (Ctrl+N)",
+    "description": "Tooltip of the New event button, with its keyboard shortcut. src/renderer/calendar.js (sidebarHtml)"
+  },
+  "calendar.event.noTitle": {
+    "message": "(No title)",
+    "description": "Calendar: shown for an event without a title. src/renderer/calendar.js (titleOf)"
+  },
+  "calendar.event.allDay": {
+    "message": "All day",
+    "description": "Calendar: label of the all-day row, the all-day checkbox in the event dialog, and the time of an all-day event in the Upcoming list. src/renderer/calendar.js"
+  },
+  "calendar.event.from": {
+    "message": "from {time}",
+    "description": "Upcoming list: time of an event that starts on this day and ends on a later one; time is the start time. src/renderer/calendar.js (rowHtml)"
+  },
+  "calendar.event.until": {
+    "message": "until {time}",
+    "description": "Upcoming list: time of an event that started on an earlier day and ends on this one; time is the end time. src/renderer/calendar.js (rowHtml)"
+  },
+  "calendar.event.invitation": {
+    "message": "Invitation",
+    "description": "Upcoming list: pill on an invitation the user hasn't answered yet. src/renderer/calendar.js (rowHtml)"
+  },
+  "calendar.event.series": {
+    "message": "Repeats",
+    "description": "Event card: row for an event that is one of a recurring series. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.event.join": {
+    "message": "Join video call",
+    "description": "Event card: link to the event's video call, such as Google Meet. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.event.openGoogle": {
+    "message": "Open in Google Calendar",
+    "description": "Tooltip of the event card button that opens the event in Google Calendar in the browser. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.event.editShortcut": {
+    "message": "Edit (E)",
+    "description": "Tooltip of the event card's edit button, with its keyboard shortcut. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.event.deleteShortcut": {
+    "message": "Delete (Delete)",
+    "description": "Tooltip of the event card's delete button, with its keyboard shortcut. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.event.deleteTitle": {
+    "message": "Delete this event?",
+    "description": "Confirmation dialog title before an event is deleted. src/renderer/calendar.js (removeEvent)"
+  },
+  "calendar.event.deleteHelp": {
+    "message": "\"{title}\" will be removed from the calendar.",
+    "description": "Confirmation dialog text before an event is deleted; title is the event's title. src/renderer/calendar.js (removeEvent)"
+  },
+  "calendar.event.created": {
+    "message": "Event created",
+    "description": "Toast after a new event was saved in the calendar. src/renderer/calendar.js (eventDialog)"
+  },
+  "calendar.event.deleted": {
+    "message": "Event deleted",
+    "description": "Toast after an event was deleted. src/renderer/calendar.js (removeEvent)"
+  },
+  "calendar.guests.count": {
+    "message": { "one": "{count} guest", "other": "{count} guests" },
+    "description": "Event card: heading of the guest list; count includes the organizer and the user. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.guests.more": {
+    "message": { "one": "and {count} more", "other": "and {count} more" },
+    "description": "Event card: last line of a shortened guest list; count is the number of guests not shown. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.guests.organizer": {
+    "message": "Organizer",
+    "description": "Event card: label after the name of the guest who organizes the event. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.guests.organizedBy": {
+    "message": "Organized by {name}",
+    "description": "Event card: who organizes an event without a guest list; name is a person's name or address. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.response.needsAction": {
+    "message": "No answer yet",
+    "description": "Event card guest list and accessible event names: a guest, or the user, hasn't answered the invitation. src/renderer/calendar.js"
+  },
+  "calendar.response.accepted": {
+    "message": "Going",
+    "description": "Event card guest list: the guest accepted the invitation. src/renderer/calendar.js"
+  },
+  "calendar.response.tentative": {
+    "message": "Maybe",
+    "description": "Event card guest list and accessible event names: the guest, or the user, answered maybe. src/renderer/calendar.js"
+  },
+  "calendar.response.declined": {
+    "message": "Not going",
+    "description": "Event card guest list and accessible event names: the guest, or the user, declined. src/renderer/calendar.js"
+  },
+  "calendar.rsvp.question": {
+    "message": "Going?",
+    "description": "Event card: question before the three answers to an invitation. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.rsvp.accepted": {
+    "message": "Yes",
+    "description": "Event card: answer that accepts the invitation. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.rsvp.tentative": {
+    "message": "Maybe",
+    "description": "Event card: answer that accepts the invitation tentatively. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.rsvp.declined": {
+    "message": "No",
+    "description": "Event card: answer that declines the invitation. src/renderer/calendar.js (popHtml)"
+  },
+  "calendar.rsvp.sent.accepted": {
+    "message": "Invitation accepted",
+    "description": "Toast after the user accepted an invitation; Google tells the organizer. src/renderer/calendar.js (respond)"
+  },
+  "calendar.rsvp.sent.tentative": {
+    "message": "Answered maybe",
+    "description": "Toast after the user answered maybe to an invitation; Google tells the organizer. src/renderer/calendar.js (respond)"
+  },
+  "calendar.rsvp.sent.declined": {
+    "message": "Invitation declined",
+    "description": "Toast after the user declined an invitation; Google tells the organizer. src/renderer/calendar.js (respond)"
+  },
+  "calendar.series.one": {
+    "message": "This event",
+    "description": "Choice for a recurring event: only the occurrence the user opened. src/renderer/calendar.js (seriesChoice)"
+  },
+  "calendar.series.all": {
+    "message": "All events in the series",
+    "description": "Choice for a recurring event: every occurrence of the series. src/renderer/calendar.js (seriesChoice)"
+  },
+  "calendar.series.deleteTitle": {
+    "message": "Delete a recurring event",
+    "description": "Title of the choice between deleting one occurrence or the whole series. src/renderer/calendar.js (removeEvent)"
+  },
+  "calendar.series.respondTitle": {
+    "message": "Answer a recurring event",
+    "description": "Title of the choice between answering one occurrence or the whole series. src/renderer/calendar.js (respond)"
+  },
+  "calendar.notify.updateTitle": {
+    "message": "Send the change to the guests?",
+    "description": "Dialog after the user changed an event they organize that has guests. src/renderer/calendar.js (notifyGuests)"
+  },
+  "calendar.notify.deleteTitle": {
+    "message": "Tell the guests the event is cancelled?",
+    "description": "Dialog before deleting an event the user organizes that has guests. src/renderer/calendar.js (notifyGuests)"
+  },
+  "calendar.notify.help": {
+    "message": { "one": "Google emails {count} guest about it.", "other": "Google emails {count} guests about it." },
+    "description": "Dialog text under calendar.notify.*Title; count is the number of guests besides the user. src/renderer/calendar.js (notifyGuests)"
+  },
+  "calendar.notify.send": {
+    "message": "Send",
+    "description": "Dialog button: save the change and let Google email the guests. src/renderer/calendar.js (notifyGuests)"
+  },
+  "calendar.notify.dontSend": {
+    "message": "Don't send",
+    "description": "Dialog button: save the change without emailing the guests. src/renderer/calendar.js (notifyGuests)"
+  },
+  "calendar.dialog.newTitle": {
+    "message": "New event",
+    "description": "Title of the dialog that creates an event. src/renderer/calendar.js (eventDialog)"
+  },
+  "calendar.dialog.editTitle": {
+    "message": "Edit event",
+    "description": "Title of the dialog that changes an event. src/renderer/calendar.js (eventDialog)"
+  },
+  "calendar.dialog.title": {
+    "message": "Title",
+    "description": "Event dialog: accessible name of the title field. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.titlePlaceholder": {
+    "message": "Add a title",
+    "description": "Event dialog: placeholder of the title field. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.starts": {
+    "message": "Starts",
+    "description": "Event dialog: label of the start date and time. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.ends": {
+    "message": "Ends",
+    "description": "Event dialog: label of the end date and time; for an all-day event the last day. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.calendar": {
+    "message": "Calendar",
+    "description": "Event dialog: label of the calendar the event goes in, grouped by account. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.location": {
+    "message": "Location",
+    "description": "Event dialog: label of the location field. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.description": {
+    "message": "Description",
+    "description": "Event dialog: label of the description field. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.seriesNote": {
+    "message": "Changes apply to this event only, not to the rest of the series.",
+    "description": "Event dialog: note when the user edits one occurrence of a recurring event. src/renderer/calendar.js (formHtml)"
+  },
+  "calendar.dialog.missingTime": {
+    "message": "Fill in when the event starts and ends.",
+    "description": "Event dialog error when a date or time field is empty. src/renderer/calendar.js (readForm)"
+  },
+  "calendar.dialog.noCalendar": {
+    "message": "Choose a calendar.",
+    "description": "Event dialog error when no calendar is chosen. src/renderer/calendar.js (readForm)"
+  },
+  "calendar.dialog.endBeforeStart": {
+    "message": "The event ends before it starts.",
+    "description": "Event dialog error when the end is before or at the start. src/renderer/calendar.js (readForm)"
+  },
   "common.actions.add": {
     "message": "Add",
     "description": "common > actions. src/renderer/app.js (messageMenu); src/renderer/settings.js (render)"
@@ -972,6 +1312,10 @@
   "common.actions.ok": {
     "message": "OK",
     "description": "common > actions. src/renderer/ui.js (dialog); src/renderer/ui.js (confirmDialog)"
+  },
+  "common.actions.retry": {
+    "message": "Retry",
+    "description": "common > actions. Tries a failed fetch again. src/renderer/calendar.js (noticesHtml)"
   },
   "common.actions.save": {
     "message": "Save",
@@ -1356,6 +1700,58 @@
   "errors.folder.rebuilt": {
     "message": "The folder was rebuilt on the server.",
     "description": "errors > folder. src/main/imap.js"
+  },
+  "errors.calendar.apiDisabled": {
+    "message": "The Google Calendar API is turned off in the Google Cloud project of your OAuth client. Turn it on there, then try again.",
+    "description": "Calendar notice when Google answers that the Calendar API isn't enabled for the user's own OAuth client. src/main/calendar/google.js"
+  },
+  "errors.calendar.busy": {
+    "message": "Google Calendar is busy. Try again in a minute.",
+    "description": "Calendar error when Google limits the number of requests. src/main/calendar/google.js"
+  },
+  "errors.calendar.invalidResponse": {
+    "message": "That isn't an answer to an invitation.",
+    "description": "Calendar error when an RSVP has a value other than yes, maybe or no. src/main/calendar/index.js"
+  },
+  "errors.calendar.invalidTimes": {
+    "message": "An event needs a start before its end.",
+    "description": "Calendar error when a new or changed event has missing or reversed times. src/main/calendar/index.js"
+  },
+  "errors.calendar.noCalendar": {
+    "message": "This calendar can't be found, or it doesn't take new events.",
+    "description": "Calendar error when a new event names a calendar that is gone or read-only. src/main/calendar/index.js"
+  },
+  "errors.calendar.notFound": {
+    "message": "This event no longer exists.",
+    "description": "Calendar error when the event was deleted elsewhere in the meantime. src/main/calendar/google.js; src/main/calendar/index.js"
+  },
+  "errors.calendar.notInvited": {
+    "message": "You aren't a guest of this event.",
+    "description": "Calendar error when the user answers an event they aren't invited to. src/main/calendar/google.js; src/main/calendar/index.js"
+  },
+  "errors.calendar.readOnly": {
+    "message": "You can't change this event.",
+    "description": "Calendar error when the user changes an event on a read-only calendar or one organized by someone else. src/main/calendar/index.js"
+  },
+  "errors.calendar.request": {
+    "message": "Google Calendar refused the request ({reason}).",
+    "description": "Calendar error for any other refusal; reason is Google's own message or the HTTP status. src/main/calendar/google.js"
+  },
+  "errors.calendar.scope": {
+    "message": "This account hasn't given Rukoo access to its calendar.",
+    "description": "Calendar error when the Google grant doesn't cover the calendar. src/main/calendar/google.js"
+  },
+  "errors.calendar.signIn": {
+    "message": "Google turned down the sign-in. Connect the calendar again.",
+    "description": "Calendar error when Google rejects the account's access token. src/main/calendar/google.js"
+  },
+  "errors.calendar.tooMany": {
+    "message": "This calendar has more events in this period than Rukoo can fetch.",
+    "description": "Calendar error when Google keeps returning pages of events past Rukoo's limit, so the list would be incomplete. src/main/calendar/google.js"
+  },
+  "errors.calendar.unreachable": {
+    "message": "Can't reach Google Calendar. Check your internet connection.",
+    "description": "Calendar error when the request to Google fails or times out. src/main/calendar/google.js"
   },
   "errors.google.aliases": {
     "message": "Gmail did not return aliases ({status}).",

@@ -95,6 +95,8 @@ class Engine extends EventEmitter {
     this.google = google;
     // Short-lived OAuth access tokens per account, kept in memory only.
     this.tokens = new Map();
+    // Per account, how many times it signed in again; see grant().
+    this.grants = new Map();
     this.accounts = [];
     this.settings = { ...DEFAULT_SETTINGS };
     this.caches = new Map();
@@ -194,18 +196,40 @@ class Engine extends EventEmitter {
     if (cached && cached.accessToken && cached.expiresAt - Date.now() > 60000) return Promise.resolve(cached.accessToken);
     if (cached && cached.refreshing) return cached.refreshing;
     if (!this.google) return Promise.reject(new Error(t('errors.google.unavailable')));
+    // A refresh only writes back while it still owns the cache entry: signing in again during it replaces the
+    // entry, and the old grant's token and scopes must not overwrite the new ones.
+    const owns = () => this.tokens.get(acc.id)?.refreshing === refreshing;
     const refreshing = this.google
       .refresh(this.secrets.decrypt(acc.secret))
       .then((t) => {
+        if (!owns()) return t.accessToken;
         this.tokens.set(acc.id, t);
+        if (t.scopes) this.setScopes(acc.id, t.scopes);
         return t.accessToken;
       })
       .catch((err) => {
-        this.tokens.delete(acc.id);
+        if (owns()) this.tokens.delete(acc.id);
         throw err;
       });
     this.tokens.set(acc.id, { refreshing });
     return refreshing;
+  }
+
+  // How many times the account signed in again in this run. Work started under an earlier grant can tell from
+  // this that its failures are about that grant, not the current one.
+  grant(id) {
+    return this.grants.get(id) || 0;
+  }
+
+  // What the account's Google grant covers. Accounts added before Rukoo stored this have none until the next
+  // token refresh, which is also when access withdrawn in the Google account shows up.
+  setScopes(id, scopes) {
+    const acc = this.accounts.find((a) => a.id === id);
+    const next = [...new Set((scopes || []).map(String))].sort();
+    if (!acc || (acc.scopes && acc.scopes.join(' ') === next.join(' '))) return;
+    acc.scopes = next;
+    this.persistAccounts();
+    this.emit('updated');
   }
 
   // Adds a Google account after the browser sign-in, or refreshes the grant of an existing one.
@@ -218,7 +242,9 @@ class Engine extends EventEmitter {
       }
       acc.auth = 'oauth2';
       acc.secret = this.secrets.encrypt(grant.refreshToken);
+      acc.scopes = [...new Set(grant.scopes || [])].sort();
       this.tokens.set(acc.id, { accessToken: grant.accessToken, expiresAt: grant.expiresAt });
+      this.grants.set(acc.id, this.grant(acc.id) + 1);
       const old = this.sessions.get(acc.id);
       this.sessions.delete(acc.id);
       if (old) await old.close();
@@ -240,6 +266,7 @@ class Engine extends EventEmitter {
       imap: { ...defaults.imap, user: email },
       smtp: { ...defaults.smtp, user: email },
       secret: this.secrets.encrypt(grant.refreshToken),
+      scopes: [...new Set(grant.scopes || [])].sort(),
       createdAt: Date.now()
     };
     this.tokens.set(acc.id, { accessToken: grant.accessToken, expiresAt: grant.expiresAt });
@@ -449,6 +476,7 @@ class Engine extends EventEmitter {
       this.persistSettings();
     }
     this.persistAccounts();
+    this.emit('account-removed', acc);
     this.emit('updated');
   }
 

@@ -18,6 +18,7 @@ const {
   Menu
 } = require('electron');
 const { Engine } = require('./engine');
+const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
@@ -69,6 +70,7 @@ const composeWindows = new Map();
 let windowState = null;
 let logos = null;
 let engine = null;
+let calendars = null;
 let google = null;
 let syncTimer = null;
 let newSinceFocus = 0;
@@ -126,8 +128,13 @@ function applyTheme() {
 function scheduleSync() {
   clearInterval(syncTimer);
   const minutes = Number(engine.settings.syncInterval) || 0;
-  // Errors are stored per account and shown in the list; nothing to do with them here.
-  if (minutes > 0) syncTimer = setInterval(() => engine.syncAll().catch(() => {}), minutes * 60000);
+  // Errors are stored per account and shown in the list and the calendar; nothing to do with them here.
+  if (minutes > 0) {
+    syncTimer = setInterval(() => {
+      engine.syncAll().catch(() => {});
+      calendars.syncAll().catch(() => {});
+    }, minutes * 60000);
+  }
 }
 
 function badgeCount() {
@@ -357,6 +364,35 @@ async function printHtml(html) {
   printer.destroy();
 }
 
+// The calendar view's arguments. The calendar store checks the fields of an event again.
+const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+function calendarRange(range) {
+  const { start, end } = plainObject(range);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 400 * 86400000) throw new Error('invalid');
+  return { start, end };
+}
+function calendarInput(input) {
+  const i = plainObject(input);
+  const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  return {
+    accountId: text(i.accountId, 200),
+    calendarId: text(i.calendarId, 1000),
+    title: text(i.title, 1000),
+    location: text(i.location, 1000),
+    description: text(i.description, 20000),
+    allDay: i.allDay === true,
+    start: Number(i.start),
+    end: Number(i.end),
+    startDate: text(i.startDate, 10),
+    endDate: text(i.endDate, 10),
+    id: text(i.id, 1024)
+  };
+}
+function calendarEventId(id) {
+  if (typeof id !== 'string' || !id || id.length > 3000) throw new Error('invalid');
+  return id;
+}
+
 // Every renderer call goes through this table; nothing else is reachable from the UI.
 const api = {
   state: () => engine.state(),
@@ -522,8 +558,16 @@ const api = {
   googleReauth: async (accountId) => {
     const grant = await google.signIn(engine.account(accountId).email);
     showWindow();
-    return engine.addGoogleAccount(grant, { reauthId: accountId });
+    const acc = await engine.addGoogleAccount(grant, { reauthId: accountId });
+    calendars.reconnected(accountId);
+    return acc;
   },
+  calendarView: (range) => calendars.view(calendarRange(range)),
+  calendarSync: (accountId) => (accountId ? calendars.syncAccount(String(accountId)) : calendars.syncAll()).then(() => true),
+  calendarCreate: (input) => calendars.create(calendarInput(input)),
+  calendarUpdate: (id, input, opts) => calendars.update(calendarEventId(id), calendarInput(input), { notify: plainObject(opts).notify === true }),
+  calendarDelete: (id, opts) => calendars.remove(calendarEventId(id), { notify: plainObject(opts).notify === true, series: plainObject(opts).series === true }),
+  calendarRespond: (id, response, opts) => calendars.respond(calendarEventId(id), String(response), { series: plainObject(opts).series === true }),
   googleCancel: () => google.cancel(),
   fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),
   googleImportClient: async () => {
@@ -738,6 +782,9 @@ app.whenReady().then(() => {
     if (engine.settings.badge === 'unread') refreshBadge();
   });
   engine.on('new-mail', notify);
+  calendars = new Calendars({ engine });
+  if (process.env.SEM_HIDDEN) global.__semCalendars = calendars;
+  calendars.on('updated', () => send('calendar'));
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({
@@ -771,6 +818,7 @@ app.whenReady().then(() => {
   createWindow();
   scheduleSync();
   engine.syncAll().catch(() => {});
+  calendars.syncAll().catch(() => {});
 });
 
 app.on('window-all-closed', () => app.quit());
@@ -778,6 +826,7 @@ app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => {
   clearInterval(syncTimer);
   if (engine) engine.flush();
+  if (calendars) calendars.flush();
 });
 
 // ---- agents ----
