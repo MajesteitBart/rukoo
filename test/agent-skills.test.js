@@ -127,8 +127,11 @@ test('skills load from both folders; a user skill replaces Rukoo\'s skill with t
   assert.equal(lines.length, 5);
   skills.load();
   assert.equal(lines.length, 5, 'the same problem is logged once');
-  // Files in the skills folder, such as a README, are not skills.
-  assert.deepEqual(new Skills({ bundled: path.join(__dirname, '..', 'skills') }).list(), []);
+  // Files in the skills folder, such as its README, are not skills: only the folders are.
+  const shipped = path.join(__dirname, '..', 'skills');
+  assert.ok(fs.existsSync(path.join(shipped, 'README.md')));
+  const folders = fs.readdirSync(shipped).filter((f) => fs.statSync(path.join(shipped, f)).isDirectory());
+  assert.deepEqual(new Skills({ bundled: shipped }).list().map((s) => s.name), folders.sort());
   assert.deepEqual(new Skills({ user: path.join(tmp('rukoo-none-'), 'missing') }).load(), { skills: new Map(), skipped: [] }, 'no user folder is normal');
 });
 

@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { LONG_COMMAND, LONG_COMMAND_TAIL } = require('../../src/main/agents/fake');
+const { Skills } = require('../../src/main/agents/skills');
 
 const SHOTS = path.join(os.tmpdir(), 'rukoo-agent-shots');
 let app;
@@ -354,7 +355,8 @@ test('newsletters offer Unsubscribe, and without an email the inbox overview is 
   await chip('Summarize').click();
   await expect(transcript()).toContainText('It needs a short reply from you, today.', { timeout: 10000 });
   await input().fill('/unsub');
-  await expect(win.locator('.agentpane .bui-pb__cmd')).toHaveCount(1);
+  // The quick action, then Rukoo's skill that finishes the page in the agent's browser.
+  await expect(win.locator('.agentpane .bui-pb__cmdname')).toHaveText(['/unsubscribe', '/unsubscribe-via-browser']);
   // Main keeps that on the chat's email too, so it holds once the newsletter is off screen.
   expect(await app.evaluate(() => global.__semAgents.list()[0].message.unsubscribe)).toBe(true);
   await input().fill('');
@@ -489,6 +491,32 @@ test('/name starts a skill from the user skills folder; the agent gets its instr
   expect(mcp.instructions).toContain('- reply: A user skill named like the /reply quick action.');
   expect(mcp.bundled).toBe(path.join(__dirname, '..', '..', 'skills'));
   expect(mcp.user).toBe(path.join(dataDir, 'skills'));
+});
+
+test("Rukoo's own skills are slash commands that start with their instructions, from the app's skills folder", async () => {
+  const shipped = new Skills({ bundled: path.join(__dirname, '..', '..', 'skills') }).list();
+  expect(shipped.map((s) => s.name)).toContain('unsubscribe-via-browser');
+  const received = () => app.evaluate(() => global.__semAgents.adapters.get('clark').received.at(-1));
+  const idle = () => app.evaluate(() => global.__semAgents.list().every((c) => c.status !== 'running'));
+  await openChat('Traffic fines in 2027: what you will pay');
+  const rows = win.locator('.agentpane .bui-pb__cmd');
+  for (const [i, skill] of shipped.entries()) {
+    if (i) await win.click('.agentpane [data-ap="new"]');
+    await input().fill(`/${skill.name}`);
+    const named = shipped.filter((s) => s.name.startsWith(skill.name));
+    await expect(rows.locator('.bui-pb__cmdname')).toHaveText(named.map((s) => `/${s.name}`));
+    await expect(rows.first().locator('.bui-pb__cmddesc')).toHaveText(skill.description);
+    if (skill.name === 'unsubscribe-via-browser') await shot('18-bundled-skills-menu');
+    await input().press('Enter');
+    await expect(transcript().locator('.bui-ub')).toHaveText(`/${skill.name}`);
+    // The scripted agent reads the skill with read_skill and quotes its first line.
+    await expect(transcript()).toContainText(`Following the skill ${skill.name}. It starts with: ${skill.body.split('\n')[0]}`, { timeout: 10000 });
+    const got = await received();
+    expect(got.action).toBe('skill');
+    expect(got.input).toContain(`[The user started the skill "${skill.name}".`);
+    expect(got.input.endsWith(`\n\n${skill.body}`)).toBe(true);
+    await expect.poll(idle, { timeout: 10000 }).toBe(true);
+  }
 });
 
 test('a typed /name sent with the Send button runs the skill or quick action, like picking it from the menu', async () => {

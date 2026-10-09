@@ -94,7 +94,7 @@ const TOOLS = [
     name: 'read_message',
     title: 'Read an email',
     description:
-      'Returns one email: headers (including the Message-ID header to link back to it from other systems), plain text body and the attachment list. Does not mark it as read.',
+      'Returns one email: headers (including the Message-ID header to link back to it from other systems, and the List-Unsubscribe links), plain text body and the attachment list. Does not mark it as read.',
     inputSchema: schema(
       { message_id: MESSAGE_ID, max_chars: { type: 'integer', minimum: 200, maximum: 200000, description: 'Maximum body characters (default 20000).' } },
       ['message_id']
@@ -607,7 +607,11 @@ function fullView(engine, m, maxChars = TEXT_MAX) {
       content_type: unsafeValue(a.contentType || 'application/octet-stream'),
       size: a.size
     })),
-    unsubscribe: Boolean(m.unsubscribe)
+    unsubscribe: Boolean(m.unsubscribe),
+    // The List-Unsubscribe links, for an agent that finishes the page in its own browser
+    // (skills/unsubscribe-via-browser). The sender wrote them, so they are tagged like the rest.
+    unsubscribe_url: unsafeValue(m.unsubscribe && m.unsubscribe.url) || null,
+    unsubscribe_mailto: unsafeValue(m.unsubscribe && m.unsubscribe.mail) || null
   };
   if ((m.bcc || []).length) out.bcc = m.bcc.map(emailAddr);
   return out;
