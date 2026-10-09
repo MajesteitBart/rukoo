@@ -132,6 +132,8 @@ test('read_message returns headers, text and attachments without marking it read
     assert.equal(m.truncated, false);
     assert.deepEqual(m.attachments, [{ index: 0, filename: tagged('Proposal-v3.pdf'), content_type: tagged('application/pdf'), size: 192 }]);
     assert.equal(m.unsubscribe, false);
+    assert.equal(m.unsubscribe_url, null);
+    assert.equal(m.unsubscribe_mailto, null);
     assert.equal('html' in m, false, 'agents never get html');
     assert.equal(t.find('Call on Thursday').unread, true);
     // The Message-ID header works as an id too, and max_chars cuts the text.
@@ -145,6 +147,9 @@ test('read_message returns headers, text and attachments without marking it read
     assert.equal(body[1].length, 200);
     assert.equal(short.truncated, true);
     assert.equal(short.unsubscribe, true);
+    // The List-Unsubscribe link, for a skill that finishes the page in a browser; the sender wrote it.
+    assert.equal(short.unsubscribe_url, tagged('https://example.com/unsubscribe'));
+    assert.equal(short.unsubscribe_mailto, null);
     const missing = await t.hub.callTool(local(), 'read_message', { message_id: 'nope:INBOX:1' });
     assert.equal(missing.isError, true);
     assert.match(missing.content[0].text, /search_mail/);
