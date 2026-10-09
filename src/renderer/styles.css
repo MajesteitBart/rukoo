@@ -3884,8 +3884,13 @@ body.calendar-mode .titlebar-search {
 }
 
 .cal-list-inner {
-  max-width: 760px;
+  max-width: 820px;
   padding: 0 18px 24px 10px;
+}
+.cal-list-day {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
 }
 .cal-list-day h2 {
   position: sticky;
@@ -3895,7 +3900,7 @@ body.calendar-mode .titlebar-search {
   align-items: baseline;
   gap: 8px;
   margin: 0;
-  padding: 14px 8px 6px;
+  padding: 16px 4px 4px;
   background: var(--panel);
   font-size: 13px;
   font-weight: 600;
@@ -3905,30 +3910,45 @@ body.calendar-mode .titlebar-search {
   font-weight: 500;
   color: var(--text-3);
 }
+/* A row is a soft card in its account's colour, like the events in the week. Everything in it hangs from the
+   first line: the time, the dot, the title, a pill and the guests. */
 .cal-row {
+  --tint: color-mix(in srgb, var(--c) var(--ev-pale), var(--panel));
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 12px;
   width: 100%;
-  min-height: 40px;
-  padding: 6px 8px;
-  border-radius: var(--radius);
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--tint);
   text-align: left;
+  line-height: 18px;
   transition: background-color 120ms ease;
 }
 .cal-row:hover,
 .cal-row.open {
-  background: var(--hover);
+  --tint: color-mix(in srgb, var(--c) var(--ev), var(--panel));
 }
 .cal-row-time {
-  width: 112px;
+  width: 104px;
   flex: none;
+  display: flex;
+  flex-direction: column;
   font-size: 12.5px;
-  color: var(--text-2);
   font-variant-numeric: tabular-nums;
+}
+.cal-row-time > span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.cal-row-time .rel {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.cal-row-time .rel.now {
+  color: var(--text);
+  font-weight: 600;
 }
 .cal-dot {
   width: 8px;
@@ -3937,35 +3957,95 @@ body.calendar-mode .titlebar-search {
   background: var(--c);
   flex: none;
 }
+.cal-row .cal-dot {
+  margin-top: 5px;
+}
 .cal-row-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 3px;
 }
-.cal-row-title,
-.cal-row-sub {
+.cal-row-title {
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.cal-row-title {
-  font-weight: 500;
-}
 .cal-row-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  min-width: 0;
   font-size: 12px;
+  color: var(--text-2);
+}
+.cal-row-sub .m {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+.cal-row-sub .m svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
   color: var(--text-3);
 }
-.cal-row-sub:empty {
-  display: none;
+.cal-row-sub .m span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cal-row.declined .cal-row-title {
   color: var(--text-3);
   text-decoration: line-through;
 }
+/* The guests: faces that overlap, each ringed in the row's own colour. */
+.cal-people {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin: -3px 0 -3px 3px;
+}
+.cal-people .avatar {
+  width: 24px;
+  height: 24px;
+  margin-left: -3px;
+  font-size: 9.5px;
+  box-shadow: 0 0 0 2px var(--tint);
+}
+.cal-people-more {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+/* The list measures itself: where it is narrow the faces go, and narrower still the time column shrinks, so
+   the title keeps its room. */
+.cal-list {
+  container-type: inline-size;
+}
+@container (max-width: 560px) {
+  .cal-people {
+    display: none;
+  }
+}
+@container (max-width: 400px) {
+  .cal-row {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .cal-row-time {
+    width: 76px;
+  }
+}
 .cal-pill {
   flex: none;
   height: 22px;
+  margin-top: -2px;
   padding: 0 8px;
   border-radius: 9999px;
   display: inline-flex;
@@ -3977,7 +4057,7 @@ body.calendar-mode .titlebar-search {
 }
 .cal-more {
   display: flex;
-  margin: 18px 0 0 8px;
+  margin: 18px 0 0;
 }
 
 /* The event card next to an event. */

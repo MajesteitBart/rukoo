@@ -349,6 +349,11 @@ function renderShell() {
   shell.classList.toggle('agent-open', Boolean(prefs.agentOpen));
   shell.classList.toggle('calendar-mode', calendarMode());
   document.body.classList.toggle('calendar-mode', calendarMode());
+  // The sidebar holds folders or calendars; its name for screen readers follows, also after a language change.
+  const side = shell.querySelector('.sidebar');
+  const sideLabel = calendarMode() ? 'calendar.sidebar.calendars' : 'mailbox.layout.folders';
+  side.dataset.i18nAriaLabel = sideLabel;
+  side.setAttribute('aria-label', t(sideLabel));
   root.style.setProperty('--sidebar-w', `${collapsed ? RAIL_W : SIDEBAR_W}px`);
   root.style.setProperty('--list-w', `${listWidth()}px`);
   root.style.setProperty('--agent-w', `${agentWidth()}px`);

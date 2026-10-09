@@ -1097,6 +1097,14 @@
     "message": "Join video call",
     "description": "Event card: link to the event's video call, such as Google Meet. src/renderer/calendar.js (popHtml)"
   },
+  "calendar.event.now": {
+    "message": "Now",
+    "description": "Upcoming list: under the time of an event that is happening at this moment. src/renderer/calendar.js (rowHtml)"
+  },
+  "calendar.event.videoCall": {
+    "message": "Video call",
+    "description": "Upcoming list: marks an event that has a video call link, such as Google Meet. src/renderer/calendar.js (rowHtml)"
+  },
   "calendar.event.openGoogle": {
     "message": "Open in Google Calendar",
     "description": "Tooltip of the event card button that opens the event in Google Calendar in the browser. src/renderer/calendar.js (popHtml)"

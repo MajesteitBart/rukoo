@@ -275,6 +275,8 @@
   "calendar.event.invitation": "Uitnodiging",
   "calendar.event.series": "Terugkerende afspraak",
   "calendar.event.join": "Deelnemen aan videogesprek",
+  "calendar.event.now": "Nu",
+  "calendar.event.videoCall": "Videogesprek",
   "calendar.event.openGoogle": "Openen in Google Agenda",
   "calendar.event.editShortcut": "Bewerken (E)",
   "calendar.event.deleteShortcut": "Verwijderen (Delete)",

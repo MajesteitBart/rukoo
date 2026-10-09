@@ -9,7 +9,7 @@ const path = require('path');
 const { Engine } = require('../src/main/engine');
 const { Calendars } = require('../src/main/calendar');
 const { DemoCalendar } = require('../src/main/calendar/demo');
-const { toEvent, GoogleCalendar } = require('../src/main/calendar/google');
+const { toEvent, GoogleCalendar, apiError } = require('../src/main/calendar/google');
 const { CALENDAR_SCOPES } = require('../src/main/google');
 
 const DAY = 86400000;
@@ -20,7 +20,8 @@ function fakeCalendar({ events = [], fail = null } = {}) {
   const calendars = [
     { id: 'me@example.com', summary: 'me@example.com', primary: true, accessRole: 'owner', timeZone: 'Europe/Amsterdam' },
     { id: 'nl#holiday@group.v.calendar.google.com', summary: 'Holidays', accessRole: 'reader', selected: false },
-    { id: 'busy@example.com', summary: 'Free/busy only', accessRole: 'freeBusyReader' }
+    { id: 'busy@example.com', summary: 'Free/busy only', accessRole: 'freeBusyReader' },
+    { id: 'team@example.com', summary: 'Team', accessRole: 'writerWithoutPrivateAccess' }
   ];
   const store = events.map((e) => ({ calendarId: 'me@example.com', ...e }));
   const requests = [];
@@ -139,7 +140,8 @@ test('a view fetches its weeks once, with expanded recurring events, and later o
   assert.equal(second.accounts[0].loading, false);
   assert.deepEqual(second.accounts[0].calendars.map((c) => [c.name, c.writable, c.selected]), [
     ['me@example.com', true, true],
-    ['Holidays', false, false]
+    ['Holidays', false, false],
+    ['Team', true, true]
   ]);
   const titles = second.events.map((e) => e.title).sort();
   assert.deepEqual(titles, ['Offsite', 'Planning'], 'working locations are left out');
@@ -149,7 +151,7 @@ test('a view fetches its weeks once, with expanded recurring events, and later o
   assert.equal(offsite.endDate, day(at(m, 5, 0)));
 
   const lists = fake.requests.filter((r) => r.path.endsWith('/events'));
-  assert.equal(lists.length, 2, 'one list per calendar; free/busy-only calendars are skipped');
+  assert.equal(lists.length, 3, 'one list per calendar; free/busy-only calendars are skipped');
   assert.equal(lists[0].query.singleEvents, 'true');
   assert.equal(lists[0].query.orderBy, 'startTime');
   // Two weeks around the view, and two days more on each side for calendars in another time zone.
@@ -208,6 +210,12 @@ test('Google events: times, guests, answers and what the user may change', () =>
   assert.equal(own.response, null);
   assert.equal(toEvent({ id: 'r1', start: { date: '2026-10-13' }, end: { date: '2026-10-14' } }, { ...cal, writable: false }).canEdit, false);
   assert.equal(toEvent({ id: 'l1', locked: true, start: { date: '2026-10-13' }, end: { date: '2026-10-14' } }, cal).canEdit, false);
+  // A calendar shared without private details takes changes to everything but its private events.
+  const shared = { ...cal, hidesPrivate: true };
+  assert.equal(toEvent({ id: 'w1', start: { date: '2026-10-13' }, end: { date: '2026-10-14' } }, shared).canEdit, true);
+  assert.equal(toEvent({ id: 'w2', visibility: 'private', start: { date: '2026-10-13' }, end: { date: '2026-10-14' } }, shared).canEdit, false);
+  // Rate limits are a pause, whichever name Google gives them.
+  for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded']) assert.equal(apiError(403, { error: { errors: [{ reason }] } }).code, 'busy');
 });
 
 test('creating, changing and deleting send what Google expects and keep the cache in step', async () => {
@@ -314,8 +322,9 @@ test('answering an invitation patches only the guest list, for one event or the 
   let patch = fake.requests.filter((r) => r.method === 'PATCH').pop();
   assert.equal(patch.path, '/calendars/me@example.com/events/series_0');
   assert.equal(patch.query.sendUpdates, 'all', 'the organizer hears the answer');
-  assert.deepEqual(Object.keys(patch.body), ['attendees']);
-  assert.deepEqual(patch.body.attendees.map((a) => a.responseStatus), ['accepted', 'accepted']);
+  // Only the user's own entry goes back, marked as a partial list, so other guests' answers stay as they are.
+  assert.equal(patch.body.attendeesOmitted, true);
+  assert.deepEqual(patch.body.attendees, [{ email: 'me@example.com', self: true, responseStatus: 'accepted' }]);
   assert.equal(calendars.view(week).events.find((e) => e.id === first.id).response, 'accepted');
 
   await calendars.respond(first.id, 'declined', { series: true });
@@ -456,8 +465,13 @@ test('a scope failure from before signing in again does not undo the new grant',
   await settle(calendars);
   closed();
   await signedIn;
+  // With the new grant Google answers again, and signing in fetches the calendar anew.
+  calendars.fetch = fake.fetchImpl;
+  const before = fake.requests.length;
   calendars.reconnected('g1');
+  await settle(calendars);
   assert.ok(CALENDAR_SCOPES.every((s) => engine.accounts[0].scopes.includes(s)), 'the new grant stays');
+  assert.ok(fake.requests.length > before, 'reconnecting syncs the cached weeks');
   assert.equal(calendars.view(week).accounts[0].state, 'ready');
 });
 

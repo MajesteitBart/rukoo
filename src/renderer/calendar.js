@@ -1,6 +1,6 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, $$, hhmm, toast, dialog, choiceDialog, confirmDialog, segmented, setSegmented, KEEP_OPEN } from './ui.js';
+import { api, esc, $, $$, hhmm, avatar, toast, dialog, choiceDialog, confirmDialog, segmented, setSegmented, KEEP_OPEN } from './ui.js';
 
 // The calendar view: the calendars of every account together, as a week, a day or a list of what comes next.
 // Main fetches and caches the events (src/main/calendar); this module draws them and sends changes back.
@@ -88,6 +88,12 @@ function parseLocal(date, time = '00:00') {
   const [y, m, d] = date.split('-').map(Number);
   const [h, min] = time.split(':').map(Number);
   return new Date(y, m - 1, d, h || 0, min || 0).getTime();
+}
+
+// A date and time field that still show the instant ms keep it: on the night the clocks go back, 02:30 happens
+// twice, and parsing it again would pick the first one.
+function keptInstant(ms, date, time) {
+  return Number.isFinite(ms) && dateValue(ms) === date && timeValue(ms) === time ? ms : parseLocal(date, time);
 }
 
 function longDay(ts) {
@@ -546,17 +552,59 @@ function listHtml() {
   return `<div class="cal-scroll cal-list"><div class="cal-list-inner">${out}<button class="btn secondary sm cal-more" data-cal="more">${esc(t('calendar.views.more'))}</button></div></div>`;
 }
 
+// "45 min" or "1 hr, 30 min", in the interface language.
+function duration(ms) {
+  const total = Math.round(ms / 60000);
+  const parts = { hours: Math.floor(total / 60), minutes: total % 60 };
+  if (!parts.hours) delete parts.hours;
+  if (!parts.minutes && parts.hours) delete parts.minutes;
+  try {
+    return new Intl.DurationFormat(getLocale(), { style: 'short' }).format(parts);
+  } catch (_) {
+    return `${parts.hours ? `${parts.hours} h ` : ''}${parts.minutes ? `${parts.minutes} min` : ''}`.trim();
+  }
+}
+
+// "in 25 min" or "in 3 hr", for what is still to come today.
+function fromNow(ms) {
+  const minutesAway = Math.max(1, Math.round(ms / 60000));
+  const rtf = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto', style: 'short' });
+  return minutesAway < 60 ? rtf.format(minutesAway, 'minute') : rtf.format(Math.round(minutesAway / 60), 'hour');
+}
+
+// The guests besides the user, as a stack of up to three faces and a count for the rest.
+function peopleHtml(e) {
+  const people = (e.attendees || []).filter((a) => !a.self);
+  if (!people.length) return '';
+  const shown = people.slice(0, 3);
+  const names = people.map((a) => a.name || a.address).join(', ');
+  return `<span class="cal-people" title="${esc(names)}">${shown.map((a) => avatar(a)).join('')}${
+    people.length > shown.length ? `<span class="cal-people-more">+${people.length - shown.length}</span>` : ''
+  }</span>`;
+}
+
+// A row of the Upcoming list: when, the event, where and with whom. Everything hangs from the first line.
 function rowHtml(e, day, next) {
+  const now = Date.now();
   let time;
+  let detail = '';
   if (e.allDay || (e.start <= day && e.end >= next)) time = t('calendar.event.allDay');
   else if (e.start < day) time = t('calendar.event.until', { time: hhmm(e.end) });
   else if (e.end > next) time = t('calendar.event.from', { time: hhmm(e.start) });
   else time = `${hhmm(e.start)} – ${hhmm(e.end)}`;
-  const sub = [e.location, calendarOf(e)?.name].filter(Boolean).join(' · ');
-  return `<button class="cal-row ${stateClass(e)}" data-ev="${esc(e.id)}" aria-label="${esc(ariaLabel(e))}">
-    <span class="cal-row-time">${esc(time)}</span><span class="cal-dot" style="--c:${colorOf(e.accountId)}"></span>
-    <span class="cal-row-main"><span class="cal-row-title">${esc(titleOf(e))}</span><span class="cal-row-sub">${esc(sub)}</span></span>
-    ${e.response === 'needsAction' ? `<span class="cal-pill">${esc(t('calendar.event.invitation'))}</span>` : ''}</button>`;
+  const today = day === startOfDay(now);
+  if (!e.allDay && today && e.start <= now && e.end > now) detail = `<span class="rel now">${esc(t('calendar.event.now'))}</span>`;
+  else if (!e.allDay && today && e.start > now) detail = `<span class="rel">${esc(fromNow(e.start - now))}</span>`;
+  else if (!e.allDay && e.start >= day && e.end <= next) detail = `<span class="rel">${esc(duration(e.end - e.start))}</span>`;
+  const meta = [
+    e.location ? `<span class="m">${icons.pin}<span>${esc(e.location)}</span></span>` : '',
+    e.meeting ? `<span class="m">${icons.video}<span>${esc(t('calendar.event.videoCall'))}</span></span>` : '',
+    `<span class="m">${icons.calendar}<span>${esc(calendarOf(e)?.name || '')}</span></span>`
+  ].join('');
+  return `<button class="cal-row ${stateClass(e)}" data-ev="${esc(e.id)}" style="--c:${colorOf(e.accountId)}" aria-label="${esc(ariaLabel(e))}">
+    <span class="cal-row-time"><span>${esc(time)}</span>${detail}</span><span class="cal-dot"></span>
+    <span class="cal-row-main"><span class="cal-row-title">${esc(titleOf(e))}</span><span class="cal-row-sub">${meta}</span></span>
+    ${e.response === 'needsAction' ? `<span class="cal-pill">${esc(t('calendar.event.invitation'))}</span>` : ''}${peopleHtml(e)}</button>`;
 }
 
 // ---------- event card ----------
@@ -762,8 +810,14 @@ function bindForm(body) {
   const f = body.querySelector('.cal-form');
   const field = (n) => f.querySelector(`[name="${n}"]`);
   const at = (date, time) => parseLocal(date || dateValue(Date.now()), field('allDay').checked ? '00:00' : time);
-  const startOf = () => at(field('startDate').value, field('startTime').value);
-  const endOf = () => at(field('endDate').value, field('endTime').value);
+  // Fields that still show the instant they started from keep it, also in the hour that happens twice.
+  const instant = (which) => {
+    const date = field(`${which}Date`).value || dateValue(Date.now());
+    if (field('allDay').checked) return at(date, '00:00');
+    return keptInstant(Number(f.dataset[which]), date, field(`${which}Time`).value);
+  };
+  const startOf = () => instant('start');
+  const endOf = () => instant('end');
   // Moving the start moves the end with it, so the event keeps its length: in time for a timed event, in
   // calendar days for an all-day one, whose days are 23 or 25 hours long across a clock change.
   const dayCount = () => Math.round((at(field('endDate').value, '00:00') - at(field('startDate').value, '00:00')) / DAY);
@@ -779,6 +833,8 @@ function bindForm(body) {
       const end = startOf() + Math.max(length, 0);
       field('endDate').value = dateValue(end);
       field('endTime').value = timeValue(end);
+      // The end the fields now show is this instant, even where the clock shows that time twice.
+      f.dataset.end = String(end);
     }
     remember();
   };
@@ -787,7 +843,14 @@ function bindForm(body) {
   field('endDate').addEventListener('change', remember);
   field('endTime').addEventListener('change', remember);
   field('allDay').addEventListener('change', () => {
-    f.classList.toggle('all-day', field('allDay').checked);
+    const allDay = field('allDay').checked;
+    f.classList.toggle('all-day', allDay);
+    // From all day to a time: the hidden times are midnight, which would end the event where it starts or lose its
+    // last day. It becomes nine to ten instead, from the first day to the last.
+    if (!allDay && field('startTime').value === '00:00' && field('endTime').value === '00:00') {
+      field('startTime').value = '09:00';
+      field('endTime').value = '10:00';
+    }
     remember();
   });
   // Enter in a single-line field saves.
@@ -820,11 +883,8 @@ function readForm(scrim) {
     out.start = parseLocal(startDate);
     out.end = parseLocal(out.endDate);
   } else {
-    // A field left as it was keeps its instant: on the night the clocks go back, 02:30 happens twice and parsing
-    // it again would pick the first one.
-    const kept = (ms, date, time) => (Number.isFinite(ms) && dateValue(ms) === date && timeValue(ms) === time ? ms : parseLocal(date, time));
-    out.start = kept(Number(f.dataset.start), startDate, field('startTime').value);
-    out.end = kept(Number(f.dataset.end), endDate, field('endTime').value);
+    out.start = keptInstant(Number(f.dataset.start), startDate, field('startTime').value);
+    out.end = keptInstant(Number(f.dataset.end), endDate, field('endTime').value);
     if (out.end <= out.start) return fail(t('calendar.dialog.endBeforeStart'));
   }
   return out;
@@ -833,6 +893,8 @@ function readForm(scrim) {
 // Guests hear about a change only when the user says so, as Google Calendar asks.
 async function notifyGuests(e, what) {
   const others = (e.attendees || []).filter((a) => !a.self);
+  // The demo account's guests are made up and nobody emails them, so there is nothing to ask.
+  if (account(e.accountId)?.kind === 'demo') return false;
   if (!e.organizer || !e.organizer.self || !others.length) return false;
   return dialog({
     title: t(`calendar.notify.${what}Title`),
@@ -1074,7 +1136,7 @@ export function onKey(ev) {
   return true;
 }
 
-// The line for now moves along; a new day redraws.
+// The line for now moves along, and Upcoming's "in 25 min" and "Now" stay true; a new day redraws.
 setInterval(() => {
   if (!C.open) return;
   const today = startOfDay(Date.now());
@@ -1083,6 +1145,7 @@ setInterval(() => {
     reload(0);
     return;
   }
+  if (shownView() === 'upcoming') render();
   const line = $('.calendar .cal-now');
   if (line) line.style.top = `${(minutes(Date.now()) * HOUR) / 60}px`;
 }, 30000);

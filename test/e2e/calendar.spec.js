@@ -40,12 +40,15 @@ test('switches between mail and calendar, by the sidebar and by Ctrl+1 and Ctrl+
   await openCalendar();
   await expect(win.locator('.listpane')).toBeHidden();
   await expect(win.locator('[data-mode="calendar"]')).toHaveAttribute('aria-selected', 'true');
+  // Screen readers hear what the sidebar holds now.
+  await expect(win.locator('.sidebar')).toHaveAttribute('aria-label', 'Calendars');
   await expect(win.locator('.sidebar .cal-toggle')).toHaveCount(3);
   await expect(win.locator('.cal-dayhead')).toHaveCount(7);
   await expect(win.locator('.cal-dayhead.today')).toHaveCount(1);
 
   await win.keyboard.press('Control+1');
   await expect(win.locator('.listpane')).toBeVisible();
+  await expect(win.locator('.sidebar')).toHaveAttribute('aria-label', 'Folders');
   await expect(win.locator('.calendar')).toBeHidden();
   await win.keyboard.press('Control+2');
   await expect(win.locator('.calendar')).toBeVisible();
@@ -111,6 +114,26 @@ test('creates, edits and deletes an event', async () => {
   await expect(win.locator('#toast')).toHaveText('Event deleted');
   await expect(event('Yoga class')).toHaveCount(0);
 
+  // An event with guests in the demo account changes without asking to email them: nobody gets those emails.
+  await event('Roadmap review').click();
+  await card().locator('[data-pop="edit"]').click();
+  await win.fill('.cal-form [name="title"]', 'Roadmap review (moved)');
+  await win.click('.dialog .buttons button.primary');
+  await expect(event('Roadmap review (moved)')).toBeVisible();
+  await expect(win.locator('.dialog')).toHaveCount(0);
+
+  // A one-day all-day event turned into a timed one becomes nine to ten instead of ending where it starts.
+  await win.locator('.cal-allday-cell').first().click();
+  await expect(win.locator('.cal-form [name="allDay"]')).toBeChecked();
+  await win.fill('.cal-form [name="title"]', 'Workshop prep');
+  await win.uncheck('.cal-form [name="allDay"]');
+  await expect(win.locator('.cal-form [name="startTime"]')).toHaveValue('09:00');
+  await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('10:00');
+  await expect(win.locator('.cal-form [name="endDate"]')).toHaveValue(await win.locator('.cal-form [name="startDate"]').inputValue());
+  await win.click('.dialog .buttons button.primary');
+  await expect(win.locator('.cal-form')).toHaveCount(0);
+  await expect(event('Workshop prep')).toContainText('09:00 – 10:00');
+
   // An empty spot in the grid starts an event at that half hour.
   await win.locator('.cal-scroll').evaluate((el) => (el.scrollTop = 0));
   const col = win.locator('.cal-col').nth(2);
@@ -147,7 +170,15 @@ test('hides a calendar, switches views and moves through the weeks by keyboard',
   await win.keyboard.press('u');
   await expect(title).toHaveText('Upcoming');
   await expect(win.locator('.cal-list-day').first()).toBeVisible();
-  await expect(win.locator('.cal-row', { hasText: 'KL1691 Amsterdam to Lisbon' })).toBeVisible();
+  const flight = win.locator('.cal-row', { hasText: 'KL1691 Amsterdam to Lisbon' });
+  await expect(flight).toBeVisible();
+  // A row hangs from its first line: the time and the title start at the same height.
+  const tops = await flight.evaluate((row) => [row.querySelector('.cal-row-time > span').getBoundingClientRect().top, row.querySelector('.cal-row-title').getBoundingClientRect().top]);
+  expect(Math.abs(tops[0] - tops[1])).toBeLessThan(1);
+  await expect(flight.locator('.cal-row-time .rel')).toHaveText('2 hrs, 40 mins');
+  await expect(flight.locator('.cal-row-sub')).toContainText('Amsterdam Airport Schiphol');
+  // The stand-up's guests besides the user show as faces.
+  await expect(win.locator('.cal-row', { hasText: 'Stand-up' }).first().locator('.cal-people .avatar')).toHaveCount(2);
   await win.click('[data-cal-view="week"]');
   await expect(win.locator('.cal-dayhead')).toHaveCount(7);
 
@@ -208,6 +239,14 @@ test('renaming an event in the hour the clocks go back keeps its time', async ()
   );
   expect(saved.start).toBe(second);
   expect(saved.end).toBe(second + 3600000);
+
+  // Moving it keeps its real length of an hour, though the clock showed its start twice.
+  await event('Night shift (renamed)').click();
+  await card().locator('[data-pop="edit"]').click();
+  await win.fill('.cal-form [name="startTime"]', '04:00');
+  await win.locator('.cal-form [name="startTime"]').dispatchEvent('change');
+  await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('05:00');
+  await win.keyboard.press('Escape');
 });
 
 test('moving an all-day event over the day the clocks go forward keeps its number of days', async () => {

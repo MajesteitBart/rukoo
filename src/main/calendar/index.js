@@ -128,6 +128,8 @@ class Calendars extends EventEmitter {
       cache.failedAt = null;
     }
     this.emit('updated');
+    // What the cache holds is from before; fetch it again with the new grant.
+    this.syncAccount(id).catch(() => {});
   }
 
   forget(acc) {

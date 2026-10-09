@@ -42,7 +42,8 @@ function apiError(status, body) {
   }
   if (status === 404 || status === 410) return calendarError('not_found', t('errors.calendar.notFound'));
   if (status === 409) return calendarError('conflict', t('errors.calendar.request', { reason: e.message || status }));
-  if (status === 429 || why.some((r) => /rateLimitExceeded/.test(r))) return calendarError('busy', t('errors.calendar.busy'));
+  // rateLimitExceeded and userRateLimitExceeded are both a pause, not a refusal.
+  if (status === 429 || why.some((r) => /^(rateLimitExceeded|userRateLimitExceeded)$/.test(r))) return calendarError('busy', t('errors.calendar.busy'));
   return calendarError('request', t('errors.calendar.request', { reason: e.message || status }));
 }
 
@@ -109,7 +110,10 @@ function toEvent(item, cal) {
     status: item.status === 'tentative' ? 'tentative' : 'confirmed',
     busy: item.transparency !== 'transparent',
     response: me && !own ? me.response : null,
-    canEdit: Boolean(cal.writable && (own || item.guestsCanModify) && !item.locked && !item.privateCopy),
+    // A calendar shared without private details can change everything except its private events.
+    canEdit: Boolean(
+      cal.writable && (own || item.guestsCanModify) && !item.locked && !item.privateCopy && !(cal.hidesPrivate && item.visibility === 'private')
+    ),
     canRespond: Boolean(me && !own),
     organizer,
     attendees,
@@ -186,7 +190,8 @@ class GoogleCalendar {
         id: String(c.id),
         name: String(c.summaryOverride || c.summary || c.id),
         primary: Boolean(c.primary),
-        writable: c.accessRole === 'owner' || c.accessRole === 'writer',
+        writable: c.accessRole === 'owner' || c.accessRole === 'writer' || c.accessRole === 'writerWithoutPrivateAccess',
+        hidesPrivate: c.accessRole === 'writerWithoutPrivateAccess',
         selected: c.selected !== false,
         timeZone: c.timeZone || null
       }))
@@ -243,13 +248,16 @@ class GoogleCalendar {
     await this.request('DELETE', this.eventPath(cal, id), { query: { sendUpdates: notify ? 'all' : 'none' } });
   }
 
-  // An answer to an invitation: the user's own entry in the guest list. The organizer is told, as Google Calendar does.
+  // An answer to an invitation: only the user's own entry, with attendeesOmitted, which tells Google the list is
+  // partial. Sending the whole list back would overwrite answers other guests gave in the meantime, and drop the
+  // guests Google left out of a long list. The organizer is told, as Google Calendar does.
   async respond(cal, event, response, { series = false } = {}) {
     const id = series && event.seriesId ? event.seriesId : event.eventId;
     const item = await this.request('GET', this.eventPath(cal, id));
-    const attendees = (item.attendees || []).map((a) => (a.self ? { ...a, responseStatus: response } : a));
-    if (!attendees.some((a) => a.self)) throw calendarError('not_invited', t('errors.calendar.notInvited'));
-    await this.request('PATCH', this.eventPath(cal, id), { query: { sendUpdates: 'all' }, body: { attendees } });
+    const me = (item.attendees || []).find((a) => a.self);
+    if (!me) throw calendarError('not_invited', t('errors.calendar.notInvited'));
+    const body = { attendeesOmitted: true, attendees: [{ ...me, responseStatus: response }] };
+    await this.request('PATCH', this.eventPath(cal, id), { query: { sendUpdates: 'all' }, body });
   }
 }
 
