@@ -441,6 +441,10 @@
     "message": "Close chat",
     "description": "Chat panel header: tooltip of the button that closes the panel."
   },
+  "agent.panel.continueChat": {
+    "message": "Continue the chat about the earlier message",
+    "description": "Chat panel empty state: quiet row under the quick actions when the open email has no chat but an earlier email in its thread has one; the agent and the chat's date are under it (renderEmpty and continueChat in agent/panel.js)."
+  },
   "agent.panel.history": {
     "message": "Recent chats",
     "description": "Chat panel header: tooltip of the clock button that lists earlier conversations."
@@ -476,6 +480,18 @@
   "agent.panel.newChat": {
     "message": "New chat",
     "description": "Chat panel header: title line for a conversation without a title yet, and history fallback."
+  },
+  "agent.panel.newerMessage": {
+    "message": "Newer message",
+    "description": "Chat panel input: grey text in the second email chip, next to the subject of the newer email you continued an earlier chat from, while that email is open (contextChip in agent/panel.js)."
+  },
+  "agent.panel.newerPending": {
+    "message": "You continued this chat from this newer message. It goes to {name} with your next message.",
+    "description": "Chat panel input: tooltip of Newer message in the second email chip, before the agent has had that email; name is the agent (contextChip in agent/panel.js)."
+  },
+  "agent.panel.newerSent": {
+    "message": "You continued this chat from this newer message. {name} has it.",
+    "description": "Chat panel input: tooltip of Newer message in the second email chip, once a message took that email to the agent; name is the agent (contextChip in agent/panel.js)."
   },
   "agent.panel.noHistory": {
     "message": "No chats yet",

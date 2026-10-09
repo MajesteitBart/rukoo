@@ -532,6 +532,98 @@ test('a typed /name sent with the Send button runs the skill or quick action, li
   expect(got.text).toBe('/not-a-command');
 });
 
+test('a newer email in a thread offers the earlier chat, and continuing gives the agent the newer email', async () => {
+  // Hermes talks about the dinner invitation the user sent; Joris's answer is in the inbox.
+  await win.click('[data-view="sent"]');
+  await openChat('Dinner on Saturday');
+  await say('Did Joris answer?');
+  await expect(transcript()).toContainText('You asked: "Did Joris answer?"', { timeout: 10000 });
+  await win.click('[data-view="inbox"]');
+  await item('Re: Dinner on Saturday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Re: Dinner on Saturday');
+
+  // No chat of its own: the empty state as always, with the earlier chat offered under the actions.
+  const offer = win.locator('.agentpane .bui-offer');
+  const files = win.locator('.agentpane .bui-pb__files');
+  await expect(win.locator('.agentpane .bui-rec__title')).toHaveText('What should Hermes do with this email?');
+  await expect(offer.locator('.bui-offer__label')).toHaveText('Continue the chat about the earlier message');
+  await expect(offer.locator('.bui-offer__sub')).toHaveText(/^Hermes · \d{2}:\d{2}$/);
+  await expect(offer).toHaveAttribute('title', 'Dinner on Saturday');
+  await expect(files.locator('.bui-entity__name')).toHaveText('Re: Dinner on Saturday');
+  await settled();
+  await shot('16-continue-offer');
+
+  // An email without a related chat has no offer.
+  await item('Your parcel is on its way').click();
+  await expect(files.locator('.bui-entity__name')).toHaveText('Your parcel is on its way');
+  await expect(offer).toHaveCount(0);
+  await item('Re: Dinner on Saturday').click();
+  await expect(offer).toBeVisible();
+
+  // Another agent picked for a new chat: the offer still names the chat's own agent, and continuing goes to it.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Claude' }).click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
+  await expect(offer.locator('.bui-offer__sub')).toContainText('Hermes');
+  await app.evaluate(() => {
+    const adapter = global.__semAgents.adapters.get('clark');
+    const real = adapter.runTurn.bind(adapter);
+    global.__inputs = [];
+    adapter.runTurn = (turn) => {
+      global.__inputs.push(turn.input);
+      return real(turn);
+    };
+  });
+  // By keyboard: the offer is a button.
+  await offer.focus();
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Hermes');
+  await expect(transcript()).toContainText('You asked: "Did Joris answer?"');
+  await expect(input()).toBeFocused();
+  // The chat is still about the invitation; the answer on screen shows next to it.
+  await expect(files.locator('.bui-entity__name')).toHaveText(['Dinner on Saturday', 'Re: Dinner on Saturday']);
+  await expect(files.locator('.bui-entity__sub')).toHaveText(['Demo User', 'Newer message']);
+  await expect(files.locator('.bui-entity__sub').last()).toHaveAttribute('title', 'You continued this chat from this newer message. It goes to Hermes with your next message.');
+  await expect(files.getByRole('button')).toHaveCount(0);
+  await settled();
+  await shot('17-continued');
+
+  await say('What did he say?');
+  await expect(transcript()).toContainText('You asked: "What did he say?"', { timeout: 10000 });
+  const [next] = await app.evaluate(() => global.__inputs);
+  expect(next).toContain('[The user now looks at a newer email in the same thread and continues this chat from it.');
+  expect(next).toMatch(/<unsafe_content source="email" id="[^"]*:INBOX:\d+" message_id="<demo-\d+@example\.com>"/);
+  expect(next).toContain('Great, I will book a table for 19:30.');
+  expect(next).not.toContain('Could you book a table?');
+  await expect(files.locator('.bui-entity__sub').last()).toHaveAttribute('title', 'You continued this chat from this newer message. Hermes has it.');
+
+  // Back on the answer later, the chat shows at once.
+  await item('Your parcel is on its way').click();
+  await expect(offer).toHaveCount(0);
+  await expect(transcript()).not.toContainText('What did he say?');
+  await item('Re: Dinner on Saturday').click();
+  await expect(transcript()).toContainText('You asked: "What did he say?"');
+  await expect(offer).toHaveCount(0);
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(1);
+});
+
+test('typing instead of continuing starts a new chat about the email on screen', async () => {
+  await openChat('Call on Thursday');
+  await say('Summarize this');
+  await expect(transcript()).toContainText('You asked: "Summarize this"', { timeout: 10000 });
+  await win.click('[data-view="sent"]');
+  await item('Re: Call on Thursday').click();
+  await expect(win.locator('.agentpane .bui-offer')).toBeVisible();
+  await say('Hello');
+  await expect(transcript()).toContainText('You asked: "Hello"', { timeout: 10000 });
+  await expect(transcript()).not.toContainText('Summarize this');
+  const chats = await app.evaluate(() => global.__semAgents.list().map((c) => ({ subject: c.message.subject, continued: global.__semAgents.conversations.get(c.id).continued.length })));
+  expect(chats).toEqual([
+    { subject: 'Re: Call on Thursday', continued: 0 },
+    { subject: 'Call on Thursday', continued: 0 }
+  ]);
+});
+
 test('the panel docks in wide windows, slides over the reader in narrower ones and fills narrow ones', async () => {
   await openChat('Call on Thursday');
   // The title bar holds the only sparkle button; the reading pane toolbar has none.
