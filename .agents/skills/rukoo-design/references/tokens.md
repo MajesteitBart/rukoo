@@ -61,7 +61,7 @@ The panel uses Beautiful UI's token names. Most of them point at the app tokens,
 | `--green-tint`, `--orange-tint`, `--red-tint` | 14% alpha in dark, pale solid in light | Status pill backgrounds |
 | `--font-mono` | JetBrains Mono, Cascadia Mono, Consolas | Code, commands, file names |
 
-Status pills (`.bui-task__pill`, `.bui-donepill`) put text in the status color on its tint, with no ring: `background: var(--green-tint); color: var(--green)`. Neutral states, such as a proposed task, use `--field` with `--ink-2` text and `--shadow-hairline`. The danger button is the one place a ring of the status color appears: `color-mix(in oklch, var(--red) 28%, transparent)`. Beautiful UI's `ValuePill` uses that same ring, so a ported value pill would have it too.
+Status pills (`.bui-task__pill`, `.bui-donepill`) put text in the status color on its tint, with no ring: `background: var(--green-tint); color: var(--green)`. Neutral states use `--field` without a ring: a skipped task has `--ink-3` text, a grey done pill `--ink-2`. A proposed task, which still waits for you, is the exception: `--ink-2` text with `--shadow-hairline`. The danger button is the one place a ring of the status color appears: `color-mix(in oklch, var(--red) 28%, transparent)`. Beautiful UI's colored `ValuePill` tones use that same 28% ring, while its neutral tone uses `--shadow-hairline`.
 
 Base text under `.bui` is 13px, line height 1.5, letter-spacing -0.01em, with `font-feature-settings: 'cv11', 'ss01'`.
 
@@ -133,11 +133,11 @@ In the panel, every elevation is a 1px ring plus a blur:
 
 | Token | Light | Dark | Use |
 | --- | --- | --- | --- |
-| `--shadow-hairline` | 1px `--line` ring | same | Chips, inline cards, separators |
-| `--shadow-btn` | `--line-strong` ring with a 4px blur at 4% | white ring at 10%, 1px drop with a 2px blur at 30% | Secondary buttons |
-| `--shadow-card` | `--line` ring with six layered blurs from 1 to 47px, each at 1 to 3% | white ring at 11%, two short drops at 20% | Cards in the transcript |
-| `--shadow-raised` | `--line` ring with a mid blur stack | white ring at 13%, 10px blur at 22% | Hovered or lifted cards |
-| `--shadow-overlay` | `--line` ring with the large blur stack (up to 50px) | white ring at 15%, 28px blur at 34% | Menus and popovers |
+| `--shadow-hairline` | 1px `--line` ring | same | Entity chips, counts, suggestion chips, the offer row, the proposed-task pill, code blocks |
+| `--shadow-btn` | `--line-strong` ring with a 4px blur at 4% | white ring at 10%, 1px drop with a 2px blur at 30% | Secondary buttons, tool rows, source chips |
+| `--shadow-card` | `--line` ring with six layered blurs from 1 to 47px, each at 1 to 3% | white ring at 11%, two short drops at 20% | Approval, task, source, recommendation and draft cards; the composer box |
+| `--shadow-raised` | `--line` ring with a mid blur stack | white ring at 13%, 10px blur at 22% | Panel menus (`.bui-menu`) and the composer's `/` menu |
+| `--shadow-overlay` | `--line` ring with the large blur stack (up to 50px) | white ring at 15%, 28px blur at 34% | Defined, not used yet. Beautiful UI uses it for popovers and large overlays. |
 | `--shadow-inset-field` | 2px inner shadow at 12% | at 40% | Recessed inputs |
 
 Filled buttons (primary, accent) also get a 1px inner highlight at the top: `inset 0 1px 0 rgba(255, 255, 255, 0.14)`.
