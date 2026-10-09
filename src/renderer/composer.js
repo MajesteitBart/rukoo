@@ -937,11 +937,21 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   let sending = false;
-  async function send() {
+  // While sending: resolves to true once the message is sent and the editor closed, false when it stays open.
+  let sent = null;
+  function send() {
     // Taken before anything is awaited, so a second click cannot send the message twice.
     // Nothing is sent once the editor is saving to close.
     if (sending || closing || closed) return;
     sending = true;
+    const outcome = () => closed;
+    sent = trySend()
+      .then(outcome, outcome)
+      .finally(() => (sent = null));
+    return sent;
+  }
+
+  async function trySend() {
     const btn = page.querySelector('[data-c="send"]');
     const label = btn.querySelector('span');
     btn.disabled = true;
@@ -1005,7 +1015,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   function close() {
     if (closed) return Promise.resolve(true);
     if (answer) return answer;
-    // Busy with another question (the agent's Undo), a save before closing, or sending.
+    // A quit during a send goes on once the message is sent, and is called off if it isn't.
+    if (sent) return sent;
+    // Busy with another question (the agent's Undo) or a save before closing.
     if (asking || closing || sending) return Promise.resolve(false);
     answer = ask().finally(() => (answer = null));
     return answer;

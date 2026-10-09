@@ -331,6 +331,9 @@ function answered(id, closed) {
   if (!closed) {
     quitAsks.clear();
     quitting = false;
+    // The main window closed before the quit was called off. Rukoo stays in the tray with a hidden main window, as
+    // after any close: the agents' tools need it, and only a window hears that the Windows session ends.
+    if (!win && engine.settings.closeToTray) createWindow({ hidden: true });
     return;
   }
   // Without windows left, window-all-closed has quit already; a second quit would cut will-quit's wait short.
@@ -356,12 +359,17 @@ function endSession() {
   // ---- /agents ----
 }
 
-// Test mode: a never-shown window does not paint, so park it off-screen without focus.
-function reveal(w, maximized = false) {
+// Test mode: a never-shown window does not paint, so park it off-screen without focus. hidden: the window starts in
+// the tray and shows later, through showWindow().
+function reveal(w, maximized = false, hidden = false) {
   w.once('ready-to-show', () => {
     if (process.env.SEM_HIDDEN) {
       w.setPosition(-5000, -5000);
-      w.showInactive();
+      if (!hidden) w.showInactive();
+      return;
+    }
+    if (hidden) {
+      if (maximized) w.once('show', () => w.maximize());
       return;
     }
     if (maximized) w.maximize();
@@ -834,7 +842,7 @@ ipcMain.handle('mail:call', async (event, method, args) => {
   }
 });
 
-function createWindow() {
+function createWindow({ hidden = false } = {}) {
   const b = windowState.bounds('main', { width: 1440, height: 920, minWidth: 760, minHeight: 560 });
   const { bar, background } = themeColors();
   win = new BrowserWindow({
@@ -862,6 +870,11 @@ function createWindow() {
   // Close to the tray: the window hides before its page hears of the close, so nothing asks about unsaved
   // changes and a draft in the reading pane stays as it is. The agents' tools keep their window too.
   win.on('close', (event) => {
+    // While its page asks about unsaved changes for a quit, the window stays in view with the question.
+    if (quitAsks.has(win.webContents.id)) {
+      event.preventDefault();
+      return;
+    }
     if ((quitting && !quitAsks.size) || !engine.settings.closeToTray) return;
     event.preventDefault();
     win.hide();
@@ -879,7 +892,7 @@ function createWindow() {
     if (agentGate && details && details.isMainFrame && !details.isSameDocument) agentGate.close();
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
-  reveal(win, b.maximized);
+  reveal(win, b.maximized, hidden);
   win.loadFile(path.join(RENDERER, 'index.html'));
 }
 

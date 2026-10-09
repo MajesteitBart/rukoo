@@ -331,25 +331,48 @@ test('a save that fails during a quit keeps Rukoo running with the draft', async
   expect(running).toBe(true);
 });
 
-test('Cancel in a compose window calls off a quit; the tray then opens a new main window', async () => {
+test('Cancel in a compose window calls off a quit; a main window comes back hidden in the tray', async () => {
   const compose = await composeDraft('Popped out');
   await trayMenu('quit');
   // The main window had nothing to ask and closed; the compose window asks.
   await expect(compose.locator('.scrim')).toContainText('Save draft?');
   await expect.poll(main).toBeNull();
-  await compose.click('.scrim .buttons button:text-is("Cancel")');
+  const [fresh] = await Promise.all([app.waitForEvent('window'), compose.click('.scrim .buttons button:text-is("Cancel")')]);
+  win = page(fresh);
   await expect(compose.locator('.scrim')).toHaveCount(0);
   await expect(compose.locator('[data-field="subject"]')).toHaveValue('Popped out');
+  // Rukoo is running with a main window in the tray, as after any close.
+  await expect.poll(main).toMatchObject({ visible: false });
   expect(running).toBe(true);
 
-  // Rukoo is running: the tray opens a fresh main window, and closing it goes to the tray.
-  const [fresh] = await Promise.all([app.waitForEvent('window'), trayClick()]);
-  win = page(fresh);
+  // The tray shows it, and closing it goes to the tray again.
+  await trayClick();
+  await expect.poll(visible).toBe(true);
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
-  expect(await visible()).toBe(true);
   await closeMain();
   await expect.poll(visible).toBe(false);
   expect(running).toBe(true);
+});
+
+test('after a quit called off in a compose window, the end of the Windows session still cleans up once that window closes', async () => {
+  const compose = await composeDraft('Closed later');
+  await trayMenu('quit');
+  await expect(compose.locator('.scrim')).toContainText('Save draft?');
+  await Promise.all([app.waitForEvent('window'), compose.click('.scrim .buttons button:text-is("Cancel")')]);
+  await expect(compose.locator('.scrim')).toHaveCount(0);
+  // Closing the compose window now asks again, outside a quit; Don't save lets it go.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('compose.html')).close());
+  await expect(compose.locator('.scrim')).toContainText('Save draft?');
+  await Promise.all([compose.waitForEvent('close'), compose.click(`.scrim .buttons button:text-is("Don't save")`)]);
+  expect(await windowCount()).toBe(1);
+  expect(running).toBe(true);
+
+  // The hidden main window is still there to hear that Windows signs out.
+  await watchQuit();
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('session-end'));
+  const lines = () => (fs.existsSync(quitLog) ? fs.readFileSync(quitLog, 'utf8').trim().split(/\r?\n/) : []);
+  await expect.poll(lines).toEqual(['engine flushed', 'tray removed', 'agents closed']);
+  fs.rmSync(quitLog, { force: true });
 });
 
 for (const [button, kept] of [["Don't save", false], ['Save', true]]) {
@@ -467,4 +490,71 @@ test('a quit after the end of the Windows session still waits for the agents to 
   const events = await quitEvents();
   expect(events.slice(0, 4)).toEqual(['engine flushed', 'calendars flushed', 'tray removed', 'agents closed']);
   expect(events.slice(-2)).toEqual(['will-quit', 'agents done']);
+});
+
+test('the close button keeps the window and its question in view while a quit asks about a draft', async () => {
+  await inlineDraft('Still asking', 'Some words');
+  await closeMain();
+  await expect.poll(visible).toBe(false);
+  await trayMenu('quit');
+  await expect.poll(visible).toBe(true);
+  await expect(win.locator('.scrim')).toContainText('Save draft?');
+
+  await closeMain();
+  await win.waitForTimeout(500);
+  expect(await visible()).toBe(true);
+  await expect(win.locator('.scrim')).toContainText('Save draft?');
+
+  // The question still decides the quit.
+  await watchQuit();
+  await win.click('.scrim .buttons button:text-is("Save")');
+  expect(await quitEvents()).toEqual(['engine flushed', 'before-quit', 'tray removed', 'agents closed', 'will-quit']);
+  expect(savedDrafts()).toContain('Still asking');
+});
+
+// Sending takes a while, as it does over a slow connection.
+const slowSend = (fail = false) =>
+  app.evaluate((_electron, fail) => {
+    const engine = global.__semEngine;
+    const send = engine.send.bind(engine);
+    engine.send = async (payload) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (fail) throw new Error('Connection lost');
+      return send(payload);
+    };
+  }, fail);
+const inboxSubjects = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'data', 'demo-server.json'), 'utf8')).boxes.INBOX.messages.map((m) => m.subject);
+
+async function inlineMessage(subject) {
+  await inlineDraft(subject, 'Some words');
+  await win.fill('.composer [data-rinput="to"]', 'demo@example.com');
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.composer [data-rfield="to"] .recipient')).toHaveCount(1);
+}
+
+test('a quit from the tray during a send waits for it and goes on once the mail is sent', async () => {
+  await inlineMessage('Sent while quitting');
+  await slowSend();
+  await win.click('.composer [data-c="send"]');
+  await expect(win.locator('.composer [data-c="send"]')).toBeDisabled();
+  await watchQuit();
+  await trayMenu('quit');
+  expect(await quitEvents()).toEqual(QUIT_AFTER_QUESTION);
+  expect(inboxSubjects()).toContain('Sent while quitting');
+});
+
+test('a send that fails during a quit calls the quit off and keeps the message', async () => {
+  await inlineMessage('Not sent while quitting');
+  await slowSend(true);
+  await win.click('.composer [data-c="send"]');
+  await expect(win.locator('.composer [data-c="send"]')).toBeDisabled();
+  await trayMenu('quit');
+  await expect(win.locator('.scrim')).toContainText('Connection lost');
+  await win.click('.scrim .buttons button');
+  await expect(win.locator('.composer [data-c="send"]')).toBeEnabled();
+  await expect(win.locator('.composer .editor')).toContainText('Some words');
+  // Called off: closing goes to the tray again instead of quitting.
+  await closeMain();
+  await expect.poll(visible).toBe(false);
+  expect(running).toBe(true);
 });
