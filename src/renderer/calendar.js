@@ -8,7 +8,7 @@ import { api, esc, $, $$, hhmm, toast, dialog, choiceDialog, confirmDialog, segm
 
 const DAY = 86400000;
 // The grid: pixels per hour, and the least an event is drawn, so a short one still shows its title.
-const HOUR = 48;
+const HOUR = 56;
 const MIN_EVENT = 20;
 const UPCOMING_DAYS = 30;
 // A week narrower than this shows its day instead: seven columns would be too narrow to read.
@@ -375,14 +375,18 @@ function render() {
   }
 }
 
-// Where the grid opens: an hour or two before now on today, otherwise the start of the working day.
+// Where the grid opens: at the start of the working day.
 // The Upcoming list opens at its top.
 function workingDayTop(view, height) {
   if (view === 'upcoming') return 0;
   const r = range(view);
   const now = Date.now();
-  const hours = now >= r.start && now < r.end ? Math.max(0, minutes(now) / 60 - 2) : 7.5;
-  return Math.min(hours * HOUR, 24 * HOUR - height);
+  const start = 7.5 * HOUR;
+  const nowTop = (minutes(now) * HOUR) / 60;
+  let top = start;
+  // Late in the day, the line for now still has to be on screen; then it sits about two thirds down.
+  if (now >= r.start && now < r.end && nowTop > start + height - 16) top = nowTop - height * 0.66;
+  return Math.max(0, Math.min(top, 24 * HOUR - height));
 }
 
 function stateClass(e) {
@@ -506,16 +510,19 @@ function layoutDay(segs) {
   return segs;
 }
 
+// An event in the grid: a card a pixel inside its slot and a few pixels in from the day's edges, so neighbours
+// and back-to-back events stay apart without borders.
 function eventHtml(s) {
   const e = s.e;
-  const top = (s.top * HOUR) / 60;
-  const height = Math.max(((s.bottom - s.top) * HOUR) / 60, MIN_EVENT) - 2;
-  const short = height < 34;
+  const top = (s.top * HOUR) / 60 + 1;
+  const height = Math.max(((s.bottom - s.top) * HOUR) / 60, MIN_EVENT) - 3;
+  // Two lines need 42px; below that the title and start time share one.
+  const short = height < 42;
   const left = (s.col / s.cols) * 100;
   const width = (s.span / s.cols) * 100;
-  const time = short ? hhmm(e.start) : `${hhmm(e.start)} – ${hhmm(e.end)}`;
-  return `<button class="cal-ev ${stateClass(e)} ${short ? 'short' : ''}" data-ev="${esc(e.id)}" style="top:${top}px;height:${height}px;left:calc(${left}% + 1px);width:calc(${width}% - 3px);--c:${colorOf(e.accountId)}" aria-label="${esc(ariaLabel(e))}">
-    <span class="t">${esc(titleOf(e))}</span><span class="w">${esc(time)}</span>${!short && e.location && height >= 52 ? `<span class="w">${esc(e.location)}</span>` : ''}</button>`;
+  const time = short ? `<span class="w">${esc(hhmm(e.start))}</span>` : `<span class="w">${icons.clock}<span>${esc(`${hhmm(e.start)} – ${hhmm(e.end)}`)}</span></span>`;
+  return `<button class="cal-ev ${stateClass(e)} ${short ? 'short' : ''}" data-ev="${esc(e.id)}" style="top:${top}px;height:${height}px;left:calc(${left}% + 3px);width:calc(${width}% - 6px);--c:${colorOf(e.accountId)}" aria-label="${esc(ariaLabel(e))}">
+    <span class="t">${esc(titleOf(e))}</span>${time}${!short && e.location && height >= 59 ?`<span class="w"><span>${esc(e.location)}</span></span>` : ''}</button>`;
 }
 
 function listHtml() {

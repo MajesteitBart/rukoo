@@ -115,7 +115,7 @@ test('creates, edits and deletes an event', async () => {
   await win.locator('.cal-scroll').evaluate((el) => (el.scrollTop = 0));
   const col = win.locator('.cal-col').nth(2);
   const box = await col.boundingBox();
-  await win.mouse.click(box.x + 20, box.y + 6 * 48 + 30);
+  await win.mouse.click(box.x + 20, box.y + 6 * 56 + 30);
   await expect(win.locator('.cal-form [name="startTime"]')).toHaveValue('06:30');
   await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('07:30');
   await win.keyboard.press('Escape');
