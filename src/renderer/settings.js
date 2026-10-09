@@ -241,6 +241,7 @@ export function openSettings(ctx, { view: start } = {}) {
           ${agentField('clark', 'name', t('settings.agents.name'), c.clark.name, 'Hermes')}
           ${agentField('clark', 'url', t('settings.agents.url'), c.clark.url, 'http://100.64.0.1:8642')}
           <div class="agent-key-box">${keyHtml()}</div>
+          ${agentField('clark', 'model', t('settings.agents.model'), c.clark.model, t('settings.agents.optional'))}
         </div>
         ${row({ title: t('settings.agents.remote', { name: nameSpan('clark') }), desc: `<span data-agent-address>${remoteDesc()}</span>`, action: 'agent-remote', toggle: Boolean(c.mcp && c.mcp.remote) })}
         ${row({ title: t('settings.agents.copySetup'), desc: t('settings.agents.copySetupHelp', { name: nameSpan('clark') }), action: 'agent-copy-setup' })}

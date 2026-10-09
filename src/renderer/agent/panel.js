@@ -167,7 +167,13 @@ export function mountAgentPanel(ctx) {
     // An email opened from the panel itself (a source, a draft): the chat stays as it is.
     keepFor: null,
     // Rukoo's skills and the user's, for the slash commands: [{name, description, source}].
-    skills: []
+    skills: [],
+    // The model and effort picked for a chat that has not started yet (null: the agent's default). A started chat
+    // keeps its own on the conversation.
+    draft: { model: null, effort: null },
+    // agent → the models and efforts main offers (agentModels), and the agents whose list is loading.
+    models: {},
+    loadingModels: new Set()
   };
 
   pane.innerHTML = `
@@ -219,13 +225,19 @@ export function mountAgentPanel(ctx) {
       P.config = config;
       P.unavailable = false;
       // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
-      if (AGENTS.includes(config.defaultAgent) && config.defaultAgent !== before) P.agentId = config.defaultAgent;
+      if (AGENTS.includes(config.defaultAgent) && config.defaultAgent !== before) {
+        // What was picked for the chat that has not started belongs to the agent before.
+        if (!P.conv && P.agentId !== config.defaultAgent) P.draft = { model: null, effort: null };
+        P.agentId = config.defaultAgent;
+      }
     } catch (err) {
       // No agent support in main (yet): show the panel, but say so instead of failing quietly.
       if (!P.config) P.unavailable = true;
     }
     redrawAgents();
     if (P.unavailable) return;
+    // A new model in Settings: main dropped its list, and this gets the new one.
+    if (ctx.agentOpen()) loadModels();
     try {
       P.status = await api('agentStatus');
     } catch (_) {
@@ -385,6 +397,7 @@ export function mountAgentPanel(ctx) {
         onSend: (text) => submit(text),
         onStop: () => P.conv && api('agentStop', P.conv.id).catch((err) => showError(err)),
         onAgent: (id) => pickAgent(id),
+        onPick: (kind, id) => pickChoice(kind, id),
         onCommand: (name) => runAction(name),
         onSlash: () => loadSkills(),
         onRemoveContext: () => detach()
@@ -425,6 +438,134 @@ export function mountAgentPanel(ctx) {
     const state = stateOf(id);
     const blocked = P.unavailable || BLOCKED.has(state);
     chat.setDisabled(blocked, blocked ? setupNote(id, state) : null);
+    refreshPickers();
+  }
+
+  // ---------- model and effort ----------
+
+  // The chat on screen's own model and effort, or what was picked for the chat that has not started yet.
+  const choiceOf = () => (P.conv ? { model: P.conv.model || null, effort: P.conv.effort || null } : P.draft);
+  const effortName = (e) => (hasKey(`agent.effort.${e}`) ? t(`agent.effort.${e}`) : String(e));
+  // Where the effort dial's needle stands for each level, so a narrow panel still shows it without the name.
+  const METER = { minimal: 0, low: 0.15, medium: 0.35, high: 0.55, xhigh: 0.75, max: 0.9, ultra: 1 };
+  const modelEntry = (list, id) => (list && id ? list.models.find((m) => m.id === id) || null : null);
+  // Hermes names a model of another provider "provider::model"; the menus show the model.
+  const modelName = (list, id) => {
+    const m = modelEntry(list, id);
+    return m ? m.label : String(id).split('::').pop();
+  };
+  // The efforts on offer for a model (null: the default model). Without a list there are none to go by.
+  const effortsOf = (list, model) => {
+    if (!list) return [];
+    if (!model) return list.efforts || [];
+    const m = modelEntry(list, model);
+    return m ? m.efforts : list.custom || [];
+  };
+
+  // refresh: the panel just opened, so main loads a list that is older than half a minute again.
+  async function loadModels(id = currentAgent(), refresh = false) {
+    if (P.unavailable || !AGENTS.includes(id)) return;
+    P.loadingModels.add(id);
+    try {
+      P.models[id] = await api('agentModels', id, { refresh });
+    } catch (err) {
+      // Main could not answer at all: the menus offer the default and the chat's own choice.
+      if (!P.models[id]) P.models[id] = { models: [], efforts: [], custom: [], defaultModel: '', error: { code: 'unknown', detail: String((err && err.message) || err) } };
+    } finally {
+      P.loadingModels.delete(id);
+    }
+    if (id === currentAgent()) refreshPickers();
+  }
+
+  function modelItems() {
+    const list = P.models[currentAgent()] || null;
+    const { model } = choiceOf();
+    const fallback = list && (list.defaultModel || (list.models.find((m) => m.isDefault) || {}).id);
+    const items = [{ heading: t('agent.model.title') }, { id: '', label: t('agent.model.default'), tag: fallback ? modelName(list, fallback) : '', checked: !model }];
+    const rows = list ? [...list.models] : [];
+    // The chat's model stays in the menu when the list no longer has it (or could not load).
+    if (model && !rows.some((m) => m.id === model)) rows.push({ id: model, label: modelName(list, model) });
+    let group = null;
+    for (const m of rows) {
+      const name = m.route ? t('agent.model.routes') : m.group || '';
+      if (name !== group) {
+        items.push(name ? { heading: name } : { separator: true });
+        group = name;
+      }
+      items.push({ id: m.id, label: m.label, tag: m.tag || '', title: m.id, checked: m.id === model });
+    }
+    if (!list && P.loadingModels.has(currentAgent())) items.push({ id: '', label: t('agent.model.loading'), disabled: true });
+    else if (list && list.error) items.push({ separator: true }, { id: '', label: t('agent.model.failed'), title: list.error.detail || '', disabled: true });
+    return items;
+  }
+
+  function effortItems() {
+    const list = P.models[currentAgent()] || null;
+    const { model, effort } = choiceOf();
+    const levels = [...effortsOf(list, model)];
+    if (effort && !levels.includes(effort)) levels.push(effort);
+    // What Default comes down to, where the agent says so (Codex, per model).
+    const own = modelEntry(list, model || (list && list.defaultModel));
+    const items = [{ heading: t('agent.effort.title') }, { id: '', label: t('agent.effort.default'), tag: own && own.defaultEffort ? effortName(own.defaultEffort) : '', checked: !effort }];
+    if (levels.length) items.push({ separator: true });
+    for (const e of levels) items.push({ id: e, label: effortName(e), checked: e === effort });
+    return items;
+  }
+
+  // The buttons show the chat on screen: its model (else the default in Settings) and its effort (else only the
+  // icon). The effort menu goes away for a model without effort levels.
+  function refreshPickers() {
+    if (!chat) return;
+    const id = currentAgent();
+    const blocked = P.unavailable || BLOCKED.has(stateOf(id));
+    const list = P.models[id] || null;
+    // The panel shows this agent: its list loads now (also after a pick of another agent or chat).
+    if (!list && !blocked && !P.loadingModels.has(id) && ctx.agentOpen()) loadModels(id);
+    const { model, effort } = choiceOf();
+    const shown = model || (list && list.defaultModel) || '';
+    const modelText = shown ? modelName(list, shown) : t('agent.model.defaultButton');
+    chat.setPicker('model', { text: modelText, label: t('agent.model.button', { model: modelText }), items: modelItems, hidden: blocked });
+    chat.setPicker('effort', {
+      text: effort ? effortName(effort) : '',
+      label: t('agent.effort.button', { effort: effort ? effortName(effort) : t('agent.effort.default') }),
+      items: effortItems,
+      hidden: blocked || (!effort && !effortsOf(list, model).length),
+      meter: effort && effort in METER ? METER[effort] : null
+    });
+  }
+
+  function pickChoice(kind, value) {
+    const list = P.models[currentAgent()] || null;
+    const next = { ...choiceOf(), [kind]: value || null };
+    // An effort the new model does not offer goes back to the default.
+    if (kind === 'model' && next.effort && list && !list.error && !effortsOf(list, next.model).includes(next.effort)) next.effort = null;
+    if (!P.conv) {
+      P.draft = next;
+      return refreshPickers();
+    }
+    // Applies from the next turn; a turn that runs now keeps what it started with.
+    const conv = P.conv;
+    Object.assign(conv, next);
+    refreshPickers();
+    api('agentSetChoice', conv.id, next)
+      .then((saved) => {
+        if (saved && P.conv && P.conv.id === conv.id) {
+          Object.assign(P.conv, saved);
+          refreshPickers();
+        }
+      })
+      .catch((err) => {
+        showError(err);
+        // Main kept what the chat had: show that again.
+        api('agentGet', conv.id)
+          .then((c) => {
+            if (c && P.conv && P.conv.id === c.id) {
+              Object.assign(P.conv, { model: c.model || null, effort: c.effort || null });
+              refreshPickers();
+            }
+          })
+          .catch(() => {});
+      });
   }
 
   // ---------- following the email on screen ----------
@@ -464,6 +605,7 @@ export function mountAgentPanel(ctx) {
     if (otherEmail) {
       P.detached = false;
       P.related = null;
+      P.draft = { model: null, effort: null };
     }
     // Without an email, or one opened from this chat, the conversation on screen stays.
     if (!m || P.keepFor || (P.detached && !otherEmail)) {
@@ -562,12 +704,16 @@ export function mountAgentPanel(ctx) {
     if (mine !== turn || !conv) return;
     P.related = null;
     P.detached = false;
+    // The chat goes on with its own model and effort; what was picked for a new one is dropped.
+    P.draft = { model: null, effort: null };
     showConversation(conv);
     chat.focus();
   }
 
   function pickAgent(id) {
     if (!AGENTS.includes(id)) return;
+    // What was picked for one agent means nothing to another.
+    if (id !== currentAgent()) P.draft = { model: null, effort: null };
     P.agentId = id;
     // A conversation stays with its agent; another agent starts a new one about the same email.
     if (P.conv && P.conv.agent !== id) return showEmpty();
@@ -581,7 +727,8 @@ export function mountAgentPanel(ctx) {
   async function ensureConversation() {
     if (P.conv) return P.conv;
     const m = contextEmail();
-    const conv = await api('agentCreate', { agent: P.agentId, message: m ? messageRef(m) : null });
+    const conv = await api('agentCreate', { agent: P.agentId, message: m ? messageRef(m) : null, model: P.draft.model, effort: P.draft.effort });
+    P.draft = { model: null, effort: null };
     showConversation(conv);
     return P.conv;
   }
@@ -1219,6 +1366,7 @@ export function mountAgentPanel(ctx) {
         return showHistory(b);
       case 'new':
         P.detached = false;
+        P.draft = { model: null, effort: null };
         showEmpty();
         return chat.focus();
       case 'close':
@@ -1490,6 +1638,7 @@ export function mountAgentPanel(ctx) {
     opened({ focus = false } = {}) {
       sync();
       loadSkills();
+      loadModels(currentAgent(), true);
       if (focus) chat.focus();
       follow(true);
     },

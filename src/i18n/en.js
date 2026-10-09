@@ -269,6 +269,46 @@
     "message": "Ask {name} about your mail",
     "description": "Chat panel empty state heading without an open email; name is the agent."
   },
+  "agent.effort.button": {
+    "message": "Effort: {effort}",
+    "description": "Chat panel input: tooltip and accessible name of the effort button beside the model button; effort is the chosen level or Default (refreshPickers in agent/panel.js)."
+  },
+  "agent.effort.default": {
+    "message": "Default",
+    "description": "Chat panel effort menu: first row, the agent decides how much effort to spend; also the effort button's name while nothing is picked (effortItems and refreshPickers in agent/panel.js)."
+  },
+  "agent.effort.high": {
+    "message": "High",
+    "description": "Chat panel effort menu: effort level high (effortName in agent/panel.js)."
+  },
+  "agent.effort.low": {
+    "message": "Low",
+    "description": "Chat panel effort menu: effort level low (effortName in agent/panel.js)."
+  },
+  "agent.effort.max": {
+    "message": "Max",
+    "description": "Chat panel effort menu: effort level max, the most effort (effortName in agent/panel.js)."
+  },
+  "agent.effort.medium": {
+    "message": "Medium",
+    "description": "Chat panel effort menu: effort level medium (effortName in agent/panel.js)."
+  },
+  "agent.effort.minimal": {
+    "message": "Minimal",
+    "description": "Chat panel effort menu: effort level minimal, less than low (effortName in agent/panel.js)."
+  },
+  "agent.effort.title": {
+    "message": "Effort",
+    "description": "Chat panel effort menu: heading above the effort levels; effort is how much the model thinks before it answers (effortItems in agent/panel.js)."
+  },
+  "agent.effort.ultra": {
+    "message": "Ultra",
+    "description": "Chat panel effort menu: effort level ultra, above max, offered by some Codex models (effortName in agent/panel.js)."
+  },
+  "agent.effort.xhigh": {
+    "message": "Extra high",
+    "description": "Chat panel effort menu and button: effort level xhigh, between high and max (effortName in agent/panel.js)."
+  },
   "agent.errors.busy": {
     "message": "{name} is still working on the last message.",
     "description": "Chat panel error: a message was sent while the agent was still busy."
@@ -432,6 +472,34 @@
   "agent.mail.unstar": {
     "message": { "one": "Removed the star from {count} email", "other": "Removed the star from {count} emails" },
     "description": "Chat transcript notice after Rukoo removed stars for an agent."
+  },
+  "agent.model.button": {
+    "message": "Model: {model}",
+    "description": "Chat panel input: tooltip and accessible name of the model button beside the agent picker; model is the model name or Default model (refreshPickers in agent/panel.js)."
+  },
+  "agent.model.default": {
+    "message": "Default",
+    "description": "Chat panel model menu: first row, the chat uses the agent's default model from Settings, else the agent's own (modelItems in agent/panel.js)."
+  },
+  "agent.model.defaultButton": {
+    "message": "Default model",
+    "description": "Chat panel input: text of the model button while the chat follows the agent's default and Settings name no model (refreshPickers in agent/panel.js)."
+  },
+  "agent.model.failed": {
+    "message": "Could not load the models",
+    "description": "Chat panel model menu: disabled row when the agent did not list its models; the menu still offers the default (modelItems in agent/panel.js)."
+  },
+  "agent.model.loading": {
+    "message": "Loading models...",
+    "description": "Chat panel model menu: disabled row while the agent's model list loads (modelItems in agent/panel.js)."
+  },
+  "agent.model.routes": {
+    "message": "Model routes",
+    "description": "Chat panel model menu: heading above the Hermes model_routes aliases, short names a Hermes server maps to a model (modelItems in agent/panel.js)."
+  },
+  "agent.model.title": {
+    "message": "Model",
+    "description": "Chat panel model menu: heading at the top of the menu (modelItems in agent/panel.js)."
   },
   "agent.panel.addContext": {
     "message": "Add this email",
@@ -2360,8 +2428,8 @@
     "description": "Settings, Agents page: placeholder of the program path field."
   },
   "settings.agents.help": {
-    "message": "Agents keep their own tools and memory. Rukoo only adds this chat and lets them read mail and write drafts here.",
-    "description": "Settings, Agents page: short explanation at the top."
+    "message": "Agents keep their own tools and memory. Rukoo only adds this chat and lets them read mail and write drafts here. The model you set here is where a new chat starts; under the chat input each chat can pick its own model and effort.",
+    "description": "Settings, Agents page: short explanation at the top; the chat input's model and effort menus are in agent/panel.js."
   },
   "settings.agents.key": {
     "message": "API key",
@@ -2396,8 +2464,8 @@
     "description": "Settings, Agents page: toast after the API key was stored."
   },
   "settings.agents.model": {
-    "message": "Model (optional)",
-    "description": "Settings, Agents page: field for the model the agent uses."
+    "message": "Default model (optional)",
+    "description": "Settings, Agents page: field on each agent card for the model a chat uses until it picks its own in the chat panel (agentsHtml in settings.js)."
   },
   "settings.agents.modelHint": {
     "message": "Empty for the default, for example {example}",
@@ -2413,7 +2481,7 @@
   },
   "settings.agents.optional": {
     "message": "Empty for the default",
-    "description": "Settings, Agents page: placeholder of an optional field."
+    "description": "Settings, Agents page: placeholder of an optional field, such as the Hermes and Codex default model."
   },
   "settings.agents.remote": {
     "message": "Let {name} use Rukoo",

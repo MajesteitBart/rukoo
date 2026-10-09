@@ -7,6 +7,8 @@ const crypto = require('crypto');
 
 const AGENT_IDS = ['clark', 'claude', 'codex'];
 const ACCESS = ['ask', 'full'];
+// Every effort level an agent may offer, lowest first. Each agent offers its own subset (see models()).
+const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const DEFAULTS = {
   version: 1,
@@ -288,4 +290,4 @@ class AgentConfig {
   }
 }
 
-module.exports = { AgentConfig, AgentError, AGENT_IDS, DEFAULTS, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor };
+module.exports = { AgentConfig, AgentError, AGENT_IDS, EFFORTS, DEFAULTS, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor };

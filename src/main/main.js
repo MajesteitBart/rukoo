@@ -603,7 +603,16 @@ Object.assign(api, {
   },
   agentCreate: (input) => {
     const i = agentPlain(input);
-    return agentHub().create({ agent: agentText(i.agent, 20), message: agentMessage(i.message) });
+    return agentHub().create({ agent: agentText(i.agent, 20), message: agentMessage(i.message), model: agentText(i.model, 300) || null, effort: agentText(i.effort, 20) || null });
+  },
+  agentModels: (agent, options) => agentHub().models(agentId(agent), { refresh: agentPlain(options).refresh === true }),
+  // A chat's model and effort; a key that is left out stays as it is, null goes back to the agent's default.
+  agentSetChoice: (id, choice) => {
+    const c = agentPlain(choice);
+    const pick = {};
+    if ('model' in c) pick.model = agentText(c.model, 300) || null;
+    if ('effort' in c) pick.effort = agentText(c.effort, 20) || null;
+    return agentHub().setChoice(agentId(id), pick);
   },
   agentSend: (id, input) => {
     const i = agentPlain(input);

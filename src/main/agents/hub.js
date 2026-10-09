@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
-const { AgentConfig, AgentError, AGENT_IDS, writeJsonAtomic, tailscaleAddress } = require('./config');
+const { AgentConfig, AgentError, AGENT_IDS, EFFORTS, writeJsonAtomic, tailscaleAddress } = require('./config');
 const { McpServer, INSTRUCTIONS: MCP_INSTRUCTIONS } = require('./mcp');
 const { decodeId } = require('../engine');
 const tools = require('./tools');
@@ -34,6 +34,11 @@ const DELTA_MS = 50;
 // An adapter that ignores stop() gets this long before the hub closes the turn itself.
 const STOP_GRACE_MS = 12000;
 const STATES = new Set(['ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'unknown']);
+// An agent's model list is good for ten minutes. The panel asks again when it opens, which reloads a list older
+// than half a minute; a list that failed is tried again after half a minute as well.
+const MODELS_TTL_MS = 10 * 60 * 1000;
+const MODELS_RETRY_MS = 30 * 1000;
+const MAX_MODELS = 300;
 const ADAPTERS = { clark: ['./hermes', 'HermesAdapter'], claude: ['./claude', 'ClaudeAdapter'], codex: ['./codex', 'CodexAdapter'] };
 const DENY_IDS = new Set(['deny', 'decline', 'cancel']);
 // English fallbacks for error notices; the renderer localizes by code.
@@ -134,6 +139,8 @@ class AgentHub extends EventEmitter {
     // Attachment copies written for local agents (read_attachment local_path), removed on dispose.
     this.tempDirs = new Set();
     this.viewState = emptyView();
+    // agent → { at, value, pending }: the models and efforts the panel offers (see models()).
+    this.modelLists = new Map();
     this.statuses = {};
     // Per agent, how many forced status probes have started; see probeStatus().
     this.statusRound = new Map(AGENT_IDS.map((id) => [id, 0]));
@@ -391,6 +398,9 @@ class AgentHub extends EventEmitter {
       c.needsRecap = c.needsRecap === true;
       // Saved before chats could be continued from a newer email: none.
       c.continued = Array.isArray(c.continued) ? c.continued.filter((e) => isObj(e) && typeof e.id === 'string' && e.id).map((e) => ({ ...e, pending: e.pending === true })) : [];
+      // Saved before chats had a model and effort of their own: they follow the agent's default.
+      c.model = typeof c.model === 'string' && c.model ? c.model : null;
+      c.effort = EFFORTS.includes(c.effort) ? c.effort : null;
       // A turn cannot survive a restart: close whatever was still open.
       for (const item of c.items) {
         if (item.type === 'assistant' && item.status === 'streaming') item.status = 'stopped';
@@ -730,7 +740,7 @@ class AgentHub extends EventEmitter {
     return ref;
   }
 
-  create({ agent, message = null, origin = 'panel', title = '' } = {}) {
+  create({ agent, message = null, origin = 'panel', title = '', model = null, effort = null } = {}) {
     const id = AGENT_IDS.includes(agent) ? agent : this.cfg.data.defaultAgent;
     if (this.cfg.data[id].enabled === false) throw new AgentError('disabled', `${id} is turned off`);
     const ref = this.messageRef(message);
@@ -744,6 +754,9 @@ class AgentHub extends EventEmitter {
       createdAt: now,
       updatedAt: now,
       status: 'idle',
+      // The model and effort for this chat, picked in the panel; null follows the agent's default (setChoice()).
+      model: null,
+      effort: null,
       provider: {},
       notes: [],
       // Set once a turn reached the agent; until then every message is a first turn with the email attached.
@@ -755,6 +768,8 @@ class AgentHub extends EventEmitter {
       continued: [],
       items: []
     };
+    // Picked before the chat started.
+    this.applyChoice(c, { model, effort });
     this.conversations.set(c.id, c);
     this.enforceLimit(c);
     this.scheduleSave();
@@ -848,6 +863,99 @@ class AgentHub extends EventEmitter {
     return found;
   }
 
+  // ---------- model and effort (renderer API) ----------
+
+  // The models and efforts the panel offers for an agent: what the agent itself lists (adapter.models()), and the
+  // model in Settings. A list that fails still offers the model in Settings; error says why. refresh: the panel
+  // just opened, so a list older than half a minute is loaded again.
+  models(agent, { refresh = false } = {}) {
+    if (!AGENT_IDS.includes(agent)) throw new AgentError('invalid', 'unknown agent');
+    const entry = this.modelLists.get(agent);
+    if (entry && entry.pending) return entry.pending;
+    if (entry && entry.value && Date.now() - entry.at < (refresh || entry.value.error ? MODELS_RETRY_MS : MODELS_TTL_MS)) return Promise.resolve(entry.value);
+    const pending = this.loadModels(agent).then((value) => {
+      // Settings changed meanwhile (configChanged() dropped this entry): this list is about the old ones.
+      const now = this.modelLists.get(agent);
+      if (now && now.pending === pending) this.modelLists.set(agent, { at: Date.now(), value });
+      return value;
+    });
+    // The list before stays in use (effortsFor()) until the new one is in.
+    this.modelLists.set(agent, { ...entry, pending });
+    return pending;
+  }
+
+  async loadModels(agent) {
+    const adapter = this.adapters.get(agent);
+    const settingsModel = String(this.cfg.data[agent].model || '').trim();
+    let res = null;
+    let error = null;
+    try {
+      if (!adapter || typeof adapter.models !== 'function') throw new AgentError('unknown', this.adapterErrors.get(agent) || `${agent} cannot list its models`);
+      res = await withTimeout(adapter.models(), 20000);
+    } catch (err) {
+      error = toError(err);
+    }
+    const models = [];
+    for (const m of res && Array.isArray(res.models) ? res.models : []) {
+      if (models.length >= MAX_MODELS) break;
+      const id = isObj(m) ? cleanModel(m.id, false) : null;
+      if (!id || models.some((x) => x.id === id)) continue;
+      models.push({
+        id,
+        label: clip(m.label || id, 120),
+        ...(m.group ? { group: clip(m.group, 80) } : {}),
+        ...(m.tag ? { tag: clip(m.tag, 120) } : {}),
+        ...(m.route ? { route: true } : {}),
+        ...(m.isDefault ? { isDefault: true } : {}),
+        efforts: cleanEfforts(m.efforts),
+        defaultEffort: EFFORTS.includes(m.defaultEffort) ? m.defaultEffort : ''
+      });
+    }
+    const custom = cleanEfforts(res && res.custom);
+    // A model in Settings that the agent does not list is still the default.
+    if (settingsModel && !models.some((m) => m.id === settingsModel)) models.unshift({ id: settingsModel, label: settingsModel, efforts: custom, defaultEffort: '' });
+    const own = settingsModel ? models.find((m) => m.id === settingsModel) : null;
+    return { agent, models, efforts: own ? own.efforts : cleanEfforts(res && res.efforts), custom, defaultModel: settingsModel, error };
+  }
+
+  // The efforts the agent's model list offers for a chat's model (null: the default model), or null without a list
+  // to go by.
+  effortsFor(agent, model) {
+    const entry = this.modelLists.get(agent);
+    const list = entry && entry.value;
+    if (!list || list.error) return null;
+    if (!model) return list.efforts;
+    const m = list.models.find((x) => x.id === model);
+    return m ? m.efforts : list.custom;
+  }
+
+  // Applies a model and effort picked in the panel; null follows the agent's default. An effort the model does not
+  // offer goes back to the default. A turn that runs now keeps what it started with: the choice applies to the next.
+  setChoice(id, choice) {
+    const c = this.mustGet(id);
+    this.applyChoice(c, choice);
+    this.touch(c);
+    this.emitEvent({ kind: 'conversation', conversation: { id: c.id, model: c.model, effort: c.effort } });
+    return { model: c.model, effort: c.effort };
+  }
+
+  applyChoice(c, choice) {
+    if (!isObj(choice)) throw new AgentError('invalid', 'choice must be an object');
+    const model = 'model' in choice ? cleanModel(choice.model) : c.model;
+    let effort = 'effort' in choice ? choice.effort || null : c.effort;
+    if (effort !== null && !EFFORTS.includes(effort)) throw new AgentError('invalid', `effort must be one of ${EFFORTS.join(', ')}`);
+    const offered = effort ? this.effortsFor(c.agent, model) : null;
+    if (offered && !offered.includes(effort)) effort = null;
+    c.model = model;
+    c.effort = effort;
+  }
+
+  // The effort a turn sends: the chat's, unless the agent's current list no longer offers it for the model.
+  turnEffort(c) {
+    const offered = c.effort ? this.effortsFor(c.agent, c.model) : null;
+    return offered && !offered.includes(c.effort) ? null : c.effort || null;
+  }
+
   // ---------- turns ----------
 
   // skill: the name of a skill the user started with /name. Rukoo writes that turn itself, from the skill as it is
@@ -889,6 +997,10 @@ class AgentHub extends EventEmitter {
       errorShown: false,
       // Set once the agent shows it got the input: it streamed, called a tool or asked for approval.
       reached: false,
+      // The model and effort as they were when the user sent this: a change while the turn prepares (the email
+      // loads) is for the next turn.
+      model: c.model || null,
+      effort: this.turnEffort(c),
       stopTimer: null,
       forceStop: null
     };
@@ -950,6 +1062,9 @@ class AgentHub extends EventEmitter {
         text,
         action: action || null,
         firstTurn,
+        // The chat's own model and effort; null: the adapter uses the model in Settings and the agent's own effort.
+        model: turn.model,
+        effort: turn.effort,
         mcp: { url: port ? `http://127.0.0.1:${port}/mcp` : '', token: this.tokenFor(c) },
         emit: (event) => this.onAdapterEvent(turn, event),
         approve: (request) => this.requestApproval(c.id, { ...(request || {}), source: c.agent, kind: 'runtime' }),
@@ -1744,6 +1859,8 @@ class AgentHub extends EventEmitter {
   }
 
   configChanged() {
+    // A new model in Settings, program or server: the lists are loaded again when the panel asks.
+    this.modelLists.clear();
     for (const a of this.adapters.values()) {
       // Optional adapter hook: restart processes that run with old settings.
       if (typeof a.configChanged === 'function') Promise.resolve().then(() => a.configChanged()).catch(() => {});
@@ -1798,6 +1915,22 @@ class AgentHub extends EventEmitter {
 
 function oneLine(v) {
   return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+}
+
+// A model name as the agent takes it, or null for the agent's default. strict: throw on anything else (the
+// renderer's input); otherwise the value is skipped (an agent's list).
+function cleanModel(v, strict = true) {
+  if (v == null || v === '') return null;
+  const s = typeof v === 'string' ? v.trim() : '';
+  if (s && s.length <= 200 && !/[\u0000-\u001f\u007f]/.test(s)) return s;
+  if (strict) throw new AgentError('invalid', 'model must be a model name of at most 200 characters');
+  return null;
+}
+
+// Known effort levels only, lowest first.
+function cleanEfforts(list) {
+  const set = new Set(Array.isArray(list) ? list : []);
+  return EFFORTS.filter((e) => set.has(e));
 }
 
 // A tool chip's detail comes from the arguments the agent passed, which may be values it copied from a tool

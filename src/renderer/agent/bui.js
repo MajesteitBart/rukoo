@@ -76,6 +76,18 @@ export function icon(name, size = 16, strokeWidth) {
   return svgFrom(`<svg width="${Number(size) || 16}" height="${Number(size) || 16}" viewBox="0 0 24 24" fill="none" ${stroke} aria-hidden="true" data-icon="${key}">${def[0]}</svg>`);
 }
 
+// A dial whose needle stands at level, from 0 (left) to 1 (right). Without a level only its centre shows: the
+// effort button while the agent decides.
+export function gauge(level = null, size = 13) {
+  let mark = '<circle cx="12" cy="17" r="1.3" fill="currentColor" stroke="none"/>';
+  if (typeof level === 'number' && Number.isFinite(level)) {
+    const a = Math.PI * (1 - Math.max(0, Math.min(1, level)));
+    mark = `<path d="M12 17l${(6.5 * Math.cos(a)).toFixed(2)} ${(-6.5 * Math.sin(a)).toFixed(2)}"/>`;
+  }
+  const n = Number(size) || 13;
+  return svgFrom(`<svg width="${n}" height="${n}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" data-icon="gauge"><path d="M3.5 17a8.5 8.5 0 1 1 17 0"/>${mark}</svg>`);
+}
+
 // Same hash as ui.js hue(), so a sender gets the same colour as in the list.
 function hueOf(text) {
   let v = 7;
@@ -1229,8 +1241,18 @@ export function chatComposer(opts = {}, handlers = {}) {
   let dot = statusDot(null);
   const agentName = h('span');
   const agentBtn = h('button', { type: 'button', class: 'bui-pb__modelbtn', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': labels.agent || '' }, dot, agentName, icon('chevron', 11, 2.4));
+  // The model and effort menus next to the agent picker. The caller fills them (setPicker); items is a
+  // function, so a menu shows what is current when it opens.
+  const pickers = {};
+  for (const kind of ['model', 'effort']) {
+    const text = h('span', { class: 'bui-pb__opttext' });
+    const lead = kind === 'effort' ? gauge(null) : null;
+    const btn = h('button', { type: 'button', class: 'bui-pb__opt', 'data-pick': kind, 'aria-haspopup': 'listbox', 'aria-expanded': 'false', hidden: true }, lead, text, icon('chevron', 11, 2.4));
+    pickers[kind] = { btn, text, lead, meter: null, items: () => [], menu: null };
+    btn.addEventListener('click', () => openPicker(kind));
+  }
   const send = h('button', { type: 'button', class: 'bui-pb__send', 'aria-label': labels.send || '' }, icon('send', 16));
-  const row = h('div', { class: 'bui-pb__row' }, agentBtn, h('span', { class: 'bui-pb__spacer' }), send);
+  const row = h('div', { class: 'bui-pb__row' }, agentBtn, pickers.model.btn, pickers.effort.btn, h('span', { class: 'bui-pb__spacer' }), send);
   const box = h('div', { class: 'bui-pb__box' }, files, ta, disabledRow, row);
   const el = h('div', { class: 'bui-pb' }, box);
   let menu = null;
@@ -1411,6 +1433,25 @@ export function chatComposer(opts = {}, handlers = {}) {
       }
     });
   });
+  // again: the items changed while the menu is open (a list came in), so it is drawn anew in place.
+  function openPicker(kind, again = false) {
+    const p = pickers[kind];
+    if (!again && p.btn.getAttribute('aria-expanded') === 'true') {
+      if (openMenu) openMenu.close();
+      return;
+    }
+    const items = p.items();
+    p.shown = JSON.stringify(items);
+    p.menu = glideMenu({
+      anchor: p.btn,
+      align: 'left',
+      items,
+      onPick: (id) => {
+        ta.focus();
+        if (handlers.onPick) handlers.onPick(kind, id);
+      }
+    });
+  }
 
   const api = {
     el,
@@ -1444,6 +1485,29 @@ export function chatComposer(opts = {}, handlers = {}) {
       state.agents = Array.isArray(list) ? list : [];
       if (currentId !== undefined) state.agentId = currentId;
       renderAgent();
+    },
+    // kind: 'model' or 'effort'. text is what the button shows (empty: only its icon), label its accessible name,
+    // items a function that returns glideMenu items. hidden takes the button away. meter: the effort dial's level
+    // (0 to 1, null for none).
+    setPicker(kind, { text = '', label = '', items, hidden = false, meter = null } = {}) {
+      const p = pickers[kind];
+      if (!p) return;
+      if (p.lead && meter !== p.meter) {
+        const next = gauge(meter);
+        p.lead.replaceWith(next);
+        p.lead = next;
+        p.meter = meter;
+      }
+      p.text.textContent = text;
+      p.text.hidden = !text;
+      p.btn.setAttribute('aria-label', label);
+      p.btn.title = label;
+      p.btn.hidden = Boolean(hidden);
+      if (typeof items === 'function') p.items = items;
+      // An open menu is drawn again only when its items changed, so the row in focus stays put otherwise.
+      const open = p.menu && openMenu === p.menu;
+      if (open && p.btn.hidden) openMenu.close();
+      else if (open && JSON.stringify(p.items()) !== p.shown) openPicker(kind, true);
     },
     setContext(chip) {
       files.replaceChildren();

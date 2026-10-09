@@ -986,6 +986,128 @@ test('conversations persist (no tokens, open turns closed on load) and respect t
   }
 });
 
+test('a chat keeps its own model and effort: checked against the agent’s list, sent with each turn, kept across a restart', async () => {
+  const env = await demo();
+  const first = fakeHub(env);
+  await first.hub.start();
+  const received = () => first.hub.adapters.get('codex').received.at(-1);
+  const pick = (r) => ({ conversationId: r.conversationId, model: r.model, effort: r.effort });
+  let c;
+  try {
+    // Picked before the chat started, before any list was loaded: taken as it is.
+    c = first.hub.create({ agent: 'codex', message: null, model: 'gpt-6-luna', effort: 'high' });
+    assert.deepEqual([c.model, c.effort], ['gpt-6-luna', 'high']);
+    const list = await first.hub.models('codex');
+    assert.deepEqual(list.models.map((m) => [m.id, m.efforts]), [
+      ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']],
+      ['gpt-6-luna', ['low', 'medium', 'high']]
+    ]);
+    assert.deepEqual([list.efforts, list.defaultModel, list.error], [['low', 'medium', 'high'], '', null]);
+
+    // An effort the model does not offer goes back to the default; the panel hears the new choice.
+    assert.deepEqual(first.hub.setChoice(c.id, { effort: 'xhigh' }), { model: 'gpt-6-luna', effort: null });
+    assert.deepEqual(first.events.at(-1), { kind: 'conversation', conversation: { id: c.id, model: 'gpt-6-luna', effort: null } });
+    assert.deepEqual(first.hub.setChoice(c.id, { model: 'gpt-6-astra', effort: 'ultra' }), { model: 'gpt-6-astra', effort: 'ultra' });
+    assert.deepEqual(first.hub.setChoice(c.id, { model: 'gpt-6-luna' }), { model: 'gpt-6-luna', effort: null }, 'Luna has no ultra');
+    assert.throws(() => first.hub.setChoice(c.id, { effort: 'turbo' }), (err) => err.code === 'invalid');
+    assert.throws(() => first.hub.setChoice(c.id, { model: 'x'.repeat(201) }), (err) => err.code === 'invalid');
+    assert.throws(() => first.hub.setChoice(c.id, { model: 'two\nlines' }), (err) => err.code === 'invalid');
+    first.hub.setChoice(c.id, { effort: 'medium' });
+
+    // The turn carries the chat's choice; a chat without one leaves it to the agent.
+    first.hub.send(c.id, { text: 'hello' });
+    await idle(first.hub, c.id);
+    assert.deepEqual(pick(received()), { conversationId: c.id, model: 'gpt-6-luna', effort: 'medium' });
+    const plain = first.hub.create({ agent: 'codex', message: null });
+    first.hub.send(plain.id, { text: 'hello' });
+    await idle(first.hub, plain.id);
+    assert.deepEqual(pick(received()), { conversationId: plain.id, model: null, effort: null });
+
+    // The list is kept; a new model in Settings drops it, and the next one has that model as the default.
+    const adapter = first.hub.adapters.get('codex');
+    let asked = 0;
+    const models = adapter.models.bind(adapter);
+    adapter.models = () => (asked++, models());
+    assert.equal(await first.hub.models('codex'), list);
+    assert.equal(await first.hub.models('codex', { refresh: true }), list, 'refreshed half a minute ago at most');
+    assert.equal(asked, 0);
+    await first.hub.updateConfig({ codex: { model: 'gpt-7-preview' } });
+    const fresh = await first.hub.models('codex');
+    assert.equal(asked, 1);
+    // Codex does not list it, so nothing says which efforts it takes.
+    assert.deepEqual([fresh.defaultModel, fresh.models[0], fresh.efforts], ['gpt-7-preview', { id: 'gpt-7-preview', label: 'gpt-7-preview', efforts: [], defaultEffort: '' }, []]);
+
+    // A list that fails still offers the model in Settings, and then holds no choice back.
+    adapter.models = async () => {
+      throw Object.assign(new Error('offline'), { code: 'offline', detail: 'connect ECONNREFUSED' });
+    };
+    await first.hub.updateConfig({ codex: { model: '' } });
+    const failed = await first.hub.models('codex');
+    assert.deepEqual([failed.models, failed.error], [[], { code: 'offline', detail: 'connect ECONNREFUSED' }]);
+    assert.deepEqual(first.hub.setChoice(c.id, { effort: 'max' }), { model: 'gpt-6-luna', effort: 'max' });
+    first.hub.setChoice(c.id, { effort: 'medium' });
+  } finally {
+    await first.hub.dispose();
+  }
+
+  // After a restart the chat has its choice; a chat saved before chats had one follows the agent's default.
+  const saved = JSON.parse(fs.readFileSync(path.join(env.dir, 'conversations.json'), 'utf8'));
+  const older = saved.conversations.find((x) => x.id !== c.id);
+  delete older.model;
+  delete older.effort;
+  fs.writeFileSync(path.join(env.dir, 'conversations.json'), JSON.stringify(saved));
+  const second = fakeHub(env);
+  await second.hub.start();
+  try {
+    assert.deepEqual([second.hub.get(c.id).model, second.hub.get(c.id).effort], ['gpt-6-luna', 'medium']);
+    assert.deepEqual([second.hub.get(older.id).model, second.hub.get(older.id).effort], [null, null]);
+    second.hub.send(c.id, { text: 'hello again' });
+    await idle(second.hub, c.id);
+    assert.deepEqual(pick(second.hub.adapters.get('codex').received.at(-1)), { conversationId: c.id, model: 'gpt-6-luna', effort: 'medium' });
+  } finally {
+    await second.hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('a model or effort picked while a turn prepares is for the next turn, not the one already sent', async () => {
+  const env = await demo();
+  const calls = [];
+  const adapter = {
+    async status() {
+      return { state: 'ready' };
+    },
+    async runTurn(turn) {
+      calls.push({ model: turn.model, effort: turn.effort });
+      return { status: 'done' };
+    }
+  };
+  const { hub } = fakeHub(env, { adapters: { claude: adapter } });
+  await hub.start();
+  const realGet = env.engine.getMessage.bind(env.engine);
+  let release;
+  env.engine.getMessage = (id) => new Promise((resolve) => (release = () => resolve(realGet(id))));
+  try {
+    const call = env.engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+    const c = hub.create({ agent: 'claude', message: { id: call.id }, model: 'sonnet', effort: 'high' });
+    hub.send(c.id, { text: 'Summarize' });
+    // The first turn waits for its email; the user picks another model and effort meanwhile.
+    await until(() => Boolean(release));
+    hub.setChoice(c.id, { model: 'opus', effort: 'low' });
+    release();
+    await idle(hub, c.id);
+    assert.deepEqual(calls, [{ model: 'sonnet', effort: 'high' }], 'the turn keeps what it was sent with');
+    env.engine.getMessage = realGet;
+    hub.send(c.id, { text: 'And now?' });
+    await idle(hub, c.id);
+    assert.deepEqual(calls[1], { model: 'opus', effort: 'low' });
+  } finally {
+    env.engine.getMessage = realGet;
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
 test('findFor matches on the Message-ID header, so it survives a move', async () => {
   const env = await demo();
   const { hub } = fakeHub(env);
@@ -2537,6 +2659,53 @@ test('a skill started in a continued chat carries the newer email too', async ()
     }
     assert.equal(c.continued[0].pending, false);
   } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('a skill turn that carries a newer email keeps the model and effort it was sent with', async () => {
+  const env = await demo();
+  const user = tmp('rukoo-skills-');
+  fs.mkdirSync(path.join(user, 'greet'));
+  fs.writeFileSync(path.join(user, 'greet', 'SKILL.md'), '---\nname: greet\ndescription: Greet the sender.\n---\n\nGreet the sender by their first name.\n');
+  const calls = [];
+  const adapter = {
+    async status() {
+      return { state: 'ready' };
+    },
+    async runTurn(turn) {
+      calls.push({ model: turn.model, effort: turn.effort, input: turn.input });
+      turn.emit({ type: 'text', delta: 'Done.' });
+      return { status: 'done' };
+    }
+  };
+  const { hub } = fakeHub(env, { adapters: { claude: adapter }, deps: { skills: { bundled: null, user }, skillLog: () => {} } });
+  await hub.start();
+  const realGet = env.engine.getMessage.bind(env.engine);
+  try {
+    const mail = threadMail(env.engine);
+    const c = hub.create({ agent: 'claude', message: { id: mail.dinner.id }, model: 'sonnet', effort: 'high' });
+    hub.send(c.id, { text: 'Did Joris answer?' });
+    await idle(hub, c.id);
+    hub.view({ openMessageId: mail.joris.id });
+    await hub.continueFrom(c.id, { id: mail.joris.id });
+    // The newer email loads slowly; the user picks another model and effort meanwhile.
+    let release = null;
+    env.engine.getMessage = (id) => (release ? realGet(id) : new Promise((resolve) => (release = () => resolve(realGet(id)))));
+    hub.send(c.id, { skill: 'greet' });
+    await until(() => Boolean(release));
+    hub.setChoice(c.id, { model: 'opus', effort: 'low' });
+    release();
+    await idle(hub, c.id);
+    assert.deepEqual([calls[1].model, calls[1].effort], ['sonnet', 'high'], 'the skill turn keeps what it was sent with');
+    assert.ok(calls[1].input.includes(`<unsafe_content source="email" id="${mail.joris.id}"`) && calls[1].input.includes('[The user started the skill "greet".'));
+    env.engine.getMessage = realGet;
+    hub.send(c.id, { text: 'And now?' });
+    await idle(hub, c.id);
+    assert.deepEqual([calls[2].model, calls[2].effort], ['opus', 'low']);
+  } finally {
+    env.engine.getMessage = realGet;
     await hub.dispose();
     await env.engine.close();
   }

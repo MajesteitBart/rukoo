@@ -31,6 +31,39 @@ const MARKDOWN_REPLY =
   '- Send notes to Joris\n\n' +
   'The agenda is at https://example.com/agenda.';
 
+// What each agent's model menu offers, in the shape the real adapters' models() return: Claude's aliases, two
+// Codex models whose efforts differ, and Hermes models of two providers plus a route alias.
+const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const MODELS = {
+  claude: {
+    models: [
+      { id: 'fable', label: 'Fable', efforts: LEVELS },
+      { id: 'opus', label: 'Opus', efforts: LEVELS },
+      { id: 'sonnet', label: 'Sonnet', efforts: LEVELS }
+    ],
+    efforts: LEVELS,
+    custom: LEVELS
+  },
+  codex: {
+    models: [
+      { id: 'gpt-6-astra', label: 'GPT-6-Astra', efforts: [...LEVELS, 'ultra'], defaultEffort: 'medium' },
+      { id: 'gpt-6-luna', label: 'GPT-6-Luna', efforts: ['low', 'medium', 'high'], defaultEffort: 'low' }
+    ],
+    efforts: ['low', 'medium', 'high'],
+    custom: []
+  },
+  clark: {
+    models: [
+      { id: 'anthropic::claude-opus-5-5', label: 'claude-opus-5-5', group: 'Anthropic', efforts: LEVELS, isDefault: true },
+      { id: 'openrouter::openai/gpt-6-astra', label: 'openai/gpt-6-astra', group: 'OpenRouter', efforts: LEVELS },
+      { id: 'openrouter::mistral/small-4', label: 'mistral/small-4', group: 'OpenRouter', efforts: [] },
+      { id: 'quick', label: 'quick', tag: 'mistral/small-4', route: true, efforts: LEVELS }
+    ],
+    efforts: LEVELS,
+    custom: LEVELS
+  }
+};
+
 class FakeAdapter {
   // scale multiplies every delay; tests pass a small value to run the same scripts quickly.
   constructor({ id, hub, scale } = {}) {
@@ -38,7 +71,7 @@ class FakeAdapter {
     this.hub = hub;
     const env = process.env.SEM_AGENT_FAKE_SCALE ? Number(process.env.SEM_AGENT_FAKE_SCALE) : NaN;
     this.scale = Number.isFinite(scale) ? scale : Number.isFinite(env) ? env : 1;
-    // What each turn handed the agent, newest last, so tests can check the exact text.
+    // What each turn handed the agent, newest last, so tests can check the exact text and the chat's model and effort.
     this.received = [];
   }
 
@@ -46,10 +79,14 @@ class FakeAdapter {
     return { state: 'ready', detail: 'Fake agent (SEM_AGENT_FAKE=1)' };
   }
 
+  async models() {
+    return JSON.parse(JSON.stringify(MODELS[this.id] || MODELS.claude));
+  }
+
   async dispose() {}
 
   async runTurn(turn) {
-    this.received.push({ input: turn.input, text: turn.text, action: turn.action, instructions: turn.instructions });
+    this.received.push({ conversationId: turn.conversation.id, input: turn.input, text: turn.text, action: turn.action, instructions: turn.instructions, model: turn.model || null, effort: turn.effort || null });
     if (this.received.length > 20) this.received.shift();
     const run = new FakeRun(this, turn);
     try {
@@ -143,6 +180,7 @@ class FakeRun {
     if (byAction[action]) return this[byAction[action]]();
     if (action === 'skill') return this.skill(text);
     if (/\blost session\b/.test(lower)) return this.lostSession();
+    if (/\bwhich model\b/.test(lower)) return this.say(`Model: ${this.turn.model || 'default'}. Effort: ${this.turn.effort || 'default'}.`);
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
     if (/\bmarkdown\b/.test(lower)) return this.markdown();
     if (/\bapproval\b/.test(lower)) return this.approval();

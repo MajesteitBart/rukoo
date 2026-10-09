@@ -11,7 +11,7 @@ const { PassThrough } = require('stream');
 
 const { SseParser, readSse } = require('../src/main/agents/sse');
 const { cleanEnv, readJsonLines, readLines, start, killTree } = require('../src/main/agents/proc');
-const { HermesAdapter } = require('../src/main/agents/hermes');
+const { HermesAdapter, splitModel } = require('../src/main/agents/hermes');
 const { ClaudeAdapter, toolDetail, approvalFields } = require('../src/main/agents/claude');
 const { CodexAdapter, stripShell } = require('../src/main/agents/codex');
 const { McpServer } = require('../src/main/agents/mcp');
@@ -42,12 +42,15 @@ async function closedPort() {
 }
 
 // The turn object the hub hands an adapter (SPEC 4.4), recording what the adapter does with it.
-function fakeTurn(conversation, input, { approve, mcp } = {}) {
+function fakeTurn(conversation, input, { approve, mcp, model = null, effort = null } = {}) {
   const controller = new AbortController();
   const turn = {
     id: `t_${Math.random().toString(36).slice(2, 10)}`,
     conversation,
     input,
+    // The chat's own model and effort, as the hub passes them (null: the agent's default).
+    model,
+    effort,
     instructions: 'You are working inside Rukoo Mail.\nKeep it short.',
     mcp: mcp || { url: 'http://127.0.0.1:47999/mcp', token: 'tok-123' },
     events: [],
@@ -231,6 +234,43 @@ function hermesServer() {
       if (url.pathname === '/health') return json(res, 200, { status: 'ok', platform: 'hermes-agent', version: '0.21.5' });
       if (req.headers.authorization !== `Bearer ${KEY}`) return json(res, 401, { error: { message: 'Invalid API key' } });
       if (url.pathname === '/v1/capabilities') return json(res, 200, { features: { run_submission: true, run_events_sse: true } });
+      // The model menu's sources, shaped as in Hermes 0.21 (gateway/platforms/api_server.py, hermes_cli/inventory.py):
+      // the profile with its model_routes aliases, and the picker inventory of the providers it has credentials for.
+      // "noOptions": an older Hermes without the inventory.
+      if (url.pathname === '/v1/models') {
+        const model = (id, root, parent) => ({ id, object: 'model', created: 1, owned_by: 'hermes', permission: [], root, parent });
+        return json(res, 200, { object: 'list', data: [model('hermes-agent', 'hermes-agent', null), model('quick', 'mistral/small-4', 'hermes-agent')] });
+      }
+      if (url.pathname === '/api/model/options') {
+        if (state.noOptions) return json(res, 404, { error: { message: 'Not found' } });
+        return json(res, 200, {
+          providers: [
+            {
+              slug: 'anthropic',
+              name: 'Anthropic',
+              is_current: true,
+              is_user_defined: false,
+              models: ['claude-opus-5-5', 'claude-sonnet-5'],
+              total_models: 2,
+              source: 'built-in',
+              capabilities: { 'claude-opus-5-5': { fast: false, reasoning: true }, 'claude-sonnet-5': { fast: false, reasoning: true } }
+            },
+            {
+              slug: 'openrouter',
+              name: 'OpenRouter',
+              is_current: false,
+              is_user_defined: false,
+              models: ['openai/gpt-6-astra', 'mistral/small-4', 'meta/llama-5'],
+              featured_models: ['openai/gpt-6-astra', 'mistral/small-4'],
+              total_models: 3,
+              source: 'built-in',
+              capabilities: { 'openai/gpt-6-astra': { fast: true, reasoning: true }, 'mistral/small-4': { fast: false, reasoning: false }, 'meta/llama-5': { fast: false, reasoning: true } }
+            }
+          ],
+          model: 'claude-opus-5-5',
+          provider: 'anthropic'
+        });
+      }
       if (url.pathname === '/api/sessions' && req.method === 'POST') {
         const title = data.title;
         if (title && [...state.sessions.values()].includes(title)) return json(res, 400, { error: { message: 'Title already in use', code: 'invalid_title' } });
@@ -479,6 +519,73 @@ test('hermes: a turn creates a session, starts a run and maps the recorded tool 
   } finally {
     h.server.close();
   }
+});
+
+test('hermes: a chat’s model goes with the run, split into provider and model, and its effort as model_options', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key, model: 'gpt-x' }) });
+    const c = conv();
+    const bodies = () => h.state.requests.filter((r) => r.path === '/v1/runs').map((r) => r.body);
+    // A model of another provider than Hermes' current one, named the way Hermes names it, and an effort.
+    const picked = fakeTurn(c, 'hello', { model: 'anthropic::claude-opus-5-5', effort: 'xhigh' });
+    assert.deepEqual(await adapter.runTurn(picked), { status: 'done' });
+    assert.deepEqual(bodies().at(-1), {
+      input: 'hello',
+      session_id: c.provider.sessionId,
+      instructions: picked.instructions,
+      model: 'claude-opus-5-5',
+      provider: 'anthropic',
+      model_options: { reasoning: { effort: 'xhigh' } }
+    });
+    // A model_routes alias pins its own provider, so it goes alone; no effort leaves model_options out.
+    assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'quick' })), { status: 'done' });
+    assert.deepEqual([bodies().at(-1).model, 'provider' in bodies().at(-1), 'model_options' in bodies().at(-1)], ['quick', false, false]);
+    // Without a choice the model in Settings goes, as before; a level Hermes does not take never goes.
+    assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { effort: 'turbo' })), { status: 'done' });
+    assert.deepEqual([bodies().at(-1).model, 'provider' in bodies().at(-1), 'model_options' in bodies().at(-1)], ['gpt-x', false, false]);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: the model menu lists the providers’ models and the route aliases, with the efforts each takes', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }) });
+    const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+    const list = await adapter.models();
+    assert.deepEqual(list.models, [
+      { id: 'anthropic::claude-opus-5-5', label: 'claude-opus-5-5', group: 'Anthropic', efforts: LEVELS, isDefault: true },
+      { id: 'anthropic::claude-sonnet-5', label: 'claude-sonnet-5', group: 'Anthropic', efforts: LEVELS },
+      // An aggregator's shortlist, not its whole catalog; a model without reasoning takes no effort.
+      { id: 'openrouter::openai/gpt-6-astra', label: 'openai/gpt-6-astra', group: 'OpenRouter', efforts: LEVELS },
+      { id: 'openrouter::mistral/small-4', label: 'mistral/small-4', group: 'OpenRouter', efforts: [] },
+      // The profile itself (hermes-agent) stands for Hermes' default and is no row of its own.
+      { id: 'quick', label: 'quick', tag: 'mistral/small-4', route: true, efforts: LEVELS }
+    ]);
+    assert.deepEqual([list.efforts, list.custom], [LEVELS, LEVELS]);
+    const options = h.state.requests.find((r) => r.path === '/api/model/options');
+    assert.equal(options.query, '?include_unconfigured=false', 'only providers Hermes has credentials for');
+    assert.equal(options.headers.authorization, `Bearer ${h.key}`);
+
+    // An older Hermes without the inventory still offers its route aliases.
+    h.state.noOptions = true;
+    assert.deepEqual((await adapter.models()).models.map((m) => m.id), ['quick']);
+    const refused = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: 'nope' }) });
+    await assert.rejects(refused.models(), (err) => err.code === 'unauthorized');
+    await assert.rejects(new HermesAdapter({ id: 'clark', config: () => ({ url: '', key: '' }) }).models(), (err) => err.code === 'not-configured');
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: provider::model splits only on a provider-shaped prefix', () => {
+  assert.deepEqual(splitModel('anthropic::claude-opus-5-5'), { provider: 'anthropic', model: 'claude-opus-5-5' });
+  assert.deepEqual(splitModel('custom:proxy::llama-5'), { provider: 'custom:proxy', model: 'llama-5' });
+  assert.deepEqual(splitModel('openai/gpt-6-astra'), { provider: '', model: 'openai/gpt-6-astra' });
+  assert.deepEqual(splitModel('::odd'), { provider: '', model: '::odd' });
+  assert.deepEqual(splitModel(''), { provider: '', model: '' });
 });
 
 test('hermes: approval requests become cards and the choice goes back to the run', async () => {
@@ -837,6 +944,44 @@ test('claude: full access bypasses prompts; a stuck process is killed on stop', 
   assert.deepEqual(await done, { status: 'stopped' });
 });
 
+test('claude: a chat’s model and effort go on the command line, and a change resumes the session in a new process', async (t) => {
+  const { adapter, read } = claudeAdapter();
+  t.after(() => adapter.dispose());
+  const c = conv();
+  const spawns = () => read().filter((e) => e.argv).map((e) => e.argv);
+  const flag = (argv, name) => argv.filter((a) => a.startsWith(`--${name}=`)).map((a) => a.slice(name.length + 3));
+
+  // Without a choice: the model in Settings and the agent's own effort.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello')), { status: 'done' });
+  const first = spawns()[0];
+  assert.deepEqual([flag(first, 'model'), flag(first, 'effort')], [['opus'], []]);
+  assert.equal(first[first.indexOf('--thinking') + 1], 'adaptive', 'effort comes on top of adaptive thinking');
+
+  // The chat picks a model and an effort: a new process resumes the same session with them.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'sonnet', effort: 'xhigh' })), { status: 'done' });
+  const second = spawns()[1];
+  assert.deepEqual([flag(second, 'model'), flag(second, 'effort'), flag(second, 'resume')], [['sonnet'], ['xhigh'], [c.provider.sessionId]]);
+  assert.equal(second[second.indexOf('--thinking') + 1], 'adaptive');
+  // The same choice again keeps the process.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'sonnet', effort: 'xhigh' })), { status: 'done' });
+  assert.equal(spawns().length, 2);
+  // Back to the default effort, and a level Claude Code does not know never reaches it.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'sonnet', effort: 'turbo' })), { status: 'done' });
+  assert.deepEqual([flag(spawns()[2], 'model'), flag(spawns()[2], 'effort')], [['sonnet'], []]);
+
+  // The menu: the aliases, each with every level --effort takes.
+  const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+  assert.deepEqual(await adapter.models(), {
+    models: [
+      { id: 'fable', label: 'Fable', efforts: LEVELS },
+      { id: 'opus', label: 'Opus', efforts: LEVELS },
+      { id: 'sonnet', label: 'Sonnet', efforts: LEVELS }
+    ],
+    efforts: LEVELS,
+    custom: LEVELS
+  });
+});
+
 // A blocking kill (taskkill through spawnSync) would settle dispose() before it returns and hold up the event
 // loop, and with it the quit's own deadline.
 async function disposeWaitsForKill(adapter, child) {
@@ -1094,6 +1239,64 @@ test('codex: a new MCP address or a cleared model reloads the thread in a fresh 
   const again = sent('thread/resume')[1].params;
   assert.ok(!('model' in again));
   assert.ok(!('model' in sent('turn/start').at(-1).params));
+});
+
+test('codex: model/list fills the menu, and a chat’s model and effort go on the next turn/start', async (t) => {
+  const { adapter, sent } = codexAdapter();
+  t.after(() => adapter.dispose());
+  const all = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+  const list = await adapter.models();
+  assert.deepEqual(list.models, [
+    { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', efforts: all, defaultEffort: 'low' },
+    { id: 'gpt-6-astra', label: 'GPT-6-Astra', efforts: all, defaultEffort: 'medium' },
+    { id: 'gpt-6-luna', label: 'GPT-6-Luna', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' }
+  ]);
+  // Without a model of its own a chat runs on whatever the user configured: only levels every model has.
+  assert.deepEqual([list.efforts, list.custom], [['low', 'medium', 'high', 'xhigh', 'max'], []]);
+  assert.deepEqual(sent('model/list').map((m) => m.params.cursor || null), [null, 'page-2']);
+  assert.equal(sent('model/list')[0].params.includeHidden, false);
+
+  // The list started the app-server the chats use; a turn picks it up.
+  const c = conv();
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'gpt-6-luna', effort: 'high' })), { status: 'done' });
+  assert.equal(sent('initialize').length, 1);
+  assert.equal(sent('thread/start')[0].params.model, 'gpt-6-luna');
+  const first = sent('turn/start')[0].params;
+  assert.deepEqual([first.model, first.effort], [undefined, 'high'], 'the thread has the model; the effort goes on turn/start');
+  // The same choice again: no overrides.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'gpt-6-luna', effort: 'high' })), { status: 'done' });
+  assert.deepEqual(Object.keys(sent('turn/start')[1].params).sort(), ['input', 'threadId']);
+  // Another model and effort: both on the next turn/start, which Codex keeps for later turns.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'gpt-6-astra', effort: 'ultra' })), { status: 'done' });
+  const third = sent('turn/start')[2].params;
+  assert.deepEqual([third.model, third.effort], ['gpt-6-astra', 'ultra']);
+  assert.equal(sent('initialize').length, 1);
+
+  // Back to the default effort: turn/start cannot take an override back, so the thread is resumed without one.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'gpt-6-astra' })), { status: 'done' });
+  assert.equal(sent('initialize').length, 2);
+  const resume = sent('thread/resume')[0].params;
+  assert.deepEqual([resume.threadId, resume.model], [c.provider.threadId, 'gpt-6-astra']);
+  assert.ok(!('effort' in sent('turn/start').at(-1).params));
+});
+
+test('codex: a model and effort whose turn/start Codex refused go again with the next turn', async (t) => {
+  const { adapter, sent } = codexAdapter();
+  t.after(() => adapter.dispose());
+  const c = conv();
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'gpt-6-luna', effort: 'low' })), { status: 'done' });
+  assert.equal(sent('turn/start')[0].params.effort, 'low');
+  // Codex refuses the start, so the thread still has Luna on low.
+  const refused = await adapter.runTurn(fakeTurn(c, 'refuse start', { model: 'gpt-6-astra', effort: 'high' }));
+  assert.deepEqual([refused.status, refused.error.code], ['error', 'protocol']);
+  assert.deepEqual([sent('turn/start')[1].params.model, sent('turn/start')[1].params.effort], ['gpt-6-astra', 'high']);
+  // The retry sends both again.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'gpt-6-astra', effort: 'high' })), { status: 'done' });
+  const retry = sent('turn/start')[2].params;
+  assert.deepEqual([retry.model, retry.effort], ['gpt-6-astra', 'high']);
+  // Once a start went through, the same choice sends nothing.
+  assert.deepEqual(await adapter.runTurn(fakeTurn(c, 'hello', { model: 'gpt-6-astra', effort: 'high' })), { status: 'done' });
+  assert.deepEqual(Object.keys(sent('turn/start')[3].params).sort(), ['input', 'threadId']);
 });
 
 test('codex: stop interrupts the turn; failures report once', async (t) => {
