@@ -629,10 +629,23 @@ function ownAddresses(engine) {
 
 const participants = (m) => [m.from, ...(m.to || []), ...(m.cc || [])].map((a) => lower(a && a.address)).filter(Boolean);
 
+// The Message-IDs an email names: its own, the one it answers, and its References.
+function threadIds(m) {
+  return new Set([m.messageId, m.inReplyTo, ...[].concat(m.references || [])].map(normId).filter(Boolean));
+}
+
+// Whether an email is linked by its headers to one that names these ids: it is one of them, it answers one of them,
+// or its References name one. The folder cache has no References; an email a chat keeps can have them.
+function linked(ids, r) {
+  const mid = normId(r.messageId);
+  if ((mid && ids.has(mid)) || (r.inReplyTo && ids.has(normId(r.inReplyTo)))) return true;
+  return [].concat(r.references || []).some((v) => ids.has(normId(v)));
+}
+
 // Related mail: linked by Message-ID/In-Reply-To/References, or the same base subject with someone in common
-// other than the user. The demo has no threading headers, so the subject rule carries it there.
+// other than the user. Few demo emails have threading headers, so the subject rule carries the rest there.
 function threadOf(engine, m, limit = 10) {
-  const ids = new Set([m.messageId, m.inReplyTo, ...(m.references || [])].map(normId).filter(Boolean));
+  const ids = threadIds(m);
   const self = normId(m.messageId);
   const subject = baseSubject(m.subject);
   const own = ownAddresses(engine);
@@ -650,9 +663,9 @@ function threadOf(engine, m, limit = 10) {
         const id = encodeId(acc.id, folder, r.uid);
         const mid = normId(r.messageId);
         if (id === m.id || (mid && mid === self)) continue;
-        const linked = (mid && ids.has(mid)) || (r.inReplyTo && ids.has(normId(r.inReplyTo)));
-        const similar = !linked && subject && baseSubject(r.subject) === subject && participants(r).some((a) => theirs.has(a));
-        if (!linked && !similar) continue;
+        const link = linked(ids, r);
+        const similar = !link && subject && baseSubject(r.subject) === subject && participants(r).some((a) => theirs.has(a));
+        if (!link && !similar) continue;
         const key = mid || id;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -662,6 +675,28 @@ function threadOf(engine, m, limit = 10) {
   }
   hits.sort((a, b) => (b.r.date || 0) - (a.r.date || 0));
   return hits.slice(0, limit).map(({ acc, folder, r }) => summary(engine, engine.publicMessage(acc, folder, r)));
+}
+
+// The Message-IDs of earlier mail in an email's thread, within one account, by headers only: the emails it names
+// (In-Reply-To, References), and older mail linked to one of those the way threadOf links mail. That older mail is
+// what the folder cache has, plus known: emails in the account whose headers Rukoo kept ({messageId, inReplyTo,
+// references, date}), such as a chat's own, which count when they have left the cache. A shared subject does not
+// count: "Invoice" or "Hello" says nothing about a thread.
+function earlierInThread(engine, m, accountId, known = []) {
+  const self = normId(m.messageId);
+  const named = new Set([...threadIds(m)].filter((v) => v !== self));
+  const out = new Set(named);
+  const cache = accountId ? engine.caches.get(accountId) : null;
+  const date = Number(m.date) || 0;
+  // An email that answers nothing starts its thread: most mail stops here, before the cache is looked through.
+  if (!named.size || !date) return out;
+  const older = (r) => {
+    const mid = normId(r.messageId);
+    if (mid && mid !== self && (Number(r.date) || 0) < date && linked(named, r)) out.add(mid);
+  };
+  if (cache) for (const box of Object.values(cache.boxes)) for (const r of box.messages) older(r);
+  for (const r of known) older(r);
+  return out;
 }
 
 function findAccount(engine, value) {
@@ -1435,6 +1470,7 @@ module.exports = {
   cacheMessage,
   summaryById,
   threadOf,
+  earlierInThread,
   baseSubject,
   resolveFolder,
   mailTitle,

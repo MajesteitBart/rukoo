@@ -181,6 +181,7 @@ function seed(now = Date.now()) {
       starred: true
     },
     {
+      key: 'call',
       from: { name: 'Sanne de Vries', address: 'sanne@example.com' },
       to: [me],
       cc: [{ name: 'Joris Bakker', address: 'joris@example.com' }],
@@ -205,6 +206,7 @@ function seed(now = Date.now()) {
       unread: false
     },
     {
+      replyTo: 'dinner',
       from: { name: 'Joris Bakker', address: 'joris@example.com' },
       to: [me],
       subject: 'Re: Dinner on Saturday',
@@ -224,6 +226,7 @@ function seed(now = Date.now()) {
 
   const sent = [
     {
+      replyTo: 'call',
       from: me,
       to: [{ name: 'Sanne de Vries', address: 'sanne@example.com' }],
       subject: 'Re: Call on Thursday',
@@ -232,6 +235,7 @@ function seed(now = Date.now()) {
       unread: false
     },
     {
+      key: 'dinner',
       from: me,
       to: [{ name: 'Joris Bakker', address: 'joris@example.com' }],
       subject: 'Dinner on Saturday',
@@ -282,6 +286,9 @@ function seed(now = Date.now()) {
 
   const boxes = {};
   let uid = 1;
+  // key names an email that a reply (replyTo) answers, so the reply gets In-Reply-To and References like real mail.
+  const keyed = new Map();
+  const replies = [];
   const fill = (pathName, list) => {
     boxes[pathName] = {
       uidValidity: '1',
@@ -304,6 +311,8 @@ function seed(now = Date.now()) {
           messageId: `<demo-${uid}@example.com>`,
           flags: [...(m.unread ? [] : ['\\Seen']), ...(m.starred ? ['\\Flagged'] : []), ...(pathName === 'Drafts' ? ['\\Draft'] : [])]
         };
+        if (m.key) keyed.set(m.key, msg);
+        if (m.replyTo) replies.push([msg, m.replyTo]);
         return msg;
       })
     };
@@ -317,6 +326,10 @@ function seed(now = Date.now()) {
   fill('Archive', []);
   fill('Invoices', invoices);
   fill('Travel', travel);
+  for (const [msg, key] of replies) {
+    msg.inReplyTo = keyed.get(key).messageId;
+    msg.references = [msg.inReplyTo];
+  }
   return { boxes, nextUid: uid };
 }
 

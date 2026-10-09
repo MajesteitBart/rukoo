@@ -583,6 +583,20 @@ Object.assign(api, {
     const r = agentPlain(ref);
     return agentHub().findFor({ id: agentText(r.id, 2000), messageId: agentText(r.messageId, 1000), accountId: agentText(r.accountId, 200) || null });
   },
+  agentRelatedFor: (ref) => {
+    const r = agentPlain(ref);
+    // A long thread's References can name many emails; the newest are at the end.
+    const references = (Array.isArray(r.references) ? r.references : []).slice(-100).map((v) => agentText(v, 1000)).filter(Boolean);
+    return agentHub().relatedFor({
+      id: agentText(r.id, 2000),
+      messageId: agentText(r.messageId, 1000),
+      accountId: agentText(r.accountId, 200) || null,
+      inReplyTo: agentText(r.inReplyTo, 1000) || null,
+      references,
+      date: Number(r.date) || null
+    });
+  },
+  agentContinue: (id, message) => agentHub().continueFrom(agentId(id), agentMessage(message)),
   agentLocate: (ref) => {
     const r = agentPlain(ref);
     return agentHub().locate({ id: agentText(r.id, 2000), messageHeader: agentText(r.messageHeader, 1000), accountId: agentText(r.accountId, 200) || null });

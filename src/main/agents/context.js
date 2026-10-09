@@ -197,9 +197,11 @@ function recap(items) {
 
 // conversation: the hub conversation. message: {full, account, folder} for the bound email on the first turn.
 // openMessage: {id, subject} of what the user looks at now, when that differs from the bound email.
+// newer: [{ref, full, account, folder, open}], oldest first, for newer emails in the chat's thread that the user
+// continued the chat from; full is null when Rukoo could not load one, open says the user looks at it now.
 // earlier: the transcript before this turn, for an agent that lost its session; the turn is then a first turn
 // with a recap.
-function turnText({ conversation, text, firstTurn, notes = [], message = null, openMessage = null, earlier = null, now = new Date() }) {
+function turnText({ conversation, text, firstTurn, notes = [], message = null, openMessage = null, newer = null, earlier = null, now = new Date() }) {
   const id = conversation.id;
   const out = [];
   // Notes are Rukoo's own lines; what they quote from email is already inside <unsafe_content> where the note
@@ -226,6 +228,20 @@ function turnText({ conversation, text, firstTurn, notes = [], message = null, o
     out.push(`[Rukoo conversation ${id}]`);
   }
   out.push(...noteLines);
+  const later = [].concat(newer || []).filter((n) => n && n.ref);
+  if (later.length) {
+    const where =
+      later.length > 1
+        ? `The user continued this chat from ${later.length} newer emails in the same thread, oldest first below`
+        : later[0].open
+          ? 'The user now looks at a newer email in the same thread and continues this chat from it'
+          : 'The user continued this chat from a newer email in the same thread';
+    out.push(`[${where}. The chat is still about the email it started with.]`);
+    for (const n of later) {
+      if (n.full) out.push(emailBlock(n.full, n));
+      else out.push(`[Rukoo could not load the newer email ${unsafeInline(n.ref.subject || '', 'email subject')} (id ${header(n.ref.id)}). Use read_message or search_mail.]`);
+    }
+  }
   if (openMessage && openMessage.id) {
     out.push(`[The user is now looking at another email (id ${header(openMessage.id)}), subject: ${unsafeInline(openMessage.subject || '', 'email subject', 200)}]`);
   }

@@ -1071,6 +1071,21 @@ export function suggestionChips(list = [], onPick) {
   );
 }
 
+// ---------- offer row ----------
+
+// Not in BUI: a quiet row that offers one thing to pick up, such as an earlier chat. A button: a monogram, the
+// offer, a line under it, and a chevron.
+export function offerRow({ label, sub, monogram: mono, title, onClick } = {}) {
+  const avatar = mono instanceof Node ? mono : monogram({ size: 20, ...(typeof mono === 'string' ? { label: mono } : mono || { label }) });
+  return h(
+    'button',
+    { type: 'button', class: 'bui-offer', title: title || null, onClick },
+    avatar,
+    h('span', { class: 'bui-offer__text' }, h('span', { class: 'bui-offer__label', text: label || '' }), sub ? h('span', { class: 'bui-offer__sub', text: sub }) : null),
+    icon('chevron-right', 13, 2.2)
+  );
+}
+
 // ---------- glide menu ----------
 
 let openMenu = null;

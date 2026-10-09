@@ -450,6 +450,18 @@
   background: color-mix(in oklab, var(--line) 70%, transparent);
   color: var(--ink);
 }
+/* Instead of a monogram: a mail badge, as on email sources, for the newer email a chat was continued from. */
+.bui-entity__badge {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
 /* The add chip: dashed and empty, a place to put the context (back) into. */
 .bui-entity--add {
   gap: 5px;
@@ -1782,6 +1794,53 @@
 }
 .bui-sugg__chip:active {
   scale: 0.97;
+}
+
+/* ---------- offer row ---------- */
+
+/* Not in BUI: quieter than the suggestion chips, a hairline and no fill until you point at it. */
+.bui-offer {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border-radius: 10px;
+  padding: 8px 10px 8px 9px;
+  text-align: left;
+  color: var(--ink-3);
+  box-shadow: var(--shadow-hairline);
+  transition:
+    color 100ms var(--ease-default),
+    background-color 100ms var(--ease-default);
+  animation: bui-fade-up 380ms var(--ease-out-strong) 120ms both;
+}
+.bui-offer:hover {
+  background: var(--hover-2);
+  color: var(--ink-2);
+}
+.bui-offer:active {
+  scale: 0.99;
+}
+.bui-offer__text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+.bui-offer__label {
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.bui-offer__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink-3);
 }
 
 /* ---------- chat composer ---------- */

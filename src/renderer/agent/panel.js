@@ -161,6 +161,9 @@ export function mountAgentPanel(ctx) {
     // The user left the email out of the chat that has not started yet: it starts without it, unless the
     // add chip puts it back. Another email or New chat ends this.
     detached: false,
+    // For an email without a chat: the most recent chat about an earlier email in its thread, which the empty
+    // state offers to continue ({id, agent, title, updatedAt, for: the email's id}).
+    related: null,
     // An email opened from the panel itself (a source, a draft): the chat stays as it is.
     keepFor: null,
     // Rukoo's skills and the user's, for the slash commands: [{name, description, source}].
@@ -300,22 +303,33 @@ export function mountAgentPanel(ctx) {
     const name = agentName(currentAgent());
     return contextEmail() ? t('agent.panel.placeholderEmail', { name }) : t('agent.panel.placeholder', { name });
   };
+  // In a chat the user continued from a newer email in its thread (main's continueFrom): that email, while it is
+  // on screen, and whether it still has to go to the agent.
+  const newerOpen = () => {
+    const open = currentEmail();
+    const conv = P.conv;
+    if (!conv || !conv.message || !open || open.id === conv.message.id) return null;
+    const entry = (conv.continued || []).find((e) => e.id === open.id || sameMessageId(e.messageId, open.messageId));
+    return entry ? { m: open, pending: Boolean(entry.pending) } : null;
+  };
   // The email the chat is about. Until the chat starts, its x leaves the email out and a dashed chip in its
-  // place puts it back. A chat that has started keeps its email: New chat starts one without.
+  // place puts it back. A chat that has started keeps its email: New chat starts one without. A chat continued
+  // from a newer email shows that one next to it while it is open.
   const contextState = () => {
     const m = contextEmail();
-    if (m) return { m, fixed: Boolean(P.conv) };
+    if (m) return { m, fixed: Boolean(P.conv), newer: newerOpen() };
     const open = !P.conv && P.detached ? currentEmail() : null;
     return open ? { m: open, add: true } : null;
   };
-  const contextKey = (s) => (s ? [s.add ? 'add' : s.fixed ? 'fixed' : 'open', s.m.id, s.m.subject, person(s.m.from)].join('\n') : '');
+  const contextKey = (s) =>
+    s ? [s.add ? 'add' : s.fixed ? 'fixed' : 'open', s.m.id, s.m.subject, person(s.m.from), s.newer ? `${s.newer.m.id}\n${s.newer.m.subject}\n${s.newer.pending}` : ''].join('\n') : '';
   const contextChip = (s) => {
     if (!s) return null;
     const m = s.m;
     const subject = m.subject || t('mailbox.message.noSubject');
     if (s.add) return elOf(B.addChip({ label: t('agent.panel.addContext'), title: subject, onClick: () => attach() }));
     const from = person(m.from);
-    return elOf(
+    const own = elOf(
       B.entityChip({
         label: subject,
         sub: from,
@@ -324,6 +338,18 @@ export function mountAgentPanel(ctx) {
         removeLabel: t('agent.panel.removeContext')
       })
     );
+    if (!s.newer) return own;
+    const badge = document.createElement('span');
+    badge.className = 'bui-entity__badge';
+    badge.setAttribute('aria-hidden', 'true');
+    badge.append(B.icon('mail', 10, 2.2));
+    const newer = elOf(B.entityChip({ label: s.newer.m.subject || t('mailbox.message.noSubject'), sub: t('agent.panel.newerMessage'), monogram: badge }));
+    const name = agentName(P.conv.agent);
+    const note = newer.querySelector('.bui-entity__sub');
+    if (note) note.title = s.newer.pending ? t('agent.panel.newerPending', { name }) : t('agent.panel.newerSent', { name });
+    const both = document.createDocumentFragment();
+    both.append(own, newer);
+    return both;
   };
   // Drawn again only when it changes, so its button keeps the keyboard focus through a status update.
   let shownContext = null;
@@ -435,7 +461,10 @@ export function mountAgentPanel(ctx) {
     // Goes by the selection, not the loaded message: an email from another folder can take a while to
     // load, and the chat it was opened from stays on screen meanwhile.
     if (P.keepFor && S.selectedId !== P.keepFor) P.keepFor = null;
-    if (otherEmail) P.detached = false;
+    if (otherEmail) {
+      P.detached = false;
+      P.related = null;
+    }
     // Without an email, or one opened from this chat, the conversation on screen stays.
     if (!m || P.keepFor || (P.detached && !otherEmail)) {
       // A lookup for the email before must not replace the chat that is kept now (a chat being opened
@@ -447,16 +476,27 @@ export function mountAgentPanel(ctx) {
     const mine = ++turn;
     const look = ++lookups;
     let found = null;
+    let related = null;
     try {
       found = await api('agentFindFor', { id: m.id, messageId: m.messageId || null, accountId: m.accountId || null });
     } catch (_) {
       found = null;
+    }
+    // No chat of its own: an earlier email in its thread may have one to continue. The full message has the
+    // References header; main has In-Reply-To in its cache.
+    if (!(found && found.id)) {
+      try {
+        related = await api('agentRelatedFor', { id: m.id, messageId: m.messageId || null, accountId: m.accountId || null, inReplyTo: m.inReplyTo || null, references: m.references || [], date: m.date || null });
+      } catch (_) {
+        related = null;
+      }
     }
     if (mine !== turn || look !== lookups) return;
     if (found && found.id) {
       if (P.conv && P.conv.id === found.id) return refreshComposer();
       return openConversation(found.id);
     }
+    P.related = related && related.id ? { ...related, for: m.id } : null;
     if (P.conv && !otherEmail && P.conv.message && P.conv.message.id === m.id) return refreshComposer();
     // A chat about another email keeps running in the background; this email starts fresh.
     showEmpty();
@@ -500,6 +540,29 @@ export function mountAgentPanel(ctx) {
   function attach() {
     P.detached = false;
     showEmpty();
+    chat.focus();
+  }
+
+  // Picks up the chat about an earlier email in this one's thread. It keeps its own email; main notes this one,
+  // which goes to the agent with the next message, and shows that chat when this email opens again.
+  let continuing = false;
+  async function continueChat(offer) {
+    const m = currentEmail();
+    if (!m || continuing) return;
+    continuing = true;
+    const mine = ++turn;
+    let conv = null;
+    try {
+      conv = await api('agentContinue', offer.id, messageRef(m));
+    } catch (err) {
+      showError(err);
+    } finally {
+      continuing = false;
+    }
+    if (mine !== turn || !conv) return;
+    P.related = null;
+    P.detached = false;
+    showConversation(conv);
     chat.focus();
   }
 
@@ -938,6 +1001,23 @@ export function mountAgentPanel(ctx) {
       const row = elOf(chips);
       row.classList.add('ap-actions');
       box.append(row);
+    }
+    // Typing still starts a new chat about this email; the offer only takes over when you pick it.
+    const offer = P.related;
+    const open = currentEmail();
+    if (offer && open && offer.for === open.id) {
+      const who = agentName(offer.agent);
+      box.append(
+        elOf(
+          B.offerRow({
+            label: t('agent.panel.continueChat'),
+            sub: `${who} · ${listTime(offer.updatedAt)}`,
+            monogram: { label: [...who][0] || '?', agent: true },
+            title: offer.title || null,
+            onClick: () => continueChat(offer)
+          })
+        )
+      );
     }
     transcript.replaceChildren(box);
     jump.hidden = true;

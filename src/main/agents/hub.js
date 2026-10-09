@@ -19,6 +19,12 @@ const MAX_EXTERNAL = 20;
 const EXTERNAL_REUSE_MS = 4 * 60 * 60 * 1000;
 const MAX_ITEMS = 400;
 const MAX_TEXT = 40000;
+// Newer emails in its thread a chat keeps after the user continued it from them, besides those the agent has not had
+// yet; see continueFrom(). At most MAX_NEWER of them go along with one message (loadNewer()).
+const MAX_CONTINUED = 20;
+const MAX_NEWER = 3;
+// References a chat keeps per email for the thread check (keepThread()); the newest are at the end.
+const MAX_REFERENCES = 50;
 const SAVE_MS = 400;
 // While a turn runs, items change all the time; saving all conversations every 400 ms would stall the main thread.
 const SAVE_RUNNING_MS = 2000;
@@ -383,6 +389,8 @@ class AgentHub extends EventEmitter {
       // Saved before Rukoo tracked this: a chat with a message the agent answered has had its first turn.
       if (typeof c.delivered !== 'boolean') c.delivered = c.items.some((i) => i.type === 'assistant');
       c.needsRecap = c.needsRecap === true;
+      // Saved before chats could be continued from a newer email: none.
+      c.continued = Array.isArray(c.continued) ? c.continued.filter((e) => isObj(e) && typeof e.id === 'string' && e.id).map((e) => ({ ...e, pending: e.pending === true })) : [];
       // A turn cannot survive a restart: close whatever was still open.
       for (const item of c.items) {
         if (item.type === 'assistant' && item.status === 'streaming') item.status = 'stopped';
@@ -534,20 +542,126 @@ class AgentHub extends EventEmitter {
     return this.conversations.get(id) || null;
   }
 
+  // The chat about this email, or the one the user continued from it (continueFrom()); the most recent of them.
   findFor(ref = {}) {
     const want = normId(ref.messageId);
     const id = ref.id ? String(ref.id) : '';
     // The same email can arrive in two accounts; each copy has its own chats. A saved copy has no account.
     const account = ref.accountId || tools.accountOfId(id);
+    const about = (m) => {
+      if (!isObj(m)) return false;
+      const own = m.accountId || tools.accountOfId(m.id);
+      return want && m.messageId ? normId(m.messageId) === want && !(account && own && own !== account) : Boolean(id) && m.id === id;
+    };
     let best = null;
     for (const c of this.conversations.values()) {
-      const m = c.message;
-      if (!m) continue;
-      const own = m.accountId || tools.accountOfId(m.id);
-      const hit = want && m.messageId ? normId(m.messageId) === want && !(account && own && own !== account) : Boolean(id) && m.id === id;
+      const hit = about(c.message) || (c.continued || []).some(about);
       if (hit && (!best || c.updatedAt > best.updatedAt)) best = c;
     }
     return best;
+  }
+
+  // For an email without a chat: the most recent chat about an earlier email in its thread, in the same account,
+  // which the panel offers to continue. Only a header link counts (see tools.earlierInThread). The renderer passes
+  // the open email's In-Reply-To and References; the folder cache has In-Reply-To only.
+  relatedFor(ref = {}) {
+    const id = ref.id ? String(ref.id) : '';
+    const cached = id ? this.liveMessage(id) : null;
+    const account = tools.accountOfId(id) || (cached && cached.accountId) || ref.accountId || null;
+    if (!account) return null;
+    const email = {
+      messageId: ref.messageId || (cached && cached.messageId) || null,
+      inReplyTo: ref.inReplyTo || (cached && cached.inReplyTo) || null,
+      references: Array.isArray(ref.references) ? ref.references : [],
+      date: Number(ref.date) || (cached && cached.date) || 0
+    };
+    const chats = [...this.conversations.values()];
+    const earlier = tools.earlierInThread(this.engine, email, account, chats.flatMap((c) => this.chatEmails(c, account)));
+    if (!earlier.size) return null;
+    let best = null;
+    for (const c of chats) {
+      if (this.inThread(c, earlier, account) && (!best || c.updatedAt > best.updatedAt)) best = c;
+    }
+    if (!best || !best.message) return null;
+    const m = best.message;
+    return { id: best.id, agent: best.agent, title: best.title, updatedAt: best.updatedAt, message: { subject: m.subject || '', from: m.from || null, date: m.date || null } };
+  }
+
+  // A chat's emails in this account: its own and the ones it was continued from. With the headers the chat kept
+  // (keepThread()), they count for a thread also when they have left the folder cache.
+  chatEmails(c, account) {
+    if (!c.message) return [];
+    return [c.message, ...(c.continued || [])].filter((m) => isObj(m) && m.messageId && (m.accountId || tools.accountOfId(m.id)) === account);
+  }
+
+  // Whether one of a chat's emails in this account has a Message-ID in earlier (tools.earlierInThread). A reply to
+  // the email a chat was continued from belongs to that chat as well.
+  inThread(c, earlier, account) {
+    return this.chatEmails(c, account).some((m) => earlier.has(normId(m.messageId)));
+  }
+
+  // Keeps the thread headers Rukoo read for an email a chat keeps, so a reply to the same email still finds the chat
+  // once this one moved to a folder Rukoo has not opened. Only from a message Rukoo loaded itself, which has its
+  // References; the folder cache gives In-Reply-To alone (messageRef). Returns whether anything changed.
+  keepThread(ref, full) {
+    if (!isObj(ref) || !isObj(full)) return false;
+    const inReplyTo = full.inReplyTo ? clip(full.inReplyTo, 1000) : null;
+    const references = [].concat(full.references || []).slice(-MAX_REFERENCES).map((v) => clip(v, 1000)).filter(Boolean);
+    if ((ref.inReplyTo || null) === inReplyTo && JSON.stringify(ref.references || []) === JSON.stringify(references)) return false;
+    ref.inReplyTo = inReplyTo;
+    ref.references = references;
+    return true;
+  }
+
+  // What Rukoo itself knows of an email that is here, for the thread check: the account its id names (a saved copy's
+  // entry names it), and its headers from the stored message, or the folder cache if that does not load. Nothing
+  // from the renderer. null when the email is not here.
+  async threadEmail(id) {
+    const cached = this.liveMessage(id);
+    if (!cached) return null;
+    const account = String(id).startsWith('saved:') ? cached.accountId || null : tools.accountOfId(id);
+    if (!account) return null;
+    const full = await this.engine.getMessage(id).catch(() => null);
+    const src = full || cached;
+    return { account, full, email: { messageId: src.messageId || null, inReplyTo: src.inReplyTo || null, references: full ? full.references || [] : [], date: src.date || 0 } };
+  }
+
+  // The user continues a chat from a newer email in its thread. The chat keeps its own email. The newer one goes to
+  // the agent with the next message that reaches it (runTurn()), and opening that email again shows this chat
+  // (findFor()) instead of offering it again. Only the email's id comes from the renderer: Rukoo checks with what it
+  // knows itself that the email is in the chat's account and thread, so no other email can be tied to the chat.
+  async continueFrom(id, input) {
+    const c = this.mustGet(id);
+    const ref = this.messageRef(isObj(input) ? { id: input.id } : null);
+    const known = ref ? await this.threadEmail(ref.id) : null;
+    if (!known) throw new AgentError('invalid', 'no such email to continue from');
+    if (this.conversations.get(c.id) !== c) throw new AgentError('invalid', 'unknown conversation');
+    const same = (a, b) => isObj(a) && (a.messageId && b.messageId ? normId(a.messageId) === normId(b.messageId) : a.id === b.id);
+    if (same(c.message, ref)) return c;
+    const earlier = tools.earlierInThread(this.engine, known.email, known.account, this.chatEmails(c, known.account));
+    if (!this.inThread(c, earlier, known.account)) throw new AgentError('invalid', "that email is not a newer one in this chat's thread");
+    const entry = { ...ref, messageId: known.email.messageId || ref.messageId, at: Date.now(), pending: true };
+    this.keepThread(entry, known.full);
+    const list = (c.continued || []).filter((e) => !same(e, ref));
+    list.push(entry);
+    c.continued = this.pruneContinued(list);
+    this.touch(c);
+    this.emitContinued(c);
+    return c;
+  }
+
+  // Past MAX_CONTINUED the oldest emails the agent has had go. One it has not had yet stays until a message takes it.
+  pruneContinued(list) {
+    for (let i = 0; list.length > MAX_CONTINUED && i < list.length; ) {
+      if (list[i].pending) i++;
+      else list.splice(i, 1);
+    }
+    return list;
+  }
+
+  // Without the transcript: the panel only needs the list for the email chip (agent/panel.js newerOpen).
+  emitContinued(c) {
+    this.emitEvent({ kind: 'conversation', conversation: { id: c.id, continued: c.continued, updatedAt: c.updatedAt } });
   }
 
   // The current Rukoo id of an email a card points at: the stored id while it still holds that email, else the
@@ -608,6 +722,8 @@ class AgentHub extends EventEmitter {
       if (!ref.subject) ref.subject = cached.subject || '';
       if (!ref.from && cached.from) ref.from = { name: cached.from.name || '', address: cached.from.address || '' };
       if (!ref.date) ref.date = cached.date || null;
+      // Kept for the thread check, from Rukoo's own cache (see keepThread()).
+      if (cached.inReplyTo) ref.inReplyTo = clip(cached.inReplyTo, 1000);
       // A saved copy's id names no account; its entry does.
       if (!ref.accountId) ref.accountId = id.startsWith('saved:') ? cached.accountId || null : id.split(':').map(decodeURIComponent)[0];
     }
@@ -635,6 +751,8 @@ class AgentHub extends EventEmitter {
       // Set when the agent lost its session and started a new one; until a turn reaches that one, every message
       // carries the email and a recap of the chat (see startOver()).
       needsRecap: false,
+      // Newer emails in the same thread the user continued this chat from, oldest first (see continueFrom()).
+      continued: [],
       items: []
     };
     this.conversations.set(c.id, c);
@@ -718,9 +836,8 @@ class AgentHub extends EventEmitter {
 
   // The live id of a conversation's email, found like a source card's (locate): ids change when mail moves,
   // the Message-ID header does not, and a copy in another account belongs to another chat. The chat keeps
-  // the id it finds.
-  async currentMessageId(c) {
-    const ref = c && c.message;
+  // the id it finds. ref: another email the chat keeps, such as one it was continued from.
+  async currentMessageId(c, ref = c && c.message) {
     if (!ref) return null;
     const found = await this.locate({ id: ref.id, messageHeader: ref.messageId, accountId: ref.accountId });
     // The chat may have been deleted while a folder synced.
@@ -808,16 +925,22 @@ class AgentHub extends EventEmitter {
           return this.finishTurn(turn, { status: 'stopped' });
         }
       }
-      let openMessage = null;
-      const openId = this.openMessageId();
-      const boundId = c.message ? c.message.id : null;
-      if (!firstTurn && openId && openId !== boundId) {
-        const m = this.liveMessage(openId);
-        openMessage = { id: openId, subject: m ? m.subject : '' };
+      // Newer emails in the thread the user continued this chat from go along once. A new session has had none of
+      // the chat, so it gets the newest one again.
+      let newer = [];
+      if ((c.continued || []).length) {
+        newer = await this.loadNewer(c, { again: recap });
+        // Stopped while it loaded, as above.
+        if (turn.closed || turn.controller.signal.aborted) {
+          this.giveBack(c, turn);
+          return this.finishTurn(turn, { status: 'stopped' });
+        }
       }
+      turn.newer = newer;
+      const openMessage = firstTurn ? null : this.openLine(c, newer);
       const notes = c.notes.splice(0);
       turn.notes = notes;
-      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, earlier: recap ? this.earlier(c, turn) : null });
+      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null });
       const port = this.mcp ? this.mcp.ports().local : null;
       const handle = {
         id: turn.id,
@@ -842,7 +965,7 @@ class AgentHub extends EventEmitter {
         },
         // Optional for adapters: the agent no longer has this chat's session, and the adapter starts a new one.
         // Await it before sending input, which then carries the email and a recap of the chat.
-        startOver: () => this.startOver(c, turn, handle, { text, openMessage, ready: firstTurn || recap }),
+        startOver: () => this.startOver(c, turn, handle, { text, ready: firstTurn || recap }),
         signal: turn.controller.signal
       };
       const forced = new Promise((resolve) => {
@@ -862,18 +985,64 @@ class AgentHub extends EventEmitter {
         c.needsRecap = false;
         this.touch(c);
       }
+      // The agent has the newer emails this turn carried. Any it did not carry still wait (see loadNewer()).
+      const told = (turn.newer || []).filter((n) => n.ref.pending);
+      if (told.length) {
+        for (const n of told) n.ref.pending = false;
+        c.continued = this.pruneContinued(c.continued || []);
+        this.touch(c);
+        this.emitContinued(c);
+      }
     } else this.giveBack(c, turn);
     this.finishTurn(turn, result || { status: 'error', error: { code: 'protocol', detail: 'the adapter returned nothing' } });
   }
 
   // The chat's own email in full, found again if it moved; null when it is gone or does not load. Never the email
-  // that happens to be open now.
-  async loadEmail(c) {
-    const liveId = await this.currentMessageId(c);
+  // that happens to be open now. ref: another email the chat keeps (currentMessageId).
+  async loadEmail(c, ref = c.message) {
+    const liveId = await this.currentMessageId(c, ref);
     const full = liveId ? await this.engine.getMessage(liveId).catch(() => null) : null;
     if (!full) return null;
+    // Chats saved before Rukoo kept these get them here, with their first message after an update.
+    if (this.keepThread(ref, full) && this.conversations.get(c.id) === c) this.touch(c);
     const acc = this.engine.accounts.find((a) => a.id === full.accountId);
     return { full, account: acc ? acc.email : '', folder: full.folder || '' };
+  }
+
+  // The newer emails the user continued this chat from (continueFrom()) that the agent has not had yet, by the emails'
+  // dates, oldest first: the newest MAX_NEWER of them, so one message stays a sensible size. Older ones wait for the
+  // next message. With again set and none waiting, the newest one the agent had already: a new session has had
+  // nothing. Each is {ref, full, account, folder, open}, with full null when it does not load; the turn names that
+  // one instead.
+  async loadNewer(c, { again = false } = {}) {
+    const byDate = (list) => list.slice().sort((a, b) => (Number(a.date) || 0) - (Number(b.date) || 0));
+    const all = c.continued || [];
+    let refs = byDate(all.filter((e) => e.pending)).slice(-MAX_NEWER);
+    if (!refs.length && again) refs = byDate(all).slice(-1);
+    const out = [];
+    for (const ref of refs) {
+      let email = null;
+      try {
+        email = await this.loadEmail(c, ref);
+      } catch (err) {
+        this.log('hub', 'loading the newer email failed:', err && err.message);
+      }
+      out.push({ ref, full: email ? email.full : null, account: email ? email.account : '', folder: email ? email.folder : '' });
+    }
+    // After the loads: finding a moved email gives it its current id.
+    const open = this.openMessageId();
+    for (const n of out) n.open = Boolean(open && open === n.ref.id);
+    return out;
+  }
+
+  // The email the user looks at now, as {id, subject}, when it is not the chat's own. null as well when it is the one
+  // newer email this turn carries: that one's own line says the user looks at it.
+  openLine(c, newer) {
+    const openId = this.openMessageId();
+    const saysSo = Array.isArray(newer) && newer.length === 1 && newer[0].open;
+    if (!openId || openId === (c.message ? c.message.id : null) || saysSo) return null;
+    const m = this.liveMessage(openId);
+    return { id: openId, subject: m ? m.subject : '' };
   }
 
   // The transcript before this turn's own message.
@@ -886,7 +1055,7 @@ class AgentHub extends EventEmitter {
   // one that knows nothing of the chat. Before the adapter sends anything, input becomes a first turn with the
   // chat's email and a recap of the chat. A turn that has the email already (ready) stays as it is: a first turn
   // has nothing to recap. Never throws, so a lost session costs the adapter one await.
-  async startOver(c, turn, handle, { text, openMessage, ready }) {
+  async startOver(c, turn, handle, { text, ready }) {
     if (ready || turn.startedOver) return handle.input;
     turn.startedOver = true;
     // Kept until a turn reaches the new session, so a turn that fails on the way does not leave it without the email.
@@ -898,9 +1067,13 @@ class AgentHub extends EventEmitter {
     } catch (err) {
       this.log('hub', 'loading the email for a new session failed:', err && err.message);
     }
+    // The new session has not had a newer email either, even if the old one did.
+    const newer = turn.newer && turn.newer.length ? turn.newer : (c.continued || []).length ? await this.loadNewer(c, { again: true }) : [];
     // Stopped meanwhile: the adapter sees the abort and sends nothing.
     if (turn.closed || turn.controller.signal.aborted) return handle.input;
-    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, earlier: this.earlier(c, turn) });
+    turn.newer = newer;
+    const openMessage = this.openLine(c, newer);
+    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, newer, earlier: this.earlier(c, turn) });
     return handle.input;
   }
 
