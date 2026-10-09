@@ -99,6 +99,18 @@ async function capture(theme, out) {
     await win.click('.agentpane [data-ap="close"]');
     await win.waitForTimeout(300);
 
+    // The calendar: the demo account's week, then the card of the invitation that waits for an answer.
+    const invitation = win.locator('.calendar [data-ev]', { hasText: 'Quarterly planning' }).first();
+    await win.click('[data-mode="calendar"]');
+    await expect(invitation).toBeVisible({ timeout: 10000 });
+    await shot('13-calendar.png');
+    await invitation.click();
+    await win.waitForSelector('.cal-pop');
+    await shot('14-calendar-event.png', 400);
+    await win.keyboard.press('Escape');
+    await win.click('[data-mode="mail"]');
+    await win.waitForTimeout(300);
+
     await win.click('[data-action="settings"]');
     await win.waitForSelector('.settings .card');
     await expect(win.locator('.settings h1')).toHaveText('Email settings');

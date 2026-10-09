@@ -27,12 +27,15 @@ import {
   choiceDialog,
   applyTheme,
   onSystemThemeChange,
-  isLight
+  isLight,
+  segmented,
+  setSegmented
 } from './ui.js';
 import { fillFrame } from './mailframe.js';
 import { mountComposer } from './composer.js';
 import { openSettings, promptDialog } from './settings.js';
 import { openSetup } from './setup.js';
+import * as calendar from './calendar.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -90,8 +93,9 @@ export const S = {
   composer: null
 };
 
-// Layout preferences live in the renderer; they only matter to this window.
-const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, ...readPrefs() };
+// Layout preferences live in the renderer; they only matter to this window. mode: 'mail' or 'calendar'.
+const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, mode: 'mail', ...readPrefs() };
+const calendarMode = () => prefs.mode === 'calendar';
 function readPrefs() {
   try {
     return JSON.parse(localStorage.getItem('rukoo.layout') || '{}');
@@ -149,6 +153,7 @@ async function refreshOnce() {
     if (S.message) renderReader();
     S.composer?.retheme(data);
     agentPanel?.relocalize();
+    calendar.relocalize();
   }
   // With one account, "Alle accounts" would just repeat it; show the account itself.
   if (data.accounts.length === 1) S.scope = data.accounts[0].id;
@@ -181,6 +186,11 @@ async function refreshOnce() {
   if (S.checked.size > 1) renderReader();
   else renderReaderNav();
   autoOpen();
+  // Account names and colours show in the calendar too.
+  if (calendarMode()) {
+    if (calendar.isOpen()) calendar.reload();
+    else calendar.show();
+  }
 }
 
 // Show the newest message instead of an empty reading pane. It stays unread until you open it yourself.
@@ -305,8 +315,9 @@ function renderShell() {
   const app = $('#app');
   if (!app.querySelector('.shell')) {
     app.innerHTML = `<div class="shell">
-      <aside class="sidebar" data-i18n-aria-label="mailbox.layout.folders" aria-label="${esc(t('mailbox.layout.folders'))}"></aside>
+      <aside class="sidebar" data-i18n-aria-label="mailbox.layout.folders" aria-label="${esc(t('mailbox.layout.folders'))}"><div class="sidebar-mode"></div><div class="sidebar-main"></div></aside>
       <div class="workspace">
+        <section class="calendar" data-i18n-aria-label="calendar.title" aria-label="${esc(t('calendar.title'))}"></section>
         <section class="listpane" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}">
           <div class="list-head"></div>
           <div class="list-tools"></div>
@@ -336,6 +347,13 @@ function renderShell() {
   shell.classList.toggle('compact', S.data?.settings.density === 'compact');
   shell.classList.toggle('selecting', S.checked.size > 0);
   shell.classList.toggle('agent-open', Boolean(prefs.agentOpen));
+  shell.classList.toggle('calendar-mode', calendarMode());
+  document.body.classList.toggle('calendar-mode', calendarMode());
+  // The sidebar holds folders or calendars; its name for screen readers follows, also after a language change.
+  const side = shell.querySelector('.sidebar');
+  const sideLabel = calendarMode() ? 'calendar.sidebar.calendars' : 'mailbox.layout.folders';
+  side.dataset.i18nAriaLabel = sideLabel;
+  side.setAttribute('aria-label', t(sideLabel));
   root.style.setProperty('--sidebar-w', `${collapsed ? RAIL_W : SIDEBAR_W}px`);
   root.style.setProperty('--list-w', `${listWidth()}px`);
   root.style.setProperty('--agent-w', `${agentWidth()}px`);
@@ -514,8 +532,8 @@ function clearSearch() {
 
 // ---------- sidebar ----------
 
-function syncStatus() {
-  const accounts = scopedAccounts();
+// The sidebar's sync line, for the mail accounts in scope or, in the calendar, the calendar accounts.
+function syncStatus(accounts = calendarMode() ? calendar.syncAccounts() : scopedAccounts()) {
   if (accounts.some((a) => a.syncing)) return { cls: 'busy', text: t('mailbox.sync.syncing'), title: '' };
   const failed = accounts.find((a) => a.error);
   if (failed) return { cls: 'error', text: t('mailbox.sync.failed'), title: `${failed.email}: ${failed.error}` };
@@ -543,8 +561,50 @@ function accountAvatar(acc) {
   return `<span class="avatar acc" style="--acc:${esc(acc.color || '#6f9cf2')}" aria-hidden="true">${esc((acc.name || acc.email).trim()[0] || '?').toUpperCase()}</span>`;
 }
 
+// Mail and Calendar at the top of the sidebar. The switch stays in place, so its thumb slides.
+function renderModeSwitch() {
+  const box = $('.sidebar-mode');
+  const options = [
+    { value: 'mail', label: t('calendar.mode.mail'), title: t('calendar.mode.mailShortcut'), icon: 'unread' },
+    { value: 'calendar', label: t('calendar.mode.calendar'), title: t('calendar.mode.calendarShortcut'), icon: 'calendar' }
+  ];
+  const el = box.querySelector('.segmented');
+  if (el && el.dataset.language === S.data.settings.language) return setSegmented(el, prefs.mode);
+  box.innerHTML = segmented({ name: 'mode', label: t('calendar.mode.label'), value: prefs.mode, options });
+  box.querySelector('.segmented').dataset.language = S.data.settings.language;
+}
+
+function setMode(mode) {
+  if (mode === prefs.mode || !['mail', 'calendar'].includes(mode)) return;
+  prefs.mode = mode;
+  savePrefs();
+  closeMenu();
+  renderShell();
+  renderSidebar();
+  if (mode === 'calendar') calendar.show();
+  else {
+    calendar.hide();
+    renderList();
+    $('.list-scroll')?.focus();
+  }
+}
+
+function sidebarFoot() {
+  const status = syncStatus();
+  return `<div class="sidebar-foot">
+      <button class="sync-status ${status.cls}" data-action="sync" title="${esc(status.title)}"><span class="dot"></span><span class="t">${esc(status.text)}</span></button>
+      <button class="icon-btn" data-action="settings" data-i18n-title="settings.title.short" title="${esc(t('settings.title.short'))}">${icons.settings}</button>
+      <button class="icon-btn" data-action="collapse" title="${sidebarCollapsed() ? t('mailbox.sidebar.expand') : t('mailbox.sidebar.collapse')}">${icons.panelLeft}</button>
+    </div>`;
+}
+
 function renderSidebar() {
-  const el = $('.sidebar');
+  renderModeSwitch();
+  if (calendarMode()) {
+    $('.sidebar-main').innerHTML = calendar.sidebarHtml() + sidebarFoot();
+    return;
+  }
+  const el = $('.sidebar-main');
   const counts = S.counts;
   const current = account(S.scope);
   const accounts = S.data.accounts;
@@ -588,17 +648,12 @@ function renderSidebar() {
   const who = current
     ? `${accountAvatar(current)}<span class="who"><span class="name">${esc(current.name || current.email.split('@')[0])}</span><span class="email">${esc(current.email)}</span></span>`
     : `<span class="avatar acc all" aria-hidden="true">${icons.inbox}</span><span class="who"><span class="name" data-i18n="mailbox.search.allAccounts">${esc(t('mailbox.search.allAccounts'))}</span><span class="email">${esc(t('mailbox.sidebar.accountCount', { count: accounts.length }))}</span></span>`;
-  const status = syncStatus();
 
   el.innerHTML = `
     <button class="account-switch" data-action="accounts" aria-haspopup="menu" title="${esc(current ? current.email : t('mailbox.search.allAccounts'))}">${who}<span class="chev">${icons.chevronUpDown}</span></button>
     <button class="btn compose-btn" data-action="compose" data-i18n-title="composer.titles.newShortcut" title="${esc(t('composer.titles.newShortcut'))}">${icons.compose}<span data-i18n="composer.titles.new">${esc(t('composer.titles.new'))}</span></button>
     <nav class="nav" data-i18n-aria-label="mailbox.layout.folders" aria-label="${esc(t('mailbox.layout.folders'))}">${viewRows}${folderRows}</nav>
-    <div class="sidebar-foot">
-      <button class="sync-status ${status.cls}" data-action="sync" title="${esc(status.title)}"><span class="dot"></span><span class="t">${esc(status.text)}</span></button>
-      <button class="icon-btn" data-action="settings" data-i18n-title="settings.title.short" title="${esc(t('settings.title.short'))}">${icons.settings}</button>
-      <button class="icon-btn" data-action="collapse" title="${sidebarCollapsed() ? t('mailbox.sidebar.expand') : t('mailbox.sidebar.collapse')}">${icons.panelLeft}</button>
-    </div>`;
+    ${sidebarFoot()}`;
 }
 
 function accountMenu(anchor) {
@@ -634,6 +689,8 @@ function bindSidebar() {
   el.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
+    if (t.dataset.mode) return setMode(t.dataset.mode);
+    if (calendarMode() && calendar.sidebarClick(t)) return;
     switch (t.dataset.action) {
       case 'accounts':
         return accountMenu(t);
@@ -642,7 +699,7 @@ function bindSidebar() {
       case 'settings':
         return openSettings(ctx);
       case 'sync':
-        return syncNow();
+        return calendarMode() ? calendar.syncNow() : syncNow();
       case 'collapse':
         if (prefs.agentOpen) prefs.sidebarWithAgent = sidebarCollapsed();
         else prefs.sidebarCollapsed = !sidebarCollapsed();
@@ -2071,6 +2128,15 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.target.closest && e.target.closest('.composer')) return;
   if (!S.data || !S.data.accounts.length) return;
+  // Ctrl+1 and Ctrl+2 switch between Mail and Calendar, as in Outlook.
+  if (ctrl && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2')) {
+    e.preventDefault();
+    return setMode(e.key === '1' ? 'mail' : 'calendar');
+  }
+  if (calendarMode()) {
+    if (!e.target.closest?.('.agentpane, .bui-menu') && calendar.onKey(e)) e.preventDefault();
+    return;
+  }
   if (ctrl && key === 'n') {
     e.preventDefault();
     return compose({ mode: 'new' });
@@ -2184,6 +2250,7 @@ function drawBadge(count) {
 
 window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
+  if (type === 'calendar') calendar.reload();
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
@@ -2193,6 +2260,7 @@ window.mail.on(async ({ type, payload }) => {
     S.composer?.retheme(S.data);
   }
   if (type === 'open-message') {
+    setMode('mail');
     S.scope = 'all';
     S.view = 'inbox';
     S.folder = null;
@@ -2243,6 +2311,7 @@ export const ctx = {
   openSetup: (opts) => openSetup(ctx, opts),
   // view: open straight on one page, such as 'agents'.
   openSettings: (view) => openSettings(ctx, { view }),
+  renderSidebar: () => renderSidebar(),
   revealAgent: () => setAgentOpen(true),
   closeAgent: () => setAgentOpen(false),
   agentOpen: () => Boolean(prefs.agentOpen),
@@ -2254,4 +2323,5 @@ export const ctx = {
   }
 };
 
+calendar.init(ctx);
 refresh().catch((err) => toast(err.message, 6000));

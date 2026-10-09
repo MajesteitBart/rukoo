@@ -294,7 +294,37 @@ document.addEventListener('mousedown', (e) => {
 window.addEventListener('blur', () => closeMenu());
 window.addEventListener('resize', () => closeMenu());
 
+// ---------- segmented control ----------
+
+// Beautiful UI's SegmentedControl: equal segments with a thumb that slides to the chosen one. name: the data
+// attribute each segment carries its value in. An option's icon shows instead of its label where there is no room.
+export function segmented({ options, value, name, label }) {
+  const index = Math.max(0, options.findIndex((o) => o.value === value));
+  return `<div class="segmented" role="tablist" aria-label="${esc(label)}" style="--n:${options.length};--i:${index}">
+    <span class="seg-thumb" aria-hidden="true"></span>${options
+      .map(
+        (o) =>
+          `<button role="tab" aria-selected="${o.value === value}" data-${name}="${esc(o.value)}" title="${esc(o.title || o.label)}">${
+            o.icon ? `<span class="seg-ic">${icons[o.icon]}</span>` : ''
+          }<span class="seg-label">${esc(o.label)}</span></button>`
+      )
+      .join('')}</div>`;
+}
+
+// Moves the thumb of a segmented control that stays on screen, so it slides instead of jumping.
+export function setSegmented(el, value) {
+  if (!el) return;
+  const buttons = [...el.querySelectorAll('[role="tab"]')];
+  const index = buttons.findIndex((b) => Object.values(b.dataset).includes(value));
+  if (index < 0) return;
+  el.style.setProperty('--i', String(index));
+  buttons.forEach((b, i) => b.setAttribute('aria-selected', String(i === index)));
+}
+
 // ---------- dialogs ----------
+
+// A button value that keeps the dialog open, for a form that found something to fix.
+export const KEEP_OPEN = Symbol('keep-open');
 
 export function dialog({ title, body = '', buttons = [{ get label() { return t('common.actions.ok'); }, value: true }], render, wide = false }) {
   return new Promise((resolve) => {
@@ -341,7 +371,8 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
     scrim.querySelectorAll('.buttons button').forEach((b) =>
       b.addEventListener('click', () => {
         const btn = buttons[Number(b.dataset.i)];
-        done(typeof btn.value === 'function' ? btn.value(scrim) : btn.value);
+        const value = typeof btn.value === 'function' ? btn.value(scrim) : btn.value;
+        if (value !== KEEP_OPEN) done(value);
       })
     );
     document.body.appendChild(scrim);
