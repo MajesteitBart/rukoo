@@ -773,6 +773,98 @@ test('after a restart, an agent that lost its session says so and gets the email
   await shot('lost-session');
 });
 
+test('each chat has its own model and effort: the next turn uses them, and they come back after a restart', async () => {
+  // Functions: the window is a new one after the restart.
+  const modelButton = () => win.locator('.agentpane .bui-pb__opt[data-pick="model"]');
+  const effortButton = () => win.locator('.agentpane .bui-pb__opt[data-pick="effort"]');
+  // A menu row by its label alone: a Default row's tag can name a model too.
+  const exact = (text) => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`);
+  const row = (label) => win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: exact(label) }) });
+  const received = (agent) => app.evaluate((_e, agent) => global.__semAgents.adapters.get(agent).received.at(-1), agent);
+  const pickAgent = async (name) => {
+    await win.click('.agentpane .bui-pb__modelbtn');
+    await row(name).click();
+    await expect(win.locator('.agentpane .ap-agent')).toHaveText(name);
+  };
+  await openChat('Call on Thursday');
+  // A new chat follows the agent's default.
+  await expect(modelButton()).toHaveText('Default model');
+  await expect(effortButton()).toHaveAttribute('aria-label', 'Effort: Default');
+
+  // Claude, before the first message: a model by mouse, an effort by keyboard.
+  await pickAgent('Claude');
+  await modelButton().click();
+  await expect(win.locator('.bui-menu .bui-menu__row')).toHaveText(['Default', 'Fable', 'Opus', 'Sonnet']);
+  await row('Sonnet').click();
+  await expect(modelButton()).toHaveText('Sonnet');
+  await effortButton().focus();
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.bui-menu .bui-menu__row')).toHaveText(['Default', 'Low', 'Medium', 'High', 'Extra high', 'Max']);
+  await expect(row('Default')).toBeFocused();
+  for (let i = 0; i < 4; i++) await win.keyboard.press('ArrowDown');
+  await win.keyboard.press('Enter');
+  await expect(effortButton()).toHaveText('Extra high');
+  await expect(input()).toBeFocused();
+  await say('Which model do you use?');
+  await expect(transcript()).toContainText('Model: sonnet. Effort: xhigh.', { timeout: 10000 });
+  expect(await received('claude')).toMatchObject({ model: 'sonnet', effort: 'xhigh' });
+  // A chat that has started takes a new choice from its next turn.
+  await modelButton().click();
+  await row('Opus').click();
+  await effortButton().click();
+  await row('Low').click();
+  await say('And which model now?');
+  await expect(transcript()).toContainText('Model: opus. Effort: low.', { timeout: 10000 });
+  await settled();
+  await shot('19-model-effort');
+
+  // Codex in a new chat: each model offers the efforts it supports, and Default says what it comes down to.
+  await win.click('.agentpane [data-ap="new"]');
+  await pickAgent('Codex');
+  await expect(modelButton()).toHaveText('Default model');
+  await modelButton().click();
+  await row('GPT-6-Luna').click();
+  await effortButton().click();
+  await expect(win.locator('.bui-menu .bui-menu__row')).toHaveText(['DefaultLow', 'Low', 'Medium', 'High']);
+  await row('High').click();
+  await say('Which model do you use?');
+  await expect(transcript()).toContainText('Model: gpt-6-luna. Effort: high.', { timeout: 10000 });
+  expect(await received('codex')).toMatchObject({ model: 'gpt-6-luna', effort: 'high' });
+
+  // Hermes in a new chat: models grouped by provider; one without effort levels has no effort menu.
+  await win.click('.agentpane [data-ap="new"]');
+  await pickAgent('Hermes');
+  await modelButton().click();
+  await expect(win.locator('.bui-menu .bui-menu__heading')).toHaveText(['Model', 'Anthropic', 'OpenRouter', 'Model routes']);
+  await row('mistral/small-4').click();
+  await expect(effortButton()).toBeHidden();
+  await modelButton().click();
+  await row('claude-opus-5-5').click();
+  await effortButton().click();
+  await row('Max').click();
+  await say('Which model do you use?');
+  await expect(transcript()).toContainText('Model: anthropic::claude-opus-5-5. Effort: max.', { timeout: 10000 });
+  expect(await received('clark')).toMatchObject({ model: 'anthropic::claude-opus-5-5', effort: 'max' });
+
+  // After a restart each chat has its own choice again, and switching chats shows the other's.
+  await app.close();
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await item('Call on Thursday').click();
+  if (!(await pane().isVisible())) await win.keyboard.press('Control+j');
+  await expect(transcript()).toContainText('Model: anthropic::claude-opus-5-5. Effort: max.');
+  await expect(modelButton()).toHaveText('claude-opus-5-5');
+  await expect(effortButton()).toHaveText('Max');
+  await win.click('.agentpane [data-ap="history"]');
+  await row('Call on Thursday').filter({ hasText: 'Claude' }).click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
+  await expect(modelButton()).toHaveText('Opus');
+  await expect(effortButton()).toHaveText('Low');
+  await say('Still the same model?');
+  await expect(transcript()).toContainText('You asked: "Still the same model?"', { timeout: 10000 });
+  expect(await received('claude')).toMatchObject({ model: 'opus', effort: 'low' });
+});
+
 test('the panel follows a language change, the open conversation included', async () => {
   await openChat('Call on Thursday');
   await chip('Plan follow-ups').click();

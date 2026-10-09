@@ -169,6 +169,44 @@ class CodexAdapter {
     };
   }
 
+  // The settings with the chat's own model and effort; without them the chat follows the settings. The hub only
+  // passes an effort that model/list says the model supports.
+  withChoice(s, turn) {
+    return { ...s, model: String((turn && turn.model) || '').trim() || s.model, effort: String((turn && turn.effort) || '').trim() };
+  }
+
+  // The models app-server offers (model/list), each with the efforts it supports. The list needs a running
+  // app-server: the one the chats use, started now if there is none yet.
+  async models() {
+    const s = this.settings();
+    if (!s.enabled) throw new AgentError('disabled', 'Codex is turned off');
+    const exe = await this.exe();
+    if (!exe) throw new AgentError('not-installed', s.exe ? `Not found: ${clip(s.exe, 150)}` : 'Codex is not installed');
+    if (this.starting) await this.starting.catch(() => {});
+    const server = this.server && !this.server.exited ? this.server : await this.ensureServer(exe, { conversation: null, mcp: null }, s);
+    if (!server) throw new AgentError('busy', 'Codex is restarting');
+    const found = [];
+    let cursor = null;
+    for (let page = 0; page < 5; page++) {
+      const res = await server.request('model/list', { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) }, 15000);
+      found.push(...(res && Array.isArray(res.data) ? res.data : []));
+      cursor = res && res.nextCursor;
+      if (!cursor) break;
+    }
+    const models = found
+      .filter((m) => m && !m.hidden && typeof (m.model || m.id) === 'string')
+      .map((m) => ({
+        id: String(m.model || m.id),
+        label: String(m.displayName || m.model || m.id),
+        efforts: (Array.isArray(m.supportedReasoningEfforts) ? m.supportedReasoningEfforts : []).map((e) => e && String(e.reasoningEffort || '')).filter(Boolean),
+        defaultEffort: typeof m.defaultReasoningEffort === 'string' ? m.defaultReasoningEffort : ''
+      }));
+    // Without a model of its own the chat runs on the user's configured one, which can be any of these: offer
+    // the efforts they all support. A model that is not in the list gets none, as its support is unknown.
+    const common = models.length ? models.reduce((acc, m) => acc.filter((e) => m.efforts.includes(e)), models[0].efforts) : [];
+    return { models, efforts: common, custom: [] };
+  }
+
   // The native binary inside the global npm package; its codex.cmd/.ps1 shims would need a shell.
   npmExe() {
     if (!WINDOWS) return null;
@@ -246,7 +284,7 @@ class CodexAdapter {
   }
 
   async turn(turn) {
-    const s = this.settings();
+    const s = this.withChoice(this.settings(), turn);
     if (!s.enabled) throw new AgentError('disabled', 'Codex is turned off');
     const exe = await this.exe();
     if (!exe) throw new AgentError('not-installed', s.exe ? `Not found: ${clip(s.exe, 150)}` : 'Codex is not installed');
@@ -262,17 +300,25 @@ class CodexAdapter {
       this.runs.set(threadId, run);
       try {
         const params = { threadId, input: [{ type: 'text', text: turn.input, text_elements: [] }] };
-        // Access or model changed since the thread was loaded: these overrides stick for later turns.
+        // Access, model or effort changed since the thread was loaded: these overrides stick for later turns.
         const loaded = server.threads.get(threadId);
-        if (loaded && (loaded.access !== s.access || loaded.model !== s.model)) {
-          Object.assign(params, this.policy(s).turn);
-          if (s.model) params.model = s.model;
-          // A cleared model has no override; the thread keeps the old one until ensureServer reloads it.
-          server.threads.set(threadId, { ...loaded, access: s.access, model: s.model || loaded.model });
+        let next = null;
+        if (loaded && (loaded.access !== s.access || loaded.model !== s.model || loaded.effort !== s.effort)) {
+          if (loaded.access !== s.access || loaded.model !== s.model) {
+            Object.assign(params, this.policy(s).turn);
+            if (s.model) params.model = s.model;
+          }
+          if (s.effort) params.effort = s.effort;
+          // A cleared model or effort has no override; the thread keeps the old one until ensureServer reloads it.
+          next = { ...loaded, access: s.access, model: s.model || loaded.model, effort: s.effort || loaded.effort };
         }
         server
           .request('turn/start', params, this.startWait)
-          .then((res) => run.started(res && res.turn && res.turn.id))
+          .then((res) => {
+            // Codex has the overrides only once it started the turn: a refused start sends them again next time.
+            if (next && server.threads.has(threadId)) server.threads.set(threadId, next);
+            run.started(res && res.turn && res.turn.id);
+          })
           .catch((err) => {
             if (run.ended) return;
             const detail = clip(err.message, 200);
@@ -303,19 +349,21 @@ class CodexAdapter {
     };
   }
 
-  // What a thread was loaded with, to tell later which settings it still lacks.
+  // What a thread was loaded with, to tell later which settings it still lacks. A thread starts without an effort
+  // override; the first turn/start sends the chat's effort.
   threadState(turn, s) {
-    return { access: s.access, model: s.model, url: (turn.mcp && turn.mcp.url) || '' };
+    return { access: s.access, model: s.model, effort: '', url: (turn.mcp && turn.mcp.url) || '' };
   }
 
   // Codex ignores new config for a thread it has loaded (thread/resume overrides included), and turn/start
-  // cannot take a model override back. A thread loaded with another Rukoo MCP address (the port changed)
-  // or with a model the settings no longer name only gets the new settings from a fresh app-server.
+  // cannot take a model or effort override back. A thread loaded with another Rukoo MCP address (the port
+  // changed), or with a model or effort the chat and settings no longer name, only gets the new settings from a
+  // fresh app-server.
   reloadNeeded(server, turn, s) {
     const known = turn.conversation && turn.conversation.provider && turn.conversation.provider.threadId;
     const loaded = known ? server.threads.get(known) : null;
     if (!loaded) return false;
-    return loaded.url !== ((turn.mcp && turn.mcp.url) || '') || Boolean(loaded.model && !s.model);
+    return loaded.url !== ((turn.mcp && turn.mcp.url) || '') || Boolean(loaded.model && !s.model) || Boolean(loaded.effort && !s.effort);
   }
 
   threadParams(turn, s) {
@@ -349,7 +397,7 @@ class CodexAdapter {
     // old server, whose threads still have the old model or point at a closed Rukoo listener.
     if (server && this.busy > 0) {
       if (!(await this.whenIdle(turn.signal))) return null;
-      return this.ensureServer(exe, turn, this.settings());
+      return this.ensureServer(exe, turn, this.withChoice(this.settings(), turn));
     }
     if (server) server.close();
     if (!this.starting) {

@@ -20,6 +20,14 @@ const STOP_WAIT = 5000;
 const INPUT_WAIT = 1500;
 const EXE_TTL = 30000;
 const DENIED = 'The user denied this in Rukoo.';
+// Claude Code has no command that lists models. These aliases always point at the latest of each. --effort takes
+// these levels for any model (`claude --help`, 2.1.294); Claude Code lowers a level the model does not support.
+const MODELS = [
+  { id: 'fable', label: 'Fable' },
+  { id: 'opus', label: 'Opus' },
+  { id: 'sonnet', label: 'Sonnet' }
+];
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 const oneLine = (text) => String(text).replace(/\s+/g, ' ').trim();
 
@@ -126,6 +134,16 @@ class ClaudeAdapter {
     return promise;
   }
 
+  // The settings with the chat's own model and effort; without them the chat follows the settings.
+  withChoice(s, turn) {
+    return { ...s, model: String((turn && turn.model) || '').trim() || s.model, effort: EFFORTS.includes(turn && turn.effort) ? turn.effort : '' };
+  }
+
+  // For the model and effort menus.
+  async models() {
+    return { models: MODELS.map((m) => ({ ...m, efforts: EFFORTS })), efforts: EFFORTS, custom: EFFORTS };
+  }
+
   invalidate() {
     this.exeCache = null;
   }
@@ -187,7 +205,7 @@ class ClaudeAdapter {
   }
 
   async turn(turn, fresh = false) {
-    const s = this.settings();
+    const s = this.withChoice(this.settings(), turn);
     if (!s.enabled) throw new AgentError('disabled', 'Claude Code is turned off');
     const exe = await this.exe();
     if (!exe) throw new AgentError('not-installed', s.exe ? `Not found: ${clip(s.exe, 150)}` : 'Claude Code is not installed');
@@ -195,10 +213,11 @@ class ClaudeAdapter {
     const cid = turn.conversation.id;
     const key = crypto
       .createHash('sha256')
-      .update(JSON.stringify([exe, s.configDir, s.model, s.access, turn.mcp && turn.mcp.url, turn.mcp && turn.mcp.token, turn.instructions]))
+      .update(JSON.stringify([exe, s.configDir, s.model, s.effort, s.access, turn.mcp && turn.mcp.url, turn.mcp && turn.mcp.token, turn.instructions]))
       .digest('hex');
     let session = this.sessions.get(cid);
-    // Settings, the MCP endpoint and the instructions are fixed at spawn: a change means a new process.
+    // Settings, the chat's model and effort, the MCP endpoint and the instructions are fixed at spawn: a change
+    // means a new process, which resumes the session.
     // A process still busy with a turn the hub gave up on would answer this turn with the old one's
     // output, so it goes too.
     if (session && (session.key !== key || session.exited || session.current)) {
@@ -261,6 +280,8 @@ class ClaudeAdapter {
     const attachments = this.attachmentsDir();
     if (attachments) args.push('--add-dir', attachments);
     if (s.model) args.push(`--model=${s.model}`);
+    // Effort goes with adaptive thinking: Claude decides when to think, the effort level how much.
+    if (s.effort) args.push(`--effort=${s.effort}`);
     // "Ask" is explicit, so a defaultMode in the user's settings cannot quietly turn the prompts off.
     if (s.access === 'full') args.push('--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions');
     else args.push('--permission-mode', 'default');

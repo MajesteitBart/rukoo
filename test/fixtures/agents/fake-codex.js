@@ -184,9 +184,37 @@ function handle(msg) {
       const turnId = crypto.randomUUID();
       turns.set(turnId, { interrupted: false });
       const text = (p.input || []).map((i) => i.text).join('');
+      // "refuse start": Codex refuses the turn before it starts, so none of its overrides take.
+      if (/refuse start/.test(text)) return send({ id: msg.id, error: { code: -32600, message: 'turn could not start' } });
       // "mute": the turn starts, but the answer to turn/start never comes.
       if (!/mute/.test(text)) send({ id: msg.id, result: { turn: { id: turnId, items: [], status: 'inProgress', error: null } } });
       return void runTurn(p.threadId, turnId, text);
+    }
+    case 'model/list': {
+      // Recorded from codex-cli 0.161.0 (trimmed), on two pages so the client has to follow nextCursor.
+      const effort = (reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} reasoning` });
+      const model = (id, displayName, efforts, defaultReasoningEffort, extra = {}) => ({
+        id,
+        model: id,
+        upgrade: null,
+        displayName,
+        description: '',
+        hidden: false,
+        supportedReasoningEfforts: efforts.map(effort),
+        defaultReasoningEffort,
+        inputModalities: ['text', 'image'],
+        isDefault: false,
+        ...extra
+      });
+      const pages = [
+        [
+          model('gpt-6.1-sol', 'GPT-6.1-Sol', ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'low', { isDefault: true }),
+          model('gpt-6-astra', 'GPT-6-Astra', ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'medium')
+        ],
+        [model('gpt-6-luna', 'GPT-6-Luna', ['low', 'medium', 'high', 'xhigh', 'max'], 'medium'), model('codex-internal', 'Internal', ['low'], 'low', { hidden: true })]
+      ];
+      const page = p.cursor === 'page-2' ? 1 : 0;
+      return send({ id: msg.id, result: { data: pages[page], nextCursor: page === 0 ? 'page-2' : null } });
     }
     case 'turn/interrupt': {
       const state = turns.get(p.turnId);

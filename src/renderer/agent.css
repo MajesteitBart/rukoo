@@ -1906,6 +1906,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  container-type: inline-size;
 }
 .bui-pb__spacer {
   flex: 1;
@@ -1939,6 +1940,54 @@
 }
 .bui-pb__modelbtn > svg {
   color: var(--ink-3);
+}
+/* The model and effort menus beside the agent picker: quieter buttons of the same kind. In a narrow panel the
+ * model name gives way first; the agent and the effort keep their width. */
+.bui-pb__modelbtn {
+  flex-shrink: 0;
+}
+.bui-pb__opt {
+  display: flex;
+  height: 28px;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+  transition:
+    color 150ms var(--ease-default),
+    background-color 150ms var(--ease-default);
+}
+.bui-pb__opt[data-pick='model'] {
+  flex-shrink: 4;
+}
+.bui-pb__opt[data-pick='effort'] {
+  flex-shrink: 0;
+}
+.bui-pb__opt:hover,
+.bui-pb__opt[aria-expanded='true'] {
+  background: var(--hover);
+  color: var(--ink);
+}
+.bui-pb__opt > svg {
+  flex-shrink: 0;
+}
+.bui-pb__opttext {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The narrowest panels: the effort dial alone shows the level (its name is in the tooltip), and the menus lose
+ * their chevrons, so the model name stays readable. */
+@container (max-width: 330px) {
+  .bui-pb__opt > [data-icon='chevron'],
+  .bui-pb__opt[data-pick='effort'] .bui-pb__opttext {
+    display: none;
+  }
 }
 .bui-pb__send {
   display: flex;
@@ -2059,6 +2108,10 @@
   z-index: 90;
   min-width: 176px;
   max-width: 320px;
+  /* A long model list scrolls inside the menu. */
+  max-height: min(420px, calc(100vh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-radius: 10px;
   background: var(--surface);
   padding: 4px;

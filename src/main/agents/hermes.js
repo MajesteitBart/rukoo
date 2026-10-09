@@ -34,6 +34,22 @@ const STOP_RETRY = 30000;
 // How long a quit waits for the answer to a run start that is still out.
 const QUIT_ANSWER_MS = 1000;
 
+// The effort levels a run's model_options.reasoning.effort takes (Hermes 0.21 also knows minimal and ultra, which
+// few models have; it ignores a level a model lacks).
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+// A model list longer than this is cut: an aggregator such as OpenRouter lists hundreds.
+const MAX_MODELS = 300;
+const MAX_PER_PROVIDER = 60;
+
+// "provider::model", the way Hermes names a model of a provider other than its current one; a bare model or a
+// model_routes alias has no provider.
+function splitModel(value) {
+  const text = String(value || '').trim();
+  const at = text.indexOf('::');
+  if (at > 0 && /^[A-Za-z0-9_.:-]{2,80}$/.test(text.slice(0, at)) && text.slice(at + 2).trim()) return { provider: text.slice(0, at), model: text.slice(at + 2).trim() };
+  return { provider: '', model: text };
+}
+
 const CHOICES = {
   once: { id: 'once', label: 'Allow once', kind: 'primary' },
   session: { id: 'session', label: 'Allow for this turn', kind: 'default' },
@@ -218,6 +234,55 @@ class HermesAdapter {
     this.invalidate();
   }
 
+  // The models a chat can pick: the model_routes aliases (GET /v1/models) and the models of each provider Hermes
+  // has credentials for (GET /api/model/options), named provider::model. Either list can be missing (an older
+  // Hermes, a slow catalog); the menu then has what the other one gives.
+  async models() {
+    const s = this.settings();
+    if (!s.enabled) throw new AgentError('disabled', `${s.name} is turned off`);
+    if (!s.url || !s.key) throw new AgentError('not-configured', !s.url ? 'No server URL' : 'No API key');
+    const server = { url: s.url, key: s.key };
+    const [routes, options] = await Promise.allSettled([
+      this.request('GET', '/v1/models', { server }),
+      this.request('GET', '/api/model/options?include_unconfigured=false', { server, timeout: 15000 })
+    ]);
+    const ok = (r) => r.status === 'fulfilled' && r.value.ok && r.value.data && typeof r.value.data === 'object';
+    if (!ok(routes) && !ok(options)) {
+      const answered = [routes, options].find((r) => r.status === 'fulfilled');
+      if (answered) throw httpError(answered.value);
+      throw networkError(routes.reason, this.base(s.url).host);
+    }
+    const models = [];
+    const add = (m) => {
+      if (models.length < MAX_MODELS && !models.some((x) => x.id === m.id)) models.push(m);
+    };
+    let current = null;
+    if (ok(options)) {
+      const d = options.value.data;
+      for (const row of Array.isArray(d.providers) ? d.providers : []) {
+        const slug = row && typeof row.slug === 'string' ? row.slug.trim() : '';
+        if (!/^[A-Za-z0-9_.:-]{2,80}$/.test(slug)) continue;
+        const caps = row.capabilities && typeof row.capabilities === 'object' ? row.capabilities : {};
+        // An aggregator's shortlist (the newest few per lab) instead of its whole catalog.
+        const featured = Array.isArray(row.featured_models) && row.featured_models.length ? row.featured_models : null;
+        const ids = (featured || (Array.isArray(row.models) ? row.models : [])).filter((m) => typeof m === 'string' && m.trim() && m.length <= 150);
+        for (const id of ids.slice(0, MAX_PER_PROVIDER)) {
+          add({ id: `${slug}::${id}`, label: id, group: String(row.name || slug), efforts: caps[id] && caps[id].reasoning === false ? [] : EFFORTS });
+        }
+      }
+      if (typeof d.model === 'string' && d.model) current = typeof d.provider === 'string' && d.provider ? `${d.provider}::${d.model}` : d.model;
+    }
+    if (ok(routes)) {
+      // The first entry is the profile itself, which stands for Hermes' own default; the rest are aliases.
+      for (const m of Array.isArray(routes.value.data.data) ? routes.value.data.data : []) {
+        if (m && typeof m.id === 'string' && m.id && m.parent) add({ id: m.id, label: m.id, tag: typeof m.root === 'string' && m.root !== m.id ? m.root : '', route: true, efforts: EFFORTS });
+      }
+    }
+    const own = current && models.find((m) => m.id === current);
+    if (own) own.isDefault = true;
+    return { models, efforts: own ? own.efforts : EFFORTS, custom: EFFORTS };
+  }
+
   // Cheap and cached: /health says the server is there, /v1/capabilities that the key works.
   // force (the Test button) skips the cache.
   async status({ force = false } = {}) {
@@ -288,7 +353,11 @@ class HermesAdapter {
     if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
     const body = { input: turn.input, session_id: sessionId };
     if (turn.instructions) body.instructions = turn.instructions;
-    if (s.model) body.model = s.model;
+    // The chat's own model and effort, else the model in Settings. Without either, Hermes uses its own.
+    const { provider, model } = splitModel(String(turn.model || '').trim() || s.model);
+    if (model) body.model = model;
+    if (provider) body.provider = provider;
+    if (EFFORTS.includes(turn.effort)) body.model_options = { reasoning: { effort: turn.effort } };
     // A retried POST (lost response) must not start the same turn twice.
     const idem = String(turn.id || '').replace(/[^\x21-\x7e]/g, '').slice(0, 200) || crypto.randomUUID();
     const started = await this.submit(body, `rukoo-${idem}`, server, turn.signal);
@@ -818,4 +887,4 @@ class HermesAdapter {
   }
 }
 
-module.exports = { HermesAdapter, missingText };
+module.exports = { HermesAdapter, missingText, splitModel };
