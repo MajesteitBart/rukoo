@@ -999,10 +999,24 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   let asking = false;
-  async function close() {
-    if (asking || closing || closed || sending) return;
+  let answer = null;
+  // Resolves to true once the editor has closed, false while it stays open (Cancel, or a save that failed). Called
+  // again while the question or its save is still open, it returns the same answer: a quit waits for it.
+  function close() {
+    if (closed) return Promise.resolve(true);
+    if (answer) return answer;
+    // Busy with another question (the agent's Undo), a save before closing, or sending.
+    if (asking || closing || sending) return Promise.resolve(false);
+    answer = ask().finally(() => (answer = null));
+    return answer;
+  }
+
+  async function ask() {
     flushInputs();
-    if (!st.dirty) return finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
+    if (!st.dirty) {
+      finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
+      return true;
+    }
     asking = true;
     const choice = await dialog({
       title: t('composer.close.title'),
@@ -1021,7 +1035,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       await saving;
       if (st.draftId) await api('discardDraft', st.draftId).catch(() => {});
       finish(st.draftId ? t('composer.status.deleted') : null);
+      return true;
     }
+    return false;
   }
 
   // Lock the editor while the last save runs, so nothing typed now is left out of it.
@@ -1197,19 +1213,15 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     // The window's close button: keep the window open while there are unsaved changes and ask instead.
     listen(window, 'beforeunload', (e) => {
       if (closed) return;
-      // While sending or saving before closing, the window closes by itself when that is done.
-      if (sending || closing) {
-        e.preventDefault();
-        e.returnValue = false;
-        return;
-      }
-      if (!st.dirty) {
+      if (!st.dirty && !sending && !closing) {
         if (st.draftId && st.mode !== 'draft') api('toastMain', t('composer.status.kept')).catch(() => {});
         return;
       }
       e.preventDefault();
       e.returnValue = false;
-      setTimeout(close, 0);
+      // While sending or saving before closing, the window closes by itself when that is done; otherwise this
+      // asks. Main hears the outcome, because a quit waits for it.
+      setTimeout(() => close().then((done) => api('unloadAnswer', done)).catch(() => {}), 0);
     });
   }
 

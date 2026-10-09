@@ -2482,6 +2482,29 @@
     "message": "1 new email",
     "description": "native > notifications. Windows taskbar badge: singular unread/new email description."
   },
+  "native.tray.compose": {
+    "message": "New message",
+    "description": "native > tray. Menu of the Rukoo icon in the Windows notification area: opens a compose window for a new email. src/main/tray.js (TrayIcon.relabel)"
+  },
+  "native.tray.open": {
+    "message": "Open Rukoo",
+    "description": "native > tray. Menu of the Rukoo icon in the Windows notification area: shows the main window again. src/main/tray.js (TrayIcon.relabel)"
+  },
+  "native.tray.quit": {
+    "message": "Quit",
+    "description": "native > tray. Menu of the Rukoo icon in the Windows notification area: quits Rukoo, which stops sync and new-mail notifications. src/main/tray.js (TrayIcon.relabel)"
+  },
+  "native.tray.sync": {
+    "message": "Sync now",
+    "description": "native > tray. Menu of the Rukoo icon in the Windows notification area: syncs every account now. src/main/tray.js (TrayIcon.relabel)"
+  },
+  "native.tray.tooltip": {
+    "message": {
+      "one": "Rukoo Mail: {count} unread email",
+      "other": "Rukoo Mail: {count} unread emails"
+    },
+    "description": "native > tray. Tooltip of the Rukoo icon in the Windows notification area while there is unread mail; count is the unread mail in the inboxes of all accounts. Without unread mail the tooltip is just the product name. src/main/tray.js (tooltip)"
+  },
   "reader.actions.edit": {
     "message": "Edit",
     "description": "reader > actions. src/renderer/app.js (readerBar)"
@@ -3037,6 +3060,14 @@
     "message": "App badge count",
     "description": "settings > general. src/renderer/settings.js (render); src/renderer/settings.js (openSettings)"
   },
+  "settings.general.closeToTray": {
+    "message": "Close to the tray",
+    "description": "settings > general. Settings > General: title of the switch that keeps Rukoo running in the Windows notification area when the main window closes. On by default. src/renderer/settings.js (render)"
+  },
+  "settings.general.closeToTrayHelp": {
+    "message": "Rukoo keeps running in the tray when you close the window, so new mail still comes in and notifies you. To quit, right-click the tray icon and choose Quit.",
+    "description": "settings > general. Settings > General: explanation below Close to the tray; Quit is the label of native.tray.quit. src/renderer/settings.js (render)"
+  },
   "settings.general.darkEmails": {
     "message": "Dark email display",
     "description": "settings > general. src/renderer/settings.js (render)"
@@ -3080,6 +3111,14 @@
   "settings.general.logosHelp": {
     "message": "Show logos for companies that email you. Rukoo Mail fetches each logo once from their website.",
     "description": "settings > general. src/renderer/settings.js (render)"
+  },
+  "settings.general.minimizeToTray": {
+    "message": "Minimize to the tray",
+    "description": "settings > general. Settings > General: title of the switch that hides the minimized main window in the Windows notification area instead of the taskbar. Off by default. src/renderer/settings.js (render)"
+  },
+  "settings.general.minimizeToTrayHelp": {
+    "message": "Minimizing puts the window in the tray instead of on the taskbar.",
+    "description": "settings > general. Settings > General: explanation below Minimize to the tray. src/renderer/settings.js (render)"
   },
   "settings.general.notifications": {
     "message": "Notifications",
