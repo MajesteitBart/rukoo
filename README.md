@@ -33,8 +33,9 @@ Translation labels have descriptive keys and screen context in the [English sour
 - A chat panel (`Ctrl+J`) for Hermes Agent, Claude Code and Codex. Quick actions draft a reply, brief you on the sender, plan follow-ups, tell the team, update other systems, unsubscribe and summarize. Agents read mail and write drafts through Rukoo's own MCP server and never send mail; anything other people will see waits for your approval. Each chat can pick its own model and effort under the input. Works the same for every provider. See [Agents](docs/agents.md).
 - Skills in the Agent Skills format: Rukoo's own from `skills/`, and yours from `%APPDATA%\Rukoo Mail\skills`. Every agent gets them through Rukoo's MCP server, and `/name` in the chat input starts one. See [Skills](docs/agents.md#skills).
 - Zoom from 80% to 200% with `Ctrl+Plus`, `Ctrl+Minus` or Ctrl and the mouse wheel. The main window and the compose windows share one level, and the app remembers it.
-- Settings: language, theme, zoom, list density, swipe actions, fit content to the window, sender logos, notifications, taskbar badge, sync interval, signature (none by default), spam addresses, VIPs and folder visibility.
+- Settings: language, theme, zoom, list density, swipe actions, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, signature (none by default), spam addresses, VIPs and folder visibility.
 - Windows notifications for new mail and a count badge on the taskbar icon.
+- Closing the window keeps Rukoo running in the tray, so mail keeps syncing and new mail still notifies you. Clicking the tray icon or a notification brings the window back where it was, with a half-written reply still in it. The icon's menu opens Rukoo, starts a new message, syncs or quits. Its tooltip counts unread mail, and a dot on the icon repeats the taskbar badge. Minimizing can hide the window in the tray as well. Turn both off in Settings → General to have closing quit Rukoo again. Windows 11 first puts the icon among the hidden icons, behind the arrow on the taskbar; drag it onto the taskbar to keep it in view.
 
 Keyboard in the main window: `Ctrl+N` new mail, `Ctrl+R` reply, `Ctrl+Shift+R` reply all, `Ctrl+F` forward, `Ctrl+E` or `/` search, `↑`/`↓` previous and next, `Shift+↑`/`Shift+↓` extend the selection, `Ctrl+A` select all, `Ctrl+Q` mark read, `Ctrl+U` mark unread, `Ctrl+Shift+V` move, `Delete` delete, `Ctrl+Z` undo, `Ctrl+P` print, `F5` sync, `Esc` clear the selection or search. While writing: `Ctrl+Enter` send, `Ctrl+S` save the draft, `Ctrl+K` insert a link, `Esc` close. In every window, also with the focus inside an email: `Ctrl+Plus` (or `Ctrl+=`) zoom in, `Ctrl+Minus` zoom out, `Ctrl+0` back to 100%. The numpad keys work too.
 
@@ -154,6 +155,7 @@ The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.em
 | `src/main/calendar/` | The calendar: the cache, sync and changes for every account (`index.js`), Google Calendar (`google.js`) and the demo account's calendar (`demo.js`) |
 | `src/main/main.js` | Main and compose windows, IPC table, notifications, taskbar badge, unsubscribe |
 | `src/main/windowstate.js` | Remembers window size and position |
+| `src/main/tray.js` | The tray icon, its tooltip and menu; `main.js` decides when there is one |
 | `src/main/zoom.js` | Zoom steps and the zoom keys; `main.js` applies the level to every window |
 | `src/main/logos.js` | Fetches and caches sender logos |
 | `src/renderer/app.js` | The main window: sidebar, list, reading pane, selection, undo |

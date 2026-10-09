@@ -45,10 +45,13 @@ class WindowState {
     win.on('move', later);
     win.on('maximize', save);
     win.on('unmaximize', save);
-    win.on('close', () => {
-      clearTimeout(timer);
-      save();
-    });
+    // A window that closes to the tray only hides, and Rukoo may then run for days before it quits.
+    for (const event of ['close', 'hide']) {
+      win.on(event, () => {
+        clearTimeout(timer);
+        save();
+      });
+    }
   }
 
   write() {

@@ -2277,13 +2277,14 @@ onSystemThemeChange(() => {
   S.composer?.retheme(S.data);
 });
 
-// Closing the window with unsaved text in the editor: keep it open and ask first.
+// Closing the window with unsaved text in the editor: keep it open and ask first. Main hears the outcome, because
+// a quit waits for it. A busy editor answers without asking, or with the question that is already open.
 window.addEventListener('beforeunload', (e) => {
   const editor = S.composer;
   if (!editor || (!editor.isDirty() && !editor.isBusy())) return;
   e.preventDefault();
   e.returnValue = false;
-  if (!editor.isBusy()) setTimeout(() => editor.close(), 0);
+  setTimeout(() => editor.close().then((done) => api('unloadAnswer', done)).catch(() => {}), 0);
 });
 
 // Scrollbars show while scrolling and fade after.

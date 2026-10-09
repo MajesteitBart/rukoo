@@ -15,7 +15,8 @@ const {
   nativeTheme,
   nativeImage,
   Notification,
-  Menu
+  Menu,
+  screen
 } = require('electron');
 const { Engine } = require('./engine');
 const { Calendars } = require('./calendar');
@@ -25,6 +26,7 @@ const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
 const { nextZoom, zoomKey } = require('./zoom');
+const { TrayIcon } = require('./tray');
 // ---- agents ----
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
@@ -74,6 +76,12 @@ let calendars = null;
 let google = null;
 let syncTimer = null;
 let newSinceFocus = 0;
+let tray = null;
+// Set once Rukoo really quits, so the main window closes instead of hiding in the tray. A window with unsaved
+// changes holds the quit while it asks about them, and can call it off; see watchQuit().
+let quitting = false;
+// The windows (by webContents id) that hold the quit while they ask.
+const quitAsks = new Set();
 // ---- agents ----
 let hub = null;
 // Holds the agent events the chat panel must not miss until it listens; see agents/gate.js.
@@ -139,12 +147,48 @@ function scheduleSync() {
 
 function badgeCount() {
   if (engine.settings.badge === 'none') return 0;
-  if (engine.settings.badge === 'unread') return engine.counts('all').all;
+  if (engine.settings.badge === 'unread') return engine.unreadCount();
   return newSinceFocus;
 }
 
 function refreshBadge() {
   send('badge', badgeCount());
+  refreshTray();
+}
+
+// The tray icon is there while closing or minimizing hides the main window, so the window can always come back.
+function updateTray() {
+  const wanted = engine.settings.closeToTray || engine.settings.minimizeToTray;
+  if (wanted && !tray) {
+    tray = new TrayIcon({
+      icon: ICON,
+      // Windows draws tray icons at 16 px at 100% scaling; an image of exactly that size stays sharp.
+      size: Math.round(16 * screen.getPrimaryDisplay().scaleFactor),
+      test: Boolean(process.env.SEM_HIDDEN),
+      actions: {
+        open: showWindow,
+        compose: () => openComposeWindow({ mode: 'new' }),
+        sync: () => engine.syncAll().catch(() => {}),
+        quit: () => app.quit()
+      }
+    });
+    refreshTray();
+  }
+  if (!wanted && tray) destroyTray();
+  if (process.env.SEM_HIDDEN) global.__semTray = tray;
+}
+
+// The tooltip counts unread mail. The icon gets a dot while the taskbar badge has a count, because the badge
+// isn't visible while the window is hidden.
+function refreshTray() {
+  if (tray) tray.update({ unread: engine.unreadCount(), dot: badgeCount() > 0 });
+}
+
+// Removed before Rukoo exits; an icon left behind stays in the notification area until the mouse passes over it.
+function destroyTray() {
+  if (tray) tray.destroy();
+  tray = null;
+  if (process.env.SEM_HIDDEN) global.__semTray = null;
 }
 
 function notify(messages) {
@@ -177,6 +221,12 @@ function showWindow() {
     createWindow();
     return;
   }
+  // Test mode keeps the window off-screen and leaves the focus alone; see reveal().
+  if (process.env.SEM_HIDDEN) {
+    win.showInactive();
+    return;
+  }
+  // Minimized to the tray, the window is minimized and hidden; restoring brings it back where it was.
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
@@ -255,12 +305,71 @@ function watchZoom(w) {
   contents.on('did-navigate', () => contents.setZoomFactor(engine.settings.zoomLevel / 100));
 }
 
-// Test mode: a never-shown window does not paint, so park it off-screen without focus.
-function reveal(w, maximized = false) {
+// How a window takes part in a quit. A window with unsaved changes stops a quit from its beforeunload and asks
+// what to do with them; Electron then stops quitting. Rukoo holds the quit until every window that asks has
+// answered (see answered()) and keeps syncing meanwhile. The main window shows, because its question could
+// otherwise wait in the tray.
+function watchQuit(w) {
+  const id = w.webContents.id;
+  w.webContents.on('will-prevent-unload', () => {
+    if (!quitting) return;
+    quitAsks.add(id);
+    scheduleSync();
+    if (w === win) showWindow();
+  });
+  // A window that closes has answered: its changes are saved or let go.
+  w.on('closed', () => answered(id, true));
+  // A crashed page can't answer any more, and its unsaved changes are gone with it.
+  w.webContents.on('render-process-gone', () => answered(id, true));
+  w.on('session-end', endSession);
+}
+
+// closed: the editor closed after Save or Don't save, so the quit goes on once no other window still asks.
+// Otherwise (Cancel, or a save that failed) the window stays open and Rukoo stays running.
+function answered(id, closed) {
+  if (!quitAsks.delete(id)) return;
+  if (!closed) {
+    quitAsks.clear();
+    quitting = false;
+    // The main window closed before the quit was called off. Rukoo stays in the tray with a hidden main window, as
+    // after any close: the agents' tools need it, and only a window hears that the Windows session ends.
+    if (!win && engine.settings.closeToTray) createWindow({ hidden: true });
+    return;
+  }
+  // Without windows left, window-all-closed has quit already; a second quit would cut will-quit's wait short.
+  if (!quitAsks.size) setImmediate(() => windows().length && app.quit());
+}
+
+// Windows is signing out or shutting down. No before-quit or will-quit follows, and Windows ends Rukoo soon after,
+// so save now, stop waiting for answers and take the tray icon away. Every window hears it, and the main window may
+// already be gone; this runs once, for the first.
+let sessionEnded = false;
+function endSession() {
+  if (sessionEnded) return;
+  sessionEnded = true;
+  quitting = true;
+  quitAsks.clear();
+  clearInterval(syncTimer);
+  engine.flush();
+  if (calendars) calendars.flush();
+  destroyTray();
+  // ---- agents ----
+  // dispose() saves the chats before its first await; see will-quit.
+  if (hub) closeAgents();
+  // ---- /agents ----
+}
+
+// Test mode: a never-shown window does not paint, so park it off-screen without focus. hidden: the window starts in
+// the tray and shows later, through showWindow().
+function reveal(w, maximized = false, hidden = false) {
   w.once('ready-to-show', () => {
     if (process.env.SEM_HIDDEN) {
       w.setPosition(-5000, -5000);
-      w.showInactive();
+      if (!hidden) w.showInactive();
+      return;
+    }
+    if (hidden) {
+      if (maximized) w.once('show', () => w.maximize());
       return;
     }
     if (maximized) w.maximize();
@@ -319,6 +428,7 @@ function openComposeWindow(input) {
   w.on('closed', () => composeWindows.delete(id));
   harden(w);
   watchZoom(w);
+  watchQuit(w);
   if (!process.env.SEM_HIDDEN) windowState.track('compose', w);
   reveal(w);
   w.loadFile(path.join(RENDERER, 'compose.html'));
@@ -446,8 +556,12 @@ const api = {
   updateSettings: (patch) => {
     const s = engine.updateSettings(patch);
     if ('theme' in patch) applyTheme();
-    if ('language' in patch) broadcast('language');
+    if ('language' in patch) {
+      broadcast('language');
+      if (tray) tray.relabel();
+    }
     if ('syncInterval' in patch) scheduleSync();
+    if ('closeToTray' in patch || 'minimizeToTray' in patch) updateTray();
     if ('badge' in patch) refreshBadge();
     return s;
   },
@@ -705,6 +819,8 @@ const windowApi = {
     const c = composeWindows.get(sender.id);
     if (c) c.draftId = draftId ? String(draftId) : null;
   },
+  // What the question about unsaved changes after a close or quit came to: true once the editor has closed.
+  unloadAnswer: (sender, closed) => answered(sender.id, closed === true),
   // Closes without asking again; the compose window has already handled unsaved changes.
   composeClose: (sender) => {
     const w = BrowserWindow.fromWebContents(sender);
@@ -726,7 +842,7 @@ ipcMain.handle('mail:call', async (event, method, args) => {
   }
 });
 
-function createWindow() {
+function createWindow({ hidden = false } = {}) {
   const b = windowState.bounds('main', { width: 1440, height: 920, minWidth: 760, minHeight: 560 });
   const { bar, background } = themeColors();
   win = new BrowserWindow({
@@ -746,9 +862,25 @@ function createWindow() {
   Menu.setApplicationMenu(null);
   harden(win);
   watchZoom(win);
+  watchQuit(win);
   win.on('focus', () => {
     newSinceFocus = 0;
     refreshBadge();
+  });
+  // Close to the tray: the window hides before its page hears of the close, so nothing asks about unsaved
+  // changes and a draft in the reading pane stays as it is. The agents' tools keep their window too.
+  win.on('close', (event) => {
+    // While its page asks about unsaved changes for a quit, the window stays in view with the question.
+    if (quitAsks.has(win.webContents.id)) {
+      event.preventDefault();
+      return;
+    }
+    if ((quitting && !quitAsks.size) || !engine.settings.closeToTray) return;
+    event.preventDefault();
+    win.hide();
+  });
+  win.on('minimize', () => {
+    if (engine.settings.minimizeToTray) win.hide();
   });
   win.on('closed', () => {
     win = null;
@@ -760,7 +892,7 @@ function createWindow() {
     if (agentGate && details && details.isMainFrame && !details.isSameDocument) agentGate.close();
   });
   if (!process.env.SEM_HIDDEN) windowState.track('main', win);
-  reveal(win, b.maximized);
+  reveal(win, b.maximized, hidden);
   win.loadFile(path.join(RENDERER, 'index.html'));
 }
 
@@ -780,6 +912,7 @@ app.whenReady().then(() => {
   engine.on('updated', () => {
     send('updated');
     if (engine.settings.badge === 'unread') refreshBadge();
+    else refreshTray();
   });
   engine.on('new-mail', notify);
   calendars = new Calendars({ engine });
@@ -816,18 +949,30 @@ app.whenReady().then(() => {
   });
   applyTheme();
   createWindow();
+  updateTray();
   scheduleSync();
   engine.syncAll().catch(() => {});
   calendars.syncAll().catch(() => {});
 });
 
-app.on('window-all-closed', () => app.quit());
+// With "Close to the tray" the main window only closes in a quit. If a compose window then cancels that quit,
+// Rukoo stays in the tray after the compose window closes, and the tray opens a new main window.
+app.on('window-all-closed', () => {
+  if (quitting || !engine || !engine.settings.closeToTray) app.quit();
+});
 
+// Quit in the tray menu, the last window closing, and the e2e teardown all come through here.
 app.on('before-quit', () => {
+  quitting = true;
+  // Every quit asks the windows afresh; one that still has a question open says so again from its beforeunload.
+  quitAsks.clear();
   clearInterval(syncTimer);
   if (engine) engine.flush();
   if (calendars) calendars.flush();
 });
+
+// Every window has closed, so the quit goes through.
+app.on('will-quit', destroyTray);
 
 // ---- agents ----
 // dispose() stops turns and flushes the conversations before its first await, and starts the kills of the
@@ -839,15 +984,20 @@ app.on('before-quit', () => {
 // will-quit, not before-quit: a window can still cancel the quit after before-quit (a pop-out composer that
 // asks to save), and the agents must keep running then. will-quit comes once every window has closed.
 const QUIT_WAIT = 5000;
-let agentsDisposed = false;
+// Closing the agents starts once, at the end of the Windows session or in will-quit, and a quit waits for it
+// either way: dispose() a second time returns at once.
+let agentsClosing = null;
+function closeAgents() {
+  if (!agentsClosing) agentsClosing = hub.dispose().catch(() => {});
+  return agentsClosing;
+}
+let quitWaited = false;
 app.on('will-quit', (event) => {
-  if (!hub || agentsDisposed) return;
-  agentsDisposed = true;
+  if (!hub || quitWaited) return;
+  quitWaited = true;
   event.preventDefault();
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
-  Promise.race([hub.dispose(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))])
-    .catch(() => {})
-    .finally(() => app.exit(0));
+  Promise.race([closeAgents(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))]).finally(() => app.exit(0));
 });
 // ---- /agents ----

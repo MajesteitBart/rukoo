@@ -46,8 +46,20 @@ const DEFAULT_SETTINGS = {
   signature: '',
   senderLogos: true,
   // Percent, shared by the main window and the compose windows; see zoom.js.
-  zoomLevel: 100
+  zoomLevel: 100,
+  // Closing the main window hides it and Rukoo keeps running in the tray; minimizing can do the same. See main.js.
+  closeToTray: true,
+  minimizeToTray: false
 };
+
+// Values a hand-edited or older settings.json may get wrong. The tray switches are booleans with their default
+// for anything else.
+function normalizeSettings(s) {
+  s.language = normalizeLanguage(s.language);
+  s.zoomLevel = normalizeZoom(s.zoomLevel);
+  s.closeToTray = s.closeToTray !== false;
+  s.minimizeToTray = s.minimizeToTray === true;
+}
 
 function readJson(file, fallback) {
   try {
@@ -118,8 +130,7 @@ class Engine extends EventEmitter {
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.accounts = readJson(this.file('accounts.json'), []);
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.file('settings.json'), {}) };
-    this.settings.language = normalizeLanguage(this.settings.language);
-    this.settings.zoomLevel = normalizeZoom(this.settings.zoomLevel);
+    normalizeSettings(this.settings);
     setLanguage(this.settings.language);
     // Once only, so a user who sets this signature again keeps it.
     if (!this.settings.signatureOptIn) {
@@ -483,8 +494,7 @@ class Engine extends EventEmitter {
   // quiet: save without 'updated', for a change no list or count depends on (zoom), so the windows don't redraw.
   updateSettings(patch, { quiet = false } = {}) {
     this.settings = { ...this.settings, ...patch };
-    this.settings.language = normalizeLanguage(this.settings.language);
-    this.settings.zoomLevel = normalizeZoom(this.settings.zoomLevel);
+    normalizeSettings(this.settings);
     setLanguage(this.settings.language);
     this.persistSettings();
     if (!quiet) this.emit('updated');
@@ -747,6 +757,11 @@ class Engine extends EventEmitter {
       list.sort((a, b) => (a.from.name || a.from.address).localeCompare(b.from.name || b.from.address, getLocale()) || byDate(a, b));
     } else list.sort(byDate);
     return list;
+  }
+
+  // Unread mail in the inboxes of all accounts: the taskbar badge's "unread" count and the tray's tooltip.
+  unreadCount() {
+    return this.collect('all', this.viewPredicate('unread')).length;
   }
 
   counts(scope = 'all') {
