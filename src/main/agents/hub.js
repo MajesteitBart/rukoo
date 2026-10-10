@@ -336,6 +336,7 @@ class AgentHub extends EventEmitter {
     clearInterval(this.remoteTimer);
     // PDF reads still running end now, so no reader process outlives Rukoo; their turns stop below.
     this.pdf.dispose();
+    this.files.dispose();
     for (const turn of [...this.turns.values()]) {
       // runTurn() would give these back only after the flush below, so a turn the agent does not have yet gives
       // them back now.

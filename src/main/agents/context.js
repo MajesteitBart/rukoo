@@ -304,6 +304,8 @@ function attachedLines(attached, local) {
       else if (f.text) {
         out.push(unsafeBlock(f.text, { source: 'file', file_id: f.id, filename: f.name }));
         out.push(textNote(f));
+      } else if (f.omitted) {
+        out.push(`  (The files before it filled this message, so its text is not here; read_chat_file returns ${f.kind === 'pdf' && f.partial ? 'what Rukoo could extract' : 'it'}.)`);
       } else if (f.kind === 'pdf') {
         if (f.failed) out.push(`  (Rukoo could not extract text from this PDF: ${PDF_FAILED[f.failed] || PDF_FAILED.error}. ${file})`);
         else if (f.encrypted) out.push('  (The PDF is encrypted, so Rukoo has no text from it.)');

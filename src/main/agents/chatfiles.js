@@ -138,31 +138,41 @@ class ChatFiles {
     const type = typeOf(clean, data);
     const entry = { id: `s_${rand(16)}`, name: clean, size: data.length, type, kind: kindOf(clean, type), data, at: Date.now() };
     this.staged.set(entry.id, entry);
+    // Let go after STAGED_TTL even when nothing else is staged, so a message never sent doesn't keep its files.
+    entry.timer = setTimeout(() => this.unstage(entry.id), STAGED_TTL);
+    if (entry.timer.unref) entry.timer.unref();
     this.trim();
     return shown(entry);
   }
 
   unstage(id) {
+    const s = this.staged.get(id);
+    if (s) clearTimeout(s.timer);
     return this.staged.delete(id);
   }
 
   trim() {
     const now = Date.now();
-    for (const [id, s] of this.staged) if (now - s.at > STAGED_TTL) this.staged.delete(id);
+    for (const [id, s] of this.staged) if (now - s.at > STAGED_TTL) this.unstage(id);
     let bytes = [...this.staged.values()].reduce((n, s) => n + s.size, 0);
     for (const [id, s] of this.staged) {
       if (this.staged.size <= STAGED_MAX && bytes <= STAGED_BYTES) break;
-      this.staged.delete(id);
+      this.unstage(id);
       bytes -= s.size;
     }
   }
 
-  // The staged files these tokens name, or null when one of them is gone.
+  // Rukoo is closing: the staged files go.
+  dispose() {
+    for (const id of [...this.staged.keys()]) this.unstage(id);
+  }
+
+  // The staged files these tokens name, or null when one of them is gone, also when it is past STAGED_TTL.
   pending(ids) {
     const out = [];
     for (const id of ids) {
       const s = this.staged.get(id);
-      if (!s) return null;
+      if (!s || Date.now() - s.at > STAGED_TTL) return null;
       if (!out.includes(s)) out.push(s);
     }
     return out;
@@ -211,7 +221,7 @@ class ChatFiles {
       }
       throw err;
     }
-    for (const s of entries) this.staged.delete(s.id);
+    for (const s of entries) this.unstage(s.id);
     return kept;
   }
 
@@ -238,15 +248,18 @@ class ChatFiles {
     return loaded.map(({ out, data, pdf }) => {
       if (out.missing) return out;
       const max = Math.min(FILE_TEXT_INLINE, room);
-      if (out.kind === 'text' && max > 0) {
-        const text = decodeText(data);
-        out.text = text.slice(0, max);
-        out.truncated = text.length > max;
+      // omitted: the file has text, but the files before it used up TURN_TEXT_MAX; read_chat_file returns it.
+      if (out.kind === 'text') {
+        if (max > 0) {
+          const text = decodeText(data);
+          out.text = text.slice(0, max);
+          out.truncated = text.length > max;
+        } else out.omitted = data.length > 0;
       } else if (pdf) {
         if (max > 0 && pdf.text) {
           out.text = pdf.text.slice(0, max);
           out.truncated = pdf.truncated || pdf.text.length > max;
-        }
+        } else if (pdf.text) out.omitted = true;
         out.partial = pdf.partial === true;
         out.failed = pdf.failed || null;
         out.encrypted = pdf.encrypted;
@@ -287,6 +300,7 @@ module.exports = {
   TEXT_EXT,
   IMAGE_TYPES,
   FILE_MAX,
+  STAGED_TTL,
   MAX_FILES,
   MAX_EMAILS,
   FILE_TEXT_INLINE,

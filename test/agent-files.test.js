@@ -13,7 +13,7 @@ const { Engine } = require('../src/main/engine');
 const { AgentHub } = require('../src/main/agents/hub');
 const context = require('../src/main/agents/context');
 const { pdfText, glyphText, parseCMap } = require('../src/main/pdftext');
-const { decodeText, FILE_MAX } = require('../src/main/agents/chatfiles');
+const { ChatFiles, decodeText, FILE_MAX, FILE_TEXT_INLINE, STAGED_TTL } = require('../src/main/agents/chatfiles');
 const { makePdf, hostilePdfs, manyOpsPdf, silentCaps } = require('./fixtures/make-pdf');
 const { PdfReader } = require('../src/main/pdfread');
 
@@ -780,6 +780,54 @@ test('the agent hears when text is only a preview and when the reader stopped ea
   } finally {
     await t.done();
   }
+});
+
+test('when the files before it fill the message, a file with text is said to be in read_chat_file, not to have none', async () => {
+  const t = await setup();
+  try {
+    const c = t.hub.create({ agent: 'clark', message: null });
+    const full = (i) => t.hub.stageFile(`part${i}.txt`, Buffer.from('x'.repeat(FILE_TEXT_INLINE))).id;
+    const later = [t.hub.stageFile('report.pdf', makePdf([['Quarterly report 2026']])).id, t.hub.stageFile('notes.txt', Buffer.from('Later notes')).id];
+    t.hub.send(c.id, { text: 'Five files', files: [full(1), full(2), full(3), ...later] });
+    await t.idle(c.id);
+    const input = t.turns.at(-1).input;
+    assert.doesNotMatch(input, /may be scanned|Quarterly report 2026|Later notes/);
+    assert.equal(input.split('(The files before it filled this message, so its text is not here; read_chat_file returns it.)').length - 1, 2);
+  } finally {
+    await t.done();
+  }
+});
+
+test('a PDF named like a text file is read as a PDF: read_chat_file gives its text and the file, not PDF syntax', async () => {
+  const t = await setup();
+  try {
+    const c = t.hub.create({ agent: 'claude', message: null });
+    const s = t.hub.stageFile('report.txt', makePdf([['Quarterly report 2026']]));
+    assert.equal(s.kind, 'pdf');
+    t.hub.send(c.id, { text: 'Here', files: [s.id] });
+    await t.idle(c.id);
+    const r = await call(t.hub, c.id, 'read_chat_file', { file_id: c.files[0].id });
+    assert.equal(r.structuredContent.text, '<unsafe_content source="file" filename="report.txt">\nQuarterly report 2026\n</unsafe_content>');
+    assert.equal(r.structuredContent.pages, 1);
+    assert.equal(r.content[1].type, 'resource');
+  } finally {
+    await t.done();
+  }
+});
+
+test('a staged file goes after two hours even when nothing else is staged, and its token no longer sends', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const files = new ChatFiles(tmp('sem-staged-'), null);
+  const a = files.stage('notes.txt', Buffer.from('hello'));
+  const b = files.stage('more.txt', Buffer.from('again'));
+  t.mock.timers.tick(STAGED_TTL - 1000);
+  assert.equal(files.pending([a.id, b.id]).length, 2);
+  // Past its two hours a token no longer counts, also before the timer has let its file go.
+  files.staged.get(b.id).at -= 2000;
+  assert.equal(files.pending([b.id]), null);
+  // The files go when their time is up, without another file staged after them.
+  t.mock.timers.tick(2000);
+  assert.equal(files.staged.size, 0);
 });
 
 test('text files are read as UTF-16 or UTF-8 by their byte order mark, else UTF-8, else Windows-1252', () => {

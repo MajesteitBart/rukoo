@@ -919,7 +919,8 @@ async function readAttachment(hub, args, call) {
 // inside <unsafe_content>; source says where it came from.
 async function fileResult(hub, info, { name, type, content, local = null, uri, source, decode, signal = null }) {
   const out = local ? { ...info, local_path: local } : { ...info };
-  if (TEXT_TYPES.test(type) || TEXT_EXT.test(name)) {
+  // A PDF by its bytes, whatever its name says, as when the file was staged: report.txt can be a PDF.
+  if (!isPdf(content) && (TEXT_TYPES.test(type) || TEXT_EXT.test(name))) {
     const text = decode(content).replace(/^\uFEFF/, '');
     return { ...out, text: unsafeBlock(text.slice(0, ATTACHMENT_TEXT_MAX), { source, filename: name }), truncated: text.length > ATTACHMENT_TEXT_MAX };
   }
