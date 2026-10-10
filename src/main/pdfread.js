@@ -21,6 +21,12 @@ const RSS_MAX = 768 * 1024 * 1024;
 const HEAP_MB = 512;
 // A message can bring ten PDFs, and each process may use up to RSS_MAX.
 const AT_ONCE = 2;
+// The PDFs an agent asks for (read_attachment, read_chat_file) wait for a reader only while few others do. An agent
+// can ask for any number at once, and each read that waits keeps its file in memory; one past these limits fails at
+// once as 'busy'. A message's own PDFs do not count: the turn holds them in memory anyway, and the message's limits
+// bound them.
+const TOOL_WAITING = 4;
+const TOOL_WAITING_BYTES = 32 * 1024 * 1024;
 
 const CHILD = path.join(__dirname, 'pdfchild.js');
 
@@ -65,13 +71,20 @@ class PdfReader {
   }
 
   // pdftext's {text, pages, truncated, partial, encrypted} and failed: null once the reader finished, or why it has
-  // no text: 'timeout', 'memory' (over the cap), 'error' (the process ended without an answer) or 'stopped' (signal
-  // aborted, or Rukoo is closing). signal: the turn or tool call it is for; once that is stopped the read leaves the
-  // queue, or its process is killed, so it never keeps another chat's PDF waiting. Never rejects.
-  read(buffer, { maxChars = 200000, signal = null } = {}) {
+  // no text: 'timeout', 'memory' (over the cap), 'error' (the process ended without an answer), 'stopped' (signal
+  // aborted, or Rukoo is closing) or 'busy' (a tool read that found too many waiting). signal: the turn or tool call
+  // it is for; once that is stopped the read leaves the queue, or its process is killed, so it never keeps another
+  // chat's PDF waiting. tool: an agent asked for it, so TOOL_WAITING applies. Never rejects.
+  read(buffer, { maxChars = 200000, signal = null, tool = false } = {}) {
     if (this.stopped || (signal && signal.aborted)) return Promise.resolve(failed('stopped'));
+    // It would wait: every reader is taken (next() keeps the queue empty otherwise).
+    if (tool && this.running.size >= AT_ONCE) {
+      const waiting = this.queue.filter((j) => j.tool);
+      const bytes = waiting.reduce((n, j) => n + j.buffer.length, buffer.length);
+      if (waiting.length >= TOOL_WAITING || bytes > TOOL_WAITING_BYTES) return Promise.resolve(failed('busy'));
+    }
     return new Promise((resolve) => {
-      const job = { buffer, maxChars, signal, resolve, run: null, done: false };
+      const job = { buffer, maxChars, signal, tool, resolve, run: null, done: false };
       if (signal) {
         job.onAbort = () => {
           if (job.run) return job.run.finish(failed('stopped'));

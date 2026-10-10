@@ -1154,6 +1154,18 @@ body:has(.page) .titlebar-actions {
 .sel-count {
   font-weight: 600;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A narrow list keeps Read, Delete, More and Clear for checked emails; star, move and archive are in More. A count
+ * too long even then gives way, so no button ever leaves the list. */
+@container list (max-width: 420px) {
+  .list-tools.selecting [data-bulk='star'],
+  .list-tools.selecting [data-bulk='move'],
+  .list-tools.selecting [data-bulk='archive'] {
+    display: none;
+  }
 }
 .spacer {
   flex: 1;

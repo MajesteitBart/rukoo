@@ -548,6 +548,17 @@
     "message": "Add this email",
     "description": "Chat panel input: dashed chip in the email chip's place after you left the email out of a new chat; clicking it puts the email back (contextChip and attach in agent/panel.js)."
   },
+  "agent.panel.addToChat": {
+    "message": "Add to chat",
+    "description": "Item in an email's menu (the reader's More button, a right-click on the list) and in the menu for checked emails: adds the email or emails to the message being written in the chat panel, as dragging them onto the panel does, and opens the panel if it is closed (addToChatItem in app.js)."
+  },
+  "agent.panel.inChatAlready": {
+    "message": {
+      "one": "That email is in the chat already.",
+      "other": "Those emails are in the chat already."
+    },
+    "description": "Chat panel notice after Add to chat (email menus) when every email picked is already the chat's own email, a newer email the chat was continued from, or added to the message being written; count: how many were picked (addEmails in agent/panel.js)."
+  },
   "agent.panel.attach": {
     "message": "Attach files",
     "description": "Chat panel input: tooltip and label of the paperclip button before the email chip, and the title of the file dialog it opens (pickFiles in agent/panel.js, chatComposer in agent/bui.js, agentPickFiles in main.js)."
@@ -2590,7 +2601,7 @@
   },
   "reader.actions.more": {
     "message": "More actions",
-    "description": "reader > actions. src/renderer/app.js (readerBar)"
+    "description": "reader > actions. src/renderer/app.js (readerBar), and the button that opens the menu for checked emails in the list toolbar (renderListTools)"
   },
   "reader.actions.replyAllShortcut": {
     "message": "Reply all (Ctrl+Shift+R)",

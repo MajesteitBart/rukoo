@@ -140,6 +140,11 @@
   "agent.model.routes": "Modelroutes",
   "agent.model.title": "Model",
   "agent.panel.addContext": "Deze e-mail toevoegen",
+  "agent.panel.addToChat": "Toevoegen aan chat",
+  "agent.panel.inChatAlready": {
+    "one": "Die e-mail zit al in de chat.",
+    "other": "Die e-mails zitten al in de chat."
+  },
   "agent.panel.attach": "Bestanden toevoegen",
   "agent.panel.close": "Chat sluiten",
   "agent.panel.continueChat": "Ga verder met de chat over het eerdere bericht",

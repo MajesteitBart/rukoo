@@ -1112,6 +1112,9 @@ class AgentHub extends EventEmitter {
         gone.push(id);
         continue;
       }
+      // A newer email the chat was continued from is in it already: the next turn carries it by itself while the
+      // agent has not had it (loadNewer()), so attached as well it would go twice and take a place.
+      if ((c.continued || []).some((e) => e.id === id || (e.messageId && m.messageId && normId(e.messageId) === normId(m.messageId)))) continue;
       const from = isObj(m.from) ? { name: clip(m.from.name || '', 200), address: clip(m.from.address || '', 320) } : null;
       out.push({ id, subject: clip(m.subject || '', 300), from });
     }

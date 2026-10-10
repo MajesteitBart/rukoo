@@ -11,7 +11,7 @@ const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
-const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, PDF_FAILED } = require('./context');
+const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, PDF_FAILED, IMAGE_DATA } = require('./context');
 const { SkillError, toolDescription } = require('./skills');
 const { decodeText, TEXT_TYPES, TEXT_EXT, IMAGE_TYPES } = require('./chatfiles');
 const { isPdf } = require('../pdftext');
@@ -924,18 +924,25 @@ async function fileResult(hub, info, { name, type, content, local = null, uri, s
     const text = decode(content).replace(/^\uFEFF/, '');
     return { ...out, text: unsafeBlock(text.slice(0, ATTACHMENT_TEXT_MAX), { source, filename: name }), truncated: text.length > ATTACHMENT_TEXT_MAX };
   }
-  const data = content.toString('base64');
   if (IMAGE_TYPES.test(type) && content.length <= IMAGE_MAX) {
-    // No structured result: Codex passes only that on when there is one, and the image would never reach it.
-    return raw([{ type: 'text', text: JSON.stringify(out) }, { type: 'image', data, mimeType: type }]);
+    // No structured result: Codex passes only that on when there is one, and the image would never reach it. The
+    // note comes before the image: it cannot carry tags, and its text can be anyone's.
+    return raw([{ type: 'text', text: JSON.stringify({ ...out, note: `The image follows. ${IMAGE_DATA}` }) }, { type: 'image', data: content.toString('base64'), mimeType: type }]);
   }
-  const resource = { type: 'resource', resource: { uri, mimeType: type, blob: data } };
+  // Encoded only when the result is made: a PDF may first wait for a reader, and its base64 copy, a third larger than
+  // the file, must not wait with it.
+  const resource = () => ({ type: 'resource', resource: { uri, mimeType: type, blob: content.toString('base64') } });
   const saved = local ? ' and saved at local_path' : '';
   if (isPdf(content)) {
     // Codex takes no PDF, and Hermes elsewhere gets the file without a reader, so the text comes along. The note
     // tells the agent when that is not all of it: past ATTACHMENT_TEXT_MAX there is more text (truncated), and a
     // reader that stopped early or failed leaves the rest only in the file (partial, failed).
-    const pdf = await hub.pdf.read(content, { maxChars: ATTACHMENT_TEXT_MAX, signal });
+    const pdf = await hub.pdf.read(content, { maxChars: ATTACHMENT_TEXT_MAX, signal, tool: true });
+    if (pdf.failed === 'busy') {
+      // Too many reads wait already (pdfread.js): no text and no file, so asking many times at once holds nothing.
+      const full = { ...out, failed: 'busy', note: `Rukoo is reading other PDFs for you and has no room for this one yet. Ask for it again once those reads are done${local ? ', or open the file at local_path' : ''}.` };
+      return raw([{ type: 'text', text: JSON.stringify(full) }], full);
+    }
     const file = `The file itself is attached as a resource${saved}.`;
     let note;
     if (pdf.failed) note = `Rukoo could not extract text from this PDF: ${PDF_FAILED[pdf.failed] || PDF_FAILED.error}. ${file}`;
@@ -951,10 +958,11 @@ async function fileResult(hub, info, { name, type, content, local = null, uri, s
       ...(pdf.failed ? { failed: pdf.failed } : {}),
       note
     };
-    return raw([{ type: 'text', text: JSON.stringify(full) }, resource], full);
+    return raw([{ type: 'text', text: JSON.stringify(full) }, resource()], full);
   }
-  const note = `The file is attached as a resource${saved}.`;
-  return raw([{ type: 'text', text: JSON.stringify({ ...out, note }) }, resource], { ...out, note });
+  // An image too big to show as one can still reach the agent as a file.
+  const note = `The file is attached as a resource${saved}.${IMAGE_TYPES.test(type) ? ` ${IMAGE_DATA}` : ''}`;
+  return raw([{ type: 'text', text: JSON.stringify({ ...out, note }) }, resource()], { ...out, note });
 }
 
 // The files the user attached to messages in this chat (hub.send keeps them in the chat's folder). Their names are

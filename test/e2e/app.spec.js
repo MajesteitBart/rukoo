@@ -425,6 +425,49 @@ test('the message list can be resized from the keyboard', async () => {
   expect(saved).toBe(Math.round(before + 48));
 });
 
+test('at the narrowest list every button for checked emails is inside it and can be clicked, in Dutch and English', async () => {
+  await item('Bencompare').click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+ArrowDown');
+  await expect(win.locator('.sel-count')).toHaveText('2 geselecteerd');
+  // As narrow as the keyboard makes the list.
+  await win.locator('.divider').focus();
+  let width = 0;
+  for (let i = 0; i < 30; i++) {
+    await win.keyboard.press('ArrowLeft');
+    const now = Math.round((await win.locator('.listpane').boundingBox()).width);
+    if (now === width) break;
+    width = now;
+  }
+  // The buttons on screen that sit outside the list, or under something else at their centre.
+  const covered = () =>
+    win.evaluate(() => {
+      const pane = document.querySelector('.listpane').getBoundingClientRect();
+      return [...document.querySelectorAll('.list-tools button')]
+        .filter((b) => b.offsetParent !== null)
+        .filter((b) => {
+          const r = b.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return r.left < pane.left || r.right > pane.right || !(hit === b || b.contains(hit));
+        })
+        .map((b) => b.dataset.bulk || b.dataset.action);
+    });
+  for (const [language, count, move] of [
+    ['nl', '2 geselecteerd', 'Verplaatsen...'],
+    ['en', '2 selected', 'Move...']
+  ]) {
+    await win.evaluate((language) => window.mail.call('updateSettings', { language }), language);
+    await expect(win.locator('.sel-count')).toHaveText(count);
+    expect(await covered(), language).toEqual([]);
+    // What no longer fits is in More, which the keyboard reaches.
+    await win.locator('.list-tools [data-bulk="more"]').focus();
+    await win.keyboard.press('Enter');
+    await expect(win.locator('.menu [role="menuitem"]', { hasText: move })).toBeVisible();
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.list-tools [data-bulk="more"]')).toBeFocused();
+  }
+});
+
 test('settings: theme switch and account page', async () => {
   await win.click('[data-action="settings"]');
   await expect(win.locator('.settings h1')).toHaveText('E-mailinstellingen');

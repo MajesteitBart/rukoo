@@ -85,6 +85,13 @@ function onePage(content, { fonts = '/F1 5 0 R', resources = '', objects = '', c
   return Buffer.concat([Buffer.from(head, 'latin1'), body, Buffer.from('\nendstream\nendobj\ntrailer<</Root 1 0 R>>\n%%EOF\n', 'latin1')]);
 }
 
+// One page whose content is object 10, stored as written: no filter unless stream adds one. stream: more entries
+// of its dictionary; length: its Length, the content's own by default; before and after: more objects, written
+// before and after it.
+function plainPage(content, { stream = '', length = content.length, before = '', after = '' } = {}) {
+  return onePage('', { contents: 10, objects: `${before}10 0 obj<<${stream}/Length ${length}>>stream\n${content}\nendstream\nendobj\n${after}` });
+}
+
 // An object with stream data, compressed when deflate is set.
 function streamObject(num, dict, data, deflate = false) {
   const bytes = deflate ? zlib.deflateSync(Buffer.from(data, 'latin1')).toString('latin1') : data;
@@ -234,4 +241,4 @@ function silentCaps() {
   };
 }
 
-module.exports = { makePdf, hostilePdfs, manyOpsPdf, silentCaps };
+module.exports = { makePdf, hostilePdfs, manyOpsPdf, silentCaps, onePage, plainPage };

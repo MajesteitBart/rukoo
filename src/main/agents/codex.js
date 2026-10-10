@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
-const { untag } = require('./context');
+const { untag, imageLabel } = require('./context');
 const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, tail, killTree, writeJson, WINDOWS, humanize, fieldText, inputField, approvalTitle } = require('./proc');
 
 const EXE_TTL = 30000;
@@ -127,12 +127,13 @@ function turnError(error) {
   return { code: 'unknown', detail };
 }
 
-// The turn's text, then each image the user attached that goes along with the message: Codex reads a local image
-// itself. Codex takes no other files as input; they are in its working folder, and the text says where.
+// The turn's text, then each image the user attached that goes along with the message, each right after a line
+// that says which file it is and that it is untrusted data: Codex reads a local image itself. Codex takes no other
+// files as input; they are in its working folder, and the text says where.
 function turnInput(turn) {
   const input = [{ type: 'text', text: turn.input, text_elements: [] }];
   for (const f of Array.isArray(turn.files) ? turn.files : []) {
-    if (f.kind === 'image' && f.inline && f.path) input.push({ type: 'localImage', path: f.path });
+    if (f.kind === 'image' && f.inline && f.path) input.push({ type: 'text', text: imageLabel(f), text_elements: [] }, { type: 'localImage', path: f.path });
   }
   return input;
 }

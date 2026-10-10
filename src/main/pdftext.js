@@ -179,9 +179,11 @@ class Lexer {
   }
 }
 
-// One value: a number, a reference ("12 0 R"), an array, a dictionary (a Map), or the token itself. Past NEST_MAX
-// an item is null, and past ITEMS_MAX it is left out; either marks lex.flags partial.
+// One value: a number, a reference ("12 0 R"), an array, a dictionary (a Map), null, or the token itself. Past
+// NEST_MAX an item is null, and past ITEMS_MAX it is left out; either marks lex.flags partial. A dictionary entry
+// whose value is null is no entry, as the PDF specification says: /Filter null is no filter.
 function value(lex, tok, depth = 0) {
+  if (tok === 'null') return null;
   if (typeof tok === 'number') {
     if (lex.refs && Number.isInteger(tok) && tok >= 0) {
       const save = lex.pos;
@@ -209,7 +211,8 @@ function value(lex, tok, depth = 0) {
       if (v === '>>' || v === null) break;
       const item = depth < NEST_MAX ? value(lex, v, depth + 1) : null;
       const room = dict.size < ITEMS_MAX || dict.has(t.name);
-      if (room) dict.set(t.name, item);
+      if (item === null) dict.delete(t.name);
+      else if (room) dict.set(t.name, item);
       if (!room || depth >= NEST_MAX) lex.flags.partial = true;
     }
     return dict;
@@ -277,15 +280,38 @@ class Doc {
     this.cmaps = new Map();
     // Codes the ToUnicode maps and CID widths may still set (CMAP_MAX); parseCMap() takes the Doc for it.
     this.room = CMAP_MAX;
-    this.scan();
+    // A stream whose Length is an object later in the file ends at its first endstream in the first scan, and
+    // its data can hold that word. Once the lengths are read, such a stream gets its own length. If that goes past
+    // an endstream, the file is scanned again with the lengths, so nothing in its data passes for an object.
+    const later = this.scan();
+    const known = new Map();
+    let again = false;
+    for (const { ref, entry, stop } of later) {
+      const length = this.length(ref);
+      if (!this.fits(entry.start, length)) continue;
+      known.set(ref, length);
+      if (stop < entry.start + length) again = true;
+      else entry.end = entry.start + length;
+    }
+    if (again) {
+      this.partial = false;
+      this.scan(known);
+    }
   }
 
   // Every "n g obj" in the file. A later definition replaces an earlier one, as in an incremental update. Stream
   // data is skipped, so bytes inside it never pass for an object. A value ends at its endobj or where the next
   // object starts, whichever comes first, and the scan goes on after it: a broken object can't take in the
   // objects after it, and one that never closes is read once, not again from every header inside it.
-  scan() {
+  // known: stream lengths read in a first scan, by the number of their object. Without it, returns the streams
+  // whose length is an object that was not there yet.
+  scan(known = null) {
     const s = this.s;
+    this.objects = new Map();
+    this.count = 0;
+    // Where object values and stream data are, as start and end pairs in file order: a trailer is never inside one.
+    this.spans = [];
+    const later = known ? null : [];
     // Not inside a run of digits: retried at each of its digits, a long run took quadratic time.
     const re = /(?<!\d)(\d+)\s+\d+\s+obj\b/g;
     const ahead = new RegExp(re.source, 'g');
@@ -315,21 +341,36 @@ class Doc {
         let start = lex.pos + 6;
         if (s[start] === '\r') start++;
         if (s[start] === '\n') start++;
-        const length = entry.value instanceof Map ? entry.value.get('Length') : undefined;
-        let end = -1;
-        if (typeof length === 'number' && length >= 0 && /^\s*endstream/.test(s.slice(start + length, start + length + 40))) end = start + length;
+        let length = entry.value instanceof Map ? entry.value.get('Length') : undefined;
+        const ref = length instanceof Ref ? length.num : -1;
+        if (ref >= 0) length = known && known.has(ref) ? known.get(ref) : this.length(ref);
+        let end = this.fits(start, length) ? start + length : -1;
         if (end < 0) {
-          const at = s.indexOf('endstream', start);
-          end = at < 0 ? s.length : at;
+          const stop = s.indexOf('endstream', start);
+          end = stop < 0 ? s.length : stop;
           if (s[end - 1] === '\n') end--;
           if (s[end - 1] === '\r') end--;
+          if (ref >= 0 && later) later.push({ ref, entry, stop: stop < 0 ? s.length : stop });
         }
         entry.start = start;
         entry.end = end;
         re.lastIndex = Math.max(re.lastIndex, end);
-      }
+        this.spans.push(at, end);
+      } else if (s.startsWith('endobj', lex.pos)) this.spans.push(at, lex.pos);
       this.objects.set(Number(m[1]), entry);
     }
+    return later;
+  }
+
+  // A Length given as a reference: only an integer written in that object itself, not a reference again.
+  length(num) {
+    const e = this.objects.get(num);
+    return e && e.start < 0 && Number.isInteger(e.value) ? e.value : undefined;
+  }
+
+  // A length is taken when endstream follows the data it measures.
+  fits(start, length) {
+    return Number.isInteger(length) && length >= 0 && /^\s*endstream/.test(this.s.slice(start + length, start + length + 40));
   }
 
   entry(ref) {
@@ -440,7 +481,8 @@ class Doc {
   stream(e) {
     if (!e || e.start < 0) return null;
     const dict = e.value instanceof Map ? e.value : new Map();
-    const filters = [].concat(this.resolve(dict.get('Filter')) || []).map((f) => nameOf(this.resolve(f)));
+    // A null in the list, or a reference to a null object, is no filter either.
+    const filters = [].concat(this.resolve(dict.get('Filter')) || []).map((f) => this.resolve(f)).filter((f) => f !== null).map(nameOf);
     if (!filters.length) return this.s.slice(e.start, e.end);
     let data = Buffer.from(this.s.slice(e.start, e.end), 'latin1');
     for (const f of filters) {
@@ -492,13 +534,21 @@ class Doc {
     return out;
   }
 
-  // The trailer dictionaries, first to last. The search goes on after each one's value, so a trailer that never
-  // closes is read once, not again for every "trailer" inside it.
+  // The trailer dictionaries, first to last. "trailer" in stream data or in an object's strings is passed over: a
+  // page that shows trailer<</Encrypt 9 0 R>> is no encrypted file. The search goes on after each one's value, so
+  // a trailer that never closes is read once, not again for every "trailer" inside it.
   trailers() {
     if (this.trailerDicts) return this.trailerDicts;
     const s = this.s;
+    const spans = this.spans;
     this.trailerDicts = [];
+    let k = 0;
     for (let at = s.indexOf('trailer'); at >= 0; ) {
+      while (k < spans.length && spans[k + 1] <= at) k += 2;
+      if (k < spans.length && spans[k] <= at) {
+        at = s.indexOf('trailer', spans[k + 1]);
+        continue;
+      }
       const lex = new Lexer(s, at + 7, s.length, this);
       const t = value(lex, lex.token());
       if (t instanceof Map) this.trailerDicts.push(t);
@@ -507,9 +557,21 @@ class Doc {
     return this.trailerDicts;
   }
 
+  // Encrypted when an Encrypt leads to an encryption dictionary: a dictionary, not a stream's, whose Filter names
+  // its security handler. One that leads nowhere encrypts nothing, such as a trailer in a string that a header-like
+  // "12 0 obj" in it made the scan take apart.
   encrypted() {
-    for (const t of this.trailers()) if (t.has('Encrypt')) return true;
-    for (const e of this.objects.values()) if (e.value instanceof Map && nameOf(e.value.get('Type')) === 'XRef' && e.value.has('Encrypt')) return true;
+    const handler = (v) => {
+      let dict = v;
+      if (v instanceof Ref) {
+        const e = this.entry(v);
+        if (!e || e.start >= 0) return false;
+        dict = e.value;
+      }
+      return dict instanceof Map && this.resolve(dict.get('Filter')) instanceof Name;
+    };
+    for (const t of this.trailers()) if (handler(t.get('Encrypt'))) return true;
+    for (const e of this.objects.values()) if (e.value instanceof Map && nameOf(e.value.get('Type')) === 'XRef' && handler(e.value.get('Encrypt'))) return true;
     return false;
   }
 
@@ -863,6 +925,81 @@ const mul = (m, n) => [
 const IDENTITY = [1, 0, 0, 1, 0, 0];
 const matrix = (list) => (Array.isArray(list) && list.length === 6 && list.every((v) => typeof v === 'number') ? list : null);
 
+// ---------- inline images ----------
+
+// Every operator of content streams, to tell content from the bytes of an inline image.
+const OPERATORS = new Set(['b', 'B', 'b*', 'B*', 'BDC', 'BI', 'BMC', 'BT', 'BX', 'c', 'cm', 'CS', 'cs', 'd', 'd0', 'd1', 'Do', 'DP', 'EI', 'EMC', 'ET', 'EX', 'f', 'F', 'f*', 'G', 'g', 'gs', 'h', 'i', 'ID', 'j', 'J', 'K', 'k', 'l', 'm', 'M', 'MP', 'n', 'q', 'Q', 're', 'RG', 'rg', 'ri', 's', 'S', 'SC', 'sc', 'SCN', 'scn', 'sh', 'T*', 'Tc', 'Td', 'TD', 'Tf', 'Tj', 'TJ', 'TL', 'Tm', 'Tr', 'Ts', 'Tw', 'Tz', 'v', 'w', 'W', 'W*', 'y', "'", '"']);
+// Bytes looked at after a possible end of an inline image.
+const IMAGE_CHECK = 1024;
+// What zlib data of an inline image may inflate to in one step of finding its end, at least (flateEnd). Inline
+// images are meant to be small, a few kilobytes.
+const IMAGE_INFLATE = 256 * 1024;
+// Colour components by colour space name, the short names of inline images included.
+const COLOURS = new Map([['G', 1], ['DeviceGray', 1], ['CalGray', 1], ['I', 1], ['Indexed', 1], ['Separation', 1], ['RGB', 3], ['DeviceRGB', 3], ['CalRGB', 3], ['Lab', 3], ['CMYK', 4], ['DeviceCMYK', 4]]);
+
+// The colour components of an inline image's colour space, or 0 when this reader can't tell. A name that is no
+// device's is looked up in the page's ColorSpace resources.
+function components(doc, cs, resources) {
+  let space = cs;
+  if (space instanceof Name && !COLOURS.has(space.name)) {
+    const named = resources instanceof Map ? doc.resolve(resources.get('ColorSpace')) : null;
+    space = named instanceof Map ? doc.resolve(named.get(space.name)) : null;
+  }
+  const family = nameOf(Array.isArray(space) ? doc.resolve(space[0]) : space);
+  if (family === 'ICCBased') {
+    const e = doc.entry(space[1]);
+    const n = e && e.value instanceof Map ? doc.resolve(e.value.get('N')) : 0;
+    return n === 1 || n === 3 || n === 4 ? n : 0;
+  }
+  if (family === 'DeviceN') {
+    const names = doc.resolve(space[1]);
+    return Array.isArray(names) ? names.length : 0;
+  }
+  return COLOURS.get(family) || 0;
+}
+
+// The size of an unfiltered inline image's data in bytes, from its dictionary (short or full keys), or -1 when it
+// can't be told: a colour space or size this reader doesn't know.
+function imageBytes(doc, image, resources) {
+  const get = (short, long) => (image.has(short) ? image.get(short) : image.get(long));
+  const mask = get('IM', 'ImageMask') === 'true';
+  const bits = mask ? 1 : get('BPC', 'BitsPerComponent');
+  const colours = mask ? 1 : components(doc, get('CS', 'ColorSpace'), resources);
+  const width = get('W', 'Width');
+  const height = get('H', 'Height');
+  if (![1, 2, 4, 8, 16].includes(bits) || !colours || !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) return -1;
+  // Each row starts on a byte.
+  const bytes = Math.ceil((width * colours * bits) / 8) * height;
+  return Number.isSafeInteger(bytes) ? bytes : -1;
+}
+
+// Whether an "EI" ends an inline image, by what follows it: lex reads from there, up to IMAGE_CHECK bytes. 1 for
+// nothing, or content with an operator; -1 for what content can't be (a word that is no operator, too many
+// operands, or operands the content ends with); 0 when no operator comes in the bytes looked at, so it can't be
+// told. lex.pos is how far it looked.
+function endsImage(lex) {
+  lex.refs = false;
+  const cut = lex.end < lex.s.length;
+  let operators = 0;
+  let operands = 0;
+  for (let tok = lex.token(); tok !== null; tok = lex.token()) {
+    if (typeof tok === 'string' && tok !== '[' && tok !== '<<' && tok !== 'true' && tok !== 'false' && tok !== 'null') {
+      // A word the window cuts off can be part of an operator.
+      if (cut && lex.pos >= lex.end) break;
+      if (!OPERATORS.has(tok)) return -1;
+      // The data of another inline image comes next, which is no content to check.
+      if (tok === 'ID') return 1;
+      operators++;
+      operands = 0;
+    } else {
+      value(lex, tok);
+      if (++operands > 64) return -1;
+    }
+  }
+  if (cut) return operators ? 1 : 0;
+  return operands ? -1 : 1;
+}
+
 // Runs the text operators of one page and writes what they show, with spaces and line breaks where the
 // positions say so. room: the characters the page may write. Past them it stops with Limit, so a page of
 // millions of characters is never built.
@@ -911,6 +1048,124 @@ class Page {
       this.full = true;
       throw new Limit();
     }
+  }
+
+  // An inline image, after BI: its dictionary, ID, then its data up to EI. The data is bytes and can hold "EI"
+  // itself, so where it can, the data says where it ends (dataEnd), and EI must follow. Else the end is a guess and
+  // the text partial: the first EI that content follows (endsImage), or one that might be. Without either, the rest
+  // of the content can't be told apart from the image, and is not read.
+  image(lex, resources) {
+    const doc = this.doc;
+    const s = lex.s;
+    const dict = new Map();
+    let tok = lex.token();
+    for (; tok !== null && tok !== 'ID'; tok = lex.token()) {
+      if (!(tok instanceof Name)) continue;
+      const v = lex.token();
+      if (v === null || v === 'ID') {
+        tok = v;
+        break;
+      }
+      dict.set(tok.name, value(lex, v));
+    }
+    if (tok === null) {
+      doc.partial = true;
+      return;
+    }
+    // One white-space byte separates ID from the data.
+    const start = isWs(s.charCodeAt(lex.pos)) ? lex.pos + 1 : lex.pos;
+    const end = this.dataEnd(s, start, dict, resources);
+    const after = end < 0 ? -1 : this.tagEnd(s, end);
+    if (after >= 0) {
+      lex.pos = after;
+      return;
+    }
+    doc.partial = true;
+    const re = /[\0\t\n\f\r ]EI(?=[\0\t\n\f\r ]|$)/g;
+    re.lastIndex = lex.pos;
+    let unsure = -1;
+    // Every byte the search passes counts as content read, also when it finds nothing, so images whose end is never
+    // clear can't each search the rest of the page.
+    let searched = lex.pos;
+    for (let m = re.exec(s); ; m = re.exec(s)) {
+      const reached = m ? m.index + m[0].length : s.length;
+      this.spend(reached - searched);
+      searched = reached;
+      if (!m) break;
+      const at = m.index + m[0].length;
+      const ahead = new Lexer(s, at, Math.min(s.length, at + IMAGE_CHECK), { partial: false });
+      const ends = endsImage(ahead);
+      // Looking ahead counts as content read, so data full of EIs can't make the work grow unchecked.
+      this.spend(ahead.pos - at);
+      if (ends > 0) {
+        lex.pos = at;
+        return;
+      }
+      if (ends === 0 && unsure < 0) unsure = at;
+    }
+    lex.pos = unsure >= 0 ? unsure : s.length;
+  }
+
+  // Where an inline image's data ends, or -1 when the data can't tell. Without filters, by its size; else by its
+  // first filter, the one its bytes are written in: zlib data ends where zlib stops, ASCIIHex at ">", ASCII85 at
+  // "~>". Whatever is read to find it counts as content read.
+  dataEnd(s, start, image, resources) {
+    const filters = [].concat((image.has('F') ? image.get('F') : image.get('Filter')) ?? []).filter((f) => f !== null);
+    if (!filters.length) {
+      const size = imageBytes(this.doc, image, resources);
+      return size >= 0 && size <= s.length - start ? start + size : -1;
+    }
+    const first = nameOf(filters[0]);
+    if (first === 'Fl' || first === 'FlateDecode') return this.flateEnd(s, start);
+    const mark = first === 'AHx' || first === 'ASCIIHexDecode' ? '>' : first === 'A85' || first === 'ASCII85Decode' ? '~>' : '';
+    if (!mark) return -1;
+    const at = s.indexOf(mark, start);
+    this.spend((at < 0 ? s.length : at) - start);
+    return at < 0 ? -1 : at + mark.length;
+  }
+
+  // Where zlib data that starts at start ends: inflated, zlib uses its own data and no more. Read in steps that
+  // double, each counted as content read and its output as inflated, so neither grows faster than the data. A step
+  // that fails doesn't say what it inflated, so it counts all it was allowed: IMAGE_INFLATE, or 64 bytes for each
+  // byte read if that is more. -1 for data that is no zlib data or doesn't end.
+  flateEnd(s, start) {
+    const doc = this.doc;
+    for (let take = Math.min(4096, s.length - start); ; take = Math.min(take * 2, s.length - start)) {
+      this.spend(take);
+      const room = INFLATE_MAX - doc.inflated;
+      if (room <= 0) throw new Limit();
+      const most = Math.min(room, Math.max(IMAGE_INFLATE, take * 64));
+      let r = null;
+      try {
+        r = zlib.inflateSync(Buffer.from(s.slice(start, start + take), 'latin1'), { info: true, finishFlush: zlib.constants.Z_SYNC_FLUSH, maxOutputLength: most });
+      } catch (err) {
+        doc.inflated += most;
+        if (doc.inflated >= INFLATE_MAX) throw new Limit();
+        // Broken data has no end; data that inflates past this step's share may end in a larger one.
+        if (!err || err.code !== 'ERR_BUFFER_TOO_LARGE') return -1;
+      }
+      if (r) {
+        doc.inflated += r.buffer.length;
+        if (r.engine.bytesWritten < take) return start + r.engine.bytesWritten;
+      }
+      if (take >= s.length - start) return -1;
+    }
+  }
+
+  // Where the content goes on after the EI that must follow an image's data, past any white space, or -1. The white
+  // space counts as content read, and a run is read once: images whose data ends in the same run (white) go to its
+  // end at once, so white space that fills the rest of the page is not read again for every image.
+  tagEnd(s, at) {
+    let i = at;
+    const run = this.white;
+    if (run && run.s === s && at >= run.from && at <= run.to) i = run.to;
+    else {
+      while (i < s.length && isWs(s.charCodeAt(i))) i++;
+      this.spend(i - at);
+      this.white = { s, from: at, to: i };
+    }
+    this.spend(3);
+    return s.startsWith('EI', i) && (i + 2 >= s.length || isWs(s.charCodeAt(i + 2))) ? i + 2 : -1;
   }
 
   breakLine(blank) {
@@ -1059,15 +1314,9 @@ class Page {
           seen.delete(ref.num);
           break;
         }
-        case 'BI': {
-          // An inline image: skip its data, up to EI.
-          const id = s.indexOf('ID', lex.pos);
-          const ei = id < 0 ? -1 : s.slice(id + 3).search(/\sEI(\s|$)/);
-          // Without its end the rest of the content can't be told apart from the image, and is not read.
-          if (id < 0 || ei < 0) doc.partial = true;
-          lex.pos = id < 0 || ei < 0 ? s.length : id + 3 + ei + 3;
+        case 'BI':
+          this.image(lex, resources);
           break;
-        }
         default:
           break;
       }

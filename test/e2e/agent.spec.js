@@ -1708,6 +1708,76 @@ test('two emails dragged from the list show up as chips, and the agent reads bot
   await shot('24-emails-sent');
 });
 
+test('the newer email a chat was continued from, dropped on the chat, is not added to the message again', async () => {
+  await win.click('[data-view="sent"]');
+  await openChat('Dinner on Saturday');
+  await say('Did Joris answer?');
+  await expect(transcript()).toContainText('You asked: "Did Joris answer?"', { timeout: 10000 });
+  await win.click('[data-view="inbox"]');
+  await item('Re: Dinner on Saturday').click();
+  await win.locator('.agentpane .bui-offer').click();
+  const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
+  await expect(names).toHaveText(['Dinner on Saturday', 'Re: Dinner on Saturday']);
+  // The answer goes with the next message as the newer email already; another email is added as usual.
+  await dragToChat('Re: Dinner on Saturday');
+  await dragToChat('Your parcel is on its way');
+  await expect(names).toHaveText(['Dinner on Saturday', 'Re: Dinner on Saturday', 'Your parcel is on its way']);
+  await say('What did he say?');
+  await expect.poll(async () => ((await received()) || {}).text).toBe('What did he say?');
+  const got = await received();
+  expect(got.emails).toEqual([await item('Your parcel is on its way').getAttribute('data-id')]);
+  expect(got.input).toContain('Great, I will book a table for 19:30.');
+  expect(got.input).toContain('[The user attached an email to this message. Read it with read_message.]');
+});
+
+test('emails go into the chat by keyboard as well: Add to chat in the menu for checked emails and in an email menu', async () => {
+  const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
+  // Goes down the open menu with the arrow keys to the item, and picks it with Enter.
+  const choose = async (label) => {
+    await expect(win.locator('.menu')).toBeVisible();
+    for (let i = 0; i < 20; i++) {
+      if ((await win.evaluate(() => document.activeElement?.querySelector('.ml')?.textContent || '')) === label) return win.keyboard.press('Enter');
+      await win.keyboard.press('ArrowDown');
+    }
+    throw new Error(`no ${label} in the menu`);
+  };
+  // The chat is closed. The email on screen and the one below it are checked with the keyboard, and the menu for
+  // checked emails adds them: the chat opens on the email on screen, which is its own, and the other one goes along.
+  await item('Call on Thursday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(pane()).toBeHidden();
+  const below = await win.evaluate(() => {
+    const rows = [...document.querySelectorAll('.list-scroll .item')];
+    const at = rows.findIndex((el) => el.textContent.includes('Call on Thursday'));
+    return rows[at + 1].querySelector('.subject').textContent;
+  });
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+ArrowDown');
+  await expect(win.locator('.sel-count')).toHaveText('2 selected');
+  await win.locator('.list-tools [data-bulk="more"]').focus();
+  await win.keyboard.press('Enter');
+  await choose('Add to chat');
+  await expect(pane()).toBeVisible();
+  await expect(names).toHaveText(['Call on Thursday', below]);
+  await expect(input()).toBeFocused();
+  await settled();
+  await shot('26-add-to-chat');
+
+  // In the menu of the email on screen it is the chat's own, so nothing is added twice, and the notice says why.
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
+  await win.locator('[data-reader="more"]').focus();
+  await win.keyboard.press('Enter');
+  await choose('Add to chat');
+  await expect(win.locator('#toast')).toContainText('That email is in the chat already.');
+  await expect(names).toHaveText(['Call on Thursday', below]);
+
+  // Sent, the agent gets the one email.
+  await input().press('Enter');
+  await expect.poll(async () => ((await received()) || { emails: [] }).emails.length).toBe(1);
+});
+
 test('the paperclip and chips fit next to the agent, model and effort menus from 320 to 560 px', async () => {
   await openChat('Call on Thursday');
   await win.click('.agentpane .bui-pb__modelbtn');

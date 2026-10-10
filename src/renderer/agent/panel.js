@@ -536,20 +536,37 @@ export function mountAgentPanel(ctx) {
   }
 
   // Emails dragged from the list, by id. The chat's own email is there already.
-  function addEmails(ids) {
+  // An email the chat has already: its own, or a newer one in its thread it was continued from (main's continueFrom),
+  // which the next message carries by itself while the agent has not had it. Added again, it would go twice.
+  function inChat(m) {
     const own = contextEmail();
+    if (own && own.id === m.id) return true;
+    return Boolean(P.conv && (P.conv.continued || []).some((e) => e.id === m.id || sameMessageId(e.messageId, m.messageId)));
+  }
+
+  // The emails that were dropped or picked go with the message, up to MAX_EMAILS; how many were new, and how many
+  // were already in the chat or the message.
+  function addEmails(ids) {
     let full = false;
+    let added = 0;
+    let had = 0;
     for (const id of Array.isArray(ids) ? ids : []) {
       const m = ctx.messageById(id);
-      if (!m || (own && own.id === id) || P.attach.emails.some((x) => x.id === id)) continue;
+      if (!m) continue;
+      if (inChat(m) || P.attach.emails.some((x) => x.id === id)) {
+        had++;
+        continue;
+      }
       if (P.attach.emails.length >= MAX_EMAILS) {
         full = true;
         continue;
       }
       P.attach.emails.push({ id: m.id, subject: m.subject || '', from: m.from ? { name: m.from.name || '', address: m.from.address || '' } : null });
+      added++;
     }
     showAttachments();
     if (full) toast(t('agent.files.tooManyEmails', { count: MAX_EMAILS }), 6000);
+    return { added, had };
   }
 
   const hasAttachments = () => P.attach.files.length > 0 || P.attach.emails.length > 0;
@@ -738,7 +755,17 @@ export function mountAgentPanel(ctx) {
   // lookups: only the searches for the chat of the email on screen.
   let turn = 0;
   let lookups = 0;
-  async function sync() {
+  // The last time sync() went to find the chat for the email on screen, until that chat shows: "Add to chat" waits
+  // for it, so it checks the emails against the chat they land in. Read before this, the panel may still show the
+  // chat of an email from before it was opened.
+  let looking = Promise.resolve();
+  function sync() {
+    const before = P.emailKey;
+    const run = syncEmail();
+    if (P.emailKey !== before) looking = run.catch(() => {});
+    return run;
+  }
+  async function syncEmail() {
     if (!ctx.agentOpen()) return;
     const m = currentEmail();
     const key = emailKey(m);
@@ -1892,6 +1919,18 @@ export function mountAgentPanel(ctx) {
       return sync();
     },
     composerClosed,
+    // "Add to chat" in the message and bulk menus: what dropping emails on the panel does, for the keyboard too. The
+    // app has opened the panel; the emails go in once it shows the chat for the email on screen, with the same
+    // checks and limits as a drop. False when the chat takes no messages now (its agent is not set up).
+    async addEmails(ids) {
+      await looking;
+      if (!droppable()) return false;
+      const { added, had } = addEmails(ids);
+      // Picked from a menu, nothing new would look like nothing happened: say that they are there already.
+      if (!added && had) toast(t('agent.panel.inChatAlready', { count: had }));
+      chat.focus();
+      return true;
+    },
     inputFocused: () => Boolean(chat && chat.el.contains(document.activeElement) && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)),
     // False while the agent is not set up or turned off: the input is hidden then.
     inputAvailable: () => Boolean(chat && !chat.el.classList.contains('is-disabled')),
