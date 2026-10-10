@@ -414,6 +414,77 @@ test('a conversations file that is JSON but no store, or that loads only in part
   await t.done();
 });
 
+test('a full staging area refuses the new file and never lets go of one that waits', async () => {
+  const t = await setup();
+  try {
+    // Twelve files of 10 MB fill the 120 MB; the next is refused, and the twelve are all still there to send.
+    const big = Buffer.alloc(FILE_MAX);
+    const kept = Array.from({ length: 12 }, (_, i) => t.hub.stageFile(`big-${i}.bin`, big));
+    assert.ok(kept.every((f) => f.id));
+    assert.deepEqual(t.hub.stageFile('one-more.bin', big), { name: 'one-more.bin', error: 'full' });
+    assert.equal(t.hub.files.pending(kept.map((f) => f.id)).length, 12);
+    for (const f of kept) t.hub.unstageFile(f.id);
+    // The same for the count: thirty files wait at most.
+    const small = Array.from({ length: 30 }, (_, i) => t.hub.stageFile(`small-${i}.txt`, Buffer.from('x')));
+    assert.equal(t.hub.stageFile('thirty-one.txt', Buffer.from('x')).error, 'full');
+    assert.equal(t.hub.files.pending(small.map((f) => f.id)).length, 30);
+  } finally {
+    await t.done();
+  }
+});
+
+test('a refused message names exactly the files and emails that are gone', async () => {
+  const t = await setup();
+  try {
+    const c = t.hub.create({ agent: 'claude', message: null });
+    const keep = t.hub.stageFile('keep.txt', Buffer.from('keep'));
+    const lost = t.hub.stageFile('lost.txt', Buffer.from('lost'));
+    t.hub.unstageFile(lost.id);
+    const err = (fn) => {
+      try {
+        fn();
+      } catch (e) {
+        return e;
+      }
+      throw new Error('no error');
+    };
+    const files = err(() => t.hub.send(c.id, { text: 'x', files: [keep.id, lost.id] }));
+    assert.equal(files.code, 'file-missing');
+    assert.equal(files.message, `file-missing: ${JSON.stringify([lost.id])}`);
+    assert.equal(t.hub.files.staged.has(keep.id), true, 'the file still there stays staged');
+    // An email id can hold spaces (a folder name), so the ids go as JSON.
+    const real = t.engine.listMessages({ scope: 'all', view: 'everything' })[0].id;
+    const gone = ['nope:Sent Items:1', 'saved:missing'];
+    const emails = err(() => t.hub.send(c.id, { text: 'x', emails: [real, ...gone] }));
+    assert.equal(emails.code, 'email-missing');
+    assert.deepEqual(JSON.parse(emails.message.replace(/^email-missing: /, '')), gone);
+    assert.equal(c.items.length, 0);
+  } finally {
+    await t.done();
+  }
+});
+
+test('a chat started with only an attachment gets its name from it at once, not when it is opened again', async () => {
+  const t = await setup();
+  try {
+    const events = [];
+    t.hub.on('event', (e) => events.push(e));
+    const c = t.hub.create({ agent: 'claude', message: null });
+    t.hub.send(c.id, { text: '', files: [t.hub.stageFile('Budget 2027.xlsx', Buffer.from('PK')).id] });
+    // With the message, not once the turn is over: the renderer names a chat from item text, and this one has none.
+    assert.equal(c.title, 'Budget 2027.xlsx');
+    const user = events.findIndex((e) => e.kind === 'item' && e.item.type === 'user');
+    assert.ok(user >= 0);
+    assert.ok(
+      events.slice(user + 1).some((e) => e.kind === 'conversation' && e.conversation.id === c.id && e.conversation.title === 'Budget 2027.xlsx'),
+      'the name follows the message at once'
+    );
+    await t.idle(c.id);
+  } finally {
+    await t.done();
+  }
+});
+
 test('a copy that fails to write leaves the message unsent: no copy stays behind and every file can be sent again', async () => {
   const t = await setup();
   const write = fs.writeFileSync;

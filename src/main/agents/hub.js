@@ -66,6 +66,14 @@ const newItemId = () => `i_${rand(10)}`;
 const clip = (v, max) => String(v == null ? '' : v).slice(0, max);
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest();
 const isObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+// Files or emails added to a message that are no longer here. Only an error's message reaches the renderer, so it
+// names them, as JSON (an email id can hold spaces): the renderer drops exactly those and keeps the rest.
+function missingError(code, ids, detail) {
+  const err = new AgentError(code, detail);
+  err.message = `${code}: ${JSON.stringify(ids)}`;
+  err.ids = ids;
+  return err;
+}
 const normId = (v) => String(v || '').trim().replace(/^<|>$/g, '').toLowerCase();
 
 // Anything thrown or reported becomes {code, detail} with a code from SPEC 4.6.
@@ -1034,7 +1042,7 @@ class AgentHub extends EventEmitter {
     const fileIds = [].concat(files || []).map(String);
     if (fileIds.length > MAX_FILES) throw new AgentError('invalid', `at most ${MAX_FILES} files per message`);
     const staged = this.files.pending(fileIds);
-    if (!staged) throw new AgentError('file-missing', 'a file is no longer ready to send; attach it again');
+    if (!staged) throw missingError('file-missing', this.files.missing(fileIds), 'a file is no longer ready to send; attach it again');
     const mails = this.attachEmails(c, emails);
     if (!body.trim() && !staged.length && !mails.length) throw new AgentError('invalid', 'empty message');
     const firstTurn = !c.delivered;
@@ -1046,6 +1054,9 @@ class AgentHub extends EventEmitter {
     const line = display ? context.untag(shown) : shown;
     const kept = staged.length ? this.files.keep(c.id, staged) : [];
     if (kept.length) c.files = [...(c.files || []), ...kept];
+    // A chat is named after its first message, or after what it brought when it has no text.
+    const naming = !c.title;
+    if (naming) c.title = clip((line.trim() ? line : [...kept.map((f) => f.name), ...mails.map((m) => m.subject)].join(', ')).replace(/\s+/g, ' ').trim(), 80);
     const userItem = this.addItem(c, {
       type: 'user',
       text: line,
@@ -1053,7 +1064,9 @@ class AgentHub extends EventEmitter {
       ...(kept.length ? { files: kept.map(shownFile) } : {}),
       ...(mails.length ? { emails: mails.map(({ id: mailId, subject, from }) => ({ id: mailId, subject, from })) } : {})
     });
-    if (!c.title) c.title = clip((line.trim() ? line : [...kept.map((f) => f.name), ...mails.map((m) => m.subject)].join(', ')).replace(/\s+/g, ' ').trim(), 80);
+    // The renderer names a chat after its first message's text by itself; a name taken from attachments only main
+    // has, and it reaches the renderer here.
+    if (naming) this.emitEvent({ kind: 'conversation', conversation: { id: c.id, title: c.title } });
     const turn = {
       id: `t_${rand(10)}`,
       cid: c.id,
@@ -1090,14 +1103,19 @@ class AgentHub extends EventEmitter {
     const list = [].concat(ids || []);
     if (list.length > MAX_EMAILS) throw new AgentError('invalid', `at most ${MAX_EMAILS} emails per message`);
     const out = [];
+    const gone = [];
     for (const raw of list) {
       const id = clip(raw, 4000);
-      if (!id || out.some((m) => m.id === id) || (c.message && c.message.id === id)) continue;
+      if (!id || out.some((m) => m.id === id) || gone.includes(id) || (c.message && c.message.id === id)) continue;
       const m = this.liveMessage(id);
-      if (!m) throw new AgentError('email-missing', 'an email added to the message is no longer here');
+      if (!m) {
+        gone.push(id);
+        continue;
+      }
       const from = isObj(m.from) ? { name: clip(m.from.name || '', 200), address: clip(m.from.address || '', 320) } : null;
       out.push({ id, subject: clip(m.subject || '', 300), from });
     }
+    if (gone.length) throw missingError('email-missing', gone, 'an email added to the message is no longer here');
     return out;
   }
 

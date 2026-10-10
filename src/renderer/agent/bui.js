@@ -143,11 +143,17 @@ export function entityChip({ label, sub, monogram: mono, onRemove, removeLabel }
 }
 
 // A file or email that goes along with a message: an icon badge instead of a monogram, a name and a detail (the
-// size, the sender). With onRemove it has an x.
-export function attachmentChip({ label, sub, icon: iconName = 'file', onRemove, removeLabel } = {}) {
+// size, the sender). With onRemove it has an x. pending: still on its way (busy: what assistive tech hears); it
+// has no x until it is there.
+export function attachmentChip({ label, sub, icon: iconName = 'file', onRemove, removeLabel, pending = false, busy = '' } = {}) {
   const badge = h('span', { class: 'bui-entity__badge bui-entity__badge--file', 'aria-hidden': 'true' }, icon(iconName, 10, 2.2));
-  const el = entityChip({ label, sub, monogram: badge, onRemove, removeLabel });
+  const el = entityChip({ label, sub, monogram: badge, onRemove: pending ? null : onRemove, removeLabel });
   el.classList.add('bui-entity--attached');
+  if (pending) {
+    el.classList.add('is-pending');
+    el.setAttribute('aria-busy', 'true');
+    if (busy) el.setAttribute('aria-label', busy);
+  }
   return el;
 }
 
@@ -1248,7 +1254,11 @@ export function chatComposer(opts = {}, handlers = {}) {
     engaged: false,
     query: null,
     // Files or emails go along: a message can be those alone.
-    attached: false
+    attached: false,
+    // Something the message takes is still on its way (setHolding): nothing can be sent or started until it is
+    // there, and the text stays. holdLabel says so on the Send button.
+    holding: false,
+    holdLabel: ''
   };
   // The chips row: the paperclip, the email the chat is about, then what the user attached. The paperclip leads,
   // so it stays put as chips come and go, and the footer keeps its room for the agent, model and effort menus.
@@ -1290,7 +1300,11 @@ export function chatComposer(opts = {}, handlers = {}) {
     send.replaceChildren(icon(state.running ? 'stop' : 'send', 16));
     send.setAttribute('aria-label', state.running ? labels.stop || '' : labels.send || '');
     send.classList.toggle('is-stop', state.running);
-    send.disabled = state.running ? false : state.disabled || (!ta.value.trim() && !state.attached);
+    send.disabled = state.running ? false : state.disabled || state.holding || (!ta.value.trim() && !state.attached);
+    const why = !state.running && state.holding ? state.holdLabel : '';
+    send.title = why;
+    if (why) send.setAttribute('aria-description', why);
+    else send.removeAttribute('aria-description');
   }
   function refreshFiles() {
     if (attach) attach.hidden = state.disabled;
@@ -1329,7 +1343,8 @@ export function chatComposer(opts = {}, handlers = {}) {
     hl.style.opacity = '1';
   }
   function refreshMenu() {
-    const tok = state.disabled || state.dismissed ? null : token();
+    // While holding no command can start, so none is offered.
+    const tok = state.disabled || state.dismissed || state.holding ? null : token();
     if (!tok) {
       closeMenu();
       return;
@@ -1373,27 +1388,31 @@ export function chatComposer(opts = {}, handlers = {}) {
     menu.replaceChildren(matches.length ? list : h('div', { class: 'bui-pb__empty', text: typeof labels.noMatches === 'function' ? labels.noMatches(tok.query) : labels.noMatches || '' }));
     highlight();
   }
+  // The command's token goes only once the owner takes the command: onCommand returns false for one it refuses (a
+  // message is still being sent, say), and the token stays where it was, as with submit().
   function pick(cmd) {
     const tok = token();
+    closeMenu();
+    state.dismissed = false;
+    ta.focus();
+    if (handlers.onCommand && handlers.onCommand(cmd.name) === false) return;
     if (tok) {
       ta.value = ta.value.slice(0, tok.start) + ta.value.slice(tok.end);
       ta.setSelectionRange(tok.start, tok.start);
     }
-    closeMenu();
-    state.dismissed = false;
     autosize();
     updateSend();
-    ta.focus();
-    if (handlers.onCommand) handlers.onCommand(cmd.name);
   }
+  // The text goes only once the owner takes it: onSend returns false for a message it refuses (one is still being
+  // sent, say), and the text stays where it was.
   function submit() {
     const text = ta.value.trim();
-    if ((!text && !state.attached) || state.disabled) return;
+    if ((!text && !state.attached) || state.disabled || state.holding) return;
+    if (handlers.onSend && handlers.onSend(text) === false) return;
     ta.value = '';
     closeMenu();
     autosize();
     updateSend();
-    if (handlers.onSend) handlers.onSend(text);
   }
 
   if (attach) attach.addEventListener('click', () => handlers.onAttach());
@@ -1506,6 +1525,17 @@ export function chatComposer(opts = {}, handlers = {}) {
     },
     setRunning(running) {
       state.running = Boolean(running);
+      updateSend();
+    },
+    // holding: something the message takes is still on its way. label: why Send is off, for its tooltip and screen
+    // readers. Once it is there, a / the caret sits after offers its commands again.
+    setHolding(holding, label = '') {
+      const was = state.holding;
+      state.holding = Boolean(holding);
+      state.holdLabel = String(label || '');
+      el.classList.toggle('is-holding', state.holding);
+      if (state.holding) closeMenu();
+      else if (was && document.activeElement === ta) refreshMenu();
       updateSend();
     },
     setDisabled(disabled, reason) {

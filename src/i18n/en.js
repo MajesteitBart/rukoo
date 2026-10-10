@@ -357,6 +357,10 @@
     "message": "Something went wrong.",
     "description": "Chat panel error: fallback when the cause is not known."
   },
+  "agent.files.adding": {
+    "message": "Adding {name}",
+    "description": "Chat panel, accessible name of a file chip while the file is still being read and handed to main; name is the file name (pendingChip in agent/panel.js)."
+  },
   "agent.files.blocked": {
     "message": "{name} is a program or script. Rukoo doesn't hand those to agents.",
     "description": "Chat panel notice after you attach a program or script (.exe, .js and the like) to a chat message; name is the file name (takeFiles and refusal in agent/panel.js)."
@@ -369,9 +373,16 @@
     "message": "{name} is a folder. Add the files in it instead.",
     "description": "Chat panel notice after you drop a folder on the chat; name is the folder name (addFiles in agent/panel.js)."
   },
+  "agent.files.full": {
+    "message": "{name} didn't fit: Rukoo already holds as many files as it keeps for unsent messages. Send or remove some first.",
+    "description": "Chat panel notice when a file can't be attached because the files waiting in unsent chat messages already take the room Rukoo keeps for them (30 files or 120 MB); name is the file name (refusal in agent/panel.js)."
+  },
   "agent.files.gone": {
-    "message": "The files you attached were no longer ready to send. Attach them again.",
-    "description": "Chat panel notice when you send a message whose attached files Rukoo let go of (after a long wait or many other files); the file chips are removed (send in agent/panel.js)."
+    "message": {
+      "one": "{count} file you attached was no longer ready to send, so your message was not sent. Attach it again; the other attachments are still there.",
+      "other": "{count} files you attached were no longer ready to send, so your message was not sent. Attach them again; the other attachments are still there."
+    },
+    "description": "Chat panel notice when you send a message with files Rukoo let go of (after two hours); only their chips are removed. count: how many (send in agent/panel.js)."
   },
   "agent.files.tooBig": {
     "message": "{name} is larger than 10 MB, so it can't go to the agent.",
@@ -656,6 +667,10 @@
   "agent.panel.transcript": {
     "message": "Conversation",
     "description": "Chat panel: accessible name of the list of messages in the conversation."
+  },
+  "agent.panel.waitFiles": {
+    "message": "Wait until the files are added, then send.",
+    "description": "Chat panel: why Send is off while a file you dropped, pasted or picked is still being added (tooltip of the Send button), and the notice when you pick a quick action or skill meanwhile (refreshHolding and runAction in agent/panel.js)."
   },
   "agent.panel.width": {
     "message": "Chat panel width",

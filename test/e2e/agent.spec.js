@@ -1305,7 +1305,8 @@ const dropFiles = (list, { over = false } = {}) =>
     },
     { list: list.map((f) => ({ name: f.name, type: f.type, b64: Buffer.from(f.data).toString('base64') })), over }
   );
-const fileChips = () => win.locator('.agentpane .bui-pb__files .bui-entity--attached').filter({ has: win.locator('.bui-entity__badge [data-icon^="file"], .bui-entity__badge [data-icon="image"]') });
+// The files attached to the message being written; one still on its way (pending) is not one yet.
+const fileChips = () => win.locator('.agentpane .bui-pb__files .bui-entity--attached:not(.is-pending)').filter({ has: win.locator('.bui-entity__badge [data-icon^="file"], .bui-entity__badge [data-icon="image"]') });
 // Drags an email from the list onto the chat with the mouse. Not dragTo: the list redraws its rows whenever a
 // refresh comes in (an email marked read, a setting saved), and a redraw between dragTo's checks of the row and its
 // press made Playwright end the drag without a drop and without an error. The row is found, scrolled to and
@@ -1313,7 +1314,8 @@ const fileChips = () => win.locator('.agentpane .bui-pb__files .bui-entity--atta
 async function dragToChat(subject) {
   const from = await win.evaluate((text) => {
     const row = [...document.querySelectorAll('.list-scroll .item')].find((el) => el.textContent.includes(text));
-    row.scrollIntoView({ block: 'center' });
+    // Instant: a smooth scroll would still be moving the row when it is measured.
+    row.scrollIntoView({ block: 'center', behavior: 'instant' });
     const r = row.getBoundingClientRect();
     return [r.x + r.width / 2, r.y + r.height / 2];
   }, subject);
@@ -1403,6 +1405,228 @@ test('a PDF from the paperclip or dropped on the chat goes to the agent, which r
   expect(claude.input).toContain(`local copy: ${copies[1]}`);
   expect(claude.files.map((f) => [f.kind, f.inline])).toEqual([['image', true], ['pdf', false]]);
   expect(claude.input).toContain('[The user sent this without a message.]');
+});
+
+test('picking more large files than a message takes stages only what it keeps, so all of those go out', async () => {
+  await openChat('Call on Thursday');
+  // Thirteen files just under 10 MB: together past the 120 MB Rukoo keeps for messages not yet sent.
+  const big = Buffer.alloc(Math.floor(9.5 * 1024 * 1024), 1);
+  const picked = Array.from({ length: 13 }, (_, i) => {
+    const file = path.join(dataDir, `scan-${String(i + 1).padStart(2, '0')}.bin`);
+    fs.writeFileSync(file, big);
+    return file;
+  });
+  await pickFilesWith(picked);
+  await win.click('.agentpane .bui-pb__attach');
+  await expect(fileChips()).toHaveCount(10);
+  await expect(fileChips().locator('.bui-entity__name').first()).toHaveText('scan-01.bin');
+  await expect(win.locator('#toast')).toContainText('A message takes up to 10 files.');
+  expect(await app.evaluate(() => global.__semAgents.files.staged.size)).toBe(10);
+  await say('All of these');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveCount(10);
+  await expect.poll(async () => ((await received()) || { files: [] }).files.length).toBe(10);
+});
+
+test('a chat started with only a file is named after it in the header straight away', async () => {
+  await openChat('Call on Thursday');
+  // Without the email it is a chat of its own, with no name yet.
+  await win.locator('.agentpane .bui-pb__files').getByRole('button', { name: 'Leave this email out' }).click();
+  await dropFiles([{ name: 'Budget 2027.xlsx', type: 'application/octet-stream', data: Buffer.from('PK') }]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['Budget 2027.xlsx']);
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['Budget 2027.xlsx']);
+  await expect(win.locator('.agentpane .ap-title')).toHaveText('Budget 2027.xlsx');
+});
+
+// Dropped files stay on their way until the test lets each go by name, as a large file or a slow disk would keep
+// them: nothing here depends on how long a read takes. A file let go before it is read is read at once.
+const holdReads = () =>
+  win.evaluate(() => {
+    const read = File.prototype.arrayBuffer;
+    const waiting = new Map();
+    const free = new Set();
+    window.__letGo = (name) => {
+      free.add(name);
+      for (const go of waiting.get(name) || []) go();
+      waiting.delete(name);
+    };
+    File.prototype.arrayBuffer = function () {
+      const file = this;
+      return new Promise((resolve) => (free.has(file.name) ? resolve() : waiting.set(file.name, [...(waiting.get(file.name) || []), resolve]))).then(() => read.call(file));
+    };
+  });
+const letGo = (name) => win.evaluate((n) => window.__letGo(n), name);
+const pendingChips = () => win.locator('.agentpane .bui-pb__files .bui-entity.is-pending');
+const textFile = (name) => ({ name, type: 'text/plain', data: Buffer.from(`The text of ${name}`) });
+const conversations = () => app.evaluate(() => [...global.__semAgents.conversations.values()].map((c) => ({ email: c.message ? c.message.id : null, sent: c.items.filter((i) => i.type === 'user').map((i) => i.text) })));
+
+test('nothing goes while a dropped file is still being added: Enter keeps the text, a quick action waits, and then text and file go together', async () => {
+  await openChat('Call on Thursday');
+  await holdReads();
+  await input().fill('What is in this?');
+  await dropFiles([textFile('notes.txt')]);
+  // On its way: a chip at once, still busy, and Send off with the reason.
+  await expect(pendingChips()).toHaveCount(1);
+  await expect(pendingChips()).toHaveAttribute('aria-label', 'Adding notes.txt');
+  const sendButton = win.locator('.agentpane .bui-pb__send');
+  await expect(sendButton).toBeDisabled();
+  await expect(sendButton).toHaveAttribute('title', 'Wait until the files are added, then send.');
+  await input().press('Enter');
+  await expect(input()).toHaveValue('What is in this?');
+  await chip('Summarize').click();
+  await expect(win.locator('#toast')).toContainText('Wait until the files are added, then send.');
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  expect(await conversations()).toEqual([]);
+  // There: Send is back, and Enter sends the text with the file.
+  await letGo('notes.txt');
+  await expect(pendingChips()).toHaveCount(0);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['notes.txt']);
+  await expect(sendButton).toBeEnabled();
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ub')).toHaveText('What is in this?');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['notes.txt']);
+  await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['notes.txt']);
+  await expect(input()).toHaveValue('');
+  await expect(fileChips()).toHaveCount(0);
+});
+
+test('a message held for a file goes to the chat it is sent from, not to an email opened while the file was on its way', async () => {
+  await openChat('Call on Thursday');
+  const thursday = await item('Call on Thursday').getAttribute('data-id');
+  await holdReads();
+  await input().fill('Question for Thursday');
+  await dropFiles([textFile('agenda.txt')]);
+  await input().press('Enter');
+  // Another email opens while the file is on its way; the draft goes along, and nothing is sent.
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await letGo('agenda.txt');
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['agenda.txt']);
+  await expect(input()).toHaveValue('Question for Thursday');
+  expect(await conversations()).toEqual([]);
+  // Back on Thursday the user sends: the message and the file go to that chat.
+  await item('Call on Thursday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['agenda.txt']);
+  await expect.poll(conversations).toEqual([{ email: thursday, sent: ['Question for Thursday'] }]);
+  await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['agenda.txt']);
+});
+
+test('a file dropped while another is still on its way goes with the same message', async () => {
+  await openChat('Call on Thursday');
+  await holdReads();
+  await input().fill('Both of these');
+  await dropFiles([textFile('first.txt')]);
+  await input().press('Enter');
+  await dropFiles([textFile('second.txt')]);
+  await letGo('first.txt');
+  // The second is still on its way: still nothing goes.
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['first.txt']);
+  await expect(pendingChips()).toHaveCount(1);
+  await input().press('Enter');
+  await expect(input()).toHaveValue('Both of these');
+  await letGo('second.txt');
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['first.txt', 'second.txt']);
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['first.txt', 'second.txt']);
+  await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['first.txt', 'second.txt']);
+  await expect(fileChips()).toHaveCount(0);
+});
+
+test('text typed while files are on their way is never lost, however often Enter is pressed', async () => {
+  await openChat('Call on Thursday');
+  await holdReads();
+  await input().fill('First message');
+  await dropFiles([textFile('slow.txt')]);
+  await input().press('Enter');
+  await expect(input()).toHaveValue('First message');
+  await input().press('End');
+  await input().pressSequentially(' and the second');
+  await input().press('Enter');
+  await expect(input()).toHaveValue('First message and the second');
+  await letGo('slow.txt');
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['slow.txt']);
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ub')).toHaveText('First message and the second');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['slow.txt']);
+  await expect(input()).toHaveValue('');
+});
+
+test('picked files are read without blocking Rukoo: a slow drive leaves other requests answered at once', async () => {
+  await openChat('Call on Thursday');
+  const slow = path.join(dataDir, 'slow-drive.txt');
+  fs.writeFileSync(slow, 'From a slow drive');
+  // Reading this file takes 1.5 s, whichever way it is read; the dialog closes after 200 ms.
+  await app.evaluate(({ dialog }, file) => {
+    const fsm = process.mainModule.require('fs');
+    const { readFileSync } = fsm;
+    const { readFile } = fsm.promises;
+    fsm.readFileSync = function (name, ...rest) {
+      if (String(name).includes('slow-drive')) for (const end = Date.now() + 1500; Date.now() < end; );
+      return readFileSync.call(this, name, ...rest);
+    };
+    fsm.promises.readFile = async function (name, ...rest) {
+      if (String(name).includes('slow-drive')) await new Promise((resolve) => setTimeout(resolve, 1500));
+      return readFile.call(this, name, ...rest);
+    };
+    dialog.showOpenDialog = () => new Promise((resolve) => setTimeout(() => resolve({ canceled: false, filePaths: [file] }), 200));
+  }, slow);
+  await win.click('.agentpane .bui-pb__attach');
+  // 400 ms later main is reading; another request still comes back at once.
+  const took = await win.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const started = performance.now();
+    await window.mail.call('agentSkills');
+    return performance.now() - started;
+  });
+  expect(took).toBeLessThan(500);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['slow-drive.txt']);
+});
+
+test('an email that is gone takes only its own chip, and one added from another folder stays', async () => {
+  await openChat('Call on Thursday');
+  const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
+  // One from the Sent folder (with another sent email open, so the dragged one is not the chat's own), then back to
+  // the inbox for another.
+  await win.click('.nav-item[data-view="sent"]');
+  await item('Dinner on Saturday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Dinner on Saturday');
+  await dragToChat('Question about my contract');
+  await win.click('.nav-item[data-view="inbox"]');
+  await item('Call on Thursday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await dragToChat('Your parcel is on its way');
+  await expect(names).toContainText(['Question about my contract', 'Your parcel is on its way']);
+  // The parcel email is deleted before the message goes.
+  const parcel = await item('Your parcel is on its way').getAttribute('data-id');
+  await app.evaluate((_e, id) => global.__semEngine.remove(id), parcel);
+  await say('Compare these');
+  await expect(win.locator('#toast')).toContainText('An email you added is no longer here.');
+  await expect(names).toContainText(['Question about my contract']);
+  await expect(names.filter({ hasText: 'Your parcel is on its way' })).toHaveCount(0);
+  // Sent again, the sent email goes along.
+  await input().press('Enter');
+  await expect.poll(async () => ((await received()) || { emails: [] }).emails.length).toBe(1);
+});
+
+test('a file that is gone takes only its own chip, and the other one still goes out', async () => {
+  await openChat('Call on Thursday');
+  await dropFiles([
+    { name: 'first.txt', type: 'text/plain', data: Buffer.from('first') },
+    { name: 'second.txt', type: 'text/plain', data: Buffer.from('second') }
+  ]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['first.txt', 'second.txt']);
+  // Main lets go of the first, as it does after two hours.
+  await app.evaluate(() => {
+    const files = global.__semAgents.files;
+    files.unstage([...files.staged.values()].find((s) => s.name === 'first.txt').id);
+  });
+  await say('Both');
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['second.txt']);
+  await expect(win.locator('#toast')).toContainText('1 file you attached was no longer ready to send');
+  await input().press('Enter');
+  await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['second.txt']);
 });
 
 test('a send that fails while the files are copied keeps every chip, and sending again delivers them all', async () => {

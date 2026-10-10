@@ -17,8 +17,9 @@ const { isPdf } = require('../pdftext');
 const FILE_MAX = 10 * 1024 * 1024;
 const MAX_FILES = 10;
 const MAX_EMAILS = 10;
-// Files the user attached but has not sent yet, across chats. Past these the oldest go; a chip whose file is gone
-// gets an error when it is sent.
+// Files the user attached but has not sent yet, across chats. Past these a new file is refused ('full'): a file
+// that waits is never let go of to make room for another, so a chip in the message being written keeps its file
+// until it is sent, removed or past STAGED_TTL.
 const STAGED_MAX = 30;
 const STAGED_BYTES = 120 * 1024 * 1024;
 const STAGED_TTL = 2 * 60 * 60 * 1000;
@@ -135,13 +136,15 @@ class ChatFiles {
     const clean = cleanName(name);
     const error = this.refuse(clean, data.length);
     if (error) return { name: clean, error };
+    this.trim();
+    const bytes = [...this.staged.values()].reduce((n, s) => n + s.size, 0);
+    if (this.staged.size >= STAGED_MAX || bytes + data.length > STAGED_BYTES) return { name: clean, error: 'full' };
     const type = typeOf(clean, data);
     const entry = { id: `s_${rand(16)}`, name: clean, size: data.length, type, kind: kindOf(clean, type), data, at: Date.now() };
     this.staged.set(entry.id, entry);
     // Let go after STAGED_TTL even when nothing else is staged, so a message never sent doesn't keep its files.
     entry.timer = setTimeout(() => this.unstage(entry.id), STAGED_TTL);
     if (entry.timer.unref) entry.timer.unref();
-    this.trim();
     return shown(entry);
   }
 
@@ -151,20 +154,20 @@ class ChatFiles {
     return this.staged.delete(id);
   }
 
+  // Lets go of the files past STAGED_TTL, whose timers may not have fired yet.
   trim() {
     const now = Date.now();
     for (const [id, s] of this.staged) if (now - s.at > STAGED_TTL) this.unstage(id);
-    let bytes = [...this.staged.values()].reduce((n, s) => n + s.size, 0);
-    for (const [id, s] of this.staged) {
-      if (this.staged.size <= STAGED_MAX && bytes <= STAGED_BYTES) break;
-      this.unstage(id);
-      bytes -= s.size;
-    }
   }
 
   // Rukoo is closing: the staged files go.
   dispose() {
     for (const id of [...this.staged.keys()]) this.unstage(id);
+  }
+
+  // The tokens of these that name no staged file (any more).
+  missing(ids) {
+    return [...new Set(ids)].filter((id) => !this.pending([id]));
   }
 
   // The staged files these tokens name, or null when one of them is gone, also when it is past STAGED_TTL.

@@ -67,6 +67,10 @@ app.whenReady().then(async () => {
   if (process.argv.includes('--check')) {
     // Behaviour checks run inside the real renderer; the page returns the list of failures.
     const fails = JSON.parse(await js('return JSON.stringify(await window.gallery.check())'));
+    // Then the same page with reduced motion asked for: what moves must stop.
+    win.webContents.debugger.attach();
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    fails.push(...JSON.parse(await js('return JSON.stringify(await window.gallery.checkReducedMotion())')));
     console.log(fails.length ? `FAIL\n${fails.map((f) => `  - ${f}`).join('\n')}` : 'agent gallery checks: all passed');
     if (errors.length) console.log(errors.join('\n'));
     app.exit(fails.length || errors.length ? 1 : 0);
