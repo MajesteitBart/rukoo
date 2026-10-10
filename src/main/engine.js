@@ -664,6 +664,9 @@ class Engine extends EventEmitter {
       folder: folderPath,
       role: (info && info.role) || null,
       uid: m.uid,
+      // One email can be in several folders under several ids (Inbox and Sent of a mail to yourself, two Gmail
+      // labels); by this the chat panel adds it to a message once.
+      messageId: m.messageId || null,
       subject: m.subject,
       from: m.from,
       to: m.to,

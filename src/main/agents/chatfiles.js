@@ -29,6 +29,27 @@ const TURN_TEXT_MAX = 60000;
 // Images up to this size go along with the message itself (Claude Code, Codex); Claude's API takes 5 MB, base64.
 const INLINE_IMAGE_MAX = Math.floor(3.75 * 1024 * 1024);
 
+// A file's bytes, read up to max, in steps, without blocking. null when it holds more: at most max + 1 bytes are
+// read, whatever its size said before.
+async function readCapped(file, max) {
+  const handle = await fs.promises.open(file, 'r');
+  try {
+    const parts = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, max + 1 - total));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (!bytesRead) break;
+      parts.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+      if (total > max) return null;
+    }
+    return Buffer.concat(parts, total);
+  } finally {
+    await handle.close();
+  }
+}
+
 const TEXT_TYPES = /^(text\/|application\/(json|xml|csv|x-yaml|yaml|ics)\b)/;
 const TEXT_EXT = /\.(csv|md|markdown|ics|txt|json|xml|yaml|yml|log|vcf)$/i;
 const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
@@ -129,6 +150,32 @@ class ChatFiles {
     if (RISKY.test(cleanName(name))) return 'blocked';
     if (Number(size) > FILE_MAX) return 'too-big';
     return null;
+  }
+
+  // The files the user picked in main's own dialog (the paperclip), staged in the order picked. room: how many more
+  // the message takes; past it a file is neither read nor staged ('too-many'), so a selection of many large files
+  // can't crowd out the ones the message keeps. A file can grow or be replaced after its size was checked (an
+  // active log, a file on a share), so it is read up to FILE_MAX and refused as too big past that, never read whole.
+  async stagePaths(paths, room) {
+    let left = Number.isInteger(room) ? Math.max(0, Math.min(room, MAX_FILES)) : MAX_FILES;
+    const out = [];
+    for (const file of paths) {
+      const name = path.basename(file);
+      if (!left) {
+        out.push({ name, error: 'too-many' });
+        continue;
+      }
+      try {
+        const refused = this.refuse(name, (await fs.promises.stat(file)).size);
+        const data = refused ? null : await readCapped(file, FILE_MAX);
+        const staged = refused ? { name, error: refused } : data ? this.stage(name, data) : { name, error: 'too-big' };
+        if (!staged.error) left--;
+        out.push(staged);
+      } catch (_) {
+        out.push({ name, error: 'unreadable' });
+      }
+    }
+    return out;
   }
 
   // Keeps a file for a message the user is writing. {id, name, size, type, kind}, or {name, error}.

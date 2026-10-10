@@ -1557,23 +1557,33 @@ test('picked files are read without blocking Rukoo: a slow drive leaves other re
   await openChat('Call on Thursday');
   const slow = path.join(dataDir, 'slow-drive.txt');
   fs.writeFileSync(slow, 'From a slow drive');
-  // Reading this file takes 1.5 s, whichever way it is read; the dialog closes after 200 ms.
+  // Opening or reading this file takes 1.5 s, whichever way it is read: the sync calls block, the async ones wait.
+  // The dialog closes after 200 ms.
   await app.evaluate(({ dialog }, file) => {
     const fsm = process.mainModule.require('fs');
-    const { readFileSync } = fsm;
-    const { readFile } = fsm.promises;
-    fsm.readFileSync = function (name, ...rest) {
-      if (String(name).includes('slow-drive')) for (const end = Date.now() + 1500; Date.now() < end; );
-      return readFileSync.call(this, name, ...rest);
+    const slowFile = (name) => String(name).includes('slow-drive');
+    const block = () => {
+      for (const end = Date.now() + 1500; Date.now() < end; );
     };
-    fsm.promises.readFile = async function (name, ...rest) {
-      if (String(name).includes('slow-drive')) await new Promise((resolve) => setTimeout(resolve, 1500));
-      return readFile.call(this, name, ...rest);
-    };
+    const wait = () => new Promise((resolve) => setTimeout(resolve, 1500));
+    for (const fn of ['readFileSync', 'openSync']) {
+      const orig = fsm[fn];
+      fsm[fn] = function (name, ...rest) {
+        if (slowFile(name)) block();
+        return orig.call(this, name, ...rest);
+      };
+    }
+    for (const fn of ['readFile', 'open']) {
+      const orig = fsm.promises[fn];
+      fsm.promises[fn] = async function (name, ...rest) {
+        if (slowFile(name)) await wait();
+        return orig.call(this, name, ...rest);
+      };
+    }
     dialog.showOpenDialog = () => new Promise((resolve) => setTimeout(() => resolve({ canceled: false, filePaths: [file] }), 200));
   }, slow);
   await win.click('.agentpane .bui-pb__attach');
-  // 400 ms later main is reading; another request still comes back at once.
+  // 400 ms later main is reading; another request still comes back at once, while the file is still on its way.
   const took = await win.evaluate(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const started = performance.now();
@@ -1581,6 +1591,7 @@ test('picked files are read without blocking Rukoo: a slow drive leaves other re
     return performance.now() - started;
   });
   expect(took).toBeLessThan(500);
+  expect(await fileChips().count()).toBe(0);
   await expect(fileChips().locator('.bui-entity__name')).toHaveText(['slow-drive.txt']);
 });
 
@@ -1730,17 +1741,45 @@ test('the newer email a chat was continued from, dropped on the chat, is not add
   expect(got.input).toContain('[The user attached an email to this message. Read it with read_message.]');
 });
 
+test('an email the list shows twice, under two ids, is added to the message once, and a copy of the chat own email not at all', async () => {
+  await openChat('Call on Thursday');
+  const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
+  // A second copy of two emails in the inbox, under new ids with the same Message-ID, as Inbox and Sent of a mail to
+  // yourself or two Gmail labels give.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const box = engine.caches.get(engine.accounts[0].id).boxes.INBOX;
+    for (const [subject, uid] of [['Your parcel is on its way', 90001], ['Call on Thursday', 90002]]) {
+      box.messages.push({ ...structuredClone(box.messages.find((m) => m.subject === subject)), uid });
+    }
+    engine.emit('updated');
+  });
+  const idsOf = (subject) => win.evaluate((subject) => [...document.querySelectorAll('.list-scroll .item')].filter((el) => el.textContent.includes(subject)).map((el) => el.dataset.id), subject);
+  await expect.poll(async () => (await idsOf('Your parcel is on its way')).length).toBe(2);
+  const ids = [...(await idsOf('Your parcel is on its way')), ...(await idsOf('Call on Thursday'))];
+  expect(ids).toHaveLength(4);
+  // All four dropped on the chat at once, as when they are checked and dragged.
+  await win.evaluate((ids) => {
+    const dt = new DataTransfer();
+    dt.setData('application/x-rukoo-ids', JSON.stringify(ids));
+    const target = document.querySelector('.agentpane .ap-transcript');
+    for (const type of ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+  }, ids);
+  await expect(names).toHaveText(['Call on Thursday', 'Your parcel is on its way']);
+});
+
+// Goes down the open menu with the arrow keys to the item, and picks it with Enter.
+async function choose(label) {
+  await expect(win.locator('.menu')).toBeVisible();
+  for (let i = 0; i < 20; i++) {
+    if ((await win.evaluate(() => document.activeElement?.querySelector('.ml')?.textContent || '')) === label) return win.keyboard.press('Enter');
+    await win.keyboard.press('ArrowDown');
+  }
+  throw new Error(`no ${label} in the menu`);
+}
+
 test('emails go into the chat by keyboard as well: Add to chat in the menu for checked emails and in an email menu', async () => {
   const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
-  // Goes down the open menu with the arrow keys to the item, and picks it with Enter.
-  const choose = async (label) => {
-    await expect(win.locator('.menu')).toBeVisible();
-    for (let i = 0; i < 20; i++) {
-      if ((await win.evaluate(() => document.activeElement?.querySelector('.ml')?.textContent || '')) === label) return win.keyboard.press('Enter');
-      await win.keyboard.press('ArrowDown');
-    }
-    throw new Error(`no ${label} in the menu`);
-  };
   // The chat is closed. The email on screen and the one below it are checked with the keyboard, and the menu for
   // checked emails adds them: the chat opens on the email on screen, which is its own, and the other one goes along.
   await item('Call on Thursday').click();
@@ -1776,6 +1815,31 @@ test('emails go into the chat by keyboard as well: Add to chat in the menu for c
   // Sent, the agent gets the one email.
   await input().press('Enter');
   await expect.poll(async () => ((await received()) || { emails: [] }).emails.length).toBe(1);
+});
+
+test('Add to chat just after another email opens goes to the chat for that email, not the one before', async () => {
+  const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
+  await openChat('Call on Thursday');
+  await expect(names).toHaveText(['Call on Thursday']);
+  // An open panel follows a newly opened email a moment later (agentViewChanged's timer). Held back here, so the
+  // moment lasts: only Add to chat can make the panel follow.
+  await win.evaluate(() => {
+    const later = window.setTimeout;
+    window.__setTimeout = later;
+    window.setTimeout = (fn, ms, ...rest) => (String(fn).includes("'agentView'") ? 0 : later(fn, ms, ...rest));
+  });
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(names).toHaveText(['Call on Thursday']);
+  await win.locator('[data-reader="more"]').focus();
+  await win.keyboard.press('Enter');
+  await choose('Add to chat');
+  // The panel now shows the chat for the parcel email, whose own email it is: nothing goes to the chat before.
+  await expect(names).toHaveText(['Your parcel is on its way']);
+  await expect(win.locator('#toast')).toContainText('That email is in the chat already.');
+  await win.evaluate(() => (window.setTimeout = window.__setTimeout));
+  await item('Call on Thursday').click();
+  await expect(names).toHaveText(['Call on Thursday']);
 });
 
 test('the paperclip and chips fit next to the agent, model and effort menus from 320 to 560 px', async () => {

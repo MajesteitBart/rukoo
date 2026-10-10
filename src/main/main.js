@@ -31,7 +31,6 @@ const { TrayIcon } = require('./tray');
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
 const { PanelGate } = require('./agents/gate');
-const { MAX_FILES: AGENT_MAX_FILES } = require('./agents/chatfiles');
 // ---- /agents ----
 
 const APP_ID = 'nl.bvdm.rukoo-mail';
@@ -788,30 +787,12 @@ Object.assign(api, {
     });
   },
   // The chat's paperclip opens main's own dialog, so Rukoo reads only what the user picked there. room: how many
-  // more files the message takes. Past it a file is neither read nor staged ('too-many'), so a selection of many
-  // large files can't crowd out the ones the message keeps. Read one by one, in the order picked, without blocking:
-  // a file on a slow or network drive must not hold up the windows or any other request.
+  // more files the message takes (chatfiles.stagePaths). Read one by one, in the order picked, without blocking: a
+  // file on a slow or network drive must not hold up the windows or any other request.
   agentPickFiles: async (room) => {
     const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: t('agent.panel.attach') });
     if (res.canceled) return [];
-    let left = Number.isInteger(room) ? Math.max(0, Math.min(room, AGENT_MAX_FILES)) : AGENT_MAX_FILES;
-    const out = [];
-    for (const file of res.filePaths) {
-      const name = path.basename(file);
-      if (!left) {
-        out.push({ name, error: 'too-many' });
-        continue;
-      }
-      try {
-        const refused = agentHub().refuseFile(name, (await fs.promises.stat(file)).size);
-        const staged = refused ? { name, error: refused } : agentHub().stageFile(name, await fs.promises.readFile(file));
-        if (!staged.error) left--;
-        out.push(staged);
-      } catch (_) {
-        out.push({ name, error: 'unreadable' });
-      }
-    }
-    return out;
+    return agentHub().stagePaths(res.filePaths, room);
   },
   // A file dropped on the chat or pasted into it. The sandboxed renderer sends its bytes, never a path to open.
   agentAddFile: (input) => {

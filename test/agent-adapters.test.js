@@ -2086,6 +2086,8 @@ function assertAttached(input, { emails, copy }, local) {
   assert.ok(input.includes('[The user attached 2 emails to this message. Read them with read_message.]'));
   for (const m of emails) assert.ok(input.includes(`- id ${m.id}: <unsafe_content source="email subject">${m.subject}</unsafe_content>`), m.subject);
   assert.equal(input.includes(`local copy: ${copy('Quarterly report.pdf')}`), local);
+  // Hermes, Claude Code and Codex all hear that a file they open or get handed is untrusted, like email.
+  assert.ok(input.includes(`[The user attached 2 files to this message. read_chat_file with the file_id returns each one${local ? '; you can also open the local copy' : ''}. ${require('../src/main/agents/context').FILE_DATA}]`), input);
   assert.ok(input.endsWith('\n\nhello'));
 }
 

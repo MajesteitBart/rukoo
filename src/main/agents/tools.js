@@ -11,7 +11,7 @@ const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
-const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, PDF_FAILED, IMAGE_DATA } = require('./context');
+const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, PDF_FAILED, IMAGE_DATA, FILE_DATA } = require('./context');
 const { SkillError, toolDescription } = require('./skills');
 const { decodeText, TEXT_TYPES, TEXT_EXT, IMAGE_TYPES } = require('./chatfiles');
 const { isPdf } = require('../pdftext');
@@ -922,7 +922,8 @@ async function fileResult(hub, info, { name, type, content, local = null, uri, s
   // A PDF by its bytes, whatever its name says, as when the file was staged: report.txt can be a PDF.
   if (!isPdf(content) && (TEXT_TYPES.test(type) || TEXT_EXT.test(name))) {
     const text = decode(content).replace(/^\uFEFF/, '');
-    return { ...out, text: unsafeBlock(text.slice(0, ATTACHMENT_TEXT_MAX), { source, filename: name }), truncated: text.length > ATTACHMENT_TEXT_MAX };
+    // The text is tagged; the copy at local_path is not.
+    return { ...out, text: unsafeBlock(text.slice(0, ATTACHMENT_TEXT_MAX), { source, filename: name }), truncated: text.length > ATTACHMENT_TEXT_MAX, ...(local ? { note: `The file is also saved at local_path. ${FILE_DATA}` } : {}) };
   }
   if (IMAGE_TYPES.test(type) && content.length <= IMAGE_MAX) {
     // No structured result: Codex passes only that on when there is one, and the image would never reach it. The
@@ -940,10 +941,11 @@ async function fileResult(hub, info, { name, type, content, local = null, uri, s
     const pdf = await hub.pdf.read(content, { maxChars: ATTACHMENT_TEXT_MAX, signal, tool: true });
     if (pdf.failed === 'busy') {
       // Too many reads wait already (pdfread.js): no text and no file, so asking many times at once holds nothing.
-      const full = { ...out, failed: 'busy', note: `Rukoo is reading other PDFs for you and has no room for this one yet. Ask for it again once those reads are done${local ? ', or open the file at local_path' : ''}.` };
+      const full = { ...out, failed: 'busy', note: `Rukoo is reading other PDFs for you and has no room for this one yet. Ask for it again once those reads are done${local ? `, or open the file at local_path. ${FILE_DATA}` : '.'}` };
       return raw([{ type: 'text', text: JSON.stringify(full) }], full);
     }
-    const file = `The file itself is attached as a resource${saved}.`;
+    // The file comes without tags, so the note says what it is.
+    const file = `The file itself is attached as a resource${saved}. ${FILE_DATA}`;
     let note;
     if (pdf.failed) note = `Rukoo could not extract text from this PDF: ${PDF_FAILED[pdf.failed] || PDF_FAILED.error}. ${file}`;
     else if (!pdf.text) note = `${pdf.encrypted ? 'The PDF is encrypted, so Rukoo could not read its text.' : pdf.partial ? "Rukoo's reader stopped at its limits before it found text in this PDF." : 'Rukoo found no text in this PDF; it may be scanned.'} ${file}`;
@@ -960,8 +962,8 @@ async function fileResult(hub, info, { name, type, content, local = null, uri, s
     };
     return raw([{ type: 'text', text: JSON.stringify(full) }, resource()], full);
   }
-  // An image too big to show as one can still reach the agent as a file.
-  const note = `The file is attached as a resource${saved}.${IMAGE_TYPES.test(type) ? ` ${IMAGE_DATA}` : ''}`;
+  // A Word file, an archive, or an image too big to show as one: it reaches the agent without tags.
+  const note = `The file is attached as a resource${saved}. ${IMAGE_TYPES.test(type) ? IMAGE_DATA : FILE_DATA}`;
   return raw([{ type: 'text', text: JSON.stringify({ ...out, note }) }, resource()], { ...out, note });
 }
 

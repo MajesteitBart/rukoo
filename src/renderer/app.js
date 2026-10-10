@@ -405,6 +405,9 @@ function addToChatItem(list) {
     },
     action: () => {
       if (!prefs.agentOpen) setAgentOpen(true);
+      // An open panel follows the email on screen only after agentViewChanged's wait; it follows now, so the emails
+      // go to the chat it is about to show, not the one before.
+      else agentPanel.sync();
       return agentPanel.addEmails(list.map((m) => m.id));
     }
   };

@@ -535,17 +535,18 @@ export function mountAgentPanel(ctx) {
     takeFiles(results);
   }
 
-  // Emails dragged from the list, by id. The chat's own email is there already.
   // An email the chat has already: its own, or a newer one in its thread it was continued from (main's continueFrom),
-  // which the next message carries by itself while the agent has not had it. Added again, it would go twice.
+  // which the next message carries by itself while the agent has not had it. Added again, it would go twice. One
+  // email can be in several folders under several ids, so its Message-ID counts as well.
+  const sameEmail = (a, b) => a.id === b.id || sameMessageId(a.messageId, b.messageId);
   function inChat(m) {
     const own = contextEmail();
-    if (own && own.id === m.id) return true;
-    return Boolean(P.conv && (P.conv.continued || []).some((e) => e.id === m.id || sameMessageId(e.messageId, m.messageId)));
+    if (own && sameEmail(own, m)) return true;
+    return Boolean(P.conv && (P.conv.continued || []).some((e) => sameEmail(e, m)));
   }
 
-  // The emails that were dropped or picked go with the message, up to MAX_EMAILS; how many were new, and how many
-  // were already in the chat or the message.
+  // The emails dragged from the list or picked from a menu go with the message, up to MAX_EMAILS; how many were
+  // new, and how many were already in the chat or the message.
   function addEmails(ids) {
     let full = false;
     let added = 0;
@@ -553,7 +554,7 @@ export function mountAgentPanel(ctx) {
     for (const id of Array.isArray(ids) ? ids : []) {
       const m = ctx.messageById(id);
       if (!m) continue;
-      if (inChat(m) || P.attach.emails.some((x) => x.id === id)) {
+      if (inChat(m) || P.attach.emails.some((x) => sameEmail(x, m))) {
         had++;
         continue;
       }
@@ -561,7 +562,7 @@ export function mountAgentPanel(ctx) {
         full = true;
         continue;
       }
-      P.attach.emails.push({ id: m.id, subject: m.subject || '', from: m.from ? { name: m.from.name || '', address: m.from.address || '' } : null });
+      P.attach.emails.push({ id: m.id, messageId: m.messageId || null, subject: m.subject || '', from: m.from ? { name: m.from.name || '', address: m.from.address || '' } : null });
       added++;
     }
     showAttachments();

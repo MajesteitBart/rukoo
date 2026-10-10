@@ -890,6 +890,11 @@ class AgentHub extends EventEmitter {
     return this.files.stage(name, data);
   }
 
+  // Files picked in main's dialog, by path (chatfiles.stagePaths).
+  stagePaths(paths, room) {
+    return this.files.stagePaths(paths, room);
+  }
+
   unstageFile(id) {
     return this.files.unstage(id);
   }
@@ -1104,6 +1109,10 @@ class AgentHub extends EventEmitter {
     if (list.length > MAX_EMAILS) throw new AgentError('invalid', `at most ${MAX_EMAILS} emails per message`);
     const out = [];
     const gone = [];
+    // One email can have several Rukoo ids (Inbox and Sent of a mail to yourself, two Gmail labels): by its
+    // Message-ID it goes once, and not when it is the chat's own.
+    const same = (a, b) => Boolean(a && b) && normId(a) === normId(b);
+    const seen = [];
     for (const raw of list) {
       const id = clip(raw, 4000);
       if (!id || out.some((m) => m.id === id) || gone.includes(id) || (c.message && c.message.id === id)) continue;
@@ -1112,9 +1121,11 @@ class AgentHub extends EventEmitter {
         gone.push(id);
         continue;
       }
+      if (seen.some((key) => same(key, m.messageId)) || same(c.message && c.message.messageId, m.messageId)) continue;
       // A newer email the chat was continued from is in it already: the next turn carries it by itself while the
       // agent has not had it (loadNewer()), so attached as well it would go twice and take a place.
-      if ((c.continued || []).some((e) => e.id === id || (e.messageId && m.messageId && normId(e.messageId) === normId(m.messageId)))) continue;
+      if ((c.continued || []).some((e) => e.id === id || same(e.messageId, m.messageId))) continue;
+      if (m.messageId) seen.push(m.messageId);
       const from = isObj(m.from) ? { name: clip(m.from.name || '', 200), address: clip(m.from.address || '', 320) } : null;
       out.push({ id, subject: clip(m.subject || '', 300), from });
     }
