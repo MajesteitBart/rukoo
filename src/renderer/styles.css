@@ -1154,6 +1154,18 @@ body:has(.page) .titlebar-actions {
 .sel-count {
   font-weight: 600;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A narrow list keeps Read, Delete, More and Clear for checked emails; star, move and archive are in More. A count
+ * too long even then gives way, so no button ever leaves the list. */
+@container list (max-width: 420px) {
+  .list-tools.selecting [data-bulk='star'],
+  .list-tools.selecting [data-bulk='move'],
+  .list-tools.selecting [data-bulk='archive'] {
+    display: none;
+  }
 }
 .spacer {
   flex: 1;
@@ -3275,6 +3287,36 @@ body.compose-window {
   width: 15px;
   height: 15px;
   stroke-width: 1.8;
+}
+/* While files or emails are dragged over the panel: where they go, and the input that takes them. */
+.agentpane .ap-drop {
+  position: absolute;
+  inset: 10px 10px 4px;
+  z-index: 2;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--accent) 9%, var(--bg));
+  color: var(--link);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+  pointer-events: none;
+}
+.agentpane.is-drop .ap-drop {
+  display: flex;
+  animation: pop 120ms ease;
+}
+.agentpane.is-drop .bui-pb__box {
+  border-color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agentpane.is-drop .ap-drop {
+    animation: none;
+  }
 }
 .agentpane .ap-empty {
   display: flex;

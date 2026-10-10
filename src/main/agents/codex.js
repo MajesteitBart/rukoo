@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
-const { untag } = require('./context');
+const { untag, imageLabel } = require('./context');
 const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, tail, killTree, writeJson, WINDOWS, humanize, fieldText, inputField, approvalTitle } = require('./proc');
 
 const EXE_TTL = 30000;
@@ -125,6 +125,17 @@ function turnError(error) {
   if (kind === 'unauthorized') return { code: 'unauthorized', detail };
   if (/ConnectionFailed|Disconnected|TooManyFailedAttempts/.test(kind)) return { code: 'offline', detail };
   return { code: 'unknown', detail };
+}
+
+// The turn's text, then each image the user attached that goes along with the message, each right after a line
+// that says which file it is and that it is untrusted data: Codex reads a local image itself. Codex takes no other
+// files as input; they are in its working folder, and the text says where.
+function turnInput(turn) {
+  const input = [{ type: 'text', text: turn.input, text_elements: [] }];
+  for (const f of Array.isArray(turn.files) ? turn.files : []) {
+    if (f.kind === 'image' && f.inline && f.path) input.push({ type: 'text', text: imageLabel(f), text_elements: [] }, { type: 'localImage', path: f.path });
+  }
+  return input;
 }
 
 // Card choice → app-server decision. 'cancel' is what the hub resolves when the turn stopped.
@@ -299,7 +310,7 @@ class CodexAdapter {
       const run = new Run(this, server, turn, threadId);
       this.runs.set(threadId, run);
       try {
-        const params = { threadId, input: [{ type: 'text', text: turn.input, text_elements: [] }] };
+        const params = { threadId, input: turnInput(turn) };
         // Access, model or effort changed since the thread was loaded: these overrides stick for later turns.
         const loaded = server.threads.get(threadId);
         let next = null;

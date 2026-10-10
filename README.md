@@ -30,7 +30,7 @@ Translation labels have descriptive keys and screen context in the [English sour
 - Swipe actions on touch screens: right marks read or unread, left deletes.
 - Sorting, mark all as read, empty Trash, and new folders from the "+" next to Folders.
 - A calendar next to the mail (`Ctrl+2`). It shows the calendars of every Google account together, each account in its own colour, as a week, a day or a list of what's coming. Each calendar can be switched on and off. You create, change and delete events, choosing the account and calendar for a new one, and answer invitations with Yes, Maybe or No. For a recurring event you choose between this occurrence and the whole series when you delete or answer it; a change applies to the occurrence you opened. Guests of your own events only get an email from Google when you say so. The demo account has a sample calendar.
-- A chat panel (`Ctrl+J`) for Hermes Agent, Claude Code and Codex. Quick actions draft a reply, brief you on the sender, plan follow-ups, tell the team, update other systems, unsubscribe and summarize. Agents read mail and write drafts through Rukoo's own MCP server and never send mail; anything other people will see waits for your approval. Each chat can pick its own model and effort under the input. Works the same for every provider. See [Agents](docs/agents.md).
+- A chat panel (`Ctrl+J`) for Hermes Agent, Claude Code and Codex. Quick actions draft a reply, brief you on the sender, plan follow-ups, tell the team, update other systems, unsubscribe and summarize. Agents read mail and write drafts through Rukoo's own MCP server and never send mail; anything other people will see waits for your approval. Each chat can pick its own model and effort under the input. You can attach files and other emails to a message with the paperclip, by dragging them onto the panel, by pasting, or with "Add to chat" in an email's menu. Works the same for every provider. See [Agents](docs/agents.md).
 - Skills in the Agent Skills format: Rukoo's own from `skills/`, and yours from `%APPDATA%\Rukoo Mail\skills`. Every agent gets them through Rukoo's MCP server, and `/name` in the chat input starts one. See [Skills](docs/agents.md#skills).
 - Zoom from 80% to 200% with `Ctrl+Plus`, `Ctrl+Minus` or Ctrl and the mouse wheel. The main window and the compose windows share one level, and the app remembers it.
 - Settings: language, theme, zoom, list density, swipe actions, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, signature (none by default), spam addresses, VIPs and folder visibility.
@@ -158,11 +158,13 @@ The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.em
 | `src/main/tray.js` | The tray icon, its tooltip and menu; `main.js` decides when there is one |
 | `src/main/zoom.js` | Zoom steps and the zoom keys; `main.js` applies the level to every window |
 | `src/main/logos.js` | Fetches and caches sender logos |
+| `src/main/pdftext.js` | Reads the text of a PDF for agents that can't open one themselves |
+| `src/main/pdfread.js`, `pdfchild.js` | Run `pdftext.js` in a process of its own, with a time limit and a memory cap |
 | `src/renderer/app.js` | The main window: sidebar, list, reading pane, selection, undo |
 | `src/renderer/calendar.js` | The calendar view: week, day and upcoming, the event card and the event dialog |
 | `src/renderer/composer.js` | The editor, inline or in a window, with autosave |
 | `src/renderer/compose.js` | The compose window around the editor |
-| `src/main/agents/` | The chat panel's main side: conversations and approvals (`hub.js`), Rukoo's MCP server and tools (`mcp.js`, `tools.js`), skills (`skills.js`), and the Hermes, Claude Code and Codex adapters |
+| `src/main/agents/` | The chat panel's main side: conversations and approvals (`hub.js`), Rukoo's MCP server and tools (`mcp.js`, `tools.js`), skills (`skills.js`), files attached to messages (`chatfiles.js`), and the Hermes, Claude Code and Codex adapters |
 | `skills/` | Rukoo's skills in the Agent Skills format, shipped with the app |
 | `src/renderer/agent/` | The chat panel (`panel.js`), its quick actions, and the components ported from Beautiful UI (`bui.js`, `agent.css`) |
 | `integrations/hermes/` | The stdio bridge that lets a Hermes agent on another machine reach Rukoo's tools over Tailscale |

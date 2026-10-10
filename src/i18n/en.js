@@ -357,6 +357,49 @@
     "message": "Something went wrong.",
     "description": "Chat panel error: fallback when the cause is not known."
   },
+  "agent.files.adding": {
+    "message": "Adding {name}",
+    "description": "Chat panel, accessible name of a file chip while the file is still being read and handed to main; name is the file name (pendingChip in agent/panel.js)."
+  },
+  "agent.files.blocked": {
+    "message": "{name} is a program or script. Rukoo doesn't hand those to agents.",
+    "description": "Chat panel notice after you attach a program or script (.exe, .js and the like) to a chat message; name is the file name (takeFiles and refusal in agent/panel.js)."
+  },
+  "agent.files.emailGone": {
+    "message": "An email you added is no longer here. Your message was not sent; the other attachments are still there.",
+    "description": "Chat panel notice when you send a message with an email attached that was moved or deleted meanwhile (send in agent/panel.js)."
+  },
+  "agent.files.folder": {
+    "message": "{name} is a folder. Add the files in it instead.",
+    "description": "Chat panel notice after you drop a folder on the chat; name is the folder name (addFiles in agent/panel.js)."
+  },
+  "agent.files.full": {
+    "message": "{name} didn't fit: Rukoo already holds as many files as it keeps for unsent messages. Send or remove some first.",
+    "description": "Chat panel notice when a file can't be attached because the files waiting in unsent chat messages already take the room Rukoo keeps for them (30 files or 120 MB); name is the file name (refusal in agent/panel.js)."
+  },
+  "agent.files.gone": {
+    "message": {
+      "one": "{count} file you attached was no longer ready to send, so your message was not sent. Attach it again; the other attachments are still there.",
+      "other": "{count} files you attached were no longer ready to send, so your message was not sent. Attach them again; the other attachments are still there."
+    },
+    "description": "Chat panel notice when you send a message with files Rukoo let go of (after two hours); only their chips are removed. count: how many (send in agent/panel.js)."
+  },
+  "agent.files.tooBig": {
+    "message": "{name} is larger than 10 MB, so it can't go to the agent.",
+    "description": "Chat panel notice after you attach a file over 10 MB to a chat message; name is the file name (takeFiles, addFiles and refusal in agent/panel.js)."
+  },
+  "agent.files.tooMany": {
+    "message": "A message takes up to {count} files.",
+    "description": "Chat panel notice when you attach more files to one chat message than it takes; count is the maximum (takeFiles and addFiles in agent/panel.js)."
+  },
+  "agent.files.tooManyEmails": {
+    "message": "A message takes up to {count} emails.",
+    "description": "Chat panel notice when you drag more emails onto one chat message than it takes; count is the maximum (addEmails in agent/panel.js)."
+  },
+  "agent.files.unreadable": {
+    "message": "{name} could not be read.",
+    "description": "Chat panel notice when Rukoo could not read a file you attached; name is the file name (refusal and addFiles in agent/panel.js)."
+  },
   "agent.notices.approval-too-long": {
     "message": "Declined without asking: {title}. Part of it is too long to show here, so you could not check it.",
     "description": "Chat transcript info line: Rukoo declined an approval request itself because a value was too long to show in full; title is the request."
@@ -505,6 +548,21 @@
     "message": "Add this email",
     "description": "Chat panel input: dashed chip in the email chip's place after you left the email out of a new chat; clicking it puts the email back (contextChip and attach in agent/panel.js)."
   },
+  "agent.panel.addToChat": {
+    "message": "Add to chat",
+    "description": "Item in an email's menu (the reader's More button, a right-click on the list) and in the menu for checked emails: adds the email or emails to the message being written in the chat panel, as dragging them onto the panel does, and opens the panel if it is closed (addToChatItem in app.js)."
+  },
+  "agent.panel.inChatAlready": {
+    "message": {
+      "one": "That email is in the chat already.",
+      "other": "Those emails are in the chat already."
+    },
+    "description": "Chat panel notice after Add to chat (email menus) when every email picked is already the chat's own email, a newer email the chat was continued from, or added to the message being written; count: how many were picked (addEmails in agent/panel.js)."
+  },
+  "agent.panel.attach": {
+    "message": "Attach files",
+    "description": "Chat panel input: tooltip and label of the paperclip button before the email chip, and the title of the file dialog it opens (pickFiles in agent/panel.js, chatComposer in agent/bui.js, agentPickFiles in main.js)."
+  },
   "agent.panel.close": {
     "message": "Close chat",
     "description": "Chat panel header: tooltip of the button that closes the panel."
@@ -512,6 +570,10 @@
   "agent.panel.continueChat": {
     "message": "Continue the chat about the earlier message",
     "description": "Chat panel empty state: quiet row under the quick actions when the open email has no chat but an earlier email in its thread has one; the agent and the chat's date are under it (renderEmpty and continueChat in agent/panel.js)."
+  },
+  "agent.panel.dropHere": {
+    "message": "Drop files or emails here to add them to your message",
+    "description": "Chat panel: text in the dashed area that appears while you drag files from Explorer or emails from the list over the panel (localizeChrome in agent/panel.js)."
   },
   "agent.panel.history": {
     "message": "Recent chats",
@@ -528,6 +590,10 @@
   "agent.panel.needsEmail": {
     "message": "Open an email first.",
     "description": "Chat panel toast: an email quick action was picked while no email is attached."
+  },
+  "agent.panel.removeAttachment": {
+    "message": "Remove {name}",
+    "description": "Chat panel input: label of the x on a file or email chip you attached to the message; name is the file name or the email subject (fileChip and emailChip in agent/panel.js)."
   },
   "agent.panel.skillMissing": {
     "message": "Rukoo can't find the skill /{name} anymore.",
@@ -612,6 +678,10 @@
   "agent.panel.transcript": {
     "message": "Conversation",
     "description": "Chat panel: accessible name of the list of messages in the conversation."
+  },
+  "agent.panel.waitFiles": {
+    "message": "Wait until the files are added, then send.",
+    "description": "Chat panel: why Send is off while a file you dropped, pasted or picked is still being added (tooltip of the Send button), and the notice when you pick a quick action or skill meanwhile (refreshHolding and runAction in agent/panel.js)."
   },
   "agent.panel.width": {
     "message": "Chat panel width",
@@ -785,6 +855,10 @@
     "message": "Read an attachment",
     "description": "Chat transcript tool chip: the agent opened an attachment."
   },
+  "agent.tools.read_chat_file": {
+    "message": "Read an attached file",
+    "description": "Chat transcript tool chip: the agent opened a file you attached to a message (read_chat_file)."
+  },
   "agent.tools.read_skill": {
     "message": "Read a skill",
     "description": "Chat transcript tool chip (panel.js toolProps): the agent read one of Rukoo's skills with read_skill."
@@ -792,6 +866,10 @@
   "agent.tools.read_message": {
     "message": "Read an email",
     "description": "Chat transcript tool chip: the agent read a full email."
+  },
+  "agent.tools.running.read_chat_file": {
+    "message": "Reading an attached file...",
+    "description": "Chat transcript tool chip while it runs: the agent reads a file you attached. Present tense; the done form is agent.tools.read_chat_file."
   },
   "agent.tools.search_mail": {
     "message": "Searched your mail",
@@ -2523,7 +2601,7 @@
   },
   "reader.actions.more": {
     "message": "More actions",
-    "description": "reader > actions. src/renderer/app.js (readerBar)"
+    "description": "reader > actions. src/renderer/app.js (readerBar), and the button that opens the menu for checked emails in the list toolbar (renderListTools)"
   },
   "reader.actions.replyAllShortcut": {
     "message": "Reply all (Ctrl+Shift+R)",

@@ -315,11 +315,22 @@ c2.setValue('Keep it short and mention the revised price from March.');
 c2.setRunning(true);
 const c3 = bui.chatComposer({ placeholder: 'Ask Codex…', labels: composerLabels, agents: AGENTS, agentId: 'codex', commands: COMMANDS }, {});
 c3.setDisabled(true, bui.button({ label: 'Set up Codex', kind: 'link', size: 'sm' }));
+// What goes along with the message: a file that is there (with its x), one still on its way and an email. Until the
+// pending file is there the composer holds: Send is off and says why, Enter keeps the text.
+const c5 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: { ...composerLabels, attach: 'Attach files' }, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, { onAttach: noop });
+c5.setContext(bui.entityChip({ label: 'Sanne de Vries', sub: 'Call on Thursday', monogram: 'Sanne de Vries', onRemove: noop, removeLabel: 'Remove' }));
+c5.setAttachments([
+  bui.attachmentChip({ label: 'Proposal-v3.pdf', sub: '248 KB', icon: 'file-text', onRemove: noop, removeLabel: 'Remove Proposal-v3.pdf' }),
+  bui.attachmentChip({ label: 'Floor plan.png', sub: '1.2 MB', pending: true, busy: 'Adding Floor plan.png' }),
+  bui.attachmentChip({ label: 'Invoice March', sub: 'Joris Bakker', icon: 'mail', onRemove: noop, removeLabel: 'Remove Invoice March' })
+]);
+c5.setValue('Compare these with the offer from March.');
+c5.setHolding(true, 'Wait until the files are added, then send.');
 const c4wrap = document.createElement('div');
 c4wrap.className = 'gpush';
 const c4 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
 c4wrap.append(c4.el);
-live.append(c1.el, c2.el, c3.el, c4wrap);
+live.append(c1.el, c2.el, c3.el, c5.el, c4wrap);
 
 const liveThread = document.createElement('div');
 liveThread.style.cssText = 'display:flex;flex-direction:column;gap:10px;min-height:1180px';
@@ -693,6 +704,77 @@ async function check() {
   document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
   ok(!document.querySelector('.bui-menu'), 'outside pointerdown closes the picker');
 
+  // attachments: a ready one has its x; a pending one has none, is busy and says what is being added. A holding
+  // composer sends nothing, starts no command and keeps the text; Send comes back once it stops holding.
+  const removed = [];
+  const ready = bui.attachmentChip({ label: 'a.pdf', sub: '1 KB', icon: 'file-text', onRemove: () => removed.push('a.pdf'), removeLabel: 'Remove a.pdf' });
+  const pend = bui.attachmentChip({ label: 'b.png', sub: '2 KB', pending: true, busy: 'Adding b.png', onRemove: () => removed.push('b.png'), removeLabel: 'Remove b.png' });
+  ok(ready.querySelector('.bui-entity__x')?.getAttribute('aria-label') === 'Remove a.pdf' && !ready.hasAttribute('aria-busy') && !ready.classList.contains('is-pending'), 'a ready attachment has its remove button');
+  ok(pend.classList.contains('is-pending') && !pend.querySelector('.bui-entity__x'), 'a pending attachment has no remove button');
+  ok(pend.getAttribute('aria-busy') === 'true' && pend.getAttribute('aria-label') === 'Adding b.png', 'a pending attachment is busy and says what is being added');
+  const held = { sent: [], commands: [] };
+  const hc = bui.chatComposer(
+    { placeholder: 'p', labels: { ...composerLabels, attach: 'Attach' }, agents: AGENTS, agentId: 'clark', commands: COMMANDS },
+    { onSend: (t) => held.sent.push(t), onCommand: (n) => held.commands.push(n), onAttach: () => {} }
+  );
+  scratch.append(hc.el);
+  hc.setAttachments([ready, pend]);
+  ok(getComputedStyle(pend.querySelector('.bui-entity__name')).animationName === 'bui-shimmer-text', 'a pending attachment name shimmers');
+  ok(getComputedStyle(ready.querySelector('.bui-entity__name')).animationName === 'none', 'a ready attachment name is still');
+  const hta = hc.el.querySelector('textarea');
+  const hsend = hc.el.querySelector('.bui-pb__send');
+  hc.setValue('keep me');
+  hc.setHolding(true, 'Wait for the files');
+  ok(hsend.disabled && hsend.title === 'Wait for the files' && hsend.getAttribute('aria-description') === 'Wait for the files', 'a holding composer turns Send off and says why');
+  key(hta, 'Enter');
+  hsend.click();
+  ok(held.sent.length === 0 && hc.getValue() === 'keep me', 'Enter or Send while holding sends nothing and keeps the text');
+  hc.setValue('/ta');
+  input(hta);
+  ok(!hc.el.querySelector('.bui-pb__menu'), 'a holding composer opens no slash menu');
+  key(hta, 'Enter');
+  ok(held.commands.length === 0 && held.sent.length === 0 && hc.getValue() === '/ta', 'no command starts while holding');
+  hc.setValue('keep me');
+  hc.setHolding(false);
+  ok(!hsend.disabled && !hsend.title && !hsend.hasAttribute('aria-description'), 'Send comes back when the composer stops holding');
+  key(hta, 'Enter');
+  ok(held.sent[0] === 'keep me' && hc.getValue() === '', 'then Enter sends the text');
+  // A message its owner refuses (onSend returns false) keeps its text, by Enter and by the Send button.
+  const refused = bui.chatComposer({ placeholder: 'p', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, { onSend: () => false });
+  scratch.append(refused.el);
+  refused.setValue('not yet');
+  key(refused.el.querySelector('textarea'), 'Enter');
+  refused.el.querySelector('.bui-pb__send').click();
+  ok(refused.getValue() === 'not yet', 'a message the owner refuses keeps its text');
+  // A command its owner refuses (onCommand returns false) keeps its token in the input.
+  const declined = [];
+  const nocmd = bui.chatComposer({ placeholder: 'p', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, { onCommand: (n) => declined.push(n) && false });
+  scratch.append(nocmd.el);
+  const nta = nocmd.el.querySelector('textarea');
+  nocmd.setValue('/ta');
+  input(nta);
+  key(nta, 'Enter');
+  ok(declined.length === 1 && nocmd.getValue() === '/ta' && !nocmd.el.querySelector('.bui-pb__menu'), 'a command the owner refuses keeps its token');
+
+  scratch.remove();
+  return fails;
+}
+
+// Run with reduced motion asked for (the script emulates it): what moves must stop. A pending attachment's name
+// stays still, dimmed as at the start of its shimmer.
+async function checkReducedMotion() {
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) return ['reduced motion is not being emulated'];
+  const fails = [];
+  const scratch = document.createElement('div');
+  scratch.className = 'bui';
+  scratch.style.cssText = 'position:fixed;left:0;top:0;width:380px';
+  document.body.append(scratch);
+  const pend = bui.attachmentChip({ label: 'b.png', sub: '2 KB', pending: true, busy: 'Adding b.png' });
+  scratch.append(pend);
+  const name = pend.querySelector('.bui-entity__name');
+  await sleep(100);
+  if (name.getAnimations().length) fails.push('a pending attachment name still shimmers with reduced motion');
+  if (pend.getAttribute('aria-label') !== 'Adding b.png') fails.push('a pending attachment keeps its name with reduced motion');
   scratch.remove();
   return fails;
 }
@@ -711,6 +793,7 @@ window.gallery = {
     c1.el.querySelector('.bui-pb__modelbtn').click();
   },
   check,
+  checkReducedMotion,
   paused
 };
 window.bui = bui;

@@ -3,7 +3,7 @@ import { t, getLocale } from '../i18n.js';
 // Main runs the agents and keeps the conversations; this module draws them, follows the email
 // on screen and answers the agents' requests to write into the composer (the UI bridge).
 import { icons } from '../icons.js';
-import { api, $, toast, listTime, person, hue } from '../ui.js';
+import { api, $, toast, listTime, person, hue, fileSize } from '../ui.js';
 import * as B from './bui.js';
 import { actionByKey, actionsFor, commandsFor, skillCommands } from './actions.js';
 import { replyEnvelope } from '../composer.js';
@@ -28,6 +28,7 @@ const RUKOO_TOOLS = {
   propose_action: 'approval',
   mail_action: 'approval',
   read_attachment: 'file',
+  read_chat_file: 'file',
   read_skill: 'file'
 };
 const CHOICES = new Set(['allow', 'deny', 'once', 'session', 'always', 'approve', 'decline', 'accept', 'acceptForSession', 'cancel']);
@@ -168,6 +169,11 @@ export function mountAgentPanel(ctx) {
     keepFor: null,
     // Rukoo's skills and the user's, for the slash commands: [{name, description, source}].
     skills: [],
+    // What goes along with the message being written: files main keeps until it is sent ({id, name, size, kind}),
+    // and emails from the list ({id, subject, from}). Like the text in the input, they stay when another chat opens.
+    attach: { files: [], emails: [] },
+    // Dropped or pasted files main is still being handed ({name, size}): shown as pending chips until it has them.
+    adding: [],
     // The model and effort picked for a chat that has not started yet (null: the agent's default). A started chat
     // keeps its own on the conversation.
     draft: { model: null, effort: null },
@@ -190,6 +196,7 @@ export function mountAgentPanel(ctx) {
     <div class="ap-body">
       <div class="ap-scroll" tabindex="-1"><div class="ap-transcript" role="log"></div></div>
       <button class="ap-jump" data-ap="jump" hidden>${icons.down}</button>
+      <div class="ap-drop" aria-hidden="true"><span class="ap-drop-label"></span></div>
     </div>
     <div class="ap-foot"></div>`;
   const head = {
@@ -272,6 +279,7 @@ export function mountAgentPanel(ctx) {
       b.setAttribute('aria-label', t(key));
     }
     transcript.setAttribute('aria-label', t('agent.panel.transcript'));
+    $('.ap-drop-label', pane).textContent = t('agent.panel.dropHere');
   }
 
   // ---------- chat input ----------
@@ -386,7 +394,8 @@ export function mountAgentPanel(ctx) {
           stop: t('agent.panel.stop'),
           agent: t('agent.panel.pickAgent'),
           removeContext: t('agent.panel.removeContext'),
-          noMatches: t('agent.panel.noMatches')
+          noMatches: t('agent.panel.noMatches'),
+          attach: t('agent.panel.attach')
         },
         agents: agentRows(),
         agentId: currentAgent(),
@@ -400,12 +409,168 @@ export function mountAgentPanel(ctx) {
         onPick: (kind, id) => pickChoice(kind, id),
         onCommand: (name) => runAction(name),
         onSlash: () => loadSkills(),
-        onRemoveContext: () => detach()
+        onRemoveContext: () => detach(),
+        onAttach: () => pickFiles(),
+        onFiles: (list) => addFiles(list)
       }
     );
     foot.append(chat.el);
     if (value) chat.setValue(value);
+    showAttachments();
   }
+
+  // ---------- attachments ----------
+
+  // The same caps as main's; main checks again.
+  const FILE_MAX = 10 * 1024 * 1024;
+  const MAX_FILES = 10;
+  const MAX_EMAILS = 10;
+  const FILE_ICONS = { pdf: 'file-text', text: 'file-text', image: 'image', file: 'file' };
+  const fileChip = (f, onRemove) =>
+    elOf(B.attachmentChip({ label: f.name, sub: fileSize(f.size), icon: FILE_ICONS[f.kind] || 'file', onRemove, removeLabel: t('agent.panel.removeAttachment', { name: f.name }) }));
+  // A mail badge rather than the sender's monogram, so an added email reads as an attachment next to the chat's own.
+  const emailChip = (m, onRemove) => {
+    const subject = m.subject || t('mailbox.message.noSubject');
+    return elOf(B.attachmentChip({ label: subject, sub: person(m.from), icon: 'mail', onRemove, removeLabel: t('agent.panel.removeAttachment', { name: subject }) }));
+  };
+
+  const pendingChip = (f) => elOf(B.attachmentChip({ label: f.name, sub: fileSize(f.size), icon: 'file', pending: true, busy: t('agent.files.adding', { name: f.name }) }));
+
+  function showAttachments() {
+    if (!chat) return;
+    const { files, emails } = P.attach;
+    chat.setAttachments([...files.map((f) => fileChip(f, () => removeFile(f.id))), ...P.adding.map(pendingChip), ...emails.map((m) => emailChip(m, () => removeEmail(m.id)))]);
+    refreshHolding();
+  }
+
+  // While a file is still on its way (a pending chip, or the paperclip's files being read) nothing is sent or
+  // started: the message would go without it, or it would land on the next one. Send is off, Enter leaves the text
+  // as it is, and quick actions and skills say why. Once the files are there, the user sends.
+  let picking = 0;
+  const holding = () => P.adding.length > 0 || picking > 0;
+  function refreshHolding() {
+    if (chat) chat.setHolding(holding(), t('agent.panel.waitFiles'));
+  }
+
+  function removeFile(id) {
+    P.attach.files = P.attach.files.filter((f) => f.id !== id);
+    api('agentDropFile', id).catch(() => {});
+    showAttachments();
+  }
+
+  function removeEmail(id) {
+    P.attach.emails = P.attach.emails.filter((m) => m.id !== id);
+    showAttachments();
+  }
+
+  // Short notices, one line each: what could not go along, and why.
+  function refusals(list) {
+    const lines = list.filter(Boolean);
+    if (lines.length) toast(lines.join(' '), 6000);
+  }
+
+  const REFUSALS = { blocked: 'agent.files.blocked', 'too-big': 'agent.files.tooBig', full: 'agent.files.full', folder: 'agent.files.folder' };
+  const refusal = (r) => t(REFUSALS[r.error] || 'agent.files.unreadable', { name: r.name });
+
+  // What main staged ({id, name, size, kind}) or refused ({name, error}); 'too-many': past what the message takes.
+  // Past MAX_FILES, main lets go of the rest.
+  function takeFiles(results) {
+    const notes = [];
+    let full = false;
+    for (const r of Array.isArray(results) ? results : []) {
+      if (r.error === 'too-many') full = true;
+      else if (r.error) notes.push(refusal(r));
+      else if (P.attach.files.length >= MAX_FILES) {
+        full = true;
+        api('agentDropFile', r.id).catch(() => {});
+      } else P.attach.files.push({ id: r.id, name: r.name, size: r.size, kind: r.kind });
+    }
+    if (full) notes.push(t('agent.files.tooMany', { count: MAX_FILES }));
+    showAttachments();
+    refusals(notes);
+  }
+
+  // The paperclip: main's own file dialog. Main stages no more than the message still takes.
+  async function pickFiles() {
+    picking++;
+    refreshHolding();
+    try {
+      takeFiles(await api('agentPickFiles', Math.max(0, MAX_FILES - P.attach.files.length - P.adding.length)));
+    } catch (err) {
+      showError(err);
+    } finally {
+      picking--;
+      refreshHolding();
+    }
+    chat.focus();
+  }
+
+  // Dropped or pasted files: [{file, folder}]. The renderer has no path it may hand on, so main gets the bytes. What
+  // goes along shows at once as a pending chip, before any of it is read, and holds the message until it is there.
+  async function addFiles(list) {
+    const results = [];
+    const going = [];
+    let room = MAX_FILES - P.attach.files.length - P.adding.length;
+    for (const { file, folder } of list) {
+      if (folder) results.push({ name: file.name, error: 'folder' });
+      else if (file.size > FILE_MAX) results.push({ name: file.name, error: 'too-big' });
+      else if (room <= 0) results.push({ name: file.name, error: 'too-many' });
+      else {
+        room--;
+        const pending = { name: file.name, size: file.size };
+        going.push({ file, pending, at: results.push(null) - 1 });
+      }
+    }
+    P.adding.push(...going.map((g) => g.pending));
+    showAttachments();
+    for (const g of going) {
+      try {
+        results[g.at] = await api('agentAddFile', { name: g.file.name, data: new Uint8Array(await g.file.arrayBuffer()) });
+      } catch (_) {
+        results[g.at] = { name: g.file.name, error: 'unreadable' };
+      }
+    }
+    // The pending chips give way to the files main has, all at once, so none blinks out in between.
+    P.adding = P.adding.filter((p) => !going.some((g) => g.pending === p));
+    takeFiles(results);
+  }
+
+  // An email the chat has already: its own, or a newer one in its thread it was continued from (main's continueFrom),
+  // which the next message carries by itself while the agent has not had it. Added again, it would go twice. One
+  // email can be in several folders under several ids, so its Message-ID counts as well.
+  const sameEmail = (a, b) => a.id === b.id || sameMessageId(a.messageId, b.messageId);
+  function inChat(m) {
+    const own = contextEmail();
+    if (own && sameEmail(own, m)) return true;
+    return Boolean(P.conv && (P.conv.continued || []).some((e) => sameEmail(e, m)));
+  }
+
+  // The emails dragged from the list or picked from a menu go with the message, up to MAX_EMAILS; how many were
+  // new, and how many were already in the chat or the message.
+  function addEmails(ids) {
+    let full = false;
+    let added = 0;
+    let had = 0;
+    for (const id of Array.isArray(ids) ? ids : []) {
+      const m = ctx.messageById(id);
+      if (!m) continue;
+      if (inChat(m) || P.attach.emails.some((x) => sameEmail(x, m))) {
+        had++;
+        continue;
+      }
+      if (P.attach.emails.length >= MAX_EMAILS) {
+        full = true;
+        continue;
+      }
+      P.attach.emails.push({ id: m.id, messageId: m.messageId || null, subject: m.subject || '', from: m.from ? { name: m.from.name || '', address: m.from.address || '' } : null });
+      added++;
+    }
+    showAttachments();
+    if (full) toast(t('agent.files.tooManyEmails', { count: MAX_EMAILS }), 6000);
+    return { added, had };
+  }
+
+  const hasAttachments = () => P.attach.files.length > 0 || P.attach.emails.length > 0;
 
   // Why the input is off, with the way to fix it: "Hermes isn't set up yet. Set up Hermes".
   function setupNote(id, state) {
@@ -591,7 +756,17 @@ export function mountAgentPanel(ctx) {
   // lookups: only the searches for the chat of the email on screen.
   let turn = 0;
   let lookups = 0;
-  async function sync() {
+  // The last time sync() went to find the chat for the email on screen, until that chat shows: "Add to chat" waits
+  // for it, so it checks the emails against the chat they land in. Read before this, the panel may still show the
+  // chat of an email from before it was opened.
+  let looking = Promise.resolve();
+  function sync() {
+    const before = P.emailKey;
+    const run = syncEmail();
+    if (P.emailKey !== before) looking = run.catch(() => {});
+    return run;
+  }
+  async function syncEmail() {
     if (!ctx.agentOpen()) return;
     const m = currentEmail();
     const key = emailKey(m);
@@ -735,37 +910,88 @@ export function mountAgentPanel(ctx) {
 
   // skill: the name of a skill to start. Main writes that message from the skill itself.
   let sending = false;
-  async function send(text, action = null, skill = null) {
+  // The files or emails main says are no longer there ({kind, ids}, from missingError in hub.js), or null.
+  const missingOf = (why) => {
+    const m = /^(file|email)-missing: (\[[\s\S]*\])$/.exec(why);
+    if (!m) return null;
+    try {
+      const ids = JSON.parse(m[2]);
+      return Array.isArray(ids) ? { kind: m[1], ids: ids.map(String) } : null;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  // The files and emails the user attached go along with whatever is sent, and a message can be those alone. Decided
+  // and taken here, before anything waits, so the chat, the text and the attachments are the ones on screen. false:
+  // not sent (one is still going out, a file is still on its way, or there is nothing to send); the composer keeps
+  // its text then.
+  function send(text, action = null, skill = null) {
     const body = String(text || '').trim();
-    if (!body || sending) return;
+    if (sending || holding() || (!body && !action && !skill && !hasAttachments())) return false;
     sending = true;
     clearTurnError();
+    const attached = P.attach;
+    P.attach = { files: [], emails: [] };
+    showAttachments();
+    deliver({ body, action, skill, attached }).finally(() => (sending = false));
+    return true;
+  }
+
+  async function deliver({ body, action, skill, attached }) {
+    // Not sent: the chips come back, before anything the user attached meanwhile.
+    const restore = () => {
+      P.attach = { files: [...attached.files, ...P.attach.files], emails: [...attached.emails, ...P.attach.emails] };
+      showAttachments();
+    };
     try {
       const conv = await ensureConversation();
-      await api('agentSend', conv.id, action ? { text: action.prompt, action: action.key, display: action.label } : skill ? { skill } : { text: body });
+      const message = action ? { text: action.prompt, action: action.key, display: action.label } : skill ? { skill } : { text: body };
+      await api('agentSend', conv.id, { ...message, files: attached.files.map((f) => f.id), emails: attached.emails.map((m) => m.id) });
       follow(true);
     } catch (err) {
-      if (skill && /skill-missing/.test(String((err && err.message) || ''))) {
+      const why = String((err && err.message) || '');
+      // Main names what is gone: those chips go, and every other one stays, wherever its email is.
+      const gone = missingOf(why);
+      if (gone && gone.kind === 'file') {
+        attached.files = attached.files.filter((f) => !gone.ids.includes(f.id));
+        toast(t('agent.files.gone', { count: gone.ids.length }), 6000);
+      } else if (gone) {
+        attached.emails = attached.emails.filter((m) => !gone.ids.includes(m.id));
+        toast(t('agent.files.emailGone'), 6000);
+      }
+      restore();
+      if (gone) {
+        if (!action && !skill && chat && !chat.getValue()) chat.setValue(body);
+        return;
+      }
+      if (skill && /skill-missing/.test(why)) {
         toast(t('agent.panel.skillMissing', { name: skill }), 6000);
         loadSkills();
         return;
       }
       if (!action && !skill && chat && !chat.getValue()) chat.setValue(body);
       showError(err);
-    } finally {
-      sending = false;
     }
   }
 
-  // A quick action, or a skill: a quick action keeps its command when a skill has the same name.
+  // A quick action, or a skill: a quick action keeps its command when a skill has the same name. Like send, false
+  // when it does not start. While a file is on its way none does, and the user hears why.
   function runAction(name) {
+    if (holding()) {
+      toast(t('agent.panel.waitFiles'));
+      return false;
+    }
     const action = actionByKey(name);
     if (action) {
-      if (action.needsEmail && !contextEmail()) return toast(t('agent.panel.needsEmail'));
+      if (action.needsEmail && !contextEmail()) {
+        toast(t('agent.panel.needsEmail'));
+        return false;
+      }
       return send(action.label, action);
     }
     const skill = P.skills.find((s) => s.name === name);
-    if (skill) send(`/${skill.name}`, null, skill.name);
+    return skill ? send(`/${skill.name}`, null, skill.name) : false;
   }
 
   // What the input sends with Enter or the Send button. A message that is just one of the offered commands
@@ -899,8 +1125,11 @@ export function mountAgentPanel(ctx) {
 
   function buildView(item) {
     switch (item.type) {
-      case 'user':
-        return { el: elOf(B.userBubble({ text: item.text || '', action: item.action || null, labels: { approved: t('agent.items.youApproved'), declined: t('agent.items.youDeclined') } })) };
+      case 'user': {
+        // What went along with the message, as chips without an x.
+        const attachments = [...(item.files || []).map((f) => fileChip(f, null)), ...(item.emails || []).map((m) => emailChip(m, null))];
+        return { el: elOf(B.userBubble({ text: item.text || '', action: item.action || null, attachments, labels: { approved: t('agent.items.youApproved'), declined: t('agent.items.youDeclined') } })) };
+      }
       case 'assistant': {
         const s = B.streamText({ interim: Boolean(item.interim) });
         let shown = item.text || '';
@@ -1381,6 +1610,49 @@ export function mountAgentPanel(ctx) {
     }
   });
 
+  // Files from Explorer and emails from the list can be dropped anywhere on the panel while it takes messages.
+  const MAIL_IDS = 'application/x-rukoo-ids';
+  const dragged = (e) => {
+    const types = [...((e.dataTransfer && e.dataTransfer.types) || [])];
+    return types.includes(MAIL_IDS) ? 'mail' : types.includes('Files') ? 'files' : null;
+  };
+  const droppable = () => Boolean(chat) && !chat.el.classList.contains('is-disabled');
+  pane.addEventListener('dragover', (e) => {
+    if (!dragged(e) || !droppable()) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    pane.classList.add('is-drop');
+  });
+  pane.addEventListener('dragleave', (e) => {
+    if (!e.relatedTarget || !pane.contains(e.relatedTarget)) pane.classList.remove('is-drop');
+  });
+  pane.addEventListener('drop', (e) => {
+    pane.classList.remove('is-drop');
+    const kind = dragged(e);
+    if (!kind || !droppable()) return;
+    e.preventDefault();
+    if (kind === 'mail') {
+      let ids = [];
+      try {
+        ids = JSON.parse(e.dataTransfer.getData(MAIL_IDS));
+      } catch (_) {
+        return;
+      }
+      addEmails(ids);
+      return chat.focus();
+    }
+    // A folder only shows as one while the drop event lasts.
+    const items = [...(e.dataTransfer.items || [])].filter((i) => i.kind === 'file');
+    const list = [...e.dataTransfer.files].map((file, i) => {
+      const entry = items[i] && typeof items[i].webkitGetAsEntry === 'function' ? items[i].webkitGetAsEntry() : null;
+      return { file, folder: Boolean(entry && entry.isDirectory) };
+    });
+    addFiles(list).then(() => chat.focus());
+  });
+  // A drag that ends anywhere, or is called off, leaves no highlight behind.
+  document.addEventListener('dragend', () => pane.classList.remove('is-drop'));
+  document.addEventListener('drop', () => pane.classList.remove('is-drop'));
+
   // Escape closes the panel where it covers the mail; menus and the input handle it first.
   pane.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !e.defaultPrevented && ctx.agentOverlay()) {
@@ -1648,6 +1920,18 @@ export function mountAgentPanel(ctx) {
       return sync();
     },
     composerClosed,
+    // "Add to chat" in the message and bulk menus: what dropping emails on the panel does, for the keyboard too. The
+    // app has opened the panel; the emails go in once it shows the chat for the email on screen, with the same
+    // checks and limits as a drop. False when the chat takes no messages now (its agent is not set up).
+    async addEmails(ids) {
+      await looking;
+      if (!droppable()) return false;
+      const { added, had } = addEmails(ids);
+      // Picked from a menu, nothing new would look like nothing happened: say that they are there already.
+      if (!added && had) toast(t('agent.panel.inChatAlready', { count: had }));
+      chat.focus();
+      return true;
+    },
     inputFocused: () => Boolean(chat && chat.el.contains(document.activeElement) && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)),
     // False while the agent is not set up or turned off: the input is hidden then.
     inputAvailable: () => Boolean(chat && !chat.el.classList.contains('is-disabled')),

@@ -462,6 +462,24 @@
   background: var(--accent-tint);
   color: var(--accent-ink);
 }
+/* A file the user attached: a quiet badge with the file type, the name, then the size. */
+.bui-entity__badge--file {
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--ink-3) 18%, transparent);
+  color: var(--ink-2);
+}
+.bui-entity--attached .bui-entity__sub {
+  flex-shrink: 0;
+}
+/* A file still on its way: live work, so its name shimmers, as the agent's working label does. No x yet. */
+.bui-entity--attached.is-pending .bui-entity__name {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  background-image: linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%);
+  background-size: 200% 100%;
+  animation: bui-shimmer-text 1.8s linear infinite;
+}
 /* The add chip: dashed and empty, a place to put the context (back) into. */
 .bui-entity--add {
   gap: 5px;
@@ -867,6 +885,19 @@
   display: flex;
   justify-content: flex-end;
   padding-left: 56px;
+}
+/* What went along with a message: its chips above the text, right-aligned like the bubble. */
+.bui-ubwrap:has(.bui-ubatt) {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.bui-ubatt {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 .bui-ub {
   border-radius: 12px;
@@ -1874,6 +1905,30 @@
   flex-wrap: wrap;
   gap: 6px;
   padding: 2px 2px 0;
+}
+/* The chips row: the paperclip first, then the chat's email and the attachments. The slots only group them. */
+.bui-pb__slot {
+  display: contents;
+}
+.bui-pb__attach {
+  display: flex;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  color: var(--ink-3);
+  transition:
+    color 100ms var(--ease-default),
+    background-color 100ms var(--ease-default);
+}
+.bui-pb__attach:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.bui-pb__attach:active {
+  scale: 0.94;
 }
 .bui-pb__ta {
   display: block;

@@ -11,7 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
-const { untag } = require('./context');
+const { untag, imageLabel } = require('./context');
 const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, tail, killTree, writeJson, WINDOWS, inputFields, echoFree, approvalTitle } = require('./proc');
 
 const IDLE_MS = 15 * 60 * 1000;
@@ -70,6 +70,23 @@ function toolKind(name) {
 function approvalFields(input, description = '') {
   const skip = description && input && input.description === description ? ['description'] : [];
   return inputFields(input, { lead: ['command', 'file_path', 'notebook_path', 'url', 'query', 'pattern', 'path'], skip });
+}
+
+// The turn's text, then each image the user attached that goes along with the message, each right after a line
+// that says which file it is and that it is untrusted data. Other files are in the workspace, where Claude reads
+// them with its own tools; the text says where.
+function userContent(turn) {
+  const content = [{ type: 'text', text: turn.input }];
+  for (const f of Array.isArray(turn.files) ? turn.files : []) {
+    if (f.kind !== 'image' || !f.inline || !f.path) continue;
+    try {
+      const data = fs.readFileSync(f.path).toString('base64');
+      content.push({ type: 'text', text: imageLabel(f) }, { type: 'image', source: { type: 'base64', media_type: f.type, data } });
+    } catch {
+      // Gone since the hub read it: the text still names the file, and read_chat_file says what happened.
+    }
+  }
+  return content;
 }
 
 function resultError(msg, stderr) {
@@ -375,7 +392,7 @@ class Session {
       if (turn.signal && turn.signal.aborted) return this.finish({ result: { status: 'stopped' } });
       const ok = writeJson(this.child, {
         type: 'user',
-        message: { role: 'user', content: [{ type: 'text', text: turn.input }] },
+        message: { role: 'user', content: userContent(turn) },
         parent_tool_use_id: null,
         session_id: ''
       });
@@ -640,4 +657,4 @@ class Session {
   }
 }
 
-module.exports = { ClaudeAdapter, toolDetail, approvalFields, toolKind };
+module.exports = { ClaudeAdapter, toolDetail, approvalFields, toolKind, userContent };

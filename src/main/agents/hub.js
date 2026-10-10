@@ -11,6 +11,8 @@ const { decodeId } = require('../engine');
 const tools = require('./tools');
 const context = require('./context');
 const skills = require('./skills');
+const { ChatFiles, shown: shownFile, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
+const { PdfReader } = require('../pdfread');
 
 const MAX_CONVERSATIONS = 150;
 // Conversations an agent opened from outside the panel (Clark on WhatsApp) have their own, smaller cap.
@@ -64,6 +66,14 @@ const newItemId = () => `i_${rand(10)}`;
 const clip = (v, max) => String(v == null ? '' : v).slice(0, max);
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest();
 const isObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+// Files or emails added to a message that are no longer here. Only an error's message reaches the renderer, so it
+// names them, as JSON (an email id can hold spaces): the renderer drops exactly those and keeps the rest.
+function missingError(code, ids, detail) {
+  const err = new AgentError(code, detail);
+  err.message = `${code}: ${JSON.stringify(ids)}`;
+  err.ids = ids;
+  return err;
+}
 const normId = (v) => String(v || '').trim().replace(/^<|>$/g, '').toLowerCase();
 
 // Anything thrown or reported becomes {code, detail} with a code from SPEC 4.6.
@@ -112,6 +122,11 @@ class AgentHub extends EventEmitter {
     this.cfg = new AgentConfig({ file: path.join(dataDir, 'agents.json'), secrets, interfaces: deps.interfaces });
     this.file = path.join(dataDir, 'conversations.json');
     this.workspace = deps.workspace || path.join(path.dirname(dataDir), 'agent-workspace');
+    // The text of PDFs, from attachments and attached files, read in a process of its own. deps.pdf: its limits,
+    // for tests.
+    this.pdf = new PdfReader(deps.pdf);
+    // Files the user attaches to messages: staged until sent, then in a folder per chat in the workspace.
+    this.files = new ChatFiles(path.join(this.workspace, 'files'), this.pdf);
     // Rukoo's own skills ship in skills/ next to src/; the user's sit next to the data folder. Tests pass both.
     const skillDirs = deps.skills || {};
     this.skills = new skills.Skills({
@@ -327,6 +342,9 @@ class AgentHub extends EventEmitter {
     if (this.disposed) return;
     this.disposed = true;
     clearInterval(this.remoteTimer);
+    // PDF reads still running end now, so no reader process outlives Rukoo; their turns stop below.
+    this.pdf.dispose();
+    this.files.dispose();
     for (const turn of [...this.turns.values()]) {
       // runTurn() would give these back only after the flush below, so a turn the agent does not have yet gives
       // them back now.
@@ -374,22 +392,31 @@ class AgentHub extends EventEmitter {
   // ---------- persistence ----------
 
   load() {
-    let raw = null;
+    let raw;
+    let broken = false;
+    // A file Rukoo can't read, or can read only in part, is kept aside instead of being overwritten on the next
+    // save. When none of it loads it moves; when some does, a copy stays.
+    const keepAside = (move) => {
+      broken = true;
+      try {
+        (move ? fs.renameSync : fs.copyFileSync)(this.file, `${this.file}.bad-${Date.now()}`);
+      } catch (_) {
+        // Nothing to keep.
+      }
+    };
     try {
       raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     } catch (err) {
-      if (err.code !== 'ENOENT') {
-        // Keep a broken file aside instead of overwriting it with an empty list on the next save.
-        try {
-          fs.renameSync(this.file, `${this.file}.bad-${Date.now()}`);
-        } catch (_) {
-          // Nothing to keep.
-        }
-      }
+      if (err.code !== 'ENOENT') keepAside(true);
     }
-    const list = raw && Array.isArray(raw.conversations) ? raw.conversations : [];
+    // Valid JSON is not yet a store: {"conversations": null} would load as no chats at all.
+    if (raw !== undefined && !(isObj(raw) && Array.isArray(raw.conversations))) keepAside(true);
+    const list = !broken && raw ? raw.conversations : [];
     for (const c of list) {
-      if (!isObj(c) || typeof c.id !== 'string' || !AGENT_IDS.includes(c.agent) || !Array.isArray(c.items)) continue;
+      if (!isObj(c) || typeof c.id !== 'string' || !AGENT_IDS.includes(c.agent) || !Array.isArray(c.items)) {
+        if (!broken) keepAside(false);
+        continue;
+      }
       c.status = 'idle';
       c.provider = isObj(c.provider) ? c.provider : {};
       c.notes = Array.isArray(c.notes) ? c.notes.filter((n) => typeof n === 'string') : [];
@@ -401,6 +428,8 @@ class AgentHub extends EventEmitter {
       // Saved before chats had a model and effort of their own: they follow the agent's default.
       c.model = typeof c.model === 'string' && c.model ? c.model : null;
       c.effort = EFFORTS.includes(c.effort) ? c.effort : null;
+      // Saved before files could be attached: none.
+      c.files = Array.isArray(c.files) ? c.files.filter((f) => isObj(f) && typeof f.id === 'string' && typeof f.file === 'string') : [];
       // A turn cannot survive a restart: close whatever was still open.
       for (const item of c.items) {
         if (item.type === 'assistant' && item.status === 'streaming') item.status = 'stopped';
@@ -412,6 +441,18 @@ class AgentHub extends EventEmitter {
       }
       this.conversations.set(c.id, c);
       if (c.provider.threadId) this.threads.set(String(c.provider.threadId), c.id);
+    }
+    // The files of chats that are gone. Not while a file Rukoo couldn't read is kept aside: its chats may come
+    // back, and their files with them. After the next save the store alone would say they are gone.
+    if (!broken && !this.keptAside()) this.files.prune(this.conversations.keys());
+  }
+
+  keptAside() {
+    const prefix = `${path.basename(this.file)}.bad-`;
+    try {
+      return fs.readdirSync(path.dirname(this.file)).some((name) => name.startsWith(prefix));
+    } catch (_) {
+      return true;
     }
   }
 
@@ -534,6 +575,8 @@ class AgentHub extends EventEmitter {
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((c) => {
         const last = [...c.items].reverse().find((i) => (i.type === 'assistant' && !i.interim) || i.type === 'user');
+        // A message with only attachments reads as their names.
+        const text = last ? last.text || [...(last.files || []).map((f) => f.name), ...(last.emails || []).map((e) => e.subject)].join(', ') : '';
         return {
           id: c.id,
           agent: c.agent,
@@ -542,7 +585,7 @@ class AgentHub extends EventEmitter {
           origin: c.origin,
           updatedAt: c.updatedAt,
           status: c.status,
-          preview: last ? clip(String(last.text || '').replace(/\s+/g, ' ').trim(), 140) : ''
+          preview: clip(String(text || '').replace(/\s+/g, ' ').trim(), 140)
         };
       });
   }
@@ -766,6 +809,8 @@ class AgentHub extends EventEmitter {
       needsRecap: false,
       // Newer emails in the same thread the user continued this chat from, oldest first (see continueFrom()).
       continued: [],
+      // Files the user attached to its messages, in the chat's folder (chatfiles.js); read_chat_file reads them.
+      files: [],
       items: []
     };
     // Picked before the chat started.
@@ -812,6 +857,7 @@ class AgentHub extends EventEmitter {
     this.convTokens.delete(c.id);
     for (const [threadId, cid] of this.threads) if (cid === c.id) this.threads.delete(threadId);
     this.conversations.delete(c.id);
+    this.files.remove(c.id);
     const adapter = this.adapters.get(c.agent);
     // Optional adapter hook: lets Claude kill the process that belongs to this conversation.
     if (adapter && typeof adapter.forget === 'function') Promise.resolve().then(() => adapter.forget(c)).catch(() => {});
@@ -834,6 +880,28 @@ class AgentHub extends EventEmitter {
       composer
     };
     return true;
+  }
+
+  // ---------- attachments (renderer API) ----------
+
+  // A file for the message the user is writing, from main's own file dialog or as the bytes the renderer dropped
+  // or pasted. {id, name, size, type, kind}, or {name, error} with error 'blocked' or 'too-big'.
+  stageFile(name, data) {
+    return this.files.stage(name, data);
+  }
+
+  // Files picked in main's dialog, by path (chatfiles.stagePaths).
+  stagePaths(paths, room) {
+    return this.files.stagePaths(paths, room);
+  }
+
+  unstageFile(id) {
+    return this.files.unstage(id);
+  }
+
+  // Whether a file can go to an agent at all, before main reads it: null, 'blocked' or 'too-big'.
+  refuseFile(name, size) {
+    return this.files.refuse(name, size);
   }
 
   openMessageId() {
@@ -960,7 +1028,9 @@ class AgentHub extends EventEmitter {
 
   // skill: the name of a skill the user started with /name. Rukoo writes that turn itself, from the skill as it is
   // on disk now.
-  send(id, { text, action = null, display = null, skill = null } = {}) {
+  // files: tokens of files the user attached (stageFile); emails: Rukoo ids of emails the user added. A message
+  // with either needs no text.
+  send(id, { text, action = null, display = null, skill = null, files = [], emails = [] } = {}) {
     const c = this.mustGet(id);
     if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
     if (this.turns.has(c.id)) throw new AgentError('busy', 'a turn is running');
@@ -973,7 +1043,13 @@ class AgentHub extends EventEmitter {
       display = `/${s.name}`;
     }
     const body = clip(text, 20000);
-    if (!body.trim()) throw new AgentError('invalid', 'empty message');
+    // Checked before anything changes, so a refusal leaves the chat and the user's attachments as they were.
+    const fileIds = [].concat(files || []).map(String);
+    if (fileIds.length > MAX_FILES) throw new AgentError('invalid', `at most ${MAX_FILES} files per message`);
+    const staged = this.files.pending(fileIds);
+    if (!staged) throw missingError('file-missing', this.files.missing(fileIds), 'a file is no longer ready to send; attach it again');
+    const mails = this.attachEmails(c, emails);
+    if (!body.trim() && !staged.length && !mails.length) throw new AgentError('invalid', 'empty message');
     const firstTurn = !c.delivered;
     // The agent's new session has not had the chat yet: the email and a recap go along again.
     const recap = !firstTurn && c.needsRecap === true;
@@ -981,8 +1057,21 @@ class AgentHub extends EventEmitter {
     // display can be an approved proposal's title. Email text the agent quoted in it keeps its <unsafe_content>
     // tags for the agent (runTurn gets them); the user's line and the chat title show the text alone.
     const line = display ? context.untag(shown) : shown;
-    const userItem = this.addItem(c, { type: 'user', text: line, action: action || null });
-    if (!c.title) c.title = clip(line.replace(/\s+/g, ' ').trim(), 80);
+    const kept = staged.length ? this.files.keep(c.id, staged) : [];
+    if (kept.length) c.files = [...(c.files || []), ...kept];
+    // A chat is named after its first message, or after what it brought when it has no text.
+    const naming = !c.title;
+    if (naming) c.title = clip((line.trim() ? line : [...kept.map((f) => f.name), ...mails.map((m) => m.subject)].join(', ')).replace(/\s+/g, ' ').trim(), 80);
+    const userItem = this.addItem(c, {
+      type: 'user',
+      text: line,
+      action: action || null,
+      ...(kept.length ? { files: kept.map(shownFile) } : {}),
+      ...(mails.length ? { emails: mails.map(({ id: mailId, subject, from }) => ({ id: mailId, subject, from })) } : {})
+    });
+    // The renderer names a chat after its first message's text by itself; a name taken from attachments only main
+    // has, and it reaches the renderer here.
+    if (naming) this.emitEvent({ kind: 'conversation', conversation: { id: c.id, title: c.title } });
     const turn = {
       id: `t_${rand(10)}`,
       cid: c.id,
@@ -1002,12 +1091,52 @@ class AgentHub extends EventEmitter {
       model: c.model || null,
       effort: this.turnEffort(c),
       stopTimer: null,
-      forceStop: null
+      forceStop: null,
+      // What the user attached to this message; runTurn adds the start of each file's text.
+      attached: kept.length || mails.length ? { files: kept, emails: mails } : null
     };
     this.turns.set(c.id, turn);
     this.setStatus(c, 'running');
     this.runTurn(c, turn, { text: body, action, firstTurn, recap, display: shown }).catch((err) => this.finishTurn(turn, { status: 'error', error: toError(err) }));
     return { conversationId: c.id, itemId: userItem.id };
+  }
+
+  // Emails the user added to a message, by Rukoo id. Only an email Rukoo has itself counts: one in the user's
+  // accounts, or a copy saved on this device. Subject and sender come from Rukoo's own cache, not the renderer.
+  // The chat's own email is there already.
+  attachEmails(c, ids) {
+    const list = [].concat(ids || []);
+    if (list.length > MAX_EMAILS) throw new AgentError('invalid', `at most ${MAX_EMAILS} emails per message`);
+    const out = [];
+    const gone = [];
+    // One email can have several Rukoo ids (Inbox and Sent of a mail to yourself, two Gmail labels): by its
+    // Message-ID it goes once, and not when it is the chat's own.
+    const same = (a, b) => Boolean(a && b) && normId(a) === normId(b);
+    const seen = [];
+    for (const raw of list) {
+      const id = clip(raw, 4000);
+      if (!id || out.some((m) => m.id === id) || gone.includes(id) || (c.message && c.message.id === id)) continue;
+      const m = this.liveMessage(id);
+      if (!m) {
+        gone.push(id);
+        continue;
+      }
+      if (seen.some((key) => same(key, m.messageId)) || same(c.message && c.message.messageId, m.messageId)) continue;
+      // A newer email the chat was continued from is in it already: the next turn carries it by itself while the
+      // agent has not had it (loadNewer()), so attached as well it would go twice and take a place.
+      if ((c.continued || []).some((e) => e.id === id || same(e.messageId, m.messageId))) continue;
+      if (m.messageId) seen.push(m.messageId);
+      const from = isObj(m.from) ? { name: clip(m.from.name || '', 200), address: clip(m.from.address || '', 320) } : null;
+      out.push({ id, subject: clip(m.subject || '', 300), from });
+    }
+    if (gone.length) throw missingError('email-missing', gone, 'an email added to the message is no longer here');
+    return out;
+  }
+
+  // Hermes usually runs on another machine and reaches Rukoo through its bridge, so a path on this PC means nothing
+  // to it, and its Runs API takes text only. Claude Code and Codex run here.
+  localAgent(c) {
+    return c.agent !== 'clark';
   }
 
   async runTurn(c, turn, { text, action, firstTurn, recap = false, display = '' }) {
@@ -1049,11 +1178,22 @@ class AgentHub extends EventEmitter {
         }
       }
       turn.newer = newer;
+      // The attached files from the chat's folder, with the start of their text. A PDF's text comes from a process
+      // of its own and can take a while; stopped meanwhile, as above.
+      if (turn.attached && turn.attached.files.length) {
+        turn.attached = { files: await this.files.forTurn(c.id, turn.attached.files, { signal: turn.controller.signal }), emails: turn.attached.emails };
+        if (turn.closed || turn.controller.signal.aborted) {
+          this.giveBack(c, turn);
+          return this.finishTurn(turn, { status: 'stopped' });
+        }
+      }
       const openMessage = firstTurn ? null : this.openLine(c, newer);
       const notes = c.notes.splice(0);
       turn.notes = notes;
-      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null });
+      const local = this.localAgent(c);
+      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null, attached: turn.attached, local });
       const port = this.mcp ? this.mcp.ports().local : null;
+      const attached = turn.attached || { files: [], emails: [] };
       const handle = {
         id: turn.id,
         conversation: c,
@@ -1065,6 +1205,9 @@ class AgentHub extends EventEmitter {
         // The chat's own model and effort; null: the adapter uses the model in Settings and the agent's own effort.
         model: turn.model,
         effort: turn.effort,
+        // What the user attached. Adapters that take images send each inline one along as an image.
+        files: attached.files.filter((f) => !f.missing).map(({ id, name, type, kind, size, path: file, inline }) => ({ id, name, type, kind, size, path: file, inline: Boolean(inline) })),
+        emails: attached.emails.map((e) => e.id),
         mcp: { url: port ? `http://127.0.0.1:${port}/mcp` : '', token: this.tokenFor(c) },
         emit: (event) => this.onAdapterEvent(turn, event),
         approve: (request) => this.requestApproval(c.id, { ...(request || {}), source: c.agent, kind: 'runtime' }),
@@ -1188,7 +1331,7 @@ class AgentHub extends EventEmitter {
     if (turn.closed || turn.controller.signal.aborted) return handle.input;
     turn.newer = newer;
     const openMessage = this.openLine(c, newer);
-    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, newer, earlier: this.earlier(c, turn) });
+    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, newer, earlier: this.earlier(c, turn), attached: turn.attached, local: this.localAgent(c) });
     return handle.input;
   }
 
@@ -1328,8 +1471,11 @@ class AgentHub extends EventEmitter {
     if (!turn) return false;
     turn.controller.abort();
     this.expireTurnApprovals(turn);
-    // Still loading the email: no adapter runs yet, so there is nothing to wait for.
+    // Still loading the email or reading the PDFs: no adapter runs yet, so there is nothing to wait for. What the
+    // message brought goes back now, before another message can be sent, not once runTurn() gets past its await.
     if (!turn.forceStop) {
+      const c = this.conversations.get(turn.cid);
+      if (c && !turn.reached) this.giveBack(c, turn);
       this.finishTurn(turn, { status: 'stopped' });
       return true;
     }
@@ -1406,6 +1552,16 @@ class AgentHub extends EventEmitter {
       this.touch(c);
     }
     if (turn.approval) this.keepApproval(c, turn.approval);
+    // The chat keeps the files; the next message says what the user attached and how to read it.
+    const a = turn.attached;
+    if (a && (a.files.length || a.emails.length)) {
+      const names = [
+        ...a.files.map((f) => `${context.unsafeInline(f.name, 'file name', 100)} (file_id ${f.id})`),
+        ...a.emails.map((e) => `the email ${context.unsafeInline(e.subject || '', 'email subject', 100)} (id ${e.id})`)
+      ];
+      c.notes.push(`The user attached ${names.join(', ')} to a message that did not reach you. read_chat_file and read_message return them.`);
+      this.touch(c);
+    }
   }
 
   // An approval whose follow-up turn could not start. The agent hears about it with the next message, and
@@ -1995,6 +2151,7 @@ const RUKOO_LABELS = {
   propose_action: 'Asked for approval',
   mail_action: 'Proposed a mail action',
   read_attachment: 'Read an attachment',
+  read_chat_file: 'Read an attached file',
   read_skill: 'Read a skill'
 };
 const COMMANDS = /^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$/i;

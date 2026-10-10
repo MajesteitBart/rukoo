@@ -394,6 +394,25 @@ function toggleAgent() {
   setAgentOpen(!prefs.agentOpen, { focus: !prefs.agentOpen });
 }
 
+// "Add to chat" in the message and bulk menus: the emails go with the message being written in the chat, as when they
+// are dragged onto it, and the menus make that a keyboard path too. The chat opens first when it is closed.
+function addToChatItem(list) {
+  if (!agentPanel) return null;
+  return {
+    icon: 'sparkle',
+    get label() {
+      return t('agent.panel.addToChat');
+    },
+    action: () => {
+      if (!prefs.agentOpen) setAgentOpen(true);
+      // An open panel follows the email on screen only after agentViewChanged's wait; it follows now, so the emails
+      // go to the chat it is about to show, not the one before.
+      else agentPanel.sync();
+      return agentPanel.addEmails(list.map((m) => m.id));
+    }
+  };
+}
+
 // Main keeps track of what is on screen so agents can see it too; the panel follows the open email.
 let viewTimer = null;
 function agentViewChanged() {
@@ -828,6 +847,7 @@ function renderListTools() {
       <button class="icon-btn" data-bulk="move" data-i18n-title="mailbox.actions.moveShortcut" title="${esc(t('mailbox.actions.moveShortcut'))}">${icons.move}</button>
       ${canArchive ? `<button class="icon-btn" data-bulk="archive" data-i18n-title="common.actions.archive" title="${esc(t('common.actions.archive'))}">${icons.archive}</button>` : ''}
       <button class="icon-btn" data-bulk="delete" data-i18n-title="mailbox.actions.deleteShortcut" title="${esc(t('mailbox.actions.deleteShortcut'))}">${icons.trash}</button>
+      <button class="icon-btn" data-bulk="more" data-i18n-title="reader.actions.more" title="${esc(t('reader.actions.more'))}" aria-haspopup="menu">${icons.more}</button>
       <button class="icon-btn" data-bulk="clear" data-i18n-title="mailbox.selection.clearShortcut" title="${esc(t('mailbox.selection.clearShortcut'))}">${icons.close}</button>`;
     return;
   }
@@ -1148,7 +1168,8 @@ function bindList() {
     const id = item.dataset.id;
     const ids = S.checked.has(id) ? [...S.checked] : [id];
     e.dataTransfer.setData('application/x-rukoo-ids', JSON.stringify(ids));
-    e.dataTransfer.effectAllowed = 'move';
+    // Moved onto a folder, or added to a chat message in the panel.
+    e.dataTransfer.effectAllowed = 'copyMove';
     const ghost = document.createElement('div');
     ghost.className = 'drag-ghost';
     ghost.textContent = ids.length === 1 ? (byId(id)?.subject || t('mailbox.drag.one')).slice(0, 60) : t('mailbox.drag.messages', { count: ids.length });
@@ -1551,6 +1572,7 @@ function bulkMenu(list) {
   return [
     { icon: anyUnread ? 'mailOpen' : 'markUnread', label: anyUnread ? t('mailbox.actions.read') : t('mailbox.actions.unread'), shortcut: anyUnread ? 'Ctrl+Q' : 'Ctrl+U', action: () => setUnread(list, !anyUnread) },
     { icon: 'star', label: list.every((m) => m.starred) ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), action: () => setStarred(list, !list.every((m) => m.starred)) },
+    addToChatItem(list),
     { separator: true },
     { icon: 'move', get label() { return t('mailbox.actions.moveMenu'); }, shortcut: 'Ctrl+Shift+V', action: () => moveWithPicker(list) },
     canArchive ? { icon: 'archive', get label() { return t('common.actions.archive'); }, action: () => archiveMessages(list) } : null,
@@ -1569,6 +1591,7 @@ function messageMenu(m) {
     draft ? null : { icon: 'reply', get label() { return t('composer.titles.reply'); }, shortcut: 'Ctrl+R', action: () => compose({ mode: 'reply', id: m.id }) },
     draft ? null : { icon: 'replyAll', get label() { return t('composer.titles.replyAll'); }, shortcut: 'Ctrl+Shift+R', action: () => compose({ mode: 'replyAll', id: m.id }) },
     draft ? null : { icon: 'forward', get label() { return t('composer.titles.forward'); }, shortcut: 'Ctrl+F', action: () => compose({ mode: 'forward', id: m.id }) },
+    addToChatItem([m]),
     { separator: true },
     saved ? null : { icon: m.unread ? 'mailOpen' : 'markUnread', label: m.unread ? t('mailbox.actions.read') : t('mailbox.actions.unread'), shortcut: m.unread ? 'Ctrl+Q' : 'Ctrl+U', action: () => setUnread([m], !m.unread) },
     saved ? null : { icon: 'star', label: m.starred ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), action: () => setStarred([m], !m.starred) },
@@ -2309,6 +2332,8 @@ export const ctx = {
   openMessage,
   closeReader,
   compose,
+  // An email in the list, or the open one; the chat panel adds dragged emails by id.
+  messageById: (id) => byId(id),
   openSetup: (opts) => openSetup(ctx, opts),
   // view: open straight on one page, such as 'agents'.
   openSettings: (view) => openSettings(ctx, { view }),
