@@ -711,6 +711,8 @@ const agentMailId = (v) => {
   return v;
 };
 const agentPlain = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+// A list from the renderer, bounded; the hub checks how many it takes.
+const agentList = (v) => (Array.isArray(v) ? v.slice(0, 50) : []);
 function agentHub() {
   if (!hub) throw new Error('unknown');
   return hub;
@@ -778,9 +780,35 @@ Object.assign(api, {
       text: agentText(i.text, 20000),
       action: agentText(i.action, 40) || null,
       display: agentText(i.display, 20000) || null,
-      skill: agentText(i.skill, 64) || null
+      skill: agentText(i.skill, 64) || null,
+      // Tokens of staged files (agentPickFiles, agentAddFile) and Rukoo ids of emails.
+      files: agentList(i.files).map(agentId),
+      emails: agentList(i.emails).map(agentMailId)
     });
   },
+  // The chat's paperclip opens main's own dialog, so Rukoo reads only what the user picked there.
+  agentPickFiles: async () => {
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: t('agent.panel.attach') });
+    if (res.canceled) return [];
+    return res.filePaths.slice(0, 20).map((file) => {
+      const name = path.basename(file);
+      try {
+        const refused = agentHub().refuseFile(name, fs.statSync(file).size);
+        return refused ? { name, error: refused } : agentHub().stageFile(name, fs.readFileSync(file));
+      } catch (_) {
+        return { name, error: 'unreadable' };
+      }
+    });
+  },
+  // A file dropped on the chat or pasted into it. The sandboxed renderer sends its bytes, never a path to open.
+  agentAddFile: (input) => {
+    const i = agentPlain(input);
+    if (!(i.data instanceof Uint8Array)) throw new Error('invalid');
+    const name = agentText(i.name, 1000);
+    const refused = agentHub().refuseFile(name, i.data.byteLength);
+    return refused ? { name, error: refused } : agentHub().stageFile(name, Buffer.from(i.data));
+  },
+  agentDropFile: (id) => agentHub().unstageFile(agentId(id)),
   agentSkills: () => agentHub().skillList(),
   agentStop: (id) => agentHub().stop(agentId(id)),
   agentDecide: (id, itemId, choiceId) => agentHub().decide(agentId(id), agentId(itemId), agentId(choiceId)),

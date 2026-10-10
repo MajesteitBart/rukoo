@@ -86,7 +86,17 @@ class FakeAdapter {
   async dispose() {}
 
   async runTurn(turn) {
-    this.received.push({ conversationId: turn.conversation.id, input: turn.input, text: turn.text, action: turn.action, instructions: turn.instructions, model: turn.model || null, effort: turn.effort || null });
+    this.received.push({
+      conversationId: turn.conversation.id,
+      input: turn.input,
+      text: turn.text,
+      action: turn.action,
+      instructions: turn.instructions,
+      model: turn.model || null,
+      effort: turn.effort || null,
+      files: turn.files || [],
+      emails: turn.emails || []
+    });
     if (this.received.length > 20) this.received.shift();
     const run = new FakeRun(this, turn);
     try {
@@ -179,6 +189,7 @@ class FakeRun {
     const byAction = { reply: 'reply', brief: 'brief', tasks: 'tasks', team: 'team', unsubscribe: 'unsubscribe', triage: 'triage', summary: 'summary', update: 'update' };
     if (byAction[action]) return this[byAction[action]]();
     if (action === 'skill') return this.skill(text);
+    if ((this.turn.files || []).length || (this.turn.emails || []).length) return this.attachments();
     if (/\blost session\b/.test(lower)) return this.lostSession();
     if (/\bwhich model\b/.test(lower)) return this.say(`Model: ${this.turn.model || 'default'}. Effort: ${this.turn.effort || 'default'}.`);
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
@@ -296,6 +307,25 @@ class FakeRun {
     if (res.error) return this.say(`I could not read the skill: ${res.error}`);
     const first = String(res.skill_md || '').split('---').slice(2).join('---').trim().split('\n')[0] || '';
     return this.say(`Following the skill ${name}. It starts with: ${first}`);
+  }
+
+  // Files and emails the user attached: read each one with Rukoo's tools, like a real agent, and say what is in it.
+  async attachments() {
+    const lines = [];
+    for (const f of this.turn.files || []) {
+      const res = await this.tool('read_chat_file', { file_id: f.id });
+      if (res.error) lines.push(`I could not read ${f.name}: ${res.error}`);
+      else if (f.kind === 'image') lines.push(`I looked at ${f.name}.`);
+      else {
+        const first = untag(res.text || '').trim().split('\n')[0];
+        lines.push(first ? `${f.name} starts with: ${first}` : `${f.name} has no text I can read.`);
+      }
+    }
+    for (const id of this.turn.emails || []) {
+      const res = await this.tool('read_message', { message_id: id });
+      lines.push(res.error ? `I could not read an email: ${res.error}` : `The email "${untag(res.subject)}" is from ${untag(res.from && (res.from.name || res.from.address))}.`);
+    }
+    return this.say(lines.join('\n'));
   }
 
   async summary() {

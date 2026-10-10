@@ -127,6 +127,16 @@ function turnError(error) {
   return { code: 'unknown', detail };
 }
 
+// The turn's text, then each image the user attached that goes along with the message: Codex reads a local image
+// itself. Codex takes no other files as input; they are in its working folder, and the text says where.
+function turnInput(turn) {
+  const input = [{ type: 'text', text: turn.input, text_elements: [] }];
+  for (const f of Array.isArray(turn.files) ? turn.files : []) {
+    if (f.kind === 'image' && f.inline && f.path) input.push({ type: 'localImage', path: f.path });
+  }
+  return input;
+}
+
 // Card choice → app-server decision. 'cancel' is what the hub resolves when the turn stopped.
 const decision = (choice) => ({ decision: choice === 'accept' || choice === 'acceptForSession' || choice === 'cancel' ? choice : 'decline' });
 
@@ -299,7 +309,7 @@ class CodexAdapter {
       const run = new Run(this, server, turn, threadId);
       this.runs.set(threadId, run);
       try {
-        const params = { threadId, input: [{ type: 'text', text: turn.input, text_elements: [] }] };
+        const params = { threadId, input: turnInput(turn) };
         // Access, model or effort changed since the thread was loaded: these overrides stick for later turns.
         const loaded = server.threads.get(threadId);
         let next = null;

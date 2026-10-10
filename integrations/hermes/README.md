@@ -51,7 +51,7 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
    ```sh
    hermes mcp test rukoo
    ```
-   It should list Rukoo's eleven tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 11 tool(s)`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
+   It should list Rukoo's twelve tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 12 tool(s)`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
 
 The first `tools/list` has to reach Rukoo once to fill the cache. After that, Hermes keeps the tools even when Rukoo is closed.
 

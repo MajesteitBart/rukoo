@@ -273,7 +273,7 @@ test('end to end: a real hub on a demo engine answers initialize, tools/list and
     const list = await request(port, { token, body: rpc(1, 'tools/list') });
     assert.deepEqual(
       list.json.result.tools.map((t) => t.name),
-      ['get_context', 'search_mail', 'read_message', 'read_attachment', 'write_draft', 'get_draft', 'show_plan', 'show_sources', 'propose_action', 'mail_action', 'read_skill']
+      ['get_context', 'search_mail', 'read_message', 'read_attachment', 'read_chat_file', 'write_draft', 'get_draft', 'show_plan', 'show_sources', 'propose_action', 'mail_action', 'read_skill']
     );
     for (const t of list.json.result.tools) {
       assert.equal(t.inputSchema.type, 'object', t.name);

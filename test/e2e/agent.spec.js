@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { LONG_COMMAND, LONG_COMMAND_TAIL } = require('../../src/main/agents/fake');
 const { Skills } = require('../../src/main/agents/skills');
+const { makePdf } = require('../fixtures/make-pdf');
 
 const SHOTS = path.join(os.tmpdir(), 'rukoo-agent-shots');
 let app;
@@ -74,18 +75,36 @@ const tool = (cid, name, args = {}) =>
 const composerTitle = () => win.locator('.composer .composer-title');
 const editor = () => win.locator('.composer .editor');
 
+// Sets the theme and returns once the page has it and the mail list has redrawn. A settings change reaches the
+// list as a refresh a moment later; when that redraw came in the middle of the next dragTo, Playwright's drag
+// ended without a drop and without an error.
+async function setTheme(theme) {
+  const watching = await win.evaluate(() => {
+    window.__listRedrawn = false;
+    const list = document.querySelector('.list-scroll');
+    const seen = (_, observer) => {
+      observer.disconnect();
+      window.__listRedrawn = true;
+    };
+    if (list) new MutationObserver(seen).observe(list, { childList: true });
+    return Boolean(list);
+  });
+  await win.evaluate((t) => window.mail.call('updateSettings', { theme: t }), theme);
+  await expect(win.locator('html')).toHaveClass(theme === 'light' ? /light/ : /^(?!.*light).*$/);
+  if (watching) await expect.poll(() => win.evaluate(() => window.__listRedrawn)).toBe(true);
+}
+
 // Both themes, the whole window and the panel alone.
 async function shot(name) {
   fs.mkdirSync(SHOTS, { recursive: true });
   for (const theme of ['dark', 'light']) {
-    await win.evaluate((t) => window.mail.call('updateSettings', { theme: t }), theme);
-    await expect(win.locator('html')).toHaveClass(theme === 'light' ? /light/ : /^(?!.*light).*$/);
+    await setTheme(theme);
     // The mail frame redraws for the theme a moment after the page itself.
     await win.waitForTimeout(900);
     await win.screenshot({ path: path.join(SHOTS, `${name}-${theme}.png`) });
     await pane().screenshot({ path: path.join(SHOTS, `${name}-${theme}-panel.png`) });
   }
-  await win.evaluate(() => window.mail.call('updateSettings', { theme: 'dark' }));
+  await setTheme('dark');
 }
 
 test('the chat drafts a reply into the composer, marks it and can undo it', async () => {
@@ -439,7 +458,7 @@ test('an email left out of a new chat comes back with one click, and goes with t
 
   // The chat has the email now, so its chip has no x; New chat starts one that can leave it out.
   await expect(email).toHaveText('Call on Thursday');
-  await expect(files.getByRole('button')).toHaveCount(0);
+  await expect(files.locator('.bui-entity').getByRole('button')).toHaveCount(0);
   await shot('15-email-in-chat');
   await win.click('.agentpane [data-ap="new"]');
   await expect(remove).toBeVisible();
@@ -612,7 +631,7 @@ test('a newer email in a thread offers the earlier chat, and continuing gives th
   await expect(files.locator('.bui-entity__name')).toHaveText(['Dinner on Saturday', 'Re: Dinner on Saturday']);
   await expect(files.locator('.bui-entity__sub')).toHaveText(['Demo User', 'Newer message']);
   await expect(files.locator('.bui-entity__sub').last()).toHaveAttribute('title', 'You continued this chat from this newer message. It goes to Hermes with your next message.');
-  await expect(files.getByRole('button')).toHaveCount(0);
+  await expect(files.locator('.bui-entity').getByRole('button')).toHaveCount(0);
   await settled();
   await shot('17-continued');
 
@@ -757,6 +776,71 @@ test('a wide chat panel gives way, so the reader keeps its 420 px', async () => 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1900, 950));
   await expect.poll(async () => (await size()).agent).toBeGreaterThan(450);
   expect((await size()).reader).toBeGreaterThanOrEqual(419);
+});
+
+test('a PDF is read in a utility process: one that never finishes or takes ever more memory is ended there, the app keeps working, and quitting leaves no reader behind', async () => {
+  const reader = path.join(__dirname, '..', 'fixtures', 'hostile-reader.js');
+  const readers = () => app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().filter((m) => m.name === 'Rukoo PDF reader').map((m) => m.pid));
+  // A read that never finishes, in a utility process of the app; the window meanwhile opens an email.
+  const hang = app.evaluate(async (_e, file) => {
+    const PdfReader = global.__semAgents.pdf.constructor;
+    const started = Date.now();
+    const res = await new PdfReader({ timeout: 2500, reader: file }).read(Buffer.from('%PDF-1.4\nHANG\n'));
+    return { ...res, ms: Date.now() - started };
+  }, reader);
+  await expect.poll(readers).toHaveLength(1);
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  const hung = await hang;
+  expect(hung.failed).toBe('timeout');
+  expect(hung.ms).toBeLessThan(5000);
+  // Buffers outside V8's heap: the watchdog in the utility process ends it at its memory cap.
+  const buffers = await app.evaluate(async (_e, file) => {
+    const PdfReader = global.__semAgents.pdf.constructor;
+    return new PdfReader({ rssMax: 300 * 1024 * 1024, reader: file }).read(Buffer.from('%PDF-1.4\nBUFFERS\n'));
+  }, reader);
+  expect(buffers.failed).toBe('memory');
+  await expect.poll(readers).toHaveLength(0);
+  // The app's own reader, stuck on a PDF when Rukoo quits: closing ends it.
+  await app.evaluate((_e, file) => {
+    const pdf = global.__semAgents.pdf;
+    pdf.opts.reader = file;
+    pdf.read(Buffer.from('%PDF-1.4\nHANG\n'));
+  }, reader);
+  await expect.poll(readers).toHaveLength(1);
+  const [pid] = await readers();
+  await app.close();
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+  await expect.poll(alive).toBe(false);
+});
+
+test('Stop while a PDF is read ends its reader at once, and the next message tells the agent what the stopped one brought', async () => {
+  await openChat('Call on Thursday');
+  const readers = () => app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().filter((m) => m.name === 'Rukoo PDF reader').length);
+  const last = () => app.evaluate(() => global.__semAgents.adapters.get('clark').received.at(-1) || null);
+  // The app's own reader gets stuck on this PDF; its time limit is 10 s.
+  await app.evaluate((_e, file) => (global.__semAgents.pdf.opts.reader = file), path.join(__dirname, '..', 'fixtures', 'hostile-reader.js'));
+  await dropFiles([{ name: 'stuck.pdf', type: 'application/pdf', data: Buffer.from('%PDF-1.4\nHANG\n') }]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['stuck.pdf']);
+  await say('Read this');
+  await expect.poll(readers).toBe(1);
+  const send = win.locator('.agentpane .bui-pb__send');
+  await expect(send).toHaveClass(/is-stop/);
+  await send.click();
+  await expect.poll(readers, { timeout: 2000 }).toBe(0);
+  await expect(send).not.toHaveClass(/is-stop/);
+  await say('Never mind');
+  await expect.poll(async () => ((await last()) || {}).text).toBe('Never mind');
+  const got = await last();
+  expect(got.input).toContain('Since your last turn: The user attached <unsafe_content source="file name">stuck.pdf</unsafe_content>');
+  expect((await app.evaluate(() => global.__semAgents.adapters.get('clark').received.map((r) => r.text))).includes('Read this')).toBe(false);
 });
 
 test('errors read as a sentence with the technical cause underneath', async () => {
@@ -1205,4 +1289,227 @@ test('a chat that is not on screen leaves an unrelated reply alone, even an empt
   expect(res.error).toContain('writing another email');
   await expect(win.locator('.composer #subject')).toHaveValue('Re: Sign in to Bencompare');
   await expect(editor()).not.toContainText('Agent text.');
+});
+
+// ---------- files and emails attached to a message ----------
+
+// Drops files on the chat panel the way Explorer does: drag events whose DataTransfer holds them. over: stop
+// before the drop, with the panel showing where they go.
+const dropFiles = (list, { over = false } = {}) =>
+  win.evaluate(
+    ({ list, over }) => {
+      const dt = new DataTransfer();
+      for (const f of list) dt.items.add(new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name, { type: f.type }));
+      const target = document.querySelector('.agentpane .ap-transcript');
+      for (const type of over ? ['dragenter', 'dragover'] : ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+    },
+    { list: list.map((f) => ({ name: f.name, type: f.type, b64: Buffer.from(f.data).toString('base64') })), over }
+  );
+const fileChips = () => win.locator('.agentpane .bui-pb__files .bui-entity--attached').filter({ has: win.locator('.bui-entity__badge [data-icon^="file"], .bui-entity__badge [data-icon="image"]') });
+// Drags an email from the list onto the chat with the mouse. Not dragTo: the list redraws its rows whenever a
+// refresh comes in (an email marked read, a setting saved), and a redraw between dragTo's checks of the row and its
+// press made Playwright end the drag without a drop and without an error. The row is found, scrolled to and
+// measured in one step in the page, so no redraw comes in between; the mouse then drags whatever row is under it.
+async function dragToChat(subject) {
+  const from = await win.evaluate((text) => {
+    const row = [...document.querySelectorAll('.list-scroll .item')].find((el) => el.textContent.includes(text));
+    row.scrollIntoView({ block: 'center' });
+    const r = row.getBoundingClientRect();
+    return [r.x + r.width / 2, r.y + r.height / 2];
+  }, subject);
+  const box = await transcript().boundingBox();
+  await win.mouse.move(...from);
+  await win.mouse.down();
+  await win.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
+  await win.mouse.up();
+}
+const received = (agent = 'clark') => app.evaluate((_e, agent) => global.__semAgents.adapters.get(agent).received.at(-1), agent);
+const pickFilesWith = (paths) =>
+  app.evaluate(({ dialog }, paths) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: paths });
+  }, paths);
+
+test('a PDF from the paperclip or dropped on the chat goes to the agent, which reads it; a chip can be removed first', async () => {
+  await openChat('Call on Thursday');
+  const report = path.join(dataDir, 'Quarterly report.pdf');
+  fs.writeFileSync(report, makePdf([['Quarterly report 2026', 'Revenue grew by 12%'], ['Page two']]));
+  const program = path.join(dataDir, 'setup.exe');
+  fs.writeFileSync(program, 'MZ');
+  // The paperclip opens main's own dialog. A program is refused with a short notice, not a dialog.
+  await pickFilesWith([report, program]);
+  await win.click('.agentpane .bui-pb__attach');
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['Quarterly report.pdf']);
+  await expect(win.locator('#toast')).toContainText("setup.exe is a program or script. Rukoo doesn't hand those to agents.");
+  await expect(input()).toBeFocused();
+
+  // Dropped from Explorer: a second PDF and a text file. A file over 10 MB never leaves the renderer.
+  await dropFiles([
+    { name: 'Minutes.pdf', type: 'application/pdf', data: makePdf([['Minutes of the board meeting']], { type0: true }) },
+    { name: 'notes.txt', type: 'text/plain', data: Buffer.from('Remember the deadline') },
+    { name: 'video.mp4', type: 'video/mp4', data: Buffer.alloc(10 * 1024 * 1024 + 1) }
+  ]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['Quarterly report.pdf', 'Minutes.pdf', 'notes.txt']);
+  await expect(win.locator('#toast')).toContainText("video.mp4 is larger than 10 MB, so it can't go to the agent.");
+  await expect(pane()).not.toHaveClass(/is-drop/);
+  // Files alone are a message: Send is on with an empty input.
+  await expect(win.locator('.agentpane .bui-pb__send')).toBeEnabled();
+  await shot('20-attachments');
+
+  // Removed before sending: the chip goes, and so does main's copy.
+  await win.locator('.agentpane .bui-pb__files').getByRole('button', { name: 'Remove notes.txt' }).click();
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['Quarterly report.pdf', 'Minutes.pdf']);
+  await expect(input()).toBeFocused();
+  expect(await app.evaluate(() => [...global.__semAgents.files.staged.values()].map((s) => s.name))).toEqual(['Quarterly report.pdf', 'Minutes.pdf']);
+
+  await say('What is in these files?');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['Quarterly report.pdf', 'Minutes.pdf']);
+  await expect(transcript().locator('.bui-ub')).toHaveText('What is in these files?');
+  await expect(fileChips()).toHaveCount(0);
+  // The scripted agent reads each one with read_chat_file, as a real one would.
+  await expect(transcript()).toContainText('Quarterly report.pdf starts with: Quarterly report 2026', { timeout: 10000 });
+  await expect(transcript()).toContainText('Minutes.pdf starts with: Minutes of the board meeting');
+  await expect(transcript().locator('.bui-tool', { hasText: 'Read an attached file' })).toBeVisible();
+  const got = await received();
+  expect(got.files.map((f) => [f.name, f.kind])).toEqual([['Quarterly report.pdf', 'pdf'], ['Minutes.pdf', 'pdf']]);
+  expect(got.input).toMatch(/<unsafe_content source="file" file_id="f_[0-9a-f]{10}" filename="Quarterly report\.pdf">\nQuarterly report 2026\nRevenue grew by 12%\n\nPage two\n<\/unsafe_content>/);
+  // Hermes runs elsewhere, so it gets no paths, only read_chat_file.
+  expect(got.input).not.toContain('local copy');
+  expect(got.input.endsWith('\n\nWhat is in these files?')).toBe(true);
+  await settled();
+  await shot('21-attachments-sent');
+
+  // Claude Code works on this PC: it gets the copy in its working folder as well, and a picture as a picture.
+  await win.click('.agentpane [data-ap="new"]');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Claude' }).click();
+  // A pasted screenshot is attached; a paste that has text as well (a selection from Word) stays text.
+  const paste = (withText) =>
+    input().evaluate((ta, withText) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0))], 'photo.png', { type: 'image/png' }));
+      if (withText) dt.setData('text/plain', 'Copied text');
+      ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, withText);
+  await paste(true);
+  await paste(false);
+  await pickFilesWith([report]);
+  await win.click('.agentpane .bui-pb__attach');
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['photo.png', 'Quarterly report.pdf']);
+  await input().press('Enter');
+  await expect(transcript()).toContainText('I looked at photo.png.', { timeout: 10000 });
+  const claude = await received('claude');
+  const copies = claude.files.map((f) => f.path);
+  expect(copies.every((p) => p.startsWith(path.join(dataDir, 'agent-workspace', 'files')) && fs.existsSync(p))).toBe(true);
+  expect(claude.input).toContain(`local copy: ${copies[1]}`);
+  expect(claude.files.map((f) => [f.kind, f.inline])).toEqual([['image', true], ['pdf', false]]);
+  expect(claude.input).toContain('[The user sent this without a message.]');
+});
+
+test('a send that fails while the files are copied keeps every chip, and sending again delivers them all', async () => {
+  await openChat('Call on Thursday');
+  await dropFiles([
+    { name: 'a.txt', type: 'text/plain', data: Buffer.from('first') },
+    { name: 'b.txt', type: 'text/plain', data: Buffer.from('second') }
+  ]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['a.txt', 'b.txt']);
+  // The disk fills up halfway through main's copy of the second file, once.
+  await app.evaluate(() => {
+    const fs = process.mainModule.require('fs');
+    const write = fs.writeFileSync;
+    let copies = 0;
+    fs.writeFileSync = function (file, data, ...rest) {
+      if (/[\\/]agent-workspace[\\/]files[\\/]/.test(String(file)) && !/:Zone\.Identifier$/.test(file) && ++copies === 2) {
+        fs.writeFileSync = write;
+        write.call(this, file, data.subarray(0, 2), ...rest);
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+      }
+      return write.call(this, file, data, ...rest);
+    };
+  });
+  await say('Both, please');
+  await expect(win.locator('#toast')).toContainText('ENOSPC');
+  // Nothing went out: the chips and the words are back, and main still has both files.
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['a.txt', 'b.txt']);
+  await expect(input()).toHaveValue('Both, please');
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  expect(await app.evaluate(() => [...global.__semAgents.files.staged.values()].map((s) => s.name))).toEqual(['a.txt', 'b.txt']);
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['a.txt', 'b.txt']);
+  await expect(fileChips()).toHaveCount(0);
+  await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['a.txt', 'b.txt']);
+});
+
+test('two emails dragged from the list show up as chips, and the agent reads both', async () => {
+  await openChat('Call on Thursday');
+  const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
+  await dragToChat('Your parcel is on its way');
+  await dragToChat('Sign in to Bencompare');
+  // The chat's own email is in it already, and an email added twice counts once.
+  await dragToChat('Call on Thursday');
+  await dragToChat('Sign in to Bencompare');
+  await expect(names).toHaveText(['Call on Thursday', 'Your parcel is on its way', 'Sign in to Bencompare']);
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  // While something is dragged over the panel it says where it goes.
+  await win.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.setData('application/x-rukoo-ids', '[]');
+    document.querySelector('.agentpane .ap-transcript').dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  });
+  await expect(win.locator('.agentpane .ap-drop')).toHaveText('Drop files or emails here to add them to your message');
+  await shot('22-drop-here');
+  await win.evaluate(() => document.dispatchEvent(new DragEvent('dragend')));
+  await expect(win.locator('.agentpane .ap-drop')).toBeHidden();
+  await shot('23-emails-attached');
+
+  // A third one can go again before sending; by keyboard, its x is a button.
+  await dragToChat('Your password has changed');
+  const third = win.locator('.agentpane .bui-pb__files').getByRole('button', { name: 'Remove Your password has changed' });
+  await third.focus();
+  await win.keyboard.press('Enter');
+  await expect(names).toHaveText(['Call on Thursday', 'Your parcel is on its way', 'Sign in to Bencompare']);
+  await expect(input()).toBeFocused();
+
+  // Sent with no text: the emails are the message.
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['Your parcel is on its way', 'Sign in to Bencompare']);
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await expect(transcript()).toContainText('The email "Your parcel is on its way" is from', { timeout: 10000 });
+  await expect(transcript()).toContainText('The email "Sign in to Bencompare" is from');
+  const got = await received();
+  const ids = await win.evaluate(() => ['Your parcel is on its way', 'Sign in to Bencompare'].map((s) => [...document.querySelectorAll('.item')].find((el) => el.textContent.includes(s)).dataset.id));
+  expect(got.emails).toEqual(ids);
+  expect(got.input).toContain('[The user attached 2 emails to this message. Read them with read_message.]');
+  expect(got.input).toContain(`- id ${ids[0]}: <unsafe_content source="email subject">Your parcel is on its way</unsafe_content>`);
+  await settled();
+  await shot('24-emails-sent');
+});
+
+test('the paperclip and chips fit next to the agent, model and effort menus from 320 to 560 px', async () => {
+  await openChat('Call on Thursday');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Claude' }).click();
+  await win.click('.agentpane .bui-pb__opt[data-pick="model"]');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Sonnet' }).click();
+  await dropFiles([{ name: 'A very long file name for the quarterly report of 2026.pdf', type: 'application/pdf', data: makePdf([['x']]) }]);
+  await dragToChat('Your parcel is on its way');
+  for (const width of [320, 400, 560]) {
+    await win.evaluate((w) => document.documentElement.style.setProperty('--agent-w', `${w}px`), width);
+    await expect.poll(() => win.evaluate(() => Math.round(document.querySelector('.agentpane').getBoundingClientRect().width))).toBe(width);
+    const fit = await win.evaluate(() => {
+      const box = document.querySelector('.agentpane .bui-pb__box').getBoundingClientRect();
+      const inside = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
+      };
+      const row = document.querySelector('.agentpane .bui-pb__row');
+      return {
+        row: row.scrollWidth <= row.clientWidth + 1,
+        chips: [...document.querySelectorAll('.agentpane .bui-pb__attach, .agentpane .bui-pb__files .bui-entity')].every(inside),
+        controls: [...row.children].filter((el) => !el.hidden).every(inside)
+      };
+    });
+    expect(fit, `${width} px`).toEqual({ row: true, chips: true, controls: true });
+    fs.mkdirSync(SHOTS, { recursive: true });
+    await pane().screenshot({ path: path.join(SHOTS, `25-attachments-${width}.png`) });
+  }
 });

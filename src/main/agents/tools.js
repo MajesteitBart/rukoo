@@ -11,8 +11,10 @@ const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const { toHtml } = require('./markdown');
-const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged } = require('./context');
+const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, PDF_FAILED } = require('./context');
 const { SkillError, toolDescription } = require('./skills');
+const { decodeText, TEXT_TYPES, TEXT_EXT, IMAGE_TYPES } = require('./chatfiles');
+const { isPdf } = require('../pdftext');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -106,13 +108,22 @@ const TOOLS = [
     name: 'read_attachment',
     title: 'Read an attachment',
     description:
-      'Returns an attachment of an email by its index from read_message. Text files come back as text, images as images, other files (PDF, Office) as a resource; local agents also get local_path to open the file themselves. Up to 10 MB.',
+      "Returns an attachment of an email by its index from read_message. Text files come back as text, images as images, a PDF as the text Rukoo could extract (note says when that is not all of it) with the file as a resource, other files (Office) as a resource; local agents also get local_path to open the file themselves. Up to 10 MB.",
     inputSchema: schema({ message_id: MESSAGE_ID, index: { type: 'integer', minimum: 0, description: 'The attachment index from read_message.' } }, [
       'message_id',
       'index'
     ]),
     annotations: READ,
     run: readAttachment
+  },
+  {
+    name: 'read_chat_file',
+    title: 'Read a file the user attached',
+    description:
+      "Returns a file the user attached to a message in this chat, by the file_id the message gives. Text files come back as text, images as images, a PDF as the text Rukoo could extract (note says when that is not all of it) with the file as a resource, other files as a resource; local agents also get local_path to open the file themselves. Without file_id it lists the chat's files.",
+    inputSchema: schema({ file_id: { type: 'string', description: 'The file_id from the message, e.g. "f_1a2b3c4d5e".', maxLength: 100 } }),
+    annotations: READ,
+    run: readChatFile
   },
   {
     name: 'write_draft',
@@ -399,9 +410,11 @@ async function callTool(hub, identity, name, args, meta = {}) {
     meta: meta || {},
     conversation: hub.resolveConversation(identity, clean, meta || {})
   };
-  // A tool call during a turn shows the agent got that turn's input.
+  // A tool call during a turn shows the agent got that turn's input. Stopping the turn stops the PDF reads it
+  // started (signal), so they don't hold up another chat's.
   const running = call.conversation && hub.turns && hub.turns.get(call.conversation.id);
   if (running) running.reached = true;
+  call.signal = running ? running.controller.signal : null;
   try {
     return toResult(await tool.run(hub, clean, call));
   } catch (err) {
@@ -844,10 +857,6 @@ async function readMessage(hub, args) {
   return fullView(hub.engine, m, args.max_chars || TEXT_MAX);
 }
 
-const TEXT_TYPES = /^(text\/|application\/(json|xml|csv|x-yaml|yaml|ics)\b)/;
-const TEXT_EXT = /\.(csv|md|markdown|ics|txt|json|xml|yaml|yml|log|vcf)$/i;
-const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
-
 function sizeText(n) {
   return n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
@@ -892,24 +901,94 @@ async function readAttachment(hub, args, call) {
   }
   if (bytes > ATTACHMENT_MAX) throw new ToolError(`${unsafeValue(name)} is ${sizeText(bytes)}; Rukoo hands out attachments up to 10 MB.`);
   const local = call.remote ? null : writeTemp(hub, name, a.content);
-  if (local) info.local_path = local;
-  if (TEXT_TYPES.test(type) || TEXT_EXT.test(name)) {
+  return fileResult(hub, info, {
+    name,
+    type,
+    content: a.content,
+    local,
+    uri: `rukoo://attachment/${encodeURIComponent(id)}/${args.index}`,
+    source: 'attachment',
+    signal: call.signal,
     // In the charset the attachment declares (Rukoo's own decoder, as for mail bodies); UTF-8 without one.
-    const text = decodeCharset(a.content, a.charset || charsetOf(meta.contentType) || 'utf-8').replace(/^\uFEFF/, '');
-    return { ...info, text: unsafeBlock(text.slice(0, ATTACHMENT_TEXT_MAX), { source: 'attachment', filename: name }), truncated: text.length > ATTACHMENT_TEXT_MAX };
+    decode: (buffer) => decodeCharset(buffer, a.charset || charsetOf(meta.contentType) || 'utf-8')
+  });
+}
+
+// A file as read_attachment and read_chat_file hand it out: text as text, an image as an image, a PDF as its text
+// with the file as a resource, anything else as a resource. local: a copy local agents can open. The text sits
+// inside <unsafe_content>; source says where it came from.
+async function fileResult(hub, info, { name, type, content, local = null, uri, source, decode, signal = null }) {
+  const out = local ? { ...info, local_path: local } : { ...info };
+  if (TEXT_TYPES.test(type) || TEXT_EXT.test(name)) {
+    const text = decode(content).replace(/^\uFEFF/, '');
+    return { ...out, text: unsafeBlock(text.slice(0, ATTACHMENT_TEXT_MAX), { source, filename: name }), truncated: text.length > ATTACHMENT_TEXT_MAX };
   }
-  const data = a.content.toString('base64');
-  if (IMAGE_TYPES.test(type) && bytes <= IMAGE_MAX) {
-    return raw([{ type: 'text', text: JSON.stringify(info) }, { type: 'image', data, mimeType: type }], info);
+  const data = content.toString('base64');
+  if (IMAGE_TYPES.test(type) && content.length <= IMAGE_MAX) {
+    // No structured result: Codex passes only that on when there is one, and the image would never reach it.
+    return raw([{ type: 'text', text: JSON.stringify(out) }, { type: 'image', data, mimeType: type }]);
   }
-  const note = local ? 'The file is attached as a resource and saved at local_path.' : 'The file is attached as a resource.';
-  return raw(
-    [
-      { type: 'text', text: JSON.stringify({ ...info, note }) },
-      { type: 'resource', resource: { uri: `rukoo://attachment/${encodeURIComponent(id)}/${args.index}`, mimeType: type, blob: data } }
-    ],
-    { ...info, note }
-  );
+  const resource = { type: 'resource', resource: { uri, mimeType: type, blob: data } };
+  const saved = local ? ' and saved at local_path' : '';
+  if (isPdf(content)) {
+    // Codex takes no PDF, and Hermes elsewhere gets the file without a reader, so the text comes along. The note
+    // tells the agent when that is not all of it: past ATTACHMENT_TEXT_MAX there is more text (truncated), and a
+    // reader that stopped early or failed leaves the rest only in the file (partial, failed).
+    const pdf = await hub.pdf.read(content, { maxChars: ATTACHMENT_TEXT_MAX, signal });
+    const file = `The file itself is attached as a resource${saved}.`;
+    let note;
+    if (pdf.failed) note = `Rukoo could not extract text from this PDF: ${PDF_FAILED[pdf.failed] || PDF_FAILED.error}. ${file}`;
+    else if (!pdf.text) note = `${pdf.encrypted ? 'The PDF is encrypted, so Rukoo could not read its text.' : pdf.partial ? "Rukoo's reader stopped at its limits before it found text in this PDF." : 'Rukoo found no text in this PDF; it may be scanned.'} ${file}`;
+    else if (pdf.partial) note = `text is only part of the PDF's text: Rukoo's reader stopped at its limits before the end, so the rest is only in the file itself. ${file}`;
+    else if (pdf.truncated) note = `text is the first ${ATTACHMENT_TEXT_MAX} characters of the PDF's text as Rukoo extracted it; the file itself has the rest. ${file}`;
+    else note = `text is the PDF's text as Rukoo extracted it, without images or layout. ${file}`;
+    const full = {
+      ...out,
+      pages: pdf.pages,
+      ...(pdf.text ? { text: unsafeBlock(pdf.text, { source, filename: name }), truncated: pdf.truncated } : {}),
+      ...(pdf.partial ? { partial: true } : {}),
+      ...(pdf.failed ? { failed: pdf.failed } : {}),
+      note
+    };
+    return raw([{ type: 'text', text: JSON.stringify(full) }, resource], full);
+  }
+  const note = `The file is attached as a resource${saved}.`;
+  return raw([{ type: 'text', text: JSON.stringify({ ...out, note }) }, resource], { ...out, note });
+}
+
+// The files the user attached to messages in this chat (hub.send keeps them in the chat's folder). Their names are
+// the user's file names, which anyone can have chosen, so they are tagged like an email's attachment names.
+async function readChatFile(hub, args, call) {
+  const c = call.conversation;
+  if (!c) throw new ToolError('Rukoo does not know which chat this is. Pass the conversation_id from the message.');
+  const list = Array.isArray(c.files) ? c.files : [];
+  const listing = () => list.map((f) => ({ file_id: f.id, filename: unsafeValue(f.name), content_type: f.type, size: f.size }));
+  if (!args.file_id) return { conversation_id: c.id, files: listing() };
+  const want = String(args.file_id).trim();
+  const f = list.find((x) => x.id === want);
+  if (!f) {
+    const have = list.map((x) => `${x.id}: ${unsafeValue(x.name)}`).join(', ') || 'none';
+    throw new ToolError(`This chat has no file with file_id ${unsafeValue(want)}. Its files: ${have}.`);
+  }
+  let content;
+  try {
+    content = hub.files.read(c.id, f);
+  } catch (_) {
+    throw new ToolError(`Rukoo no longer has ${unsafeValue(f.name)}. Ask the user to attach it again.`);
+  }
+  const info = { conversation_id: c.id, file_id: f.id, filename: unsafeValue(f.name), content_type: f.type, size: content.length };
+  return fileResult(hub, info, {
+    name: f.name,
+    type: f.type,
+    content,
+    // The chat's own copy, in the folder Claude Code and Codex work in.
+    local: call.remote ? null : hub.files.path(c.id, f),
+    // Hermes names the copy it saves after the last part.
+    uri: `rukoo://chat-file/${encodeURIComponent(c.id)}/${f.id}/${encodeURIComponent(f.name)}`,
+    source: 'file',
+    signal: call.signal,
+    decode: decodeText
+  });
 }
 
 const ADDRESS = /^[^@\s<>,;]+@[^@\s<>,;]+$/;

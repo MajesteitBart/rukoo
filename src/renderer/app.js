@@ -1148,7 +1148,8 @@ function bindList() {
     const id = item.dataset.id;
     const ids = S.checked.has(id) ? [...S.checked] : [id];
     e.dataTransfer.setData('application/x-rukoo-ids', JSON.stringify(ids));
-    e.dataTransfer.effectAllowed = 'move';
+    // Moved onto a folder, or added to a chat message in the panel.
+    e.dataTransfer.effectAllowed = 'copyMove';
     const ghost = document.createElement('div');
     ghost.className = 'drag-ghost';
     ghost.textContent = ids.length === 1 ? (byId(id)?.subject || t('mailbox.drag.one')).slice(0, 60) : t('mailbox.drag.messages', { count: ids.length });
@@ -2309,6 +2310,8 @@ export const ctx = {
   openMessage,
   closeReader,
   compose,
+  // An email in the list, or the open one; the chat panel adds dragged emails by id.
+  messageById: (id) => byId(id),
   openSetup: (opts) => openSetup(ctx, opts),
   // view: open straight on one page, such as 'agents'.
   openSettings: (view) => openSettings(ctx, { view }),

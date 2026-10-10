@@ -41,6 +41,8 @@ const ICONS = {
   'chevron-up': ['<path d="M18 15l-6-6-6 6"/>', 2.2],
   'chevron-right': ['<path d="M9 6l6 6-6 6"/>', 2.2],
   file: ['<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>', 1.8],
+  'file-text': ['<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6"/>', 1.8],
+  image: ['<rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4.6-4.6a1.5 1.5 0 0 0-2.1 0L5 21"/>', 1.8],
   clip: ['<path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>', 1.8],
   globe: ['<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>', 1.8],
   layers: ['<path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>', 1.8],
@@ -137,6 +139,15 @@ export function entityChip({ label, sub, monogram: mono, onRemove, removeLabel }
   const el = h('span', { class: 'bui-entity' + (onRemove ? ' has-remove' : '') }, avatar, h('span', { class: 'bui-entity__name', text: label, title: label }));
   if (sub) el.append(h('span', { class: 'bui-entity__sub', text: sub, title: sub }));
   if (onRemove) el.append(h('button', { type: 'button', class: 'bui-entity__x', 'aria-label': removeLabel || null, onClick: onRemove }, icon('x', 10, 2.5)));
+  return el;
+}
+
+// A file or email that goes along with a message: an icon badge instead of a monogram, a name and a detail (the
+// size, the sender). With onRemove it has an x.
+export function attachmentChip({ label, sub, icon: iconName = 'file', onRemove, removeLabel } = {}) {
+  const badge = h('span', { class: 'bui-entity__badge bui-entity__badge--file', 'aria-hidden': 'true' }, icon(iconName, 10, 2.2));
+  const el = entityChip({ label, sub, monogram: badge, onRemove, removeLabel });
+  el.classList.add('bui-entity--attached');
   return el;
 }
 
@@ -702,7 +713,8 @@ export function toolGroup() {
 
 // ---------- transcript lines ----------
 
-export function userBubble({ text, action, labels = {} } = {}) {
+// attachments: chips for what went along with the message, above its text. A message can be attachments alone.
+export function userBubble({ text, action, labels = {}, attachments = [] } = {}) {
   if (action === 'approved' || action === 'declined') {
     return h(
       'div',
@@ -712,7 +724,8 @@ export function userBubble({ text, action, labels = {} } = {}) {
       h('span', { class: 'bui-sys__title', text: text || '', title: text || '' })
     );
   }
-  return h('div', { class: 'bui-ubwrap' }, h('div', { class: 'bui-ub', text: text || '' }));
+  const chips = attachments.length ? h('div', { class: 'bui-ubatt' }, attachments) : null;
+  return h('div', { class: 'bui-ubwrap' }, chips, text || !chips ? h('div', { class: 'bui-ub', text: text || '' }) : null);
 }
 
 export function noticeLine(item = {}, { labels = {}, onUndo } = {}) {
@@ -1233,9 +1246,18 @@ export function chatComposer(opts = {}, handlers = {}) {
     rows: [],
     active: 0,
     engaged: false,
-    query: null
+    query: null,
+    // Files or emails go along: a message can be those alone.
+    attached: false
   };
-  const files = h('div', { class: 'bui-pb__files', hidden: true });
+  // The chips row: the paperclip, the email the chat is about, then what the user attached. The paperclip leads,
+  // so it stays put as chips come and go, and the footer keeps its room for the agent, model and effort menus.
+  const attach = handlers.onAttach
+    ? h('button', { type: 'button', class: 'bui-pb__attach', 'aria-label': labels.attach || null, title: labels.attach || null }, icon('clip', 15))
+    : null;
+  const contextSlot = h('span', { class: 'bui-pb__slot' });
+  const attachedSlot = h('span', { class: 'bui-pb__slot' });
+  const files = h('div', { class: 'bui-pb__files', hidden: true }, attach, contextSlot, attachedSlot);
   const ta = h('textarea', { class: 'bui-pb__ta', rows: '1', placeholder: opts.placeholder || '', 'aria-label': opts.placeholder || labels.send || '' });
   const disabledRow = h('div', { class: 'bui-pb__disabled', hidden: true });
   let dot = statusDot(null);
@@ -1268,7 +1290,11 @@ export function chatComposer(opts = {}, handlers = {}) {
     send.replaceChildren(icon(state.running ? 'stop' : 'send', 16));
     send.setAttribute('aria-label', state.running ? labels.stop || '' : labels.send || '');
     send.classList.toggle('is-stop', state.running);
-    send.disabled = state.running ? false : state.disabled || !ta.value.trim();
+    send.disabled = state.running ? false : state.disabled || (!ta.value.trim() && !state.attached);
+  }
+  function refreshFiles() {
+    if (attach) attach.hidden = state.disabled;
+    files.hidden = !(attach && !attach.hidden) && !contextSlot.childNodes.length && !attachedSlot.childNodes.length;
   }
   function renderAgent() {
     const agent = state.agents.find((a) => a.id === state.agentId) || state.agents[0];
@@ -1362,13 +1388,24 @@ export function chatComposer(opts = {}, handlers = {}) {
   }
   function submit() {
     const text = ta.value.trim();
-    if (!text || state.disabled) return;
+    if ((!text && !state.attached) || state.disabled) return;
     ta.value = '';
     closeMenu();
     autosize();
     updateSend();
     if (handlers.onSend) handlers.onSend(text);
   }
+
+  if (attach) attach.addEventListener('click', () => handlers.onAttach());
+  // Pasted files (a screenshot, files copied in Explorer) go along with the message. A paste that has text as well,
+  // such as a selection copied from Word, is text.
+  ta.addEventListener('paste', (e) => {
+    const data = e.clipboardData;
+    const pasted = data ? [...data.files] : [];
+    if (!pasted.length || !handlers.onFiles || state.disabled || [...data.types].includes('text/plain')) return;
+    e.preventDefault();
+    handlers.onFiles(pasted.map((file) => ({ file, folder: false })));
+  });
 
   ta.addEventListener('input', () => {
     state.dismissed = false;
@@ -1479,6 +1516,7 @@ export function chatComposer(opts = {}, handlers = {}) {
       disabledRow.replaceChildren();
       if (state.disabled && reason != null) disabledRow.append(reason instanceof Node ? reason : String(reason));
       if (state.disabled) closeMenu();
+      refreshFiles();
       updateSend();
     },
     setAgents(list, currentId) {
@@ -1510,13 +1548,24 @@ export function chatComposer(opts = {}, handlers = {}) {
       else if (open && JSON.stringify(p.items()) !== p.shown) openPicker(kind, true);
     },
     setContext(chip) {
-      files.replaceChildren();
+      contextSlot.replaceChildren();
       if (chip) {
         const remove = chip.querySelector ? chip.querySelector('.bui-entity__x') : null;
         if (remove && labels.removeContext && !remove.getAttribute('aria-label')) remove.setAttribute('aria-label', labels.removeContext);
-        files.append(chip);
+        contextSlot.append(chip);
       }
-      files.hidden = !chip;
+      refreshFiles();
+    },
+    // Chips for the files and emails the user attached to the message being written.
+    setAttachments(chips) {
+      const list = Array.isArray(chips) ? chips.filter(Boolean) : [];
+      // The focus was on a chip's x that is gone now: the input takes it, not the page.
+      const lost = attachedSlot.contains(document.activeElement);
+      attachedSlot.replaceChildren(...list);
+      state.attached = list.length > 0;
+      refreshFiles();
+      updateSend();
+      if (lost && !attachedSlot.contains(document.activeElement)) ta.focus({ preventScroll: true });
     },
     setCommands(list) {
       state.commands = Array.isArray(list) ? list : [];

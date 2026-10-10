@@ -357,6 +357,38 @@
     "message": "Something went wrong.",
     "description": "Chat panel error: fallback when the cause is not known."
   },
+  "agent.files.blocked": {
+    "message": "{name} is a program or script. Rukoo doesn't hand those to agents.",
+    "description": "Chat panel notice after you attach a program or script (.exe, .js and the like) to a chat message; name is the file name (takeFiles and refusal in agent/panel.js)."
+  },
+  "agent.files.emailGone": {
+    "message": "An email you added is no longer here. Your message was not sent; the other attachments are still there.",
+    "description": "Chat panel notice when you send a message with an email attached that was moved or deleted meanwhile (send in agent/panel.js)."
+  },
+  "agent.files.folder": {
+    "message": "{name} is a folder. Add the files in it instead.",
+    "description": "Chat panel notice after you drop a folder on the chat; name is the folder name (addFiles in agent/panel.js)."
+  },
+  "agent.files.gone": {
+    "message": "The files you attached were no longer ready to send. Attach them again.",
+    "description": "Chat panel notice when you send a message whose attached files Rukoo let go of (after a long wait or many other files); the file chips are removed (send in agent/panel.js)."
+  },
+  "agent.files.tooBig": {
+    "message": "{name} is larger than 10 MB, so it can't go to the agent.",
+    "description": "Chat panel notice after you attach a file over 10 MB to a chat message; name is the file name (takeFiles, addFiles and refusal in agent/panel.js)."
+  },
+  "agent.files.tooMany": {
+    "message": "A message takes up to {count} files.",
+    "description": "Chat panel notice when you attach more files to one chat message than it takes; count is the maximum (takeFiles and addFiles in agent/panel.js)."
+  },
+  "agent.files.tooManyEmails": {
+    "message": "A message takes up to {count} emails.",
+    "description": "Chat panel notice when you drag more emails onto one chat message than it takes; count is the maximum (addEmails in agent/panel.js)."
+  },
+  "agent.files.unreadable": {
+    "message": "{name} could not be read.",
+    "description": "Chat panel notice when Rukoo could not read a file you attached; name is the file name (refusal and addFiles in agent/panel.js)."
+  },
   "agent.notices.approval-too-long": {
     "message": "Declined without asking: {title}. Part of it is too long to show here, so you could not check it.",
     "description": "Chat transcript info line: Rukoo declined an approval request itself because a value was too long to show in full; title is the request."
@@ -505,6 +537,10 @@
     "message": "Add this email",
     "description": "Chat panel input: dashed chip in the email chip's place after you left the email out of a new chat; clicking it puts the email back (contextChip and attach in agent/panel.js)."
   },
+  "agent.panel.attach": {
+    "message": "Attach files",
+    "description": "Chat panel input: tooltip and label of the paperclip button before the email chip, and the title of the file dialog it opens (pickFiles in agent/panel.js, chatComposer in agent/bui.js, agentPickFiles in main.js)."
+  },
   "agent.panel.close": {
     "message": "Close chat",
     "description": "Chat panel header: tooltip of the button that closes the panel."
@@ -512,6 +548,10 @@
   "agent.panel.continueChat": {
     "message": "Continue the chat about the earlier message",
     "description": "Chat panel empty state: quiet row under the quick actions when the open email has no chat but an earlier email in its thread has one; the agent and the chat's date are under it (renderEmpty and continueChat in agent/panel.js)."
+  },
+  "agent.panel.dropHere": {
+    "message": "Drop files or emails here to add them to your message",
+    "description": "Chat panel: text in the dashed area that appears while you drag files from Explorer or emails from the list over the panel (localizeChrome in agent/panel.js)."
   },
   "agent.panel.history": {
     "message": "Recent chats",
@@ -528,6 +568,10 @@
   "agent.panel.needsEmail": {
     "message": "Open an email first.",
     "description": "Chat panel toast: an email quick action was picked while no email is attached."
+  },
+  "agent.panel.removeAttachment": {
+    "message": "Remove {name}",
+    "description": "Chat panel input: label of the x on a file or email chip you attached to the message; name is the file name or the email subject (fileChip and emailChip in agent/panel.js)."
   },
   "agent.panel.skillMissing": {
     "message": "Rukoo can't find the skill /{name} anymore.",
@@ -785,6 +829,10 @@
     "message": "Read an attachment",
     "description": "Chat transcript tool chip: the agent opened an attachment."
   },
+  "agent.tools.read_chat_file": {
+    "message": "Read an attached file",
+    "description": "Chat transcript tool chip: the agent opened a file you attached to a message (read_chat_file)."
+  },
   "agent.tools.read_skill": {
     "message": "Read a skill",
     "description": "Chat transcript tool chip (panel.js toolProps): the agent read one of Rukoo's skills with read_skill."
@@ -792,6 +840,10 @@
   "agent.tools.read_message": {
     "message": "Read an email",
     "description": "Chat transcript tool chip: the agent read a full email."
+  },
+  "agent.tools.running.read_chat_file": {
+    "message": "Reading an attached file...",
+    "description": "Chat transcript tool chip while it runs: the agent reads a file you attached. Present tense; the done form is agent.tools.read_chat_file."
   },
   "agent.tools.search_mail": {
     "message": "Searched your mail",

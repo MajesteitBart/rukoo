@@ -349,7 +349,7 @@ test('without skills, or with an unreadable skills folder, the MCP server keeps 
     const init = await request(port, token, { jsonrpc: '2.0', id: 0, method: 'initialize', params: {} });
     assert.equal(init.json.result.instructions, require('../src/main/agents/mcp').INSTRUCTIONS);
     const list = await request(port, token, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
-    assert.equal(list.json.result.tools.length, 11);
+    assert.equal(list.json.result.tools.length, 12);
     assert.match(list.json.result.tools.find((x) => x.name === 'read_skill').description, /There are no skills yet\.$/);
     // A hub that throws while listing skills still answers the handshake.
     hub.skillInstructions = () => {
@@ -362,7 +362,7 @@ test('without skills, or with an unreadable skills folder, the MCP server keeps 
       throw new Error('disk on fire');
     };
     const tools2 = await request(port, token, { jsonrpc: '2.0', id: 3, method: 'tools/list' });
-    assert.equal(tools2.json.result.tools.length, 11);
+    assert.equal(tools2.json.result.tools.length, 12);
   } finally {
     await server.close();
     await hub.dispose();
