@@ -157,6 +157,8 @@ class Calendars extends EventEmitter {
         // Never opened, or the file is damaged: start empty.
       }
       this.caches.set(id, { calendars: [], events: [], range: null, view: null, syncedAt: null, error: null, failedAt: null, ...(saved || {}) });
+      // A cache from before canDelete: what could be changed could be deleted.
+      for (const e of this.caches.get(id).events) if (e.canDelete === undefined) e.canDelete = Boolean(e.canEdit);
     }
     return this.caches.get(id);
   }
@@ -397,6 +399,36 @@ class Calendars extends EventEmitter {
     }
   }
 
+  // A change made on the version of the event the user saw (etag). When the provider has a newer one, the change
+  // fails and the cache gets that version, so the user sees it before trying again; when the event is gone, it leaves
+  // the cache. An event cached before Rukoo kept versions has none to send, so it counts as changed as well.
+  async unlessChanged(acc, p, cache, cal, event, etag, job) {
+    try {
+      if (p.versioned && !etag) throw calendarError('changed', t('errors.calendar.changed'));
+      return await job();
+    } catch (err) {
+      if (!err || err.code !== 'changed') throw err;
+      let latest;
+      try {
+        latest = await p.get(cal, event.eventId);
+      } catch (gone) {
+        // Deleted in the meantime: that is the news. Any other failure leaves the cache as it was.
+        throw gone && gone.code === 'not_found' ? gone : err;
+      }
+      this.store(acc, cache, latest, event);
+      throw err;
+    }
+  }
+
+  // One event from the cache, wherever it lies now; null when it is gone.
+  event(id) {
+    const { accountId, calendarId, eventId } = decodeId(id);
+    const acc = this.engine.accounts.find((a) => a.id === accountId);
+    if (!acc || !this.provider(acc)) return null;
+    const e = this.cache(acc.id).events.find((x) => x.calendarId === calendarId && x.eventId === eventId);
+    return e ? this.publicEvent(acc, e) : null;
+  }
+
   store(acc, cache, event, replaces = null) {
     cache.events = cache.events.filter((e) => !sameEvent(e, replaces || event)).concat(event).sort((a, b) => a.start - b.start);
     this.persist(acc.id);
@@ -418,18 +450,26 @@ class Calendars extends EventEmitter {
     return this.store(acc, cache, event);
   }
 
-  async update(id, input, { notify = false } = {}) {
+  // etag: the version the user saw, from the event card or the dialog.
+  async update(id, input, { notify = false, etag = null } = {}) {
     const { acc, p, cache, cal, event } = this.locate(id);
     if (!event.canEdit) throw calendarError('read_only', t('errors.calendar.readOnly'));
     const clean = this.clean(input);
-    const next = await this.change(acc, cache, event, () => p.update(cal, event, clean, { notify }));
+    const next = await this.change(acc, cache, event, () => this.unlessChanged(acc, p, cache, cal, event, etag, () => p.update(cal, event, clean, { notify, etag })));
     return this.store(acc, cache, next, event);
   }
 
-  async remove(id, { notify = false, series = false } = {}) {
+  async remove(id, { notify = false, series = false, etag = null } = {}) {
     const { acc, p, cache, cal, event } = this.locate(id);
-    if (!event.canEdit) throw calendarError('read_only', t('errors.calendar.readOnly'));
-    await this.change(acc, cache, event, () => p.remove(cal, event, { notify, series }));
+    if (!event.canDelete) throw calendarError('read_only', t('errors.calendar.readOnly'));
+    const job = () => p.remove(cal, event, { notify, series, etag });
+    try {
+      // A whole series goes without a version: Rukoo only knows the occurrence's.
+      await this.change(acc, cache, event, series && event.seriesId ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job));
+    } catch (err) {
+      // Already gone, for instance after a first try whose answer got lost: the event or series is deleted, as asked.
+      if (!err || err.code !== 'not_found') throw err;
+    }
     cache.events = cache.events.filter((e) => !inScope(e, event, series));
     this.persist(acc.id);
     this.emit('updated');

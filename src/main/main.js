@@ -502,6 +502,11 @@ function calendarEventId(id) {
   if (typeof id !== 'string' || !id || id.length > 3000) throw new Error('invalid');
   return id;
 }
+// The version of the event the user saw; Google's etags are short quoted strings.
+function calendarEtag(opts) {
+  const etag = plainObject(opts).etag;
+  return typeof etag === 'string' && etag && etag.length <= 200 ? etag : null;
+}
 
 // Every renderer call goes through this table; nothing else is reachable from the UI.
 const api = {
@@ -678,9 +683,11 @@ const api = {
   },
   calendarView: (range) => calendars.view(calendarRange(range)),
   calendarSync: (accountId) => (accountId ? calendars.syncAccount(String(accountId)) : calendars.syncAll()).then(() => true),
+  calendarEvent: (id) => calendars.event(calendarEventId(id)),
   calendarCreate: (input) => calendars.create(calendarInput(input)),
-  calendarUpdate: (id, input, opts) => calendars.update(calendarEventId(id), calendarInput(input), { notify: plainObject(opts).notify === true }),
-  calendarDelete: (id, opts) => calendars.remove(calendarEventId(id), { notify: plainObject(opts).notify === true, series: plainObject(opts).series === true }),
+  calendarUpdate: (id, input, opts) => calendars.update(calendarEventId(id), calendarInput(input), { notify: plainObject(opts).notify === true, etag: calendarEtag(opts) }),
+  calendarDelete: (id, opts) =>
+    calendars.remove(calendarEventId(id), { notify: plainObject(opts).notify === true, series: plainObject(opts).series === true, etag: calendarEtag(opts) }),
   calendarRespond: (id, response, opts) => calendars.respond(calendarEventId(id), String(response), { series: plainObject(opts).series === true }),
   googleCancel: () => google.cancel(),
   fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),

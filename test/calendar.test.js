@@ -15,23 +15,27 @@ const { CALENDAR_SCOPES } = require('../src/main/google');
 const DAY = 86400000;
 const API = 'https://www.googleapis.com/calendar/v3';
 
-// A Google Calendar with two calendars, answering the calls Rukoo makes and recording them.
+// A Google Calendar with two calendars, answering the calls Rukoo makes and recording them. Like Google, it names
+// selected only for calendars that show, gives every event an etag that changes with it, and answers a change sent
+// with an older etag in If-Match with 412.
 function fakeCalendar({ events = [], fail = null } = {}) {
   const calendars = [
-    { id: 'me@example.com', summary: 'me@example.com', primary: true, accessRole: 'owner', timeZone: 'Europe/Amsterdam' },
+    { id: 'me@example.com', summary: 'me@example.com', primary: true, accessRole: 'owner', timeZone: 'Europe/Amsterdam', selected: true },
     { id: 'nl#holiday@group.v.calendar.google.com', summary: 'Holidays', accessRole: 'reader', selected: false },
     { id: 'busy@example.com', summary: 'Free/busy only', accessRole: 'freeBusyReader' },
     { id: 'team@example.com', summary: 'Team', accessRole: 'writerWithoutPrivateAccess' }
   ];
-  const store = events.map((e) => ({ calendarId: 'me@example.com', ...e }));
+  const store = events.map((e) => ({ calendarId: 'me@example.com', etag: '"1"', ...e }));
   const requests = [];
   let next = 1;
+  let version = 1;
   const json = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
   const fetchImpl = async (url, opts = {}) => {
     const u = new URL(url);
     const method = opts.method || 'GET';
     const body = opts.body ? JSON.parse(opts.body) : null;
-    requests.push({ method, path: decodeURIComponent(u.pathname.replace('/calendar/v3', '')), query: Object.fromEntries(u.searchParams), body, auth: opts.headers.authorization });
+    const ifMatch = opts.headers['if-match'] || null;
+    requests.push({ method, path: decodeURIComponent(u.pathname.replace('/calendar/v3', '')), query: Object.fromEntries(u.searchParams), body, auth: opts.headers.authorization, ifMatch });
     if (fail) {
       const answer = fail({ method, url: u, body });
       if (answer) return json(answer.status, answer.body);
@@ -50,15 +54,17 @@ function fakeCalendar({ events = [], fail = null } = {}) {
       if (body.id && store.some((e) => e.calendarId === calendarId && e.id === body.id)) {
         return json(409, { error: { code: 409, message: 'The requested identifier already exists.', errors: [{ reason: 'duplicate' }] } });
       }
-      const item = { ...body, calendarId, id: body.id || `new${next++}`, status: 'confirmed', organizer: { email: 'me@example.com', self: true }, htmlLink: 'https://www.google.com/calendar/event?eid=x' };
+      const item = { ...body, calendarId, id: body.id || `new${next++}`, etag: `"${++version}"`, status: 'confirmed', organizer: { email: 'me@example.com', self: true }, htmlLink: 'https://www.google.com/calendar/event?eid=x' };
       store.push(item);
       return json(200, item);
     }
     const item = store.find((e) => e.calendarId === calendarId && e.id === eventId);
     if (!item) return json(404, { error: { code: 404, message: 'Not Found' } });
     if (method === 'GET') return json(200, item);
+    if (ifMatch && ifMatch !== item.etag) return json(412, { error: { code: 412, message: 'Precondition Failed', errors: [{ reason: 'conditionNotMet' }] } });
     if (method === 'PATCH') {
       for (const [k, v] of Object.entries(body)) item[k] = v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries({ ...item[k], ...v }).filter(([, x]) => x !== null)) : v;
+      item.etag = `"${++version}"`;
       return json(200, item);
     }
     if (method === 'DELETE') {
@@ -138,10 +144,11 @@ test('a view fetches its weeks once, with expanded recurring events, and later o
 
   const second = calendars.view(week);
   assert.equal(second.accounts[0].loading, false);
+  // Team comes without selected, which Google means as switched off in Google Calendar.
   assert.deepEqual(second.accounts[0].calendars.map((c) => [c.name, c.writable, c.selected]), [
     ['me@example.com', true, true],
     ['Holidays', false, false],
-    ['Team', true, true]
+    ['Team', true, false]
   ]);
   const titles = second.events.map((e) => e.title).sort();
   assert.deepEqual(titles, ['Offsite', 'Planning'], 'working locations are left out');
@@ -214,6 +221,15 @@ test('Google events: times, guests, answers and what the user may change', () =>
   const shared = { ...cal, hidesPrivate: true };
   assert.equal(toEvent({ id: 'w1', start: { date: '2026-10-13' }, end: { date: '2026-10-14' } }, shared).canEdit, true);
   assert.equal(toEvent({ id: 'w2', visibility: 'private', start: { date: '2026-10-13' }, end: { date: '2026-10-14' } }, shared).canEdit, false);
+  assert.equal(own.canDelete, true);
+  assert.equal(invite.canDelete, false);
+  // A flight Gmail found and a contact's birthday: Google takes no new title or times for them, but deletes them.
+  const mine = { start: { dateTime: '2026-10-13T09:00:00Z' }, end: { dateTime: '2026-10-13T10:00:00Z' }, organizer: { email: 'me@example.com', self: true } };
+  for (const eventType of ['fromGmail', 'birthday']) {
+    const made = toEvent({ id: eventType, eventType, ...mine }, cal);
+    assert.deepEqual([made.eventType, made.canEdit, made.canDelete], [eventType, false, true]);
+  }
+  assert.deepEqual([own.eventType, toEvent({ id: 'v', etag: '"7"', ...mine }, cal).etag], ['default', '"7"']);
   // Rate limits are a pause, whichever name Google gives them.
   for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded']) assert.equal(apiError(403, { error: { errors: [{ reason }] } }).code, 'busy');
 });
@@ -248,12 +264,14 @@ test('creating, changing and deleting send what Google expects and keep the cach
   // A rename leaves the formatted description alone and keeps both time zones of the flight.
   const flight = calendars.view(week).events.find((e) => e.title === 'Flight');
   assert.equal(flight.description, 'Agenda: read here [https://example.com/doc]');
-  await calendars.update(flight.id, { title: 'Flight to London', description: flight.description, allDay: false, start: flight.start, end: flight.end });
+  // Each change is made on the version on screen, as the dialog does.
+  const seen = (id) => ({ etag: calendars.event(id).etag });
+  await calendars.update(flight.id, { title: 'Flight to London', description: flight.description, allDay: false, start: flight.start, end: flight.end }, seen(flight.id));
   const rename = fake.requests.filter((r) => r.method === 'PATCH').pop();
   assert.equal('description' in rename.body, false);
   assert.equal(rename.body.start.timeZone, 'Europe/Amsterdam');
   assert.equal(rename.body.end.timeZone, 'Europe/London');
-  await calendars.update(flight.id, { title: 'Flight to London', description: 'Gate D7', allDay: false, start: flight.start, end: flight.end });
+  await calendars.update(flight.id, { title: 'Flight to London', description: 'Gate D7', allDay: false, start: flight.start, end: flight.end }, seen(flight.id));
   assert.equal(fake.requests.filter((r) => r.method === 'PATCH').pop().body.description, 'Gate D7');
   fake.requests.length = 0;
 
@@ -273,23 +291,115 @@ test('creating, changing and deleting send what Google expects and keep the cach
   await assert.rejects(calendars.create({ accountId: 'g1', calendarId: 'me@example.com', title: 'x', start: 2, end: 1 }), /start before its end/);
 
   const review = calendars.view(week).events.find((e) => e.title === 'Review');
-  await calendars.update(review.id, { title: 'Design review', allDay: false, start: at(m, 2, 10, 30).getTime(), end: at(m, 2, 11, 30).getTime() }, { notify: true });
+  await calendars.update(review.id, { title: 'Design review', allDay: false, start: at(m, 2, 10, 30).getTime(), end: at(m, 2, 11, 30).getTime() }, { notify: true, ...seen(review.id) });
   const patch = fake.requests.find((r) => r.method === 'PATCH');
   assert.equal(patch.query.sendUpdates, 'all');
   assert.equal(patch.body.start.timeZone, 'America/New_York', 'an edited event keeps its own zone');
   assert.equal(patch.body.start.date, null);
   assert.equal(calendars.view(week).events.find((e) => e.id === review.id).title, 'Design review');
 
-  await calendars.update(review.id, { title: 'Design review', allDay: true, startDate: day(at(m, 2, 0)), endDate: day(at(m, 3, 0)) });
+  await calendars.update(review.id, { title: 'Design review', allDay: true, startDate: day(at(m, 2, 0)), endDate: day(at(m, 3, 0)) }, seen(review.id));
   const toAllDay = fake.requests.filter((r) => r.method === 'PATCH')[1];
   assert.equal(toAllDay.query.sendUpdates, 'none');
   assert.deepEqual(toAllDay.body.start, { dateTime: null, timeZone: null, date: day(at(m, 2, 0)) });
 
-  await calendars.remove(review.id, { notify: false });
+  await calendars.remove(review.id, { notify: false, ...seen(review.id) });
   const del = fake.requests.find((r) => r.method === 'DELETE');
   assert.equal(del.path, '/calendars/me@example.com/events/m1');
   assert.equal(del.query.sendUpdates, 'none');
   assert.ok(!calendars.view(week).events.some((e) => e.id === review.id));
+});
+
+test('a change or deletion made on an older version than Google has is refused, and the cache gets the latest one', async () => {
+  const m = monday();
+  const mine = { organizer: { email: 'me@example.com', self: true } };
+  const fake = fakeCalendar({
+    events: [
+      { id: 'p1', summary: 'Planning', location: 'Room 1', start: { dateTime: iso(at(m, 1, 9)) }, end: { dateTime: iso(at(m, 1, 10)) }, ...mine },
+      { id: 'p2', summary: 'Retro', start: { dateTime: iso(at(m, 2, 9)) }, end: { dateTime: iso(at(m, 2, 10)) }, ...mine }
+    ]
+  });
+  const { calendars } = setup(fake);
+  const week = { start: m, end: m + 7 * DAY };
+  calendars.view(week);
+  await settle(calendars);
+  const opened = calendars.view(week).events.find((e) => e.eventId === 'p1');
+  assert.equal(opened.etag, '"1"');
+
+  // Someone moves the meeting to another room in Google Calendar while the dialog is open.
+  Object.assign(fake.store.find((e) => e.id === 'p1'), { location: 'Room 2', etag: '"9"' });
+  const input = { title: 'Planning (moved)', location: 'Room 1', description: '', allDay: false, start: opened.start, end: opened.end };
+  await assert.rejects(calendars.update(opened.id, input, { etag: opened.etag }), (err) => err.code === 'changed');
+  assert.equal(fake.requests.filter((r) => r.method === 'PATCH').pop().ifMatch, '"1"');
+  assert.deepEqual([fake.store.find((e) => e.id === 'p1').summary, fake.store.find((e) => e.id === 'p1').location], ['Planning', 'Room 2'], 'Google keeps the other change');
+  const latest = calendars.view(week).events.find((e) => e.eventId === 'p1');
+  assert.deepEqual([latest.location, latest.etag], ['Room 2', '"9"'], 'the cache has the version from Google now');
+
+  // Saved again on that version, the change goes through.
+  const saved = await calendars.update(latest.id, { ...input, location: 'Room 2' }, { etag: latest.etag });
+  assert.deepEqual([saved.title, saved.location], ['Planning (moved)', 'Room 2']);
+
+  // A deletion on an older version is refused as well, and nothing is deleted.
+  const retro = calendars.view(week).events.find((e) => e.eventId === 'p2');
+  fake.store.find((e) => e.id === 'p2').etag = '"12"';
+  await assert.rejects(calendars.remove(retro.id, { etag: retro.etag }), (err) => err.code === 'changed');
+  assert.ok(fake.store.some((e) => e.id === 'p2'));
+  assert.equal(calendars.view(week).events.find((e) => e.eventId === 'p2').etag, '"12"');
+});
+
+test('a change that finds the event gone drops it, and an event without a known version is not changed blindly', async () => {
+  const m = monday();
+  const mine = { organizer: { email: 'me@example.com', self: true } };
+  const slot = (n) => ({ start: { dateTime: iso(at(m, n, 9)) }, end: { dateTime: iso(at(m, n, 10)) } });
+  const fake = fakeCalendar({
+    events: [
+      { id: 'c1', summary: 'Cancelled soon', ...slot(1), ...mine },
+      { id: 'c2', summary: 'Deleted soon', ...slot(2), ...mine },
+      { id: 'old', summary: 'From an old cache', location: 'Room 1', ...slot(3), ...mine }
+    ]
+  });
+  const { calendars } = setup(fake);
+  const week = { start: m, end: m + 7 * DAY };
+  calendars.view(week);
+  await settle(calendars);
+  const find = (eventId) => calendars.view(week).events.find((e) => e.eventId === eventId);
+
+  // Changed and then cancelled in Google: the refresh finds it gone, and so does the user.
+  const c1 = find('c1');
+  Object.assign(fake.store.find((e) => e.id === 'c1'), { status: 'cancelled', etag: '"5"' });
+  await assert.rejects(calendars.update(c1.id, { title: 'x', start: c1.start, end: c1.end }, { etag: c1.etag }), /no longer exists/);
+  assert.equal(calendars.event(c1.id), null);
+  // A deletion that finds the event gone is done.
+  const c2 = find('c2');
+  Object.assign(fake.store.find((e) => e.id === 'c2'), { status: 'cancelled', etag: '"6"' });
+  await calendars.remove(c2.id, { etag: c2.etag });
+  assert.equal(calendars.event(c2.id), null);
+
+  // An event from a cache written before Rukoo kept versions has none: the save fetches the event instead of going out.
+  delete calendars.cache('g1').events.find((e) => e.eventId === 'old').etag;
+  fake.store.find((e) => e.id === 'old').location = 'Room 2';
+  const old = find('old');
+  const patches = fake.requests.filter((r) => r.method === 'PATCH').length;
+  await assert.rejects(calendars.update(old.id, { title: 'Renamed', location: 'Room 1', start: old.start, end: old.end }, { etag: old.etag }), (err) => err.code === 'changed');
+  assert.equal(fake.requests.filter((r) => r.method === 'PATCH').length, patches, 'nothing went out without a version');
+  assert.deepEqual([calendars.event(old.id).location, calendars.event(old.id).etag], ['Room 2', '"1"']);
+});
+
+test('deleting a series that Google already deleted removes every occurrence', async () => {
+  const m = monday();
+  const occurrence = (n) => ({ id: `daily_${n}`, recurringEventId: 'daily', summary: 'Daily', start: { dateTime: iso(at(m, n, 9)) }, end: { dateTime: iso(at(m, n, 9, 15)) }, organizer: { email: 'me@example.com', self: true } });
+  // An earlier try deleted the series in Google but its answer got lost, so this one finds it gone.
+  const fake = fakeCalendar({ events: [0, 1, 2].map(occurrence), fail: ({ method }) => (method === 'DELETE' ? { status: 410, body: { error: { code: 410, message: 'Resource has been deleted' } } } : null) });
+  const { calendars } = setup(fake);
+  const week = { start: m, end: m + 7 * DAY };
+  calendars.view(week);
+  await settle(calendars);
+  const [first] = calendars.view(week).events;
+  await calendars.remove(first.id, { series: true, etag: first.etag });
+  const del = fake.requests.find((r) => r.method === 'DELETE');
+  assert.equal(del.path, '/calendars/me@example.com/events/daily');
+  assert.equal(del.ifMatch, null, "Rukoo knows the occurrence's version, not the series'");
+  assert.deepEqual(calendars.view(week).events, [], 'no occurrence stays on screen');
 });
 
 test('answering an invitation patches only the guest list, for one event or the series', async () => {
@@ -380,7 +490,7 @@ test('missing grants ask to reconnect; a disabled API and gone events say so', a
   await settle(c.calendars);
   const [event] = c.calendars.view(week).events;
   gone = true;
-  await assert.rejects(c.calendars.update(event.id, { title: 'x', start: event.start, end: event.end }), /no longer exists/);
+  await assert.rejects(c.calendars.update(event.id, { title: 'x', start: event.start, end: event.end }, { etag: event.etag }), /no longer exists/);
   assert.deepEqual(c.calendars.view(week).events, [], 'the cache forgets an event that is gone');
 });
 

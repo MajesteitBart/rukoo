@@ -138,6 +138,9 @@ function seed(now = Date.now()) {
   return { events };
 }
 
+// A copy for the store. The demo has no events Google made itself, so what can be changed can also be deleted.
+const copy = (e) => ({ ...e, canDelete: e.canEdit });
+
 class DemoCalendar {
   constructor(file, account) {
     this.file = file;
@@ -168,7 +171,11 @@ class DemoCalendar {
   async events(cal, start, end) {
     return this.load()
       .events.filter((e) => e.calendarId === cal.id && e.start < end && e.end > start)
-      .map((e) => ({ ...e }));
+      .map(copy);
+  }
+
+  async get(cal, eventId) {
+    return copy(this.find({ calendarId: cal.id, eventId }));
   }
 
   find(event) {
@@ -216,13 +223,13 @@ class DemoCalendar {
     );
     this.load().events.push(e);
     this.persist();
-    return { ...e };
+    return copy(e);
   }
 
   async update(cal, event, input) {
     const e = DemoCalendar.apply(this.find(event), input);
     this.persist();
-    return { ...e };
+    return copy(e);
   }
 
   async remove(cal, event, { series = false } = {}) {
