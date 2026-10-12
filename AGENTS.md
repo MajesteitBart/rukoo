@@ -113,6 +113,18 @@ Before declaring UI-impacting work complete:
 - For UI-impacting work, link to the issue containing screenshots. Screenshots are required before completion even when coding and pushes preceded the issue.
 - Fix small adjacent problems in touched files while keeping the diff reviewable. Create GitHub issues for larger discoveries rather than silently expanding the task.
 
+## Versioning and releases
+
+- Use Semantic Versioning in `package.json`: patch for compatible fixes, minor for compatible user-facing features, major for breaking behavior, integration contracts or stored-data compatibility. Use `-alpha.N`, `-beta.N` or `-rc.N` for preview builds; previews are GitHub prereleases.
+- Bump the version when preparing a release, not for every commit or PR. Update `package.json` and both version entries in `package-lock.json` together with `npm version <version> --no-git-tag-version`. Include the bump in a reviewed release-preparation PR and merge it before tagging. Never have the workflow rewrite versions.
+- A release warrants a new downloadable build: a useful feature, a user-visible bug fix, a security fix, or a compatibility/dependency change that affects shipped behavior. Batch related changes. Documentation, tests, development tooling and refactors alone normally wait for the next product release. Ship urgent security or severe regression fixes as patch releases.
+- Before a release, run `npm test`, `npm run test:e2e` and `npm run dist`. Check the installer and portable build on Windows with an isolated demo profile, including launch and the changed workflows. Complete the relevant issue criteria and UI screenshot evidence. Record known limitations and breaking changes in release notes; scripted agents and demo accounts do not verify live integrations.
+- Release preparation may proceed within the requested work. Creating/pushing a release tag and dispatching publication require an explicit release request from the maintainer; permission to commit, push or open a PR alone does not authorize a release. Merging still requires an explicit request.
+- Create an annotated `v<version>` tag on the tested release commit already merged into `main`, then push that tag. The tag must match the package and lockfile versions exactly. Never move or reuse a published tag or replace published binaries; ship a new version for corrections.
+- Publication is manual. In GitHub Actions, run `Release Windows executables` from `main` and supply the existing tag, or use `gh workflow run release.yml --ref main -f tag=v<version>`. Branch pushes, tag pushes and PRs do not trigger this workflow. See [README.md](README.md#releases) for the procedure.
+- The workflow tests and builds Windows x64 installer and portable executables, uploads SHA-256 checksums, then publishes to [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). It uses the built-in `GITHUB_TOKEN`; no personal token is needed. Builds are unsigned until code signing is configured.
+- A failed upload/publication can leave an unpublished draft. Inspect the run and draft, remove only that incomplete draft, then rerun the same tag. Existing releases are never overwritten by the workflow. Review generated notes and add migration instructions or known limitations as needed. When publishing an older maintenance release, clear its GitHub "latest" designation after publication if a newer stable release exists.
+
 ## Plans and work artifacts
 
 Put temporary plans, research, investigation notes, local test profiles and verification screenshots in ignored `tmp/`. Do not commit scratch plans as permanent documentation.

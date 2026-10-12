@@ -135,6 +135,19 @@ Build a Windows installer and a portable exe in `dist/`:
 npm run dist
 ```
 
+## Releases
+
+Download the Windows x64 installer or portable executable from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. These builds are currently unsigned.
+
+Releases are started manually after a version tag exists. Pushing a branch or tag does not start a build. Maintainers prepare a release as follows:
+
+1. Choose the version using the [versioning rules](AGENTS.md#versioning-and-releases). Run `npm version <version> --no-git-tag-version`, commit the package and lockfile changes, and merge the reviewed PR into `main` after release checks.
+2. On the tested `main` commit, create and push an annotated tag, for example `git tag -a v1.0.0 -m "Rukoo Mail 1.0.0"` followed by `git push origin v1.0.0`.
+3. Open **Actions → Release Windows executables → Run workflow**, select `main`, and enter `v1.0.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.0.0`. The workflow must be merged into the default branch before manual dispatch is available.
+4. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds both executables, verifies their checksums, and publishes the release after uploading all files. Review the generated release notes and add known limitations or migration instructions.
+
+Tags such as `v1.1.0-rc.1` publish as prereleases without becoming the latest stable release. A repeated run cannot overwrite an existing release. If publication fails and leaves an incomplete draft, inspect and delete that draft before retrying; keep the tag. Release publication uses GitHub Actions' built-in token and needs no personal token or extra secrets.
+
 ## Tests
 
 ```bash
