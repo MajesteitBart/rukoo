@@ -1359,6 +1359,10 @@
     "message": "The event ends before it starts.",
     "description": "Event dialog error when the end is before or at the start. src/renderer/calendar.js (readForm)"
   },
+  "calendar.dialog.changedElsewhere": {
+    "message": "This event was changed elsewhere while you edited it. The form now shows the latest version with your changes; save again to keep them.",
+    "description": "Event dialog notice after Save failed because the event changed in Google Calendar (or another app) after the dialog opened. The fields now hold the latest version with the user's own changes on top. src/renderer/calendar.js (eventDialog)"
+  },
   "common.actions.add": {
     "message": "Add",
     "description": "common > actions. src/renderer/app.js (messageMenu); src/renderer/settings.js (render)"
@@ -1794,6 +1798,10 @@
   "errors.calendar.busy": {
     "message": "Google Calendar is busy. Try again in a minute.",
     "description": "Calendar error when Google limits the number of requests. src/main/calendar/google.js"
+  },
+  "errors.calendar.changed": {
+    "message": "This event was changed elsewhere after Rukoo loaded it, so Rukoo left it as it is.",
+    "description": "Calendar error when a change or deletion was refused because the event changed in Google Calendar since Rukoo loaded it (HTTP 412), or Rukoo had no version of it to check. Shown in a toast after Delete, and in the event dialog when the latest version couldn't be loaded. src/main/calendar/google.js; src/main/calendar/index.js (unlessChanged)"
   },
   "errors.calendar.invalidResponse": {
     "message": "That isn't an answer to an invitation.",

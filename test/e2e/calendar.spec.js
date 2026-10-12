@@ -309,34 +309,46 @@ async function addGoogleAccount() {
     monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
     const at = (day, h) => new Date(monday.getTime() + day * 86400000 + h * 3600000).toISOString();
     const store = [
-      { id: 'g1', summary: 'Board meeting', start: { dateTime: at(1, 9), timeZone: 'Europe/Amsterdam' }, end: { dateTime: at(1, 10) }, organizer: { email: 'work@gmail.com', self: true } },
+      { id: 'g1', etag: '"1"', summary: 'Board meeting', start: { dateTime: at(1, 9), timeZone: 'Europe/Amsterdam' }, end: { dateTime: at(1, 10) }, organizer: { email: 'work@gmail.com', self: true } },
       {
         id: 'g2',
+        etag: '"1"',
         summary: 'Partner call',
         start: { dateTime: at(3, 13) },
         end: { dateTime: at(3, 14) },
         organizer: { email: 'partner@example.com' },
         attendees: [{ email: 'partner@example.com', organizer: true, responseStatus: 'accepted' }, { email: 'work@gmail.com', self: true, responseStatus: 'needsAction' }]
-      }
+      },
+      // A flight Gmail found in a booking email: Google takes no new title or times for it.
+      { id: 'g3', etag: '"1"', eventType: 'fromGmail', summary: 'Flight to Lisbon', start: { dateTime: at(4, 7) }, end: { dateTime: at(4, 9) }, organizer: { email: 'work@gmail.com', self: true } }
     ];
     global.__google = { store, requests: [] };
     const json = (status, body) => ({ ok: status < 300, status, json: async () => body });
+    let version = 1;
     global.__semCalendars.fetch = async (url, opts = {}) => {
       const u = new URL(url);
       const method = opts.method || 'GET';
       const body = opts.body ? JSON.parse(opts.body) : null;
-      global.__google.requests.push({ method, path: decodeURIComponent(u.pathname), query: Object.fromEntries(u.searchParams), body });
-      if (u.pathname.endsWith('/users/me/calendarList')) return json(200, { items: [{ id: 'work@gmail.com', summary: 'work@gmail.com', primary: true, accessRole: 'owner' }] });
+      const ifMatch = opts.headers['if-match'] || null;
+      global.__google.requests.push({ method, path: decodeURIComponent(u.pathname), query: Object.fromEntries(u.searchParams), body, ifMatch });
+      if (u.pathname.endsWith('/users/me/calendarList')) return json(200, { items: [{ id: 'work@gmail.com', summary: 'work@gmail.com', primary: true, accessRole: 'owner', selected: true }] });
       const id = decodeURIComponent(u.pathname.split('/events/')[1] || '');
       if (!id && method === 'GET') return json(200, { items: store });
       if (!id && method === 'POST') {
-        const item = { ...body, id: `n${store.length}`, organizer: { email: 'work@gmail.com', self: true } };
+        const item = { ...body, id: `n${store.length}`, etag: `"${++version}"`, organizer: { email: 'work@gmail.com', self: true } };
         store.push(item);
         return json(200, item);
       }
       const item = store.find((e) => e.id === id);
+      if (!item) return json(404, { error: { code: 404, message: 'Not Found' } });
       if (method === 'GET') return json(200, item);
-      if (method === 'PATCH') return json(200, Object.assign(item, body));
+      // A change sent for an older version than this one, as Google answers it.
+      if (ifMatch && ifMatch !== item.etag) return json(412, { error: { code: 412, message: 'Precondition Failed' } });
+      if (method === 'PATCH') return json(200, Object.assign(item, body, { etag: `"${++version}"` }));
+      if (method === 'DELETE') {
+        store.splice(store.indexOf(item), 1);
+        return { ok: true, status: 204, json: async () => ({}) };
+      }
       return json(400, {});
     };
     engine.accounts.push({
@@ -396,6 +408,64 @@ test('a Google calendar shows beside the demo calendar in its own colour, and ch
   const patch = await app.evaluate(() => global.__google.requests.filter((r) => r.method === 'PATCH').pop());
   expect(patch.query.sendUpdates).toBe('all');
   expect(patch.body.attendees.find((a) => a.self).responseStatus).toBe('accepted');
+});
+
+test('an event Gmail made can be deleted from its card, but not edited', async () => {
+  await openCalendar();
+  await addGoogleAccount();
+  await event('Flight to Lisbon').click();
+  await expect(card().locator('[data-pop="delete"]')).toBeVisible();
+  await expect(card().locator('[data-pop="edit"]')).toHaveCount(0);
+  // E doesn't open the dialog either. Delete asks first, then deletes the event in Google.
+  await win.keyboard.press('e');
+  await expect(win.locator('.cal-form')).toHaveCount(0);
+  await win.keyboard.press('Delete');
+  await win.locator('.dialog .buttons button.danger').click();
+  await expect(win.locator('#toast')).toHaveText('Event deleted');
+  await expect(event('Flight to Lisbon')).toHaveCount(0);
+  const del = await app.evaluate(() => global.__google.requests.find((r) => r.method === 'DELETE'));
+  expect(del.path).toBe('/calendar/v3/calendars/work@gmail.com/events/g3');
+  expect(del.ifMatch).toBe('"1"');
+});
+
+test("a change made in Google while the dialog is open is kept, and the next Save puts the user's changes on top", async () => {
+  await openCalendar();
+  await addGoogleAccount();
+  await event('Board meeting').click();
+  await card().locator('[data-pop="edit"]').click();
+  await win.fill('.cal-form [name="title"]', 'Board meeting (budget)');
+  // Meanwhile someone moves the meeting to next week, in another room, in Google Calendar.
+  const moved = await app.evaluate(() => {
+    const e = global.__google.store[0];
+    const week = (t) => new Date(Date.parse(t) + 7 * 86400000).toISOString();
+    Object.assign(e, { location: 'Room 4.2', etag: '"40"', start: { ...e.start, dateTime: week(e.start.dateTime) }, end: { ...e.end, dateTime: week(e.end.dateTime) } });
+    return e.start.dateTime;
+  });
+  const day = new Date(moved);
+  const movedDate = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+  await win.click('.dialog .buttons button.primary');
+  await expect(win.locator('.cal-form .error')).toContainText('changed elsewhere while you edited it');
+  await expect(win.locator('.cal-form [name="title"]')).toHaveValue('Board meeting (budget)');
+  await expect(win.locator('.cal-form [name="location"]')).toHaveValue('Room 4.2');
+  await expect(win.locator('.cal-form [name="startDate"]')).toHaveValue(movedDate);
+  expect(await app.evaluate(() => global.__google.store[0].summary)).toBe('Board meeting');
+
+  await win.click('.dialog .buttons button.primary');
+  await expect(win.locator('.dialog')).toHaveCount(0);
+  await expect(event('Board meeting (budget)')).toBeVisible();
+  const saved = await app.evaluate(() => global.__google.store[0]);
+  expect([saved.summary, saved.location, saved.start.dateTime]).toEqual(['Board meeting (budget)', 'Room 4.2', moved]);
+  const versions = await app.evaluate(() => global.__google.requests.filter((r) => r.method === 'PATCH').map((r) => r.ifMatch));
+  expect(versions).toEqual(['"1"', '"40"']);
+
+  // A deletion is refused as well when the event changed in Google since Rukoo loaded it, and the change shows.
+  await app.evaluate(() => Object.assign(global.__google.store[0], { summary: 'Board meeting (renamed in Google)', etag: '"41"' }));
+  await event('Board meeting (budget)').click();
+  await win.keyboard.press('Delete');
+  await win.locator('.dialog .buttons button.danger').click();
+  await expect(win.locator('#toast')).toContainText('changed elsewhere');
+  await expect(event('Board meeting (renamed in Google)')).toBeVisible();
+  expect(await app.evaluate(() => global.__google.store.some((e) => e.id === 'g1'))).toBe(true);
 });
 
 test('a Google account without calendar access offers to connect it instead of an error', async () => {

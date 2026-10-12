@@ -42,6 +42,8 @@ function apiError(status, body) {
   }
   if (status === 404 || status === 410) return calendarError('not_found', t('errors.calendar.notFound'));
   if (status === 409) return calendarError('conflict', t('errors.calendar.request', { reason: e.message || status }));
+  // If-Match failed: the event changed since the version the user saw.
+  if (status === 412) return calendarError('changed', t('errors.calendar.changed'));
   // rateLimitExceeded and userRateLimitExceeded are both a pause, not a refusal.
   if (status === 429 || why.some((r) => /^(rateLimitExceeded|userRateLimitExceeded)$/.test(r))) return calendarError('busy', t('errors.calendar.busy'));
   return calendarError('request', t('errors.calendar.request', { reason: e.message || status }));
@@ -76,6 +78,10 @@ function person(p) {
 }
 
 const RESPONSES = new Set(['needsAction', 'accepted', 'declined', 'tentative']);
+// Events Google made itself: a flight or reservation Gmail found, a contact's birthday. Google takes no new title,
+// place or description for them, so Rukoo's dialog can't change them; deleting them works.
+// https://developers.google.com/workspace/calendar/api/guides/event-types
+const GOOGLE_MADE = new Set(['fromGmail', 'birthday']);
 
 function toEvent(item, cal) {
   const allDay = Boolean(item.start && item.start.date);
@@ -92,9 +98,17 @@ function toEvent(item, cal) {
   const organizer = item.organizer ? { ...person(item.organizer), self: Boolean(item.organizer.self) } : null;
   const own = !organizer || organizer.self;
   const video = item.hangoutLink || ((item.conferenceData && item.conferenceData.entryPoints) || []).find((p) => p && p.entryPointType === 'video')?.uri || null;
+  // A calendar shared without private details can change everything except its private events.
+  const changeable = Boolean(
+    cal.writable && (own || item.guestsCanModify) && !item.locked && !item.privateCopy && !(cal.hidesPrivate && item.visibility === 'private')
+  );
+  const eventType = typeof item.eventType === 'string' ? item.eventType : 'default';
   return {
     calendarId: cal.id,
     eventId: String(item.id),
+    // The version of the event; a change or deletion sends it back so it can't land on a newer one.
+    etag: typeof item.etag === 'string' ? item.etag : null,
+    eventType,
     seriesId: item.recurringEventId ? String(item.recurringEventId) : null,
     title: String(item.summary || ''),
     location: String(item.location || ''),
@@ -110,10 +124,8 @@ function toEvent(item, cal) {
     status: item.status === 'tentative' ? 'tentative' : 'confirmed',
     busy: item.transparency !== 'transparent',
     response: me && !own ? me.response : null,
-    // A calendar shared without private details can change everything except its private events.
-    canEdit: Boolean(
-      cal.writable && (own || item.guestsCanModify) && !item.locked && !item.privateCopy && !(cal.hidesPrivate && item.visibility === 'private')
-    ),
+    canEdit: changeable && !GOOGLE_MADE.has(eventType),
+    canDelete: changeable,
     canRespond: Boolean(me && !own),
     organizer,
     attendees,
@@ -139,9 +151,12 @@ class GoogleCalendar {
     this.token = token;
     this.fetch = fetchImpl;
     this.timeZone = timeZone;
+    // Every event has an etag, and a change can be made to apply only to that version.
+    this.versioned = true;
   }
 
-  async request(method, path, { query = {}, body } = {}) {
+  // etag: only change the event if it is still this version; Google answers 412 otherwise.
+  async request(method, path, { query = {}, body, etag = null } = {}) {
     const url = new URL(API + path);
     for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
     const token = await this.token();
@@ -149,7 +164,7 @@ class GoogleCalendar {
     try {
       res = await this.fetch(url.toString(), {
         method,
-        headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}), ...(etag ? { 'if-match': etag } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         redirect: 'error',
         signal: AbortSignal.timeout(TIMEOUT)
@@ -192,7 +207,8 @@ class GoogleCalendar {
         primary: Boolean(c.primary),
         writable: c.accessRole === 'owner' || c.accessRole === 'writer' || c.accessRole === 'writerWithoutPrivateAccess',
         hidesPrivate: c.accessRole === 'writerWithoutPrivateAccess',
-        selected: c.selected !== false,
+        // Google leaves selected out for a calendar that is switched off in Google Calendar; its default is false.
+        selected: c.selected === true,
         timeZone: c.timeZone || null
       }))
       .sort((a, b) => Number(b.primary) - Number(a.primary));
@@ -214,6 +230,13 @@ class GoogleCalendar {
     return `/calendars/${encodeURIComponent(cal.id)}/events/${encodeURIComponent(eventId)}`;
   }
 
+  // The event as Google has it now. A deleted occurrence of a series still answers, as cancelled.
+  async get(cal, eventId) {
+    const item = await this.request('GET', this.eventPath(cal, eventId));
+    if (!item || item.status === 'cancelled') throw calendarError('not_found', t('errors.calendar.notFound'));
+    return toEvent(item, cal);
+  }
+
   // input.id, when given, is the event's id: a Save that is tried again after a lost answer finds the event it
   // made the first time (Google answers 409) and gives it the latest fields instead of making a second one.
   async create(cal, input) {
@@ -232,20 +255,22 @@ class GoogleCalendar {
 
   // Changes this one event; for a recurring event that is this occurrence. The event keeps its own time zones.
   // Rukoo shows a description as plain text, so an untouched one stays out of the patch and keeps its formatting.
-  async update(cal, event, input, { notify = false } = {}) {
+  // etag is the version the user changed; a newer one in Google makes this fail with 'changed'.
+  async update(cal, event, input, { notify = false, etag = null } = {}) {
     const body = {
       summary: input.title,
       location: input.location,
       ...(input.description !== event.description ? { description: input.description } : {}),
       ...times(input, event.timeZone, { patch: true, endTimeZone: event.endTimeZone || event.timeZone })
     };
-    const item = await this.request('PATCH', this.eventPath(cal, event.eventId), { query: { sendUpdates: notify ? 'all' : 'none' }, body });
+    const item = await this.request('PATCH', this.eventPath(cal, event.eventId), { query: { sendUpdates: notify ? 'all' : 'none' }, body, etag });
     return toEvent(item, cal);
   }
 
-  async remove(cal, event, { notify = false, series = false } = {}) {
-    const id = series && event.seriesId ? event.seriesId : event.eventId;
-    await this.request('DELETE', this.eventPath(cal, id), { query: { sendUpdates: notify ? 'all' : 'none' } });
+  // A series goes without etag: Rukoo only knows the version of the occurrence, not of the series.
+  async remove(cal, event, { notify = false, series = false, etag = null } = {}) {
+    const whole = series && event.seriesId;
+    await this.request('DELETE', this.eventPath(cal, whole ? event.seriesId : event.eventId), { query: { sendUpdates: notify ? 'all' : 'none' }, etag: whole ? null : etag });
   }
 
   // An answer to an invitation: only the user's own entry, with attendeesOmitted, which tells Google the list is

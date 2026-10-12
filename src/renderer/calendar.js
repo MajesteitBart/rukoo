@@ -621,7 +621,7 @@ function popHtml(e) {
   const guests = e.attendees || [];
   const actions = [
     e.canEdit ? `<button class="icon-btn sm" data-pop="edit" title="${esc(t('calendar.event.editShortcut'))}">${icons.edit}</button>` : '',
-    e.canEdit ? `<button class="icon-btn sm" data-pop="delete" title="${esc(t('calendar.event.deleteShortcut'))}">${icons.trash}</button>` : '',
+    e.canDelete ? `<button class="icon-btn sm" data-pop="delete" title="${esc(t('calendar.event.deleteShortcut'))}">${icons.trash}</button>` : '',
     e.link ? `<button class="icon-btn sm" data-href="${esc(e.link)}" title="${esc(t('calendar.event.openGoogle'))}">${icons.popOut}</button>` : '',
     `<button class="icon-btn sm" data-pop="close" title="${esc(t('common.actions.close'))}">${icons.close}</button>`
   ].join('');
@@ -776,6 +776,24 @@ export function newEvent(preset = {}) {
 
 function fromEvent(e) {
   return { title: e.title, location: e.location, description: e.description, allDay: e.allDay, start: e.start, end: e.end, key: key(e.accountId, e.calendarId) };
+}
+
+// The event as the calendar store has it now, also when it moved; null when it is gone.
+async function latestVersion(e) {
+  try {
+    return await api('calendarEvent', e.id);
+  } catch (_) {
+    return null;
+  }
+}
+
+// The latest version with what the user changed on top: the title, place and description each on their own, the
+// times together. What the user left alone shows as it is now.
+function rebase(opened, mine, latest) {
+  const out = { ...fromEvent(latest), key: mine.key };
+  for (const k of ['title', 'location', 'description']) if (mine[k] !== opened[k]) out[k] = mine[k];
+  if (mine.allDay !== opened.allDay || mine.start !== opened.start || mine.end !== opened.end) Object.assign(out, { allDay: mine.allDay, start: mine.start, end: mine.end });
+  return out;
 }
 
 function formHtml(v, e) {
@@ -942,7 +960,8 @@ async function eventDialog(e, preset) {
       if (e) {
         const notify = await notifyGuests(e, 'update');
         if (notify === null) return;
-        saved = await api('calendarUpdate', e.id, input, { notify });
+        // The version this dialog opened: a newer one in the calendar makes the save fail instead of overwriting it.
+        saved = await api('calendarUpdate', e.id, input, { notify, etag: e.etag });
       } else {
         saved = await api('calendarCreate', { ...input, id: createId });
         prefs.calendar = chosen;
@@ -957,6 +976,13 @@ async function eventDialog(e, preset) {
       return;
     } catch (err) {
       values = { ...result, error: err.message };
+      // Changed elsewhere since the dialog opened: the dialog continues from the latest version, with the user's own
+      // changes on top, and the next Save applies them to that version.
+      const latest = e && (await latestVersion(e));
+      if (latest && latest.etag !== e.etag) {
+        values = { ...rebase(fromEvent(e), result, latest), error: t('calendar.dialog.changedElsewhere') };
+        e = latest;
+      }
     }
   }
 }
@@ -988,7 +1014,7 @@ async function removeEvent(e) {
   const notify = await notifyGuests(e, 'delete');
   if (notify === null) return;
   try {
-    await api('calendarDelete', e.id, { notify, series });
+    await api('calendarDelete', e.id, { notify, series, etag: e.etag });
     toast(t('calendar.event.deleted'));
   } catch (err) {
     toast(err.message, 5000);
@@ -1110,7 +1136,7 @@ export function onKey(ev) {
     return true;
   }
   if (typing) return false;
-  if (e && e.canEdit && !ctrl && (ev.key === 'Delete' || key === 'e')) {
+  if (e && !ctrl && ((ev.key === 'Delete' && e.canDelete) || (key === 'e' && e.canEdit))) {
     if (ev.key === 'Delete') removeEvent(e);
     else editEvent(e);
     return true;
