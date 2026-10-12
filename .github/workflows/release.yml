@@ -1,0 +1,120 @@
+name: Release Windows executables
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag (for example v1.0.0 or v1.1.0-rc.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Validate tag format
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$') {
+            throw 'Use vMAJOR.MINOR.PATCH, optionally followed by -alpha.N, -beta.N or -rc.N.'
+          }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tagged version and release commit
+        shell: pwsh
+        run: |
+          @'
+          const fs = require('node:fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const version = process.env.RELEASE_TAG.slice(1);
+          if ([pkg.version, lock.version, lock.packages[''].version].some(v => v !== version)) {
+            throw new Error('The tag, package.json and package-lock.json versions must match.');
+          }
+          '@ | node
+          if ($LASTEXITCODE -ne 0) { throw 'Release version validation failed.' }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release tags must point to a commit merged into main.' }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:e2e
+
+      - name: Build installer and portable executable
+        run: npm run dist -- --x64 --publish never
+
+      - name: Verify artifacts and write checksums
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $files = @("dist/Rukoo-Mail-Setup-$version.exe", "dist/Rukoo-Mail-Portable-$version.exe")
+          $checksums = foreach ($file in $files) {
+            if (!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) {
+              throw "Missing or empty release executable: $file"
+            }
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([System.IO.Path]::GetFileName($file))"
+          }
+          [System.IO.File]::WriteAllText("$pwd/dist/SHA256SUMS.txt", ($checksums -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            dist/Rukoo-Mail-Setup-*.exe
+            dist/Rukoo-Mail-Portable-*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release
+
+      - name: Publish release with executables and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum --check SHA256SUMS.txt
+          flags=(--latest)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            flags=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
+            --title "Rukoo Mail ${RELEASE_TAG#v}" "${flags[@]}"
+          gh release upload "$RELEASE_TAG" ./*.exe SHA256SUMS.txt
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
