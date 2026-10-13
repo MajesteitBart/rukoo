@@ -33,7 +33,10 @@ const { AgentHub } = require('./agents');
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
 
-const APP_ID = 'nl.bvdm.rukoo-mail';
+// Windows takes the taskbar icon and the handler for notification clicks from the Start menu shortcut with this ID,
+// and Electron writes such a shortcut the first time it shows a notification. A run from a checkout gets its own ID,
+// or its shortcut (named Electron, pointing at the checkout) takes over the installed app's icon.
+const APP_ID = app.isPackaged ? 'nl.bvdm.rukoo-mail' : 'nl.bvdm.rukoo-mail.dev';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
 const DARK_BAR = { color: '#141519', symbolColor: '#e6e8ee', height: 40 };
 const LIGHT_BAR = { color: '#f4f5f7', symbolColor: '#1a1c22', height: 40 };
