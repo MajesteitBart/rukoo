@@ -104,7 +104,7 @@ jobs:
           name: windows-release
           path: release
 
-      - name: Publish release with executables and checksums
+      - name: Publish the draft release with executables and checksums
         shell: bash
         run: |
           set -euo pipefail
@@ -114,7 +114,19 @@ jobs:
           if [[ "$RELEASE_TAG" == *-* ]]; then
             flags=(--prerelease --latest=false)
           fi
-          gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
-            --title "Rukoo Mail ${RELEASE_TAG#v}" "${flags[@]}"
-          gh release upload "$RELEASE_TAG" ./*.exe SHA256SUMS.txt
-          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
+          # The maintainer writes the title and notes in a draft release before the run.
+          if ! found=$(gh release view "$RELEASE_TAG" --json isDraft,name --jq '"\(.isDraft)\t\(.name)"'); then
+            echo "::error::There is no draft release for $RELEASE_TAG. Write one, then re-run the failed jobs."
+            exit 1
+          fi
+          IFS=$'\t' read -r draft title <<< "$found"
+          if [[ "$draft" != true ]]; then
+            echo "::error::$RELEASE_TAG is already published."
+            exit 1
+          fi
+          if [[ "$title" != "$RELEASE_TAG - "* ]]; then
+            echo "::error::Title the draft \"$RELEASE_TAG - Added ...\" or \"$RELEASE_TAG - Fixed ...\", then re-run the failed jobs."
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" ./*.exe SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --tag "$RELEASE_TAG" --verify-tag --draft=false "${flags[@]}"

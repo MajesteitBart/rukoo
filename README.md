@@ -139,14 +139,17 @@ npm run dist
 
 Download the Windows x64 installer or portable executable from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. These builds are currently unsigned.
 
+Versions follow [Semantic Versioning](https://semver.org): a patch release fixes things, a minor release adds features, and a major release breaks compatibility of behavior, integrations or stored data. Previews use `-alpha.N`, `-beta.N` or `-rc.N` and publish as prereleases. A release is worth making when a new download gives users something: a feature, a visible fix, a security fix or a dependency change that affects the app. Documentation, tests and tooling wait for the next one.
+
 Releases are started manually after a version tag exists. Pushing a branch or tag does not start a build. Maintainers prepare a release as follows:
 
-1. Choose the version using the [versioning rules](AGENTS.md#versioning-and-releases). Run `npm version <version> --no-git-tag-version`, commit the package and lockfile changes, and merge the reviewed PR into `main` after release checks.
-2. On the tested `main` commit, create and push an annotated tag, for example `git tag -a v1.0.0 -m "Rukoo Mail 1.0.0"` followed by `git push origin v1.0.0`.
-3. Open **Actions → Release Windows executables → Run workflow**, select `main`, and enter `v1.0.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.0.0`. The workflow must be merged into the default branch before manual dispatch is available.
-4. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds both executables, verifies their checksums, and publishes the release after uploading all files. Review the generated release notes and add known limitations or migration instructions.
+1. Run `npm version <version> --no-git-tag-version`, commit the package and lockfile changes, and merge the reviewed PR into `main`. Before merging, run `npm test`, `npm run test:e2e` and `npm run dist`, and start the built app with a demo profile.
+2. Write the release as a draft on GitHub. Title it `v<version> - Added …` when it adds features, or `v<version> - Fixed …` when it only fixes things, for example `v1.1.0 - Added CalDAV calendars and Microsoft sign-in`. The notes tell users what changed, with known limitations and migration steps. `gh release create v1.1.0 --draft --title "…" --notes-file notes.md` writes the draft without creating the tag.
+3. On the tested `main` commit, create and push an annotated tag, for example `git tag -a v1.1.0 -m "Rukoo Mail 1.1.0"` followed by `git push origin v1.1.0`.
+4. Open **Actions → Release Windows executables → Run workflow**, select `main`, and enter `v1.1.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.1.0`.
+5. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds both executables and verifies their checksums. It then uploads them to the draft and publishes it.
 
-Tags such as `v1.1.0-rc.1` publish as prereleases without becoming the latest stable release. A repeated run cannot overwrite an existing release. If publication fails and leaves an incomplete draft, inspect and delete that draft before retrying; keep the tag. Release publication uses GitHub Actions' built-in token and needs no personal token or extra secrets.
+Tags such as `v1.1.0-rc.1` publish as prereleases without becoming the latest stable release. A stable release for an older version line does become the latest, so clear that on GitHub afterwards. The workflow stops when the tag has no draft, when the draft's title doesn't start with the tag, or when the release is already published. Never move or reuse a published tag; ship a new version for corrections. If publication fails, fix the cause and choose **Re-run failed jobs**: the build is kept, and the upload replaces files from the earlier attempt. Release publication uses GitHub Actions' built-in token and needs no personal token or extra secrets.
 
 ## Tests
 
