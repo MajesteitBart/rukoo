@@ -305,9 +305,10 @@ function sidebarCollapsed() {
 }
 
 function listWidth() {
-  // The docked chat plus its handle and the workspace's right edge.
+  // The docked chat plus its handle and the workspace's right edge. The 2 px after it: the workspace's left
+  // edge and the divider between the list and the reader.
   const agent = agentDocked() ? agentWidth() + 2 : 0;
-  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - agent - 420));
+  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - agent - 2 - 420));
   return Math.round(Math.max(LIST_MIN, Math.min(max, prefs.listWidth)));
 }
 

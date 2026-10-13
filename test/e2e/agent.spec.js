@@ -705,10 +705,15 @@ test('the panel docks in wide windows, slides over the reader in narrower ones a
   await expect(pane()).toBeVisible();
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(820, 700));
-  // The panel covers the whole workspace.
+  // The panel covers the whole workspace, its left edge included.
   await expect
-    .poll(() => win.evaluate(() => Math.abs(Math.round(document.querySelector('.agentpane').getBoundingClientRect().width - document.querySelector('.workspace').clientWidth))))
-    .toBe(0);
+    .poll(() =>
+      win.evaluate(() => {
+        const [pane, workspace] = ['.agentpane', '.workspace'].map((s) => document.querySelector(s).getBoundingClientRect());
+        return [pane.left - workspace.left, pane.right - workspace.right].map((d) => Math.abs(Math.round(d)));
+      })
+    )
+    .toEqual([0, 0]);
   expect(await win.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(860);
   await settled();
   await win.screenshot({ path: path.join(SHOTS, '08-narrow.png') });
