@@ -176,14 +176,26 @@ class McpServer {
     });
   }
 
+  // Answers once the request is read, like the 413 above. Answering mid-body closes the socket while the rest
+  // still arrives, and the reset can reach the client before the answer does: the bridge's probes send their
+  // body after the headers.
   reject(req, res, status, body, extra) {
-    // Drain the request so keep-alive connections stay usable.
-    req.resume();
-    if (req.method === 'HEAD') {
-      res.writeHead(status, { 'Content-Type': 'application/json', ...extra });
-      return res.end();
+    const answer = () => {
+      if (req.method === 'HEAD') {
+        res.writeHead(status, { 'Content-Type': 'application/json', ...extra });
+        return res.end();
+      }
+      return json(res, status, body, extra);
+    };
+    if (Number(req.headers['content-length'] || 0) > MAX_ABSURD) {
+      answer();
+      req.destroy();
+      return;
     }
-    return json(res, status, body, extra);
+    req.on('error', () => {});
+    req.once('end', answer);
+    // Drained, the request also leaves a keep-alive connection usable.
+    req.resume();
   }
 
   // The fixed text plus the skills there are now. A skills folder that can't be read leaves the fixed text.

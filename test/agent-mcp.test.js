@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const net = require('net');
 const { McpServer } = require('../src/main/agents/mcp');
 const { AgentHub } = require('../src/main/agents/hub');
 const { Engine } = require('../src/main/engine');
@@ -185,6 +186,43 @@ test("the remote listener proves it has the key when asked, and tells the bridge
     assert.deepEqual(hello.json.result, { owns: true, idle: 5, agent: 'clark' });
     assert.equal((await request(port, { body: rpc(3, 'rukoo/hello'), token: null })).status, 401);
   } finally {
+    await server.close();
+  }
+});
+
+// Python's http.client, which the Hermes bridge uses, writes the body after the headers and asks to close the
+// connection. A socket closed while the body is still arriving gets reset, and on Windows the reset wipes the
+// answer before the bridge reads it.
+test('a refused request is answered after its body is in, so a late body cannot reset the answer away', async () => {
+  const server = new McpServer({ hub: { ...fakeHub(), proof: (c, endpoint) => `proof-of-${endpoint}-${c}` } });
+  const port = await server.listen({ host: '127.0.0.1', port: 0, remote: true });
+  // Resolves with the response once the server has handled the headers, whenever that happens.
+  const handled = new Promise((resolve) => {
+    const handle = server.handle.bind(server);
+    server.handle = (entry, req, res) => {
+      handle(entry, req, res);
+      resolve(res);
+    };
+  });
+  const body = JSON.stringify(rpc(0, 'ping'));
+  const socket = net.connect(port, '127.0.0.1');
+  try {
+    await new Promise((r) => socket.once('connect', r));
+    const received = [];
+    socket.on('data', (d) => received.push(d));
+    const ended = new Promise((r) => socket.once('end', r));
+    socket.write(
+      `POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n` +
+        'X-Rukoo-Challenge: abcdefghijklmnop_-12\r\nConnection: close\r\n\r\n'
+    );
+    assert.equal((await handled).headersSent, false, 'no answer before the body is in');
+    socket.write(body);
+    await ended;
+    const answer = Buffer.concat(received).toString('utf8');
+    assert.match(answer, /^HTTP\/1\.1 401 /);
+    assert.match(answer, new RegExp(`x-rukoo-proof: proof-of-127\\.0\\.0\\.1:${port}-abcdefghijklmnop_-12`, 'i'));
+  } finally {
+    socket.destroy();
     await server.close();
   }
 });
