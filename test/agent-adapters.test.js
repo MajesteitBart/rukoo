@@ -1444,13 +1444,17 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   const laptop = await fakeRukoo({ key: 'hermes-key', idle: 300, chats: ['c_laptop'] });
   const desktop = await fakeRukoo({ key: 'hermes-key', idle: 5 });
   const other = await fakeRukoo({ key: 'another-key' });
+  // These answer once the request is in, as Rukoo does: answered earlier, the bridge's probe can lose the answer
+  // to a reset (see agent-mcp.test.js).
   const plain = async (status, body) => {
     const seen = [];
     const server = http.createServer((req, res) => {
       seen.push(req.headers.authorization || null);
+      req.on('end', () => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(body);
+      });
       req.resume();
-      res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(body);
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     return { server, seen, url: `http://127.0.0.1:${server.address().port}/mcp` };
@@ -1460,14 +1464,16 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   const relayAuth = [];
   const relay = http.createServer((req, res) => {
     relayAuth.push(req.headers.authorization || null);
-    req.resume();
-    const forward = http.request(desktop.url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-rukoo-challenge': req.headers['x-rukoo-challenge'] || '' } }, (answer) => {
-      answer.resume();
-      res.writeHead(401, { 'Content-Type': 'application/json', ...(answer.headers['x-rukoo-proof'] ? { 'X-Rukoo-Proof': answer.headers['x-rukoo-proof'] } : {}) });
-      res.end('{"error":"unauthorized"}');
+    req.on('end', () => {
+      const forward = http.request(desktop.url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-rukoo-challenge': req.headers['x-rukoo-challenge'] || '' } }, (answer) => {
+        answer.resume();
+        res.writeHead(401, { 'Content-Type': 'application/json', ...(answer.headers['x-rukoo-proof'] ? { 'X-Rukoo-Proof': answer.headers['x-rukoo-proof'] } : {}) });
+        res.end('{"error":"unauthorized"}');
+      });
+      forward.on('error', () => res.end());
+      forward.end('{"jsonrpc":"2.0","id":0,"method":"ping"}');
     });
-    forward.on('error', () => res.end());
-    forward.end('{"jsonrpc":"2.0","id":0,"method":"ping"}');
+    req.resume();
   });
   await new Promise((r) => relay.listen(0, '127.0.0.1', r));
   const stranger = await plain(404, '{"error":"not found"}');
