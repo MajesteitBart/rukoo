@@ -78,8 +78,8 @@ function provider(server, { password = 'secret' } = {}) {
 const WEEK = { start: Date.UTC(2026, 2, 23), end: Date.UTC(2026, 3, 1) };
 
 test('the calendar server address: a host name means https, plain http only for a server on this PC', () => {
-  assert.equal(serverUrl('api.cirrux.co'), 'https://api.cirrux.co/');
-  assert.equal(serverUrl(' https://api.cirrux.co/caldav/ '), 'https://api.cirrux.co/caldav/');
+  assert.equal(serverUrl('dav.example.net'), 'https://dav.example.net/');
+  assert.equal(serverUrl(' https://dav.example.net/caldav/ '), 'https://dav.example.net/caldav/');
   assert.equal(serverUrl('https://me:pw@dav.example.com/x#y'), 'https://dav.example.com/x');
   assert.equal(serverUrl('http://127.0.0.1:5232/'), 'http://127.0.0.1:5232/');
   assert.equal(serverUrl('http://localhost:5232'), 'http://localhost:5232/');
