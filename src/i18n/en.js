@@ -1891,6 +1891,10 @@
     "message": "The calendar server sent Rukoo on to {host}. Rukoo only gives your password to the server you entered; enter {host} in Server settings if you trust it.",
     "description": "Calendar and Server settings error when the CalDAV server redirects, or points its calendars, to a host other than the one the user entered; host is that host name. src/main/calendar/caldav.js (request, homeFrom)"
   },
+  "errors.caldav.reconfigured": {
+    "message": "The calendar server in Server settings changed while this was on its way. Try again.",
+    "description": "Calendar error when a request to the old CalDAV server was still running after the user entered another server in Server settings; Rukoo doesn't send the new password to the old server. src/main/calendar/index.js (provider)"
+  },
   "errors.google.aliases": {
     "message": "Gmail did not return aliases ({status}).",
     "description": "errors > google. src/main/engine.js"

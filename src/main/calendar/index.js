@@ -83,13 +83,18 @@ class Calendars extends EventEmitter {
       else {
         // The account's sign-in and addresses as they are at each request, so a new password applies right away. The
         // server is the one this provider was made for, also when Server settings name another one by the time it
-        // finds its home.
+        // finds its home; once they do, a request it still had running gets no password at all, so the new password
+        // never reaches the old server.
         const current = () => this.engine.account(acc.id);
         const { url } = acc.caldav;
         p = new CalDavCalendar({
           url,
           home: acc.caldav.home || null,
-          credentials: () => ({ user: (current().imap && current().imap.user) || current().email, password: this.engine.credentials(current()) }),
+          credentials: () => {
+            const now = current();
+            if (!now.caldav || now.caldav.url !== url) throw calendarError('reconfigured', t('errors.caldav.reconfigured'));
+            return { user: (now.imap && now.imap.user) || now.email, password: this.engine.credentials(now) };
+          },
           addresses: () => this.engine.identities(current()).map((i) => i.address),
           onHome: (home) => this.engine.setCalDavHome(acc.id, home, url),
           fetchImpl: this.fetch
@@ -485,8 +490,10 @@ class Calendars extends EventEmitter {
     if (!event.canDelete) throw calendarError('read_only', t('errors.calendar.readOnly'));
     const job = () => p.remove(cal, event, { notify, series, etag });
     try {
-      // A whole series goes without a version: Rukoo only knows the occurrence's.
-      await this.change(acc, cache, event, series && event.seriesId ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job));
+      // A whole series goes without a version where Rukoo only knows the occurrence's (Google). A provider whose series
+      // is one object with one version (CalDAV) checks it like any other change.
+      const unversioned = series && event.seriesId && !p.versionedSeries;
+      await this.change(acc, cache, event, unversioned ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job));
     } catch (err) {
       // Already gone, for instance after a first try whose answer got lost: the event or series is deleted, as asked.
       if (!err || err.code !== 'not_found') throw err;

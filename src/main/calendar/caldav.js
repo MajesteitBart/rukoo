@@ -329,9 +329,9 @@ function toEvent(comp, { cal, href, etag, me, rid = null, seriesId = null, locke
   const organizer = org ? { ...person(org), self: false } : null;
   if (organizer) organizer.self = !organizer.address || me.has(organizer.address);
   const own = !organizer || organizer.self;
-  const attendees = comp
+  // Rooms and resources aren't shown as guests, but a change still reaches them.
+  const everyone = comp
     .getAllProperties('attendee')
-    .filter((p) => !/^(room|resource)$/i.test(String(p.getParameter('cutype') || '')))
     .map((p) => {
       const who = person(p);
       return {
@@ -339,14 +339,17 @@ function toEvent(comp, { cal, href, etag, me, rid = null, seriesId = null, locke
         response: PARTSTAT[String(p.getParameter('partstat') || 'NEEDS-ACTION').toUpperCase()] || 'needsAction',
         self: me.has(who.address),
         organizer: Boolean(organizer && organizer.address && organizer.address === who.address),
-        optional: /^opt-participant$/i.test(String(p.getParameter('role') || ''))
+        optional: /^opt-participant$/i.test(String(p.getParameter('role') || '')),
+        booked: /^(room|resource)$/i.test(String(p.getParameter('cutype') || ''))
       };
     })
     .filter((a) => a.address);
+  const attendees = everyone.filter((a) => !a.booked).map(({ booked, ...a }) => a);
   const mine = attendees.find((a) => a.self);
-  // A meeting with guests stays as it is: depending on the server, a change would email them without Rukoo asking.
-  // An invitation can be answered where the server tells the organizer (cal.scheduling).
-  const guests = attendees.filter((a) => !a.self && !(own && a.organizer));
+  // A meeting with guests, or with a room or resource booked, stays as it is: depending on the server, a change would
+  // email them or change the booking without Rukoo asking. An invitation can be answered where the server tells the
+  // organizer (cal.scheduling).
+  const guests = everyone.filter((a) => !a.self && !(own && a.organizer));
   const changeable = Boolean(cal.writable && own && !guests.length && !locked);
   const location = String(comp.getFirstPropertyValue('location') || '').trim();
   const description = plainDescription(comp.getFirstPropertyValue('description'));
@@ -604,8 +607,10 @@ class CalDavCalendar {
     this.addresses = addresses;
     this.onHome = onHome;
     this.fetch = fetchImpl;
-    // Every calendar object has an etag, and a change can be made to apply only to that version.
+    // Every calendar object has an etag, and a change can be made to apply only to that version. A series is one
+    // object, so deleting it can be made to apply only to the version the user saw as well.
     this.versioned = true;
+    this.versionedSeries = true;
   }
 
   me() {
@@ -849,12 +854,14 @@ class CalDavCalendar {
     return e;
   }
 
-  // An event, a whole series (without a version: Rukoo only knows the occurrence's), or one occurrence, which the
-  // series then leaves out (EXDATE).
+  // An event, a whole series, or one occurrence, which the series then leaves out (EXDATE); each only on the version
+  // the user saw.
   async remove(cal, event, { series = false, etag = null } = {}) {
     const { href, rid } = splitId(event.eventId);
     if (!rid || (series && event.seriesId)) {
-      const res = await this.request('DELETE', series && event.seriesId ? event.seriesId : href, { etag: series ? null : etag });
+      // The whole series is one calendar object, whose version every occurrence carries: a series changed elsewhere in
+      // the meantime is refused (412) rather than deleted.
+      const res = await this.request('DELETE', series && event.seriesId ? event.seriesId : href, { etag });
       if (!res.ok) throw httpError(res.status, { write: true });
       return;
     }

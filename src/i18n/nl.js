@@ -478,6 +478,7 @@
   "errors.caldav.insecure": "Gebruik een https://-adres. Rukoo stuurt je wachtwoord alleen over een versleutelde verbinding.",
   "errors.caldav.invalidUrl": "Dat is geen webadres.",
   "errors.caldav.elsewhere": "De agendaserver stuurde Rukoo door naar {host}. Rukoo geeft je wachtwoord alleen aan de server die je hebt ingevuld; vul {host} in bij Serverinstellingen als je die vertrouwt.",
+  "errors.caldav.reconfigured": "De agendaserver in Serverinstellingen is veranderd terwijl dit onderweg was. Probeer het opnieuw.",
   "errors.google.aliases": "Gmail gaf de aliassen niet terug ({status}).",
   "errors.google.aliasesAuth": "Alleen beschikbaar voor accounts met Google-aanmelding.",
   "errors.google.cancelled": "Aanmelden geannuleerd.",

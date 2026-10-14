@@ -228,12 +228,66 @@ test('deleting one occurrence excludes it from the series; deleting the series r
     assert.doesNotMatch(stored, /Stand-up, later/);
     assert.deepEqual((await p.events(home, WEEK.start, WEEK.end)).map((e) => new Date(e.start).toISOString()), ['2026-03-23T08:30:00.000Z']);
 
+    // The series is one object with one version, which every occurrence carries: deleting it on an older version is
+    // refused, and on the version the user saw it goes.
     const [monday] = await p.events(home, WEEK.start, WEEK.end);
-    await p.remove(home, monday, { series: true, etag: 'ignored' });
-    const del = server.requests.find((r) => r.method === 'DELETE');
-    // Rukoo only knows the occurrence's version, so the series goes without one.
-    assert.equal(del.ifMatch, null);
+    await assert.rejects(p.remove(home, monday, { series: true, etag: '"older"' }), { code: 'changed' });
+    assert.ok(server.object('home/standup.ics'));
+    await p.remove(home, monday, { series: true, etag: monday.etag });
+    const del = server.requests.filter((r) => r.method === 'DELETE').pop();
+    assert.equal(del.ifMatch, monday.etag);
     assert.equal(server.object('home/standup.ics'), null);
+  });
+});
+
+test('a series changed elsewhere is not deleted from an older version, and the store shows the latest one', async () => {
+  await withServer({ objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const monday = calendars.view(WEEK).events.find((e) => e.title === 'Stand-up');
+    // Another app renames the series.
+    server.put('home/standup.ics', STANDUP.replace('SUMMARY:Stand-up\r\n', 'SUMMARY:Daily sync\r\n'));
+    await assert.rejects(calendars.remove(monday.id, { series: true, etag: monday.etag }), { code: 'changed' });
+    assert.ok(server.object('home/standup.ics'));
+    const latest = calendars.event(monday.id);
+    assert.equal(latest.title, 'Daily sync');
+    assert.notEqual(latest.etag, monday.etag);
+    // On the version now shown, the series goes.
+    await calendars.remove(monday.id, { series: true, etag: latest.etag });
+    assert.equal(server.object('home/standup.ics'), null);
+    assert.equal(calendars.view(WEEK).events.length, 0);
+  });
+});
+
+test('a meeting with only a room or resource booked stays as it is, and the room is not shown as a guest', async () => {
+  const booked = ics(vevent('UID:booked', 'DTSTART:20260325T100000Z', 'DTEND:20260325T110000Z', 'SUMMARY:Focus time', `ORGANIZER:mailto:${ME}`, `ATTENDEE;PARTSTAT=ACCEPTED:mailto:${ME}`, 'ATTENDEE;CUTYPE=ROOM;CN=Room 4.12:mailto:room@example.com'));
+  const alone = ics(vevent('UID:alone', 'DTSTART:20260325T120000Z', 'DTEND:20260325T130000Z', 'SUMMARY:Lunch', `ORGANIZER:mailto:${ME}`, `ATTENDEE;PARTSTAT=ACCEPTED:mailto:${ME}`));
+  await withServer({ objects: { 'home/booked.ics': booked, 'home/alone.ics': alone } }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    const events = await p.events(home, WEEK.start, WEEK.end);
+    const room = events.find((e) => e.title === 'Focus time');
+    assert.deepEqual(room.attendees.map((a) => a.address), [ME]);
+    assert.equal(room.canEdit, false);
+    assert.equal(room.canDelete, false);
+    // With only the user as attendee, the event can still be changed.
+    assert.equal(events.find((e) => e.title === 'Lunch').canEdit, true);
+  });
+});
+
+test('a request the old calendar server still had running gets no password once another server is entered', async () => {
+  await withServer({ objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const { engine, calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    const old = calendars.provider(engine.account('c1'));
+    // The user enters another server with a new password; the old provider may still be on its way.
+    const acc = engine.account('c1');
+    acc.caldav = { url: 'https://new.example/', home: 'https://new.example/home/' };
+    acc.secret = 'new-password';
+    const before = server.requests.length;
+    await assert.rejects(old.request('PROPFIND', server.home, { depth: 0, body: '<x/>' }), { code: 'reconfigured' });
+    assert.equal(server.requests.length, before);
   });
 });
 
