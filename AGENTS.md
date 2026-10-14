@@ -98,7 +98,7 @@ Before declaring UI-impacting work complete:
 - Attach screenshots to the corresponding GitHub issue, even if work started without an issue. Create the issue by this point when needed; it was not a prerequisite for coding or pushing.
 - Show the affected screens and states. Include before-and-after captures when useful and a short explanation of what was verified.
 - Follow the design skill's checks for themes, languages, window width and zoom.
-- Upload images as GitHub issue attachments so they remain outside Git history. A local file path or screenshots only in a PR do not satisfy the issue requirement.
+- Upload images as GitHub issue attachments so they remain outside Git history: `gh issue comment <issue> --body-file <comment.md> --attach <file>`, with one `--attach` per image. A reference such as `![The saved draft](./tmp/screenshots/draft.png)` in the comment becomes the uploaded image; attached images the comment doesn't reference are added at the end. `--attach` needs GitHub CLI 2.99.0 or newer; check `gh --version` and update an older one. Where updating isn't possible, upload through the issue's comment box in a browser signed in to GitHub. A local file path or screenshots only in a PR do not satisfy the issue requirement.
 
 `node scripts/screenshots.js tmp/screenshots` captures the existing demo screens in both themes using an isolated profile. Capture additional states specifically when the script does not cover the change. Keep verification captures in ignored `tmp/`; never commit them. Documentation screenshots may remain tracked and can be updated intentionally with `npm run screenshots`.
 
