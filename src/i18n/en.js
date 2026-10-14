@@ -1108,7 +1108,7 @@
     "description": "Calendar view when none of the accounts has a calendar Rukoo can show. src/renderer/calendar.js (render)"
   },
   "calendar.empty.help": {
-    "message": "Rukoo shows the calendars of Google accounts. Add one under Settings → Accounts.",
+    "message": "Rukoo shows the calendars of Google accounts, and of other accounts with a CalDAV server in their Server settings. Add an account under Settings → Accounts.",
     "description": "Calendar view, under calendar.empty.title: which accounts have a calendar and where to add one. src/renderer/calendar.js (render)"
   },
   "calendar.empty.upcoming": {
@@ -1138,6 +1138,10 @@
   "calendar.errors.noWritable": {
     "message": "None of your calendars takes new events.",
     "description": "Toast when the user wants to create an event but every shown calendar is read-only. src/renderer/calendar.js (eventDialog)"
+  },
+  "calendar.errors.serverSettings": {
+    "message": "Server settings",
+    "description": "Button in the calendar notice of an account whose CalDAV server failed; it opens that account's Server settings. src/renderer/calendar.js (noticesHtml)"
   },
   "calendar.event.new": {
     "message": "New event",
@@ -1846,6 +1850,50 @@
   "errors.calendar.unreachable": {
     "message": "Can't reach Google Calendar. Check your internet connection.",
     "description": "Calendar error when the request to Google fails or times out. src/main/calendar/google.js"
+  },
+  "errors.caldav.signIn": {
+    "message": "The calendar server turned down the username or password. Check them in Server settings.",
+    "description": "Calendar error when the CalDAV server answers 401 to the account's username and password. Shown in the calendar notice and under the Server settings form. src/main/calendar/caldav.js"
+  },
+  "errors.caldav.unreachable": {
+    "message": "Can't reach the calendar server. Check its address and your internet connection.",
+    "description": "Calendar error when a request to the CalDAV server fails or times out. src/main/calendar/caldav.js"
+  },
+  "errors.caldav.busy": {
+    "message": "The calendar server is busy. Try again in a minute.",
+    "description": "Calendar error when the CalDAV server answers 429 or 503. src/main/calendar/caldav.js"
+  },
+  "errors.caldav.request": {
+    "message": "The calendar server refused the request ({reason}).",
+    "description": "Calendar error for any other refusal by the CalDAV server; reason is the HTTP status code. src/main/calendar/caldav.js"
+  },
+  "errors.caldav.badAnswer": {
+    "message": "The calendar server sent an answer Rukoo can't read.",
+    "description": "Calendar error when the CalDAV server answers with something other than the expected XML or iCalendar data. src/main/calendar/caldav.js"
+  },
+  "errors.caldav.notFound": {
+    "message": "No CalDAV server answers at this address. Enter the CalDAV address your provider gives.",
+    "description": "Server settings error when neither the address the user entered nor its /.well-known/caldav leads to a CalDAV calendar home. src/main/calendar/caldav.js (discover)"
+  },
+  "errors.caldav.noCalendars": {
+    "message": "The calendar server has no calendars with events for this account.",
+    "description": "Server settings error when the CalDAV server answers but lists no calendar that holds events (only task lists, for example). src/main/calendar/caldav.js (discoverCalDav)"
+  },
+  "errors.caldav.insecure": {
+    "message": "Use an https:// address. Rukoo only sends your password over an encrypted connection.",
+    "description": "Server settings error when the CalDAV address uses http:// for a server that is not on this PC. src/main/calendar/caldav.js (serverUrl)"
+  },
+  "errors.caldav.invalidUrl": {
+    "message": "That isn't a web address.",
+    "description": "Server settings error when the CalDAV address can't be read as an http or https address. src/main/calendar/caldav.js (serverUrl)"
+  },
+  "errors.caldav.elsewhere": {
+    "message": "The calendar server sent Rukoo on to {host}. Rukoo only gives your password to the server you entered; enter {host} in Server settings if you trust it.",
+    "description": "Calendar and Server settings error when the CalDAV server redirects, or points its calendars, to a host other than the one the user entered; host is that host name. src/main/calendar/caldav.js (request, homeFrom)"
+  },
+  "errors.caldav.reconfigured": {
+    "message": "The calendar server in Server settings changed while this was on its way. Try again.",
+    "description": "Calendar error when a request to the old CalDAV server was still running after the user entered another server in Server settings; Rukoo doesn't send the new password to the old server. src/main/calendar/index.js (provider)"
   },
   "errors.google.aliases": {
     "message": "Gmail did not return aliases ({status}).",
@@ -3293,6 +3341,18 @@
   "settings.server.saved": {
     "message": "Server settings saved",
     "description": "settings > server. src/renderer/settings.js (openSettings)"
+  },
+  "settings.server.caldav": {
+    "message": "Calendar server (CalDAV)",
+    "description": "Server settings form: label of the optional field for the address of the account's CalDAV calendar server. src/renderer/settings.js (render)"
+  },
+  "settings.server.caldavPlaceholder": {
+    "message": "Optional, for example caldav.example.com",
+    "description": "Server settings form: placeholder in the empty CalDAV address field. src/renderer/settings.js (render)"
+  },
+  "settings.server.caldavHelp": {
+    "message": "Rukoo signs in with the username and password above. Leave this empty to show no calendar for this account.",
+    "description": "Server settings form: help text under the CalDAV address field. src/renderer/settings.js (render)"
   },
   "settings.signature.generalValue": {
     "message": "General: {signature}",

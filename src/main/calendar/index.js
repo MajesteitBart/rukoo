@@ -10,6 +10,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { CALENDAR_SCOPES } = require('../google');
 const { GoogleCalendar, calendarError, localDay } = require('./google');
+const { CalDavCalendar } = require('./caldav');
 const { DemoCalendar } = require('./demo');
 
 const DAY = 86400000;
@@ -51,14 +52,21 @@ class Calendars extends EventEmitter {
     this.loading = new Map();
     this.saveTimers = new Map();
     engine.on('account-removed', (acc) => this.forget(acc));
+    // A new calendar server, or none: what the cache holds came from the old one.
+    engine.on('calendar-changed', (acc) => {
+      this.forget(acc);
+      this.emit('updated');
+    });
   }
 
   // ---------- accounts ----------
 
-  // How an account gets its calendar: 'demo', 'google', 'reconnect' for a Google account whose grant doesn't
-  // include the calendar, or null when Rukoo has no calendar for that kind of account.
+  // How an account gets its calendar: 'demo', 'google', 'caldav' for an account with a CalDAV server in its Server
+  // settings, 'reconnect' for a Google account whose grant doesn't include the calendar, or null when Rukoo has no
+  // calendar for the account.
   kind(acc) {
     if (acc.type === 'demo') return 'demo';
+    if (acc.type === 'imap' && acc.auth !== 'oauth2' && acc.caldav && acc.caldav.url) return 'caldav';
     if (acc.provider !== 'google') return null;
     const scopes = acc.auth === 'oauth2' ? acc.scopes || [] : [];
     return CALENDAR_SCOPES.every((s) => scopes.includes(s)) ? 'google' : 'reconnect';
@@ -66,15 +74,33 @@ class Calendars extends EventEmitter {
 
   provider(acc) {
     const kind = this.kind(acc);
-    if (kind !== 'demo' && kind !== 'google') return null;
+    if (kind !== 'demo' && kind !== 'google' && kind !== 'caldav') return null;
     const key = `${acc.id}:${kind}`;
     if (!this.providers.has(key)) {
-      this.providers.set(
-        key,
-        kind === 'demo'
-          ? new DemoCalendar(path.join(this.dataDir, 'demo-calendar.json'), acc)
-          : new GoogleCalendar({ token: () => this.engine.accessToken(this.engine.account(acc.id)), fetchImpl: this.fetch })
-      );
+      let p;
+      if (kind === 'demo') p = new DemoCalendar(path.join(this.dataDir, 'demo-calendar.json'), acc);
+      else if (kind === 'google') p = new GoogleCalendar({ token: () => this.engine.accessToken(this.engine.account(acc.id)), fetchImpl: this.fetch });
+      else {
+        // The account's sign-in and addresses as they are at each request, so a new password applies right away. The
+        // server is the one this provider was made for, also when Server settings name another one by the time it
+        // finds its home; once they do, a request it still had running gets no password at all, so the new password
+        // never reaches the old server.
+        const current = () => this.engine.account(acc.id);
+        const { url } = acc.caldav;
+        p = new CalDavCalendar({
+          url,
+          home: acc.caldav.home || null,
+          credentials: () => {
+            const now = current();
+            if (!now.caldav || now.caldav.url !== url) throw calendarError('reconfigured', t('errors.caldav.reconfigured'));
+            return { user: (now.imap && now.imap.user) || now.email, password: this.engine.credentials(now) };
+          },
+          addresses: () => this.engine.identities(current()).map((i) => i.address),
+          onHome: (home) => this.engine.setCalDavHome(acc.id, home, url),
+          fetchImpl: this.fetch
+        });
+      }
+      this.providers.set(key, p);
     }
     return this.providers.get(key);
   }
@@ -402,7 +428,9 @@ class Calendars extends EventEmitter {
   // A change made on the version of the event the user saw (etag). When the provider has a newer one, the change
   // fails and the cache gets that version, so the user sees it before trying again; when the event is gone, it leaves
   // the cache. An event cached before Rukoo kept versions has none to send, so it counts as changed as well.
-  async unlessChanged(acc, p, cache, cal, event, etag, job) {
+  // series: the change is to the whole series the event belongs to. Then only this occurrence can turn out to be
+  // gone; the series may still be there, so that counts as changed, and only the occurrence leaves the cache.
+  async unlessChanged(acc, p, cache, cal, event, etag, job, { series = false } = {}) {
     try {
       if (p.versioned && !etag) throw calendarError('changed', t('errors.calendar.changed'));
       return await job();
@@ -412,6 +440,12 @@ class Calendars extends EventEmitter {
       try {
         latest = await p.get(cal, event.eventId);
       } catch (gone) {
+        if (gone && gone.code === 'not_found' && series) {
+          cache.events = cache.events.filter((e) => !sameEvent(e, event));
+          this.persist(acc.id);
+          this.emit('updated');
+          throw err;
+        }
         // Deleted in the meantime: that is the news. Any other failure leaves the cache as it was.
         throw gone && gone.code === 'not_found' ? gone : err;
       }
@@ -464,8 +498,11 @@ class Calendars extends EventEmitter {
     if (!event.canDelete) throw calendarError('read_only', t('errors.calendar.readOnly'));
     const job = () => p.remove(cal, event, { notify, series, etag });
     try {
-      // A whole series goes without a version: Rukoo only knows the occurrence's.
-      await this.change(acc, cache, event, series && event.seriesId ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job));
+      // A whole series goes without a version where Rukoo only knows the occurrence's (Google). A provider whose series
+      // is one object with one version (CalDAV) checks it like any other change.
+      const whole = Boolean(series && event.seriesId);
+      const unversioned = whole && !p.versionedSeries;
+      await this.change(acc, cache, event, unversioned ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job, { series: whole }));
     } catch (err) {
       // Already gone, for instance after a first try whose answer got lost: the event or series is deleted, as asked.
       if (!err || err.code !== 'not_found') throw err;

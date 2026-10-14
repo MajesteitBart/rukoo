@@ -10,6 +10,7 @@ const { simpleParser } = require('mailparser');
 const { ImapAccount, friendlyError } = require('./imap');
 const { DemoAccount, DEMO_EMAIL } = require('./demo');
 const { serverDefaults, publicProviders } = require('./providers');
+const { discoverCalDav, serverUrl } = require('./calendar/caldav');
 const util = require('./mailutil');
 const { normalizeZoom } = require('./zoom');
 
@@ -349,6 +350,7 @@ class Engine extends EventEmitter {
       defaultFrom: this.identity(acc).address,
       imap: acc.imap ? { ...acc.imap } : null,
       smtp: acc.smtp ? { ...acc.smtp } : null,
+      caldav: acc.caldav ? { url: acc.caldav.url } : null,
       isDefault: this.defaultAccount() === acc,
       lastSync: cache.lastSync || null,
       error: cache.error || null,
@@ -450,23 +452,52 @@ class Engine extends EventEmitter {
       this.persistSettings();
     }
     const serverChange = patch.imap || patch.smtp || patch.password;
-    if (serverChange && acc.type === 'imap') {
+    if ((serverChange || patch.caldav !== undefined) && acc.type === 'imap') {
       const next = {
         ...acc,
         imap: { ...acc.imap, ...(patch.imap || {}) },
         smtp: { ...acc.smtp, ...(patch.smtp || {}) },
         secret: patch.password && acc.auth !== 'oauth2' ? this.secrets.encrypt(patch.password) : acc.secret
       };
-      const probe = new ImapAccount(next, this.credentials(next));
-      await probe.verify();
+      if (serverChange) {
+        const probe = new ImapAccount(next, this.credentials(next));
+        await probe.verify();
+      }
+      // The calendar server is checked with the same username and password, and only saved when it answers.
+      const calendar = patch.caldav !== undefined && acc.auth !== 'oauth2' ? await this.checkCalDav(acc, next, patch) : undefined;
       Object.assign(acc, next);
-      const old = this.sessions.get(id);
-      this.sessions.delete(id);
-      if (old) old.close();
+      if (calendar !== undefined) acc.caldav = calendar.caldav;
+      if (serverChange) {
+        const old = this.sessions.get(id);
+        this.sessions.delete(id);
+        if (old) old.close();
+      }
+      if (calendar && calendar.changed) this.emit('calendar-changed', acc);
     }
     this.persistAccounts();
     this.emit('updated');
     return this.publicAccount(acc);
+  }
+
+  // The CalDAV server from Server settings: { caldav, changed }, where caldav is null for none. The same address
+  // with the same sign-in isn't checked again.
+  async checkCalDav(acc, next, patch) {
+    const text = String((patch.caldav && patch.caldav.url) || '').trim();
+    if (!text) return { caldav: null, changed: Boolean(acc.caldav) };
+    const url = serverUrl(text);
+    const user = next.imap.user || acc.email;
+    if (acc.caldav && acc.caldav.url === url && !patch.password && user === (acc.imap.user || acc.email)) return { caldav: acc.caldav, changed: false };
+    const found = await discoverCalDav({ url, user, password: this.credentials(next), fetchImpl: this.fetch });
+    return { caldav: { url: found.url, home: found.home }, changed: true };
+  }
+
+  // Where the account's calendars live, found again after the server moved them. url: the server it was found on; a
+  // search that started before the user entered another server must not leave the old server's home behind.
+  setCalDavHome(id, home, url) {
+    const acc = this.accounts.find((a) => a.id === id);
+    if (!acc || !acc.caldav || acc.caldav.url !== url || acc.caldav.home === home) return;
+    acc.caldav = { ...acc.caldav, home };
+    this.persistAccounts();
   }
 
   async removeAccount(id) {

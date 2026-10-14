@@ -336,7 +336,13 @@ function noticesHtml() {
           <button class="btn sm" data-cal-dismiss="${esc(a.id)}">${esc(t('calendar.connect.later'))}</button>
           <button class="btn sm primary" data-cal-reconnect="${esc(a.id)}">${esc(t('calendar.connect.action'))}</button></div>`;
       }
-      const open = a.error && a.error.url ? `<button class="btn sm" data-href="${esc(a.error.url)}">${esc(t('calendar.errors.openCloud'))}</button>` : '';
+      // A CalDAV server's address and sign-in live in the account's Server settings.
+      const open =
+        a.error && a.error.url
+          ? `<button class="btn sm" data-href="${esc(a.error.url)}">${esc(t('calendar.errors.openCloud'))}</button>`
+          : a.kind === 'caldav'
+            ? `<button class="btn sm" data-cal-server="${esc(a.id)}">${esc(t('calendar.errors.serverSettings'))}</button>`
+            : '';
       return `<div class="cal-notice error" role="status"><span class="ic">${icons.info}</span>
         <div class="text"><div class="t">${esc(a.email)}</div><div class="d">${esc(a.error ? a.error.message : '')}</div></div>
         ${open}<button class="btn sm secondary" data-cal-retry="${esc(a.id)}">${esc(t('common.actions.retry'))}</button></div>`;
@@ -1103,6 +1109,7 @@ function bind() {
       api('calendarSync', d.calRetry).catch((err) => toast(err.message, 5000));
       return;
     }
+    if (d.calServer) return ctx.openSettings('server', { id: d.calServer });
     if (d.calDay) {
       C.date = Number(d.calDay);
       return setView('day');

@@ -286,4 +286,4 @@ class GoogleCalendar {
   }
 }
 
-module.exports = { GoogleCalendar, toEvent, apiError, calendarError, dayKey, localDay };
+module.exports = { GoogleCalendar, toEvent, apiError, calendarError, dayKey, localDay, plainDescription };

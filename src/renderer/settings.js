@@ -45,6 +45,13 @@ const hideableViews = () => [
 ];
 
 const labelOf = (list, value) => (list.find((x) => x.value === value) || list[0]).label;
+const hostOf = (url) => {
+  try {
+    return new URL(url).host;
+  } catch (_) {
+    return url;
+  }
+};
 
 const AGENT_IDS = ['clark', 'claude', 'codex'];
 const AGENT_PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex' };
@@ -77,13 +84,14 @@ export function promptDialog(title, value = '', { multiline = false, placeholder
   });
 }
 
-// view: open straight on one page (the chat panel opens 'agents'); Back still leads to the overview.
-export function openSettings(ctx, { view: start } = {}) {
+// view: open straight on one page (the chat panel opens 'agents'); Back still leads to the overview. An account's
+// 'server' page needs the account's id, and Back from it leads to that account.
+export function openSettings(ctx, { view: start, id = null } = {}) {
   const page = document.createElement('div');
   page.className = 'page settings';
   document.getElementById('overlays').appendChild(page);
-  const stack = start ? ['main', start] : ['main'];
-  let params = {};
+  const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : ['main', start];
+  let params = id ? { id } : {};
 
   // Live status (sync times, errors) matters on the overview pages; forms must not be reset under the user.
   const unsubscribe = window.mail.on(({ type, payload }) => {
@@ -480,7 +488,7 @@ export function openSettings(ctx, { view: start } = {}) {
           ${a.isDefault ? '' : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' })}
           ${row({ title: t('settings.account.sync'), desc: a.lastSync ? t('settings.account.lastSync', { date: numericDate(a.lastSync), time: hhmm(a.lastSync) }) : '', action: 'acc-sync' })}
           ${a.provider === 'google' && s && state.googleAvailable ? row({ title: a.auth === 'oauth2' ? t('settings.account.googleReauth') : t('settings.account.googleSwitch'), desc: a.auth === 'oauth2' ? t('settings.account.googleReauthHelp') : t('settings.account.googleSwitchHelp'), action: 'acc-google' }) : ''}
-          ${a.type === 'imap' ? row({ title: t('settings.account.server'), desc: `${esc(a.imap.host)} / ${esc(a.smtp.host)}`, action: 'acc-server' }) : ''}
+          ${a.type === 'imap' ? row({ title: t('settings.account.server'), desc: [a.imap.host, a.smtp.host, a.caldav && hostOf(a.caldav.url)].filter(Boolean).map(esc).join(' / '), action: 'acc-server' }) : ''}
         </div>
         <div class="settings-group-title"></div>
         <div class="card">${row({ title: t('settings.account.remove'), action: 'acc-remove', cls: 'danger' })}</div>`;
@@ -499,6 +507,12 @@ export function openSettings(ctx, { view: start } = {}) {
         <div class="two"><label data-i18n="setup.fields.smtp">${esc(t('setup.fields.smtp'))}<input type="text" name="smtpHost" value="${esc(a.smtp.host)}"/></label>
           <label data-i18n="setup.fields.port">${esc(t('setup.fields.port'))}<input type="number" name="smtpPort" value="${a.smtp.port}"/></label>
           <label class="inline"><input type="checkbox" name="smtpSecure" ${a.smtp.secure ? 'checked' : ''}/> SSL/TLS</label></div>
+        ${
+          a.auth === 'oauth2'
+            ? ''
+            : `<label data-i18n="settings.server.caldav">${esc(t('settings.server.caldav'))}<input type="text" name="caldavUrl" value="${esc(a.caldav ? a.caldav.url : '')}" spellcheck="false" data-i18n-placeholder="settings.server.caldavPlaceholder" placeholder="${esc(t('settings.server.caldavPlaceholder'))}"/>
+          <span class="field-help" data-i18n="settings.server.caldavHelp">${esc(t('settings.server.caldavHelp'))}</span></label>`
+        }
         <div class="error" data-error></div>
         <div><button class="btn" type="submit" data-i18n="common.actions.save">${esc(t('common.actions.save'))}</button></div>
       </form></div>`;
@@ -571,11 +585,17 @@ export function openSettings(ctx, { view: start } = {}) {
     btn.innerHTML = `<span class="spinner"></span>${esc(t('settings.server.checking'))}`;
     err.textContent = '';
     try {
-      await api('updateAccount', params.id, {
-        imap: { host: f.get('imapHost').trim(), port: Number(f.get('imapPort')), secure: f.get('imapSecure') === 'on', user: f.get('user').trim() },
-        smtp: { host: f.get('smtpHost').trim(), port: Number(f.get('smtpPort')), secure: f.get('smtpSecure') === 'on', user: f.get('user').trim() },
-        password: f.get('password') || undefined
-      });
+      const acc = ctx.S.data.accounts.find((x) => x.id === params.id);
+      const user = f.get('user').trim();
+      const imap = { host: f.get('imapHost').trim(), port: Number(f.get('imapPort')), secure: f.get('imapSecure') === 'on', user };
+      const smtp = { host: f.get('smtpHost').trim(), port: Number(f.get('smtpPort')), secure: f.get('smtpSecure') === 'on', user };
+      const password = f.get('password') || undefined;
+      // The mail servers are only checked again when something about them changed, so adding a calendar server
+      // doesn't need the mail server to answer too.
+      const same = (next, was) => Boolean(was) && next.host === was.host && next.port === Number(was.port) && next.secure === Boolean(was.secure) && next.user === (was.user || acc.email);
+      const patch = password || !acc || !same(imap, acc.imap) || !same(smtp, acc.smtp) ? { imap, smtp, password } : {};
+      if (f.has('caldavUrl')) patch.caldav = { url: f.get('caldavUrl').trim() };
+      await api('updateAccount', params.id, patch);
       toast(t('settings.server.saved'));
       back();
     } catch (ex) {
