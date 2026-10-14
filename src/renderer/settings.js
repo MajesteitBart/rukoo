@@ -110,6 +110,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     unsubscribe();
     page.remove();
     document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('focus', showMailto);
   };
   const back = () => {
     if (stack.length > 1) {
@@ -152,6 +153,35 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     value.textContent = t('settings.general.zoomValue', { percent: level });
     page.querySelector('[data-a="zoom-reset"]').disabled = level === 100;
   };
+
+  // Which app opens mailto: links: { available, app, rukoo } from main, or null until Windows has answered.
+  let mailtoState = null;
+  const mailtoValue = () => {
+    if (!mailtoState) return '';
+    if (!mailtoState.available) return t('settings.general.mailtoUnavailable');
+    if (mailtoState.rukoo) return t('settings.general.mailtoRukoo');
+    return mailtoState.app ? t('settings.general.mailtoHandler', { app: mailtoState.app }) : t('settings.general.mailtoNone');
+  };
+  const mailtoDisabled = () => !mailtoState || !mailtoState.available || mailtoState.rukoo;
+  // A static row like the zoom row. The page draws with the last answer; showMailto() fills in the new one.
+  const mailtoRow = () => `
+    <div class="row static" data-mailto>
+      <div class="text"><div class="title">${esc(t('settings.general.mailto'))}</div>
+        <div class="desc">${esc(t('settings.general.mailtoHelp'))}</div>
+        <div class="value" data-mailto-value>${esc(mailtoValue())}</div></div>
+      <button class="btn sm secondary" data-a="mailto-use" ${mailtoDisabled() ? 'disabled' : ''}>${esc(t('settings.general.mailtoUse'))}</button>
+    </div>`;
+  const showMailto = async () => {
+    const next = await api('mailtoStatus').catch(() => null);
+    if (!next) return;
+    mailtoState = next;
+    const value = page.querySelector('[data-mailto-value]');
+    if (!value) return;
+    value.textContent = mailtoValue();
+    page.querySelector('[data-a="mailto-use"]').disabled = mailtoDisabled();
+  };
+  // The choice is made in Windows Settings; coming back to Rukoo shows the outcome.
+  window.addEventListener('focus', showMailto);
 
   // ----- agents -----
 
@@ -459,6 +489,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
           ${row({ title: t('settings.general.closeToTray'), desc: t('settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: s.closeToTray })}
           ${row({ title: t('settings.general.minimizeToTray'), desc: t('settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
+          ${mailtoRow()}
           ${row({ title: t('settings.general.signature'), value: esc(s.signature || t('common.values.none')), action: 'signature' })}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
@@ -573,6 +604,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
     if (view === 'agents' && agentState) AGENT_IDS.forEach((id) => showAgentStatus(id));
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
+    if (view === 'main') showMailto();
   }
 
   page.addEventListener('submit', async (e) => {
@@ -618,6 +650,15 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a === 'back') return back();
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
+    if (a === 'mailto-use') {
+      b.disabled = true;
+      try {
+        await api('useForMailto');
+      } catch (err) {
+        toast(err.message, 5000);
+      }
+      return showMailto();
+    }
     if (a === 'agents') return go('agents');
     if (a.startsWith('agent-')) return agentAction(a, b);
     if (a === 'add') {

@@ -8,7 +8,28 @@ async function init() {
   const host = document.getElementById('app');
   const [data, opts] = await Promise.all([api('state'), api('composeInit')]);
   applyTheme(data.settings.theme);
-  if (!opts || !data.accounts.length) return api('composeClose');
+  if (!opts) return api('composeClose');
+  // A mailto: link or the tray's New message before any account was added: say why there is no editor. It follows
+  // the language and theme like the editor, and turns into the editor, with the link's fields, once an account exists.
+  if (!data.accounts.length) {
+    const draw = () => {
+      host.innerHTML = `<div class="compose-error"><p data-compose-empty>${esc(t('composer.errors.noAccount'))}</p><button class="btn secondary">${esc(t('common.actions.close'))}</button></div>`;
+      host.querySelector('button').addEventListener('click', () => api('composeClose'));
+    };
+    const update = async () => {
+      const next = await api('state');
+      if (next.accounts.length) return location.reload();
+      setLanguage(next.settings.language);
+      applyTheme(next.settings.theme);
+      draw();
+    };
+    draw();
+    window.mail.on(({ type }) => (type === 'theme' || type === 'language') && update());
+    onSystemThemeChange(update);
+    // An account is added in the main window; coming back here finds it.
+    window.addEventListener('focus', update);
+    return;
+  }
   let message = null;
   if (opts.id) {
     try {

@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
+const mailto = require('../mailto');
 const { toHtml } = require('./markdown');
 const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, PDF_FAILED, IMAGE_DATA, FILE_DATA } = require('./context');
 const { SkillError, toolDescription } = require('./skills');
@@ -1539,14 +1540,8 @@ function readSkill(hub, args) {
 
 // The first address of a mailto: link, or null.
 function mailtoAddress(url) {
-  try {
-    const u = new URL(String(url));
-    if (u.protocol !== 'mailto:') return null;
-    const first = decodeURIComponent(u.pathname).split(',')[0].trim();
-    return ADDRESS.test(first) ? first.slice(0, 320) : null;
-  } catch (_) {
-    return null;
-  }
+  const first = mailto.parse(url).to[0];
+  return first && ADDRESS.test(first.address) ? first.address.slice(0, 320) : null;
 }
 
 module.exports = {
