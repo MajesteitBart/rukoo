@@ -428,7 +428,9 @@ class Calendars extends EventEmitter {
   // A change made on the version of the event the user saw (etag). When the provider has a newer one, the change
   // fails and the cache gets that version, so the user sees it before trying again; when the event is gone, it leaves
   // the cache. An event cached before Rukoo kept versions has none to send, so it counts as changed as well.
-  async unlessChanged(acc, p, cache, cal, event, etag, job) {
+  // series: the change is to the whole series the event belongs to. Then only this occurrence can turn out to be
+  // gone; the series may still be there, so that counts as changed, and only the occurrence leaves the cache.
+  async unlessChanged(acc, p, cache, cal, event, etag, job, { series = false } = {}) {
     try {
       if (p.versioned && !etag) throw calendarError('changed', t('errors.calendar.changed'));
       return await job();
@@ -438,6 +440,12 @@ class Calendars extends EventEmitter {
       try {
         latest = await p.get(cal, event.eventId);
       } catch (gone) {
+        if (gone && gone.code === 'not_found' && series) {
+          cache.events = cache.events.filter((e) => !sameEvent(e, event));
+          this.persist(acc.id);
+          this.emit('updated');
+          throw err;
+        }
         // Deleted in the meantime: that is the news. Any other failure leaves the cache as it was.
         throw gone && gone.code === 'not_found' ? gone : err;
       }
@@ -492,8 +500,9 @@ class Calendars extends EventEmitter {
     try {
       // A whole series goes without a version where Rukoo only knows the occurrence's (Google). A provider whose series
       // is one object with one version (CalDAV) checks it like any other change.
-      const unversioned = series && event.seriesId && !p.versionedSeries;
-      await this.change(acc, cache, event, unversioned ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job));
+      const whole = Boolean(series && event.seriesId);
+      const unversioned = whole && !p.versionedSeries;
+      await this.change(acc, cache, event, unversioned ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job, { series: whole }));
     } catch (err) {
       // Already gone, for instance after a first try whose answer got lost: the event or series is deleted, as asked.
       if (!err || err.code !== 'not_found') throw err;

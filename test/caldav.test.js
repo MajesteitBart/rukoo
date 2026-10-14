@@ -260,6 +260,22 @@ test('a series changed elsewhere is not deleted from an older version, and the s
   });
 });
 
+test('deleting a series whose opened occurrence was removed elsewhere keeps the series and drops only that occurrence', async () => {
+  await withServer({ objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const monday = calendars.view(WEEK).events.find((e) => e.title === 'Stand-up');
+    // Another app removes just this occurrence.
+    server.put('home/standup.ics', STANDUP.replace('EXDATE;TZID=Europe/Amsterdam:20260326T093000', 'EXDATE;TZID=Europe/Amsterdam:20260326T093000\r\nEXDATE;TZID=Europe/Amsterdam:20260323T093000'));
+    await assert.rejects(calendars.remove(monday.id, { series: true, etag: monday.etag }), { code: 'changed' });
+    assert.ok(server.object('home/standup.ics'));
+    assert.equal(calendars.event(monday.id), null);
+    // The rest of the series is still in the calendar.
+    assert.deepEqual(calendars.view(WEEK).events.map((e) => e.title), ['Stand-up, later']);
+  });
+});
+
 test('a meeting with only a room or resource booked stays as it is, and the room is not shown as a guest', async () => {
   const booked = ics(vevent('UID:booked', 'DTSTART:20260325T100000Z', 'DTEND:20260325T110000Z', 'SUMMARY:Focus time', `ORGANIZER:mailto:${ME}`, `ATTENDEE;PARTSTAT=ACCEPTED:mailto:${ME}`, 'ATTENDEE;CUTYPE=ROOM;CN=Room 4.12:mailto:room@example.com'));
   const alone = ics(vevent('UID:alone', 'DTSTART:20260325T120000Z', 'DTEND:20260325T130000Z', 'SUMMARY:Lunch', `ORGANIZER:mailto:${ME}`, `ATTENDEE;PARTSTAT=ACCEPTED:mailto:${ME}`));
