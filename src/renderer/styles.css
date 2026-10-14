@@ -2519,6 +2519,13 @@ body:has(.page) .titlebar-actions {
   color: var(--text);
   font-size: 13px;
 }
+/* A line under a field that says what it is for. */
+.form .field-help {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
 .pw {
   position: relative;
 }

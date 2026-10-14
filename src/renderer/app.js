@@ -2336,8 +2336,8 @@ export const ctx = {
   // An email in the list, or the open one; the chat panel adds dragged emails by id.
   messageById: (id) => byId(id),
   openSetup: (opts) => openSetup(ctx, opts),
-  // view: open straight on one page, such as 'agents'.
-  openSettings: (view) => openSettings(ctx, { view }),
+  // view: open straight on one page, such as 'agents', or an account's 'server' page with { id }.
+  openSettings: (view, opts = {}) => openSettings(ctx, { view, ...opts }),
   renderSidebar: () => renderSidebar(),
   revealAgent: () => setAgentOpen(true),
   closeAgent: () => setAgentOpen(false),

@@ -10,6 +10,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { CALENDAR_SCOPES } = require('../google');
 const { GoogleCalendar, calendarError, localDay } = require('./google');
+const { CalDavCalendar } = require('./caldav');
 const { DemoCalendar } = require('./demo');
 
 const DAY = 86400000;
@@ -51,14 +52,21 @@ class Calendars extends EventEmitter {
     this.loading = new Map();
     this.saveTimers = new Map();
     engine.on('account-removed', (acc) => this.forget(acc));
+    // A new calendar server, or none: what the cache holds came from the old one.
+    engine.on('calendar-changed', (acc) => {
+      this.forget(acc);
+      this.emit('updated');
+    });
   }
 
   // ---------- accounts ----------
 
-  // How an account gets its calendar: 'demo', 'google', 'reconnect' for a Google account whose grant doesn't
-  // include the calendar, or null when Rukoo has no calendar for that kind of account.
+  // How an account gets its calendar: 'demo', 'google', 'caldav' for an account with a CalDAV server in its Server
+  // settings, 'reconnect' for a Google account whose grant doesn't include the calendar, or null when Rukoo has no
+  // calendar for the account.
   kind(acc) {
     if (acc.type === 'demo') return 'demo';
+    if (acc.type === 'imap' && acc.auth !== 'oauth2' && acc.caldav && acc.caldav.url) return 'caldav';
     if (acc.provider !== 'google') return null;
     const scopes = acc.auth === 'oauth2' ? acc.scopes || [] : [];
     return CALENDAR_SCOPES.every((s) => scopes.includes(s)) ? 'google' : 'reconnect';
@@ -66,15 +74,28 @@ class Calendars extends EventEmitter {
 
   provider(acc) {
     const kind = this.kind(acc);
-    if (kind !== 'demo' && kind !== 'google') return null;
+    if (kind !== 'demo' && kind !== 'google' && kind !== 'caldav') return null;
     const key = `${acc.id}:${kind}`;
     if (!this.providers.has(key)) {
-      this.providers.set(
-        key,
-        kind === 'demo'
-          ? new DemoCalendar(path.join(this.dataDir, 'demo-calendar.json'), acc)
-          : new GoogleCalendar({ token: () => this.engine.accessToken(this.engine.account(acc.id)), fetchImpl: this.fetch })
-      );
+      let p;
+      if (kind === 'demo') p = new DemoCalendar(path.join(this.dataDir, 'demo-calendar.json'), acc);
+      else if (kind === 'google') p = new GoogleCalendar({ token: () => this.engine.accessToken(this.engine.account(acc.id)), fetchImpl: this.fetch });
+      else {
+        // The account's sign-in and addresses as they are at each request, so a new password applies right away. The
+        // server is the one this provider was made for, also when Server settings name another one by the time it
+        // finds its home.
+        const current = () => this.engine.account(acc.id);
+        const { url } = acc.caldav;
+        p = new CalDavCalendar({
+          url,
+          home: acc.caldav.home || null,
+          credentials: () => ({ user: (current().imap && current().imap.user) || current().email, password: this.engine.credentials(current()) }),
+          addresses: () => this.engine.identities(current()).map((i) => i.address),
+          onHome: (home) => this.engine.setCalDavHome(acc.id, home, url),
+          fetchImpl: this.fetch
+        });
+      }
+      this.providers.set(key, p);
     }
     return this.providers.get(key);
   }

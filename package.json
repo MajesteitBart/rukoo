@@ -16,7 +16,9 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
     "html-to-text": "^10.0.1",
+    "ical.js": "^2.2.1",
     "iconv-lite": "^0.7.3",
     "imapflow": "^2.2.6",
     "libqp": "^2.1.2",
