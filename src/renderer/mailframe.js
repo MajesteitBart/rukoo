@@ -66,55 +66,59 @@ const MIN_ZOOM = 0.8;
 // options: frameDoc's options plus { fitContent }
 export function fillFrame(frame, m, opts = {}) {
   (frame.observers || []).forEach((o) => o.disconnect());
-  frame.srcdoc = frameDoc(m, opts);
-  frame.addEventListener(
-    'load',
-    () => {
-      const doc = frame.contentDocument;
-      if (!doc) return;
-      const fit = () => {
-        const body = doc.body;
-        const root = doc.documentElement;
-        if (!body || !frame.isConnected) return;
-        root.style.overflowY = '';
-        if (opts.fitContent !== false) {
-          body.style.zoom = '';
-          const avail = frame.clientWidth;
-          const needed = root.scrollWidth;
-          // Shrinking further makes small print unreadable; what is still too wide scrolls sideways.
-          if (needed > avail + 4) body.style.zoom = String(Math.max(MIN_ZOOM, avail / needed));
-        }
-        // A few pixels over is a stray border or rounding, not content worth a scrollbar.
-        root.style.overflowX = root.scrollWidth > root.clientWidth + 4 ? '' : 'hidden';
-        // A document's scroll height never drops below the frame's own height, so measured in place
-        // the frame can only grow, and every resize grows it again. Measure with the frame collapsed,
-        // and keep the surrounding scroll position, which the collapse would otherwise reset.
-        const scroller = frame.closest('.reader-scroll, .compose-body');
-        const top = scroller ? scroller.scrollTop : 0;
-        frame.style.height = '0px';
-        const height = Math.ceil(root.scrollHeight);
-        frame.style.height = `${height}px`;
-        // A sideways scrollbar takes its room from the frame's height; add it so the last line stays in view.
-        const bar = frame.clientHeight - root.clientHeight;
-        if (bar > 0) frame.style.height = `${height + bar}px`;
-        // Content sized to the window (100vh and the like) grows along with the frame and has no
-        // fitting height; let such mail scroll inside the frame instead of cutting off its end.
-        if (root.scrollHeight > root.clientHeight + 1) root.style.overflowY = 'auto';
-        if (scroller && scroller.scrollTop !== top) scroller.scrollTop = top;
-      };
-      if (m.isHtml && doc.body) clearCanvas(doc);
-      fit();
-      frame.observers = [new ResizeObserver(fit), new ResizeObserver(fit)];
-      frame.observers[0].observe(doc.body);
-      frame.observers[1].observe(frame);
-      doc.addEventListener('click', (e) => {
-        const a = e.target.closest && e.target.closest('a[href]');
-        if (!a) return;
-        e.preventDefault();
-        const href = a.getAttribute('href');
-        if (href && !href.startsWith('#')) window.mail.call('openExternal', a.href);
-      });
-    },
-    { once: true }
-  );
+  frame.observers = [];
+  const doc = frame.contentDocument;
+  if (!doc) return;
+  // Written into the frame's own document instead of loaded through srcdoc: the mail is parsed right here, so the
+  // frame takes its height before any remote image or font arrives. The frame's load event waits for all of them,
+  // and one slow tracking pixel used to keep the mail a 150 px strip until it came in.
+  doc.open();
+  doc.write(frameDoc(m, opts));
+  doc.close();
+  const fit = () => {
+    const body = doc.body;
+    const root = doc.documentElement;
+    if (!body || !frame.isConnected) return;
+    root.style.overflowY = '';
+    if (opts.fitContent !== false) body.style.zoom = '';
+    // On every resize and unzoomed: an image that arrives later can widen a newsletter's canvas to the frame.
+    if (m.isHtml) clearCanvas(doc);
+    if (opts.fitContent !== false) {
+      const avail = frame.clientWidth;
+      const needed = root.scrollWidth;
+      // Shrinking further makes small print unreadable; what is still too wide scrolls sideways.
+      if (needed > avail + 4) body.style.zoom = String(Math.max(MIN_ZOOM, avail / needed));
+    }
+    // A few pixels over is a stray border or rounding, not content worth a scrollbar.
+    root.style.overflowX = root.scrollWidth > root.clientWidth + 4 ? '' : 'hidden';
+    // A document's scroll height never drops below the frame's own height, so measured in place
+    // the frame can only grow, and every resize grows it again. Measure with the frame collapsed,
+    // and keep the surrounding scroll position, which the collapse would otherwise reset.
+    const scroller = frame.closest('.reader-scroll, .compose-body');
+    const top = scroller ? scroller.scrollTop : 0;
+    frame.style.height = '0px';
+    const height = Math.ceil(root.scrollHeight);
+    frame.style.height = `${height}px`;
+    // A sideways scrollbar takes its room from the frame's height; add it so the last line stays in view.
+    const bar = frame.clientHeight - root.clientHeight;
+    if (bar > 0) frame.style.height = `${height + bar}px`;
+    // Content sized to the window (100vh and the like) grows along with the frame and has no
+    // fitting height; let such mail scroll inside the frame instead of cutting off its end.
+    if (root.scrollHeight > root.clientHeight + 1) root.style.overflowY = 'auto';
+    if (scroller && scroller.scrollTop !== top) scroller.scrollTop = top;
+  };
+  fit();
+  // Images and fonts that arrive later resize the body, which fits the frame again. Once all of them are in, the
+  // load event fits it a last time, for a change that left the body's size alone.
+  frame.observers = [new ResizeObserver(fit), new ResizeObserver(fit)];
+  if (doc.body) frame.observers[0].observe(doc.body);
+  frame.observers[1].observe(frame);
+  doc.defaultView.addEventListener('load', fit);
+  doc.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    e.preventDefault();
+    const href = a.getAttribute('href');
+    if (href && !href.startsWith('#')) window.mail.call('openExternal', a.href);
+  });
 }

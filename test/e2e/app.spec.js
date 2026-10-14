@@ -1,6 +1,7 @@
 // End-to-end tests: launch the real Electron app with a throwaway profile and the demo account.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 
@@ -734,6 +735,80 @@ test('a mail frame settles at its content height and keeps the scroll position',
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1380, 600));
   await settled();
   expect(await win.locator('.reader-scroll').evaluate((s) => s.scrollTop)).toBe(300);
+});
+
+// Images a local server holds back until the test lets them through, like a slow tracking pixel.
+async function heldImages() {
+  const held = new Map();
+  const server = http.createServer((req, res) => held.set(req.url, res));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    base: `http://127.0.0.1:${server.address().port}`,
+    held,
+    release(url, width, height) {
+      held.get(url).writeHead(200, { 'content-type': 'image/svg+xml' });
+      held.get(url).end(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"/>`);
+    },
+    close() {
+      for (const res of held.values()) res.destroy();
+      server.closeAllConnections();
+      server.close();
+    }
+  };
+}
+
+// Saves a draft with this html and opens it in the reader.
+async function openDraft(subject, html) {
+  const state = await win.evaluate(() => window.mail.call('state'));
+  await win.evaluate(
+    ([accountId, subject, html]) => window.mail.call('saveDraft', { accountId, to: ['a@example.com'], subject, html }),
+    [state.accounts[0].id, subject, html]
+  );
+  await win.click('[data-view="drafts"]');
+  await item(subject).click();
+}
+
+test('a mail frame takes its height before slow images arrive, and grows when they do', async () => {
+  const images = await heldImages();
+  try {
+    const { base } = images;
+    await openDraft(
+      'Slow images',
+      `<p>Above the images.</p><p><img src="${base}/sized" width="400" height="300" alt=""></p><p><img src="${base}/unsized" alt=""></p><p>Below the images.</p><img src="${base}/pixel" width="1" height="1" alt="">`
+    );
+    const height = () => win.locator('.mail-frame').evaluate((f) => f.offsetHeight).catch(() => 0);
+    // With every image still on its way, the text and the declared image size are in view.
+    await expect.poll(() => images.held.size).toBe(3);
+    await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Below the images.');
+    await expect.poll(height).toBeGreaterThan(330);
+    const before = await height();
+    // The image without a size adds its height when it arrives, while the pixel is still loading.
+    images.release('/sized', 400, 300);
+    images.release('/unsized', 400, 500);
+    await expect.poll(height).toBeGreaterThan(before + 450);
+  } finally {
+    images.close();
+  }
+});
+
+test('a newsletter canvas that spans the frame only once its image arrives is still cleared', async () => {
+  const images = await heldImages();
+  try {
+    await openDraft('Late canvas', `<table cellpadding="0" cellspacing="0" style="background:#eeeeee"><tr><td><img src="${images.base}/banner" alt=""></td></tr></table>`);
+    const canvas = () =>
+      win
+        .frameLocator('.mail-frame')
+        .locator('table')
+        .evaluate((t) => getComputedStyle(t).backgroundColor)
+        .catch(() => null);
+    // Without its image the table is a few pixels wide: no canvas yet.
+    await expect.poll(() => images.held.size).toBe(1);
+    await expect.poll(canvas).toBe('rgb(238, 238, 238)');
+    images.release('/banner', 2000, 200);
+    await expect.poll(canvas).toBe('rgba(0, 0, 0, 0)');
+  } finally {
+    images.close();
+  }
 });
 
 test('wide mail shrinks to no less than 80% and scrolls sideways, also with fitting off', async () => {
