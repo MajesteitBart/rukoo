@@ -115,7 +115,7 @@ A CalDAV calendar uses the username and password of the account's mail servers, 
 
 Other providers use IMAP and SMTP with a password; Yahoo requires an app password. Microsoft has switched off password sign-in for most Outlook.com and many Microsoft 365 mailboxes, and those need OAuth, which this app does not implement yet. Exchange works when the server offers IMAP and SMTP; Exchange ActiveSync is not supported.
 
-Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally. Older mail stays on the server.
+Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally. Older mail stays on the server. The list holds headers and a short preview; a message's full content is downloaded when you open it. After each sync Rukoo also downloads the newest 30 inbox messages of up to 1 MB each, so they open without waiting for the server. Those downloads don't mark anything read, and a downloaded message is deleted again once it drops out of the folders Rukoo keeps.
 
 Sender logos are the icons companies publish on their own websites. The app fetches one per sender domain, caches it in `%APPDATA%\Rukoo Mail\logos` and tries a missing one again after a week. That request tells the company's web server that someone opened mail from it, much like loading images in the mail itself. Mail from free-mail providers such as Gmail or Ziggo never triggers a request. You can switch logos off in the settings.
 

@@ -445,6 +445,7 @@
   "errors.attachment.missing": "Bijlage niet gevonden.",
   "errors.connection.auth": "Aanmelden mislukt. Controleer je e-mailadres en (app-)wachtwoord.",
   "errors.connection.certificate": "Het certificaat van de server is niet vertrouwd.",
+  "errors.connection.closed": "De verbinding met de mailserver is gesloten. Probeer het opnieuw.",
   "errors.connection.host": "Server niet gevonden. Controleer de servernaam.",
   "errors.connection.refused": "Verbinding geweigerd. Controleer de server en poort.",
   "errors.connection.timeout": "Er is een time-out opgetreden bij het verbinden met de server.",

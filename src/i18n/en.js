@@ -1759,6 +1759,10 @@
     "message": "The server certificate is not trusted.",
     "description": "errors > connection. src/main/imap.js (friendlyError)"
   },
+  "errors.connection.closed": {
+    "message": "The connection to the mail server was closed. Try again.",
+    "description": "errors > connection. A mail command that was still waiting when the account's connection closed, because the account was removed, signed in again or moved to another server. Shown in the reader or a toast. src/main/imap.js (ImapAccount.drain)"
+  },
   "errors.connection.host": {
     "message": "Server not found. Check the server name.",
     "description": "errors > connection. src/main/imap.js (friendlyError)"

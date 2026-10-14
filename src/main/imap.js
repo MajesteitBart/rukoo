@@ -32,7 +32,11 @@ class ImapAccount {
     this.account = account;
     this.credentials = credentials;
     this.client = null;
-    this.queue = Promise.resolve();
+    // Commands waiting for the connection: what the user waits for, and background work (syncs, prefetching).
+    this.queue = { now: [], later: [] };
+    this.busy = false;
+    // Set by close(): the account is gone or uses a new session, so nothing may connect through this one again.
+    this.closed = false;
   }
 
   async auth(user) {
@@ -90,18 +94,34 @@ class ImapAccount {
     return client;
   }
 
-  // IMAP commands share one connection, so they run one at a time.
-  run(fn) {
-    const task = this.queue.then(async () => {
-      try {
-        return await fn(await this.connect());
-      } catch (err) {
-        if (this.client && !this.client.usable) this.client = null;
-        throw err;
-      }
+  // IMAP commands share one connection, so they run one at a time. Background work waits until nothing else is
+  // queued: opening a message goes ahead of the next folder of a sync, but not ahead of the command already running.
+  run(fn, { background = false } = {}) {
+    return new Promise((resolve, reject) => {
+      this.queue[background ? 'later' : 'now'].push({ fn, resolve, reject });
+      this.drain();
     });
-    this.queue = task.catch(() => {});
-    return task;
+  }
+
+  async drain() {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      for (let task; (task = this.queue.now.shift() || this.queue.later.shift()); ) {
+        if (this.closed) {
+          task.reject(new Error(t('errors.connection.closed')));
+          continue;
+        }
+        try {
+          task.resolve(await task.fn(await this.connect()));
+        } catch (err) {
+          if (this.client && !this.client.usable) this.client = null;
+          task.reject(err);
+        }
+      }
+    } finally {
+      this.busy = false;
+    }
   }
 
   async verify() {
@@ -123,7 +143,7 @@ class ImapAccount {
     }
   }
 
-  listFolders() {
+  listFolders({ background = false } = {}) {
     return this.run(async (client) => {
       const list = await client.list();
       return list
@@ -140,7 +160,7 @@ class ImapAccount {
           delete folder.flags;
           return folder;
         });
-    });
+    }, { background });
   }
 
   // Creates a top-level folder in the personal namespace and returns its path.
@@ -152,7 +172,7 @@ class ImapAccount {
     });
   }
 
-  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null } = {}) {
+  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path, { readOnly: true });
       try {
@@ -228,12 +248,14 @@ class ImapAccount {
       } finally {
         lock.release();
       }
-    });
+    }, { background });
   }
 
-  fetchSource(path, uid) {
+  // Opens the folder read-write, like setFlags: imapflow reopens a folder whenever the mode changes, and opening an
+  // unread message marks it read. The fetch itself still leaves the flags alone: imapflow fetches with PEEK.
+  fetchSource(path, uid, { background = false } = {}) {
     return this.run(async (client) => {
-      const lock = await client.getMailboxLock(path, { readOnly: true });
+      const lock = await client.getMailboxLock(path);
       try {
         const msg = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
         if (!msg || !msg.source) throw new Error(t('errors.message.serverMissing'));
@@ -241,7 +263,7 @@ class ImapAccount {
       } finally {
         lock.release();
       }
-    });
+    }, { background });
   }
 
   setFlags(path, uid, { unread, starred, answered }) {
@@ -329,6 +351,7 @@ class ImapAccount {
   }
 
   async close() {
+    this.closed = true;
     const client = this.client;
     this.client = null;
     if (client) {
