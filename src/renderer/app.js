@@ -1982,14 +1982,9 @@ async function unsubscribe(m) {
     const res = await api('unsubscribe', m.id);
     if (res.done) toast(t('reader.unsubscribe.done', { sender: sender }));
     else if (res.opened) toast(t('reader.unsubscribe.opened'));
-    else if (res.mailto) {
-      const u = new URL(res.mailto);
-      compose({
-        mode: 'new',
-        to: decodeURIComponent(u.pathname).split(',').filter(Boolean).map((address) => ({ name: '', address: address.trim() })),
-        subject: u.searchParams.get('subject') || t('reader.unsubscribe.subject'),
-        body: u.searchParams.get('body') || ''
-      });
+    else if (res.message) {
+      const m = res.message;
+      compose({ mode: 'new', to: m.to, cc: m.cc, bcc: m.bcc, subject: m.subject || t('reader.unsubscribe.subject'), body: m.body });
     }
   } catch (err) {
     toast(err.message, 5000);

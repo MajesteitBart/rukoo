@@ -1555,6 +1555,10 @@
     "message": "The draft is in Drafts, but its attachments could not be found. Close this window and reopen the draft.",
     "description": "composer > errors. src/renderer/composer.js (settleAttachments)"
   },
+  "composer.errors.noAccount": {
+    "message": "Add an email account in Rukoo Mail before you write an email.",
+    "description": "composer > errors. Shown in a compose window opened before any account exists, by a mailto: link from another app or by New message in the tray. src/renderer/compose.js (init)"
+  },
   "composer.errors.noRecipients": {
     "message": "Add at least one recipient",
     "description": "composer > errors. src/renderer/composer.js (send)"
@@ -3245,6 +3249,38 @@
   "settings.general.logosHelp": {
     "message": "Show logos for companies that email you. Rukoo Mail fetches each logo once from their website.",
     "description": "settings > general. src/renderer/settings.js (render)"
+  },
+  "settings.general.mailto": {
+    "message": "Email links",
+    "description": "settings > general, title of the row that makes Rukoo Mail the app for mailto: links. src/renderer/settings.js (mailtoRow)"
+  },
+  "settings.general.mailtoAppDescription": {
+    "message": "Email, calendar and agent chat for Windows",
+    "description": "Description Windows may show for Rukoo Mail among the apps that open mailto: links. src/main/main.js (mailClient)"
+  },
+  "settings.general.mailtoHandler": {
+    "message": "Opened by {app}",
+    "description": "settings > general, under Email links: the app that opens mailto: links now. {app} is its name from Windows, such as Firefox or Outlook. src/renderer/settings.js (mailtoRow)"
+  },
+  "settings.general.mailtoHelp": {
+    "message": "Open mailto: links from your browser and other apps in Rukoo Mail. Windows asks you to pick it under Default apps.",
+    "description": "settings > general, help under Email links. \"Default apps\" is the Windows Settings page. src/renderer/settings.js (mailtoRow)"
+  },
+  "settings.general.mailtoNone": {
+    "message": "No app opens them yet",
+    "description": "settings > general, under Email links: Windows has no app for mailto: links. src/renderer/settings.js (mailtoRow)"
+  },
+  "settings.general.mailtoRukoo": {
+    "message": "Rukoo Mail opens them",
+    "description": "settings > general, under Email links: Rukoo Mail is the app for mailto: links. src/renderer/settings.js (mailtoRow)"
+  },
+  "settings.general.mailtoUnavailable": {
+    "message": "Only in the installed or portable app",
+    "description": "settings > general, under Email links, in a run from source or a test profile, which Windows can't offer for links. Also the error if the button is used there. src/renderer/settings.js (mailtoRow), src/main/main.js (useForMailto)"
+  },
+  "settings.general.mailtoUse": {
+    "message": "Use Rukoo Mail",
+    "description": "settings > general, button under Email links: offers Rukoo Mail to Windows for mailto: links and opens the Windows page to pick it. src/renderer/settings.js (mailtoRow)"
   },
   "settings.general.minimizeToTray": {
     "message": "Minimize to the tray",

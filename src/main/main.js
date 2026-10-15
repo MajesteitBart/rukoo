@@ -27,6 +27,8 @@ const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
 const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
+const mailto = require('./mailto');
+const { MailClient, SETTINGS_URL } = require('./mailclient');
 // ---- agents ----
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
@@ -239,26 +241,34 @@ function safeUrl(url) {
   return /^(https?:|mailto:)/i.test(String(url || ''));
 }
 
-function parseMailto(url) {
-  try {
-    const u = new URL(url);
-    const to = decodeURIComponent(u.pathname || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((address) => ({ name: '', address }));
-    return { mode: 'new', to, subject: u.searchParams.get('subject') || '', body: u.searchParams.get('body') || '' };
-  } catch (_) {
-    return { mode: 'new' };
-  }
+// A mailto: link, from a message, an agent or another app, opens a filled-in compose window; the user sends it.
+// Without an account the compose window says so, and the main window comes forward to add one.
+function openMailto(url) {
+  if (!engine.accounts.length) showWindow();
+  openComposeWindow({ mode: 'new', ...mailto.parse(url) });
 }
 
 function openUrl(url) {
-  if (/^mailto:/i.test(url)) {
-    openComposeWindow(parseMailto(url));
+  if (mailto.isMailto(url)) {
+    openMailto(url);
     return;
   }
   if (safeUrl(url)) shell.openExternal(url);
+}
+
+// Windows can only offer the installed or portable app for mailto: links. A run from a checkout or a test profile
+// leaves the registration alone.
+function mailClient() {
+  if (process.platform !== 'win32' || !app.isPackaged || process.env.SEM_DATA_DIR) return null;
+  // The portable build runs from a temporary copy; Windows has to start the .exe the user keeps.
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  return new MailClient({ exe, description: t('settings.general.mailtoAppDescription') });
+}
+
+// See MailClient.refresh(): the installed app offers itself to Windows at startup, a portable copy when asked.
+async function refreshMailClient() {
+  const client = mailClient();
+  if (client) await client.refresh({ portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE) });
 }
 
 // Links never navigate an app window; they open in the browser or, for mailto:, in a compose window.
@@ -391,6 +401,8 @@ function composeOptions(input = {}) {
     id: input.id ? text(input.id, 2000) : null,
     accountId: input.accountId ? text(input.accountId, 200) : null,
     to: people(input.to),
+    cc: people(input.cc),
+    bcc: people(input.bcc),
     subject: text(input.subject, 1000),
     body: text(input.body, 20000)
   };
@@ -641,7 +653,8 @@ const api = {
       shell.openExternal(u.url);
       return { opened: true };
     }
-    return { mailto: u.mail };
+    // The link for agents, which open it themselves; its fields for the reader's composer.
+    return { mailto: u.mail, message: mailto.parse(u.mail) };
   },
   createFolder: (accountId, name) => engine.createFolder(accountId, name),
   senderLogos: (addresses) => {
@@ -666,6 +679,30 @@ const api = {
     return res.filePath;
   },
   openExternal: (url) => openUrl(url),
+  // Which app opens mailto: links now, for Settings. available: false where Rukoo can't offer itself.
+  mailtoStatus: async () => {
+    const client = mailClient();
+    const own = client ? path.resolve(client.exe).toLowerCase() : null;
+    let handler = null;
+    try {
+      handler = await app.getApplicationInfoForProtocol('mailto:');
+    } catch (_) {
+      // No app opens them.
+    }
+    return {
+      available: Boolean(client),
+      app: handler && handler.name ? String(handler.name) : null,
+      rukoo: Boolean(own && handler && handler.path && path.resolve(handler.path).toLowerCase() === own)
+    };
+  },
+  // Offers Rukoo for mailto: links and opens the Windows page where the user picks it.
+  useForMailto: async () => {
+    const client = mailClient();
+    if (!client) throw new Error(t('settings.general.mailtoUnavailable'));
+    await client.register();
+    await shell.openExternal(SETTINGS_URL);
+    return true;
+  },
   print: (html) => printHtml(html),
   setBadge: (dataUrl, count) => {
     if (!win || process.platform !== 'win32') return;
@@ -928,7 +965,18 @@ function createWindow({ hidden = false } = {}) {
   win.loadFile(path.join(RENDERER, 'index.html'));
 }
 
-app.on('second-instance', showWindow);
+// A mailto: link Rukoo was started with, opened once the main window is up.
+let startLink = mailto.fromArgs(process.argv);
+
+// Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
+// the main window stays where it was, in the tray too.
+app.on('second-instance', (e, argv) => {
+  const link = mailto.fromArgs(argv);
+  if (!link) showWindow();
+  // Once Rukoo is ready, also with only a compose window left open after the main window closed.
+  else if (engine) openMailto(link);
+  else startLink = link;
+});
 
 app.whenReady().then(() => {
   windowState = new WindowState(path.join(app.getPath('userData'), 'window-state.json'));
@@ -981,6 +1029,9 @@ app.whenReady().then(() => {
   });
   applyTheme();
   createWindow();
+  // After the main window shows, so the compose window comes up in front of it.
+  if (startLink) win.once('ready-to-show', () => openMailto(startLink));
+  refreshMailClient().catch(() => {});
   updateTray();
   scheduleSync();
   engine.syncAll().catch(() => {});
