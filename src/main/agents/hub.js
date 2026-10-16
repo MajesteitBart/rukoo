@@ -11,6 +11,7 @@ const { decodeId } = require('../engine');
 const tools = require('./tools');
 const context = require('./context');
 const skills = require('./skills');
+const ownskills = require('./ownskills');
 const { ChatFiles, shown: shownFile, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
 const { PdfReader } = require('../pdfread');
 
@@ -41,6 +42,12 @@ const STATES = new Set(['ready', 'offline', 'unconfigured', 'disabled', 'missing
 const MODELS_TTL_MS = 10 * 60 * 1000;
 const MODELS_RETRY_MS = 30 * 1000;
 const MAX_MODELS = 300;
+// The agents' own skills, for the $ menu and for finding the ones a message names: kept a minute, and loaded again
+// when the menu opens on a list older than ten seconds.
+const OWN_SKILLS_TTL_MS = 60 * 1000;
+const OWN_SKILLS_RETRY_MS = 10 * 1000;
+// Message actions whose text Rukoo wrote (an approval) or that is a whole skill already: no $name in them counts.
+const NO_MENTIONS = new Set(['approved', 'declined', 'skill']);
 const ADAPTERS = { clark: ['./hermes', 'HermesAdapter'], claude: ['./claude', 'ClaudeAdapter'], codex: ['./codex', 'CodexAdapter'] };
 const DENY_IDS = new Set(['deny', 'decline', 'cancel']);
 // English fallbacks for error notices; the renderer localizes by code.
@@ -156,6 +163,7 @@ class AgentHub extends EventEmitter {
     this.viewState = emptyView();
     // agent → { at, value, pending }: the models and efforts the panel offers (see models()).
     this.modelLists = new Map();
+    this.skillLists = new Map();
     this.statuses = {};
     // Per agent, how many forced status probes have started; see probeStatus().
     this.statusRound = new Map(AGENT_IDS.map((id) => [id, 0]));
@@ -986,6 +994,52 @@ class AgentHub extends EventEmitter {
     return { agent, models, efforts: own ? own.efforts : cleanEfforts(res && res.efforts), custom, defaultModel: settingsModel, error };
   }
 
+  // ---------- the agents' own skills (renderer API) ----------
+
+  // The skills the agent itself has, for the panel's $ menu: {agent, skills: [{name, description, scope}], error}.
+  // refresh: the menu just opened, so a list older than ten seconds is loaded again.
+  ownSkills(agent, { refresh = false } = {}) {
+    if (!AGENT_IDS.includes(agent)) throw new AgentError('invalid', 'unknown agent');
+    const entry = this.skillLists.get(agent);
+    if (entry && entry.pending) return entry.pending;
+    if (entry && entry.value && Date.now() - entry.at < (refresh || entry.value.error ? OWN_SKILLS_RETRY_MS : OWN_SKILLS_TTL_MS)) return Promise.resolve(entry.value);
+    const pending = this.loadOwnSkills(agent).then((value) => {
+      // Settings changed meanwhile (configChanged() dropped this entry): this list is about the old ones.
+      const now = this.skillLists.get(agent);
+      if (now && now.pending === pending) this.skillLists.set(agent, { at: Date.now(), value });
+      return value;
+    });
+    this.skillLists.set(agent, { ...entry, pending });
+    return pending;
+  }
+
+  async loadOwnSkills(agent) {
+    const adapter = this.adapters.get(agent);
+    try {
+      if (this.cfg.data[agent].enabled === false) throw new AgentError('disabled', `${agent} is turned off`);
+      if (!adapter || typeof adapter.skills !== 'function') throw new AgentError('unknown', this.adapterErrors.get(agent) || `${agent} cannot list its skills`);
+      return { agent, skills: ownskills.cleanList(await withTimeout(adapter.skills(), 20000)), error: null };
+    } catch (err) {
+      return { agent, skills: [], error: toError(err) };
+    }
+  }
+
+  // The agent's own skills that the user's text names as $name, for the adapter to start. Only text the user wrote
+  // counts, never what Rukoo adds around it: that can quote an email. The list is the one the menu showed, or a
+  // fresh one when there is none; without a list, nothing counts as a skill and the text goes as it is.
+  async mentionedSkills(agent, text, action) {
+    if (NO_MENTIONS.has(action) || !/(^|\s)\$[a-zA-Z0-9]/.test(String(text || ''))) return [];
+    let list;
+    try {
+      list = await withTimeout(this.ownSkills(agent), 10000);
+    } catch (_) {
+      return [];
+    }
+    const names = new Set((list && list.skills ? list.skills : []).map((s) => s.name));
+    const seen = new Set();
+    return ownskills.mentionsIn(text, names).filter((m) => !seen.has(m.name) && seen.add(m.name)).map((m) => ({ name: m.name }));
+  }
+
   // The efforts the agent's model list offers for a chat's model (null: the default model), or null without a list
   // to go by.
   effortsFor(agent, model) {
@@ -1187,6 +1241,13 @@ class AgentHub extends EventEmitter {
           return this.finishTurn(turn, { status: 'stopped' });
         }
       }
+      // The agent's own skills the user named ($name). Hermes can take a moment to list them; stopped meanwhile, as
+      // above.
+      const named = await this.mentionedSkills(c.agent, text, action);
+      if (turn.closed || turn.controller.signal.aborted) {
+        this.giveBack(c, turn);
+        return this.finishTurn(turn, { status: 'stopped' });
+      }
       const openMessage = firstTurn ? null : this.openLine(c, newer);
       const notes = c.notes.splice(0);
       turn.notes = notes;
@@ -1201,6 +1262,9 @@ class AgentHub extends EventEmitter {
         instructions: context.instructions({ agent: c.agent, agentName: this.agentName(c.agent) }),
         text,
         action: action || null,
+        // The agent's own skills the user's text names as $name ([{name}]), in that order. The adapter starts them
+        // the way its agent does; text keeps the mentions as the user wrote them.
+        skills: named,
         firstTurn,
         // The chat's own model and effort; null: the adapter uses the model in Settings and the agent's own effort.
         model: turn.model,
@@ -1982,6 +2046,11 @@ class AgentHub extends EventEmitter {
   async updateConfig(patch) {
     const before = JSON.stringify(this.cfg.data.mcp);
     this.cfg.update(patch);
+    // Shortcuts change nothing about the agents themselves: the panel only needs to draw them again.
+    if (isObj(patch) && Object.keys(patch).every((k) => k === 'shortcuts')) {
+      this.emitEvent({ kind: 'agents', status: this.statuses });
+      return this.config();
+    }
     if (JSON.stringify(this.cfg.data.mcp) !== before && this.mcp) {
       if (this.cfg.data.mcp.port !== JSON.parse(before).port) {
         await this.mcp.close();
@@ -2017,6 +2086,7 @@ class AgentHub extends EventEmitter {
   configChanged() {
     // A new model in Settings, program or server: the lists are loaded again when the panel asks.
     this.modelLists.clear();
+    this.skillLists.clear();
     for (const a of this.adapters.values()) {
       // Optional adapter hook: restart processes that run with old settings.
       if (typeof a.configChanged === 'function') Promise.resolve().then(() => a.configChanged()).catch(() => {});

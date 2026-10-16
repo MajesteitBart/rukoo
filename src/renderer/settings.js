@@ -1,6 +1,18 @@
 import { t, languages, setLanguage, localize } from './i18n.js';
 import { icons } from './icons.js';
-import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm } from './ui.js';
+import { api, brandLogo, esc, toast, dialog, confirmDialog, choiceDialog, numericDate, hhmm, KEEP_OPEN } from './ui.js';
+import { icon as panelIcon } from './agent/bui.js';
+import {
+  ACTIONS,
+  shortcutList,
+  storedShortcuts,
+  SHORTCUT_ICONS,
+  SHORTCUT_NAME,
+  SHORTCUT_RESERVED,
+  SHORTCUTS_MAX,
+  SHORTCUT_LABEL_MAX,
+  SHORTCUT_PROMPT_MAX
+} from './agent/actions.js';
 
 const THEMES = [
   { value: 'system', get label() { return t('settings.theme.system'); } },
@@ -67,6 +79,102 @@ const agentStateOf = (status, id) => {
 };
 const agentDot = (state) => (state === 'ready' ? 'ready' : state === 'offline' || state === 'unauthorized' ? 'offline' : state === 'starting' ? 'starting' : 'unconfigured');
 
+// When a shortcut shows in a new chat, for its row in Settings.
+const shortcutWhen = (s) =>
+  s.custom
+    ? s.when === 'always'
+      ? t('settings.shortcuts.whenAlways')
+      : t('settings.shortcuts.whenEmail')
+    : s.needsUnsubscribe
+      ? t('settings.shortcuts.whenNewsletter')
+      : s.needsEmail
+        ? t('settings.shortcuts.whenEmail')
+        : t('settings.shortcuts.whenNoEmail');
+
+// Edits one shortcut, or makes a new one of the user's (s null). list: all shortcuts, to keep commands unique.
+// Resolves to {label, prompt, key, icon, when}, 'restore' (back to Rukoo's own), 'delete', or null.
+function shortcutDialog(s, list) {
+  const fresh = !s;
+  const custom = fresh || s.custom;
+  let iconName = custom ? (s && s.icon) || 'sparkle' : s.icon;
+  let when = custom ? (s && s.when) || 'email' : null;
+  const buttons = [];
+  if (s && s.custom) buttons.push({ get label() { return t('common.actions.delete'); }, value: 'delete', danger: true });
+  if (s && !s.custom && (s.edited.label || s.edited.prompt)) buttons.push({ get label() { return t('settings.shortcuts.restore'); }, value: 'restore', left: true });
+  buttons.push({ get label() { return t('common.actions.cancel'); }, value: null });
+  buttons.push({
+    get label() {
+      return fresh ? t('common.actions.add') : t('common.actions.save');
+    },
+    value: (scrim) => {
+      const form = scrim.querySelector('.shortcut-form');
+      const error = form.querySelector('[data-error]');
+      const field = (name) => form.querySelector(`[name="${name}"]`);
+      const fail = (name, message) => {
+        error.textContent = message;
+        field(name).focus();
+        return KEEP_OPEN;
+      };
+      const label = field('label').value.trim();
+      const prompt = field('prompt').value.trim();
+      if (!label) return fail('label', t('settings.shortcuts.needLabel'));
+      if (!prompt) return fail('prompt', t('settings.shortcuts.needPrompt'));
+      if (!custom) return { label, prompt };
+      const key = field('key').value.trim().replace(/^\//, '').toLowerCase();
+      if (!SHORTCUT_NAME.test(key) || key.length > 40) return fail('key', t('settings.shortcuts.badCommand'));
+      const taken = SHORTCUT_RESERVED.has(key) || ACTIONS.some((a) => a.key === key) || list.some((x) => x.key === key && x !== s);
+      if (taken) return fail('key', t('settings.shortcuts.takenCommand', { name: key }));
+      return { label, prompt, key, icon: iconName, when };
+    }
+  });
+  return dialog({
+    title: fresh ? t('settings.shortcuts.newTitle') : t('settings.shortcuts.editTitle'),
+    wide: true,
+    buttons,
+    render(body) {
+      const icons = SHORTCUT_ICONS.map(
+        (name) =>
+          `<button type="button" class="shortcut-icon" role="radio" data-icon="${name}" aria-checked="${name === iconName}" aria-label="${esc(name)}">${panelIcon(name, 15).outerHTML}</button>`
+      ).join('');
+      const whenRow = (value, label) =>
+        `<button type="button" class="radio-row" role="radio" data-when="${value}" aria-checked="${value === when}"><span class="radio ${value === when ? 'on' : ''}"></span><span class="rl">${esc(label)}</span></button>`;
+      body.innerHTML = `<div class="form shortcut-form" style="padding:0">
+        <label>${esc(t('settings.shortcuts.label'))}<input type="text" name="label" maxlength="${SHORTCUT_LABEL_MAX}" spellcheck="false" autocomplete="off" value="${esc(s ? s.label : '')}"/></label>
+        <label>${esc(t('settings.shortcuts.command'))}<span class="shortcut-command"><span aria-hidden="true">/</span><input type="text" name="key" maxlength="40" spellcheck="false" autocomplete="off" value="${esc(s ? s.key : '')}" ${custom ? '' : 'disabled'} placeholder="${esc(t('settings.shortcuts.commandPlaceholder'))}"/></span>
+          <span class="field-help">${esc(custom ? t('settings.shortcuts.commandHelp') : t('settings.shortcuts.commandFixed'))}</span></label>
+        ${
+          custom
+            ? `<div class="shortcut-field"><span class="shortcut-field-label" id="shortcut-when">${esc(t('settings.shortcuts.when'))}</span>
+          <div class="choices" role="radiogroup" aria-labelledby="shortcut-when">${whenRow('email', t('settings.shortcuts.whenEmailOption'))}${whenRow('always', t('settings.shortcuts.whenAlwaysOption'))}</div></div>
+        <div class="shortcut-field"><span class="shortcut-field-label" id="shortcut-icon">${esc(t('settings.shortcuts.icon'))}</span>
+          <div class="shortcut-icons" role="radiogroup" aria-labelledby="shortcut-icon">${icons}</div></div>`
+            : ''
+        }
+        <label>${esc(t('settings.shortcuts.prompt'))}<textarea name="prompt" rows="7" maxlength="${SHORTCUT_PROMPT_MAX}" spellcheck="false">${esc(s ? s.prompt : '')}</textarea>
+          <span class="field-help">${esc(custom ? t('settings.shortcuts.promptHelp') : t('settings.shortcuts.promptHelpBuiltin'))}</span></label>
+        <div class="error" data-error></div>
+      </div>`;
+      // An error is about what the field held: it goes once the user changes it.
+      body.querySelector('.shortcut-form').addEventListener('input', () => (body.querySelector('[data-error]').textContent = ''));
+      body.querySelectorAll('[data-when]').forEach((b) =>
+        b.addEventListener('click', () => {
+          when = b.dataset.when;
+          body.querySelectorAll('[data-when]').forEach((x) => {
+            x.setAttribute('aria-checked', String(x === b));
+            x.querySelector('.radio').classList.toggle('on', x === b);
+          });
+        })
+      );
+      body.querySelectorAll('[data-icon]').forEach((b) =>
+        b.addEventListener('click', () => {
+          iconName = b.dataset.icon;
+          body.querySelectorAll('[data-icon]').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+        })
+      );
+    }
+  });
+}
+
 export function promptDialog(title, value = '', { multiline = false, placeholder = '' } = {}) {
   return dialog({
     title,
@@ -90,7 +198,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const page = document.createElement('div');
   page.className = 'page settings';
   document.getElementById('overlays').appendChild(page);
-  const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : ['main', start];
+  const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : start === 'shortcuts' ? ['main', 'agents', 'shortcuts'] : ['main', start];
   let params = id ? { id } : {};
 
   // Live status (sync times, errors) matters on the overview pages; forms must not be reset under the user.
@@ -269,6 +377,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       <p class="settings-intro" data-i18n="settings.agents.help">${esc(t('settings.agents.help'))}</p>
       <div class="card">
         ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(agentName(c, c.defaultAgent))}</span>`, action: 'agent-default' })}
+        ${row({ title: t('settings.agents.shortcuts'), desc: t('settings.agents.shortcutsHelp'), action: 'agent-shortcuts' })}
         ${row({ title: t('settings.agents.autoMail'), desc: t('settings.agents.autoMailHelp'), action: 'agent-auto', toggle: Boolean(c.autoMailActions) })}
       </div>
       ${head('clark')}
@@ -307,6 +416,98 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       </div>`;
   }
 
+  // ----- shortcuts -----
+
+  // The quick actions of the chat panel, as the user arranged them (actions.js shortcutList).
+  const shortcuts = () => shortcutList(agentState && agentState.config.shortcuts);
+  const shortcutRow = (s, i, list) => {
+    const label = esc(s.label);
+    const desc = [`/${esc(s.key)}`, esc(shortcutWhen(s)), !s.custom && (s.edited.label || s.edited.prompt) ? esc(t('settings.shortcuts.edited')) : ''].filter(Boolean).join(' · ');
+    return `<div class="row static shortcut-row ${s.hidden ? 'is-hidden' : ''}" data-shortcut="${esc(s.key)}">
+      <button class="shortcut-main" data-a="sc-edit:${esc(s.key)}" title="${esc(t('settings.shortcuts.editTitle'))}">
+        <span class="shortcut-lead">${panelIcon(s.icon, 16).outerHTML}</span>
+        <div class="text"><div class="title">${label}</div><div class="desc">${desc}</div></div>
+      </button>
+      <button class="icon-btn sm" data-a="sc-up:${esc(s.key)}" aria-label="${esc(t('settings.shortcuts.moveUp', { name: s.label }))}" title="${esc(t('settings.shortcuts.moveUp', { name: s.label }))}" ${i === 0 ? 'disabled' : ''}>${icons.up}</button>
+      <button class="icon-btn sm" data-a="sc-down:${esc(s.key)}" aria-label="${esc(t('settings.shortcuts.moveDown', { name: s.label }))}" title="${esc(t('settings.shortcuts.moveDown', { name: s.label }))}" ${i === list.length - 1 ? 'disabled' : ''}>${icons.down}</button>
+      <button class="shortcut-switch" data-a="sc-show:${esc(s.key)}" role="switch" aria-checked="${!s.hidden}" aria-label="${esc(t('settings.shortcuts.show', { name: s.label }))}" title="${esc(t('settings.shortcuts.show', { name: s.label }))}"><span class="switch ${s.hidden ? '' : 'on'}"></span></button>
+    </div>`;
+  };
+  const shortcutRows = () => {
+    const list = shortcuts();
+    return `${list.map((s, i) => shortcutRow(s, i, list)).join('')}
+      ${row({ title: t('settings.shortcuts.add'), action: 'sc-add', lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}`;
+  };
+  function shortcutsHtml() {
+    return `
+      <p class="settings-intro">${esc(t('settings.shortcuts.help'))}</p>
+      <div class="card shortcut-card" data-shortcuts>${shortcutRows()}</div>
+      <div class="settings-group-title"></div>
+      <div class="card">${row({ title: t('settings.shortcuts.reset'), desc: t('settings.shortcuts.resetHelp'), action: 'sc-reset' })}</div>`;
+  }
+  // Saves the list and draws the rows again in place, so the page keeps its scroll; focus: the control to give the
+  // focus back to, as a data-a value (a move button that is now disabled hands it to the other one).
+  async function saveShortcuts(list, focus) {
+    if (!(await updateAgents({ shortcuts: storedShortcuts(list) }))) return false;
+    const card = page.querySelector('[data-shortcuts]');
+    if (!card) return true;
+    card.innerHTML = shortcutRows();
+    if (focus) {
+      let el = card.querySelector(`[data-a="${focus}"]`);
+      if (el && el.disabled) el = card.querySelector(`[data-a="${focus.replace(/^sc-(up|down)/, (m, d) => `sc-${d === 'up' ? 'down' : 'up'}`)}"]`);
+      el?.focus();
+    }
+    return true;
+  }
+  async function shortcutAction(action) {
+    const [name, key] = action.split(':');
+    const list = shortcuts();
+    const i = list.findIndex((s) => s.key === key);
+    const s = list[i];
+    switch (name) {
+      case 'sc-up':
+      case 'sc-down': {
+        const j = name === 'sc-up' ? i - 1 : i + 1;
+        if (!s || j < 0 || j >= list.length) return;
+        [list[i], list[j]] = [list[j], list[i]];
+        return saveShortcuts(list, action);
+      }
+      case 'sc-show':
+        if (!s) return;
+        s.hidden = !s.hidden;
+        return saveShortcuts(list, action);
+      case 'sc-edit': {
+        if (!s) return;
+        const v = await shortcutDialog(s, list);
+        if (!v) return;
+        if (v === 'delete') list.splice(i, 1);
+        else if (v === 'restore') s.edited = { label: '', prompt: '' };
+        else if (s.custom) list[i] = { ...s, ...v, needsEmail: v.when === 'email', description: v.label };
+        else s.edited = { label: v.label === s.defaultLabel ? '' : v.label, prompt: v.prompt === s.defaultPrompt ? '' : v.prompt };
+        if (await saveShortcuts(list, v === 'delete' ? 'sc-add' : `sc-edit:${list[i] ? list[i].key : ''}`)) toast(t('settings.agents.saved'), 1400);
+        return;
+      }
+      case 'sc-add': {
+        if (list.length >= SHORTCUTS_MAX) return toast(t('settings.shortcuts.tooMany', { count: SHORTCUTS_MAX }), 5000);
+        const v = await shortcutDialog(null, list);
+        if (!v || typeof v !== 'object') return;
+        list.push({ ...v, custom: true, hidden: false, needsEmail: v.when === 'email', description: v.label, action: 'shortcut' });
+        if (await saveShortcuts(list, `sc-edit:${v.key}`)) toast(t('settings.shortcuts.added', { name: v.label }), 2400);
+        return;
+      }
+      case 'sc-reset': {
+        const ok = await confirmDialog(t('settings.shortcuts.resetTitle'), t('settings.shortcuts.resetConfirm'), t('settings.shortcuts.resetOk'));
+        if (!ok) return;
+        if (await updateAgents({ shortcuts: null })) {
+          const card = page.querySelector('[data-shortcuts]');
+          if (card) card.innerHTML = shortcutRows();
+          toast(t('settings.shortcuts.resetDone'), 2400);
+        }
+        return;
+      }
+    }
+  }
+
   // Saves a patch and reads the config back, so the page shows what main accepted.
   async function updateAgents(patch) {
     try {
@@ -340,6 +541,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const [name, id] = action.split(':');
     const c = agentState.config;
     switch (name) {
+      case 'agent-shortcuts':
+        return go('shortcuts');
       case 'agent-default': {
         const v = await choiceDialog(t('settings.agents.default'), AGENT_IDS.map((x) => ({ value: x, label: agentName(c, x), hint: AGENT_PRODUCTS[x] })), c.defaultAgent);
         if (v && (await updateAgents({ defaultAgent: v }))) b.querySelector('[data-agent-default]').textContent = agentName(agentState.config, v);
@@ -444,7 +647,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const view = stack[stack.length - 1];
     let title = t('settings.title');
     let body = '';
-    if (view === 'main' || view === 'agents') {
+    if (view === 'main' || view === 'agents' || view === 'shortcuts') {
       agentState = await loadAgents();
       if (stack[stack.length - 1] !== view) return;
     }
@@ -599,6 +802,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       body = agentState ? agentsHtml() : `<p class="empty">${esc(t('settings.agents.unavailable'))}</p>`;
     }
 
+    if (view === 'shortcuts') {
+      title = t('settings.shortcuts.title');
+      body = agentState ? shortcutsHtml() : `<p class="empty">${esc(t('settings.agents.unavailable'))}</p>`;
+    }
+
     page.innerHTML = `
       <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
@@ -661,6 +869,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     }
     if (a === 'agents') return go('agents');
     if (a.startsWith('agent-')) return agentAction(a, b);
+    if (a.startsWith('sc-')) return shortcutAction(a);
     if (a === 'add') {
       close();
       return ctx.openSetup({ first: false });

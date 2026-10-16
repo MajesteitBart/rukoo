@@ -8,7 +8,17 @@ Open the panel with the sparkle button in the title bar or with `Ctrl+J`. While 
 
 ## What you can ask
 
-The panel offers quick actions for the open email. The same actions work as slash commands in the chat input, such as `/reply`. [Skills](#skills) are slash commands too. You can also type anything else.
+The panel offers quick actions for the open email. The same actions work as slash commands in the chat input, such as `/reply`. [Skills](#skills) are slash commands too. Type `$` for the [agent's own skills](#the-agents-own-skills). You can also type anything else.
+
+The quick actions are the same with every agent. Settings → Agents → Shortcuts, or the round button after them in a new chat, lists them in their order:
+
+- The switch takes one out of new chats. Its slash command keeps working.
+- The arrows move one up or down.
+- Click one to change its name or the instructions the agent gets. A quick action of Rukoo's keeps its command; "Restore default" gives it back its own name and instructions.
+- "Add a shortcut" makes one of your own: a name, a command, an icon, the instructions, and whether it shows only with an open email or always. The agent gets the instructions with the open email, if there is one.
+- "Restore Rukoo's shortcuts" removes your own and your changes.
+
+Rukoo keeps the list in `agents.json`. It holds at most 40 shortcuts, with a name of up to 60 characters and instructions of up to 4,000.
 
 A new chat is about the open email. The email shows as a chip above the input and goes to the agent with your first message. To ask something without it, click the × on the chip. An "Add this email" chip takes its place; click it to put the email back. Once a chat has started it keeps its email, so the chip has no ×. Start a new chat to leave the email out.
 
@@ -172,6 +182,20 @@ The skills are plain Agent Skills, so you can install them into an agent directl
 - **Codex:** copy a skill folder into `~/.agents/skills`, or into `.agents/skills` in the project you work in.
 
 Rukoo starts Claude Code and Codex with your own settings, so in Rukoo they also load the skills you installed for them. A skill installed there that Rukoo offers too shows up twice.
+
+### The agent's own skills
+
+Hermes, Claude Code and Codex have skills of their own, installed for that agent. Type `$` in the chat input to see the ones the agent of the chat has, under a line such as "Hermes's skills". Typing narrows the list down, by name first and then by description. Pick one with the mouse, Enter or Tab: it goes into your message as `$name`, and you write the rest. A `$` followed by a digit, as in `$50`, opens nothing.
+
+| Agent | Where the list comes from | How the skill starts |
+|---|---|---|
+| Hermes Agent | `GET /v1/skills` on the Hermes server, with each skill's category. An older Hermes without that endpoint offers none | Hermes' runs API doesn't start a skill named in a message, so Rukoo reads it with `GET /v1/skills/{name}` and puts its instructions before your message, the way Hermes does for `/name` in its own chat. Up to three skills per message, each up to 16,000 characters; a longer one Hermes loads with its `skill_view` tool |
+| Claude Code | Its folders, read the way Claude Code reads them: `skills/` in its config folder (`CLAUDE_CONFIG_DIR`, or the folder in Settings, else `~/.claude`), `.claude/skills` in Rukoo's agent workspace, and the skills of the plugins you turned on, named `plugin:skill`. A skill marked `user-invocable: false`, or turned off with `skillOverrides`, is left out | Claude Code starts a skill when the last text block of a message begins with `/name`. Rukoo sends your message that way: the text before the last skill you named in one block, then `/name` with the rest. Claude Code starts one skill per message; earlier ones read `/name` in the text |
+| Codex | `skills/list` on the app-server, for Rukoo's agent workspace. Skills that are turned off are left out | Codex reads `$name` in a message itself |
+
+Rukoo loads the list when the panel opens and when you type `$`, and keeps it for a minute. Only your own text counts: a `$name` in an email, or in anything else Rukoo sends along, starts nothing. A skill the list doesn't have goes as plain text.
+
+Rukoo's own skills stay slash commands, because every agent has them. The quick actions don't show after `$` either: they work the same with every agent.
 
 ## Approvals
 

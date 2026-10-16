@@ -10,11 +10,24 @@ const ACCESS = ['ask', 'full'];
 // Every effort level an agent may offer, lowest first. Each agent offers its own subset (see models()).
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
+// The chat panel's shortcuts, as the user arranged them (null: Rukoo's own, in their own order). Each entry is a
+// command name with what the user changed: a shortcut of Rukoo's can be hidden or get its own label and prompt; one
+// of the user's own (custom) has all of these. Main checks the shape; the panel knows which names are Rukoo's.
+const SHORTCUT_KEY = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Message actions the hub and the panel give a meaning of their own; a shortcut can't take their name.
+const SHORTCUT_RESERVED = new Set(['approved', 'declined', 'skill', 'shortcut']);
+const SHORTCUT_ICONS = ['sparkle', 'mail', 'search', 'list', 'arrow-right', 'layers', 'clock', 'file', 'pen', 'calendar', 'person', 'globe', 'chart', 'link', 'check', 'shield', 'info', 'x'];
+const SHORTCUT_WHEN = ['email', 'always'];
+const SHORTCUTS_MAX = 40;
+const SHORTCUT_LABEL_MAX = 60;
+const SHORTCUT_PROMPT_MAX = 4000;
+
 const DEFAULTS = {
   version: 1,
   defaultAgent: 'clark',
   // true: mail_action runs without an approval card (unsubscribe always asks).
   autoMailActions: false,
+  shortcuts: null,
   clark: { enabled: true, name: 'Hermes', url: '', key: null, model: '' },
   claude: { enabled: true, exe: '', configDir: '', model: '', access: 'ask' },
   codex: { enabled: true, exe: '', model: '', access: 'ask' },
@@ -93,6 +106,44 @@ function bool(value, field) {
   return value;
 }
 
+// The shortcut list as stored: a clean copy, in order. An entry that breaks the rules throws 'invalid'.
+function shortcutList(value) {
+  if (value === null) return null;
+  if (!Array.isArray(value)) throw new AgentError('invalid', 'shortcuts must be a list');
+  if (value.length > SHORTCUTS_MAX) throw new AgentError('invalid', `at most ${SHORTCUTS_MAX} shortcuts`);
+  const seen = new Set();
+  return value.map((entry) => {
+    if (!isObj(entry)) throw new AgentError('invalid', 'a shortcut must be an object');
+    const key = text(entry.key, 40, 'shortcut name').toLowerCase();
+    if (!SHORTCUT_KEY.test(key)) throw new AgentError('invalid', 'a shortcut name has lowercase letters, digits and single hyphens');
+    if (SHORTCUT_RESERVED.has(key)) throw new AgentError('invalid', `/${key} is taken`);
+    if (seen.has(key)) throw new AgentError('invalid', `/${key} is there twice`);
+    seen.add(key);
+    const out = { key };
+    if (entry.custom === true) out.custom = true;
+    if (entry.hidden !== undefined && bool(entry.hidden, 'shortcut hidden')) out.hidden = true;
+    const label = entry.label == null ? '' : text(entry.label, SHORTCUT_LABEL_MAX, 'shortcut label');
+    const prompt = entry.prompt == null ? '' : text(entry.prompt, SHORTCUT_PROMPT_MAX, 'shortcut prompt');
+    if (label) out.label = label;
+    if (prompt) out.prompt = prompt;
+    if (out.custom) {
+      if (!label || !prompt) throw new AgentError('invalid', `/${key} needs a label and a prompt`);
+      out.icon = SHORTCUT_ICONS.includes(entry.icon) ? entry.icon : 'sparkle';
+      out.when = SHORTCUT_WHEN.includes(entry.when) ? entry.when : 'email';
+    }
+    return out;
+  });
+}
+
+// A list in the file that no longer passes (edited by hand, or from a later Rukoo) gives way to the defaults.
+function storedShortcuts(value) {
+  try {
+    return value === undefined ? null : shortcutList(value);
+  } catch (_) {
+    return null;
+  }
+}
+
 function httpUrl(value, field) {
   const s = text(value, 300, field);
   if (!s) return '';
@@ -129,6 +180,7 @@ class AgentConfig {
       version: 1,
       defaultAgent: AGENT_IDS.includes(s.defaultAgent) ? s.defaultAgent : DEFAULTS.defaultAgent,
       autoMailActions: s.autoMailActions === true,
+      shortcuts: storedShortcuts(s.shortcuts),
       clark: mergeSection(DEFAULTS.clark, s.clark),
       claude: mergeSection(DEFAULTS.claude, s.claude),
       codex: mergeSection(DEFAULTS.codex, s.codex),
@@ -179,6 +231,7 @@ class AgentConfig {
       version: 1,
       defaultAgent: d.defaultAgent,
       autoMailActions: d.autoMailActions,
+      shortcuts: d.shortcuts ? clone(d.shortcuts) : null,
       clark: { ...clark, hasKey: Boolean(key) },
       claude: { ...d.claude },
       codex: { ...d.codex },
@@ -204,6 +257,7 @@ class AgentConfig {
       next.defaultAgent = patch.defaultAgent;
     }
     if ('autoMailActions' in patch) next.autoMailActions = bool(patch.autoMailActions, 'autoMailActions');
+    if ('shortcuts' in patch) next.shortcuts = shortcutList(patch.shortcuts);
     const section = (name, apply) => {
       if (!(name in patch)) return;
       if (!isObj(patch[name])) throw new AgentError('invalid', `${name} must be an object`);
@@ -290,4 +344,4 @@ class AgentConfig {
   }
 }
 
-module.exports = { AgentConfig, AgentError, AGENT_IDS, EFFORTS, DEFAULTS, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor };
+module.exports = { AgentConfig, AgentError, AGENT_IDS, EFFORTS, DEFAULTS, SHORTCUT_ICONS, SHORTCUTS_MAX, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor };

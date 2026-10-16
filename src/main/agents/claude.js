@@ -12,6 +12,7 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 const { untag, imageLabel } = require('./context');
+const { claudeDispatch, claudeSkills } = require('./ownskills');
 const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, tail, killTree, writeJson, WINDOWS, inputFields, echoFree, approvalTitle } = require('./proc');
 
 const IDLE_MS = 15 * 60 * 1000;
@@ -75,8 +76,16 @@ function approvalFields(input, description = '') {
 // The turn's text, then each image the user attached that goes along with the message, each right after a line
 // that says which file it is and that it is untrusted data. Other files are in the workspace, where Claude reads
 // them with its own tools; the text says where.
+// A message that names one of Claude Code's skills ($name, turn.skills) ends in a block that starts with /name,
+// which is how Claude Code starts a skill (ownskills.claudeDispatch). Only the user's own text, at the end of the
+// input, is looked at: what Rukoo puts before it can quote an email.
 function userContent(turn) {
-  const content = [{ type: 'text', text: turn.input }];
+  const input = String(turn.input || '');
+  const own = String(turn.text || '');
+  const names = (Array.isArray(turn.skills) ? turn.skills : []).map((s) => s.name);
+  const dispatch = names.length && own && input.endsWith(own) ? claudeDispatch(own, names) : null;
+  const before = dispatch ? `${input.slice(0, input.length - own.length)}${dispatch.leading}`.trimEnd() : input;
+  const content = [{ type: 'text', text: before }];
   for (const f of Array.isArray(turn.files) ? turn.files : []) {
     if (f.kind !== 'image' || !f.inline || !f.path) continue;
     try {
@@ -86,6 +95,7 @@ function userContent(turn) {
       // Gone since the hub read it: the text still names the file, and read_chat_file says what happened.
     }
   }
+  if (dispatch) content.push({ type: 'text', text: dispatch.command });
   return content;
 }
 
@@ -159,6 +169,12 @@ class ClaudeAdapter {
   // For the model and effort menus.
   async models() {
     return { models: MODELS.map((m) => ({ ...m, efforts: EFFORTS })), efforts: EFFORTS, custom: EFFORTS };
+  }
+
+  // For the $ menu: the skills Claude Code offers as /name in Rukoo's workspace, read from its folders.
+  async skills() {
+    const s = this.settings();
+    return claudeSkills({ configDir: s.configDir || undefined, cwd: this.workspace() });
   }
 
   invalidate() {

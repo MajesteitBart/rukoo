@@ -851,6 +851,8 @@ Object.assign(api, {
   },
   agentDropFile: (id) => agentHub().unstageFile(agentId(id)),
   agentSkills: () => agentHub().skillList(),
+  // The skills of the agent itself, for the $ menu (Rukoo's own are agentSkills).
+  agentOwnSkills: (agent, options) => agentHub().ownSkills(agentId(agent), { refresh: agentPlain(options).refresh === true }),
   agentStop: (id) => agentHub().stop(agentId(id)),
   agentDecide: (id, itemId, choiceId) => agentHub().decide(agentId(id), agentId(itemId), agentId(choiceId)),
   agentRemove: (id) => agentHub().remove(agentId(id)),

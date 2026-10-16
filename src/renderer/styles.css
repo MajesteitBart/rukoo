@@ -2215,7 +2215,8 @@ body:has(.page) .titlebar-actions {
 .dialog .buttons button.danger {
   color: var(--danger);
 }
-.dialog .buttons button.danger:first-child:not(:last-child) {
+.dialog .buttons button.danger:first-child:not(:last-child),
+.dialog .buttons button.left {
   margin-right: auto;
 }
 .dialog .buttons button.danger:last-child {
@@ -3499,6 +3500,109 @@ body.compose-window {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* ---------- settings: shortcuts ---------- */
+
+/* A row per shortcut: the part that opens the editor, then move up, move down and the switch. Each is its own
+   button, so the row is a static one. */
+.shortcut-row {
+  gap: 2px;
+  padding: 6px 10px 6px 6px;
+}
+.shortcut-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px 6px 4px;
+  border-radius: var(--radius);
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+.shortcut-main:hover {
+  background: var(--hover);
+}
+.shortcut-main .title,
+.shortcut-main .desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shortcut-lead {
+  display: grid;
+  width: 30px;
+  flex: none;
+  place-items: center;
+  color: var(--text-2);
+}
+/* Turned off: still there to edit and move, quieter. */
+.shortcut-row.is-hidden .title,
+.shortcut-row.is-hidden .shortcut-lead {
+  color: var(--text-3);
+}
+.shortcut-switch {
+  display: grid;
+  flex: none;
+  place-items: center;
+  height: 32px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: var(--radius);
+}
+.shortcut-form .shortcut-command {
+  position: relative;
+  display: block;
+}
+.shortcut-form .shortcut-command > span {
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  transform: translateY(-50%);
+  font-size: 13.5px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+.form .shortcut-command input[type='text'] {
+  padding-left: 20px;
+}
+.form .shortcut-command input:disabled {
+  color: var(--text-2);
+  background: var(--chip);
+  cursor: default;
+}
+.shortcut-field {
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.shortcut-field .choices {
+  color: var(--text);
+}
+.shortcut-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.shortcut-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: var(--radius);
+  color: var(--text-2);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.shortcut-icon:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.shortcut-icon[aria-checked='true'] {
+  background: var(--active);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 /* ---------- calendar ---------- */

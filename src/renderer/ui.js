@@ -335,7 +335,7 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
       ${title ? `<h2 id="dialog-title">${esc(title)}</h2>` : ''}
       <div class="dialog-body">${body}</div>
       <div class="buttons">${buttons
-        .map((b, i) => `<button data-i="${i}" class="${b.danger ? 'danger' : ''} ${b.primary ? 'primary' : ''}">${esc(b.label)}</button>`)
+        .map((b, i) => `<button data-i="${i}" class="${b.danger ? 'danger' : ''} ${b.primary ? 'primary' : ''} ${b.left ? 'left' : ''}">${esc(b.label)}</button>`)
         .join('')}</div>
     </div>`;
     const done = (value) => {

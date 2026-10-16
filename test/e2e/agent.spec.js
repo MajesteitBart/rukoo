@@ -1876,3 +1876,147 @@ test('the paperclip and chips fit next to the agent, model and effort menus from
     await pane().screenshot({ path: path.join(SHOTS, `25-attachments-${width}.png`) });
   }
 });
+
+test("$ offers the agent's own skills: Hermes' from its server, Claude Code's and Codex's from their setup; a picked skill goes with the message", async () => {
+  await openChat('Call on Thursday');
+  const rows = win.locator('.agentpane .bui-pb__cmd');
+  const names = win.locator('.agentpane .bui-pb__cmdname');
+  await input().fill('$');
+  await expect(win.locator('.agentpane .bui-pb__heading')).toHaveText("Hermes's skills");
+  await expect(names).toHaveText(['$meeting-prep', '$invoice-check', '$crm-update']);
+  await expect(rows.first().locator('.bui-pb__cmdtag')).toHaveText('productivity');
+  await settled();
+  await shot('30-skills-dollar');
+
+  // Typing narrows the list down; Enter puts the skill in the message instead of sending it.
+  await input().fill('Please $inv');
+  await expect(names).toHaveText(['$invoice-check']);
+  await input().press('Enter');
+  await expect(input()).toHaveValue('Please $invoice-check ');
+  await expect(rows).toHaveCount(0);
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  // A description matches too, after the names.
+  await input().fill('$quote');
+  await expect(names).toHaveText(['$invoice-check']);
+  // An amount opens nothing, and / still offers the shortcuts and Rukoo's skills, not the agent's.
+  await input().fill('It costs $5');
+  await expect(win.locator('.agentpane .bui-pb__menu')).toHaveCount(0);
+  await input().fill('/');
+  await expect(names.first()).toHaveText('/reply');
+  await expect(win.locator('.agentpane .bui-pb__cmdname', { hasText: '$' })).toHaveCount(0);
+
+  await input().fill('Please $invoice-check for this email');
+  await input().press('Enter');
+  await expect(transcript().locator('.bui-ub')).toHaveText('Please $invoice-check for this email');
+  await expect(transcript()).toContainText('Started $invoice-check.', { timeout: 10000 });
+  const got = await received('clark');
+  expect(got.skills).toEqual([{ name: 'invoice-check' }]);
+  expect(got.text).toBe('Please $invoice-check for this email');
+
+  // Another agent: its own skills, a plugin skill under its plugin's name.
+  await win.click('.agentpane [data-ap="new"]');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Claude' }).click();
+  await input().fill('$');
+  await expect(win.locator('.agentpane .bui-pb__heading')).toHaveText("Claude's skills");
+  await expect(names).toHaveText(['$humanizer', '$pdf', '$codex:rescue']);
+  await input().fill('$res');
+  await expect(names).toHaveText(['$codex:rescue']);
+  await input().press('Tab');
+  await expect(input()).toHaveValue('$codex:rescue ');
+});
+
+test('shortcuts: the user hides, orders, edits and adds them in Settings; new chats follow, with every agent, after a restart too', async () => {
+  const closeSettings = async () => {
+    while (await win.locator('.page.settings').count()) await win.keyboard.press('Escape');
+  };
+  // Functions, so they find the window again after the restart.
+  const chips = () => win.locator('.agentpane .ap-actions .bui-sugg__chip:not(.bui-sugg__edit)');
+  await openChat('Call on Thursday');
+  await expect(chips()).toHaveText(['Draft a reply', 'Brief me', 'Plan follow-ups', 'Tell the team', 'Update systems', 'Summarize']);
+
+  // The round chip after the shortcuts opens their page.
+  await win.click('.agentpane .bui-sugg__edit');
+  await expect(win.locator('.page.settings h1')).toHaveText('Shortcuts');
+  const rows = () => win.locator('.page.settings .shortcut-row .shortcut-main .title');
+  await expect(rows()).toHaveText(['Draft a reply', 'Brief me', 'Plan follow-ups', 'Tell the team', 'Update systems', 'Unsubscribe', 'Summarize', 'What needs me today?']);
+  await win.screenshot({ path: path.join(SHOTS, '31-shortcuts-settings.png') });
+
+  // Off, and up twice: the page redraws in place and keeps the focus on the control.
+  await win.click('.page.settings [data-a="sc-show:team"]');
+  await expect(win.locator('.page.settings [data-a="sc-show:team"]')).toHaveAttribute('aria-checked', 'false');
+  await win.click('.page.settings [data-a="sc-up:summary"]');
+  await expect(win.locator('.page.settings [data-a="sc-up:summary"]')).toBeFocused();
+  await win.keyboard.press('Enter');
+  await expect(rows()).toHaveText(['Draft a reply', 'Brief me', 'Plan follow-ups', 'Tell the team', 'Summarize', 'Update systems', 'Unsubscribe', 'What needs me today?']);
+  await expect(win.locator('.page.settings [data-a="sc-up:summary"]')).toBeFocused();
+
+  // One of Rukoo's gets its own name; its command stays.
+  await win.click('.page.settings [data-a="sc-edit:reply"]');
+  await expect(win.locator('.dialog [name="key"]')).toBeDisabled();
+  await win.locator('.dialog [name="label"]').fill('Answer');
+  await win.click('.dialog .buttons button:last-child');
+  await expect(rows().first()).toHaveText('Answer');
+  await expect(win.locator('.page.settings .shortcut-row').first().locator('.desc')).toHaveText('/reply · With an open email · Edited');
+
+  // A shortcut of the user's own, for every new chat.
+  await win.click('.page.settings [data-a="sc-add"]');
+  await expect(win.locator('.dialog h2')).toHaveText('New shortcut');
+  await win.click('.dialog .buttons button:last-child');
+  await expect(win.locator('.dialog [data-error]')).toHaveText('Give the shortcut a name.');
+  await win.locator('.dialog [name="label"]').fill('Follow up');
+  await win.locator('.dialog [name="key"]').fill('reply');
+  await win.locator('.dialog [name="prompt"]').fill('Plan a follow-up call about this email and propose a time with propose_action.');
+  await win.click('.dialog .buttons button:last-child');
+  await expect(win.locator('.dialog [data-error]')).toHaveText('/reply is already a command.');
+  await win.locator('.dialog [name="key"]').fill('follow-up');
+  await win.click('.dialog [data-when="always"]');
+  await win.click('.dialog [data-icon="calendar"]');
+  await win.screenshot({ path: path.join(SHOTS, '32-shortcut-new.png') });
+  await win.click('.dialog .buttons button:last-child');
+  await expect(rows().last()).toHaveText('Follow up');
+  await expect(win.locator('.page.settings .shortcut-row').last().locator('.desc')).toHaveText('/follow-up · Always');
+
+  await closeSettings();
+  await expect(chips()).toHaveText(['Answer', 'Brief me', 'Plan follow-ups', 'Summarize', 'Update systems', 'Follow up']);
+  await expect(win.locator('.agentpane .ap-actions [data-icon="calendar"]')).toHaveCount(1);
+  await settled();
+  await shot('33-shortcuts-chips');
+  // A hidden shortcut keeps its command.
+  await input().fill('/te');
+  await expect(win.locator('.agentpane .bui-pb__cmdname')).toHaveText(['/team']);
+  await input().fill('/fol');
+  await expect(win.locator('.agentpane .bui-pb__cmdname')).toHaveText(['/follow-up']);
+  await input().fill('');
+
+  // The user's shortcut sends its instructions; the bubble shows its name.
+  await chips().filter({ hasText: 'Follow up' }).click();
+  await expect(transcript().locator('.bui-ub')).toHaveText('Follow up');
+  await expect.poll(async () => ((await received('clark')) || {}).action).toBe('shortcut');
+  expect((await received('clark')).text).toBe('Plan a follow-up call about this email and propose a time with propose_action.');
+
+  // With no email in the chat the shortcut for always is there, next to the inbox overview; so it is with Claude.
+  await win.click('.agentpane [data-ap="new"]');
+  await win.click('.agentpane .bui-entity__x');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Claude' }).click();
+  await expect(chips()).toHaveText(['What needs me today?', 'Follow up']);
+
+  // After a restart it is all still there.
+  await app.close();
+  await launch();
+  await item('Call on Thursday').click();
+  if (!(await pane().isVisible())) await win.keyboard.press('Control+j');
+  // The email has the chat from before; a new one shows the shortcuts.
+  await expect(transcript().locator('.bui-ub')).toHaveText('Follow up');
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(chips()).toHaveText(['Answer', 'Brief me', 'Plan follow-ups', 'Summarize', 'Update systems', 'Follow up']);
+
+  // Restoring brings Rukoo's own back, in their own order.
+  await win.click('.agentpane .bui-sugg__edit');
+  await win.click('.page.settings [data-a="sc-reset"]');
+  await win.click('.dialog .buttons button:last-child');
+  await expect(rows()).toHaveText(['Draft a reply', 'Brief me', 'Plan follow-ups', 'Tell the team', 'Update systems', 'Unsubscribe', 'Summarize', 'What needs me today?']);
+  await closeSettings();
+  await expect(chips()).toHaveText(['Draft a reply', 'Brief me', 'Plan follow-ups', 'Tell the team', 'Update systems', 'Summarize']);
+});

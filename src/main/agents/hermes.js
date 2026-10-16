@@ -39,6 +39,9 @@ const QUIT_ANSWER_MS = 1000;
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 // A model list longer than this is cut: an aggregator such as OpenRouter lists hundreds.
 const MAX_MODELS = 300;
+// Skills one message can start, and the instructions of each that go along in the message (as Rukoo's own skills).
+const SKILLS_PER_TURN = 3;
+const SKILL_BODY_MAX = 16000;
 const MAX_PER_PROVIDER = 60;
 
 // "provider::model", the way Hermes names a model of a provider other than its current one; a bare model or a
@@ -283,6 +286,39 @@ class HermesAdapter {
     return { models, efforts: own ? own.efforts : EFFORTS, custom: EFFORTS };
   }
 
+  // For the $ menu: the skills installed on the Hermes server (GET /v1/skills). An older Hermes has no such
+  // endpoint and offers none.
+  async skills() {
+    const s = this.settings();
+    if (!s.enabled) throw new AgentError('disabled', `${s.name} is turned off`);
+    if (!s.url || !s.key) throw new AgentError('not-configured', !s.url ? 'No server URL' : 'No API key');
+    const res = await this.request('GET', '/v1/skills', { server: { url: s.url, key: s.key }, timeout: 15000 });
+    if (res.status === 404) return [];
+    if (!res.ok) throw httpError(res);
+    const list = res.data && Array.isArray(res.data.data) ? res.data.data : [];
+    return list.map((k) => ({ name: k && k.name, description: (k && k.description) || '', scope: (k && typeof k.category === 'string' && k.category) || '' }));
+  }
+
+  // The instructions of the skills a message names ($name, turn.skills), read from the server the run goes to, as
+  // Hermes itself puts a skill the user starts with /name in the message: a line that says so, then SKILL.md. The
+  // runs API doesn't do that for a message. A skill that can't be read, or is too long to go along, is left to
+  // Hermes to load with its own skill_view tool.
+  async skillBlocks(turn, server) {
+    const blocks = [];
+    for (const { name } of (Array.isArray(turn.skills) ? turn.skills : []).slice(0, SKILLS_PER_TURN)) {
+      let body = '';
+      try {
+        const res = await this.request('GET', `/v1/skills/${encodeURIComponent(name)}`, { server, signal: turn.signal });
+        if (res.ok && res.data && typeof res.data.body === 'string') body = res.data.body.trim();
+      } catch (err) {
+        if (err instanceof AgentError && err.code === 'stopped') throw err;
+      }
+      const intro = `[The user invoked the "${name}" skill, so they want you to follow its instructions.`;
+      blocks.push(body && body.length <= SKILL_BODY_MAX ? `${intro} The full skill content is loaded below.]\n\n${body}` : `${intro} Load it with skill_view (name "${name}") and follow it.]`);
+    }
+    return blocks;
+  }
+
   // Cheap and cached: /health says the server is there, /v1/capabilities that the key works.
   // force (the Test button) skips the cache.
   async status({ force = false } = {}) {
@@ -351,7 +387,9 @@ class HermesAdapter {
     const sessionId = await this.session(turn, server);
     // Stop can arrive while the session lookup is in flight; nothing has been submitted to Hermes yet.
     if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
-    const body = { input: turn.input, session_id: sessionId };
+    const skills = await this.skillBlocks(turn, server);
+    if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
+    const body = { input: skills.length ? `${skills.join('\n\n')}\n\n${turn.input}` : turn.input, session_id: sessionId };
     if (turn.instructions) body.instructions = turn.instructions;
     // The chat's own model and effort, else the model in Settings. Without either, Hermes uses its own.
     const { provider, model } = splitModel(String(turn.model || '').trim() || s.model);

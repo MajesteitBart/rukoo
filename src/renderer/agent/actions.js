@@ -1,6 +1,6 @@
 import { t } from '../i18n.js';
 
-// Quick actions in the chat panel. The bubble shows the short label; the agent gets the prompt.
+// Rukoo's quick actions in the chat panel. The bubble shows the short label; the agent gets the prompt.
 // Prompts stay in English on purpose: they are instructions for the model, not interface text.
 export const ACTIONS = [
   {
@@ -65,25 +65,94 @@ for (const a of ACTIONS) {
   Object.defineProperty(a, 'description', { get: () => t(`agent.actions.${a.key}.description`), enumerable: true });
 }
 
-export const actionByKey = (key) => ACTIONS.find((a) => a.key === String(key || '').replace(/^\//, '')) || null;
+// ---------- shortcuts ----------
 
-// Whether an action makes sense for this email (or for no email at all).
-export function applies(action, message) {
-  if (!message) return !action.needsEmail;
-  if (action.needsUnsubscribe && !message.unsubscribe) return false;
-  return action.needsEmail;
+// The user arranges the quick actions in Settings → Agents → Shortcuts: hides Rukoo's, gives them their own label or
+// prompt, puts them in another order, and adds their own. Main keeps that list (agents.json, config.js) as entries
+// with only what changed; shortcutList() turns it into the shortcuts the panel offers, with every agent.
+// The same rules as main's: the icons a shortcut of the user's can have, and the names neither can take.
+export const SHORTCUT_ICONS = ['sparkle', 'mail', 'search', 'list', 'arrow-right', 'layers', 'clock', 'file', 'pen', 'calendar', 'person', 'globe', 'chart', 'link', 'check', 'shield', 'info', 'x'];
+export const SHORTCUT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const SHORTCUT_RESERVED = new Set(['approved', 'declined', 'skill', 'shortcut']);
+export const SHORTCUTS_MAX = 40;
+export const SHORTCUT_LABEL_MAX = 60;
+export const SHORTCUT_PROMPT_MAX = 4000;
+
+const builtinOf = (key) => ACTIONS.find((a) => a.key === key) || null;
+
+// One shortcut as the panel and Settings use it. Rukoo's keep their translated label, unless the user wrote their
+// own. action: what the message tells main it came from; a shortcut of the user's is just 'shortcut'.
+function makeShortcut(entry, base) {
+  const e = entry || {};
+  if (!base) {
+    const when = e.when === 'always' ? 'always' : 'email';
+    return { key: e.key, custom: true, hidden: Boolean(e.hidden), icon: SHORTCUT_ICONS.includes(e.icon) ? e.icon : 'sparkle', when, needsEmail: when === 'email', label: e.label, description: e.label, prompt: e.prompt, action: 'shortcut' };
+  }
+  const edited = { label: e.label || '', prompt: e.prompt || '' };
+  const s = { key: base.key, custom: false, hidden: Boolean(e.hidden), icon: base.icon, needsEmail: base.needsEmail, needsUnsubscribe: Boolean(base.needsUnsubscribe), edited, defaultPrompt: base.prompt, action: base.key };
+  Object.defineProperty(s, 'defaultLabel', { get: () => base.label, enumerable: true });
+  Object.defineProperty(s, 'label', { get: () => s.edited.label || base.label, enumerable: true });
+  Object.defineProperty(s, 'description', { get: () => (s.edited.label ? base.label : base.description), enumerable: true });
+  Object.defineProperty(s, 'prompt', { get: () => s.edited.prompt || base.prompt, enumerable: true });
+  return s;
 }
 
-// The chips in the empty state: the email actions, or the inbox overview when no email is open.
-export const actionsFor = (message) => ACTIONS.filter((a) => applies(a, message));
+// The stored list (null: Rukoo's own) as shortcuts, in the user's order. A shortcut of Rukoo's that the list doesn't
+// have, such as one newer than the list, goes after the one before it in Rukoo's own order.
+export function shortcutList(stored) {
+  const out = [];
+  const seen = new Set();
+  for (const e of Array.isArray(stored) ? stored : []) {
+    if (!e || typeof e.key !== 'string' || seen.has(e.key)) continue;
+    const base = builtinOf(e.key);
+    if (!base && !(e.custom && e.label && e.prompt)) continue;
+    seen.add(e.key);
+    out.push(makeShortcut(e, base));
+  }
+  ACTIONS.forEach((a, i) => {
+    if (seen.has(a.key)) return;
+    const before = ACTIONS.slice(0, i).reverse().find((p) => seen.has(p.key));
+    out.splice(before ? out.findIndex((s) => s.key === before.key) + 1 : 0, 0, makeShortcut(null, a));
+    seen.add(a.key);
+  });
+  return out;
+}
 
-// Slash commands (/reply, /brief, ...): the same actions; the inbox overview is always available.
-export const commandsFor = (message) =>
-  ACTIONS.filter((a) => a.key === 'triage' || applies(a, message)).map((a) => ({ name: a.key, label: a.label, description: a.description, icon: a.icon }));
+// What main stores for these shortcuts: null when they are Rukoo's own, as they come.
+export function storedShortcuts(list) {
+  const entries = list.map((s) => {
+    const hidden = s.hidden ? { hidden: true } : {};
+    if (s.custom) return { key: s.key, custom: true, label: s.label, prompt: s.prompt, icon: s.icon, when: s.when, ...hidden };
+    return { key: s.key, ...hidden, ...(s.edited.label ? { label: s.edited.label } : {}), ...(s.edited.prompt ? { prompt: s.edited.prompt } : {}) };
+  });
+  const plain = entries.length === ACTIONS.length && entries.every((e, i) => Object.keys(e).length === 1 && e.key === ACTIONS[i].key);
+  return plain ? null : entries;
+}
 
-// Skills as slash commands, after the quick actions. A quick action keeps its command: a skill with the same name
-// is not offered here, though the agent can still read it with read_skill (docs/agents.md, "Skills").
-export const skillCommands = (skills) =>
+export const shortcutByKey = (list, key) => list.find((s) => s.key === String(key || '').replace(/^\//, '')) || null;
+
+// Whether a shortcut makes sense for this email (or for no email at all). Rukoo's are for an email, except the inbox
+// overview, which is for no email; the user's are for an email or for always.
+export function applies(s, message) {
+  if (s.custom) return s.when === 'always' || Boolean(message);
+  if (!message) return !s.needsEmail;
+  if (s.needsUnsubscribe && !message.unsubscribe) return false;
+  return s.needsEmail;
+}
+
+// The chips in the empty state: the shortcuts for the email, or for no email, that the user didn't hide.
+export const actionsFor = (message, list) => list.filter((s) => !s.hidden && applies(s, message));
+
+// Slash commands (/reply, /brief, ...): the same shortcuts, hidden ones too; the inbox overview and the user's
+// shortcuts for always are always there.
+export const commandsFor = (message, list) =>
+  list
+    .filter((s) => s.key === 'triage' || (s.custom && s.when === 'always') || applies(s, message))
+    .map((s) => ({ name: s.key, label: s.label, description: s.description, icon: s.icon }));
+
+// Skills as slash commands, after the shortcuts. A shortcut keeps its command: a skill with the same name is not
+// offered here, though the agent can still read it with read_skill (docs/agents.md, "Skills").
+export const skillCommands = (skills, list) =>
   (Array.isArray(skills) ? skills : [])
-    .filter((s) => s && typeof s.name === 'string' && !actionByKey(s.name))
+    .filter((s) => s && typeof s.name === 'string' && !shortcutByKey(list, s.name))
     .map((s) => ({ name: s.name, label: s.description, description: s.description, icon: 'file', skill: true }));

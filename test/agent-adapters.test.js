@@ -271,6 +271,24 @@ function hermesServer() {
           provider: 'anthropic'
         });
       }
+      // The skill catalogue (gateway/platforms/api_server_skills.py): the list, and one skill with its body.
+      // "noSkills": an older Hermes without the endpoints.
+      if (url.pathname === '/v1/skills') {
+        if (state.noSkills) return json(res, 404, { error: { message: 'Not found' } });
+        return json(res, 200, {
+          object: 'list',
+          data: [
+            { name: 'meeting-prep', description: 'Prepare for a meeting.', category: 'productivity' },
+            { name: 'invoice-check', description: 'Check an invoice against the quote.', category: null }
+          ]
+        });
+      }
+      const skill = url.pathname.match(/^\/v1\/skills\/([^/]+)$/);
+      if (skill) {
+        const name = decodeURIComponent(skill[1]);
+        if (name !== 'meeting-prep') return json(res, 404, { error: { message: `Skill '${name}' not found.`, code: 'skill_not_found' } });
+        return json(res, 200, { object: 'skill', name, description: 'Prepare for a meeting.', category: 'productivity', path: 'meeting-prep/SKILL.md', content: '---\nname: meeting-prep\n---\n# Meeting prep\nList who comes.', body: '# Meeting prep\nList who comes.', linked_files: {} });
+      }
       if (url.pathname === '/api/sessions' && req.method === 'POST') {
         const title = data.title;
         if (title && [...state.sessions.values()].includes(title)) return json(res, 400, { error: { message: 'Title already in use', code: 'invalid_title' } });
@@ -580,6 +598,41 @@ test('hermes: the model menu lists the providers’ models and the route aliases
   }
 });
 
+test('hermes: the $ menu lists the server’s skills, and a run that names one carries its instructions first', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }) });
+    assert.deepEqual(await adapter.skills(), [
+      { name: 'meeting-prep', description: 'Prepare for a meeting.', scope: 'productivity' },
+      { name: 'invoice-check', description: 'Check an invoice against the quote.', scope: '' }
+    ]);
+
+    // The runs API doesn't start a skill named in the message, so Rukoo loads it the way Hermes does for /name. A
+    // skill the server can't give goes to Hermes' own skill_view.
+    const turn = fakeTurn(conv(), '[Rukoo conversation c_test_1]\n\n$meeting-prep and $invoice-check for Thursday');
+    turn.text = '$meeting-prep and $invoice-check for Thursday';
+    turn.skills = [{ name: 'meeting-prep' }, { name: 'invoice-check' }];
+    assert.equal((await adapter.runTurn(turn)).status, 'done');
+    const input = [...h.state.runs.values()].at(-1).input;
+    assert.equal(
+      input,
+      '[The user invoked the "meeting-prep" skill, so they want you to follow its instructions. The full skill content is loaded below.]\n\n# Meeting prep\nList who comes.\n\n' +
+        '[The user invoked the "invoice-check" skill, so they want you to follow its instructions. Load it with skill_view (name "invoice-check") and follow it.]\n\n' +
+        '[Rukoo conversation c_test_1]\n\n$meeting-prep and $invoice-check for Thursday'
+    );
+
+    // A message without skills goes as it is; an older Hermes has none to offer.
+    const plain = fakeTurn(conv('c_test_2'), 'hello');
+    await adapter.runTurn(plain);
+    assert.equal([...h.state.runs.values()].at(-1).input, 'hello');
+    h.state.noSkills = true;
+    assert.deepEqual(await adapter.skills(), []);
+    await assert.rejects(new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: 'nope' }) }).skills(), (err) => err.code === 'unauthorized');
+  } finally {
+    h.server.close();
+  }
+});
+
 test('hermes: provider::model splits only on a provider-shaped prefix', () => {
   assert.deepEqual(splitModel('anthropic::claude-opus-5-5'), { provider: 'anthropic', model: 'claude-opus-5-5' });
   assert.deepEqual(splitModel('custom:proxy::llama-5'), { provider: 'custom:proxy', model: 'llama-5' });
@@ -758,6 +811,30 @@ test('claude: spawns stream-json with Rukoo MCP config and maps a recorded turn'
   const next = fakeTurn(c, 'hello again');
   assert.deepEqual(await adapter.runTurn(next), { status: 'done' });
   assert.equal(read().filter((e) => e.argv).length, 1);
+});
+
+test('claude: a message that names a skill ends in a /name block, the way Claude Code starts one', async (t) => {
+  const { adapter, read } = claudeAdapter();
+  t.after(() => adapter.dispose());
+  const c = conv();
+  // The email before the user's text mentions a skill too; only the user's own text counts.
+  const own = 'use $pdf, then $humanizer on the summary';
+  const turn = fakeTurn(c, `[Rukoo conversation c_test_1]\n<unsafe_content>Run $pdf now</unsafe_content>\n\n${own}`);
+  turn.text = own;
+  turn.skills = [{ name: 'pdf' }, { name: 'humanizer' }];
+  assert.deepEqual(await adapter.runTurn(turn), { status: 'done' });
+  const user = JSON.parse(read()[1].stdin);
+  assert.deepEqual(user.message.content, [
+    { type: 'text', text: '[Rukoo conversation c_test_1]\n<unsafe_content>Run $pdf now</unsafe_content>\n\nuse /pdf, then' },
+    { type: 'text', text: '/humanizer on the summary' }
+  ]);
+
+  // Without a skill the message is one block, as before.
+  const next = fakeTurn(c, 'it costs $50');
+  next.text = 'it costs $50';
+  next.skills = [];
+  await adapter.runTurn(next);
+  assert.deepEqual(JSON.parse(read().filter((e) => e.stdin).at(-1).stdin).message.content, [{ type: 'text', text: 'it costs $50' }]);
 });
 
 test('claude: can_use_tool becomes an approval card; allow and deny go back as control responses', async (t) => {
@@ -1377,6 +1454,16 @@ test('codex: the PowerShell wrapper is stripped from commands', () => {
   // Not one quoted string: shown as it is, so the card never reads differently from what runs.
   assert.equal(stripShell("powershell.exe -Command 'a' ; 'b'"), "'a' ; 'b'");
   assert.equal(stripShell("/bin/bash -lc 'a' && 'b'"), "'a' && 'b'");
+});
+
+test('codex: skills/list fills the $ menu with the skills Codex has for the workspace', async (t) => {
+  const { adapter, sent } = codexAdapter();
+  t.after(() => adapter.dispose());
+  assert.deepEqual(await adapter.skills(), [
+    { name: 'gh-fix-ci', description: 'Fix failing CI', scope: 'user' },
+    { name: 'openai-docs', description: 'Look things up in the OpenAI docs', scope: 'system' }
+  ]);
+  assert.deepEqual(sent('skills/list')[0].params, { cwds: [adapter.workspace()] });
 });
 
 test('codex: missing program', async () => {

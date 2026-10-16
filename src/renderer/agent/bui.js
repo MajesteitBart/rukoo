@@ -66,7 +66,9 @@ const ICONS = {
   person: ['<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', 1.8],
   calendar: ['<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>', 1.8],
   info: ['<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.2"/>', 2],
-  minus: ['<path d="M5 12h14"/>', 2.5]
+  minus: ['<path d="M5 12h14"/>', 2.5],
+  bolt: ['<path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/>', 1.8],
+  sliders: ['<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>', 1.8]
 };
 
 export function icon(name, size = 16, strokeWidth) {
@@ -1102,6 +1104,12 @@ export function suggestionChips(list = [], onPick) {
   );
 }
 
+// Not in BUI: the quiet round chip after the suggestions that leads to where they are set up. index: its place in
+// the row, so it pops in after them.
+export function suggestionEdit({ label, index = 0, onClick } = {}) {
+  return h('button', { type: 'button', class: 'bui-sugg__chip bui-sugg__edit', style: { '--i': String(index) }, 'aria-label': label || null, title: label || null, onClick }, icon('sliders', 13));
+}
+
 // ---------- offer row ----------
 
 // Not in BUI: a quiet row that offers one thing to pick up, such as an earlier chat. A button: a monogram, the
@@ -1240,6 +1248,9 @@ export function glideMenu({ items = [], anchor, onPick, align = 'left', width } 
 
 // ---------- chat composer ----------
 
+// The $ menu shows this many skills at most; typing narrows them down.
+const SKILL_ROWS_MAX = 200;
+
 export function chatComposer(opts = {}, handlers = {}) {
   const labels = opts.labels || {};
   const state = {
@@ -1248,6 +1259,11 @@ export function chatComposer(opts = {}, handlers = {}) {
     agents: Array.isArray(opts.agents) ? opts.agents : [],
     agentId: opts.agentId || null,
     commands: Array.isArray(opts.commands) ? opts.commands : [],
+    // The agent's own skills for the $ menu (setSkills): the list, whether it is still loading, why it failed, and
+    // the line above it.
+    skills: { items: [], loading: false, error: '', heading: '' },
+    // The menu on screen: '/' for commands, '$' for skills.
+    sigil: null,
     dismissed: false,
     rows: [],
     active: 0,
@@ -1317,11 +1333,13 @@ export function chatComposer(opts = {}, handlers = {}) {
     agentBtn.hidden = !state.agents.length;
   }
 
-  // Slash commands: the token must sit at the start of a word, just before the caret.
+  // A / command or a $ skill: the token must sit at the start of a word, just before the caret. A $ followed by a
+  // digit is an amount, not a skill.
   function token() {
     const before = ta.value.slice(0, ta.selectionStart);
-    const m = /(^|\s)\/([\w-]*)$/.exec(before);
-    return m ? { query: m[2].toLowerCase(), start: m.index + m[1].length, end: ta.selectionStart } : null;
+    const m = /(^|\s)([/$])([\w:-]*)$/.exec(before);
+    if (!m || (m[2] === '$' && /^[0-9]/.test(m[3]))) return null;
+    return { sigil: m[2], query: m[3].toLowerCase(), start: m.index + m[1].length, end: ta.selectionStart };
   }
   function closeMenu() {
     if (menu) menu.remove();
@@ -1329,7 +1347,24 @@ export function chatComposer(opts = {}, handlers = {}) {
     hl = null;
     state.rows = [];
     state.query = null;
+    state.sigil = null;
     state.engaged = false;
+  }
+  // The skills for what was typed after the $: names that start with it first, then names with a word that does,
+  // then names and descriptions that hold it anywhere.
+  function skillMatches(query) {
+    const items = state.skills.items;
+    if (!query) return items.slice(0, SKILL_ROWS_MAX);
+    const scored = [];
+    for (const k of items) {
+      const name = k.name.toLowerCase();
+      const score = name.startsWith(query) ? 0 : name.split(/[-_:]/).some((w) => w.startsWith(query)) ? 1 : name.includes(query) ? 2 : String(k.description || '').toLowerCase().includes(query) ? 3 : -1;
+      if (score >= 0) scored.push({ k, score });
+    }
+    return scored
+      .sort((a, b) => a.score - b.score || a.k.name.localeCompare(b.k.name))
+      .slice(0, SKILL_ROWS_MAX)
+      .map((x) => x.k);
   }
   function highlight() {
     if (!hl) return;
@@ -1349,27 +1384,37 @@ export function chatComposer(opts = {}, handlers = {}) {
       closeMenu();
       return;
     }
-    if (tok.query !== state.query) {
+    const skills = tok.sigil === '$';
+    const same = tok.query === state.query && tok.sigil === state.sigil;
+    // The row the user is on, so a list that comes in while the menu is open keeps it.
+    const was = same && state.rows[state.active] ? state.rows[state.active].cmd.name : null;
+    if (!same) {
       state.active = 0;
       state.engaged = false;
     }
+    const opened = !menu || tok.sigil !== state.sigil;
     state.query = tok.query;
-    const matches = state.commands.filter((c) => String(c.name).toLowerCase().startsWith(tok.query));
+    state.sigil = tok.sigil;
+    const matches = skills
+      ? skillMatches(tok.query).map((k) => ({ name: k.name, label: k.description, description: k.description, tag: k.scope, icon: 'bolt', skill: true }))
+      : state.commands.filter((c) => String(c.name).toLowerCase().startsWith(tok.query));
+    const kept = was === null ? -1 : matches.findIndex((m) => m.name === was);
+    state.active = kept >= 0 ? kept : Math.min(state.active, Math.max(matches.length - 1, 0));
     if (!menu) {
       menu = h('div', { class: 'bui-pb__menu', role: 'listbox' });
       el.prepend(menu);
-      // The owner may refresh the commands now (skills are read from disk); setCommands redraws the open menu.
-      if (handlers.onSlash) handlers.onSlash();
     }
     hl = h('span', { class: 'bui-glide__hl', 'aria-hidden': 'true' });
     const list = h('div', { class: 'bui-pb__list' }, hl);
+    const sigil = skills ? '$' : '/';
     state.rows = matches.map((cmd, i) => {
       const rowEl = h(
         'button',
         { type: 'button', class: 'bui-pb__cmd', role: 'option', 'aria-selected': String(i === state.active), tabindex: '-1', title: cmd.description || null },
         h('span', { class: 'bui-pb__cmdicon' }, cmd.icon ? icon(cmd.icon, 15) : null),
-        h('span', { class: 'bui-pb__cmdname', text: `/${cmd.name}` }),
-        h('span', { class: 'bui-pb__cmddesc', text: cmd.label || cmd.description || '' })
+        h('span', { class: 'bui-pb__cmdname', text: `${sigil}${cmd.name}` }),
+        h('span', { class: 'bui-pb__cmddesc', text: cmd.label || cmd.description || '' }),
+        cmd.tag ? h('span', { class: 'bui-pb__cmdtag', text: cmd.tag }) : null
       );
       rowEl.addEventListener('mousedown', (e) => e.preventDefault());
       rowEl.addEventListener('mouseenter', () => {
@@ -1385,16 +1430,41 @@ export function chatComposer(opts = {}, handlers = {}) {
       state.engaged = false;
       highlight();
     });
-    menu.replaceChildren(matches.length ? list : h('div', { class: 'bui-pb__empty', text: typeof labels.noMatches === 'function' ? labels.noMatches(tok.query) : labels.noMatches || '' }));
+    const k = state.skills;
+    const empty = (text, busy = false) => h('div', { class: 'bui-pb__empty', role: busy ? 'status' : null }, busy ? icon('spinner') : null, h('span', { text: text || '' }));
+    let body;
+    if (matches.length) body = list;
+    else if (skills && k.loading) body = empty(labels.skillsLoading, true);
+    else if (skills && k.error) body = empty(k.error);
+    else if (skills && !k.items.length) body = empty(labels.noSkills);
+    else body = empty(typeof labels.noMatches === 'function' ? labels.noMatches(tok.query) : labels.noMatches || '');
+    const heading = skills && k.heading ? h('div', { class: 'bui-pb__heading', text: k.heading }) : null;
+    menu.replaceChildren(...(heading ? [heading] : []), body);
     highlight();
+    // The owner may refresh the list now (skills are read from disk, or asked of the agent). Last, so the menu that
+    // setCommands or setSkills draws from the new list is the one that stays.
+    if (opened && !skills && handlers.onSlash) handlers.onSlash();
+    if (opened && skills && handlers.onDollar) handlers.onDollar();
   }
-  // The command's token goes only once the owner takes the command: onCommand returns false for one it refuses (a
-  // message is still being sent, say), and the token stays where it was, as with submit().
+  // A skill goes into the text as $name, for the message the user is writing. The command's token goes only once
+  // the owner takes the command: onCommand returns false for one it refuses (a message is still being sent, say),
+  // and the token stays where it was, as with submit().
   function pick(cmd) {
     const tok = token();
     closeMenu();
     state.dismissed = false;
     ta.focus();
+    if (cmd.skill && tok && tok.sigil === '$') {
+      const rest = ta.value.slice(tok.end);
+      const spaced = /^\s/.test(rest);
+      const insert = `$${cmd.name}${spaced ? '' : ' '}`;
+      ta.value = ta.value.slice(0, tok.start) + insert + rest;
+      const at = tok.start + insert.length + (spaced ? 1 : 0);
+      ta.setSelectionRange(at, at);
+      autosize();
+      updateSend();
+      return;
+    }
     if (handlers.onCommand && handlers.onCommand(cmd.name) === false) return;
     if (tok) {
       ta.value = ta.value.slice(0, tok.start) + ta.value.slice(tok.end);
@@ -1599,7 +1669,13 @@ export function chatComposer(opts = {}, handlers = {}) {
     },
     setCommands(list) {
       state.commands = Array.isArray(list) ? list : [];
-      if (menu) refreshMenu();
+      if (menu && state.sigil === '/') refreshMenu();
+    },
+    // The agent's own skills for the $ menu: items [{name, description, scope}], loading while they are on their way,
+    // error why there are none, heading the line above the list.
+    setSkills({ items = [], loading = false, error = '', heading = '' } = {}) {
+      state.skills = { items: Array.isArray(items) ? items : [], loading: Boolean(loading), error: String(error || ''), heading: String(heading || '') };
+      if (menu && state.sigil === '$') refreshMenu();
     },
     setPlaceholder(text) {
       ta.placeholder = String(text ?? '');

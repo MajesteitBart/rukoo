@@ -218,6 +218,30 @@ class CodexAdapter {
     return { models, efforts: common, custom: [] };
   }
 
+  // For the $ menu: the skills Codex has for Rukoo's workspace (skills/list), the user's and any it ships with. A
+  // message that names one as $name starts it: Codex reads those mentions itself.
+  async skills() {
+    const s = this.settings();
+    if (!s.enabled) throw new AgentError('disabled', 'Codex is turned off');
+    const exe = await this.exe();
+    if (!exe) throw new AgentError('not-installed', s.exe ? `Not found: ${clip(s.exe, 150)}` : 'Codex is not installed');
+    if (this.starting) await this.starting.catch(() => {});
+    const server = this.server && !this.server.exited ? this.server : await this.ensureServer(exe, { conversation: null, mcp: null }, s);
+    if (!server) throw new AgentError('busy', 'Codex is restarting');
+    const cwd = this.workspace();
+    const res = await server.request('skills/list', { cwds: [cwd] }, 15000);
+    const entries = res && Array.isArray(res.data) ? res.data : [];
+    const entry = entries.find((e) => e && e.cwd === cwd);
+    const found = entry ? entry.skills : entries.flatMap((e) => (e && Array.isArray(e.skills) ? e.skills : []));
+    return (Array.isArray(found) ? found : [])
+      .filter((k) => k && k.enabled !== false)
+      .map((k) => ({
+        name: k.name,
+        description: k.shortDescription || (k.interface && k.interface.shortDescription) || k.description || '',
+        scope: typeof k.scope === 'string' ? k.scope : ''
+      }));
+  }
+
   // The native binary inside the global npm package; its codex.cmd/.ps1 shims would need a shell.
   npmExe() {
     if (!WINDOWS) return null;

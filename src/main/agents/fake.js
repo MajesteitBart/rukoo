@@ -64,6 +64,25 @@ const MODELS = {
   }
 };
 
+// Each agent's own skills for the $ menu, in the shape ownskills.cleanList() takes: Hermes skills with a
+// category, Claude Code's with a plugin skill, and Codex's.
+const SKILLS = {
+  clark: [
+    { name: 'meeting-prep', description: 'Prepare for a meeting: who is coming, what was said before and what to decide.', scope: 'productivity' },
+    { name: 'invoice-check', description: 'Check an invoice against the quote and the contract before it is paid.', scope: 'finance' },
+    { name: 'crm-update', description: 'Record a contact, deal or note in the CRM.', scope: 'sales' }
+  ],
+  claude: [
+    { name: 'humanizer', description: 'Remove signs of AI-generated writing and make text read naturally.', scope: 'user' },
+    { name: 'pdf', description: 'Read, create and edit PDF files.', scope: 'user' },
+    { name: 'codex:rescue', description: 'Hand a stuck task to Codex.', scope: 'plugin' }
+  ],
+  codex: [
+    { name: 'gh-fix-ci', description: 'Debug failing GitHub Actions checks on a pull request.', scope: 'user' },
+    { name: 'openai-docs', description: 'Look things up in the OpenAI developer docs.', scope: 'system' }
+  ]
+};
+
 class FakeAdapter {
   // scale multiplies every delay; tests pass a small value to run the same scripts quickly.
   constructor({ id, hub, scale } = {}) {
@@ -83,6 +102,10 @@ class FakeAdapter {
     return JSON.parse(JSON.stringify(MODELS[this.id] || MODELS.claude));
   }
 
+  async skills() {
+    return JSON.parse(JSON.stringify(SKILLS[this.id] || SKILLS.claude));
+  }
+
   async dispose() {}
 
   async runTurn(turn) {
@@ -91,6 +114,7 @@ class FakeAdapter {
       input: turn.input,
       text: turn.text,
       action: turn.action,
+      skills: turn.skills || [],
       instructions: turn.instructions,
       model: turn.model || null,
       effort: turn.effort || null,
@@ -189,6 +213,8 @@ class FakeRun {
     const byAction = { reply: 'reply', brief: 'brief', tasks: 'tasks', team: 'team', unsubscribe: 'unsubscribe', triage: 'triage', summary: 'summary', update: 'update' };
     if (byAction[action]) return this[byAction[action]]();
     if (action === 'skill') return this.skill(text);
+    const own = (this.turn.skills || []).map((k) => k.name);
+    if (own.length) return this.say(`Started ${own.map((n) => `$${n}`).join(' and ')}.`);
     if ((this.turn.files || []).length || (this.turn.emails || []).length) return this.attachments();
     if (/\blost session\b/.test(lower)) return this.lostSession();
     if (/\bwhich model\b/.test(lower)) return this.say(`Model: ${this.turn.model || 'default'}. Effort: ${this.turn.effort || 'default'}.`);

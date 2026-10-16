@@ -5,7 +5,7 @@ import { t, getLocale } from '../i18n.js';
 import { icons } from '../icons.js';
 import { api, $, toast, listTime, person, hue, fileSize } from '../ui.js';
 import * as B from './bui.js';
-import { actionByKey, actionsFor, commandsFor, skillCommands } from './actions.js';
+import { shortcutList, shortcutByKey, actionsFor, commandsFor, skillCommands } from './actions.js';
 import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
 
@@ -169,6 +169,11 @@ export function mountAgentPanel(ctx) {
     keepFor: null,
     // Rukoo's skills and the user's, for the slash commands: [{name, description, source}].
     skills: [],
+    // The quick actions as the user arranged them in Settings (actions.js shortcutList), for every agent.
+    shortcuts: shortcutList(null),
+    // agent → its own skills for the $ menu (agentOwnSkills: {skills, error}), and the agents whose list is loading.
+    ownSkills: {},
+    loadingSkills: new Set(),
     // What goes along with the message being written: files main keeps until it is sent ({id, name, size, kind}),
     // and emails from the list ({id, subject, from}). Like the text in the input, they stay when another chat opens.
     attach: { files: [], emails: [] },
@@ -230,6 +235,7 @@ export function mountAgentPanel(ctx) {
       const config = await api('agentConfig');
       const before = P.config ? P.config.defaultAgent : null;
       P.config = config;
+      P.shortcuts = shortcutList(config.shortcuts);
       P.unavailable = false;
       // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
       if (AGENTS.includes(config.defaultAgent) && config.defaultAgent !== before) {
@@ -293,8 +299,8 @@ export function mountAgentPanel(ctx) {
     const open = currentEmail();
     return m && open && open.id === m.id ? open : m;
   };
-  // The quick actions for the email, then the skills.
-  const commands = () => [...commandsFor(slashEmail()), ...skillCommands(P.skills)];
+  // The shortcuts for the email, then the skills.
+  const commands = () => [...commandsFor(slashEmail(), P.shortcuts), ...skillCommands(P.skills, P.shortcuts)];
   // Main reads the skills folders on every call, so a skill the user just added shows up the next time they type /.
   let skillsLoading = null;
   let skillsAgain = false;
@@ -395,6 +401,8 @@ export function mountAgentPanel(ctx) {
           agent: t('agent.panel.pickAgent'),
           removeContext: t('agent.panel.removeContext'),
           noMatches: t('agent.panel.noMatches'),
+          skillsLoading: t('agent.panel.skillsLoading'),
+          noSkills: t('agent.panel.noSkills'),
           attach: t('agent.panel.attach')
         },
         agents: agentRows(),
@@ -409,6 +417,7 @@ export function mountAgentPanel(ctx) {
         onPick: (kind, id) => pickChoice(kind, id),
         onCommand: (name) => runAction(name),
         onSlash: () => loadSkills(),
+        onDollar: () => loadOwnSkills(currentAgent(), true),
         onRemoveContext: () => detach(),
         onAttach: () => pickFiles(),
         onFiles: (list) => addFiles(list)
@@ -417,6 +426,7 @@ export function mountAgentPanel(ctx) {
     foot.append(chat.el);
     if (value) chat.setValue(value);
     showAttachments();
+    showOwnSkills();
   }
 
   // ---------- attachments ----------
@@ -598,6 +608,7 @@ export function mountAgentPanel(ctx) {
     chat.setAgents(agentRows(), id);
     showContext();
     chat.setCommands(commands());
+    showOwnSkills();
     chat.setRunning(Boolean(P.conv && P.conv.status === 'running'));
     chat.setPlaceholder(placeholder());
     const state = stateOf(id);
@@ -626,6 +637,40 @@ export function mountAgentPanel(ctx) {
     const m = modelEntry(list, model);
     return m ? m.efforts : list.custom || [];
   };
+
+  // ---------- the agent's own skills ($) ----------
+
+  // The $ menu offers the skills of the agent on screen: Hermes' from its server, Claude Code's and Codex's from their
+  // own setup. Main keeps each list a minute; refresh (the menu opened) asks again for one older than ten seconds.
+  async function loadOwnSkills(id = currentAgent(), refresh = false) {
+    if (P.unavailable || !AGENTS.includes(id) || P.loadingSkills.has(id)) return;
+    P.loadingSkills.add(id);
+    if (id === currentAgent()) showOwnSkills();
+    try {
+      P.ownSkills[id] = await api('agentOwnSkills', id, { refresh });
+    } catch (err) {
+      if (!P.ownSkills[id]) P.ownSkills[id] = { skills: [], error: { code: 'unknown', detail: String((err && err.message) || err) } };
+    } finally {
+      P.loadingSkills.delete(id);
+    }
+    if (id === currentAgent()) showOwnSkills();
+  }
+
+  function showOwnSkills() {
+    if (!chat) return;
+    const id = currentAgent();
+    const name = agentName(id);
+    const entry = P.ownSkills[id] || null;
+    const items = entry && Array.isArray(entry.skills) ? entry.skills : [];
+    // A list that failed says why, in the agent's words where Rukoo knows the code (offline, not set up).
+    const failed = entry && entry.error && !items.length ? describeError(entry.error, name) : null;
+    chat.setSkills({
+      items,
+      loading: P.loadingSkills.has(id) && !items.length,
+      error: failed ? (failed.code ? failed.text : t('agent.panel.skillsFailed', { name })) : '',
+      heading: t('agent.panel.skillsOf', { name })
+    });
+  }
 
   // refresh: the panel just opened, so main loads a list that is older than half a minute again.
   async function loadModels(id = currentAgent(), refresh = false) {
@@ -946,7 +991,7 @@ export function mountAgentPanel(ctx) {
     };
     try {
       const conv = await ensureConversation();
-      const message = action ? { text: action.prompt, action: action.key, display: action.label } : skill ? { skill } : { text: body };
+      const message = action ? { text: action.prompt, action: action.action, display: action.label } : skill ? { skill } : { text: body };
       await api('agentSend', conv.id, { ...message, files: attached.files.map((f) => f.id), emails: attached.emails.map((m) => m.id) });
       follow(true);
     } catch (err) {
@@ -982,7 +1027,7 @@ export function mountAgentPanel(ctx) {
       toast(t('agent.panel.waitFiles'));
       return false;
     }
-    const action = actionByKey(name);
+    const action = shortcutByKey(P.shortcuts, name);
     if (action) {
       if (action.needsEmail && !contextEmail()) {
         toast(t('agent.panel.needsEmail'));
@@ -1370,12 +1415,15 @@ export function mountAgentPanel(ctx) {
     );
     box.append(elOf(card));
     if (!blocked) {
+      const list = actionsFor(m, P.shortcuts);
       const chips = B.suggestionChips(
-        actionsFor(m).map((a) => ({ id: a.key, label: a.label, icon: a.icon })),
+        list.map((a) => ({ id: a.key, label: a.label, icon: a.icon })),
         (key) => runAction(key)
       );
       const row = elOf(chips);
       row.classList.add('ap-actions');
+      // Settings → Agents → Shortcuts, where the user picks and orders these and adds their own.
+      row.append(elOf(B.suggestionEdit({ label: t('agent.panel.editShortcuts'), index: list.length, onClick: () => ctx.openSettings('shortcuts') })));
       box.append(row);
     }
     // Typing still starts a new chat about this email; the offer only takes over when you pick it.
@@ -1911,6 +1959,7 @@ export function mountAgentPanel(ctx) {
       sync();
       loadSkills();
       loadModels(currentAgent(), true);
+      loadOwnSkills(currentAgent());
       if (focus) chat.focus();
       follow(true);
     },
