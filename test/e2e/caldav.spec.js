@@ -2,8 +2,8 @@
 // server is the test server in test/fixtures; the account's mail server doesn't exist, so mail stays empty.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 const { caldavServer } = require('../fixtures/caldav-server');
 
 const ME = 'me@example.com';
@@ -40,7 +40,7 @@ test.beforeEach(async () => {
       'shared/offsite.ics': ics('UID:offsite', `DTSTART;VALUE=DATE:${day(3)}`, `DTEND;VALUE=DATE:${day(5)}`, 'SUMMARY:Team offsite')
     }
   });
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-caldav-'));
+  dataDir = tempDir('sem-e2e-caldav-');
   fs.mkdirSync(path.join(dataDir, 'data'));
   const unreachable = { host: '127.0.0.1', port: 1, secure: false, user: ME };
   fs.writeFileSync(
@@ -60,7 +60,7 @@ test.afterEach(async () => {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
   await app.close();
   await server.close();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 const event = (title) => win.locator('.calendar [data-ev]', { hasText: title }).first();

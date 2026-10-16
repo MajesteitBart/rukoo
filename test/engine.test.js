@@ -3,12 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { Engine, decodeId } = require('../src/main/engine');
 
 async function freshEngine() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-test-'));
+  const dir = tempDir('sem-test-');
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);

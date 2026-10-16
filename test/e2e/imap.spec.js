@@ -2,8 +2,8 @@
 const { test, expect, _electron: electron } = require('@playwright/test');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 test('sign in with "Overige" and read real IMAP mail', async () => {
   test.setTimeout(120000);
@@ -18,7 +18,7 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
   await transport.sendMail({ from: eth.user, to: eth.user, subject: 'Welcome to your real inbox', text: 'This message arrived via SMTP.' });
   transport.close();
 
-  const env = { ...process.env, SEM_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-imap-')), SEM_HIDDEN: '1' };
+  const env = { ...process.env, SEM_DATA_DIR: tempDir('sem-e2e-imap-'), SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   const app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   try {
@@ -48,6 +48,6 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
     await expect(win.locator('.sync-status')).toContainText(/updated/i);
   } finally {
     await app.close();
-    fs.rmSync(env.SEM_DATA_DIR, { recursive: true, force: true });
+    removeDir(env.SEM_DATA_DIR);
   }
 });

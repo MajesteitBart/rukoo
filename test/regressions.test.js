@@ -4,14 +4,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { simpleParser } = require('mailparser');
 const { Engine } = require('../src/main/engine');
 const { RISKY, safeName } = require('../src/main/files');
 
 async function freshEngine() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-reg-'));
+  const dir = tempDir('sem-reg-');
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);
@@ -65,7 +65,7 @@ test('a sync during a move does not bring the message back', async () => {
 
 test('re-saving and sending a draft keeps its attachments, Bcc and threading', async () => {
   const { engine, acc } = await freshEngine();
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sem-att-')), 'quote.pdf');
+  const file = path.join(tempDir('sem-att-'), 'quote.pdf');
   fs.writeFileSync(file, '%PDF-1.4 test');
   const firstId = await engine.saveDraft({
     accountId: acc.id,

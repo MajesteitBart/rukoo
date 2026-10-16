@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { ZOOM_LEVELS, normalizeZoom, nextZoom, zoomKey } = require('../src/main/zoom');
 const { Engine } = require('../src/main/engine');
 
@@ -66,7 +66,7 @@ test('zoom keys cover the US keys, the numpad and other layouts, and leave other
 });
 
 test('the zoom level is saved in settings.json, normalized on load, and a quiet save does not redraw', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-zoom-'));
+  const dir = tempDir('sem-zoom-');
   try {
     const engine = new Engine({ dataDir: dir }).init();
     assert.equal(engine.settings.zoomLevel, 100);

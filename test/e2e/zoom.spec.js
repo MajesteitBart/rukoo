@@ -2,8 +2,8 @@
 // the Settings row, and the level after a restart. Launches the real app with a throwaway profile.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 let app;
 let win;
@@ -24,7 +24,7 @@ async function quit() {
 }
 
 test.beforeEach(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-'));
+  dataDir = tempDir('sem-e2e-');
   await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
@@ -33,7 +33,7 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
   await quit();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 // Zoom per window in percent, keyed by page: { 'index.html': [100], 'compose.html': [100, 100] }.

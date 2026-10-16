@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const http = require('http');
 const net = require('net');
 const { McpServer } = require('../src/main/agents/mcp');
@@ -286,7 +286,7 @@ test('oversized bodies are read to the end, so the client gets the 413 and not a
   }));
 
 test('end to end: a real hub on a demo engine answers initialize, tools/list and get_context', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-mcp-'));
+  const dir = tempDir('sem-mcp-');
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);

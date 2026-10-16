@@ -1,13 +1,13 @@
 // "Aanmelden met Google" in the real app, with the system browser replaced by a stub.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 test('Google tile starts browser sign-in and reports a denied consent', async () => {
   const env = {
     ...process.env,
-    SEM_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-g-')),
+    SEM_DATA_DIR: tempDir('sem-e2e-g-'),
     SEM_HIDDEN: '1',
     SEM_GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
     SEM_GOOGLE_CLIENT_SECRET: 'test-secret'
@@ -42,6 +42,6 @@ test('Google tile starts browser sign-in and reports a denied consent', async ()
     await expect(win.locator('[name=password]')).toBeVisible();
   } finally {
     await app.close();
-    fs.rmSync(env.SEM_DATA_DIR, { recursive: true, force: true });
+    removeDir(env.SEM_DATA_DIR);
   }
 });

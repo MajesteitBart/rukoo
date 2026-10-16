@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const vm = require('vm');
 const i18n = require('../src/i18n');
 const en = require('../src/i18n/en');
@@ -97,7 +97,7 @@ test('the same catalogs load in the sandboxed renderer and update document langu
 });
 
 test('language persists across restarts, migrates old profiles to English, and leaves folder paths intact', async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-i18n-'));
+  const dataDir = tempDir('rukoo-i18n-');
   const engine = new Engine({ dataDir }).init();
   try {
     assert.equal(engine.settings.language, 'en');

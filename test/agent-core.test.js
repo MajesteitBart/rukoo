@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const crypto = require('crypto');
 const { Engine, encodeId } = require('../src/main/engine');
 const { AgentHub, toolLabel, MAX_ITEMS, MAX_CONVERSATIONS } = require('../src/main/agents/hub');
@@ -15,7 +16,7 @@ const { FakeAdapter, LONG_COMMAND, MARKDOWN_REPLY } = require('../src/main/agent
 const context = require('../src/main/agents/context');
 const { toHtml } = require('../src/main/agents/markdown');
 
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+const tmp = (prefix) => tempDir(prefix);
 // Reversible stand-in for safeStorage, so tests can see that secrets are not stored in the clear.
 const secrets = {
   encrypt: (s) => `enc:${Buffer.from(String(s)).toString('hex')}`,

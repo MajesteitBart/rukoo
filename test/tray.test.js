@@ -6,8 +6,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const i18n = require('../src/i18n');
 const { withDot, tooltip } = require('../src/main/tray');
 const { WindowState } = require('../src/main/windowstate');
@@ -58,7 +58,7 @@ test('the tooltip counts unread mail in the interface language', () => {
 });
 
 test('close to the tray is on and minimize to the tray off by default; both are saved and normalized', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-tray-'));
+  const dir = tempDir('rukoo-tray-');
   try {
     const engine = new Engine({ dataDir: dir }).init();
     assert.equal(engine.settings.closeToTray, true);
@@ -82,7 +82,7 @@ test('close to the tray is on and minimize to the tray off by default; both are 
 });
 
 test('the unread count for the tray matches the count of the taskbar badge', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-tray-'));
+  const dir = tempDir('rukoo-tray-');
   try {
     const engine = new Engine({ dataDir: dir }).init();
     const acc = await engine.addAccount({ type: 'demo' });
@@ -121,7 +121,7 @@ class FakeWindow extends EventEmitter {
 }
 
 test('the window bounds are saved when the window hides, not only when it closes', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-tray-'));
+  const dir = tempDir('rukoo-tray-');
   const file = path.join(dir, 'window-state.json');
   try {
     const state = new WindowState(file);

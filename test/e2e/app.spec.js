@@ -2,15 +2,15 @@
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const http = require('http');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 let app;
 let win;
 let dataDir;
 
 test.beforeEach(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-'));
+  dataDir = tempDir('sem-e2e-');
   // Keep the existing Dutch interaction suite as coverage for the supported Dutch locale.
   fs.mkdirSync(path.join(dataDir, 'data'));
   fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'nl' }));
@@ -29,7 +29,7 @@ test.afterEach(async () => {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
   await app.close();
   // Each profile is a few MB; a full run would otherwise leave them all in the temp folder.
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 const item = (text) => win.locator('.item', { hasText: text }).first();

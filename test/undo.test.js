@@ -3,12 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { Engine } = require('../src/main/engine');
 
 async function freshEngine() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-test-'));
+  const dir = tempDir('sem-test-');
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);
@@ -65,12 +65,12 @@ test('searching everything covers all synced folders', async () => {
 });
 
 test('the old default signature is dropped, a custom one is kept', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-test-'));
+  const dir = tempDir('sem-test-');
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ signature: 'Verzonden vanaf mijn pc' }));
   assert.equal(new Engine({ dataDir: dir }).init().settings.signature, '');
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ signature: 'Groet, Bart' }));
   assert.equal(new Engine({ dataDir: dir }).init().settings.signature, 'Groet, Bart');
-  assert.equal(new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-test-')) }).init().settings.signature, '');
+  assert.equal(new Engine({ dataDir: tempDir('sem-test-') }).init().settings.signature, '');
 });
 
 test('undo refuses a mailbox whose uids were reassigned and moves nothing', async () => {
@@ -104,7 +104,7 @@ test('a sync that sees new uids in the destination forgets the undo', async () =
 });
 
 test('the signature cleanup runs once; setting it again later sticks', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-test-'));
+  const dir = tempDir('sem-test-');
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ signature: 'Verzonden vanaf mijn pc' }));
   const first = new Engine({ dataDir: dir }).init();
   assert.equal(first.settings.signature, '');

@@ -5,8 +5,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { caldavServer } = require('./fixtures/caldav-server');
 const { CalDavCalendar, discoverCalDav, serverUrl } = require('../src/main/calendar/caldav');
 const { Engine } = require('../src/main/engine');
@@ -599,7 +599,7 @@ test('answering one occurrence of a series written with DURATION makes an except
 // ---------- the account and the calendar store ----------
 
 function setup(server, extra = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-caldav-'));
+  const dataDir = tempDir('sem-caldav-');
   const account = { id: 'c1', type: 'imap', provider: 'other', email: ME, color: '#4a7dff', secret: 'secret', imap: { host: '127.0.0.1', port: 1, secure: false, user: ME }, smtp: { host: '127.0.0.1', port: 1, secure: false, user: ME }, ...extra };
   fs.writeFileSync(path.join(dataDir, 'accounts.json'), JSON.stringify([account]));
   const engine = new Engine({ dataDir }).init();

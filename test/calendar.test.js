@@ -4,8 +4,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { Engine } = require('../src/main/engine');
 const { Calendars } = require('../src/main/calendar');
 const { DemoCalendar } = require('../src/main/calendar/demo');
@@ -77,7 +77,7 @@ function fakeCalendar({ events = [], fail = null } = {}) {
 }
 
 function setup(fake, { scopes = CALENDAR_SCOPES, extra = [] } = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-cal-'));
+  const dataDir = tempDir('sem-cal-');
   fs.writeFileSync(
     path.join(dataDir, 'accounts.json'),
     JSON.stringify([{ id: 'g1', type: 'imap', provider: 'google', auth: 'oauth2', email: 'me@example.com', color: '#4a7dff', secret: 'rt', scopes: ['https://mail.google.com/', ...scopes] }, ...extra])
@@ -616,7 +616,7 @@ test('a sync fetches the cached stretch again, and an account that never opened 
 });
 
 test('the demo calendar seeds a week of sample events and keeps changes', async () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sem-dc-')), 'demo-calendar.json');
+  const file = path.join(tempDir('sem-dc-'), 'demo-calendar.json');
   const demo = new DemoCalendar(file, { name: 'Demo User' });
   const cals = await demo.calendars();
   assert.deepEqual(cals.map((c) => [c.id, c.writable]), [['personal', true], ['work', true], ['birthdays', false]]);
