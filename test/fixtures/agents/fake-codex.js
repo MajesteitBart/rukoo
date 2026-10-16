@@ -190,6 +190,27 @@ function handle(msg) {
       if (!/mute/.test(text)) send({ id: msg.id, result: { turn: { id: turnId, items: [], status: 'inProgress', error: null } } });
       return void runTurn(p.threadId, turnId, text);
     }
+    case 'skills/list': {
+      // Shaped as codex-cli 0.161 answers (SkillsListResponse): per cwd, the skills with a scope; one turned off.
+      const cwd = (p.cwds || [])[0] || '';
+      const skill = (name, description, scope, extra = {}) => ({ name, description, path: `/skills/${name}/SKILL.md`, scope, enabled: true, ...extra });
+      return send({
+        id: msg.id,
+        result: {
+          data: [
+            {
+              cwd,
+              skills: [
+                skill('gh-fix-ci', 'Debug failing GitHub Actions checks on a pull request.', 'user', { shortDescription: 'Fix failing CI' }),
+                skill('openai-docs', 'Look things up', 'system', { interface: { displayName: 'OpenAI docs', shortDescription: 'Look things up in the OpenAI docs' } }),
+                skill('old-thing', 'Turned off', 'user', { enabled: false })
+              ],
+              errors: []
+            }
+          ]
+        }
+      });
+    }
     case 'model/list': {
       // Recorded from codex-cli 0.161.0 (trimmed), on two pages so the client has to follow nextCursor.
       const effort = (reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} reasoning` });

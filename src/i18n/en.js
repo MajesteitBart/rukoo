@@ -635,6 +635,30 @@
     "message": "No matching commands",
     "description": "Chat panel slash command menu: shown when no command matches what you typed."
   },
+  "agent.panel.editShortcuts": {
+    "message": "Edit shortcuts",
+    "description": "Chat panel empty state: tooltip and accessible name of the round button after the quick action chips (suggestionEdit in agent/bui.js); it opens Settings > Agents > Shortcuts."
+  },
+  "agent.panel.skillsLoading": {
+    "message": "Loading skills…",
+    "description": "Chat panel input, $ menu: shown while Rukoo asks the agent for its own skills (Hermes, Claude Code or Codex)."
+  },
+  "agent.panel.noSkills": {
+    "message": "No skills found",
+    "description": "Chat panel input, $ menu: the agent answered, but has no skills installed."
+  },
+  "agent.panel.skillsFailed": {
+    "message": "Couldn't load {name}'s skills",
+    "description": "Chat panel input, $ menu: Rukoo could not get the list of the agent's own skills, for a reason it has no sentence for. name: the agent (Hermes, Claude, Codex)."
+  },
+  "agent.panel.skillsOf": {
+    "message": "{name}'s skills",
+    "description": "Chat panel input, $ menu: grey heading above the list of the agent's own skills. name: the agent (Hermes, Claude, Codex)."
+  },
+  "agent.panel.skillChip": {
+    "message": "Skill {name}",
+    "description": "Chat panel: what a screen reader says for the chip of one of the agent's own skills, in the input and in a sent message. name: the skill as the chip shows it (Babysit, Meeting Prep)."
+  },
   "agent.panel.pickAgent": {
     "message": "Choose agent",
     "description": "Chat panel input: label of the agent picker (Hermes, Claude Code, Codex)."
@@ -3095,6 +3119,166 @@
   "settings.agents.url": {
     "message": "Server URL",
     "description": "Settings, Agents page: field for the Hermes API server address."
+  },
+  "settings.agents.shortcuts": {
+    "message": "Shortcuts",
+    "description": "Settings > Agents: row that opens the page where you manage the quick action chips of a new chat."
+  },
+  "settings.agents.shortcutsHelp": {
+    "message": "What a new chat offers, with every agent",
+    "description": "Settings > Agents: description under the Shortcuts row."
+  },
+  "settings.shortcuts.title": {
+    "message": "Shortcuts",
+    "description": "Settings > Agents > Shortcuts: page title."
+  },
+  "settings.shortcuts.help": {
+    "message": "A new chat shows these shortcuts under the agent's card, with every agent. Each one is a / command in the chat input too. A shortcut you turn off leaves new chats, but its command keeps working.",
+    "description": "Settings > Agents > Shortcuts: intro text above the list."
+  },
+  "settings.shortcuts.add": {
+    "message": "Add a shortcut",
+    "description": "Settings > Agents > Shortcuts: row under the list that opens the editor for a new shortcut of your own."
+  },
+  "settings.shortcuts.added": {
+    "message": "Added {name}",
+    "description": "Settings > Agents > Shortcuts: toast after you added a shortcut. name: its label."
+  },
+  "settings.shortcuts.reset": {
+    "message": "Restore Rukoo's shortcuts",
+    "description": "Settings > Agents > Shortcuts: row that puts back Rukoo's own shortcuts, as they came."
+  },
+  "settings.shortcuts.resetHelp": {
+    "message": "Removes your own shortcuts and your changes to Rukoo's",
+    "description": "Settings > Agents > Shortcuts: description under the restore row."
+  },
+  "settings.shortcuts.resetTitle": {
+    "message": "Restore Rukoo's shortcuts?",
+    "description": "Settings > Agents > Shortcuts: title of the dialog that confirms the restore."
+  },
+  "settings.shortcuts.resetConfirm": {
+    "message": "Your own shortcuts go, and Rukoo's get their own names, instructions and order back.",
+    "description": "Settings > Agents > Shortcuts: text of the dialog that confirms the restore."
+  },
+  "settings.shortcuts.resetOk": {
+    "message": "Restore",
+    "description": "Settings > Agents > Shortcuts: confirm button of the restore dialog."
+  },
+  "settings.shortcuts.resetDone": {
+    "message": "Rukoo's shortcuts are back",
+    "description": "Settings > Agents > Shortcuts: toast after the restore."
+  },
+  "settings.shortcuts.moveUp": {
+    "message": "Move {name} up",
+    "description": "Settings > Agents > Shortcuts: tooltip and accessible name of the up arrow in a shortcut's row. name: the shortcut's label."
+  },
+  "settings.shortcuts.moveDown": {
+    "message": "Move {name} down",
+    "description": "Settings > Agents > Shortcuts: tooltip and accessible name of the down arrow in a shortcut's row. name: the shortcut's label."
+  },
+  "settings.shortcuts.show": {
+    "message": "Show {name} in new chats",
+    "description": "Settings > Agents > Shortcuts: tooltip and accessible name of the switch in a shortcut's row. name: the shortcut's label."
+  },
+  "settings.shortcuts.whenEmail": {
+    "message": "With an open email",
+    "description": "Settings > Agents > Shortcuts: in a shortcut's row, after its /command: it shows in a new chat about an email."
+  },
+  "settings.shortcuts.whenNoEmail": {
+    "message": "Without an open email",
+    "description": "Settings > Agents > Shortcuts: in a shortcut's row, after its /command: it shows in a new chat when no email is open (the inbox overview)."
+  },
+  "settings.shortcuts.whenNewsletter": {
+    "message": "With a newsletter open",
+    "description": "Settings > Agents > Shortcuts: in a shortcut's row, after its /command: it shows for email you can unsubscribe from."
+  },
+  "settings.shortcuts.whenAlways": {
+    "message": "Always",
+    "description": "Settings > Agents > Shortcuts: in a shortcut's row, after its /command: it shows in every new chat, with or without an email."
+  },
+  "settings.shortcuts.edited": {
+    "message": "Edited",
+    "description": "Settings > Agents > Shortcuts: in a row of one of Rukoo's shortcuts whose label or instructions you changed."
+  },
+  "settings.shortcuts.editTitle": {
+    "message": "Edit shortcut",
+    "description": "Settings > Agents > Shortcuts: title of the editor dialog, and tooltip of a shortcut's row."
+  },
+  "settings.shortcuts.newTitle": {
+    "message": "New shortcut",
+    "description": "Settings > Agents > Shortcuts: title of the editor dialog for a shortcut of your own."
+  },
+  "settings.shortcuts.label": {
+    "message": "Name",
+    "description": "Settings > Agents > Shortcuts editor: label of the field for the text on the chip, such as Draft a reply."
+  },
+  "settings.shortcuts.command": {
+    "message": "Command",
+    "description": "Settings > Agents > Shortcuts editor: label of the field for the / command, such as /reply."
+  },
+  "settings.shortcuts.commandPlaceholder": {
+    "message": "follow-up",
+    "description": "Settings > Agents > Shortcuts editor: example in the empty command field, after the /. Lowercase letters, digits and hyphens only."
+  },
+  "settings.shortcuts.commandHelp": {
+    "message": "Lowercase letters, digits and hyphens. Type it after a / in the chat input.",
+    "description": "Settings > Agents > Shortcuts editor: help under the command field of your own shortcut."
+  },
+  "settings.shortcuts.commandFixed": {
+    "message": "Rukoo's shortcuts keep their command.",
+    "description": "Settings > Agents > Shortcuts editor: help under the disabled command field of one of Rukoo's shortcuts."
+  },
+  "settings.shortcuts.when": {
+    "message": "Show it",
+    "description": "Settings > Agents > Shortcuts editor: label above the two choices of when your shortcut shows in a new chat."
+  },
+  "settings.shortcuts.whenEmailOption": {
+    "message": "When an email is open",
+    "description": "Settings > Agents > Shortcuts editor: choice under Show it."
+  },
+  "settings.shortcuts.whenAlwaysOption": {
+    "message": "Always, also without an email",
+    "description": "Settings > Agents > Shortcuts editor: choice under Show it."
+  },
+  "settings.shortcuts.icon": {
+    "message": "Icon",
+    "description": "Settings > Agents > Shortcuts editor: label above the icons you can pick for your shortcut's chip."
+  },
+  "settings.shortcuts.prompt": {
+    "message": "Instructions for the agent",
+    "description": "Settings > Agents > Shortcuts editor: label of the text the agent gets when you pick the shortcut."
+  },
+  "settings.shortcuts.promptHelp": {
+    "message": "The agent gets this when you pick the shortcut, with the open email if there is one.",
+    "description": "Settings > Agents > Shortcuts editor: help under the instructions of your own shortcut."
+  },
+  "settings.shortcuts.promptHelpBuiltin": {
+    "message": "The agent gets this when you pick the shortcut. Rukoo writes its own instructions in English, for the model.",
+    "description": "Settings > Agents > Shortcuts editor: help under the instructions of one of Rukoo's shortcuts."
+  },
+  "settings.shortcuts.restore": {
+    "message": "Restore default",
+    "description": "Settings > Agents > Shortcuts editor: button that gives one of Rukoo's shortcuts its own name and instructions back."
+  },
+  "settings.shortcuts.needLabel": {
+    "message": "Give the shortcut a name.",
+    "description": "Settings > Agents > Shortcuts editor: error when the name field is empty."
+  },
+  "settings.shortcuts.needPrompt": {
+    "message": "Write what the agent should do.",
+    "description": "Settings > Agents > Shortcuts editor: error when the instructions are empty."
+  },
+  "settings.shortcuts.badCommand": {
+    "message": "Use lowercase letters, digits and single hyphens, up to 40.",
+    "description": "Settings > Agents > Shortcuts editor: error for a command with other characters."
+  },
+  "settings.shortcuts.takenCommand": {
+    "message": "/{name} is already a command.",
+    "description": "Settings > Agents > Shortcuts editor: error when another shortcut, or Rukoo itself, has this command. name: the command without its slash."
+  },
+  "settings.shortcuts.tooMany": {
+    "message": "Rukoo keeps up to {count} shortcuts.",
+    "description": "Settings > Agents > Shortcuts: toast when you try to add one more than the limit. count: the limit."
   },
   "settings.aliases.add": {
     "message": "Add alias",

@@ -38,6 +38,11 @@ const COMMANDS = [
   { name: 'summary', label: 'Summarize', description: 'Three bullets and whether it needs a reply', icon: 'list' },
   { name: 'triage', label: 'What needs me today?', description: 'Look at the inbox across accounts', icon: 'mail' }
 ];
+const SKILLS = [
+  { name: 'meeting-prep', description: 'Prepare for a meeting: who is coming, what was said before and what to decide.', scope: 'productivity' },
+  { name: 'invoice-check', description: 'Check an invoice against the quote and the contract before it is paid.', scope: 'finance' },
+  { name: 'crm-update', description: 'Record a contact, deal or note in the CRM.', scope: 'sales' }
+];
 const APPROVAL_LABELS = {
   approved: 'Approved',
   denied: 'Denied',
@@ -89,7 +94,8 @@ const icons = document.createElement('div');
 icons.className = 'gicons';
 for (const name of [
   'plus', 'clock', 'more', 'send', 'stop', 'check', 'x', 'chevron', 'chevron-up', 'chevron-right', 'file', 'clip', 'globe', 'layers', 'chart', 'mic', 'sparkle', 'search',
-  'mail', 'list', 'list-check', 'link', 'arrow-right', 'arrow-out', 'undo', 'pen', 'terminal', 'retry', 'copy', 'shield', 'wrench', 'person', 'calendar', 'info', 'spinner'
+  'mail', 'list', 'list-check', 'link', 'arrow-right', 'arrow-out', 'undo', 'pen', 'terminal', 'retry', 'copy', 'shield', 'wrench', 'person', 'calendar', 'info', 'bolt', 'skill',
+  'sliders', 'spinner'
 ]) {
   const cell = document.createElement('span');
   cell.title = name;
@@ -98,22 +104,24 @@ for (const name of [
 }
 a.append(icons);
 head(a, 'Suggestion chips');
-a.append(
-  bui.suggestionChips(
-    [
-      { id: 'reply', label: 'Draft a reply', icon: 'pen' },
-      { id: 'brief', label: 'Brief me', icon: 'layers' },
-      { id: 'tasks', label: 'Plan follow-ups', icon: 'list-check' },
-      { id: 'team', label: 'Tell the team', icon: 'send' },
-      { id: 'summary', label: 'Summarize', icon: 'list' }
-    ],
-    noop
-  )
+// With the round chip after them that leads to the shortcut settings.
+const suggestions = bui.suggestionChips(
+  [
+    { id: 'reply', label: 'Draft a reply', icon: 'pen' },
+    { id: 'brief', label: 'Brief me', icon: 'layers' },
+    { id: 'tasks', label: 'Plan follow-ups', icon: 'list-check' },
+    { id: 'team', label: 'Tell the team', icon: 'send' },
+    { id: 'summary', label: 'Summarize', icon: 'list' }
+  ],
+  noop
 );
+suggestions.append(bui.suggestionEdit({ label: 'Edit shortcuts', index: 5, onClick: noop }));
+a.append(suggestions);
 head(a, 'User bubbles and system lines');
 a.append(
   bui.userBubble({ text: 'Draft a reply' }),
   bui.userBubble({ text: 'Can you check whether we already agreed on a price in an earlier thread?\nAnd keep it short.' }),
+  bui.userBubble({ text: 'Use $meeting-prep for Thursday, then $crm-update with what we decide.', skills: SKILLS }),
   bui.userBubble({ text: 'Add 2 tasks to Todoist', action: 'approved', labels: { approved: 'You approved', declined: 'You declined' } }),
   bui.userBubble({ text: 'Send a Slack message to #sales', action: 'declined', labels: { approved: 'You approved', declined: 'You declined' } })
 );
@@ -330,7 +338,19 @@ const c4wrap = document.createElement('div');
 c4wrap.className = 'gpush';
 const c4 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
 c4wrap.append(c4.el);
-live.append(c1.el, c2.el, c3.el, c5.el, c4wrap);
+// The $ menu: the agent's own skills, with the line that says whose they are, and a group after each description.
+const c6wrap = document.createElement('div');
+c6wrap.className = 'gpush';
+const c6 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
+c6.setSkills({ items: SKILLS, heading: "Clark's skills" });
+c6wrap.append(c6.el);
+// A skill in the input: the chip it becomes once a space follows its name.
+const c7 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
+c7.setSkills({ items: SKILLS, heading: "Clark's skills" });
+c7.setValue('Prepare the call with $meeting-prep and keep it short.');
+live.append(c1.el, c2.el, c3.el, c5.el, c7.el, c4wrap, c6wrap);
+c6.setValue('Check this with $');
+c6.el.querySelector('.bui-pb__ta').dispatchEvent(new Event('input'));
 
 const liveThread = document.createElement('div');
 liveThread.style.cssText = 'display:flex;flex-direction:column;gap:10px;min-height:1180px';
@@ -638,7 +658,7 @@ async function check() {
     { onSend: (t) => got.sent.push(t), onStop: () => got.stopped++, onCommand: (n) => got.commands.push(n), onAgent: (id) => got.agents.push(id) }
   );
   scratch.append(cp.el);
-  const ta = cp.el.querySelector('textarea');
+  const ta = cp.el.querySelector('.bui-pb__ta');
   const sendBtn = cp.el.querySelector('.bui-pb__send');
   ok(sendBtn.disabled, 'composer send is disabled when empty');
   cp.setValue(' hello ');
@@ -721,7 +741,7 @@ async function check() {
   hc.setAttachments([ready, pend]);
   ok(getComputedStyle(pend.querySelector('.bui-entity__name')).animationName === 'bui-shimmer-text', 'a pending attachment name shimmers');
   ok(getComputedStyle(ready.querySelector('.bui-entity__name')).animationName === 'none', 'a ready attachment name is still');
-  const hta = hc.el.querySelector('textarea');
+  const hta = hc.el.querySelector('.bui-pb__ta');
   const hsend = hc.el.querySelector('.bui-pb__send');
   hc.setValue('keep me');
   hc.setHolding(true, 'Wait for the files');
@@ -743,18 +763,199 @@ async function check() {
   const refused = bui.chatComposer({ placeholder: 'p', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, { onSend: () => false });
   scratch.append(refused.el);
   refused.setValue('not yet');
-  key(refused.el.querySelector('textarea'), 'Enter');
+  key(refused.el.querySelector('.bui-pb__ta'), 'Enter');
   refused.el.querySelector('.bui-pb__send').click();
   ok(refused.getValue() === 'not yet', 'a message the owner refuses keeps its text');
   // A command its owner refuses (onCommand returns false) keeps its token in the input.
   const declined = [];
   const nocmd = bui.chatComposer({ placeholder: 'p', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, { onCommand: (n) => declined.push(n) && false });
   scratch.append(nocmd.el);
-  const nta = nocmd.el.querySelector('textarea');
+  const nta = nocmd.el.querySelector('.bui-pb__ta');
   nocmd.setValue('/ta');
   input(nta);
   key(nta, 'Enter');
   ok(declined.length === 1 && nocmd.getValue() === '/ta' && !nocmd.el.querySelector('.bui-pb__menu'), 'a command the owner refuses keeps its token');
+
+  // $ menu: the agent's own skills. Opening it asks the owner for the list once; while it loads it says so, a list
+  // that failed says why. Picking a skill puts $name in the text and starts nothing; an amount opens nothing.
+  const dollar = { opened: 0, commands: [], sent: [] };
+  const sk = bui.chatComposer(
+    { placeholder: 'p', labels: { ...composerLabels, skillsLoading: 'Loading skills…', noSkills: 'No skills found' }, agents: AGENTS, agentId: 'clark', commands: COMMANDS },
+    { onDollar: () => dollar.opened++, onCommand: (n) => dollar.commands.push(n), onSend: (t) => dollar.sent.push(t) }
+  );
+  scratch.append(sk.el);
+  const sta = sk.el.querySelector('.bui-pb__ta');
+  sk.setSkills({ loading: true, heading: "Clark's skills" });
+  sk.setValue('$');
+  input(sta);
+  ok(dollar.opened === 1 && sk.el.querySelector('.bui-pb__empty[role="status"]')?.textContent === 'Loading skills…', '$ asks for the skills and says they are loading');
+  sk.setSkills({ items: SKILLS, heading: "Clark's skills" });
+  ok(sk.el.querySelector('.bui-pb__heading')?.textContent === "Clark's skills" && sk.el.querySelectorAll('.bui-pb__cmd').length === 3, 'the list replaces the loading line in the open menu');
+  ok([...sk.el.querySelectorAll('.bui-pb__cmdname')].map((n) => n.textContent).join() === '$meeting-prep,$invoice-check,$crm-update', 'skills show as $name');
+  sk.setValue('Please $inv');
+  input(sta);
+  ok(dollar.opened === 1 && sk.el.querySelectorAll('.bui-pb__cmd').length === 1, 'typing narrows the skills without asking again');
+  sk.setValue('$contract');
+  input(sta);
+  ok(sk.el.querySelector('.bui-pb__cmdname')?.textContent === '$invoice-check', 'a description matches too');
+  // A list that comes in while the menu is open keeps the row the user is on, or the nearest one that is left.
+  sk.setValue('$');
+  input(sta);
+  key(sta, 'ArrowDown');
+  key(sta, 'ArrowDown');
+  sk.setSkills({ items: [SKILLS[2], SKILLS[0]], heading: "Clark's skills" });
+  ok(sk.el.querySelectorAll('.bui-pb__cmd')[0].getAttribute('aria-selected') === 'true', 'a new list keeps the row the user is on');
+  sk.setSkills({ items: [SKILLS[0]], heading: "Clark's skills" });
+  key(sta, 'Tab');
+  ok(sk.getValue() === '$meeting-prep ', 'a shorter list moves the row onto one that is left, and Tab picks it');
+  sk.setSkills({ items: SKILLS, heading: "Clark's skills" });
+  sk.setValue('Please $inv');
+  input(sta);
+  key(sta, 'Enter');
+  ok(sk.getValue() === 'Please $invoice-check ' && !sk.el.querySelector('.bui-pb__menu'), 'Enter puts $name in the text and closes the menu');
+  ok(dollar.commands.length === 0 && dollar.sent.length === 0, 'picking a skill neither runs a command nor sends');
+  sk.setValue('It costs $5');
+  input(sta);
+  ok(!sk.el.querySelector('.bui-pb__menu'), 'an amount opens no menu');
+  sk.setSkills({ items: [], error: "Clark isn't answering" });
+  sk.setValue('$');
+  input(sta);
+  ok(sk.el.querySelector('.bui-pb__empty')?.textContent === "Clark isn't answering", 'a list that failed says why');
+  sk.setSkills({ items: [] });
+  ok(sk.el.querySelector('.bui-pb__empty')?.textContent === 'No skills found', 'an agent without skills says so');
+  sk.setValue('/');
+  input(sta);
+  ok(sk.el.querySelectorAll('.bui-pb__cmd').length === COMMANDS.length && !sk.el.querySelector('.bui-pb__heading'), 'a / after a $ shows the commands again');
+  // An owner that answers the menu's opening at once, with a new list: that list is what the menu shows.
+  const eager = bui.chatComposer({ placeholder: 'p', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {
+    onSlash: () => eager.setCommands([COMMANDS[0]]),
+    onDollar: () => eager.setSkills({ items: [SKILLS[1]], heading: "Clark's skills" })
+  });
+  scratch.append(eager.el);
+  const eta = eager.el.querySelector('.bui-pb__ta');
+  eager.setValue('/');
+  input(eta);
+  ok([...eager.el.querySelectorAll('.bui-pb__cmdname')].map((n) => n.textContent).join() === '/reply', 'commands an owner sets as the menu opens are the ones it shows');
+  eager.setValue('$');
+  input(eta);
+  ok([...eager.el.querySelectorAll('.bui-pb__cmdname')].map((n) => n.textContent).join() === '$invoice-check', 'skills an owner sets as the menu opens are the ones it shows');
+  key(eta, 'Enter');
+  ok(eager.getValue() === '$invoice-check ', 'and Enter picks from them');
+  // Skill chips, as in t3code: a $name of the agent's skills becomes a chip once a space or punctuation follows it;
+  // a name still being typed, one the agent doesn't have and an amount stay text. The text keeps $name.
+  ok(bui.skillLabel({ name: 'codex:rescue' }) === 'Codex Rescue' && bui.skillLabel({ name: 'gh-fix-ci', displayName: 'Fix CI' }) === 'Fix CI', 'a chip names a skill by its words, or its display name');
+  const chipSent = [];
+  const cs = bui.chatComposer({ placeholder: 'p', labels: { ...composerLabels, skill: (n) => `Skill ${n}` }, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, { onSend: (t) => chipSent.push(t) });
+  scratch.append(cs.el);
+  cs.setSkills({ items: SKILLS, heading: "Clark's skills" });
+  const cta = cs.el.querySelector('.bui-pb__ta');
+  const chips = () => [...cta.querySelectorAll('.bui-skill')].map((c) => c.dataset.skill).join();
+  const select = (range) => {
+    document.getSelection().removeAllRanges();
+    document.getSelection().addRange(range);
+  };
+  ok(cta.classList.contains('is-empty') && cta.getAttribute('contenteditable') === 'plaintext-only', 'the input is a plain-text editable that shows its placeholder when empty');
+  cta.focus();
+  document.execCommand('insertText', false, 'Run $crm-update');
+  ok(chips() === '' && cs.getValue() === 'Run $crm-update' && !cta.classList.contains('is-empty'), 'a name still being typed stays text');
+  document.execCommand('insertText', false, ' now');
+  const chip = cta.querySelector('.bui-skill');
+  ok(chips() === 'crm-update' && cs.getValue() === 'Run $crm-update now', 'a space after it makes the name a chip, and the text keeps $name');
+  ok(chip.textContent === 'Crm Update' && chip.getAttribute('aria-label') === 'Skill Crm Update' && chip.getAttribute('contenteditable') === 'false' && chip.querySelector('[data-icon="skill"]'), 'the chip has the box, the label and an accessible name');
+  ok(chip.title === `$crm-update\n${SKILLS[2].description}`, 'its tooltip says the name and what the skill does');
+  document.execCommand('insertText', false, '!');
+  key(cta, 'z', { ctrlKey: true });
+  ok(chips() === 'crm-update' && cs.getValue() === 'Run $crm-update now', 'Ctrl+Z undoes what was typed after the chip');
+  key(cta, 'z', { ctrlKey: true });
+  ok(chips() === '' && cs.getValue() === 'Run $crm-update', 'then the chip and the space that made it');
+  key(cta, 'y', { ctrlKey: true });
+  key(cta, 'z', { ctrlKey: true, shiftKey: true });
+  ok(chips() === 'crm-update' && cs.getValue() === 'Run $crm-update now!', 'Ctrl+Y and Ctrl+Shift+Z redo');
+  const after = document.createRange();
+  after.setStartAfter(cta.querySelector('.bui-skill'));
+  select(after);
+  document.execCommand('delete');
+  ok(chips() === '' && cs.getValue() === 'Run  now!', 'Backspace after a chip takes it whole');
+  cs.setValue('a $invoice-check b');
+  const all = document.createRange();
+  all.selectNodeContents(cta);
+  select(all);
+  const clip = new DataTransfer();
+  cta.dispatchEvent(new ClipboardEvent('copy', { clipboardData: clip, bubbles: true, cancelable: true }));
+  ok(clip.getData('text/plain') === 'a $invoice-check b', 'a copied chip is its $name');
+  const cutClip = new DataTransfer();
+  select(all);
+  cta.dispatchEvent(new ClipboardEvent('cut', { clipboardData: cutClip, bubbles: true, cancelable: true }));
+  ok(cutClip.getData('text/plain') === 'a $invoice-check b' && cs.getValue() === '' && cta.classList.contains('is-empty'), 'a cut takes the chip along and empties the input');
+  const pasted = new DataTransfer();
+  pasted.setData('text/plain', 'Check with\r\n$invoice-check');
+  cta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: pasted, bubbles: true, cancelable: true }));
+  ok(chips() === 'invoice-check' && cs.getValue() === 'Check with\n$invoice-check ', 'a pasted skill is a chip at once, with a space after it');
+  cs.setValue('$nothing-here, $5 and $meeting-prep');
+  ok(chips() === 'meeting-prep', 'a name the agent does not have, and an amount, stay text');
+  cs.setSkills({ loading: true, heading: "Claude's skills" });
+  ok(chips() === 'meeting-prep', 'chips wait while another list loads');
+  cs.setSkills({ items: [SKILLS[1]], heading: "Claude's skills" });
+  ok(chips() === '' && cs.getValue() === '$nothing-here, $5 and $meeting-prep', 'a chip for a skill the agent does not have is text again');
+  cs.setSkills({ items: SKILLS, heading: "Clark's skills" });
+  cs.setValue('');
+  document.execCommand('insertText', false, 'Use $');
+  cta.dispatchEvent(new Event('input', { bubbles: true }));
+  key(cta, 'ArrowDown');
+  key(cta, 'Enter');
+  ok(chips() === 'invoice-check' && cs.getValue() === 'Use $invoice-check ', 'a skill picked from the menu goes in as its chip');
+  document.execCommand('insertText', false, 'please');
+  ok(cs.getValue() === 'Use $invoice-check please', 'typing goes on after the chip and its space');
+  key(cta, 'Enter');
+  ok(chipSent[0] === 'Use $invoice-check please' && cs.getValue() === '' && cta.classList.contains('is-empty'), 'Enter sends the text with $name and empties the input');
+  const ub = bui.userBubble({ text: 'Run $crm-update, then $nope', skills: SKILLS, labels: { skill: (n) => `Skill ${n}` } });
+  ok([...ub.querySelectorAll('.bui-skill')].map((c) => c.dataset.skill).join() === 'crm-update' && ub.textContent === 'Run Crm Update, then $nope', 'a sent message shows its skills as chips');
+  ok(bui.userBubble({ text: 'Run $crm-update' }).querySelectorAll('.bui-skill').length === 0, 'without the list a message stays text');
+  scratch.append(ub);
+  const ubAll = document.createRange();
+  ubAll.selectNodeContents(ub);
+  select(ubAll);
+  const ubClip = new DataTransfer();
+  const onCopy = (e) => bui.copySkills(e);
+  scratch.addEventListener('copy', onCopy);
+  ub.dispatchEvent(new ClipboardEvent('copy', { clipboardData: ubClip, bubbles: true, cancelable: true }));
+  scratch.removeEventListener('copy', onCopy);
+  ok(ubClip.getData('text/plain') === 'Run $crm-update, then $nope', 'a copied message gives its chips as $name');
+
+  // A chip that no longer reads as its skill is text again: here a letter typed right after it.
+  cs.setValue('Use $crm-update now');
+  cta.focus();
+  const behind = document.createRange();
+  behind.setStartAfter(cta.querySelector('.bui-skill'));
+  select(behind);
+  document.execCommand('insertText', false, 'x');
+  ok(chips() === '' && cs.getValue() === 'Use $crm-updatex now', 'a chip with a letter typed right after it is text again');
+  // Undo after another agent's list came in shows that list's chips, not the old ones.
+  cs.setValue('');
+  document.execCommand('insertText', false, 'Use $crm-update ');
+  document.execCommand('insertText', false, 'now');
+  cs.setSkills({ items: [SKILLS[1]], heading: "Claude's skills" });
+  key(cta, 'z', { ctrlKey: true });
+  ok(chips() === '' && cs.getValue() === 'Use $crm-update ', 'an undone step has no chip for a skill the agent does not have');
+  // A list that comes in keeps the selection the user has.
+  cs.setSkills({ loading: true, heading: "Clark's skills" });
+  cs.setValue('Run $crm-update now');
+  const whole = document.createRange();
+  whole.selectNodeContents(cta);
+  select(whole);
+  cs.setSkills({ items: SKILLS, heading: "Clark's skills" });
+  const kept = new DataTransfer();
+  cta.dispatchEvent(new ClipboardEvent('copy', { clipboardData: kept, bubbles: true, cancelable: true }));
+  ok(chips() === 'crm-update' && kept.getData('text/plain') === 'Run $crm-update now', 'a list that comes in keeps the selection');
+  // Lines the browser adds as elements become text, empty lines included.
+  cta.innerHTML = 'a<div><br></div><div>b $crm-update c</div>';
+  cta.dispatchEvent(new Event('input', { bubbles: true }));
+  ok(cs.getValue() === 'a\n\nb $crm-update c' && chips() === 'crm-update' && ![...cta.children].some((c) => !c.dataset.skill), 'browser lines become text, an empty line included');
+
+  let edits = 0;
+  const edit = bui.suggestionEdit({ label: 'Edit shortcuts', onClick: () => edits++ });
+  edit.click();
+  ok(edit.getAttribute('aria-label') === 'Edit shortcuts' && edits === 1, 'the edit chip has a name and calls back');
 
   scratch.remove();
   return fails;
@@ -786,7 +987,7 @@ window.gallery = {
     if (menu === 'slash') {
       c4.setValue('/re');
       c4.focus();
-      c4.el.querySelector('textarea').dispatchEvent(new Event('input'));
+      c4.el.querySelector('.bui-pb__ta').dispatchEvent(new Event('input'));
     }
   },
   openAgents() {

@@ -66,7 +66,11 @@ const ICONS = {
   person: ['<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', 1.8],
   calendar: ['<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>', 1.8],
   info: ['<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.2"/>', 2],
-  minus: ['<path d="M5 12h14"/>', 2.5]
+  minus: ['<path d="M5 12h14"/>', 2.5],
+  bolt: ['<path d="M13 2 4.5 13.5H12L11 22l8.5-11.5H12z"/>', 1.8],
+  // An agent's own skill, as t3code shows one: Lucide's box.
+  skill: ['<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>', 1.85],
+  sliders: ['<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>', 1.8]
 };
 
 export function icon(name, size = 16, strokeWidth) {
@@ -719,8 +723,92 @@ export function toolGroup() {
 
 // ---------- transcript lines ----------
 
+// ---------- the agent's own skills in text ----------
+
+// A $name of one of the agent's skills, read the way the hub reads it (ownskills.js): at the start of a word, with a
+// letter in the name, ending at a space, punctuation or the end of the text. While typing, the end of the text does
+// not count yet, so a name still being typed stays text: t3code's rule.
+const SKILL_SENT = /(^|\s)\$(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s,.;!?)]|$)/g;
+const SKILL_TYPED = /(^|\s)\$(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s,.;!?)])/g;
+
+// What a chip says for a skill: its display name, or the words of its name with a capital each (t3code's label).
+export function skillLabel(skill) {
+  const display = skill && typeof skill.displayName === 'string' ? skill.displayName.trim() : '';
+  if (display) return display;
+  return String((skill && skill.name) || '')
+    .split(/[\s:_-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+// One of the agent's skills as t3code shows it in text: a chip with the box and its label. The input puts it in a
+// message as $name; the tooltip says that name and what the skill does. labels.skill(label): its accessible name.
+export function skillChip(skill, labels = {}) {
+  const label = skillLabel(skill);
+  const description = String(skill.description || '').trim();
+  return h(
+    'span',
+    {
+      class: 'bui-skill',
+      'data-skill': skill.name,
+      title: description ? `$${skill.name}\n${description}` : `$${skill.name}`,
+      'aria-label': typeof labels.skill === 'function' ? labels.skill(label) : label
+    },
+    icon('skill', 12),
+    h('span', { class: 'bui-skill__name', text: label })
+  );
+}
+
+// text split into strings and the skills it names ({name, description}), for the agent's skills. typing: a name at
+// the very end is still being typed. after: what comes before text is a chip, so its start is no word start.
+function skillParts(text, skills, { typing = false, after = false } = {}) {
+  const known = new Map((skills || []).map((s) => [s.name, s]));
+  const out = [];
+  if (!known.size || !text.includes('$')) return text ? [text] : [];
+  // A leading character that is no space stands for the chip before the text.
+  const lead = after ? '.' : '';
+  const s = lead + text;
+  let at = lead.length;
+  for (const m of s.matchAll(typing ? SKILL_TYPED : SKILL_SENT)) {
+    const skill = known.get(m[2]);
+    const start = m.index + m[1].length;
+    if (!skill || start < at) continue;
+    if (start > at) out.push(s.slice(at, start));
+    out.push(skill);
+    at = start + 1 + m[2].length;
+  }
+  if (at < s.length) out.push(s.slice(at));
+  return out;
+}
+
+// A message's text with the agent's skills it names as chips, for a bubble.
+export function skillText(text, skills, labels = {}) {
+  return skillParts(String(text || ''), skills).map((p) => (typeof p === 'string' ? p : skillChip(p, labels)));
+}
+
+// A copy event on text that holds skill chips (sent messages): each chip goes as its $name, so pasting it starts the
+// skill again. A copy without chips is left to the browser.
+export function copySkills(e) {
+  const sel = document.getSelection();
+  const r = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+  if (!r || r.collapsed || !e.clipboardData) return;
+  const copied = r.cloneContents();
+  const chips = copied.querySelectorAll('.bui-skill');
+  if (!chips.length) return;
+  for (const chip of chips) chip.replaceWith(`$${chip.dataset.skill}`);
+  // innerText of the copy, laid out off screen, has the line breaks a plain copy has.
+  const box = h('div', { style: { position: 'fixed', left: '-10000px', top: '0', whiteSpace: 'pre-wrap' } }, copied);
+  document.body.append(box);
+  const text = box.innerText;
+  box.remove();
+  e.preventDefault();
+  e.clipboardData.setData('text/plain', text);
+}
+
 // attachments: chips for what went along with the message, above its text. A message can be attachments alone.
-export function userBubble({ text, action, labels = {}, attachments = [] } = {}) {
+// skills: the agent's own skills, shown as chips where the text names them.
+export function userBubble({ text, action, labels = {}, attachments = [], skills = [] } = {}) {
   if (action === 'approved' || action === 'declined') {
     return h(
       'div',
@@ -731,7 +819,8 @@ export function userBubble({ text, action, labels = {}, attachments = [] } = {})
     );
   }
   const chips = attachments.length ? h('div', { class: 'bui-ubatt' }, attachments) : null;
-  return h('div', { class: 'bui-ubwrap' }, chips, text || !chips ? h('div', { class: 'bui-ub', text: text || '' }) : null);
+  // The agent's own skills the text names show as the chips they were in the input.
+  return h('div', { class: 'bui-ubwrap' }, chips, text || !chips ? h('div', { class: 'bui-ub' }, skillText(text, skills, labels)) : null);
 }
 
 export function noticeLine(item = {}, { labels = {}, onUndo } = {}) {
@@ -1102,6 +1191,12 @@ export function suggestionChips(list = [], onPick) {
   );
 }
 
+// Not in BUI: the quiet round chip after the suggestions that leads to where they are set up. index: its place in
+// the row, so it pops in after them.
+export function suggestionEdit({ label, index = 0, onClick } = {}) {
+  return h('button', { type: 'button', class: 'bui-sugg__chip bui-sugg__edit', style: { '--i': String(index) }, 'aria-label': label || null, title: label || null, onClick }, icon('sliders', 13));
+}
+
 // ---------- offer row ----------
 
 // Not in BUI: a quiet row that offers one thing to pick up, such as an earlier chat. A button: a monogram, the
@@ -1240,6 +1335,51 @@ export function glideMenu({ items = [], anchor, onPick, align = 'left', width } 
 
 // ---------- chat composer ----------
 
+// The $ menu shows this many skills at most; typing narrows them down.
+const SKILL_ROWS_MAX = 200;
+// Undo steps the input keeps, and how long a pause in typing may be before the next keys are a step of their own.
+const HISTORY_MAX = 100;
+const HISTORY_MERGE_MS = 1000;
+const HISTORY_MERGING = new Set(['insertText', 'deleteContentBackward', 'deleteContentForward']);
+
+// The input's content as parts: strings, and {name} for each skill chip. Two strings never follow each other.
+const partsText = (parts) => parts.map((p) => (typeof p === 'string' ? p : `$${p.name}`)).join('');
+const partLength = (p) => (typeof p === 'string' ? p.length : p.name.length + 1);
+const endsWithBreak = (parts) => typeof parts[parts.length - 1] === 'string' && parts[parts.length - 1].endsWith('\n');
+
+function pushPart(out, p) {
+  if (typeof p !== 'string') out.push(p);
+  else if (!p) return;
+  else if (typeof out[out.length - 1] === 'string') out[out.length - 1] += p;
+  else out.push(p);
+}
+
+function mergedParts(list) {
+  const out = [];
+  for (const p of list) pushPart(out, p);
+  return out;
+}
+
+const sameParts = (a, b) => a.length === b.length && a.every((p, i) => (typeof p === 'string' ? p === b[i] : typeof b[i] !== 'string' && b[i].name === p.name));
+
+// The parts from position from to position to in their text. A chip only comes along whole.
+function cutParts(parts, from, to) {
+  const out = [];
+  let at = 0;
+  for (const p of parts) {
+    const len = partLength(p);
+    if (typeof p === 'string') {
+      const a = Math.max(from, at);
+      const b = Math.min(to, at + len);
+      if (b > a) out.push(p.slice(a - at, b - at));
+    } else if (at >= from && at + len <= to) out.push(p);
+    at += len;
+  }
+  return out;
+}
+
+const spliceParts = (parts, start, end, text) => mergedParts([...cutParts(parts, 0, start), text, ...cutParts(parts, end, Infinity)]);
+
 export function chatComposer(opts = {}, handlers = {}) {
   const labels = opts.labels || {};
   const state = {
@@ -1248,6 +1388,11 @@ export function chatComposer(opts = {}, handlers = {}) {
     agents: Array.isArray(opts.agents) ? opts.agents : [],
     agentId: opts.agentId || null,
     commands: Array.isArray(opts.commands) ? opts.commands : [],
+    // The agent's own skills for the $ menu (setSkills): the list, whether it is still loading, why it failed, and
+    // the line above it.
+    skills: { items: [], loading: false, error: '', heading: '' },
+    // The menu on screen: '/' for commands, '$' for skills.
+    sigil: null,
     dismissed: false,
     rows: [],
     active: 0,
@@ -1258,7 +1403,9 @@ export function chatComposer(opts = {}, handlers = {}) {
     // Something the message takes is still on its way (setHolding): nothing can be sent or started until it is
     // there, and the text stays. holdLabel says so on the Send button.
     holding: false,
-    holdLabel: ''
+    holdLabel: '',
+    // Where the caret was in the text, for when the input gets the focus back.
+    caret: 0
   };
   // The chips row: the paperclip, the email the chat is about, then what the user attached. The paperclip leads,
   // so it stays put as chips come and go, and the footer keeps its room for the agent, model and effort menus.
@@ -1268,7 +1415,17 @@ export function chatComposer(opts = {}, handlers = {}) {
   const contextSlot = h('span', { class: 'bui-pb__slot' });
   const attachedSlot = h('span', { class: 'bui-pb__slot' });
   const files = h('div', { class: 'bui-pb__files', hidden: true }, attach, contextSlot, attachedSlot);
-  const ta = h('textarea', { class: 'bui-pb__ta', rows: '1', placeholder: opts.placeholder || '', 'aria-label': opts.placeholder || labels.send || '' });
+  // A plain-text editable rather than a textarea, so a skill can sit in the text as a chip, as in t3code.
+  const ta = h('div', {
+    class: 'bui-pb__ta is-empty',
+    contenteditable: 'plaintext-only',
+    role: 'textbox',
+    'aria-multiline': 'true',
+    spellcheck: 'true',
+    'data-placeholder': opts.placeholder || '',
+    'aria-placeholder': opts.placeholder || null,
+    'aria-label': opts.placeholder || labels.send || ''
+  });
   const disabledRow = h('div', { class: 'bui-pb__disabled', hidden: true });
   let dot = statusDot(null);
   const agentName = h('span');
@@ -1289,18 +1446,233 @@ export function chatComposer(opts = {}, handlers = {}) {
   const el = h('div', { class: 'bui-pb' }, box);
   let menu = null;
   let hl = null;
+  // While an IME composes (Japanese, Chinese) the text is its own: no chips, no undo steps until it is done.
+  let composing = false;
+  // The undo list: what the input held after each step ({parts, caret}), and the one on screen. A textarea has its
+  // own; an editable's would undo the chips' DOM wrongly, so the input keeps this one instead.
+  // from: where the edit under way started, for record() to tell typing on from typing elsewhere.
+  const history = { list: [{ parts: [], caret: 0 }], at: 0, type: '', last: 0, from: null };
 
-  function autosize() {
-    ta.style.height = '0px';
-    const sh = ta.scrollHeight;
-    ta.style.height = `${Math.min(Math.max(sh, 28), 120)}px`;
-    ta.style.overflowY = sh > 120 ? 'auto' : 'hidden';
+  // ---------- the input's text ----------
+
+  // The DOM holds text nodes and chips. The browser can add a line break as a <br> or a <div> (a drop, a test's
+  // fill); settle() makes text of those. Positions count the text as it is sent, a chip as its $name.
+  const isChip = (n) => n.nodeType === 1 && Boolean(n.dataset.skill);
+
+  function partsOf(node, out = []) {
+    // A <div> or <p> is a line of its own, an empty one too: a line break goes before it, unless it comes first,
+    // and before what follows it.
+    let first = true;
+    let block = false;
+    for (const n of node.childNodes) {
+      const isBlock = n.nodeType === 1 && (n.nodeName === 'DIV' || n.nodeName === 'P');
+      if ((isBlock && !first) || (block && !isBlock)) pushPart(out, '\n');
+      if (n.nodeType === 3) pushPart(out, n.data);
+      else if (isChip(n)) pushPart(out, { name: n.dataset.skill });
+      // A <br> that ends its line only holds an empty line open.
+      else if (n.nodeName === 'BR' && n !== node.lastChild) pushPart(out, '\n');
+      else if (n.nodeType === 1 && n.nodeName !== 'BR') partsOf(n, out);
+      first = false;
+      block = isBlock;
+    }
+    return out;
   }
+  // What the input holds. A line break that ends its last text only shows the empty line after a break before it.
+  function current() {
+    const parts = partsOf(ta);
+    const last = ta.lastChild;
+    if (last && last.nodeType === 3 && last.data.endsWith('\n') && endsWithBreak(parts)) {
+      parts[parts.length - 1] = parts[parts.length - 1].slice(0, -1);
+      return mergedParts(parts);
+    }
+    return parts;
+  }
+  const value = () => partsText(current());
+  // Read like a textarea's, for the Electron tests and anything else that looks at the element.
+  Object.defineProperty(ta, 'value', { get: value });
+  const canonical = () => [...ta.childNodes].every((n) => n.nodeType === 3 || isChip(n));
+  function offsetAt(node, offset) {
+    const r = document.createRange();
+    r.setStart(ta, 0);
+    r.setEnd(node, offset);
+    return partsText(partsOf(r.cloneContents())).length;
+  }
+  // The selection in the text: start and end, and anchor and focus, which keep its direction. Without one in the
+  // input, the caret where it last was.
+  function selection() {
+    const sel = document.getSelection();
+    if (sel && sel.rangeCount && ta.contains(sel.anchorNode) && ta.contains(sel.focusNode)) {
+      const len = value().length;
+      const anchor = Math.min(offsetAt(sel.anchorNode, sel.anchorOffset), len);
+      const focus = Math.min(offsetAt(sel.focusNode, sel.focusOffset), len);
+      state.caret = Math.min(anchor, focus);
+      return { start: state.caret, end: Math.max(anchor, focus), anchor, focus };
+    }
+    const at = Math.min(state.caret, value().length);
+    return { start: at, end: at, anchor: at, focus: at };
+  }
+  const caret = () => selection().start;
+  // The DOM point for a position: in a text node, or before or after a chip (never inside one).
+  function pointAt(at) {
+    let left = at;
+    const nodes = ta.childNodes;
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const len = n.nodeType === 3 ? n.data.length : isChip(n) ? n.dataset.skill.length + 1 : 0;
+      if (left <= len) return n.nodeType === 3 ? [n, left] : [ta, left === 0 ? i : i + 1];
+      left -= len;
+    }
+    return [ta, nodes.length];
+  }
+  function placeSelection(anchor, focus = anchor) {
+    document.getSelection().setBaseAndExtent(...pointAt(anchor), ...pointAt(focus));
+  }
+  const skillOf = (name) => state.skills.items.find((s) => s.name === name) || { name };
+  function chipFor(name) {
+    const chip = skillChip(skillOf(name), labels);
+    chip.setAttribute('contenteditable', 'false');
+    return chip;
+  }
+  // Draws parts with the selection from anchor to focus (a caret when they are the same). It only moves when it was
+  // in the input: a selection elsewhere, in the email say, stays there, and the input keeps the caret for when it
+  // gets the focus.
+  function render(parts, anchor, focus = anchor) {
+    const sel = document.getSelection();
+    const mine = document.activeElement === ta || Boolean(sel && sel.rangeCount && ta.contains(sel.anchorNode));
+    const nodes = parts.map((p) => (typeof p === 'string' ? document.createTextNode(p) : chipFor(p.name)));
+    // A text that ends in a line break needs one more for the empty line after it to show.
+    if (endsWithBreak(parts)) nodes[nodes.length - 1].appendData('\n');
+    ta.replaceChildren(...nodes);
+    const len = partsText(parts).length;
+    const clamp = (x) => Math.max(0, Math.min(x, len));
+    state.caret = Math.min(clamp(anchor), clamp(focus));
+    if (mine) placeSelection(clamp(anchor), clamp(focus));
+    ta.classList.toggle('is-empty', !parts.length);
+  }
+  // parts with each $name of the agent's skills as a chip. typing: one at the very end is still being typed.
+  function chipify(parts, typing) {
+    const out = [];
+    parts.forEach((p, i) => {
+      if (typeof p !== 'string') return out.push(p);
+      // Text right before a chip does not end there: "$pdf" + a chip is no skill.
+      const opts = { typing: typing || i < parts.length - 1, after: i > 0 };
+      for (const q of skillParts(p, state.skills.items, opts)) out.push(typeof q === 'string' ? q : { name: q.name });
+    });
+    return mergedParts(out);
+  }
+  // parts as the hub will read them: a chip stays one with a word start before it, a space, punctuation or the end
+  // after it, and its skill in the agent's list (while a list loads, any). One that no longer reads as its skill,
+  // such as $pdf with "x" typed after it, is text again; a $name of the list with a space after it becomes a chip.
+  function reconcile(parts) {
+    const known = new Set(state.skills.items.map((k) => k.name));
+    const kept = parts.map((p, i) => {
+      if (typeof p === 'string') return p;
+      const before = parts[i - 1];
+      const after = parts[i + 1];
+      const starts = i === 0 || (typeof before === 'string' && /\s$/.test(before));
+      const ends = after === undefined || (typeof after === 'string' && /^[\s,.;!?)]/.test(after));
+      return starts && ends && (state.skills.loading || known.has(p.name)) ? p : `$${p.name}`;
+    });
+    return chipify(mergedParts(kept), true);
+  }
+  // Focus puts the caret back where it was, as a textarea's does.
+  function focusInput() {
+    if (document.activeElement === ta) return;
+    ta.focus({ preventScroll: true });
+    placeSelection(Math.min(state.caret, value().length));
+  }
+
+  // ---------- undo ----------
+
+  // Adds what the input holds now as a step. Keys typed in a row, without a pause and from where the last ones
+  // ended, are one step: moving the caret starts a new one, as in a textarea.
+  function record(type = '') {
+    const snap = { parts: current(), caret: caret() };
+    const top = history.list[history.at];
+    const from = history.from;
+    history.from = null;
+    if (sameParts(top.parts, snap.parts)) {
+      top.caret = snap.caret;
+      return;
+    }
+    const now = Date.now();
+    const merge = HISTORY_MERGING.has(type) && type === history.type && from === top.caret && now - history.last < HISTORY_MERGE_MS && history.at > 0;
+    history.list.length = history.at + 1;
+    if (merge) history.list[history.at] = snap;
+    else {
+      history.list.push(snap);
+      history.at += 1;
+      if (history.list.length > HISTORY_MAX) {
+        history.list.shift();
+        history.at -= 1;
+      }
+    }
+    history.type = type;
+    history.last = now;
+  }
+  function resetHistory() {
+    history.list = [{ parts: current(), caret: state.caret }];
+    history.at = 0;
+    history.type = '';
+  }
+  // step -1 undoes, 1 redoes.
+  function undo(step) {
+    const i = history.at + step;
+    if (i < 0 || i >= history.list.length) return;
+    history.at = i;
+    history.type = '';
+    const snap = history.list[i];
+    // The agent may have changed since: its list decides which chips the step shows.
+    render(reconcile(snap.parts), snap.caret);
+    state.dismissed = false;
+    refreshMenu();
+    updateSend();
+  }
+
+  // After the user changed the text: a $name of a skill with a space or punctuation after it becomes a chip, a line
+  // break the browser added as an element becomes text, and the change is a step to undo.
+  function settle(type) {
+    const parts = current();
+    const next = reconcile(parts);
+    const chipped = !sameParts(parts, next);
+    if (chipped || !canonical()) {
+      const { anchor, focus } = selection();
+      render(next, anchor, focus);
+    } else ta.classList.toggle('is-empty', !parts.length);
+    record(chipped ? 'chip' : type);
+  }
+  // Puts text in place of the selection, as typing would.
+  function insert(text, type) {
+    const { start, end } = selection();
+    let add = text;
+    // A pasted skill at the end becomes a chip at once, as a picked one does (t3code).
+    const rest = value().slice(end);
+    const last = /(?:^|\s)\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)$/.exec(add);
+    if (type === 'paste' && last && state.skills.items.some((s) => s.name === last[1]) && !/^[\s,.;!?)]/.test(rest)) add += ' ';
+    render(reconcile(spliceParts(current(), start, end, add)), start + add.length);
+    record(type);
+    state.dismissed = false;
+    refreshMenu();
+    updateSend();
+  }
+  // The chips follow the agent's list: a name it has becomes one, a chip for one it does not have is text again.
+  // The selection stays where it was.
+  function restyle() {
+    if (composing) return;
+    const parts = current();
+    const next = reconcile(parts);
+    if (sameParts(parts, next)) return;
+    const { anchor, focus } = selection();
+    render(next, anchor, focus);
+    // The step on screen is what the input holds now.
+    history.list[history.at] = { parts: next, caret: state.caret };
+  }
+
   function updateSend() {
     send.replaceChildren(icon(state.running ? 'stop' : 'send', 16));
     send.setAttribute('aria-label', state.running ? labels.stop || '' : labels.send || '');
     send.classList.toggle('is-stop', state.running);
-    send.disabled = state.running ? false : state.disabled || state.holding || (!ta.value.trim() && !state.attached);
+    send.disabled = state.running ? false : state.disabled || state.holding || (!value().trim() && !state.attached);
     const why = !state.running && state.holding ? state.holdLabel : '';
     send.title = why;
     if (why) send.setAttribute('aria-description', why);
@@ -1317,11 +1689,14 @@ export function chatComposer(opts = {}, handlers = {}) {
     agentBtn.hidden = !state.agents.length;
   }
 
-  // Slash commands: the token must sit at the start of a word, just before the caret.
+  // A / command or a $ skill: the token must sit at the start of a word, just before the caret. A $ followed by a
+  // digit is an amount, not a skill.
   function token() {
-    const before = ta.value.slice(0, ta.selectionStart);
-    const m = /(^|\s)\/([\w-]*)$/.exec(before);
-    return m ? { query: m[2].toLowerCase(), start: m.index + m[1].length, end: ta.selectionStart } : null;
+    const at = caret();
+    const before = value().slice(0, at);
+    const m = /(^|\s)([/$])([\w:-]*)$/.exec(before);
+    if (!m || (m[2] === '$' && /^[0-9]/.test(m[3]))) return null;
+    return { sigil: m[2], query: m[3].toLowerCase(), start: m.index + m[1].length, end: at };
   }
   function closeMenu() {
     if (menu) menu.remove();
@@ -1329,7 +1704,24 @@ export function chatComposer(opts = {}, handlers = {}) {
     hl = null;
     state.rows = [];
     state.query = null;
+    state.sigil = null;
     state.engaged = false;
+  }
+  // The skills for what was typed after the $: names that start with it first, then names with a word that does,
+  // then names and descriptions that hold it anywhere.
+  function skillMatches(query) {
+    const items = state.skills.items;
+    if (!query) return items.slice(0, SKILL_ROWS_MAX);
+    const scored = [];
+    for (const k of items) {
+      const name = k.name.toLowerCase();
+      const score = name.startsWith(query) ? 0 : name.split(/[-_:]/).some((w) => w.startsWith(query)) ? 1 : name.includes(query) ? 2 : String(k.description || '').toLowerCase().includes(query) ? 3 : -1;
+      if (score >= 0) scored.push({ k, score });
+    }
+    return scored
+      .sort((a, b) => a.score - b.score || a.k.name.localeCompare(b.k.name))
+      .slice(0, SKILL_ROWS_MAX)
+      .map((x) => x.k);
   }
   function highlight() {
     if (!hl) return;
@@ -1349,27 +1741,37 @@ export function chatComposer(opts = {}, handlers = {}) {
       closeMenu();
       return;
     }
-    if (tok.query !== state.query) {
+    const skills = tok.sigil === '$';
+    const same = tok.query === state.query && tok.sigil === state.sigil;
+    // The row the user is on, so a list that comes in while the menu is open keeps it.
+    const was = same && state.rows[state.active] ? state.rows[state.active].cmd.name : null;
+    if (!same) {
       state.active = 0;
       state.engaged = false;
     }
+    const opened = !menu || tok.sigil !== state.sigil;
     state.query = tok.query;
-    const matches = state.commands.filter((c) => String(c.name).toLowerCase().startsWith(tok.query));
+    state.sigil = tok.sigil;
+    const matches = skills
+      ? skillMatches(tok.query).map((k) => ({ name: k.name, label: k.description, description: k.description, tag: k.scope, icon: 'skill', skill: true }))
+      : state.commands.filter((c) => String(c.name).toLowerCase().startsWith(tok.query));
+    const kept = was === null ? -1 : matches.findIndex((m) => m.name === was);
+    state.active = kept >= 0 ? kept : Math.min(state.active, Math.max(matches.length - 1, 0));
     if (!menu) {
       menu = h('div', { class: 'bui-pb__menu', role: 'listbox' });
       el.prepend(menu);
-      // The owner may refresh the commands now (skills are read from disk); setCommands redraws the open menu.
-      if (handlers.onSlash) handlers.onSlash();
     }
     hl = h('span', { class: 'bui-glide__hl', 'aria-hidden': 'true' });
     const list = h('div', { class: 'bui-pb__list' }, hl);
+    const sigil = skills ? '$' : '/';
     state.rows = matches.map((cmd, i) => {
       const rowEl = h(
         'button',
         { type: 'button', class: 'bui-pb__cmd', role: 'option', 'aria-selected': String(i === state.active), tabindex: '-1', title: cmd.description || null },
         h('span', { class: 'bui-pb__cmdicon' }, cmd.icon ? icon(cmd.icon, 15) : null),
-        h('span', { class: 'bui-pb__cmdname', text: `/${cmd.name}` }),
-        h('span', { class: 'bui-pb__cmddesc', text: cmd.label || cmd.description || '' })
+        h('span', { class: 'bui-pb__cmdname', text: `${sigil}${cmd.name}` }),
+        h('span', { class: 'bui-pb__cmddesc', text: cmd.label || cmd.description || '' }),
+        cmd.tag ? h('span', { class: 'bui-pb__cmdtag', text: cmd.tag }) : null
       );
       rowEl.addEventListener('mousedown', (e) => e.preventDefault());
       rowEl.addEventListener('mouseenter', () => {
@@ -1385,59 +1787,124 @@ export function chatComposer(opts = {}, handlers = {}) {
       state.engaged = false;
       highlight();
     });
-    menu.replaceChildren(matches.length ? list : h('div', { class: 'bui-pb__empty', text: typeof labels.noMatches === 'function' ? labels.noMatches(tok.query) : labels.noMatches || '' }));
+    const k = state.skills;
+    const empty = (text, busy = false) => h('div', { class: 'bui-pb__empty', role: busy ? 'status' : null }, busy ? icon('spinner') : null, h('span', { text: text || '' }));
+    let body;
+    if (matches.length) body = list;
+    else if (skills && k.loading) body = empty(labels.skillsLoading, true);
+    else if (skills && k.error) body = empty(k.error);
+    else if (skills && !k.items.length) body = empty(labels.noSkills);
+    else body = empty(typeof labels.noMatches === 'function' ? labels.noMatches(tok.query) : labels.noMatches || '');
+    const heading = skills && k.heading ? h('div', { class: 'bui-pb__heading', text: k.heading }) : null;
+    menu.replaceChildren(...(heading ? [heading] : []), body);
     highlight();
+    // The owner may refresh the list now (skills are read from disk, or asked of the agent). Last, so the menu that
+    // setCommands or setSkills draws from the new list is the one that stays.
+    if (opened && !skills && handlers.onSlash) handlers.onSlash();
+    if (opened && skills && handlers.onDollar) handlers.onDollar();
   }
-  // The command's token goes only once the owner takes the command: onCommand returns false for one it refuses (a
+  // A skill goes into the text as its chip, with a space after it, for the message the user is writing. The
+  // command's token goes only once the owner takes the command: onCommand returns false for one it refuses (a
   // message is still being sent, say), and the token stays where it was, as with submit().
   function pick(cmd) {
     const tok = token();
     closeMenu();
     state.dismissed = false;
-    ta.focus();
+    focusInput();
+    if (cmd.skill && tok && tok.sigil === '$') {
+      const parts = current();
+      const spaced = /^\s/.test(partsText(parts).slice(tok.end));
+      render(reconcile(spliceParts(parts, tok.start, tok.end, `$${cmd.name}${spaced ? '' : ' '}`)), tok.start + cmd.name.length + 2);
+      record('pick');
+      updateSend();
+      return;
+    }
     if (handlers.onCommand && handlers.onCommand(cmd.name) === false) return;
     if (tok) {
-      ta.value = ta.value.slice(0, tok.start) + ta.value.slice(tok.end);
-      ta.setSelectionRange(tok.start, tok.start);
+      render(spliceParts(current(), tok.start, tok.end, ''), tok.start);
+      record('pick');
     }
-    autosize();
     updateSend();
   }
   // The text goes only once the owner takes it: onSend returns false for a message it refuses (one is still being
   // sent, say), and the text stays where it was.
   function submit() {
-    const text = ta.value.trim();
+    const text = value().trim();
     if ((!text && !state.attached) || state.disabled || state.holding) return;
     if (handlers.onSend && handlers.onSend(text) === false) return;
-    ta.value = '';
+    render([], 0);
+    resetHistory();
     closeMenu();
-    autosize();
     updateSend();
   }
 
   if (attach) attach.addEventListener('click', () => handlers.onAttach());
   // Pasted files (a screenshot, files copied in Explorer) go along with the message. A paste that has text as well,
-  // such as a selection copied from Word, is text.
+  // such as a selection copied from Word, is text: plain text, with a chip for each skill it names.
   ta.addEventListener('paste', (e) => {
     const data = e.clipboardData;
     const pasted = data ? [...data.files] : [];
-    if (!pasted.length || !handlers.onFiles || state.disabled || [...data.types].includes('text/plain')) return;
+    const types = data ? [...data.types] : [];
     e.preventDefault();
-    handlers.onFiles(pasted.map((file) => ({ file, folder: false })));
+    if (pasted.length && handlers.onFiles && !state.disabled && !types.includes('text/plain')) {
+      handlers.onFiles(pasted.map((file) => ({ file, folder: false })));
+      return;
+    }
+    const text = data ? data.getData('text/plain').replace(/\r\n?/g, '\n') : '';
+    if (text) insert(text, 'paste');
   });
+  // A copied chip is its $name again.
+  function copy(e, cut) {
+    const sel = document.getSelection();
+    const r = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    if (!r || r.collapsed || !ta.contains(r.commonAncestorContainer)) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', partsText(partsOf(r.cloneContents())));
+    if (cut) insert('', 'cut');
+  }
+  ta.addEventListener('copy', (e) => copy(e, false));
+  ta.addEventListener('cut', (e) => copy(e, true));
 
-  ta.addEventListener('input', () => {
-    state.dismissed = false;
-    autosize();
+  ta.addEventListener('compositionstart', () => {
+    composing = true;
+  });
+  ta.addEventListener('compositionend', () => {
+    composing = false;
+    settle('insertText');
     refreshMenu();
     updateSend();
   });
-  ta.addEventListener('blur', () => closeMenu());
+  ta.addEventListener('input', (e) => {
+    state.dismissed = false;
+    if (!composing && !e.isComposing) settle(e.inputType);
+    refreshMenu();
+    updateSend();
+  });
+  ta.addEventListener('beforeinput', (e) => {
+    // Undo from the context menu.
+    if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+      e.preventDefault();
+      undo(e.inputType === 'historyUndo' ? -1 : 1);
+      return;
+    }
+    const { start, end } = selection();
+    history.from = start === end ? start : null;
+  });
+  ta.addEventListener('blur', () => {
+    caret();
+    closeMenu();
+  });
   ta.addEventListener('click', () => refreshMenu());
   ta.addEventListener('keydown', (e) => {
     // While an IME composes (Japanese, Chinese), Enter, Tab, the arrows and Escape are its keys: they must not
     // pick a command or send.
     if (e.isComposing || e.keyCode === 229) return;
+    const key = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
+      e.preventDefault();
+      undo(key === 'y' || e.shiftKey ? 1 : -1);
+      return;
+    }
     if (menu && state.rows.length) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -1484,7 +1951,7 @@ export function chatComposer(opts = {}, handlers = {}) {
       align: 'left',
       items: state.agents.map((a) => ({ id: a.id, label: a.name, tag: a.tag, status: a.status, checked: a.id === state.agentId })),
       onPick: (id) => {
-        ta.focus();
+        focusInput();
         if (handlers.onAgent) handlers.onAgent(id);
       }
     });
@@ -1503,7 +1970,7 @@ export function chatComposer(opts = {}, handlers = {}) {
       align: 'left',
       items,
       onPick: (id) => {
-        ta.focus();
+        focusInput();
         if (handlers.onPick) handlers.onPick(kind, id);
       }
     });
@@ -1512,16 +1979,18 @@ export function chatComposer(opts = {}, handlers = {}) {
   const api = {
     el,
     focus() {
-      ta.focus({ preventScroll: true });
+      focusInput();
     },
+    // A text set here starts the undo list, as a textarea's value does. A skill it names, also at the very end, is
+    // a chip.
     setValue(text) {
-      ta.value = String(text ?? '');
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-      autosize();
+      const s = String(text ?? '');
+      render(chipify(s ? [s] : [], false), s.length);
+      resetHistory();
       updateSend();
     },
     getValue() {
-      return ta.value;
+      return value();
     },
     setRunning(running) {
       state.running = Boolean(running);
@@ -1595,19 +2064,27 @@ export function chatComposer(opts = {}, handlers = {}) {
       state.attached = list.length > 0;
       refreshFiles();
       updateSend();
-      if (lost && !attachedSlot.contains(document.activeElement)) ta.focus({ preventScroll: true });
+      if (lost && !attachedSlot.contains(document.activeElement)) focusInput();
     },
     setCommands(list) {
       state.commands = Array.isArray(list) ? list : [];
-      if (menu) refreshMenu();
+      if (menu && state.sigil === '/') refreshMenu();
+    },
+    // The agent's own skills for the $ menu: items [{name, description, scope}], loading while they are on their way,
+    // error why there are none, heading the line above the list.
+    setSkills({ items = [], loading = false, error = '', heading = '' } = {}) {
+      state.skills = { items: Array.isArray(items) ? items : [], loading: Boolean(loading), error: String(error || ''), heading: String(heading || '') };
+      restyle();
+      if (menu && state.sigil === '$') refreshMenu();
     },
     setPlaceholder(text) {
-      ta.placeholder = String(text ?? '');
+      ta.dataset.placeholder = String(text ?? '');
+      if (text) ta.setAttribute('aria-placeholder', String(text));
+      else ta.removeAttribute('aria-placeholder');
     }
   };
   renderAgent();
   api.setContext(opts.context || null);
-  autosize();
   updateSend();
   return api;
 }

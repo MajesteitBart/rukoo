@@ -1826,6 +1826,17 @@
 .bui-sugg__chip:active {
   scale: 0.97;
 }
+/* Not in BUI: the way to the shortcut settings, a round chip without a fill that comes forward on hover. */
+.bui-sugg__edit {
+  width: 26px;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.bui-sugg__edit:hover {
+  box-shadow: var(--shadow-hairline);
+}
 
 /* ---------- offer row ---------- */
 
@@ -1931,20 +1942,67 @@
   scale: 0.94;
 }
 .bui-pb__ta {
+  position: relative;
   display: block;
   min-height: 28px;
   max-height: 120px;
   min-width: 0;
   width: 100%;
-  resize: none;
   background: transparent;
   padding: 5px 4px;
   font-size: 13px;
   line-height: 18px;
   color: var(--ink);
   outline: none;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  overflow-y: hidden;
+  overflow-y: auto;
+  cursor: text;
+}
+/* The input is an editable, so its placeholder is drawn here. */
+.bui-pb__ta.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: 5px;
+  right: 4px;
+  left: 4px;
+  overflow: hidden;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* One of the agent's own skills in text, in the input and in a sent message: t3code's context chip for a skill, in
+   its magenta. Sized in em, so it follows the text around it. */
+.bui-skill {
+  --skill: oklch(0.62 0.16 322);
+  display: inline-flex;
+  max-width: 100%;
+  height: 1.41em;
+  align-items: center;
+  gap: 0.33em;
+  border: 1px solid color-mix(in oklab, var(--skill) 34%, var(--line-strong));
+  border-radius: 0.5em;
+  background: color-mix(in oklab, var(--skill) 11%, transparent);
+  padding: 0 0.5em;
+  vertical-align: middle;
+  font-size: 0.86em;
+  font-weight: 500;
+  line-height: 1;
+  color: color-mix(in oklab, var(--skill) 22%, var(--ink));
+  white-space: nowrap;
+  cursor: default;
+}
+.bui-skill svg {
+  width: 1.17em;
+  height: 1.17em;
+}
+.bui-skill__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.25;
 }
 .bui-pb__disabled {
   display: flex;
@@ -2131,10 +2189,28 @@
 }
 .bui-pb__empty {
   display: flex;
-  height: 36px;
+  min-height: 36px;
   align-items: center;
+  gap: 8px;
   padding: 0 8px;
   font-size: 12px;
+  color: var(--ink-3);
+}
+/* The $ menu: whose skills these are, above the list. */
+.bui-pb__heading {
+  padding: 6px 8px 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+/* A skill's group (Hermes' category, Claude Code's plugin), after its description. */
+.bui-pb__cmdtag {
+  flex-shrink: 0;
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
   color: var(--ink-3);
 }
 
@@ -2274,4 +2350,12 @@
 }
 .agentpane .bui-sugg__chip:hover {
   background: var(--hover-2);
+}
+.agentpane .bui-sugg__edit {
+  background: transparent;
+  box-shadow: none;
+}
+.agentpane .bui-sugg__edit:hover {
+  background: var(--hover-2);
+  box-shadow: var(--shadow-hairline);
 }
