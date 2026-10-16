@@ -5,8 +5,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const zlib = require('zlib');
 const { execFile, execFileSync } = require('child_process');
 const { Engine } = require('../src/main/engine');
@@ -19,7 +19,7 @@ const { PdfReader } = require('../src/main/pdfread');
 
 const made = [];
 const tmp = (prefix) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = tempDir(prefix);
   made.push(dir);
   return dir;
 };

@@ -1,14 +1,14 @@
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 let app;
 let win;
 let profile;
 
 test.beforeEach(async () => {
-  profile = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-i18n-e2e-'));
+  profile = tempDir('rukoo-i18n-e2e-');
   const env = { ...process.env, SEM_DATA_DIR: profile, SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
@@ -20,7 +20,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((window) => window.destroy())).catch(() => {});
   await app.close();
-  fs.rmSync(profile, { recursive: true, force: true });
+  removeDir(profile);
 });
 
 async function demo() {

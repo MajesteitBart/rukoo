@@ -4,12 +4,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { Engine } = require('../src/main/engine');
 
 async function demoEngine(opts = {}) {
-  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-al-')), ...opts }).init();
+  const engine = new Engine({ dataDir: tempDir('sem-al-'), ...opts }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);
   return { engine, acc };
@@ -67,7 +67,7 @@ test('Gmail import keeps verified addresses and adopts Gmail\'s default once', a
     };
   };
   const google = { available: () => true, refresh: async () => ({ accessToken: 'tok', expiresAt: Date.now() + 3600000 }) };
-  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-alg-')), google, fetchImpl }).init();
+  const engine = new Engine({ dataDir: tempDir('sem-alg-'), google, fetchImpl }).init();
   const acc = { id: 'g1', type: 'imap', provider: 'google', auth: 'oauth2', email: 'me@bartvandermeeren.nl', name: 'Bart', secret: 'rt' };
   engine.accounts.push(acc);
   engine.caches.set(acc.id, { folders: [], boxes: {}, lastSync: null });

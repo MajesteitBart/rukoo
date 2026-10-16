@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const http = require('http');
 const { Engine } = require('../src/main/engine');
 const { AgentHub } = require('../src/main/agents/hub');
@@ -14,7 +14,7 @@ const context = require('../src/main/agents/context');
 const { Skills, parseFrontmatter, FILE_MAX, ONE_FILE_MAX, TOTAL_MAX, SKILL_MD_MAX } = require('../src/main/agents/skills');
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'skills');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+const tmp = (prefix) => tempDir(prefix);
 
 // The fixtures in a temp folder of their own, so a test can add files, links and broken skills.
 function copyFixtures() {

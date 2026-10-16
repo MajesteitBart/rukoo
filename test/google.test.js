@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { GoogleAuth, CALENDAR_SCOPES } = require('../src/main/google');
 const { Engine } = require('../src/main/engine');
 const { ImapAccount } = require('../src/main/imap');
@@ -14,7 +15,7 @@ const { ImapAccount } = require('../src/main/imap');
 const CLIENT = { client_id: 'test-client.apps.googleusercontent.com', client_secret: 'test-secret' };
 
 function configFile() {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sem-g-')), 'google-oauth.json');
+  const file = path.join(tempDir('sem-g-'), 'google-oauth.json');
   fs.writeFileSync(file, JSON.stringify(CLIENT));
   return file;
 }
@@ -92,7 +93,7 @@ test('sign-in keeps the granted scopes with the account; a refresh updates them'
 
   let refreshScopes = null;
   const google = { available: () => true, refresh: async () => ({ accessToken: 'access-2', expiresAt: Date.now() + 3600000, ...(refreshScopes ? { scopes: refreshScopes } : {}) }) };
-  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-gs-')), google }).init();
+  const engine = new Engine({ dataDir: tempDir('sem-gs-'), google }).init();
   let added = null;
   engine.finishAdd = async (acc) => (added = acc);
   await engine.addGoogleAccount(grant);
@@ -134,7 +135,7 @@ test('a token refresh from before signing in again does not overwrite the new gr
       return { accessToken: 'old-access', expiresAt: Date.now() + 3600000, scopes: ['https://mail.google.com/'] };
     }
   };
-  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-gr-')), google }).init();
+  const engine = new Engine({ dataDir: tempDir('sem-gr-'), google }).init();
   const acc = { id: 'a1', type: 'imap', provider: 'google', auth: 'oauth2', email: 'bart@example.com', secret: 'rt-1', scopes: ['https://mail.google.com/'] };
   engine.accounts.push(acc);
   engine.syncAccount = async () => [];
@@ -184,7 +185,7 @@ test('refresh: revoked grants give a clear message; missing config disables Goog
 });
 
 test('importClient accepts the Google Cloud download format', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-gi-'));
+  const dir = tempDir('sem-gi-');
   const download = path.join(dir, 'client_secret_x.json');
   fs.writeFileSync(download, JSON.stringify({ installed: { ...CLIENT, redirect_uris: ['http://localhost'] } }));
   const auth = new GoogleAuth({ configPath: path.join(dir, 'google-oauth.json'), openBrowser: () => {} });
@@ -204,7 +205,7 @@ test('engine: OAuth accounts get XOAUTH2 credentials and refresh tokens once, in
       return { accessToken: `access-${refreshes}`, expiresAt: Date.now() + 3600000 };
     }
   };
-  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-ge-')), google }).init();
+  const engine = new Engine({ dataDir: tempDir('sem-ge-'), google }).init();
   const acc = { id: 'a1', type: 'imap', provider: 'google', auth: 'oauth2', email: 'bart@example.com', secret: 'refresh-1', imap: { host: 'imap.gmail.com', port: 993, secure: true, user: 'bart@example.com' }, smtp: { host: 'smtp.gmail.com', port: 465, secure: true } };
   const [t1, t2] = await Promise.all([engine.accessToken(acc), engine.accessToken(acc)]);
   assert.equal(t1, 'access-1');

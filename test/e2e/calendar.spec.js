@@ -1,15 +1,15 @@
 // The calendar view in the real app, on the demo account's calendar.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 let app;
 let win;
 let dataDir;
 
 test.beforeEach(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-cal-'));
+  dataDir = tempDir('sem-e2e-cal-');
   // A Google OAuth client makes the reconnect notice appear; nothing here signs in.
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com', SEM_GOOGLE_CLIENT_SECRET: 'test-secret' };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -24,7 +24,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
   await app.close();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 const event = (title) => win.locator('.calendar [data-ev]', { hasText: title }).first();

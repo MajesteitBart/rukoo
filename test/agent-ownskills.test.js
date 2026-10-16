@@ -5,8 +5,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { mentionsIn, claudeDispatch, claudeSkills, cleanList } = require('../src/main/agents/ownskills');
 const { AgentConfig } = require('../src/main/agents/config');
 const { AgentHub } = require('../src/main/agents/hub');
@@ -14,7 +14,7 @@ const { Engine } = require('../src/main/engine');
 
 const made = [];
 const tmp = (prefix) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = tempDir(prefix);
   made.push(dir);
   return dir;
 };

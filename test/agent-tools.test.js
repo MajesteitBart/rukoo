@@ -3,14 +3,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { Engine, encodeId, decodeId } = require('../src/main/engine');
 const { AgentHub } = require('../src/main/agents/hub');
 const { cacheMessage, executeMail } = require('../src/main/agents/tools');
 
 async function setup({ auto = false, deps = {} } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-tools-'));
+  const dir = tempDir('sem-tools-');
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);

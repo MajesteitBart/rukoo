@@ -5,8 +5,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const nodemailer = require('nodemailer');
 const { Engine } = require('../src/main/engine');
 const { ImapAccount } = require('../src/main/imap');
@@ -36,7 +36,7 @@ test('real IMAP/SMTP account: add, sync, preview, flags, send, append, delete', 
   const eth = await testAccount();
   if (!eth) return t.skip('Ethereal not reachable');
 
-  const engine = new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sem-imap-')) }).init();
+  const engine = new Engine({ dataDir: tempDir('sem-imap-') }).init();
   await assert.rejects(
     engine.addAccount({ provider: 'other', email: eth.user, password: 'wrong-password', imap: eth.imap, smtp: eth.smtp }),
     /Sign-in failed|IMAP/

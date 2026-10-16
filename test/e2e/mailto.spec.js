@@ -2,8 +2,8 @@
 // a link in a message, the compose window before any account exists, and Settings > Email links.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 const LINK =
   'mailto:anna@example.com,%22Doe%2C%20Jane%22%20%3Cjane@example.com%3E?cc=joris@example.com&bcc=sanne@example.com&subject=1+1%3D2&body=First%20line%0D%0ASecond%20line';
@@ -66,12 +66,12 @@ const mainVisible = () =>
 const startAgain = (args) => app.evaluate(({ app }, args) => app.emit('second-instance', {}, args, process.cwd()), args);
 
 test.beforeEach(() => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-mailto-'));
+  dataDir = tempDir('sem-e2e-mailto-');
 });
 
 test.afterEach(async () => {
   await quit();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 test('a link Rukoo is started with opens a filled-in compose window over the main window', async () => {

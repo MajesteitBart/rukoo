@@ -5,6 +5,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 
 let app;
 let win;
@@ -36,7 +37,7 @@ function page(p) {
 }
 
 test.beforeEach(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-e2e-'));
+  dataDir = tempDir('sem-e2e-');
   await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
@@ -49,7 +50,7 @@ test.afterEach(async () => {
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
     await app.close();
   }
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 // The main window as main sees it, or null once it is gone. hidden: in the tray, not on the taskbar.

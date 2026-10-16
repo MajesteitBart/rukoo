@@ -1,14 +1,15 @@
 // End-to-end tests for the chat panel: the real app with the demo account and the fake agents
-// (SEM_AGENT_FAKE=1), in English. Screenshots for review go to %TEMP%\rukoo-agent-shots.
+// (SEM_AGENT_FAKE=1), in English. Screenshots for review go to tmp/e2e-shots/agent in the checkout, which Git
+// ignores; each run replaces them.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
 const { LONG_COMMAND, LONG_COMMAND_TAIL } = require('../../src/main/agents/fake');
 const { Skills } = require('../../src/main/agents/skills');
 const { makePdf } = require('../fixtures/make-pdf');
 
-const SHOTS = path.join(os.tmpdir(), 'rukoo-agent-shots');
+const SHOTS = path.join(__dirname, '..', '..', 'tmp', 'e2e-shots', 'agent');
 let app;
 let win;
 let dataDir;
@@ -22,7 +23,7 @@ async function launch() {
 }
 
 test.beforeEach(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-agent-e2e-'));
+  dataDir = tempDir('rukoo-agent-e2e-');
   await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
@@ -33,7 +34,7 @@ test.afterEach(async () => {
   // An editor with unsaved changes keeps its window open and asks first; skip that in tests.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
   await app.close().catch(() => {});
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 const item = (text) => win.locator('.item', { hasText: text }).first();

@@ -3,13 +3,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tempDir } = require('./tmp');
 const { Engine } = require('../src/main/engine');
 const { Logos, siteOf } = require('../src/main/logos');
 
 async function freshEngine() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-test-'));
+  const dir = tempDir('sem-test-');
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);
@@ -48,7 +48,7 @@ test('logos come from the sender\'s own site; free-mail senders keep initials', 
 });
 
 test('logos are cached, failures are remembered, and nothing but images is kept', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-logos-'));
+  const dir = tempDir('sem-logos-');
   const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(100)]);
   const calls = [];
   const getImpl = async (url) => {
