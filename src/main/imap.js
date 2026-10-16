@@ -8,6 +8,13 @@ const MailComposer = require('nodemailer/lib/mail-composer');
 const util = require('./mailutil');
 
 const PREVIEW_BYTES = 4096;
+// What a cached message needs from the server besides its flags. These never change for a uid, so a sync fetches
+// them only for messages the cache doesn't have yet; see syncFolder().
+const STORED = ['messageId', 'inReplyTo', 'subject', 'from', 'to', 'cc', 'replyTo', 'date', 'preview', 'hasAttachments', 'size'];
+
+// A connection and the commands waiting for it: what the user waits for goes first, then background work. idle
+// settles when its queue has run dry.
+const line = () => ({ client: null, busy: false, idle: Promise.resolve(), queue: { now: [], later: [] } });
 
 // Hosts whose SMTP service already files a copy in the Sent folder.
 const AUTO_SENT_HOSTS = /(gmail\.com|googlemail\.com|office365\.com|outlook\.com)$/i;
@@ -31,10 +38,12 @@ class ImapAccount {
   constructor(account, credentials) {
     this.account = account;
     this.credentials = credentials;
-    this.client = null;
-    // Commands waiting for the connection: what the user waits for, and background work (syncs, prefetching).
-    this.queue = { now: [], later: [] };
-    this.busy = false;
+    // Two connections. The main one does all the work: syncs, prefetching, flags, moves. The reader only fetches the
+    // message the user opens (read()), so opening one never waits for a sync or prefetch that is running.
+    this.main = line();
+    this.reader = line();
+    // Set when the server turned the reader down: reads then go over the main connection, ahead of its waiting work.
+    this.oneConnection = false;
     // Set by close(): the account is gone or uses a new session, so nothing may connect through this one again.
     this.closed = false;
   }
@@ -75,11 +84,11 @@ class ImapAccount {
     });
   }
 
-  async connect() {
-    if (this.client && this.client.usable) return this.client;
+  async connect(conn = this.main) {
+    if (conn.client && conn.client.usable) return conn.client;
     const client = new ImapFlow(await this.imapOptions());
     const drop = () => {
-      if (this.client === client) this.client = null;
+      if (conn.client === client) conn.client = null;
     };
     client.on('error', drop);
     client.on('close', drop);
@@ -90,37 +99,107 @@ class ImapAccount {
       client.close();
       throw err;
     }
-    this.client = client;
+    // Closed while it connected: the session is gone, so the connection goes too.
+    if (this.closed) {
+      client.logout().catch(() => client.close());
+      throw new Error(t('errors.connection.closed'));
+    }
+    conn.client = client;
     return client;
   }
 
-  // IMAP commands share one connection, so they run one at a time. Background work waits until nothing else is
-  // queued: opening a message goes ahead of the next folder of a sync, but not ahead of the command already running.
+  // The commands on a connection run one at a time. Background work waits until nothing else is queued: a flag
+  // change goes ahead of the next folder of a sync, but not ahead of the command already running.
   run(fn, { background = false } = {}) {
+    return this.queue(this.main, fn, background);
+  }
+
+  // Fetching the message the user opens: over the reader connection, which nothing else uses. It only reads, so it
+  // can run next to a sync without the two seeing different states of a change.
+  read(fn) {
+    return this.oneConnection ? this.run(fn) : this.queue(this.reader, fn, false);
+  }
+
+  queue(conn, fn, background) {
     return new Promise((resolve, reject) => {
-      this.queue[background ? 'later' : 'now'].push({ fn, resolve, reject });
-      this.drain();
+      conn.queue[background ? 'later' : 'now'].push({ fn, resolve, reject });
+      this.drain(conn);
     });
   }
 
-  async drain() {
-    if (this.busy) return;
-    this.busy = true;
+  async drain(conn) {
+    if (conn.busy) return;
+    conn.busy = true;
+    let done;
+    conn.idle = new Promise((resolve) => (done = resolve));
     try {
-      for (let task; (task = this.queue.now.shift() || this.queue.later.shift()); ) {
+      for (let task; (task = conn.queue.now.shift() || conn.queue.later.shift()); ) {
+        if (this.closed) {
+          task.reject(new Error(t('errors.connection.closed')));
+          continue;
+        }
+        let client;
+        try {
+          client = await this.connect(conn);
+        } catch (err) {
+          client = await this.oneAtATime(conn, task, err);
+          if (!client) continue;
+        }
+        // Nothing runs for a session closed while it connected: an account removed, or signed in again.
         if (this.closed) {
           task.reject(new Error(t('errors.connection.closed')));
           continue;
         }
         try {
-          task.resolve(await task.fn(await this.connect()));
+          task.resolve(await task.fn(client));
         } catch (err) {
-          if (this.client && !this.client.usable) this.client = null;
+          if (conn.client && !conn.client.usable) conn.client = null;
           task.reject(err);
         }
       }
     } finally {
-      this.busy = false;
+      conn.busy = false;
+      done();
+    }
+  }
+
+  // A server that takes one connection at a time turns down whichever of the two connects second. From then on
+  // everything goes over the main connection, reads ahead of waiting background work, as before there was a reader.
+  // Returns the client to run task on, or null once task is turned down or handed to the main connection.
+  async oneAtATime(conn, task, err) {
+    const other = conn === this.reader ? this.main : this.reader;
+    if (!other.client || !other.client.usable) {
+      task.reject(err);
+      return null;
+    }
+    this.oneConnection = true;
+    if (conn === this.reader) {
+      for (const waiting of [task, ...conn.queue.now.splice(0)]) this.run(waiting.fn).then(waiting.resolve, waiting.reject);
+      return null;
+    }
+    // The main connection is the one that has to work: the reader finishes the message it is fetching, hands over
+    // what waits for it and logs out, and the main connection tries again.
+    for (const waiting of this.reader.queue.now.splice(0)) this.run(waiting.fn).then(waiting.resolve, waiting.reject);
+    await this.reader.idle;
+    const reader = this.reader.client;
+    this.reader.client = null;
+    if (reader) {
+      try {
+        await reader.logout();
+      } catch (_) {
+        reader.close();
+      }
+    }
+    // Closed meanwhile: the command is for a session that is gone.
+    if (this.closed) {
+      task.reject(new Error(t('errors.connection.closed')));
+      return null;
+    }
+    try {
+      return await this.connect(conn);
+    } catch (again) {
+      task.reject(again);
+      return null;
     }
   }
 
@@ -182,23 +261,27 @@ class ImapAccount {
         const result = { uidValidity: String(box.uidValidity), exists: box.exists, messages: [] };
         if (!box.exists) return result;
         const start = Math.max(1, box.exists - limit + 1);
+        // The flags of every message in the window: all that can change about a message the cache already has.
         const rows = [];
-        for await (const m of client.fetch(`${start}:*`, {
-          uid: true,
-          flags: true,
-          envelope: true,
-          bodyStructure: true,
-          internalDate: true,
-          size: true
-        })) {
-          rows.push(m);
+        for await (const m of client.fetch(`${start}:*`, { uid: true, flags: true })) rows.push(m);
+        const cached = (uid) => {
+          const prior = known.get(uid);
+          return Boolean(prior) && STORED.every((k) => k in prior);
+        };
+        // Envelope, structure, date and size only for the messages it doesn't have: on a large Gmail folder that is
+        // the slow part, and repeating it every sync kept the connection busy for minutes.
+        const fresh = rows.filter((m) => !cached(m.uid)).map((m) => m.uid);
+        const details = new Map();
+        if (fresh.length) {
+          for await (const m of client.fetch(fresh.join(','), { uid: true, envelope: true, bodyStructure: true, internalDate: true, size: true }, { uid: true })) {
+            details.set(m.uid, m);
+          }
         }
 
         // Fetch a few KB of the readable part for messages we have not seen before.
         const previews = new Map();
         const byPart = new Map();
-        for (const m of rows) {
-          if (known.has(m.uid)) continue;
+        for (const m of details.values()) {
           const node = util.findPreviewPart(m.bodyStructure);
           if (!node) continue;
           const key = util.partKey(node);
@@ -222,10 +305,18 @@ class ImapAccount {
           }
         }
 
-        for (const m of rows) {
+        for (const row of rows) {
+          const flags = row.flags || new Set();
+          const state = { unread: !flags.has('\\Seen'), starred: flags.has('\\Flagged'), answered: flags.has('\\Answered') };
+          const m = details.get(row.uid);
+          const prior = known.get(row.uid);
+          if (!m) {
+            // Gone between the two fetches (moved or deleted meanwhile): the next sync no longer lists it.
+            if (!cached(row.uid)) continue;
+            result.messages.push({ uid: row.uid, ...Object.fromEntries(STORED.map((k) => [k, prior[k]])), ...state });
+            continue;
+          }
           const env = m.envelope || {};
-          const prior = known.get(m.uid);
-          const flags = m.flags || new Set();
           result.messages.push({
             uid: m.uid,
             messageId: env.messageId || null,
@@ -236,10 +327,8 @@ class ImapAccount {
             cc: util.addressFromEnvelope(env.cc),
             replyTo: util.addressFromEnvelope(env.replyTo),
             date: new Date(env.date || m.internalDate || Date.now()).getTime(),
-            preview: previews.has(m.uid) ? previews.get(m.uid) : prior ? prior.preview : '',
-            unread: !flags.has('\\Seen'),
-            starred: flags.has('\\Flagged'),
-            answered: flags.has('\\Answered'),
+            preview: previews.has(m.uid) ? previews.get(m.uid) : prior ? prior.preview || '' : '',
+            ...state,
             hasAttachments: util.hasAttachments(m.bodyStructure),
             size: m.size || 0
           });
@@ -251,11 +340,12 @@ class ImapAccount {
     }, { background });
   }
 
-  // Opens the folder read-write, like setFlags: imapflow reopens a folder whenever the mode changes, and opening an
-  // unread message marks it read. The fetch itself still leaves the flags alone: imapflow fetches with PEEK.
+  // The message the user opens comes over the reader, with the folder opened read-only: that connection only reads.
+  // A prefetch runs on the main connection and opens the folder read-write, like setFlags: imapflow reopens a folder
+  // whenever the mode changes. Either way the fetch leaves the flags alone: imapflow fetches with PEEK.
   fetchSource(path, uid, { background = false } = {}) {
-    return this.run(async (client) => {
-      const lock = await client.getMailboxLock(path);
+    const fetch = async (client) => {
+      const lock = await client.getMailboxLock(path, background ? {} : { readOnly: true });
       try {
         const msg = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
         if (!msg || !msg.source) throw new Error(t('errors.message.serverMissing'));
@@ -263,7 +353,8 @@ class ImapAccount {
       } finally {
         lock.release();
       }
-    }, { background });
+    };
+    return background ? this.run(fetch, { background }) : this.read(fetch);
   }
 
   setFlags(path, uid, { unread, starred, answered }) {
@@ -352,15 +443,18 @@ class ImapAccount {
 
   async close() {
     this.closed = true;
-    const client = this.client;
-    this.client = null;
-    if (client) {
-      try {
-        await client.logout();
-      } catch (_) {
-        client.close();
-      }
-    }
+    const clients = [this.main.client, this.reader.client].filter(Boolean);
+    this.main.client = null;
+    this.reader.client = null;
+    await Promise.all(
+      clients.map(async (client) => {
+        try {
+          await client.logout();
+        } catch (_) {
+          client.close();
+        }
+      })
+    );
   }
 }
 
