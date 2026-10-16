@@ -1,15 +1,15 @@
 // End-to-end tests for the chat panel: the real app with the demo account and the fake agents
-// (SEM_AGENT_FAKE=1), in English. Screenshots for review go to %TEMP%\rukoo-agent-shots.
+// (SEM_AGENT_FAKE=1), in English. Screenshots for review go to tmp/e2e-shots/agent in the checkout, which Git
+// ignores; each run replaces them.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { LONG_COMMAND, LONG_COMMAND_TAIL } = require('../../src/main/agents/fake');
 const { Skills } = require('../../src/main/agents/skills');
 const { makePdf } = require('../fixtures/make-pdf');
 
-const SHOTS = path.join(os.tmpdir(), 'rukoo-agent-shots');
+const SHOTS = path.join(__dirname, '..', '..', 'tmp', 'e2e-shots', 'agent');
 let app;
 let win;
 let dataDir;

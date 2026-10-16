@@ -3,7 +3,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { tempDir } = require('./tmp');
 const { Engine, encodeId, decodeId } = require('../src/main/engine');

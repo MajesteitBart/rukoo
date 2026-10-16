@@ -26,12 +26,14 @@ function tempDir(prefix) {
   return dir;
 }
 
+// A folder that still can't go, held by a process that outlived its test, is named on stderr, so a passing run
+// doesn't hide it. writeSync, because nothing asynchronous runs any more at exit.
 process.on('exit', () => {
   for (const dir of made) {
     try {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-    } catch (_) {
-      // Held by a process that outlived the test; nothing more to do from here.
+    } catch (err) {
+      fs.writeSync(2, `Could not remove the test folder ${dir}: ${err.code || err.message}\n`);
     }
   }
 });
