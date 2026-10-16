@@ -655,6 +655,10 @@
     "message": "{name}'s skills",
     "description": "Chat panel input, $ menu: grey heading above the list of the agent's own skills. name: the agent (Hermes, Claude, Codex)."
   },
+  "agent.panel.skillChip": {
+    "message": "Skill {name}",
+    "description": "Chat panel: what a screen reader says for the chip of one of the agent's own skills, in the input and in a sent message. name: the skill as the chip shows it (Babysit, Meeting Prep)."
+  },
   "agent.panel.pickAgent": {
     "message": "Choose agent",
     "description": "Chat panel input: label of the agent picker (Hermes, Claude Code, Codex)."

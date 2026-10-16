@@ -185,7 +185,7 @@ Rukoo starts Claude Code and Codex with your own settings, so in Rukoo they also
 
 ### The agent's own skills
 
-Hermes, Claude Code and Codex have skills of their own, installed for that agent. Type `$` in the chat input to see the ones the agent of the chat has, under a line such as "Hermes's skills". Typing narrows the list down, by name first and then by description. Pick one with the mouse, Enter or Tab: it goes into your message as `$name`, and you write the rest. A `$` followed by a digit, as in `$50`, opens nothing.
+Hermes, Claude Code and Codex have skills of their own, installed for that agent. Type `$` in the chat input to see the ones the agent of the chat has, under a line such as "Hermes's skills". Typing narrows the list down, by name first and then by description. Pick one with the mouse, Enter or Tab: it goes into your message as a chip with the skill's name in words, such as "Meeting Prep" for `$meeting-prep`, and you write the rest. A `$name` you type yourself becomes that chip once a space or punctuation follows it. The agent gets `$name`. Backspace removes a chip whole, Ctrl+Z brings it back, and a copied chip pastes as `$name`. Your message in the chat shows the same chips. A `$` followed by a digit, as in `$50`, opens nothing.
 
 | Agent | Where the list comes from | How the skill starts |
 |---|---|---|
@@ -193,7 +193,7 @@ Hermes, Claude Code and Codex have skills of their own, installed for that agent
 | Claude Code | Its folders, read the way Claude Code reads them: `skills/` in its config folder (`CLAUDE_CONFIG_DIR`, or the folder in Settings, else `~/.claude`), `.claude/skills` in Rukoo's agent workspace, and the skills of the plugins you turned on, named `plugin:skill`. A skill marked `user-invocable: false`, or turned off with `skillOverrides`, is left out | Claude Code starts a skill when the last text block of a message begins with `/name`. Rukoo sends your message that way: the text before the last skill you named in one block, then `/name` with the rest. Claude Code starts one skill per message; earlier ones read `/name` in the text |
 | Codex | `skills/list` on the app-server, for Rukoo's agent workspace. Skills that are turned off are left out | Codex reads `$name` in a message itself |
 
-Rukoo loads the list when the panel opens and when you type `$`, and keeps it for a minute. Only your own text counts: a `$name` in an email, or in anything else Rukoo sends along, starts nothing. A skill the list doesn't have goes as plain text.
+Rukoo loads the list when the panel opens and when you type `$`, and keeps it for a minute. Only your own text counts: a `$name` in an email, or in anything else Rukoo sends along, starts nothing. A skill the list doesn't have stays plain text and goes as it is. Switch to an agent that doesn't have a skill in your message, and its chip turns back into text.
 
 Rukoo's own skills stay slash commands, because every agent has them. The quick actions don't show after `$` either: they work the same with every agent.
 

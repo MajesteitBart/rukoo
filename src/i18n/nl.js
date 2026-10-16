@@ -169,6 +169,7 @@
   "agent.panel.noSkills": "Geen skills gevonden",
   "agent.panel.skillsFailed": "De skills van {name} zijn niet geladen",
   "agent.panel.skillsOf": "Skills van {name}",
+  "agent.panel.skillChip": "Skill {name}",
   "agent.panel.pickAgent": "Agent kiezen",
   "agent.panel.placeholder": "Vraag {name} iets...",
   "agent.panel.placeholderEmail": "Vraag {name} iets over deze e-mail...",

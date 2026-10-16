@@ -40,6 +40,8 @@ const item = (text) => win.locator('.item', { hasText: text }).first();
 const pane = () => win.locator('.agentpane');
 const transcript = () => win.locator('.agentpane .ap-transcript');
 const input = () => win.locator('.agentpane .bui-pb__ta');
+// The input's text as it is sent, a skill chip as its $name. The input is an editable, which has no form value.
+const inputValue = () => input().evaluate((el) => el.value);
 const chip = (label) => win.locator('.agentpane .bui-sugg__chip', { hasText: label });
 // The overlay slides in; wait for it to settle before a screenshot.
 const settled = () => pane().evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
@@ -410,7 +412,7 @@ test('an email left out of a new chat comes back with one click, and goes with t
   await remove.click();
   await expect(title).toHaveText('Ask Hermes about your mail');
   await expect(win.locator('.agentpane .bui-rec__body')).toHaveText('Add the email to work on it, or start with what needs you today.');
-  await expect(input()).toHaveAttribute('placeholder', 'Ask Hermes...');
+  await expect(input()).toHaveAttribute('data-placeholder', 'Ask Hermes...');
   await expect(add).toHaveAttribute('title', 'Call on Thursday');
   await expect(remove).toHaveCount(0);
   await shot('14-email-left-out');
@@ -485,7 +487,7 @@ test('/name starts a skill from the user skills folder; the agent gets its instr
   await expect(win.locator('.agentpane .bui-pb__cmd')).toHaveCount(1);
   // An IME that is still composing (Japanese, Chinese) owns Enter: it picks nothing and starts nothing.
   await input().dispatchEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true });
-  await expect(input()).toHaveValue('/shared');
+  await expect.poll(inputValue).toBe('/shared');
   await expect(win.locator('.agentpane .bui-pb__cmd')).toHaveCount(1);
   await input().press('Enter');
   await expect(transcript().locator('.bui-ub')).toHaveText('/shared-name');
@@ -558,7 +560,7 @@ test('a typed /name sent with the Send button runs the skill or quick action, li
   let got = await received();
   expect(got.action).toBe('skill');
   expect(got.input.endsWith('\n\nFixture skill body: say "user version" and nothing else.')).toBe(true);
-  await expect(input()).toHaveValue('');
+  await expect.poll(inputValue).toBe('');
 
   // A quick action typed out and sent the same way.
   await input().fill('/summary');
@@ -753,7 +755,7 @@ test('a new default agent applies at once, and Ctrl+J still closes a panel whose
   await openChat('Call on Thursday');
   await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'claude' }));
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
-  await expect(input()).toHaveAttribute('placeholder', 'Ask Claude about this email...');
+  await expect(input()).toHaveAttribute('data-placeholder', 'Ask Claude about this email...');
   await win.evaluate(() => window.mail.call('agentUpdateConfig', { claude: { enabled: false } }));
   await expect(win.locator('.agentpane .bui-pb__disabled')).toContainText('Claude is turned off.');
   await win.keyboard.press('Control+j');
@@ -989,7 +991,7 @@ test('the panel follows a language change, the open conversation included', asyn
   await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
   await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Hermes');
-  await expect(input()).toHaveAttribute('placeholder', 'Vraag Hermes iets over deze e-mail...');
+  await expect(input()).toHaveAttribute('data-placeholder', 'Vraag Hermes iets over deze e-mail...');
   await expect(transcript().locator('.bui-approval')).toContainText('Wacht op jou');
   await expect(transcript().locator('.bui-approval').getByRole('button', { name: 'Afwijzen' })).toBeVisible();
   await expect(transcript().locator('.bui-task__pill').nth(1)).toHaveText('Voorgesteld');
@@ -1398,6 +1400,8 @@ test('a PDF from the paperclip or dropped on the chat goes to the agent, which r
       ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
     }, withText);
   await paste(true);
+  await expect.poll(inputValue).toBe('Copied text');
+  await input().fill('');
   await paste(false);
   await pickFilesWith([report]);
   await win.click('.agentpane .bui-pb__attach');
@@ -1477,7 +1481,7 @@ test('nothing goes while a dropped file is still being added: Enter keeps the te
   await expect(sendButton).toBeDisabled();
   await expect(sendButton).toHaveAttribute('title', 'Wait until the files are added, then send.');
   await input().press('Enter');
-  await expect(input()).toHaveValue('What is in this?');
+  await expect.poll(inputValue).toBe('What is in this?');
   await chip('Summarize').click();
   await expect(win.locator('#toast')).toContainText('Wait until the files are added, then send.');
   await expect(transcript().locator('.bui-ub')).toHaveCount(0);
@@ -1491,7 +1495,7 @@ test('nothing goes while a dropped file is still being added: Enter keeps the te
   await expect(transcript().locator('.bui-ub')).toHaveText('What is in this?');
   await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['notes.txt']);
   await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['notes.txt']);
-  await expect(input()).toHaveValue('');
+  await expect.poll(inputValue).toBe('');
   await expect(fileChips()).toHaveCount(0);
 });
 
@@ -1507,7 +1511,7 @@ test('a message held for a file goes to the chat it is sent from, not to an emai
   await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
   await letGo('agenda.txt');
   await expect(fileChips().locator('.bui-entity__name')).toHaveText(['agenda.txt']);
-  await expect(input()).toHaveValue('Question for Thursday');
+  await expect.poll(inputValue).toBe('Question for Thursday');
   expect(await conversations()).toEqual([]);
   // Back on Thursday the user sends: the message and the file go to that chat.
   await item('Call on Thursday').click();
@@ -1530,7 +1534,7 @@ test('a file dropped while another is still on its way goes with the same messag
   await expect(fileChips().locator('.bui-entity__name')).toHaveText(['first.txt']);
   await expect(pendingChips()).toHaveCount(1);
   await input().press('Enter');
-  await expect(input()).toHaveValue('Both of these');
+  await expect.poll(inputValue).toBe('Both of these');
   await letGo('second.txt');
   await expect(fileChips().locator('.bui-entity__name')).toHaveText(['first.txt', 'second.txt']);
   await input().press('Enter');
@@ -1545,17 +1549,17 @@ test('text typed while files are on their way is never lost, however often Enter
   await input().fill('First message');
   await dropFiles([textFile('slow.txt')]);
   await input().press('Enter');
-  await expect(input()).toHaveValue('First message');
+  await expect.poll(inputValue).toBe('First message');
   await input().press('End');
   await input().pressSequentially(' and the second');
   await input().press('Enter');
-  await expect(input()).toHaveValue('First message and the second');
+  await expect.poll(inputValue).toBe('First message and the second');
   await letGo('slow.txt');
   await expect(fileChips().locator('.bui-entity__name')).toHaveText(['slow.txt']);
   await input().press('Enter');
   await expect(transcript().locator('.bui-ub')).toHaveText('First message and the second');
   await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['slow.txt']);
-  await expect(input()).toHaveValue('');
+  await expect.poll(inputValue).toBe('');
 });
 
 test('picked files are read without blocking Rukoo: a slow drive leaves other requests answered at once', async () => {
@@ -1670,7 +1674,7 @@ test('a send that fails while the files are copied keeps every chip, and sending
   await expect(win.locator('#toast')).toContainText('ENOSPC');
   // Nothing went out: the chips and the words are back, and main still has both files.
   await expect(fileChips().locator('.bui-entity__name')).toHaveText(['a.txt', 'b.txt']);
-  await expect(input()).toHaveValue('Both, please');
+  await expect.poll(inputValue).toBe('Both, please');
   await expect(transcript().locator('.bui-ub')).toHaveCount(0);
   expect(await app.evaluate(() => [...global.__semAgents.files.staged.values()].map((s) => s.name))).toEqual(['a.txt', 'b.txt']);
   await input().press('Enter');
@@ -1892,9 +1896,34 @@ test("$ offers the agent's own skills: Hermes' from its server, Claude Code's an
   await input().fill('Please $inv');
   await expect(names).toHaveText(['$invoice-check']);
   await input().press('Enter');
-  await expect(input()).toHaveValue('Please $invoice-check ');
+  await expect.poll(inputValue).toBe('Please $invoice-check ');
+  // It goes in as t3code shows a skill: a chip with the box and its name in words.
+  await expect(input().locator('.bui-skill')).toHaveText('Invoice Check');
+  await expect(input().locator('.bui-skill')).toHaveAttribute('aria-label', 'Skill Invoice Check');
   await expect(rows).toHaveCount(0);
   await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  await shot('32-skill-chip');
+  // Typed, a name becomes a chip once a space follows it. Backspace takes the chip whole; Ctrl+Z brings it back.
+  await input().fill('');
+  await input().pressSequentially('Then $crm-update');
+  await expect(input().locator('.bui-skill')).toHaveCount(0);
+  await input().pressSequentially(' ');
+  await expect(input().locator('.bui-skill')).toHaveText('Crm Update');
+  await expect.poll(inputValue).toBe('Then $crm-update ');
+  await input().press('Backspace');
+  await input().press('Backspace');
+  await expect(input().locator('.bui-skill')).toHaveCount(0);
+  await expect.poll(inputValue).toBe('Then ');
+  await input().press('Control+z');
+  await expect(input().locator('.bui-skill')).toHaveText('Crm Update');
+  await expect.poll(inputValue).toBe('Then $crm-update ');
+  // Typing somewhere else is an undo step of its own, as in a textarea.
+  await input().fill('');
+  await input().pressSequentially('hello');
+  await input().press('Home');
+  await input().pressSequentially('X');
+  await input().press('Control+z');
+  await expect.poll(inputValue).toBe('hello');
   // A description matches too, after the names.
   await input().fill('$quote');
   await expect(names).toHaveText(['$invoice-check']);
@@ -1906,8 +1935,11 @@ test("$ offers the agent's own skills: Hermes' from its server, Claude Code's an
   await expect(win.locator('.agentpane .bui-pb__cmdname', { hasText: '$' })).toHaveCount(0);
 
   await input().fill('Please $invoice-check for this email');
+  await expect(input().locator('.bui-skill')).toHaveText('Invoice Check');
   await input().press('Enter');
-  await expect(transcript().locator('.bui-ub')).toHaveText('Please $invoice-check for this email');
+  // The message shows the skill as the chip it was; the agent gets $name.
+  await expect(transcript().locator('.bui-ub')).toHaveText('Please Invoice Check for this email');
+  await expect(transcript().locator('.bui-ub .bui-skill[data-skill="invoice-check"]')).toBeVisible();
   await expect(transcript()).toContainText('Started $invoice-check.', { timeout: 10000 });
   const got = await received('clark');
   expect(got.skills).toEqual([{ name: 'invoice-check' }]);
@@ -1923,7 +1955,13 @@ test("$ offers the agent's own skills: Hermes' from its server, Claude Code's an
   await input().fill('$res');
   await expect(names).toHaveText(['$codex:rescue']);
   await input().press('Tab');
-  await expect(input()).toHaveValue('$codex:rescue ');
+  await expect.poll(inputValue).toBe('$codex:rescue ');
+  await expect(input().locator('.bui-skill')).toHaveText('Codex Rescue');
+  // Hermes does not have it: switching agents makes the chip text again.
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Hermes' }).click();
+  await expect(input().locator('.bui-skill')).toHaveCount(0);
+  await expect.poll(inputValue).toBe('$codex:rescue ');
 });
 
 test('shortcuts: the user hides, orders, edits and adds them in Settings; new chats follow, with every agent, after a restart too', async () => {

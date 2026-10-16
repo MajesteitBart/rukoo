@@ -212,6 +212,8 @@ export function mountAgentPanel(ctx) {
   };
   const scroller = $('.ap-scroll', pane);
   const transcript = $('.ap-transcript', pane);
+  // A skill chip in a sent message copies as its $name.
+  transcript.addEventListener('copy', (e) => B.copySkills(e));
   const jump = $('[data-ap="jump"]', pane);
   const foot = $('.ap-foot', pane);
 
@@ -403,6 +405,7 @@ export function mountAgentPanel(ctx) {
           noMatches: t('agent.panel.noMatches'),
           skillsLoading: t('agent.panel.skillsLoading'),
           noSkills: t('agent.panel.noSkills'),
+          skill: (name) => t('agent.panel.skillChip', { name }),
           attach: t('agent.panel.attach')
         },
         agents: agentRows(),
@@ -661,15 +664,35 @@ export function mountAgentPanel(ctx) {
     const id = currentAgent();
     const name = agentName(id);
     const entry = P.ownSkills[id] || null;
+    // The chips in the input and the chat need the list too, so one not asked for yet is asked for now. Until it is
+    // there it counts as loading: the chips stay as they are.
+    if (!entry && !P.unavailable && !P.loadingSkills.has(id)) loadOwnSkills(id);
     const items = entry && Array.isArray(entry.skills) ? entry.skills : [];
     // A list that failed says why, in the agent's words where Rukoo knows the code (offline, not set up).
     const failed = entry && entry.error && !items.length ? describeError(entry.error, name) : null;
     chat.setSkills({
       items,
-      loading: P.loadingSkills.has(id) && !items.length,
+      loading: (!entry && !P.unavailable) || (P.loadingSkills.has(id) && !items.length),
       error: failed ? (failed.code ? failed.text : t('agent.panel.skillsFailed', { name })) : '',
       heading: t('agent.panel.skillsOf', { name })
     });
+    redrawSkillText();
+  }
+
+  // The agent's own skills the chat on screen knows, for the chips in what the user sent. None for a turn that started
+  // one of Rukoo's skills: its text is that skill's name.
+  function chatSkills(item) {
+    const entry = P.conv ? P.ownSkills[P.conv.agent] : null;
+    return item.action !== 'skill' && entry && Array.isArray(entry.skills) ? entry.skills : [];
+  }
+  // A list that came in or changed shows in the messages sent before it.
+  let shownSkillText = '';
+  function redrawSkillText() {
+    const entry = P.conv ? P.ownSkills[P.conv.agent] : null;
+    const key = `${P.conv ? P.conv.id : ''} ${entry && Array.isArray(entry.skills) ? entry.skills.map((k) => k.name).join() : ''}`;
+    if (key === shownSkillText) return;
+    shownSkillText = key;
+    for (const view of views.values()) view.skills?.();
   }
 
   // refresh: the panel just opened, so main loads a list that is older than half a minute again.
@@ -1173,7 +1196,14 @@ export function mountAgentPanel(ctx) {
       case 'user': {
         // What went along with the message, as chips without an x.
         const attachments = [...(item.files || []).map((f) => fileChip(f, null)), ...(item.emails || []).map((m) => emailChip(m, null))];
-        return { el: elOf(B.userBubble({ text: item.text || '', action: item.action || null, attachments, labels: { approved: t('agent.items.youApproved'), declined: t('agent.items.youDeclined') } })) };
+        const labels = { approved: t('agent.items.youApproved'), declined: t('agent.items.youDeclined'), skill: (name) => t('agent.panel.skillChip', { name }) };
+        const el = elOf(B.userBubble({ text: item.text || '', action: item.action || null, attachments, labels, skills: chatSkills(item) }));
+        // The agent's skills it names are chips, drawn again when the list changes.
+        const skills = () => {
+          const ub = el.querySelector('.bui-ub');
+          if (ub) ub.replaceChildren(...B.skillText(item.text || '', chatSkills(item), labels));
+        };
+        return { el, skills };
       }
       case 'assistant': {
         const s = B.streamText({ interim: Boolean(item.interim) });
@@ -1981,7 +2011,7 @@ export function mountAgentPanel(ctx) {
       chat.focus();
       return true;
     },
-    inputFocused: () => Boolean(chat && chat.el.contains(document.activeElement) && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName)),
+    inputFocused: () => Boolean(chat && chat.el.contains(document.activeElement) && (document.activeElement.isContentEditable || /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName))),
     // False while the agent is not set up or turned off: the input is hidden then.
     inputAvailable: () => Boolean(chat && !chat.el.classList.contains('is-disabled')),
     inputValue: () => (chat ? chat.getValue() : ''),

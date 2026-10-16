@@ -1942,20 +1942,67 @@
   scale: 0.94;
 }
 .bui-pb__ta {
+  position: relative;
   display: block;
   min-height: 28px;
   max-height: 120px;
   min-width: 0;
   width: 100%;
-  resize: none;
   background: transparent;
   padding: 5px 4px;
   font-size: 13px;
   line-height: 18px;
   color: var(--ink);
   outline: none;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  overflow-y: hidden;
+  overflow-y: auto;
+  cursor: text;
+}
+/* The input is an editable, so its placeholder is drawn here. */
+.bui-pb__ta.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: 5px;
+  right: 4px;
+  left: 4px;
+  overflow: hidden;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* One of the agent's own skills in text, in the input and in a sent message: t3code's context chip for a skill, in
+   its magenta. Sized in em, so it follows the text around it. */
+.bui-skill {
+  --skill: oklch(0.62 0.16 322);
+  display: inline-flex;
+  max-width: 100%;
+  height: 1.41em;
+  align-items: center;
+  gap: 0.33em;
+  border: 1px solid color-mix(in oklab, var(--skill) 34%, var(--line-strong));
+  border-radius: 0.5em;
+  background: color-mix(in oklab, var(--skill) 11%, transparent);
+  padding: 0 0.5em;
+  vertical-align: middle;
+  font-size: 0.86em;
+  font-weight: 500;
+  line-height: 1;
+  color: color-mix(in oklab, var(--skill) 22%, var(--ink));
+  white-space: nowrap;
+  cursor: default;
+}
+.bui-skill svg {
+  width: 1.17em;
+  height: 1.17em;
+}
+.bui-skill__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.25;
 }
 .bui-pb__disabled {
   display: flex;
