@@ -17,6 +17,8 @@ const { normalizeZoom } = require('./zoom');
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
 const LIMITS = { inbox: 300, default: 100 };
+// After a sync, the newest inbox messages up to this size are downloaded ahead of time; see prefetch().
+const PREFETCH = { count: 30, maxBytes: 1024 * 1024 };
 const VIEW_ROLES = { drafts: 'drafts', sent: 'sent', trash: 'trash', junk: 'junk', archive: 'archive' };
 // Earlier versions put this signature under every mail by default; it is now opt-in.
 const OLD_DEFAULT_SIGNATURE = 'Verzonden vanaf mijn pc';
@@ -121,6 +123,11 @@ class Engine extends EventEmitter {
     this.pending = new Map();
     // Recent moves, keyed by the id the message had before it moved, so they can be reversed.
     this.undoable = new Map();
+    // Message bodies being downloaded, by cache file; see download().
+    this.downloads = new Map();
+    // Accounts whose newest messages are being downloaded ahead of time.
+    this.prefetching = new Set();
+    this.closed = false;
   }
 
   file(...parts) {
@@ -502,10 +509,11 @@ class Engine extends EventEmitter {
 
   async removeAccount(id) {
     const acc = this.account(id);
+    // Off the list before its connection closes, so a prefetch that goes on meanwhile doesn't open a new one.
+    this.accounts = this.accounts.filter((a) => a !== acc);
     const s = this.sessions.get(id);
     this.sessions.delete(id);
     if (s) await s.close();
-    this.accounts = this.accounts.filter((a) => a !== acc);
     this.caches.delete(id);
     this.tokens.delete(id);
     clearTimeout(this.saveTimers.get(id));
@@ -599,12 +607,14 @@ class Engine extends EventEmitter {
   async runSync(id, extraFolders) {
     const acc = this.account(id);
     const cache = this.caches.get(id);
-    const session = this.session(acc);
     const fresh = [];
     // Pick up Gmail aliases once for Google accounts; failures here never block mail sync.
     if (acc.auth === 'oauth2' && !acc.aliasesFetchedAt) await this.fetchGmailAliases(id).catch(() => {});
+    // An account removed during that wait must not get a new session; see removeAccount().
+    if (!this.accounts.includes(acc)) return fresh;
     try {
-      cache.folders = await session.listFolders();
+      // The session as it is after that wait: signing in again replaces it, and the old one takes no more commands.
+      cache.folders = await this.session(acc).listFolders({ background: true });
       const targets = cache.folders.filter((f) => SYNC_ROLES.includes(f.role)).map((f) => f.path);
       const archive = this.archiveFolder(id);
       if (archive && !targets.includes(archive.path)) targets.push(archive.path);
@@ -613,7 +623,7 @@ class Engine extends EventEmitter {
         if (!targets.includes(p) && cache.folders.some((f) => f.path === p)) targets.push(p);
       }
       for (const p of targets) {
-        fresh.push(...(await this.syncFolderInto(acc, p)));
+        fresh.push(...(await this.syncFolderInto(acc, p, { background: true })));
       }
       for (const p of Object.keys(cache.boxes)) {
         if (!cache.folders.some((f) => f.path === p)) delete cache.boxes[p];
@@ -627,10 +637,12 @@ class Engine extends EventEmitter {
     }
     this.changed(id);
     if (fresh.length) this.emit('new-mail', fresh);
+    this.prefetch(id);
     return fresh;
   }
 
-  async syncFolderInto(acc, folderPath) {
+  // background: a sync nobody waits for, which lets the user's own commands go first on the connection.
+  async syncFolderInto(acc, folderPath, { background = false } = {}) {
     const cache = this.caches.get(acc.id);
     const info = cache.folders.find((f) => f.path === folderPath) || { path: folderPath };
     const prev = cache.boxes[folderPath];
@@ -640,7 +652,8 @@ class Engine extends EventEmitter {
     const res = await this.session(acc).syncFolder(folderPath, {
       limit,
       known,
-      uidValidity: prev ? prev.uidValidity : null
+      uidValidity: prev ? prev.uidValidity : null,
+      background
     });
     const sameValidity = prev && prev.uidValidity === res.uidValidity;
     const maxKnown = sameValidity ? Math.max(0, ...prev.messages.map((m) => m.uid)) : Infinity;
@@ -847,12 +860,85 @@ class Engine extends EventEmitter {
       return fs.readFileSync(this.file('saved', item.file));
     }
     const { acc, box, folder, uid } = this.locate(id);
-    const file = this.file('bodies', acc.id, `${sha(`${folder}|${box.uidValidity}|${uid}`)}.eml`);
+    const file = this.bodyFile(acc, box, folder, uid);
     if (fs.existsSync(file)) return fs.readFileSync(file);
-    const raw = await this.session(acc).fetchSource(folder, uid);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, raw);
-    return raw;
+    return this.download(acc, box, folder, uid, file, false);
+  }
+
+  // Where a message's raw source is kept once downloaded.
+  bodyFile(acc, box, folder, uid) {
+    return this.file('bodies', acc.id, `${sha(`${folder}|${box.uidValidity}|${uid}`)}.eml`);
+  }
+
+  // One download per message at a time. A message the user opens while it waits as background work is fetched
+  // again in the user's turn, rather than behind the rest of the prefetch.
+  download(acc, box, folder, uid, file, background) {
+    const running = this.downloads.get(file);
+    if (running && (background || !running.background)) return running.raw;
+    const entry = { background };
+    entry.raw = this.session(acc)
+      .fetchSource(folder, uid, { background })
+      .then((raw) => {
+        // Not kept for an account removed in the meantime, or a folder whose uids were reassigned: their bodies
+        // were just deleted. A body that can't be saved is still shown.
+        const now = this.caches.get(acc.id);
+        if (this.accounts.includes(acc) && now && now.boxes[folder] && now.boxes[folder].uidValidity === box.uidValidity) {
+          try {
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            const tmp = `${file}.${crypto.randomUUID()}.tmp`;
+            fs.writeFileSync(tmp, raw);
+            fs.renameSync(tmp, file);
+          } catch (_) {
+            // Opened again later, it is downloaded again.
+          }
+        }
+        return raw;
+      })
+      .finally(() => {
+        if (this.downloads.get(file) === entry) this.downloads.delete(file);
+      });
+    this.downloads.set(file, entry);
+    return entry.raw;
+  }
+
+  // Downloads the newest inbox messages ahead of time, so opening one reads it from disk. The fetches run as
+  // background work, behind anything the user does on the connection, and mark nothing read (imapflow fetches with
+  // PEEK). Bodies of messages that left the synced folders go first, so the cache stays as large as the lists.
+  async prefetch(accountId) {
+    if (this.closed || this.prefetching.has(accountId)) return;
+    this.prefetching.add(accountId);
+    try {
+      const acc = this.account(accountId);
+      const cache = this.caches.get(accountId);
+      this.pruneBodies(acc, cache);
+      const inbox = cache.folders.find((f) => f.role === 'inbox');
+      const box = inbox && cache.boxes[inbox.path];
+      if (!box) return;
+      const newest = [...box.messages].sort((a, b) => b.date - a.date).slice(0, PREFETCH.count);
+      for (const m of newest) {
+        if (this.closed || !this.accounts.includes(acc)) return;
+        const file = this.bodyFile(acc, box, inbox.path, m.uid);
+        if (m.size > PREFETCH.maxBytes || fs.existsSync(file)) continue;
+        await this.download(acc, box, inbox.path, m.uid, file, true);
+      }
+    } catch (_) {
+      // Offline, signed out or the message is gone: the next sync tries again, and opening a message still works.
+    } finally {
+      this.prefetching.delete(accountId);
+    }
+  }
+
+  // Removes downloaded bodies of messages that are in none of the account's synced folders any more.
+  pruneBodies(acc, cache) {
+    const dir = this.file('bodies', acc.id);
+    if (!fs.existsSync(dir)) return;
+    const keep = new Set();
+    for (const [folder, box] of Object.entries(cache.boxes)) {
+      for (const m of box.messages) keep.add(path.basename(this.bodyFile(acc, box, folder, m.uid)));
+    }
+    for (const name of fs.readdirSync(dir)) {
+      if (name.endsWith('.eml') && !keep.has(name)) fs.rmSync(path.join(dir, name), { force: true });
+    }
   }
 
   async getMessage(id) {
@@ -1206,11 +1292,13 @@ class Engine extends EventEmitter {
     for (const a of [...mail.to, ...mail.cc, ...mail.bcc]) {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));
     }
-    const session = this.session(acc);
-    const raw = await session.send(mail);
-    const sent = this.folderByRole(acc.id, 'sent');
-    if (sent && !session.savesSentCopy()) {
-      await session.append(sent.path, raw, ['\\Seen']).catch(() => {});
+    const raw = await this.session(acc).send(mail);
+    // Sending takes a while. New account settings meanwhile close the session it started on, so the Sent copy goes
+    // through the session the account has now; an account removed meanwhile keeps no copy.
+    if (this.accounts.includes(acc)) {
+      const session = this.session(acc);
+      const sent = this.folderByRole(acc.id, 'sent');
+      if (sent && !session.savesSentCopy()) await session.append(sent.path, raw, ['\\Seen']).catch(() => {});
     }
     if (payload.draftId) await this.discardDraft(payload.draftId).catch(() => {});
     if (payload.replyToId) {
@@ -1254,6 +1342,7 @@ class Engine extends EventEmitter {
   }
 
   async close() {
+    this.closed = true;
     this.flush();
     await Promise.all([...this.sessions.values()].map((s) => s.close().catch(() => {})));
     this.sessions.clear();
