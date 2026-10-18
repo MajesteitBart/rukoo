@@ -26,8 +26,10 @@ function nextZoom(level, action) {
 // them, the numpad keys, and the 0 key on layouts where it types another character, such as AZERTY.
 // AltGr arrives as Ctrl+Alt and types characters, so it never zooms. Numpad 0 with Num Lock off is Insert,
 // and Ctrl+Insert copies.
-function zoomKey(input) {
-  if (!input || input.type !== 'keyDown' || !input.control || input.alt || input.meta) return null;
+function zoomKey(input, platform = process.platform) {
+  if (!input || input.type !== 'keyDown' || input.alt) return null;
+  const modifier = platform === 'darwin' ? input.meta && !input.control : input.control && !input.meta;
+  if (!modifier) return null;
   const { key, code } = input;
   if (key === '+' || code === 'NumpadAdd' || (key === '=' && code === 'Equal')) return 'in';
   if (key === '-' || code === 'NumpadSubtract' || (key === '_' && code === 'Minus')) return 'out';

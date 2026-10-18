@@ -58,3 +58,11 @@ test('keyring errors follow the current language', () => {
     setLanguage('en');
   }
 });
+
+test('macOS uses Keychain encryption and never writes a new credential without it', () => {
+  const secure = createSecrets(storage(undefined), 'darwin');
+  assert.equal(secure.decrypt(secure.encrypt('password')), 'password');
+  const locked = createSecrets(storage(undefined, false), 'darwin');
+  assert.throws(() => locked.encrypt('password'), /Keychain/);
+  assert.equal(locked.decrypt('plain:cGFzc3dvcmQ='), 'password');
+});

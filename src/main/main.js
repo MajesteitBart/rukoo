@@ -30,6 +30,7 @@ const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
+const { windowChrome, MailtoQueue, MacMailClient, macMenu } = require('./desktop');
 // ---- agents ----
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
@@ -121,10 +122,9 @@ function themeColors() {
 
 function applyTheme() {
   nativeTheme.themeSource = engine.settings.theme === 'light' ? 'light' : engine.settings.theme === 'dark' ? 'dark' : 'system';
-  if (!['win32', 'linux'].includes(process.platform)) return;
   const { bar, background } = themeColors();
   for (const w of windows()) {
-    w.setTitleBarOverlay(bar);
+    if (process.platform !== 'darwin') w.setTitleBarOverlay(bar);
     w.setBackgroundColor(background);
   }
 }
@@ -148,6 +148,7 @@ function badgeCount() {
 }
 
 function refreshBadge() {
+  if (process.platform === 'darwin') app.dock?.setBadge(badgeCount() ? String(badgeCount()) : '');
   send('badge', badgeCount());
   refreshTray();
 }
@@ -289,7 +290,7 @@ function setZoom(level) {
   if (level === engine.settings.zoomLevel) return level;
   const { zoomLevel } = engine.updateSettings({ zoomLevel: level }, { quiet: true });
   for (const w of windows()) w.webContents.setZoomFactor(zoomLevel / 100);
-  send('zoom', zoomLevel);
+  broadcast('zoom', zoomLevel);
   return zoomLevel;
 }
 
@@ -337,11 +338,11 @@ function answered(id, closed) {
     quitting = false;
     // The main window closed before the quit was called off. Rukoo stays in the tray with a hidden main window, as
     // after any close: the agents' tools need it, and only a window hears that the Windows session ends.
-    if (!win && engine.settings.closeToTray) createWindow({ hidden: true });
+    if (!win && (process.platform === 'darwin' || engine.settings.closeToTray)) createWindow({ hidden: true });
     return;
   }
   // Without windows left, window-all-closed has quit already; a second quit would cut will-quit's wait short.
-  if (!quitAsks.size) setImmediate(() => windows().length && app.quit());
+  if (!quitAsks.size) setImmediate(() => (process.platform === 'darwin' || windows().length) && app.quit());
 }
 
 // Windows is signing out or shutting down. No before-quit or will-quit follows, and Windows ends Rukoo soon after,
@@ -425,8 +426,7 @@ function openComposeWindow(input) {
     title: t('composer.titles.new'),
     icon: fs.existsSync(ICON) ? ICON : undefined,
     backgroundColor: background,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: bar,
+    ...windowChrome(process.platform, bar),
     webPreferences: WEB_PREFERENCES
   });
   const id = w.webContents.id;
@@ -672,6 +672,7 @@ const api = {
   openExternal: (url) => openUrl(url),
   // Which app opens mailto: links now, for Settings. available: false where Rukoo can't offer itself.
   mailtoStatus: async () => {
+    if (process.platform === 'darwin') return new MacMailClient(app, Boolean(process.env.SEM_DATA_DIR)).status();
     if (process.platform === 'linux') {
       const client = new LinuxMailClient();
       const status = await client.status();
@@ -693,6 +694,12 @@ const api = {
   },
   // Offers Rukoo for mailto: links and opens the Windows page where the user picks it.
   useForMailto: async () => {
+    if (process.platform === 'darwin') {
+      const client = new MacMailClient(app, Boolean(process.env.SEM_DATA_DIR));
+      if (!client.available) throw new Error(t('settings.general.mailtoMacUnavailable'));
+      if (!client.register()) throw new Error(t('settings.general.mailtoMacFailed'));
+      return true;
+    }
     if (process.platform === 'linux') {
       if (!app.isPackaged || process.env.SEM_DATA_DIR) throw new Error(t('settings.general.mailtoLinuxUnavailable'));
       if (!await new LinuxMailClient().register()) throw new Error(t('settings.general.mailtoLinuxFailed'));
@@ -882,6 +889,9 @@ Object.assign(api, {
 
 // Calls that act on the window that makes them.
 const windowApi = {
+  nativeEdit: (sender, action) => {
+    if (['undo', 'redo', 'selectAll'].includes(action)) sender[action]();
+  },
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
     return c ? c.opts : null;
@@ -914,6 +924,17 @@ ipcMain.handle('mail:call', async (event, method, args) => {
   }
 });
 
+let menuLanguage = null;
+function updateApplicationMenu() {
+  if (process.platform !== 'darwin') { Menu.setApplicationMenu(null); return; }
+  if (menuLanguage === engine.settings.language) return;
+  menuLanguage = engine.settings.language;
+  Menu.setApplicationMenu(Menu.buildFromTemplate(macMenu(t, (action) => {
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused) focused.webContents.send('mail:event', { type: 'menu-edit', payload: { action } });
+  })));
+}
+
 function createWindow({ hidden = false } = {}) {
   const b = windowState.bounds('main', { width: 1440, height: 920, minWidth: 760, minHeight: 560 });
   const { bar, background } = themeColors();
@@ -927,11 +948,10 @@ function createWindow({ hidden = false } = {}) {
     title: 'Rukoo Mail',
     icon: fs.existsSync(ICON) ? ICON : undefined,
     backgroundColor: background,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: bar,
+    ...windowChrome(process.platform, bar),
     webPreferences: WEB_PREFERENCES
   });
-  Menu.setApplicationMenu(null);
+  updateApplicationMenu();
   harden(win);
   watchZoom(win);
   watchQuit(win);
@@ -947,7 +967,7 @@ function createWindow({ hidden = false } = {}) {
       event.preventDefault();
       return;
     }
-    if ((quitting && !quitAsks.size) || !engine.settings.closeToTray) return;
+    if ((quitting && !quitAsks.size) || (process.platform !== 'darwin' && !engine.settings.closeToTray)) return;
     event.preventDefault();
     win.hide();
   });
@@ -969,16 +989,21 @@ function createWindow({ hidden = false } = {}) {
 }
 
 // A mailto: link Rukoo was started with, opened once the main window is up.
-let startLink = mailto.fromArgs(process.argv);
+const mailtoQueue = new MailtoQueue(openMailto);
+mailtoQueue.accept(mailto.fromArgs(process.argv));
+app.on('open-url', (event, url) => {
+  if (mailtoQueue.accept(url)) event.preventDefault();
+});
+app.on('activate', () => {
+  if (engine && windowState) showWindow();
+});
 
 // Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
 // the main window stays where it was, in the tray too.
 app.on('second-instance', (e, argv) => {
   const link = mailto.fromArgs(argv);
-  if (!link) showWindow();
-  // Once Rukoo is ready, also with only a compose window left open after the main window closed.
-  else if (engine) openMailto(link);
-  else startLink = link;
+  if (link) mailtoQueue.accept(link);
+  else if (engine && windowState) showWindow();
 });
 
 app.whenReady().then(() => {
@@ -993,6 +1018,7 @@ app.whenReady().then(() => {
   // Test mode only: lets end-to-end tests simulate server conditions.
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   engine.on('updated', () => {
+    updateApplicationMenu();
     send('updated');
     if (engine.settings.badge === 'unread') refreshBadge();
     else refreshTray();
@@ -1033,7 +1059,7 @@ app.whenReady().then(() => {
   applyTheme();
   createWindow();
   // After the main window shows, so the compose window comes up in front of it.
-  if (startLink) win.once('ready-to-show', () => openMailto(startLink));
+  win.once('ready-to-show', () => mailtoQueue.start());
   refreshMailClient().catch(() => {});
   updateTray();
   scheduleSync();
@@ -1044,7 +1070,7 @@ app.whenReady().then(() => {
 // With "Close to the tray" the main window only closes in a quit. If a compose window then cancels that quit,
 // Rukoo stays in the tray after the compose window closes, and the tray opens a new main window.
 app.on('window-all-closed', () => {
-  if (quitting || !engine || !engine.settings.closeToTray) app.quit();
+  if (process.platform !== 'darwin' && (quitting || !engine || !engine.settings.closeToTray)) app.quit();
 });
 
 // Quit in the tray menu, the last window closing, and the e2e teardown all come through here.

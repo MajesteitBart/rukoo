@@ -2853,7 +2853,7 @@
     "description": "reader > unsubscribe. src/renderer/app.js (renderReader)"
   },
   "settings.about.description": {
-    "message": "An email client for Windows and Linux, built with Electron. Data is stored in:",
+    "message": "An email client for Windows, macOS and Linux, built with Electron. Data is stored in:",
     "description": "settings > about. src/renderer/settings.js (openSettings)"
   },
   "settings.about.help": {
@@ -3825,6 +3825,38 @@
   "errors.credentials.linuxKeyring": {
     "message": "Rukoo cannot securely save credentials. Install and unlock GNOME Keyring or KWallet, then restart Rukoo and try again.",
     "description": "src/main/secrets.js: account or agent credential save error when Linux has no secure system keyring. No parameters."
+  },
+  "settings.general.mailtoMacHelp": {
+    "message": "Open mailto: links from your browser and other apps in Rukoo Mail. macOS may ask you to confirm the change.",
+    "description": "macOS email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "settings.general.mailtoMacUnavailable": {
+    "message": "Move Rukoo Mail to Applications and open it there to use it for email links.",
+    "description": "macOS email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "settings.general.mailtoMacFailed": {
+    "message": "Could not set the default email app. Open Apple Mail, choose Mail > Settings > General, then select Rukoo Mail as the default email reader.",
+    "description": "macOS email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "errors.credentials.macKeychain": {
+    "message": "Rukoo cannot securely save credentials. Unlock your login keychain in Keychain Access, then restart Rukoo and try again.",
+    "description": "macOS credential storage error. src/main/secrets.js."
+  },
+  "native.menu.edit": {
+    "message": "Edit",
+    "description": "macOS native Edit menu command. src/main/main.js."
+  },
+  "native.menu.undo": {
+    "message": "Undo",
+    "description": "macOS native Edit menu command. src/main/main.js."
+  },
+  "native.menu.redo": {
+    "message": "Redo",
+    "description": "macOS native Edit menu command. src/main/main.js."
+  },
+  "native.menu.selectAll": {
+    "message": "Select all",
+    "description": "macOS native Edit menu command. src/main/main.js."
   },
   "setup.title": {
     "message": "Set up email",

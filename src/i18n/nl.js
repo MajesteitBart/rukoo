@@ -761,7 +761,7 @@
   "reader.unsubscribe.subject": "Afmelden",
   "reader.unsubscribe.title": "Uitschrijven bij {sender}?",
   "reader.unsubscribe.tooltip": "Afmelden voor deze e-mails",
-  "settings.about.description": "Een e-mailprogramma voor Windows en Linux, gebouwd met Electron. Gegevens staan in:",
+  "settings.about.description": "Een e-mailprogramma voor Windows, macOS en Linux, gebouwd met Electron. Gegevens staan in:",
   "settings.about.help": "Versie en opslaglocatie",
   "settings.about.title": "Over Rukoo Mail",
   "settings.about.version": "Versie {version}",
@@ -1009,6 +1009,14 @@
   "setup.signIn.pending": "Aanmelden...",
   "setup.signIn.title": "Aanmelden bij {provider}",
   "errors.credentials.linuxKeyring": "Rukoo kan aanmeldgegevens niet veilig opslaan. Installeer en ontgrendel GNOME Keyring of KWallet, start Rukoo opnieuw en probeer het nogmaals.",
+  "settings.general.mailtoMacHelp": "Open mailto:-links uit je browser en andere apps in Rukoo Mail. macOS kan je vragen de wijziging te bevestigen.",
+  "settings.general.mailtoMacUnavailable": "Verplaats Rukoo Mail naar Programma’s en open de app daar om e-maillinks ermee te openen.",
+  "settings.general.mailtoMacFailed": "Kan de standaard-e-mailapp niet instellen. Open Apple Mail, kies Mail > Instellingen > Algemeen en selecteer Rukoo Mail als standaard-e-mailprogramma.",
+  "errors.credentials.macKeychain": "Rukoo kan aanmeldgegevens niet veilig opslaan. Ontgrendel je inlogsleutelhanger in Sleutelhangertoegang, start Rukoo opnieuw en probeer het nogmaals.",
+  "native.menu.edit": "Bewerken",
+  "native.menu.undo": "Maak ongedaan",
+  "native.menu.redo": "Opnieuw",
+  "native.menu.selectAll": "Selecteer alles",
   "setup.title": "E-mail instellen"
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

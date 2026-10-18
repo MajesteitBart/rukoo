@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('mail', {
+  platform: process.platform,
   async call(method, ...args) {
     const res = await ipcRenderer.invoke('mail:call', method, args);
     if (!res.ok) throw new Error(res.error);

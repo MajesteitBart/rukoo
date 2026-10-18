@@ -262,11 +262,16 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     page.querySelector('[data-a="zoom-reset"]').disabled = level === 100;
   };
 
-  // Which app opens mailto: links: { available, app, rukoo } from main, or null until Windows has answered.
+  // Which app opens mailto: links: { available, app, rukoo } from main, or null until the desktop has answered.
   let mailtoState = null;
+  const mailtoKey = (kind) => {
+    const platform = mailtoState?.platform || (mailtoState?.linux ? 'linux' : window.mail.platform);
+    const prefix = platform === 'darwin' ? 'mailtoMac' : platform === 'linux' ? 'mailtoLinux' : 'mailto';
+    return `settings.general.${prefix}${kind}`;
+  };
   const mailtoValue = () => {
     if (!mailtoState) return '';
-    if (!mailtoState.available) return t(mailtoState.linux ? 'settings.general.mailtoLinuxUnavailable' : 'settings.general.mailtoUnavailable');
+    if (!mailtoState.available) return t(mailtoKey('Unavailable'));
     if (mailtoState.rukoo) return t('settings.general.mailtoRukoo');
     return mailtoState.app ? t('settings.general.mailtoHandler', { app: mailtoState.app }) : t('settings.general.mailtoNone');
   };
@@ -275,7 +280,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const mailtoRow = () => `
     <div class="row static" data-mailto>
       <div class="text"><div class="title">${esc(t('settings.general.mailto'))}</div>
-        <div class="desc" data-mailto-help>${esc(t(mailtoState?.linux ? 'settings.general.mailtoLinuxHelp' : 'settings.general.mailtoHelp'))}</div>
+        <div class="desc" data-mailto-help>${esc(t(mailtoKey('Help')))}</div>
         <div class="value" data-mailto-value>${esc(mailtoValue())}</div></div>
       <button class="btn sm secondary" data-a="mailto-use" ${mailtoDisabled() ? 'disabled' : ''}>${esc(t('settings.general.mailtoUse'))}</button>
     </div>`;
@@ -286,10 +291,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const value = page.querySelector('[data-mailto-value]');
     if (!value) return;
     value.textContent = mailtoValue();
-    page.querySelector('[data-mailto-help]').textContent = t(mailtoState.linux ? 'settings.general.mailtoLinuxHelp' : 'settings.general.mailtoHelp');
+    page.querySelector('[data-mailto-help]').textContent = t(mailtoKey('Help'));
     page.querySelector('[data-a="mailto-use"]').disabled = mailtoDisabled();
   };
-  // The choice is made in Windows Settings; coming back to Rukoo shows the outcome.
+  // Coming back from desktop settings shows the current default handler.
   window.addEventListener('focus', showMailto);
 
   // ----- agents -----

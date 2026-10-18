@@ -2,7 +2,7 @@
 
 # Rukoo Mail
 
-Rukoo Mail is an email client for Windows and Linux, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. A switch at the top of the sidebar replaces the list and the reader with a calendar, which shows the calendars of your Google accounts and of IMAP accounts with a CalDAV server together. The interface uses Inter and supports English (the default) and Dutch. Choose a language during setup or in Settings → General → Language; the preference applies to every window and is saved.
+Rukoo Mail is an email client for Windows, macOS and Linux, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. A switch at the top of the sidebar replaces the list and the reader with a calendar, which shows the calendars of your Google accounts and of IMAP accounts with a CalDAV server together. The interface uses Inter and supports English (the default) and Dutch. Choose a language during setup or in Settings → General → Language; the preference applies to every window and is saved.
 
 A chat panel next to the email lets you hand it to an agent: a Hermes Agent such as Clark, Claude Code or Codex. The agent drafts the reply in the composer, plans follow-ups, looks things up in its own tools and asks you before it acts. See [Agents](docs/agents.md).
 
@@ -120,7 +120,7 @@ Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally
 
 Sender logos are the icons companies publish on their own websites. The app fetches one per sender domain, caches it in `%APPDATA%\Rukoo Mail\logos` and tries a missing one again after a week. That request tells the company's web server that someone opened mail from it, much like loading images in the mail itself. Mail from free-mail providers such as Gmail or Ziggo never triggers a request. You can switch logos off in the settings.
 
-Passwords and Google refresh tokens use Electron's `safeStorage`: Windows DPAPI on Windows, and GNOME Keyring or KWallet on Linux. Linux refuses to save new credentials when a supported, unlocked keyring is unavailable; demo mail still works. Account data and the message cache live in `%APPDATA%\Rukoo Mail\data`. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; the app moves that folder on first launch.
+Passwords and Google refresh tokens use Electron's `safeStorage`: Windows DPAPI on Windows, Keychain on macOS, and GNOME Keyring or KWallet on Linux. macOS and Linux refuse to save new credentials when secure system storage is unavailable; demo mail still works. Account data and the message cache live in `%APPDATA%\Rukoo Mail\data`. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; the app moves that folder on first launch.
 
 ## Run it
 
@@ -133,15 +133,35 @@ npm start
 
 `npm start` goes through `scripts/start.js`, which clears `ELECTRON_RUN_AS_NODE`. Terminals that run on Electron (VS Code, T3 Code) export that variable, and it makes `electron.exe` behave like plain Node.
 
-Build packages for the current platform in `dist/` (Windows installer and portable executable, or Linux x64 AppImage and `.deb`):
+Build packages for the current platform in `dist/` (Windows installer and portable executable, macOS DMG and ZIP, or Linux x64 AppImage and `.deb`):
 
 ```bash
 npm run dist
 ```
 
+## macOS
+
+macOS 13 or newer is required by the bundled Electron version. Choose `arm64` for Apple Silicon or `x64` for Intel. Open the DMG, drag Rukoo Mail to Applications and launch it there; ZIP builds contain the same app bundle. To build both architectures on a Mac:
+
+```bash
+npm run dist:mac
+```
+
+The red close button hides the main window while mail keeps syncing. Click Rukoo in the Dock to return to the same reader or draft. **Rukoo Mail → Quit Rukoo Mail** or **⌘Q** quits, asking about unsaved drafts. A separate compose window still asks about its unsaved draft when closed. Tray behavior is off by default; unread counts can appear on the Dock icon.
+
+Use Command instead of Ctrl for mail, compose, calendar and zoom shortcuts. The native Edit menu supports copy, paste, undo and selection, and shortcuts shown in the interface use ⌘. Zoom and traffic-light spacing apply to both main and compose windows.
+
+Choose **Settings → General → Email links → Use Rukoo Mail** after installing the app. macOS may request confirmation. If needed, choose Rukoo Mail as the default email reader in **Apple Mail → Settings → General**. Links delivered while Rukoo starts wait until its windows are ready.
+
+The profile is `~/Library/Application Support/Rukoo Mail`; `data`, `logos`, `skills` and `google-oauth.json` live under that directory. `SEM_DATA_DIR` selects an isolated test profile. Credentials use Keychain; unlock the login keychain if Rukoo cannot save them. Finder-launched agents also search `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`.
+
+CI creates ad-hoc signed development packages. These are **not Developer ID signed or notarized**, and Gatekeeper may block downloaded builds. Signed public releases require the maintainer's Apple credentials; this repository does not contain them. The release workflow's `sign_macos` option enables Developer ID signing and notarization, requires all configured credentials, and verifies the resulting signature and stapled ticket. Without that option, the workflow explicitly identifies the Mac builds as ad-hoc signed only. Do not describe those as notarized releases.
+
+For signed releases, configure repository secrets `MAC_CSC_LINK` (the Developer ID Application certificate as a base64 P12), `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`, then select `sign_macos` when starting the release workflow. Native CI runs Mac-specific Electron workflows on both Intel and Apple Silicon, repeats them against the built app, and uploads screenshots as artifacts. Live provider sign-in, notification delivery, and Developer ID/Keychain continuity across upgrades need verification with a signed release on a user's Mac.
+
 ## Linux
 
-Linux builds target x64 desktops. The `.deb` is intended for Ubuntu/Debian systems; the AppImage is a portable option for other distributions. macOS packages are not supported yet.
+Linux builds target x64 desktops. The `.deb` is intended for Ubuntu/Debian systems; the AppImage is a portable option for other distributions.
 
 ```bash
 # Build either explicitly on Linux:
@@ -167,7 +187,7 @@ For headless Electron tests, provide an X display and a window manager so minimi
 
 ## Releases
 
-Download available Windows x64 and Linux x64 packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. These builds are currently unsigned.
+Download available Windows, macOS and Linux packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. These builds are currently unsigned.
 
 Versions follow [Semantic Versioning](https://semver.org): a patch release fixes things, a minor release adds features, and a major release breaks compatibility of behavior, integrations or stored data. Previews use `-alpha.N`, `-beta.N` or `-rc.N` and publish as prereleases. A release is worth making when a new download gives users something: a feature, a visible fix, a security fix or a dependency change that affects the app. Documentation, tests and tooling wait for the next one.
 
@@ -176,8 +196,8 @@ Releases are started manually after a version tag exists. Pushing a branch or ta
 1. Run `npm version <version> --no-git-tag-version`, commit the package and lockfile changes, and merge the reviewed PR into `main`. Before merging, run `npm test`, `npm run test:e2e` and `npm run dist`, and start the built app with a demo profile.
 2. Write the release as a draft on GitHub. Title it `v<version> - Added …` when it adds features, or `v<version> - Fixed …` when it only fixes things, for example `v1.1.0 - Added CalDAV calendars and Microsoft sign-in`. The notes tell users what changed, with known limitations and migration steps. `gh release create v1.1.0 --draft --title "…" --notes-file notes.md` writes the draft without creating the tag.
 3. On the tested `main` commit, create and push an annotated tag, for example `git tag -a v1.1.0 -m "Rukoo Mail 1.1.0"` followed by `git push origin v1.1.0`.
-4. Open **Actions → Release Windows and Linux packages → Run workflow**, select `main`, and enter `v1.1.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.1.0`.
-5. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds Windows and Linux packages and verifies their checksums. It then uploads all four packages to the draft and publishes it.
+4. Open **Actions → Release desktop packages → Run workflow**, select `main`, and enter `v1.1.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.1.0`.
+5. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds Windows, macOS and Linux packages and verifies their checksums. It then uploads all eight packages to the draft and publishes it.
 
 Tags such as `v1.1.0-rc.1` publish as prereleases without becoming the latest stable release. A stable release for an older version line does become the latest, so clear that on GitHub afterwards. The workflow stops when the tag has no draft, when the draft's title doesn't start with the tag, or when the release is already published. Never move or reuse a published tag; ship a new version for corrections. If publication fails, fix the cause and choose **Re-run failed jobs**: the build is kept, and the upload replaces files from the earlier attempt. Release publication uses GitHub Actions' built-in token and needs no personal token or extra secrets.
 

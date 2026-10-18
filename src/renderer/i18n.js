@@ -1,4 +1,15 @@
-export const { languages, normalizeLanguage, getLanguage, getLocale, setLanguage, t } = globalThis.RukooI18n;
+export const { languages, normalizeLanguage, getLanguage, getLocale, setLanguage } = globalThis.RukooI18n;
+
+// Only application shortcut labels pass through this helper, never user content.
+export function shortcutLabel(label) {
+  return globalThis.mail?.platform === 'darwin' ? label.replace(/\bCtrl\b/g, '⌘') : label;
+}
+
+export function t(key, params) {
+  const label = globalThis.RukooI18n.t(key, params);
+  // Parameter values can contain user text. Current shortcut labels have no parameters.
+  return params && Object.keys(params).length ? label : shortcutLabel(label);
+}
 
 // Marks labels in persistent elements (especially open composers) with their catalog key.
 // Updating textContent and attributes keeps translations out of HTML parsing.
