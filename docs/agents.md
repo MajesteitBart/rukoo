@@ -80,6 +80,20 @@ A chat belongs to one email, so a new reply in that thread has no chat of its ow
 
 Continuing opens that chat. The chat stays about its own email. While the newer email is open, a second chip shows it, marked "Newer message". Your next message takes the newer email to the agent, inside `<unsafe_content>` like any email. If you continued the chat from several newer emails before you write, it takes up to three of them, the newest; an older one goes with the message after that. When you open the newer email again later, the panel shows that chat straight away. If you type without picking the offer, Rukoo starts a new chat about the newer email, as before.
 
+## Several chats at once
+
+A chat keeps working when you open another email. The bell in the panel's header lists your chats, the one with the newest message first. Each row names the chat's email, its agent and the time of that message, with what the chat is doing:
+
+- A spinner and "Working…" while the agent answers.
+- An orange dot and "Waiting for you" when it waits for your approval.
+- A blue dot and "Reply ready" when it answered while you were looking at another chat, or had the panel closed.
+- A red dot and "Stopped with an error" when it stopped on an error you haven't seen.
+- Otherwise, the start of the last message.
+
+The bell shows how many chats have a reply ready or wait for you. It turns orange while one waits for you, and blue otherwise. With the panel closed, a dot on its button in the title bar says the same. The list updates while it is open.
+
+Pick a chat to open it together with its email. For a chat you continued from a newer email, that's the newest one. If the email has moved since, Rukoo finds it again by its Message-ID. Opening a chat marks its reply as read. A chat you stopped yourself doesn't count as news. Rukoo keeps which replies you haven't read in `conversations.json`, so they're still marked after a restart.
+
 ## How each agent connects
 
 | Agent | Connection | Needs |

@@ -557,6 +557,31 @@ body.no-accounts .titlebar-actions,
 body:has(.page) .titlebar-actions {
   display: none;
 }
+/* With the chat panel closed, a dot on its button: an answer you have not seen (blue), or an agent waiting for your
+ * approval (orange). Open, the bell in the panel's header counts them. */
+.titlebar-actions [data-agent-toggle] {
+  position: relative;
+}
+.titlebar-actions [data-agent-toggle].has-news:not(.on)::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+  animation: pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.titlebar-actions [data-agent-toggle][data-news='waiting']::after {
+  background: var(--warn);
+}
+@media (prefers-reduced-motion: reduce) {
+  .titlebar-actions [data-agent-toggle].has-news::after {
+    animation: none;
+  }
+}
 
 /* The logo comes in a light and a dark colourway; show the one that matches the theme. */
 :root.light .brand-dark,
@@ -3222,6 +3247,33 @@ body.compose-window {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The bell opens the list of chats. With news it widens into a tinted pill with the count: blue for answers you have
+ * not seen, orange when an agent waits for your approval. */
+.agentpane .ap-bell.has-news {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 0 6px;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+.agentpane .ap-bell.has-news:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.agentpane .ap-bell.has-news[data-tone='waiting'] {
+  background: var(--orange-tint);
+  color: var(--orange);
+}
+.agentpane .ap-bell.has-news[data-tone='waiting']:hover {
+  background: color-mix(in srgb, var(--orange) 24%, transparent);
+}
+.agentpane .ap-count {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 .agentpane .ap-dot,
 .agent-dot {

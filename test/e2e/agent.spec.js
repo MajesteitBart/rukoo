@@ -875,6 +875,95 @@ test('conversations come back after a reload', async () => {
   await expect(win.locator('.bui-menu .bui-menu__row')).toContainText(['Call on Thursday']);
 });
 
+test('the bell counts chats with news from off screen; its list follows them live and opens a chat with its email', async () => {
+  const bell = () => win.locator('.agentpane [data-ap="history"]');
+  const toggle = () => win.locator('.titlebar [data-agent-toggle]');
+  const chatRow = (title) => win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: new RegExp(`^${title}$`) }) });
+  await openChat('Call on Thursday');
+  await expect(bell()).toHaveAttribute('aria-label', 'Recent chats');
+  await say('Add the proposal task; ask for approval first');
+  await expect(transcript().locator('.bui-approval')).toContainText('Waiting for you');
+  const cid = await conversationId();
+  // On another email the chat waits in the background, and the bell says an agent waits for you.
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(bell()).toHaveClass(/has-news/);
+  await expect(bell()).toHaveAttribute('data-tone', 'waiting');
+  await expect(bell()).toHaveAttribute('aria-label', 'Recent chats, 1 new');
+  await expect(bell().locator('.ap-count')).toHaveText('1');
+  await bell().click();
+  const row = chatRow('Call on Thursday');
+  await expect(row.locator('.bui-menu__sub')).toHaveText('Hermes · Waiting for you');
+  await expect(row.locator('.bui-dot--busy')).toBeVisible();
+  // Approved elsewhere, the agent finishes while the list is open: the row and the bell follow without reopening.
+  await app.evaluate((_e, cid) => {
+    const hub = global.__semAgents;
+    hub.decide(cid, hub.get(cid).items.find((i) => i.type === 'approval').id, 'allow');
+  }, cid);
+  await expect(row.locator('.bui-menu__sub')).toHaveText('Hermes · Reply ready');
+  await expect(row.locator('.bui-dot--unread')).toBeVisible();
+  await expect(bell()).toHaveAttribute('data-tone', 'unread');
+
+  // The email has moved to the archive since. Picking the chat opens it, and its email from where it is now.
+  const was = await app.evaluate((_e, cid) => global.__semAgents.get(cid).message.id, cid);
+  await app.evaluate((_e, id) => global.__semEngine.archive(id), was);
+  await expect(win.locator(`.item[data-id="${was}"]`)).toHaveCount(0);
+  await row.click();
+  await expect(transcript()).toContainText('Added "Send proposal" to Todoist, due Friday.');
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(bell()).not.toHaveClass(/has-news/);
+  await expect(bell()).toHaveAttribute('aria-label', 'Recent chats');
+  await bell().click();
+  await expect(row.locator('.bui-menu__sub')).toHaveText('Hermes · Added "Send proposal" to Todoist, due Friday.');
+  await expect(row).toHaveClass(/is-checked/);
+  await win.keyboard.press('Escape');
+
+  // An answer that comes while the panel is closed puts a dot on its title bar button; opening the panel shows that
+  // chat, which reads it.
+  await win.click('.agentpane [data-ap="close"]');
+  await expect(pane()).toBeHidden();
+  await expect(toggle()).not.toHaveClass(/has-news/);
+  await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'And now?' }), cid);
+  await expect(toggle()).toHaveClass(/has-news/, { timeout: 10000 });
+  await expect(toggle()).toHaveAttribute('data-news', 'unread');
+  await toggle().click();
+  await expect(transcript()).toContainText('You asked: "And now?"');
+  await expect(toggle()).not.toHaveClass(/has-news/);
+  await expect(bell()).not.toHaveClass(/has-news/);
+  // The answer was read, also as far as main is concerned.
+  expect(await app.evaluate((_e, cid) => global.__semAgents.get(cid).unread, cid)).toBe(false);
+});
+
+test('the open chat list goes by the last message: a chat moves up as soon as its agent writes, before its turn ends', async () => {
+  const labels = () => win.locator('.bui-menu .bui-menu__row .bui-menu__label');
+  const sub = (title) => win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: new RegExp(`^${title}$`) }) }).locator('.bui-menu__sub');
+  // A waits for an approval; B, about another email, answers after that.
+  await openChat('Call on Thursday');
+  await say('Add the proposal task; ask for approval first');
+  await expect(transcript().locator('.bui-approval')).toContainText('Waiting for you');
+  const a = await conversationId();
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  // The panel has left A's chat for a new one about this email.
+  await expect(win.locator('.agentpane .ap-empty')).toBeVisible();
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked: "Hello there"', { timeout: 10000 });
+  // B's turn has ended and the list has had the refresh that brought, so nothing else is on its way. (A's turn stays
+  // open while it waits for the approval.)
+  const b = await conversationId();
+  await expect.poll(() => app.evaluate((_e, cid) => global.__semAgents.turns.has(cid), b)).toBe(false);
+  await win.waitForTimeout(400);
+  await win.click('.agentpane [data-ap="history"]');
+  await expect(labels()).toHaveText(['Your parcel is on its way', 'Call on Thursday']);
+  // A's agent says something while its turn still runs: only that message's item event reaches the panel, and A moves up.
+  await app.evaluate((_e, cid) => {
+    const hub = global.__semAgents;
+    hub.addItem(hub.get(cid), { type: 'assistant', text: 'One moment, I am checking Todoist first.', status: 'done', interim: true });
+  }, a);
+  await expect(labels()).toHaveText(['Call on Thursday', 'Your parcel is on its way']);
+  await expect(sub('Call on Thursday')).toHaveText('Hermes · Waiting for you');
+});
+
 test('after a restart, an agent that lost its session says so and gets the email and a recap', async () => {
   await openChat('Call on Thursday');
   await chip('Summarize').click();
@@ -977,7 +1066,8 @@ test('each chat has its own model and effort: the next turn uses them, and they 
   await expect(modelButton()).toHaveText('claude-opus-5-5');
   await expect(effortButton()).toHaveText('Max');
   await win.click('.agentpane [data-ap="history"]');
-  await row('Call on Thursday').filter({ hasText: 'Claude' }).click();
+  // By the agent that starts the row's second line: the Hermes chat's last answer names a claude model.
+  await row('Call on Thursday').filter({ has: win.locator('.bui-menu__sub', { hasText: /^Claude · / }) }).click();
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
   await expect(modelButton()).toHaveText('Opus');
   await expect(effortButton()).toHaveText('Low');

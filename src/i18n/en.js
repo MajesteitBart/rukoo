@@ -577,7 +577,23 @@
   },
   "agent.panel.history": {
     "message": "Recent chats",
-    "description": "Chat panel header: tooltip of the clock button that lists earlier conversations."
+    "description": "Chat panel header: tooltip of the bell button that lists the chats, newest message first, while none has news (renderNews in agent/panel.js)."
+  },
+  "agent.panel.historyNews": {
+    "message": "Recent chats, {count} new",
+    "description": "Chat panel header: tooltip and accessible name of the bell button while chats have news: an answer you have not seen, or an agent waiting for your approval. count: how many chats (renderNews in agent/panel.js)."
+  },
+  "agent.panel.chatWorking": {
+    "message": "Working…",
+    "description": "Chat panel, list of chats under the bell: second line of a chat whose agent is working on an answer, after the agent's name (chatItems in agent/panel.js)."
+  },
+  "agent.panel.chatReady": {
+    "message": "Reply ready",
+    "description": "Chat panel, list of chats under the bell: second line of a chat whose agent answered while you were looking at another chat or had the panel closed, after the agent's name. Next to a blue dot (chatItems in agent/panel.js)."
+  },
+  "agent.panel.chatFailed": {
+    "message": "Stopped with an error",
+    "description": "Chat panel, list of chats under the bell: second line of a chat whose agent hit an error while you were looking at another chat, after the agent's name. Next to a red dot (chatItems in agent/panel.js)."
   },
   "agent.panel.jump": {
     "message": "Go to the latest message",

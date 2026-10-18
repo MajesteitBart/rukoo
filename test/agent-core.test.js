@@ -260,6 +260,79 @@ test('stop ends a streaming answer as stopped; errors become a notice and status
   }
 });
 
+test('an answer or error in a chat that is not on screen stays unread until the panel shows it; a stop does not count', async () => {
+  const env = await demo();
+  const first = fakeHub(env);
+  const { hub, events } = first;
+  await hub.start();
+  const row = (id) => hub.list().find((x) => x.id === id);
+  let a;
+  let b;
+  try {
+    a = hub.create({ agent: 'claude', message: null });
+    b = hub.create({ agent: 'codex', message: null });
+    assert.deepEqual([a.unread, row(a.id).unread, row(a.id).waiting], [false, null, false]);
+    // The panel shows a: its answer is read as it comes. b answers meanwhile and waits in the list.
+    hub.watch(a.id);
+    hub.send(a.id, { text: 'hello a' });
+    hub.send(b.id, { text: 'hello b' });
+    await idle(hub, a.id);
+    await idle(hub, b.id);
+    assert.deepEqual([row(a.id).unread, row(b.id).unread], [null, 'reply']);
+    // The partial events that say so (create sends the whole conversation, which has the flag too).
+    const marks = () => events.filter((e) => e.kind === 'conversation' && e.conversation.id === b.id && !e.conversation.items && 'unread' in e.conversation).map((e) => e.conversation.unread);
+    assert.deepEqual(marks(), ['reply']);
+    // Opening b reads it, without moving it up the list.
+    const at = b.updatedAt;
+    hub.watch(b.id);
+    assert.deepEqual([b.unread, b.updatedAt, marks()], [false, at, ['reply', false]]);
+
+    // The panel closes: nothing is on screen, and an error counts as news too.
+    hub.watch(null);
+    hub.send(a.id, { text: 'cause an error please' });
+    await idle(hub, a.id);
+    assert.deepEqual([a.status, a.unread, row(a.id).unread], ['error', 'error', 'error']);
+    // Stop is the user's own doing.
+    hub.send(b.id, { text: 'Tell me something long' });
+    await until(() => b.items.some((i) => i.type === 'assistant' && i.status === 'streaming'));
+    hub.stop(b.id);
+    await idle(hub, b.id);
+    assert.equal(b.unread, false);
+    // An approval that waits for the user shows in the list until it is answered or expires.
+    hub.send(b.id, { text: 'Please do the approval thing' });
+    await until(() => b.items.some((i) => i.type === 'approval' && i.status === 'pending'));
+    assert.equal(row(b.id).waiting, true);
+    hub.stop(b.id);
+    await idle(hub, b.id);
+    assert.deepEqual([row(b.id).waiting, b.unread], [false, false]);
+    hub.watch('no-such-chat');
+    assert.equal(hub.watching, null);
+
+    // The list goes by the last message: b had the newest. Picking a's model touches a, but adds no message.
+    assert.deepEqual(hub.list().slice(0, 2).map((x) => x.id), [b.id, a.id]);
+    hub.setChoice(a.id, { model: 'opus' });
+    assert.ok(a.updatedAt >= b.updatedAt);
+    assert.deepEqual(hub.list().slice(0, 2).map((x) => x.id), [b.id, a.id]);
+    assert.equal(row(b.id).lastAt, b.items.filter((i) => ['user', 'assistant', 'approval'].includes(i.type)).at(-1).at);
+    // A chat without messages counts from when it was made.
+    const fresh = hub.create({ agent: 'claude', message: null });
+    assert.deepEqual([hub.list()[0].id, hub.list()[0].lastAt], [fresh.id, fresh.createdAt]);
+  } finally {
+    await hub.dispose();
+  }
+  // Unread survives a restart, and an error stays an error although loading sets every status back to idle.
+  const second = fakeHub(env);
+  await second.hub.start();
+  try {
+    assert.deepEqual([second.hub.get(a.id).unread, second.hub.get(b.id).unread], ['error', false]);
+    const back = second.hub.list().find((x) => x.id === a.id);
+    assert.deepEqual([back.status, back.unread], ['idle', 'error']);
+  } finally {
+    await second.hub.dispose();
+    await env.engine.close();
+  }
+});
+
 test('proposal approve starts a follow-up turn; decline leaves a note and a system line', async () => {
   const env = await demo();
   const { hub } = fakeHub(env);
