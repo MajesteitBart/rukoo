@@ -2,13 +2,25 @@
 
 # Rukoo Mail
 
-Rukoo Mail is an email client for Windows, macOS and Linux, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. A switch at the top of the sidebar replaces the list and the reader with a calendar, which shows the calendars of your Google accounts and of IMAP accounts with a CalDAV server together. The interface uses Inter and supports English (the default) and Dutch. Choose a language during setup or in Settings → General → Language; the preference applies to every window and is saved.
+Rukoo Mail is an email client for Windows and Linux, with experimental macOS support, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. A switch at the top of the sidebar replaces the list and the reader with a calendar, which shows the calendars of your Google accounts and of IMAP accounts with a CalDAV server together. The interface uses Inter and supports English (the default) and Dutch. Choose a language during setup or in Settings → General → Language; the preference applies to every window and is saved.
 
 A chat panel next to the email lets you hand it to an agent: a Hermes Agent such as Clark, Claude Code or Codex. The agent drafts the reply in the composer, plans follow-ups, looks things up in its own tools and asks you before it acts. See [Agents](docs/agents.md).
 
 Translation labels have descriptive keys and screen context in the [English source catalog](src/i18n/en.js). See [the translation guide](docs/translations.md) for adding a language or finding a label.
 
 ![Inbox and reading pane](docs/screenshots/light/02-inbox.png)
+
+## Platforms
+
+| Platform | Status | Packages |
+| --- | --- | --- |
+| Windows 10 and 11, x64 | Supported | Installer and portable `.exe` |
+| Linux, x64 | Supported | `.deb` for Ubuntu and Debian, AppImage for other distributions. See [Linux](#linux). |
+| macOS 13 or newer, Apple Silicon and Intel | Experimental | DMG and ZIP, notarized only when the release notes say so. See [macOS](#macos-experimental). |
+
+Releases up to v1.2.0 contain only Windows packages; later releases add Linux and macOS packages. You can also [run Rukoo from source](#run-it) on all three.
+
+**Testing on a Mac?** macOS support passes the automated tests on Apple Silicon and Intel, but few people have used it on a real Mac yet. Please share what works and what doesn't in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74).
 
 ## What works
 
@@ -36,7 +48,7 @@ Translation labels have descriptive keys and screen context in the [English sour
 - Zoom from 80% to 200% with `Ctrl+Plus`, `Ctrl+Minus` or Ctrl and the mouse wheel. The main window and the compose windows share one level, and the app remembers it.
 - Settings: language, theme, zoom, list density, swipe actions, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default), spam addresses, VIPs and folder visibility.
 - `mailto:` links from your browser and other apps. The installer offers Rukoo Mail to Windows as an email app, and the installed app does so again when it starts if needed; the portable build does so when you click Use Rukoo Mail under Settings → General → Email links. That button opens the Windows Default apps page, where you pick Rukoo Mail, because Windows doesn't let an app make itself the default. The row shows which app opens the links now. A link opens a filled-in compose window with its To, Cc, Bcc, subject and text; Rukoo never attaches files a link names, and you send the message yourself. While Rukoo runs, only the compose window comes up, also when the main window is in the tray. Before you add an account, the compose window says so and becomes the message once you have one. A link in a message opens the same way. The registration is for your Windows user only. Uninstalling removes it when it belongs to that installation; a portable copy keeps its own until you pick another app, and moving the portable `.exe` updates it at the next start.
-- Desktop notifications for new mail. Windows also shows a count badge on the taskbar icon.
+- Desktop notifications for new mail. Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon.
 - On Windows, closing the window keeps Rukoo running in the tray, so mail keeps syncing and new mail still notifies you. Clicking the tray icon or a notification brings the window back where it was, with a half-written reply still in it. The icon's menu opens Rukoo, starts a new message, syncs or quits. Its tooltip counts unread mail, and a dot on the icon repeats the taskbar badge. Minimizing can hide the window in the tray as well. Turn both off in Settings → General to have closing quit Rukoo again. Windows 11 first puts the icon among the hidden icons, behind the arrow on the taskbar; drag it onto the taskbar to keep it in view.
 
 Keyboard in the main window: `Ctrl+N` new mail, `Ctrl+R` reply, `Ctrl+Shift+R` reply all, `Ctrl+F` forward, `Ctrl+E` or `/` search, `↑`/`↓` previous and next, `Shift+↑`/`Shift+↓` extend the selection, `Ctrl+A` select all, `Ctrl+Q` mark read, `Ctrl+U` mark unread, `Ctrl+Shift+V` move, `Delete` delete, `Ctrl+Z` undo, `Ctrl+P` print, `F5` sync, `Esc` clear the selection or search. While writing: `Ctrl+Enter` send, `Ctrl+S` save the draft, `Ctrl+K` insert a link, `Esc` close. In every window, also with the focus inside an email: `Ctrl+Plus` (or `Ctrl+=`) zoom in, `Ctrl+Minus` zoom out, `Ctrl+0` back to 100%. The numpad keys work too.
@@ -120,7 +132,7 @@ Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally
 
 Sender logos are the icons companies publish on their own websites. The app fetches one per sender domain, caches it in `%APPDATA%\Rukoo Mail\logos` and tries a missing one again after a week. That request tells the company's web server that someone opened mail from it, much like loading images in the mail itself. Mail from free-mail providers such as Gmail or Ziggo never triggers a request. You can switch logos off in the settings.
 
-Passwords and Google refresh tokens use Electron's `safeStorage`: Windows DPAPI on Windows, Keychain on macOS, and GNOME Keyring or KWallet on Linux. macOS and Linux refuse to save new credentials when secure system storage is unavailable; demo mail still works. Account data and the message cache live in `%APPDATA%\Rukoo Mail\data`. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; the app moves that folder on first launch.
+Passwords and Google refresh tokens use Electron's `safeStorage`: Windows DPAPI on Windows, Keychain on macOS, and GNOME Keyring or KWallet on Linux. macOS and Linux refuse to save new credentials when secure system storage is unavailable; demo mail still works. Account data and the message cache live in `%APPDATA%\Rukoo Mail\data` on Windows; [Linux](#linux) and [macOS](#macos-experimental) use their own profile folders. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; the app moves that folder on first launch.
 
 ## Run it
 
@@ -139,7 +151,9 @@ Build packages for the current platform in `dist/` (Windows installer and portab
 npm run dist
 ```
 
-## macOS
+## macOS (experimental)
+
+macOS support is experimental. Native CI runs the tests on Apple Silicon and Intel, but few people have used Rukoo on a real Mac yet, and builds are only notarized when the release notes say so. If you try it, please report your findings in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74): what works, what breaks, your Mac model and your macOS version.
 
 macOS 13 or newer is required by the bundled Electron version. Choose `arm64` for Apple Silicon or `x64` for Intel. Open the DMG, drag Rukoo Mail to Applications and launch it there; ZIP builds contain the same app bundle. To build both architectures on a Mac:
 
@@ -183,11 +197,11 @@ Linux keeps its profile under `$XDG_CONFIG_HOME/Rukoo Mail`, or `~/.config/Rukoo
 
 Real accounts and agent keys require an unlocked GNOME Keyring (Secret Service) or KWallet. Install and unlock one in your desktop session if Rukoo reports that credentials cannot be saved. Rukoo does not fall back to Electron's insecure `basic_text` storage on Linux.
 
-For headless Electron tests, provide an X display and a window manager so minimize/restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04 and Windows. The demo suite does not verify real mail synchronization, native tray availability, or live agent authentication on every Linux desktop.
+For headless Electron tests, provide an X display and a window manager so minimize/restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04, Windows and macOS. The demo suite does not verify real mail synchronization, native tray availability, or live agent authentication on every Linux desktop.
 
 ## Releases
 
-Download available Windows, macOS and Linux packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. Windows and Linux builds are unsigned. Mac builds are ad-hoc signed unless the release notes explicitly confirm Developer ID signing and notarization.
+Download available Windows, macOS and Linux packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. Windows and Linux builds are unsigned. Mac builds are experimental, and they are ad-hoc signed unless the release notes explicitly confirm Developer ID signing and notarization.
 
 Versions follow [Semantic Versioning](https://semver.org): a patch release fixes things, a minor release adds features, and a major release breaks compatibility of behavior, integrations or stored data. Previews use `-alpha.N`, `-beta.N` or `-rc.N` and publish as prereleases. A release is worth making when a new download gives users something: a feature, a visible fix, a security fix or a dependency change that affects the app. Documentation, tests and tooling wait for the next one.
 
