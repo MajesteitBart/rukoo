@@ -1,7 +1,7 @@
 {
   "name": "rukoo-mail",
   "version": "1.2.0",
-  "description": "Rukoo Mail: an email client for Windows, built with Electron",
+  "description": "Rukoo Mail: an email client for Windows and Linux, built with Electron",
   "main": "src/main/main.js",
   "scripts": {
     "start": "node scripts/start.js",
@@ -10,7 +10,9 @@
     "i18n:check": "node --test test/i18n.test.js",
     "screenshots": "node scripts/screenshots.js docs/screenshots",
     "icon": "node scripts/start-icon.js",
-    "dist": "electron-builder --win nsis portable"
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win --x64",
+    "dist:linux": "electron-builder --linux --x64"
   },
   "author": "Bart van der Meeren",
   "license": "MIT",
@@ -59,6 +61,32 @@
     },
     "portable": {
       "artifactName": "Rukoo-Mail-Portable-${version}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "executableName": "rukoo-mail",
+      "category": "Network;Email",
+      "mimeTypes": [
+        "x-scheme-handler/mailto"
+      ],
+      "maintainer": "Bart van der Meeren <MajesteitBart@users.noreply.github.com>",
+      "artifactName": "Rukoo-Mail-${version}-${arch}.${ext}"
     }
-  }
+  },
+  "homepage": "https://github.com/MajesteitBart/rukoo",
+  "desktopName": "rukoo-mail.desktop"
 }

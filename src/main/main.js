@@ -29,6 +29,7 @@ const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
+const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
 // ---- agents ----
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
@@ -69,7 +70,8 @@ function adoptLegacyData() {
 
 if (process.env.SEM_DATA_DIR) app.setPath('userData', process.env.SEM_DATA_DIR);
 else adoptLegacyData();
-app.setAppUserModelId(APP_ID);
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+if (process.platform === 'linux') app.setDesktopName(DESKTOP);
 
 let win = null;
 // Open compose windows by webContents id, with the options they were opened with.
@@ -97,18 +99,7 @@ if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
 }
 
-const secrets = {
-  encrypt(text) {
-    if (safeStorage.isEncryptionAvailable()) return `enc:${safeStorage.encryptString(text).toString('base64')}`;
-    return `plain:${Buffer.from(text).toString('base64')}`;
-  },
-  decrypt(value) {
-    const s = String(value || '');
-    if (s.startsWith('enc:')) return safeStorage.decryptString(Buffer.from(s.slice(4), 'base64'));
-    if (s.startsWith('plain:')) return Buffer.from(s.slice(6), 'base64').toString();
-    return s;
-  }
-};
+const secrets = require('./secrets').createSecrets(safeStorage);
 
 // Events for the main window only.
 function send(type, payload) {
@@ -130,7 +121,7 @@ function themeColors() {
 
 function applyTheme() {
   nativeTheme.themeSource = engine.settings.theme === 'light' ? 'light' : engine.settings.theme === 'dark' ? 'dark' : 'system';
-  if (process.platform !== 'win32') return;
+  if (!['win32', 'linux'].includes(process.platform)) return;
   const { bar, background } = themeColors();
   for (const w of windows()) {
     w.setTitleBarOverlay(bar);
@@ -226,13 +217,13 @@ function showWindow() {
     createWindow();
     return;
   }
+  // showInactive() does not restore minimized windows on Linux. Restore in both launch modes.
+  if (win.isMinimized()) win.restore();
   // Test mode keeps the window off-screen and leaves the focus alone; see reveal().
   if (process.env.SEM_HIDDEN) {
     win.showInactive();
     return;
   }
-  // Minimized to the tray, the window is minimized and hidden; restoring brings it back where it was.
-  if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
 }
@@ -681,6 +672,11 @@ const api = {
   openExternal: (url) => openUrl(url),
   // Which app opens mailto: links now, for Settings. available: false where Rukoo can't offer itself.
   mailtoStatus: async () => {
+    if (process.platform === 'linux') {
+      const client = new LinuxMailClient();
+      const status = await client.status();
+      return { ...status, available: status.available && app.isPackaged && !process.env.SEM_DATA_DIR, linux: true };
+    }
     const client = mailClient();
     const own = client ? path.resolve(client.exe).toLowerCase() : null;
     let handler = null;
@@ -697,6 +693,11 @@ const api = {
   },
   // Offers Rukoo for mailto: links and opens the Windows page where the user picks it.
   useForMailto: async () => {
+    if (process.platform === 'linux') {
+      if (!app.isPackaged || process.env.SEM_DATA_DIR) throw new Error(t('settings.general.mailtoLinuxUnavailable'));
+      if (!await new LinuxMailClient().register()) throw new Error(t('settings.general.mailtoLinuxFailed'));
+      return true;
+    }
     const client = mailClient();
     if (!client) throw new Error(t('settings.general.mailtoUnavailable'));
     await client.register();

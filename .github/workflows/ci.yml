@@ -1,0 +1,73 @@
+name: Test and package
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb openbox dbus-x11 gnome-keyring libsecret-tools libgtk-3-0 libnss3 libasound2 libgbm1 libnotify4 libsecret-1-0
+      - run: npm run test:e2e
+        if: runner.os == 'Windows'
+      - name: Test Linux desktop interactions
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" dbus-run-session -- bash -euo pipefail -c '
+            desktop_session_dir=$(mktemp -d)
+            export XDG_DATA_HOME="$desktop_session_dir/data"
+            export XDG_RUNTIME_DIR="$desktop_session_dir/runtime"
+            export XDG_CURRENT_DESKTOP=GNOME
+            mkdir -p "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            openbox >/tmp/rukoo-window-manager.log 2>&1 &
+            window_manager_pid=$!
+            cleanup() {
+              kill "$window_manager_pid" 2>/dev/null || true
+              rm -rf "$desktop_session_dir"
+            }
+            trap cleanup EXIT
+            # An isolated, unlocked Secret Service lets Electron encrypt test credentials.
+            # This password protects only the disposable CI keyring, never a user keyring.
+            printf %s rukoo-ci-keyring | gnome-keyring-daemon --unlock --daemonize --components=secrets >/dev/null
+            printf %s ready | timeout 15s secret-tool store --label="Rukoo CI readiness" application rukoo-ci
+            test "$(timeout 15s secret-tool lookup application rukoo-ci)" = ready
+            secret-tool clear application rukoo-ci
+            sleep 1
+            npm run test:e2e
+          '
+      - run: npm run dist -- --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -2,7 +2,7 @@
 
 # Rukoo Mail
 
-Rukoo Mail is an email client for Windows, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. A switch at the top of the sidebar replaces the list and the reader with a calendar, which shows the calendars of your Google accounts and of IMAP accounts with a CalDAV server together. The interface uses Inter and supports English (the default) and Dutch. Choose a language during setup or in Settings → General → Language; the preference applies to every window and is saved.
+Rukoo Mail is an email client for Windows and Linux, built with Electron. It has three panes: folders on the left, a message list you can resize, and a reading pane where you also write. A switch at the top of the sidebar replaces the list and the reader with a calendar, which shows the calendars of your Google accounts and of IMAP accounts with a CalDAV server together. The interface uses Inter and supports English (the default) and Dutch. Choose a language during setup or in Settings → General → Language; the preference applies to every window and is saved.
 
 A chat panel next to the email lets you hand it to an agent: a Hermes Agent such as Clark, Claude Code or Codex. The agent drafts the reply in the composer, plans follow-ups, looks things up in its own tools and asks you before it acts. See [Agents](docs/agents.md).
 
@@ -36,8 +36,8 @@ Translation labels have descriptive keys and screen context in the [English sour
 - Zoom from 80% to 200% with `Ctrl+Plus`, `Ctrl+Minus` or Ctrl and the mouse wheel. The main window and the compose windows share one level, and the app remembers it.
 - Settings: language, theme, zoom, list density, swipe actions, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default), spam addresses, VIPs and folder visibility.
 - `mailto:` links from your browser and other apps. The installer offers Rukoo Mail to Windows as an email app, and the installed app does so again when it starts if needed; the portable build does so when you click Use Rukoo Mail under Settings → General → Email links. That button opens the Windows Default apps page, where you pick Rukoo Mail, because Windows doesn't let an app make itself the default. The row shows which app opens the links now. A link opens a filled-in compose window with its To, Cc, Bcc, subject and text; Rukoo never attaches files a link names, and you send the message yourself. While Rukoo runs, only the compose window comes up, also when the main window is in the tray. Before you add an account, the compose window says so and becomes the message once you have one. A link in a message opens the same way. The registration is for your Windows user only. Uninstalling removes it when it belongs to that installation; a portable copy keeps its own until you pick another app, and moving the portable `.exe` updates it at the next start.
-- Windows notifications for new mail and a count badge on the taskbar icon.
-- Closing the window keeps Rukoo running in the tray, so mail keeps syncing and new mail still notifies you. Clicking the tray icon or a notification brings the window back where it was, with a half-written reply still in it. The icon's menu opens Rukoo, starts a new message, syncs or quits. Its tooltip counts unread mail, and a dot on the icon repeats the taskbar badge. Minimizing can hide the window in the tray as well. Turn both off in Settings → General to have closing quit Rukoo again. Windows 11 first puts the icon among the hidden icons, behind the arrow on the taskbar; drag it onto the taskbar to keep it in view.
+- Desktop notifications for new mail. Windows also shows a count badge on the taskbar icon.
+- On Windows, closing the window keeps Rukoo running in the tray, so mail keeps syncing and new mail still notifies you. Clicking the tray icon or a notification brings the window back where it was, with a half-written reply still in it. The icon's menu opens Rukoo, starts a new message, syncs or quits. Its tooltip counts unread mail, and a dot on the icon repeats the taskbar badge. Minimizing can hide the window in the tray as well. Turn both off in Settings → General to have closing quit Rukoo again. Windows 11 first puts the icon among the hidden icons, behind the arrow on the taskbar; drag it onto the taskbar to keep it in view.
 
 Keyboard in the main window: `Ctrl+N` new mail, `Ctrl+R` reply, `Ctrl+Shift+R` reply all, `Ctrl+F` forward, `Ctrl+E` or `/` search, `↑`/`↓` previous and next, `Shift+↑`/`Shift+↓` extend the selection, `Ctrl+A` select all, `Ctrl+Q` mark read, `Ctrl+U` mark unread, `Ctrl+Shift+V` move, `Delete` delete, `Ctrl+Z` undo, `Ctrl+P` print, `F5` sync, `Esc` clear the selection or search. While writing: `Ctrl+Enter` send, `Ctrl+S` save the draft, `Ctrl+K` insert a link, `Esc` close. In every window, also with the focus inside an email: `Ctrl+Plus` (or `Ctrl+=`) zoom in, `Ctrl+Minus` zoom out, `Ctrl+0` back to 100%. The numpad keys work too.
 
@@ -120,11 +120,11 @@ Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally
 
 Sender logos are the icons companies publish on their own websites. The app fetches one per sender domain, caches it in `%APPDATA%\Rukoo Mail\logos` and tries a missing one again after a week. That request tells the company's web server that someone opened mail from it, much like loading images in the mail itself. Mail from free-mail providers such as Gmail or Ziggo never triggers a request. You can switch logos off in the settings.
 
-Passwords and Google refresh tokens are encrypted with Windows DPAPI through Electron's `safeStorage`. Account data and the message cache live in `%APPDATA%\Rukoo Mail\data`. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; the app moves that folder on first launch.
+Passwords and Google refresh tokens use Electron's `safeStorage`: Windows DPAPI on Windows, and GNOME Keyring or KWallet on Linux. Linux refuses to save new credentials when a supported, unlocked keyring is unavailable; demo mail still works. Account data and the message cache live in `%APPDATA%\Rukoo Mail\data`. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; the app moves that folder on first launch.
 
 ## Run it
 
-Requires Node.js 20 or newer.
+Requires Node.js 22 or newer and a graphical desktop.
 
 ```bash
 npm install
@@ -133,15 +133,41 @@ npm start
 
 `npm start` goes through `scripts/start.js`, which clears `ELECTRON_RUN_AS_NODE`. Terminals that run on Electron (VS Code, T3 Code) export that variable, and it makes `electron.exe` behave like plain Node.
 
-Build a Windows installer and a portable exe in `dist/`:
+Build packages for the current platform in `dist/` (Windows installer and portable executable, or Linux x64 AppImage and `.deb`):
 
 ```bash
 npm run dist
 ```
 
+## Linux
+
+Linux builds target x64 desktops. The `.deb` is intended for Ubuntu/Debian systems; the AppImage is a portable option for other distributions. macOS packages are not supported yet.
+
+```bash
+# Build either explicitly on Linux:
+npm run dist:linux
+# Install the generated Debian package:
+sudo apt install ./dist/Rukoo-Mail-1.2.0-amd64.deb
+# Or run the portable build:
+chmod +x dist/Rukoo-Mail-1.2.0-x86_64.AppImage
+./dist/Rukoo-Mail-1.2.0-x86_64.AppImage
+```
+
+Use the version in your downloaded filename. AppImages need FUSE 2 support; where FUSE is unavailable, `--appimage-extract-and-run` runs without mounting. Run Rukoo as your desktop user. Keep Chromium's sandbox enabled; the Debian package includes Electron's sandbox setup. Some distributions restrict unprivileged user namespaces, so prefer the installed package when a portable build cannot start under the system's sandbox policy.
+
+The Debian package installs a launcher and advertises `mailto:` support. Choose **Settings → General → Email links → Use Rukoo Mail**, or select it in your desktop's default applications. This uses `xdg-mime` from `xdg-utils`. An AppImage alone does not install a desktop entry or register its temporary mount as an email handler.
+
+Close-to-tray and minimize-to-tray start disabled on Linux. Enable them only on a desktop with a visible status tray (GNOME may need an AppIndicator extension). Notifications depend on the desktop notification service; the Windows taskbar count overlay is unavailable on Linux. Theme changes apply to the main and separate compose window controls.
+
+Linux keeps its profile under `$XDG_CONFIG_HOME/Rukoo Mail`, or `~/.config/Rukoo Mail` when unset. The `data`, `logos`, `skills`, and `google-oauth.json` paths described elsewhere in this README are relative to that profile instead of `%APPDATA%\Rukoo Mail`. `SEM_DATA_DIR` overrides the entire profile for isolated tests. Do not copy encrypted credentials between operating systems; sign in again on the new system.
+
+Real accounts and agent keys require an unlocked GNOME Keyring (Secret Service) or KWallet. Install and unlock one in your desktop session if Rukoo reports that credentials cannot be saved. Rukoo does not fall back to Electron's insecure `basic_text` storage on Linux.
+
+For headless Electron tests, provide an X display and a window manager so minimize/restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04 and Windows. The demo suite does not verify real mail synchronization, native tray availability, or live agent authentication on every Linux desktop.
+
 ## Releases
 
-Download the Windows x64 installer or portable executable from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. These builds are currently unsigned.
+Download available Windows x64 and Linux x64 packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. These builds are currently unsigned.
 
 Versions follow [Semantic Versioning](https://semver.org): a patch release fixes things, a minor release adds features, and a major release breaks compatibility of behavior, integrations or stored data. Previews use `-alpha.N`, `-beta.N` or `-rc.N` and publish as prereleases. A release is worth making when a new download gives users something: a feature, a visible fix, a security fix or a dependency change that affects the app. Documentation, tests and tooling wait for the next one.
 
@@ -150,8 +176,8 @@ Releases are started manually after a version tag exists. Pushing a branch or ta
 1. Run `npm version <version> --no-git-tag-version`, commit the package and lockfile changes, and merge the reviewed PR into `main`. Before merging, run `npm test`, `npm run test:e2e` and `npm run dist`, and start the built app with a demo profile.
 2. Write the release as a draft on GitHub. Title it `v<version> - Added …` when it adds features, or `v<version> - Fixed …` when it only fixes things, for example `v1.1.0 - Added CalDAV calendars and Microsoft sign-in`. The notes tell users what changed, with known limitations and migration steps. `gh release create v1.1.0 --draft --title "…" --notes-file notes.md` writes the draft without creating the tag.
 3. On the tested `main` commit, create and push an annotated tag, for example `git tag -a v1.1.0 -m "Rukoo Mail 1.1.0"` followed by `git push origin v1.1.0`.
-4. Open **Actions → Release Windows executables → Run workflow**, select `main`, and enter `v1.1.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.1.0`.
-5. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds both executables and verifies their checksums. It then uploads them to the draft and publishes it.
+4. Open **Actions → Release Windows and Linux packages → Run workflow**, select `main`, and enter `v1.1.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.1.0`.
+5. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds Windows and Linux packages and verifies their checksums. It then uploads all four packages to the draft and publishes it.
 
 Tags such as `v1.1.0-rc.1` publish as prereleases without becoming the latest stable release. A stable release for an older version line does become the latest, so clear that on GitHub afterwards. The workflow stops when the tag has no draft, when the draft's title doesn't start with the tag, or when the release is already published. Never move or reuse a published tag; ship a new version for corrections. If publication fails, fix the cause and choose **Re-run failed jobs**: the build is kept, and the upload replaces files from the earlier attempt. Release publication uses GitHub Actions' built-in token and needs no personal token or extra secrets.
 

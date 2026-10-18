@@ -51,7 +51,7 @@ const DEFAULT_SETTINGS = {
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
   // Closing the main window hides it and Rukoo keeps running in the tray; minimizing can do the same. See main.js.
-  closeToTray: true,
+  closeToTray: process.platform !== 'linux',
   minimizeToTray: false
 };
 
@@ -60,7 +60,7 @@ const DEFAULT_SETTINGS = {
 function normalizeSettings(s) {
   s.language = normalizeLanguage(s.language);
   s.zoomLevel = normalizeZoom(s.zoomLevel);
-  s.closeToTray = s.closeToTray !== false;
+  s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
 }
 

@@ -1672,7 +1672,7 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   assert.deepEqual([...new Set(outdated.seen)], [null], 'no token for an outdated Rukoo either');
 });
 
-test('hermes bridge: looks for Rukoo only on online Windows and Mac devices of the tailnet', (t) => {
+test('hermes bridge: finds online Windows, Linux and Mac devices but skips tagged and shared devices', (t) => {
   const python = findPython();
   if (!python) return t.skip('no Python 3.8+ on PATH');
   const { spawnSync } = require('child_process');
@@ -1683,11 +1683,13 @@ test('hermes bridge: looks for Rukoo only on online Windows and Mac devices of t
       a: peer('laptop', 'windows', ['100.64.0.3', 'fd7a:115c:a1e0::1']),
       b: peer('desk-pc', 'windows', ['100.64.0.4'], { Online: false }),
       c: peer('MacBook', 'macOS', ['fd7a:115c:a1e0::2', '100.64.0.9']),
-      d: peer('mail-server', 'linux', ['100.64.0.5']),
+      d: peer('linux-desktop', 'linux', ['100.64.0.5']),
       e: peer('phone', 'android', ['100.64.0.6']),
       f: peer('funnel-ingress-node', '', ['fd7a:115c:a1e0::3'], { Tags: ['tag:ingress'] }),
       g: peer('build-box', 'windows', ['100.64.0.10'], { Tags: ['tag:server'] }),
-      h: peer('friends-pc', 'windows', ['100.64.0.11'], { ShareeNode: true })
+      h: peer('friends-pc', 'windows', ['100.64.0.11'], { ShareeNode: true }),
+      i: peer('linux-server', 'linux', ['100.64.0.12'], { Tags: ['tag:server'] }),
+      j: peer('linux-offline', 'linux', ['100.64.0.13'], { Online: false })
     }
   };
   const code = 'import json, sys; sys.path.insert(0, sys.argv[1]); import rukoo_bridge as b; print(json.dumps(b.tailnet_devices(json.load(sys.stdin))))';
@@ -1701,7 +1703,8 @@ test('hermes bridge: looks for Rukoo only on online Windows and Mac devices of t
   assert.deepEqual(JSON.parse(r.stdout), [
     ['this-pc', 'http://100.64.0.2:47801/mcp'],
     ['laptop', 'http://100.64.0.3:47801/mcp'],
-    ['MacBook', 'http://100.64.0.9:47801/mcp']
+    ['MacBook', 'http://100.64.0.9:47801/mcp'],
+    ['linux-desktop', 'http://100.64.0.5:47801/mcp']
   ]);
 });
 

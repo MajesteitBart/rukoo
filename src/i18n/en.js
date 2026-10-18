@@ -2853,7 +2853,7 @@
     "description": "reader > unsubscribe. src/renderer/app.js (renderReader)"
   },
   "settings.about.description": {
-    "message": "An email client for Windows, built with Electron. Data is stored in:",
+    "message": "An email client for Windows and Linux, built with Electron. Data is stored in:",
     "description": "settings > about. src/renderer/settings.js (openSettings)"
   },
   "settings.about.help": {
@@ -3438,6 +3438,18 @@
     "message": "Show logos for companies that email you. Rukoo Mail fetches each logo once from their website.",
     "description": "settings > general. src/renderer/settings.js (render)"
   },
+  "settings.general.mailtoLinuxHelp": {
+    "message": "Open mailto: links from your browser and other apps in Rukoo Mail. Uses your desktop’s default email app setting.",
+    "description": "Linux email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "settings.general.mailtoLinuxUnavailable": {
+    "message": "Install the .deb package to use Rukoo Mail for email links.",
+    "description": "Linux email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "settings.general.mailtoLinuxFailed": {
+    "message": "Could not set the default email app. Install xdg-utils or choose Rukoo Mail in your desktop’s default applications settings.",
+    "description": "Linux email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
   "settings.general.mailto": {
     "message": "Email links",
     "description": "settings > general, title of the row that makes Rukoo Mail the app for mailto: links. src/renderer/settings.js (mailtoRow)"
@@ -3483,7 +3495,7 @@
     "description": "settings > general. src/renderer/settings.js (render)"
   },
   "settings.general.notificationsHelp": {
-    "message": "Show a Windows notification for new emails.",
+    "message": "Show a desktop notification for new emails.",
     "description": "settings > general. src/renderer/settings.js (render)"
   },
   "settings.general.signature": {
@@ -3809,6 +3821,10 @@
   "setup.signIn.title": {
     "message": "Sign in to {provider}",
     "description": "setup > signIn. Provider login form heading; provider is a provider display name."
+  },
+  "errors.credentials.linuxKeyring": {
+    "message": "Rukoo cannot securely save credentials. Install and unlock GNOME Keyring or KWallet, then restart Rukoo and try again.",
+    "description": "src/main/secrets.js: account or agent credential save error when Linux has no secure system keyring. No parameters."
   },
   "setup.title": {
     "message": "Set up email",

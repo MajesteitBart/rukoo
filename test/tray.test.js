@@ -57,11 +57,11 @@ test('the tooltip counts unread mail in the interface language', () => {
   assert.equal(tooltip(0), 'Rukoo Mail');
 });
 
-test('close to the tray is on and minimize to the tray off by default; both are saved and normalized', async () => {
+test('tray defaults suit the platform; both settings are saved and normalized', async () => {
   const dir = tempDir('rukoo-tray-');
   try {
     const engine = new Engine({ dataDir: dir }).init();
-    assert.equal(engine.settings.closeToTray, true);
+    assert.equal(engine.settings.closeToTray, process.platform !== 'linux');
     assert.equal(engine.settings.minimizeToTray, false);
     engine.updateSettings({ closeToTray: false, minimizeToTray: true });
     const saved = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
@@ -70,10 +70,10 @@ test('close to the tray is on and minimize to the tray off by default; both are 
     const again = new Engine({ dataDir: dir }).init();
     assert.equal(again.settings.closeToTray, false);
     assert.equal(again.settings.minimizeToTray, true);
-    // A hand-edited file: anything but false keeps the window in the tray, anything but true leaves minimize as is.
+    // Invalid values fall back to the platform default.
     fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ closeToTray: 'no', minimizeToTray: 'yes' }));
     const edited = new Engine({ dataDir: dir }).init();
-    assert.equal(edited.settings.closeToTray, true);
+    assert.equal(edited.settings.closeToTray, process.platform !== 'linux');
     assert.equal(edited.settings.minimizeToTray, false);
     await Promise.all([engine.close(), again.close(), edited.close()]);
   } finally {

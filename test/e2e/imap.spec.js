@@ -20,8 +20,13 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
 
   const env = { ...process.env, SEM_DATA_DIR: tempDir('sem-e2e-imap-'), SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
-  const app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
+  const entry = process.platform === 'linux' ? path.join(__dirname, '..', 'fixtures', 'linux-keyring-app.js') : '.';
+  const app = await electron.launch({ args: [entry], cwd: path.join(__dirname, '..', '..'), env });
   try {
+    if (process.platform === 'linux') {
+      expect(await app.evaluate(({ app }) => app.getAppPath())).toBe(path.join(__dirname, '..', '..'));
+      expect(await app.evaluate(({ safeStorage }) => safeStorage.getSelectedStorageBackend())).toBe('gnome_libsecret');
+    }
     const win = await app.firstWindow();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
     await win.click('[data-provider="other"]');

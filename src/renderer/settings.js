@@ -266,7 +266,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   let mailtoState = null;
   const mailtoValue = () => {
     if (!mailtoState) return '';
-    if (!mailtoState.available) return t('settings.general.mailtoUnavailable');
+    if (!mailtoState.available) return t(mailtoState.linux ? 'settings.general.mailtoLinuxUnavailable' : 'settings.general.mailtoUnavailable');
     if (mailtoState.rukoo) return t('settings.general.mailtoRukoo');
     return mailtoState.app ? t('settings.general.mailtoHandler', { app: mailtoState.app }) : t('settings.general.mailtoNone');
   };
@@ -275,7 +275,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const mailtoRow = () => `
     <div class="row static" data-mailto>
       <div class="text"><div class="title">${esc(t('settings.general.mailto'))}</div>
-        <div class="desc">${esc(t('settings.general.mailtoHelp'))}</div>
+        <div class="desc" data-mailto-help>${esc(t(mailtoState?.linux ? 'settings.general.mailtoLinuxHelp' : 'settings.general.mailtoHelp'))}</div>
         <div class="value" data-mailto-value>${esc(mailtoValue())}</div></div>
       <button class="btn sm secondary" data-a="mailto-use" ${mailtoDisabled() ? 'disabled' : ''}>${esc(t('settings.general.mailtoUse'))}</button>
     </div>`;
@@ -286,6 +286,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const value = page.querySelector('[data-mailto-value]');
     if (!value) return;
     value.textContent = mailtoValue();
+    page.querySelector('[data-mailto-help]').textContent = t(mailtoState.linux ? 'settings.general.mailtoLinuxHelp' : 'settings.general.mailtoHelp');
     page.querySelector('[data-a="mailto-use"]').disabled = mailtoDisabled();
   };
   // The choice is made in Windows Settings; coming back to Rukoo shows the outcome.

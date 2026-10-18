@@ -48,7 +48,7 @@ Everything the agent creates elsewhere links back to the email by its Message-ID
 
 ## Attach files and other emails
 
-The paperclip before the email chip opens a file dialog. You can also drop files from Explorer on the panel, or paste a screenshot or files you copied. To add emails, drag them from the message list onto the panel, or choose "Add to chat" in an email's menu (⋮ in the reader, or a right-click in the list) or in the menu for checked emails (⋮ in the list toolbar). The menus work from the keyboard and open the panel when it's closed. Each file and email becomes a chip next to the email chip, and its × takes it off again before you send. The chat's own email doesn't need adding, nor does a newer email you continued the chat from, which goes along by itself. An email you add twice counts once.
+The paperclip before the email chip opens a file dialog. You can also drop files from your file manager on the panel, or paste a screenshot or files you copied. To add emails, drag them from the message list onto the panel, or choose "Add to chat" in an email's menu (⋮ in the reader, or a right-click in the list) or in the menu for checked emails (⋮ in the list toolbar). The menus work from the keyboard and open the panel when it's closed. Each file and email becomes a chip next to the email chip, and its × takes it off again before you send. The chat's own email doesn't need adding, nor does a newer email you continued the chat from, which goes along by itself. An email you add twice counts once.
 
 Your next message takes the chips along, also a quick action or a skill. A message can be just attachments, without text. The chips show above your message in the chat. A message takes up to 10 files and 10 emails.
 
@@ -70,7 +70,7 @@ Rukoo reads the text of a PDF itself. Codex takes no PDF as input, and Hermes on
 
 ### Where the files are
 
-Rukoo keeps each chat's files in `%APPDATA%\Rukoo Mail\agent-workspace\files`, in a folder per chat. Claude Code and Codex work in `agent-workspace`, so they open a copy without asking. Each copy is named after its `file_id`, so a file name you got from someone else never ends up in a path the agent sees. `conversations.json` keeps each file's name, type, size and id, not its content. The files stay with the chat after a restart, and deleting the chat deletes them. When an agent has lost its session, the recap names the files and emails of earlier messages with their ids, so the new session can read them again.
+Rukoo keeps each chat's files in `agent-workspace/files` inside its profile, in a folder per chat. The profile is `%APPDATA%\Rukoo Mail` on Windows and `${XDG_CONFIG_HOME:-~/.config}/Rukoo Mail` on Linux. Settings → About shows the actual profile path. Claude Code and Codex work in `agent-workspace`, so they open a copy without asking. Each copy is named after its `file_id`, so a file name you got from someone else never ends up in a path the agent sees. `conversations.json` keeps each file's name, type, size and id, not its content. The files stay with the chat after a restart, and deleting the chat deletes them. When an agent has lost its session, the recap names the files and emails of earlier messages with their ids, so the new session can read them again.
 
 Until you send, the files wait in Rukoo's memory, for up to two hours. Rukoo reads a file from its own dialog itself. For a dropped or pasted file the panel sends the bytes, never a path for Rukoo to open.
 
@@ -85,10 +85,10 @@ Continuing opens that chat. The chat stays about its own email. While the newer 
 | Agent | Connection | Needs |
 |---|---|---|
 | Hermes Agent (Clark) | Rukoo talks to the Hermes API server over HTTP. Each Rukoo chat is a Hermes session; a turn is a run on Hermes' Runs API. | The API server's address and key. For Rukoo's tools: the bridge in `integrations/hermes` |
-| Claude Code | Rukoo starts `claude.exe` per chat (stream-json) with your own settings, MCP servers, skills and hooks, plus Rukoo's MCP server. | Claude Code installed and signed in |
+| Claude Code | Rukoo starts `claude` (`claude.exe` on Windows) per chat (stream-json) with your own settings, MCP servers, skills and hooks, plus Rukoo's MCP server. | Claude Code installed and signed in |
 | Codex | Rukoo starts one `codex app-server` with your own config and adds Rukoo's MCP server to each thread. | Codex CLI installed and signed in |
 
-Set them up in Settings → Agents. Each card shows the agent's status and has a test button.
+Set them up in Settings → Agents. Each card shows the agent's status and has a test button. On Linux, Rukoo looks for Claude Code and Codex in `~/.local/bin` and on its `PATH`. If your desktop session does not include the CLI installation directory, set the executable path in the agent card. The agent must already be signed in under your Linux user account.
 
 Claude Code and Codex call Rukoo's MCP server on `127.0.0.1`. A Hermes agent usually runs on another machine, so it reaches Rukoo over Tailscale through a small stdio bridge. Turn on "Let Clark use Rukoo" in the Hermes card, then follow [integrations/hermes/README.md](../integrations/hermes/README.md). "Copy Hermes setup" puts the `config.yaml` block on the clipboard. The block holds no secret and is the same on every device: the bridge finds Rukoo on whichever of your devices has it open. Rukoo stays open in the tray after you close its window, unless you turned off "Close to the tray" in Settings → General.
 
@@ -142,7 +142,7 @@ A skill is a set of instructions for one kind of email task. Rukoo uses the [Age
 Rukoo reads skills from two folders:
 
 - `skills/` in this repository. Rukoo ships these with the app.
-- `%APPDATA%\Rukoo Mail\skills`, for your own. Create the folder if it isn't there. A skill here replaces Rukoo's skill with the same name.
+- `skills/` inside your Rukoo profile, for your own (`%APPDATA%\Rukoo Mail\skills` on Windows; `${XDG_CONFIG_HOME:-~/.config}/Rukoo Mail/skills` on Linux). Create the folder if it isn't there. A skill here replaces Rukoo's skill with the same name.
 
 Rukoo reads both folders again each time an agent connects to its MCP server or calls `read_skill`, and each time you open the chat panel or type `/`. A new or changed skill works without restarting Rukoo.
 
@@ -212,7 +212,7 @@ There are three kinds:
 - Files you attach are treated like email. A file you got from someone else can hold their instructions, so its name and its text reach the agent inside `<unsafe_content>`, in the message and in `read_chat_file`. An image can't carry tags, and a screenshot can show anyone's text. So wherever an image reaches the agent, Rukoo says just before it that it is untrusted data and not instructions: before each image that goes with a message, and in the result of `read_chat_file` and `read_attachment`. An email you add goes by its Rukoo id only, and Rukoo checks that the id is one of your own emails. The agent reads it with `read_message`, tags and all.
 - Agent-written drafts are sanitized before they reach the composer. Links stay; images, form controls, styles and scripts go.
 - Local agents get a token per chat or per process. Hermes signs in with a token made from its API server key, so every device with that key accepts it. Rukoo accepts that token only on the Tailscale address, and the local tokens only on `127.0.0.1`. A new API key replaces it. Before the bridge sends the token to a device, Rukoo there has to prove it has the same key.
-- The Hermes API key is encrypted with Windows DPAPI in `%APPDATA%\Rukoo Mail\data\agents.json`. Chats are in `conversations.json` in the same folder. They hold what you and the agent wrote, not the emails Rukoo sent along. Files you attached are in `agent-workspace\files`, next to the data folder.
+- The Hermes API key is encrypted in `data/agents.json` inside your Rukoo profile, using Windows DPAPI or the Linux desktop keyring. Linux requires an available GNOME Secret Service or KWallet keyring to save credentials. Chats are in `conversations.json` in the same folder. They hold what you and the agent wrote, not the emails Rukoo sent along. Files you attached are in `agent-workspace/files`, next to the data folder.
 
 ## Limits
 

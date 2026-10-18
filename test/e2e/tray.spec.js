@@ -38,6 +38,8 @@ function page(p) {
 
 test.beforeEach(async () => {
   dataDir = tempDir('sem-e2e-');
+  fs.mkdirSync(path.join(dataDir, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ closeToTray: true }));
   await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
@@ -78,7 +80,9 @@ const unread = () => app.evaluate(() => global.__semEngine.unreadCount());
 
 // Notifications are recorded instead of shown, so the tests put no toasts on screen.
 const recordNotifications = () =>
-  app.evaluate(({ Notification }) => {
+  app.evaluate(({ Notification, BrowserWindow }) => {
+    // Simulate a background app explicitly: Linux window managers can focus an off-screen window.
+    BrowserWindow.getAllWindows()[0].isFocused = () => false;
     global.__shown = [];
     Notification.prototype.show = function () {
       global.__shown.push(this);
