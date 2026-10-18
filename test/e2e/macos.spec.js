@@ -8,13 +8,13 @@ test.skip(process.platform !== 'darwin', 'Requires native macOS');
 const root = path.join(__dirname, '../..');
 const evidence = path.join(root, 'tmp/macos-evidence');
 let app, win, profile;
+const executablePath = process.env.SEM_MAC_PACKAGED ? path.join(root, 'dist', process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'Rukoo Mail.app', 'Contents', 'MacOS', 'Rukoo Mail') : undefined;
 
 test.beforeEach(async () => {
   profile = tempDir('rukoo-mac-');
   const env = { ...process.env, SEM_DATA_DIR: profile, SEM_AGENT_FAKE: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.SEM_HIDDEN;
-  const executablePath = process.env.SEM_MAC_PACKAGED ? path.join(root, 'dist', process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'Rukoo Mail.app', 'Contents', 'MacOS', 'Rukoo Mail') : undefined;
   app = await electron.launch({ executablePath, args: executablePath ? [] : ['.'], cwd: root, env });
   win = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1400, 950));
@@ -131,7 +131,7 @@ for (const answer of ["Don't save", 'Save']) {
       const env = { ...process.env, SEM_DATA_DIR: profile, SEM_AGENT_FAKE: '1' };
       delete env.ELECTRON_RUN_AS_NODE;
       delete env.SEM_HIDDEN;
-      app = await electron.launch({ args: ['.'], cwd: root, env });
+      app = await electron.launch({ executablePath, args: executablePath ? [] : ['.'], cwd: root, env });
       win = await app.firstWindow();
       await expect(win.locator('.item').first()).toBeVisible();
       await win.click('[data-view="drafts"]');
