@@ -2093,8 +2093,11 @@ export function mountAgentPanel(ctx) {
   return {
     // The panel became visible: catch up with the email on screen.
     opened({ focus = false } = {}) {
-      watch();
-      sync();
+      // Main hears which chat is on screen only once the panel has caught up with the email on screen: while it was
+      // closed it kept the chat from before, which may be about another email, and that chat's reply is still unread.
+      sync()
+        .catch(() => {})
+        .then(() => watch());
       loadSkills();
       loadModels(currentAgent(), true);
       loadOwnSkills(currentAgent());

@@ -932,6 +932,19 @@ test('the bell counts chats with news from off screen; its list follows them liv
   await expect(bell()).not.toHaveClass(/has-news/);
   // The answer was read, also as far as main is concerned.
   expect(await app.evaluate((_e, cid) => global.__semAgents.get(cid).unread, cid)).toBe(false);
+
+  // Closed again, with another email opened meanwhile: reopening shows that email, and the answer that came in the
+  // chat from before stays unread, although the panel still held that chat while it was closed.
+  await win.click('.agentpane [data-ap="close"]');
+  await expect(pane()).toBeHidden();
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'And after that?' }), cid);
+  await expect(toggle()).toHaveClass(/has-news/, { timeout: 10000 });
+  await toggle().click();
+  await expect(win.locator('.agentpane .ap-empty')).toBeVisible();
+  await expect(bell()).toHaveAttribute('aria-label', 'Recent chats, 1 new');
+  expect(await app.evaluate((_e, cid) => global.__semAgents.get(cid).unread, cid)).toBe('reply');
 });
 
 test('the open chat list goes by the last message: a chat moves up as soon as its agent writes, before its turn ends', async () => {
