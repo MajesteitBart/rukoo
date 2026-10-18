@@ -4,6 +4,7 @@
 // reading JSON lines, and killing a process with everything it started.
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 
@@ -50,11 +51,20 @@ function isExecutable(file) {
   }
 }
 
+// Finder starts apps with a short PATH. Keep inherited precedence and add the common CLI locations
+// for discovery AND child processes, so npm launchers using /usr/bin/env node can run too. No shell
+// startup files are evaluated. Other platforms keep their environment unchanged.
+function cliPath(env = process.env, { platform = process.platform, home = os.homedir() } = {}) {
+  if (platform !== 'darwin') return env.PATH;
+  const inherited = env.PATH ? env.PATH.split(':') : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  return [...new Set([...inherited, path.posix.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'])].join(':');
+}
+
 // Desktop Linux installations need not have `which`. Walk PATH directly there, preserving spaces
 // and accepting executable symlinks and shebang scripts (such as npm's Codex launcher).
-function onPath(name) {
-  if (!WINDOWS) {
-    const files = (process.env.PATH || '').split(path.delimiter).map((dir) => path.resolve(dir || '.', name));
+function onPath(name, { env = process.env, platform = process.platform, home = os.homedir() } = {}) {
+  if (platform !== 'win32') {
+    const files = (cliPath(env, { platform, home }) || '').split(':').map((dir) => path.resolve(dir || '.', name));
     return Promise.resolve([...new Set(files)].filter(isExecutable));
   }
   return new Promise((resolve) => {
@@ -93,7 +103,7 @@ const SESSION_PATTERNS = [
   /^CODEX_(THREAD_ID|SESSION_ID|TURN_ID|COMPANION_.*|MANAGED_BY_NPM|MANAGED_PACKAGE_ROOT|SANDBOX|SANDBOX_NETWORK_DISABLED|CI|INTERNAL_.*)$/
 ];
 
-function cleanEnv(extra = {}, base = process.env) {
+function cleanEnv(extra = {}, base = process.env, options = {}) {
   const env = {};
   for (const [key, value] of Object.entries(base)) {
     const upper = key.toUpperCase();
@@ -104,6 +114,8 @@ function cleanEnv(extra = {}, base = process.env) {
     if (value === undefined || value === null) delete env[key];
     else env[key] = String(value);
   }
+  const resolvedPath = cliPath(env, options);
+  if (resolvedPath !== undefined) env.PATH = resolvedPath;
   return env;
 }
 
@@ -363,6 +375,7 @@ module.exports = {
   logger,
   isFile,
   onPath,
+  cliPath,
   resolveExe,
   cleanEnv,
   start,

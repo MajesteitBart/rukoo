@@ -142,7 +142,7 @@ test('cleanEnv drops agent-session variables and keeps the rest', () => {
     CODEX_COMPANION_SESSION_ID: 'c',
     CODEX_HOME: 'C:\\codex',
     GONE: 'y'
-  });
+  }, { platform: 'win32' });
   assert.deepEqual(env, { PATH: 'x', CLAUDE_CODE_USE_BEDROCK: '1', CODEX_HOME: 'C:\\codex', CLAUDE_CONFIG_DIR: 'C:\\cfg' });
 });
 

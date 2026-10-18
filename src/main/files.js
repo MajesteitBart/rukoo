@@ -4,7 +4,7 @@ const fs = require('fs');
 const { t } = require('../i18n');
 
 // Executable files and launchers on supported desktops are never opened directly from mail.
-const RISKY = /\.(exe|bat|cmd|com|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ps1|psm1|psd1|msi|msp|mst|reg|cpl|jar|appref-ms|application|gadget|inf|scf|sct|chm|iso|img|vhd|vhdx|msc|xll|library-ms|settingcontent-ms|sh|bash|zsh|fish|ksh|csh|desktop|appimage|run)$/i;
+const RISKY = /\.(dmg|pkg|mpkg|command|tool|terminal|scpt|scptd|applescript|workflow|app|prefpane|fileloc|inetloc|webloc|exe|bat|cmd|com|scr|pif|lnk|url|hta|js|jse|vbs|vbe|wsf|wsh|ps1|psm1|psd1|msi|msp|mst|reg|cpl|jar|appref-ms|application|gadget|inf|scf|sct|chm|iso|img|vhd|vhdx|msc|xll|library-ms|settingcontent-ms|sh|bash|zsh|fish|ksh|csh|desktop|appimage|run)$/i;
 
 // Flattens an attachment name to a single safe file name: no folders, no bidi tricks.
 function safeName(name) {

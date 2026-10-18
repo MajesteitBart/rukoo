@@ -5,8 +5,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
-const { ZOOM_LEVELS, normalizeZoom, nextZoom, zoomKey } = require('../src/main/zoom');
+const { ZOOM_LEVELS, normalizeZoom, nextZoom, zoomKey: platformZoomKey } = require('../src/main/zoom');
 const { Engine } = require('../src/main/engine');
+
+const zoomKey = (input) => platformZoomKey(input, 'win32');
 
 // An input as webContents' before-input-event reports it for Ctrl plus a key.
 const ctrl = (key, code, extra = {}) => ({ type: 'keyDown', key, code, control: true, shift: false, alt: false, meta: false, ...extra });
@@ -86,4 +88,13 @@ test('the zoom level is saved in settings.json, normalized on load, and a quiet 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('macOS zoom uses Command and leaves Control combinations alone', () => {
+  const command = (key, code) => ctrl(key, code, { control: false, meta: true });
+  assert.equal(platformZoomKey(command('+', 'Equal'), 'darwin'), 'in');
+  assert.equal(platformZoomKey(command('-', 'Minus'), 'darwin'), 'out');
+  assert.equal(platformZoomKey(command('0', 'Digit0'), 'darwin'), 'reset');
+  assert.equal(platformZoomKey(ctrl('+', 'Equal'), 'darwin'), null);
+  assert.equal(platformZoomKey({ ...command('+', 'Equal'), alt: true }, 'darwin'), null);
 });

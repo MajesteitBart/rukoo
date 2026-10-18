@@ -182,7 +182,9 @@ test('compose windows share the zoom with the main window, both ways', async () 
   await expect.poll(zoom).toEqual({ 'index.html': [125], 'compose.html': [125] });
   await wheel('compose.html', popped.locator('.compose .editor'), 'out');
   await expect.poll(mainZoom).toBeLessThan(125);
-  expect((await zoom())['compose.html']).toEqual([await mainZoom()]);
+  // Compare one snapshot: the wheel's phase-end notch can land between two separate reads.
+  const afterWheel = await zoom();
+  expect(afterWheel['compose.html']).toEqual(afterWheel['index.html']);
   await press('compose.html', '0');
   await expect.poll(zoom).toEqual({ 'index.html': [100], 'compose.html': [100] });
   await expect(popped.locator('.compose .editor')).toHaveText('');

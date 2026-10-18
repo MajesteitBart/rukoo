@@ -262,11 +262,16 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     page.querySelector('[data-a="zoom-reset"]').disabled = level === 100;
   };
 
-  // Which app opens mailto: links: { available, app, rukoo } from main, or null until Windows has answered.
+  // Which app opens mailto: links: { available, app, rukoo } from main, or null until the desktop has answered.
   let mailtoState = null;
+  const mailtoKey = (kind) => {
+    const platform = mailtoState?.platform || (mailtoState?.linux ? 'linux' : window.mail.platform);
+    const prefix = platform === 'darwin' ? 'mailtoMac' : platform === 'linux' ? 'mailtoLinux' : 'mailto';
+    return `settings.general.${prefix}${kind}`;
+  };
   const mailtoValue = () => {
     if (!mailtoState) return '';
-    if (!mailtoState.available) return t(mailtoState.linux ? 'settings.general.mailtoLinuxUnavailable' : 'settings.general.mailtoUnavailable');
+    if (!mailtoState.available) return t(mailtoKey('Unavailable'));
     if (mailtoState.rukoo) return t('settings.general.mailtoRukoo');
     return mailtoState.app ? t('settings.general.mailtoHandler', { app: mailtoState.app }) : t('settings.general.mailtoNone');
   };
@@ -275,7 +280,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const mailtoRow = () => `
     <div class="row static" data-mailto>
       <div class="text"><div class="title">${esc(t('settings.general.mailto'))}</div>
-        <div class="desc" data-mailto-help>${esc(t(mailtoState?.linux ? 'settings.general.mailtoLinuxHelp' : 'settings.general.mailtoHelp'))}</div>
+        <div class="desc" data-mailto-help>${esc(t(mailtoKey('Help')))}</div>
         <div class="value" data-mailto-value>${esc(mailtoValue())}</div></div>
       <button class="btn sm secondary" data-a="mailto-use" ${mailtoDisabled() ? 'disabled' : ''}>${esc(t('settings.general.mailtoUse'))}</button>
     </div>`;
@@ -286,10 +291,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const value = page.querySelector('[data-mailto-value]');
     if (!value) return;
     value.textContent = mailtoValue();
-    page.querySelector('[data-mailto-help]').textContent = t(mailtoState.linux ? 'settings.general.mailtoLinuxHelp' : 'settings.general.mailtoHelp');
+    page.querySelector('[data-mailto-help]').textContent = t(mailtoKey('Help'));
     page.querySelector('[data-a="mailto-use"]').disabled = mailtoDisabled();
   };
-  // The choice is made in Windows Settings; coming back to Rukoo shows the outcome.
+  // Coming back from desktop settings shows the current default handler.
   window.addEventListener('focus', showMailto);
 
   // ----- agents -----
@@ -691,8 +696,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.notifications'), desc: t('settings.general.notificationsHelp'), action: 'toggle:notifications', toggle: s.notifications })}
           ${row({ title: t('settings.general.badge'), value: labelOf(BADGES, s.badge), action: 'badge' })}
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
-          ${row({ title: t('settings.general.closeToTray'), desc: t('settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: s.closeToTray })}
-          ${row({ title: t('settings.general.minimizeToTray'), desc: t('settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
+          ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
+          ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
           ${mailtoRow()}
           ${row({ title: t('settings.general.signature'), value: esc(s.signature || t('common.values.none')), action: 'signature' })}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
@@ -878,6 +883,12 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a.startsWith('account:')) return go('account', { id: a.slice(8) });
     if (a.startsWith('toggle:')) {
       const key = a.slice(7);
+      if (window.mail.platform === 'darwin' && key === 'closeToTray') {
+        // Minimizing to the menu bar also needs the icon. Removing it turns that behavior off.
+        return set(s.closeToTray || s.minimizeToTray
+          ? { closeToTray: false, minimizeToTray: false }
+          : { closeToTray: true });
+      }
       await set({ [key]: !s[key] });
       if (key === 'fitContent' || key === 'darkEmails') ctx.redrawMail();
       return;

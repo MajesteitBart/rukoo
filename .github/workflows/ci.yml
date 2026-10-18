@@ -17,9 +17,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-22.04]
+        include:
+          - os: windows-latest
+            arch: x64
+          - os: ubuntu-22.04
+            arch: x64
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
@@ -63,7 +71,28 @@ jobs:
             sleep 1
             npm run test:e2e
           '
-      - run: npm run dist -- --x64 --publish never
+      - name: Test native macOS desktop interactions
+        if: runner.os == 'macOS'
+        run: npx playwright test test/e2e/macos.spec.js
+      - name: Build Windows or Linux packages
+        if: runner.os != 'macOS'
+        run: npm run dist -- --${{ matrix.arch }} --publish never
+      - name: Build ad-hoc signed macOS test packages
+        if: runner.os == 'macOS'
+        run: npm run dist -- --${{ matrix.arch }} --publish never --config.mac.identity=- --config.mac.notarize=false
+      - name: Test packaged macOS desktop interactions
+        if: runner.os == 'macOS'
+        env:
+          SEM_MAC_PACKAGED: '1'
+        run: npx playwright test test/e2e/macos.spec.js
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'macOS'
+        with:
+          name: macos-evidence-${{ matrix.arch }}
+          path: tmp/macos-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

@@ -14,6 +14,7 @@ function createSecrets(safeStorage, platform = process.platform) {
           throw new Error(t('errors.credentials.linuxKeyring'));
         }
       }
+      if (platform === 'darwin' && text && !available) throw new Error(t('errors.credentials.macKeychain'));
       if (available) return `enc:${safeStorage.encryptString(text).toString('base64')}`;
       return `plain:${Buffer.from(text).toString('base64')}`;
     },
