@@ -149,7 +149,7 @@ npm run dist:mac
 
 The red close button hides the main window while mail keeps syncing. Click Rukoo in the Dock to return to the same reader or draft. **Rukoo Mail → Quit Rukoo Mail** or **⌘Q** quits, asking about unsaved drafts. A separate compose window still asks about its unsaved draft when closed. Tray behavior is off by default; unread counts can appear on the Dock icon.
 
-Use Command instead of Ctrl for mail, compose, calendar and zoom shortcuts. The native Edit menu supports copy, paste, undo and selection, and shortcuts shown in the interface use ⌘. Zoom and traffic-light spacing apply to both main and compose windows.
+Use Command instead of Ctrl for mail, compose, calendar and zoom shortcuts. Mark as read uses **⌘ShiftU**, mark as unread uses **⌘U**, and **⌘Q** remains Quit. The native Edit menu supports copy, paste, undo and selection, and shortcuts shown in the interface use ⌘. Zoom and traffic-light spacing apply to both main and compose windows.
 
 Choose **Settings → General → Email links → Use Rukoo Mail** after installing the app. macOS may request confirmation. If needed, choose Rukoo Mail as the default email reader in **Apple Mail → Settings → General**. Links delivered while Rukoo starts wait until its windows are ready.
 
@@ -187,7 +187,7 @@ For headless Electron tests, provide an X display and a window manager so minimi
 
 ## Releases
 
-Download available Windows, macOS and Linux packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. These builds are currently unsigned.
+Download available Windows, macOS and Linux packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. Windows and Linux builds are unsigned. Mac builds are ad-hoc signed unless the release notes explicitly confirm Developer ID signing and notarization.
 
 Versions follow [Semantic Versioning](https://semver.org): a patch release fixes things, a minor release adds features, and a major release breaks compatibility of behavior, integrations or stored data. Previews use `-alpha.N`, `-beta.N` or `-rc.N` and publish as prereleases. A release is worth making when a new download gives users something: a feature, a visible fix, a security fix or a dependency change that affects the app. Documentation, tests and tooling wait for the next one.
 

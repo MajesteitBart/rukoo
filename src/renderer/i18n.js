@@ -2,7 +2,7 @@ export const { languages, normalizeLanguage, getLanguage, getLocale, setLanguage
 
 // Only application shortcut labels pass through this helper, never user content.
 export function shortcutLabel(label) {
-  return globalThis.mail?.platform === 'darwin' ? label.replace(/\bCtrl\b/g, '⌘') : label;
+  return globalThis.mail?.platform === 'darwin' ? label.replace(/\bCtrl\+Q\b/g, '⌘+Shift+U').replace(/\bCtrl\b/g, '⌘') : label;
 }
 
 export function t(key, params) {

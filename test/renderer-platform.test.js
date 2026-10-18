@@ -21,10 +21,14 @@ test('Mac shortcut labels use Command in both languages without changing user va
       i18n.setLanguage(language);
       assert.match(context.labels.t('composer.actions.sendShortcut'), /⌘\+Enter/);
       assert.equal(context.labels.shortcutLabel('Ctrl+Shift+R'), '⌘+Shift+R');
+      assert.equal(context.labels.shortcutLabel('Ctrl+Q'), '⌘+Shift+U');
+      assert.match(context.labels.t('mailbox.actions.readShortcut'), /⌘\+Shift\+U/);
+      assert.match(context.labels.t('mailbox.actions.unreadShortcut'), /⌘\+U/);
       assert.match(context.labels.t('settings.general.mailtoHandler', { app: 'Ctrl Mail' }), /Ctrl Mail/);
     }
     context.mail.platform = 'linux';
     assert.match(context.labels.t('composer.actions.sendShortcut'), /Ctrl\+Enter/);
+    assert.match(context.labels.t('mailbox.actions.readShortcut'), /Ctrl\+Q/);
   } finally {
     i18n.setLanguage('en');
   }

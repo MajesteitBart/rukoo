@@ -2212,9 +2212,9 @@ document.addEventListener('keydown', (e) => {
   }
   if (ctrl && key === 'u' && list.length) {
     e.preventDefault();
-    return setUnread(list, true);
+    return setUnread(list, !(window.mail.platform === 'darwin' && e.metaKey && e.shiftKey));
   }
-  if (ctrl && key === 'q' && list.length) {
+  if (ctrl && key === 'q' && window.mail.platform !== 'darwin' && list.length) {
     e.preventDefault();
     return setUnread(list, false);
   }

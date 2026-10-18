@@ -21,7 +21,6 @@ test.beforeEach(async () => {
 });
 test.afterEach(async () => {
   if (app) {
-    if (test.info().status !== test.info().expectedStatus) console.log('Mac key events:', await app.evaluate(() => global.__macInputs || []).catch(() => []));
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
     await app.close().catch(() => {});
   }
@@ -100,19 +99,29 @@ test('Command zoom persists and native Edit menu selects mailbox messages', asyn
   await expect.poll(() => app.evaluate(({ app }) => app.dock.getBadge())).toMatch(/^[1-9][0-9]*$/);
   await win.evaluate(() => window.mail.call('updateSettings', { badge: 'none' }));
   await expect.poll(() => app.evaluate(({ app }) => app.dock.getBadge())).toBe('');
-  await app.evaluate(({ BrowserWindow }) => {
-    global.__macInputs = [];
-    BrowserWindow.getAllWindows()[0].webContents.on('before-input-event', (_event, input) => global.__macInputs.push(input));
-  });
-  await win.keyboard.press('Meta+=');
+  // DevTools keyboard events bypass Electron's before-input-event; use native input for zoom.
+  const command = (keyCode) => app.evaluate(({ BrowserWindow }, keyCode) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    w.focus();
+    for (const type of ['keyDown', 'keyUp']) w.webContents.sendInputEvent({ type, keyCode, modifiers: ['meta'] });
+  }, keyCode);
+  await command('=');
   await expect.poll(() => win.evaluate(() => window.mail.call('state').then((s) => s.settings.zoomLevel))).toBe(110);
-  await win.keyboard.press('Meta+0');
+  await command('0');
   await expect.poll(() => win.evaluate(() => window.mail.call('state').then((s) => s.settings.zoomLevel))).toBe(100);
   const menu = await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.map((item) => item.role?.toLowerCase() || item.label));
   expect(menu).toContain('appmenu');
   expect(menu).toContain('Edit');
-  await win.keyboard.press('Meta+a');
+  await app.evaluate(({ Menu, BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].focus();
+    const item = Menu.getApplicationMenu().items.find((item) => item.label === 'Edit').submenu.items.find((item) => item.accelerator === 'Command+A');
+    item.click();
+  });
   await expect(win.locator('.item.checked').first()).toBeVisible();
+  await win.keyboard.press('Meta+Shift+u');
+  await expect(win.locator('.item.unread')).toHaveCount(0);
+  await win.keyboard.press('Meta+u');
+  await expect(win.locator('.item.unread').first()).toBeVisible();
 });
 
 for (const answer of ["Don't save", 'Save']) {
