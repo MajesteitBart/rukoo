@@ -148,8 +148,8 @@ test('a mailto: link in a message opens a compose window with its Cc and Bcc', a
 });
 
 for (const [language, title, value] of [
-  ['en', 'Email links', 'Only in the installed or portable app'],
-  ['nl', 'E-maillinks', 'Alleen in de geïnstalleerde of draagbare app']
+  ['en', 'Email links', process.platform === 'linux' ? 'Install the .deb package to use Rukoo Mail for email links.' : 'Only in the installed or portable app'],
+  ['nl', 'E-maillinks', process.platform === 'linux' ? 'Installeer het .deb-pakket om Rukoo Mail voor e-maillinks te gebruiken.' : 'Alleen in de geïnstalleerde of draagbare app']
 ]) {
   test(`Settings shows Email links, and a run from source can't offer itself (${language})`, async () => {
     await withDemo();

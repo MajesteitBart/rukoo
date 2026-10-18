@@ -3,6 +3,7 @@
 // Child process helpers shared by the CLI adapters: finding the program, a clean environment,
 // reading JSON lines, and killing a process with everything it started.
 const fs = require('fs');
+const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 
@@ -38,10 +39,26 @@ function isFile(file) {
   }
 }
 
-// Every hit for a program name on PATH, through `where` (Windows) or `which -a`.
+function isExecutable(file) {
+  if (!isFile(file)) return false;
+  if (WINDOWS) return true;
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Desktop Linux installations need not have `which`. Walk PATH directly there, preserving spaces
+// and accepting executable symlinks and shebang scripts (such as npm's Codex launcher).
 function onPath(name) {
+  if (!WINDOWS) {
+    const files = (process.env.PATH || '').split(path.delimiter).map((dir) => path.resolve(dir || '.', name));
+    return Promise.resolve([...new Set(files)].filter(isExecutable));
+  }
   return new Promise((resolve) => {
-    execFile(WINDOWS ? 'where' : 'which', WINDOWS ? [name] : ['-a', name], { windowsHide: true, timeout: 5000 }, (err, stdout) => {
+    execFile('where', [name], { windowsHide: true, timeout: 5000 }, (err, stdout) => {
       if (err) return resolve([]);
       resolve(String(stdout).split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
     });
@@ -49,13 +66,13 @@ function onPath(name) {
 }
 
 // The first existing file of the candidates, else the first PATH hit for `name` that is a real
-// program: npm's .cmd/.ps1 shims and extensionless sh scripts cannot be spawned without a shell.
+// program. Windows npm shims need a shell; POSIX executable scripts work directly.
 async function resolveExe(candidates, name) {
-  for (const file of candidates) if (file && isFile(file)) return file;
+  for (const file of candidates) if (file && isExecutable(file)) return file;
   if (!name) return null;
   for (const file of await onPath(name)) {
     if (WINDOWS && !/\.exe$/i.test(file)) continue;
-    if (isFile(file)) return file;
+    if (isExecutable(file)) return file;
   }
   return null;
 }
@@ -90,7 +107,7 @@ function cleanEnv(extra = {}, base = process.env) {
   return env;
 }
 
-// Native programs only: no shell (nothing to quote or inject), no console window.
+// Spawn directly without a shell (nothing to quote or inject), and no Windows console window.
 function start(exe, args, { cwd, env } = {}) {
   const child = spawn(exe, args, { cwd, env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   // A write after the child died raises EPIPE on stdin; the exit handler reports the real problem.

@@ -251,11 +251,11 @@ class CodexAdapter {
     return path.join(npm, 'node_modules', '@openai', pkg, 'vendor', triple, 'bin', 'codex.exe');
   }
 
-  // config.exe, else the npm package's native binary, else the first codex.exe on PATH.
+  // Configured executable, then the usual per-user installation, then PATH.
   async exe() {
     const { exe } = this.settings();
     if (this.exeCache && this.exeCache.configured === exe && Date.now() - this.exeCache.at < EXE_TTL) return this.exeCache.value;
-    const candidates = exe ? [exe] : [this.npmExe()];
+    const candidates = exe ? [exe] : [WINDOWS ? this.npmExe() : path.join(os.homedir(), '.local', 'bin', 'codex')];
     const value = await resolveExe(candidates, exe ? null : WINDOWS ? 'codex.exe' : 'codex');
     this.exeCache = { configured: exe, at: Date.now(), value };
     return value;
@@ -280,7 +280,7 @@ class CodexAdapter {
   // For the settings placeholder: the program Rukoo would run when no path is set.
   defaultExe() {
     if (this.exeCache && !this.exeCache.configured && this.exeCache.value) return this.exeCache.value;
-    const file = this.npmExe();
+    const file = WINDOWS ? this.npmExe() : path.join(os.homedir(), '.local', 'bin', 'codex');
     return file && fs.existsSync(file) ? file : '';
   }
 

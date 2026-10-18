@@ -761,7 +761,7 @@
   "reader.unsubscribe.subject": "Afmelden",
   "reader.unsubscribe.title": "Uitschrijven bij {sender}?",
   "reader.unsubscribe.tooltip": "Afmelden voor deze e-mails",
-  "settings.about.description": "Een e-mailprogramma voor Windows, gebouwd met Electron. Gegevens staan in:",
+  "settings.about.description": "Een e-mailprogramma voor Windows en Linux, gebouwd met Electron. Gegevens staan in:",
   "settings.about.help": "Versie en opslaglocatie",
   "settings.about.title": "Over Rukoo Mail",
   "settings.about.version": "Versie {version}",
@@ -912,6 +912,9 @@
   "settings.general.languageHelp": "Kies de taal voor de hele app.",
   "settings.general.logos": "Afzenderlogo's",
   "settings.general.logosHelp": "Toont het logo van bedrijven die je mailen. Rukoo Mail haalt het één keer op van hun website.",
+  "settings.general.mailtoLinuxHelp": "Open mailto:-links uit je browser en andere apps in Rukoo Mail. Gebruikt de instelling voor de standaard-e-mailapp van je desktop.",
+  "settings.general.mailtoLinuxUnavailable": "Installeer het .deb-pakket om Rukoo Mail voor e-maillinks te gebruiken.",
+  "settings.general.mailtoLinuxFailed": "Kan de standaard-e-mailapp niet instellen. Installeer xdg-utils of kies Rukoo Mail bij de standaardtoepassingen van je desktop.",
   "settings.general.mailto": "E-maillinks",
   "settings.general.mailtoAppDescription": "E-mail, agenda en chat met agents voor Windows",
   "settings.general.mailtoHandler": "Geopend door {app}",
@@ -923,7 +926,7 @@
   "settings.general.minimizeToTray": "Minimaliseren naar het systeemvak",
   "settings.general.minimizeToTrayHelp": "Bij minimaliseren gaat het venster naar het systeemvak in plaats van naar de taakbalk.",
   "settings.general.notifications": "Meldingen",
-  "settings.general.notificationsHelp": "Toon een Windows-melding bij nieuwe e-mails.",
+  "settings.general.notificationsHelp": "Toon een desktopmelding bij nieuwe e-mails.",
   "settings.general.signature": "Handtekening",
   "settings.general.spam": "Spamadressen",
   "settings.general.spamHelp": "Bewerk je lijst met spamafzenders.",
@@ -1005,6 +1008,7 @@
   "setup.signIn.action": "Aanmelden",
   "setup.signIn.pending": "Aanmelden...",
   "setup.signIn.title": "Aanmelden bij {provider}",
+  "errors.credentials.linuxKeyring": "Rukoo kan aanmeldgegevens niet veilig opslaan. Installeer en ontgrendel GNOME Keyring of KWallet, start Rukoo opnieuw en probeer het nogmaals.",
   "setup.title": "E-mail instellen"
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

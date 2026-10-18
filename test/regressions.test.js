@@ -147,6 +147,9 @@ test('attachment names cannot escape the folder or hide an executable', () => {
   assert.ok(RISKY.test(safeName('invoice‮fdp.exe')), 'right-to-left override does not hide .exe');
   assert.ok(RISKY.test(safeName('script.js.')), 'trailing dots are stripped');
   assert.ok(RISKY.test(safeName('Snelkoppeling.LNK')));
+  for (const suffix of ['sh', 'bash', 'zsh', 'fish', 'ksh', 'csh', 'desktop', 'AppImage', 'run']) {
+    assert.ok(RISKY.test(safeName(`invoice.pdf.${suffix}`)), `${suffix} attachments cannot open directly`);
+  }
   assert.ok(!RISKY.test(safeName('Contract-confirmation.pdf')));
   assert.equal(safeName(''), 'attachment');
 });

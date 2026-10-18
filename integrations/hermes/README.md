@@ -17,7 +17,7 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
 
 ## How it finds Rukoo
 
-- **Which devices.** The bridge runs `tailscale status --json` and tries port 47800 on every online Windows and Mac device, the Hermes machine itself included. It skips Linux machines, phones, tagged devices and devices shared from another tailnet. `RUKOO_URL` adds addresses it should try as well.
+- **Which devices.** The bridge runs `tailscale status --json` and tries port 47800 on every online Windows, Linux and Mac device, the Hermes machine itself included. It skips phones, tagged devices and devices shared from another tailnet. `RUKOO_URL` adds addresses it should try as well.
 - **Which key.** Every Rukoo stores the Hermes API key, because it needs the key to chat. The bridge gets the same key from Hermes' `.env` as `RUKOO_KEY`. Both make the MCP token from it, so there is no token to copy, and one setup works for every device.
 - **Proof first.** The bridge doesn't send the token to whatever answers on port 47800. It sends a random challenge, and Rukoo answers with a value only a holder of the same key can compute. That value also covers the address Rukoo took the connection on, so a device that passes the challenge on to a real Rukoo elsewhere gets a proof for the wrong address. Tailscale makes sure each address belongs to one device. The token goes only to devices that get it right.
 - **Which device gets a call.** The bridge asks every Rukoo it found whether it has the chat the call is about (`conversation_id`). That device gets the call. A call without a chat, from WhatsApp for instance, goes to the device you used last: the one with the shortest time since its last keyboard or mouse input.
@@ -72,7 +72,7 @@ A new API server key locks out Rukoo and the bridge alike until both have it. En
 
 | What the agent says or the log shows | What to do |
 |---|---|
-| "Rukoo Mail isn't open on any of the user's devices" | Open Rukoo. Check that the device is on the tailnet and shows up in the "Checked" list, and that "Let Clark use Rukoo" is on. A device that isn't listed is offline in Tailscale, or not Windows or macOS: add it with `RUKOO_URL`. |
+| "Rukoo Mail isn't open on any of the user's devices" | Open Rukoo. Check that the device is on the tailnet and shows up in the "Checked" list, and that "Let Clark use Rukoo" is on. A device that isn't listed is offline in Tailscale, tagged, shared from another tailnet, or not Windows, Linux or macOS: add it with `RUKOO_URL`. |
 | "Rukoo Mail is open on ..., but doesn't have your current API server key" | Enter the API server key from `~/.hermes/.env` in Rukoo under Settings > Agents on that device. |
 | "Rukoo Mail is open on ..., but that version is too old for this bridge" | That device runs a Rukoo from before this bridge, which can't prove it has the key. Install the latest Rukoo there. |
 | "Rukoo Mail on ... refused the key" | The key changed in Rukoo while the bridge was using it. Same fix as above. |

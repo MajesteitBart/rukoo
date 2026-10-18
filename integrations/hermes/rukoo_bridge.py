@@ -8,7 +8,7 @@ it answers the handshake itself, serves the tool list from a cache while Rukoo i
 unreachable Rukoo into a tool error the agent can pass on. The cache also keeps Rukoo's instructions,
 which list the user's skills, for the next handshake.
 
-It finds Rukoo by itself. It asks Tailscale which of the user's Windows and Mac devices are online and
+It finds Rukoo by itself. It asks Tailscale which of the user's Windows, Linux and Mac devices are online and
 tries Rukoo's port on each. A device has to prove that it has the same key before the bridge sends its
 token. A call about a chat goes to the device that has the chat; anything else goes to the device the
 user touched last.
@@ -65,8 +65,8 @@ URLS = [url for url in re.split(r"[\s,]+", os.environ.get("RUKOO_URL", "")) if u
 DISCOVER = os.environ.get("RUKOO_DISCOVER", "1").strip().lower() not in ("0", "false", "no", "off")
 TAILSCALE = os.environ.get("RUKOO_TAILSCALE") or shutil.which("tailscale") or "/usr/bin/tailscale"
 CACHE = Path(os.environ.get("RUKOO_CACHE") or Path(__file__).with_name("rukoo_tools.json"))
-# Rukoo runs on these; the user's servers and phones are left alone.
-DEVICE_OS = {"windows", "macOS"}
+# Desktop operating systems; tagged servers and shared devices are filtered separately.
+DEVICE_OS = {"windows", "macOS", "linux"}
 
 # Tool calls can wait on the desktop (writing a draft waits for the composer). The time it takes to find the
 # device counts toward CALL_TIMEOUT_SECONDS.
@@ -221,7 +221,7 @@ def prove(url):
 
 
 def tailnet_devices(status):
-    """(name, url) for each online Windows or Mac device in `tailscale status --json`, this one included when
+    """(name, url) for each online desktop device in `tailscale status --json`, this one included when
     Hermes runs on the same computer as Rukoo. Tagged devices are servers, and shared ones belong to someone else."""
     devices = []
     for peer in [status.get("Self") or {}, *(status.get("Peer") or {}).values()]:

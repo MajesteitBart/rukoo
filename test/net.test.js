@@ -91,28 +91,39 @@ test('IPv4 addresses written inside IPv6 are checked as IPv4', async () => {
   assert.equal(await request('https://[::ffff:c0a8:1]/'), null);
 });
 
-test('a redirect body is not downloaded', { timeout: 5000 }, async () => {
+test('a redirect body is not downloaded', { timeout: 5000 }, async (t) => {
   let written = 0;
+  let redirectClosed = false;
   const server = await serve((req, res) => {
     if (req.url === '/icon') return res.writeHead(200).end('icon');
     res.writeHead(302, { location: '/icon' });
     const chunk = Buffer.alloc(64 * 1024);
-    const send = () => {
-      while (written < 8 * 1024 * 1024) {
-        written += chunk.length;
-        if (!res.write(chunk)) return res.once('drain', send);
+    // Pace the response so the assertion measures the client's cancellation, not
+    // how much data this operating system can buffer before it observes a close.
+    const tick = setInterval(() => {
+      written += chunk.length;
+      res.write(chunk);
+      if (written >= 8 * 1024 * 1024) {
+        clearInterval(tick);
+        res.end();
       }
-      res.end();
-    };
-    send();
+    }, 10);
+    res.on('close', () => {
+      redirectClosed = true;
+      clearInterval(tick);
+    });
+    res.flushHeaders();
+  });
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
   });
   const o = local(server);
   const res = await request(`${o.base}/start`, { ...o, maxBytes: 1024 });
   assert.equal(res.body.toString(), 'icon');
   await new Promise((r) => setTimeout(r, 200));
+  assert.equal(redirectClosed, true, 'the redirect connection was closed');
   assert.ok(written < 2 * 1024 * 1024, `only a little of the redirect body went out (${written} bytes)`);
-  server.closeAllConnections();
-  server.close();
 });
 
 test('a server that trickles bytes is cut off at the deadline', { timeout: 5000 }, async () => {

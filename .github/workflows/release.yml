@@ -1,4 +1,4 @@
-name: Release Windows executables
+name: Release Windows and Linux packages
 
 on:
   workflow_dispatch:
@@ -17,7 +17,15 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-22.04
+            platform: linux
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       RELEASE_TAG: ${{ inputs.tag }}
@@ -59,9 +67,40 @@ jobs:
 
       - run: npm ci
       - run: npm test
-      - run: npm run test:e2e
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb openbox dbus-x11 gnome-keyring libsecret-tools libgtk-3-0 libnss3 libasound2 libgbm1 libnotify4 libsecret-1-0
 
-      - name: Build installer and portable executable
+      - run: npm run test:e2e
+        if: runner.os == 'Windows'
+      - name: Test Linux desktop interactions
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" dbus-run-session -- bash -euo pipefail -c '
+            desktop_session_dir=$(mktemp -d)
+            export XDG_DATA_HOME="$desktop_session_dir/data"
+            export XDG_RUNTIME_DIR="$desktop_session_dir/runtime"
+            export XDG_CURRENT_DESKTOP=GNOME
+            mkdir -p "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            openbox >/tmp/rukoo-window-manager.log 2>&1 &
+            window_manager_pid=$!
+            cleanup() {
+              kill "$window_manager_pid" 2>/dev/null || true
+              rm -rf "$desktop_session_dir"
+            }
+            trap cleanup EXIT
+            # An isolated, unlocked Secret Service lets Electron encrypt test credentials.
+            # This password protects only the disposable CI keyring, never a user keyring.
+            printf %s rukoo-ci-keyring | gnome-keyring-daemon --unlock --daemonize --components=secrets >/dev/null
+            printf %s ready | timeout 15s secret-tool store --label="Rukoo CI readiness" application rukoo-ci
+            test "$(timeout 15s secret-tool lookup application rukoo-ci)" = ready
+            secret-tool clear application rukoo-ci
+            sleep 1
+            npm run test:e2e
+          '
+
+      - name: Build platform packages
         run: npm run dist -- --x64 --publish never
 
       - name: Verify artifacts and write checksums
@@ -69,22 +108,27 @@ jobs:
         run: |
           $version = $env:RELEASE_TAG.Substring(1)
           $files = @("dist/Rukoo-Mail-Setup-$version.exe", "dist/Rukoo-Mail-Portable-$version.exe")
+          if ($IsLinux) {
+            $files = @("dist/Rukoo-Mail-$version-x86_64.AppImage", "dist/Rukoo-Mail-$version-amd64.deb")
+          }
           $checksums = foreach ($file in $files) {
             if (!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) {
-              throw "Missing or empty release executable: $file"
+              throw "Missing or empty release package: $file"
             }
             $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $([System.IO.Path]::GetFileName($file))"
           }
-          [System.IO.File]::WriteAllText("$pwd/dist/SHA256SUMS.txt", ($checksums -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText("$pwd/dist/SHA256SUMS-${{ matrix.platform }}.txt", ($checksums -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-release
+          name: ${{ matrix.platform }}-release
           path: |
             dist/Rukoo-Mail-Setup-*.exe
             dist/Rukoo-Mail-Portable-*.exe
-            dist/SHA256SUMS.txt
+            dist/Rukoo-Mail-*.AppImage
+            dist/Rukoo-Mail-*.deb
+            dist/SHA256SUMS-*.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -101,14 +145,16 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: windows-release
+          pattern: '*-release'
+          merge-multiple: true
           path: release
 
-      - name: Publish the draft release with executables and checksums
+      - name: Publish the draft release with packages and checksums
         shell: bash
         run: |
           set -euo pipefail
           cd release
+          cat SHA256SUMS-windows.txt SHA256SUMS-linux.txt > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
           flags=(--latest)
           if [[ "$RELEASE_TAG" == *-* ]]; then
@@ -128,5 +174,5 @@ jobs:
             echo "::error::Title the draft \"$RELEASE_TAG - Added ...\" or \"$RELEASE_TAG - Fixed ...\", then re-run the failed jobs."
             exit 1
           fi
-          gh release upload "$RELEASE_TAG" ./*.exe SHA256SUMS.txt --clobber
+          gh release upload "$RELEASE_TAG" ./*.exe ./*.AppImage ./*.deb SHA256SUMS.txt --clobber
           gh release edit "$RELEASE_TAG" --tag "$RELEASE_TAG" --verify-tag --draft=false "${flags[@]}"

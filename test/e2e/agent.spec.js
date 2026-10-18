@@ -778,12 +778,13 @@ test('a wide chat panel gives way, so the reader keeps its 420 px', async () => 
       reader: Math.round(document.querySelector('.reader').getBoundingClientRect().width),
       agent: Math.round(document.querySelector('.agentpane').getBoundingClientRect().width)
     }));
-  expect((await size()).reader).toBeGreaterThanOrEqual(419);
-  expect((await size()).agent).toBeLessThan(560);
+  // Linux window managers deliver resize/layout updates asynchronously.
+  await expect.poll(async () => (await size()).reader).toBeGreaterThanOrEqual(419);
+  await expect.poll(async () => (await size()).agent).toBeLessThan(560);
   // With room to spare the panel takes the width you gave it.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1900, 950));
   await expect.poll(async () => (await size()).agent).toBeGreaterThan(450);
-  expect((await size()).reader).toBeGreaterThanOrEqual(419);
+  await expect.poll(async () => (await size()).reader).toBeGreaterThanOrEqual(419);
 });
 
 test('a PDF is read in a utility process: one that never finishes or takes ever more memory is ended there, the app keeps working, and quitting leaves no reader behind', async () => {
