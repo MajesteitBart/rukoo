@@ -1018,7 +1018,8 @@ app.whenReady().then(() => {
   // Test mode only: lets end-to-end tests simulate server conditions.
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   engine.on('updated', () => {
-    updateApplicationMenu();
+    // The Mac menu follows the language; elsewhere the menu stays off and needs no update.
+    if (process.platform === 'darwin') updateApplicationMenu();
     send('updated');
     if (engine.settings.badge === 'unread') refreshBadge();
     else refreshTray();
