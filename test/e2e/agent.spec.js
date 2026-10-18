@@ -964,6 +964,25 @@ test('the open chat list goes by the last message: a chat moves up as soon as it
   await expect(sub('Call on Thursday')).toHaveText('Hermes · Waiting for you');
 });
 
+test('a chat picked from the list opens with the newest email it was continued from', async () => {
+  await openChat('Call on Thursday');
+  await say('Summarize this');
+  await expect(transcript()).toContainText('You asked: "Summarize this"', { timeout: 10000 });
+  // The reply in Sent continues the same chat.
+  await win.click('[data-view="sent"]');
+  await item('Re: Call on Thursday').click();
+  await win.locator('.agentpane .bui-offer').click();
+  await expect(transcript()).toContainText('You asked: "Summarize this"');
+  // Elsewhere in the inbox, the chat from the list brings back the reply, not the email it started with.
+  await win.click('[data-view="inbox"]');
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.agentpane .ap-empty')).toBeVisible();
+  await win.click('.agentpane [data-ap="history"]');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'Call on Thursday' }).click();
+  await expect(win.locator('.reader-subject')).toHaveText('Re: Call on Thursday');
+  await expect(transcript()).toContainText('You asked: "Summarize this"');
+});
+
 test('after a restart, an agent that lost its session says so and gets the email and a recap', async () => {
   await openChat('Call on Thursday');
   await chip('Summarize').click();
