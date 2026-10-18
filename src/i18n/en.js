@@ -2869,7 +2869,7 @@
     "description": "reader > unsubscribe. src/renderer/app.js (renderReader)"
   },
   "settings.about.description": {
-    "message": "An email client for Windows and Linux, built with Electron. Data is stored in:",
+    "message": "An email client for Windows, macOS and Linux, built with Electron. Data is stored in:",
     "description": "settings > about. src/renderer/settings.js (openSettings)"
   },
   "settings.about.help": {
@@ -3841,6 +3841,58 @@
   "errors.credentials.linuxKeyring": {
     "message": "Rukoo cannot securely save credentials. Install and unlock GNOME Keyring or KWallet, then restart Rukoo and try again.",
     "description": "src/main/secrets.js: account or agent credential save error when Linux has no secure system keyring. No parameters."
+  },
+  "settings.general.mailtoMacHelp": {
+    "message": "Open mailto: links from your browser and other apps in Rukoo Mail. macOS may ask you to confirm the change.",
+    "description": "macOS email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "settings.general.mailtoMacUnavailable": {
+    "message": "Move Rukoo Mail to Applications and open it there to use it for email links.",
+    "description": "macOS email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "settings.general.mailtoMacFailed": {
+    "message": "Could not set the default email app. Open Apple Mail, choose Mail > Settings > General, then select Rukoo Mail as the default email reader.",
+    "description": "macOS email-link integration in Settings > General. src/renderer/settings.js and src/main/main.js."
+  },
+  "errors.credentials.macKeychain": {
+    "message": "Rukoo cannot securely save credentials. Unlock your login keychain in Keychain Access, then restart Rukoo and try again.",
+    "description": "macOS credential storage error. src/main/secrets.js."
+  },
+  "native.menu.view": {"message": "View", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
+  "native.menu.zoomIn": {"message": "Zoom in", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
+  "native.menu.zoomOut": {"message": "Zoom out", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
+  "native.menu.actualSize": {"message": "Actual size", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
+  "native.menu.edit": {
+    "message": "Edit",
+    "description": "macOS native Edit menu command. src/main/main.js."
+  },
+  "native.menu.undo": {
+    "message": "Undo",
+    "description": "macOS native Edit menu command. src/main/main.js."
+  },
+  "native.menu.redo": {
+    "message": "Redo",
+    "description": "macOS native Edit menu command. src/main/main.js."
+  },
+  "native.menu.selectAll": {
+    "message": "Select all",
+    "description": "macOS native Edit menu command. src/main/main.js."
+  },
+  "settings.general.macMenuBarIcon": {
+    "message": "Show menu bar icon",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macMenuBarIconHelp": {
+    "message": "Add Rukoo to the menu bar. Closing the window always keeps Rukoo running; reopen it from the Dock. Press ⌘+Q to quit. Turning this off also turns off minimizing to the menu bar.",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macMinimize": {
+    "message": "Minimize to menu bar",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macMinimizeHelp": {
+    "message": "Hide the minimized window and show a menu bar icon. Reopen Rukoo from that icon or the Dock.",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
   },
   "setup.title": {
     "message": "Set up email",

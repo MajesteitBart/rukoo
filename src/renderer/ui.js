@@ -1,4 +1,4 @@
-import { t, getLocale } from './i18n.js';
+import { t, getLocale, shortcutLabel } from './i18n.js';
 import { icons } from './icons.js';
 
 export const api = (method, ...args) => window.mail.call(method, ...args);
@@ -238,7 +238,7 @@ export function showMenu(anchor, items, { above = false, at = null, align = 'rig
     b.disabled = Boolean(item.disabled);
     const lead = item.checked !== undefined ? (item.checked ? icons.check : '') : item.icon ? icons[item.icon] || item.icon : '';
     b.innerHTML = `<span class="mi">${lead}</span><span class="ml">${esc(item.label)}</span>${item.hint ? `<span class="mh">${esc(item.hint)}</span>` : ''}${
-      item.shortcut ? `<kbd>${esc(item.shortcut)}</kbd>` : ''
+      item.shortcut ? `<kbd>${esc(shortcutLabel(item.shortcut))}</kbd>` : ''
     }`;
     b.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -416,3 +416,29 @@ export function choiceDialog(title, options, current) {
 export function icon(name) {
   return icons[name] || '';
 }
+
+// Native macOS window controls keep their screen size when page zoom changes.
+// Edit menu commands must preserve mailbox shortcuts while text
+// fields and message frames keep Chromium's own editing and selection behavior.
+window.mail.on(({ type, payload }) => {
+  if (type === 'zoom' && window.mail.platform === 'darwin' && Number.isFinite(payload) && payload > 0) {
+    document.documentElement.style.setProperty('--mac-titlebar-inset', `${86 / (payload / 100)}px`);
+    return;
+  }
+  if (type !== 'menu-edit') return;
+  const action = payload?.action;
+  if (!['undo', 'redo', 'selectAll'].includes(action)) return;
+  const active = document.activeElement;
+  if (active?.matches('input, textarea, iframe') || active?.isContentEditable) {
+    api('nativeEdit', action).catch((error) => toast(error.message));
+    return;
+  }
+  (active || document).dispatchEvent(new KeyboardEvent('keydown', {
+    key: action === 'selectAll' ? 'a' : 'z',
+    code: action === 'selectAll' ? 'KeyA' : 'KeyZ',
+    metaKey: true,
+    shiftKey: action === 'redo',
+    bubbles: true,
+    cancelable: true
+  }));
+});

@@ -1,4 +1,4 @@
-import { t, setLanguage, localize } from './i18n.js';
+import { t, setLanguage, localize, shortcutLabel } from './i18n.js';
 import { icons } from './icons.js';
 import {
   api,
@@ -498,7 +498,7 @@ function renderSearch() {
     box.innerHTML = `<span class="s-ic">${icons.search}</span>
       <input id="search" type="search" autocomplete="off" spellcheck="false" data-i18n-aria-label="mailbox.search.label" aria-label="${esc(t('mailbox.search.label'))}"/>
       <button class="search-scope" data-action="search-scope" data-i18n-title="mailbox.search.scope" title="${esc(t('mailbox.search.scope'))}" aria-haspopup="menu"><span></span>${icons.chevronDown}</button>
-      <kbd class="search-kbd">Ctrl+E</kbd>`;
+      <kbd class="search-kbd">${esc(shortcutLabel('Ctrl+E'))}</kbd>`;
     const input = box.querySelector('input');
     input.addEventListener('input', () => {
       S.query = input.value;
@@ -541,7 +541,7 @@ function renderSearch() {
     });
   }
   const input = box.querySelector('input');
-  box.title = `${t('mailbox.search.label')} (Ctrl+E)`;
+  box.title = `${t('mailbox.search.label')} (${shortcutLabel('Ctrl+E')})`;
   input.placeholder = S.searchScope === 'view' ? t('mailbox.search.placeholder', { scope: viewLabel() }) : t('mailbox.search.placeholder', { scope: searchScopeLabel().toLowerCase() });
   box.querySelector('.search-scope span').textContent = searchScopeLabel();
   if (document.activeElement !== input && input.value !== S.query) input.value = S.query;
@@ -1928,7 +1928,7 @@ function renderReader() {
     el.innerHTML = `<div class="reader-empty">
       ${icons.mailOpen}
       <div class="t" data-i18n="reader.empty.title">${esc(t('reader.empty.title'))}</div>
-      <div class="keys"><span><kbd>Ctrl+N</kbd> ${esc(t('composer.titles.new'))}</span><span><kbd>Ctrl+E</kbd> ${esc(t('mailbox.search.label'))}</span><span><kbd>↑</kbd><kbd>↓</kbd> ${esc(t('reader.empty.browse'))}</span></div>
+      <div class="keys"><span><kbd>${esc(shortcutLabel('Ctrl+N'))}</kbd> ${esc(t('composer.titles.new'))}</span><span><kbd>${esc(shortcutLabel('Ctrl+E'))}</kbd> ${esc(t('mailbox.search.label'))}</span><span><kbd>↑</kbd><kbd>↓</kbd> ${esc(t('reader.empty.browse'))}</span></div>
     </div>`;
     return;
   }
@@ -2185,7 +2185,7 @@ document.addEventListener('keydown', (e) => {
   // Its menus (agent picker, history) live on the body, outside the panel.
   if (e.target.closest?.('.agentpane, .bui-menu')) return;
   if (editing(e)) return;
-  if (ctrl && key === 'z') {
+  if (ctrl && key === 'z' && !e.shiftKey) {
     if (runToastAction()) e.preventDefault();
     return;
   }
@@ -2225,9 +2225,9 @@ document.addEventListener('keydown', (e) => {
   }
   if (ctrl && key === 'u' && list.length) {
     e.preventDefault();
-    return setUnread(list, true);
+    return setUnread(list, !(window.mail.platform === 'darwin' && e.metaKey && e.shiftKey));
   }
-  if (ctrl && key === 'q' && list.length) {
+  if (ctrl && key === 'q' && window.mail.platform !== 'darwin' && list.length) {
     e.preventDefault();
     return setUnread(list, false);
   }

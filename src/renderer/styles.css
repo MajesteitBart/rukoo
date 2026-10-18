@@ -442,7 +442,7 @@ kbd {
   display: flex;
   align-items: center;
   z-index: 100;
-  /* Room for the window buttons Windows draws on the right. */
+  /* Room for native window buttons on Windows and Linux. */
   padding-right: 150px;
 }
 .titlebar-brand {
@@ -453,6 +453,15 @@ kbd {
   padding-left: 22px;
   overflow: hidden;
   pointer-events: none;
+}
+/* Traffic lights stay in native screen pixels while page zoom scales this bar.
+ * Keep the brand width aligned with the sidebar and reserve the left inset inside it. */
+:root[data-platform="darwin"] .titlebar {
+  padding-right: 12px;
+}
+:root[data-platform="darwin"] .titlebar-brand {
+  padding-left: var(--mac-titlebar-inset, 86px);
+  min-width: var(--mac-titlebar-inset, 86px);
 }
 .titlebar-icon {
   width: 18px;
