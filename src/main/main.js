@@ -865,6 +865,8 @@ Object.assign(api, {
   agentDecide: (id, itemId, choiceId) => agentHub().decide(agentId(id), agentId(itemId), agentId(choiceId)),
   agentRemove: (id) => agentHub().remove(agentId(id)),
   agentView: (state) => agentHub().view(agentPlain(state)),
+  // The chat the open panel shows, or null; showing a chat reads its answer.
+  agentWatch: (id) => agentHub().watch(id == null ? null : agentId(id)),
   agentUiReply: (requestId, ok, result) => agentHub().uiReply(agentId(requestId), ok === true, result === undefined ? null : result),
   agentPanelReady: () => {
     if (agentGate) agentGate.open();

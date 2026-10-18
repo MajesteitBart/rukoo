@@ -388,7 +388,20 @@ function setAgentOpen(open, { focus = false } = {}) {
   // The folders become a rail while the chat is open; the rail button's label follows.
   if (sidebarCollapsed() !== rail) renderSidebar();
   if (prefs.agentOpen) agentPanel?.opened({ focus });
-  else if ($('.agentpane')?.contains(document.activeElement)) document.activeElement.blur();
+  else {
+    agentPanel?.closed();
+    if ($('.agentpane')?.contains(document.activeElement)) document.activeElement.blur();
+  }
+}
+
+// The chat panel's news (agent/panel.js renderNews): 'unread' when an answer came in a chat you have not seen, 'waiting'
+// when an agent waits for your approval, null for none. The title bar button shows a dot while the panel is closed.
+function setAgentNews(tone) {
+  for (const b of $$('[data-agent-toggle]')) {
+    b.classList.toggle('has-news', Boolean(tone));
+    if (tone) b.dataset.news = tone;
+    else delete b.dataset.news;
+  }
 }
 
 function toggleAgent() {
@@ -2338,6 +2351,7 @@ export const ctx = {
   closeAgent: () => setAgentOpen(false),
   agentOpen: () => Boolean(prefs.agentOpen),
   agentOverlay: () => Boolean(prefs.agentOpen) && window.innerWidth < AGENT_DOCK,
+  agentNews: (tone) => setAgentNews(tone),
   // For settings that change how mail is drawn: the open mail and the editor's quote.
   redrawMail: () => {
     if (S.message) renderReader();

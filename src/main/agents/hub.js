@@ -28,6 +28,11 @@ const MAX_CONTINUED = 20;
 const MAX_NEWER = 3;
 // References a chat keeps per email for the thread check (keepThread()); the newest are at the end.
 const MAX_REFERENCES = 50;
+// How a turn the user has not seen ended (watch()).
+const UNREAD = ['reply', 'error'];
+// What counts as a message for the chat list's order: what the user wrote, what the agent said, and an approval card,
+// which asks the user something. Thinking, tool calls and settings such as the model leave the order alone.
+const MESSAGE_TYPES = new Set(['user', 'assistant', 'approval']);
 const SAVE_MS = 400;
 // While a turn runs, items change all the time; saving all conversations every 400 ms would stall the main thread.
 const SAVE_RUNNING_MS = 2000;
@@ -161,6 +166,8 @@ class AgentHub extends EventEmitter {
     // Attachment copies written for local agents (read_attachment local_path), removed on dispose.
     this.tempDirs = new Set();
     this.viewState = emptyView();
+    // The chat the panel shows while it is open, or null. A turn that ends in any other chat leaves it unread (watch()).
+    this.watching = null;
     // agent → { at, value, pending }: the models and efforts the panel offers (see models()).
     this.modelLists = new Map();
     this.skillLists = new Map();
@@ -431,6 +438,8 @@ class AgentHub extends EventEmitter {
       // Saved before Rukoo tracked this: a chat with a message the agent answered has had its first turn.
       if (typeof c.delivered !== 'boolean') c.delivered = c.items.some((i) => i.type === 'assistant');
       c.needsRecap = c.needsRecap === true;
+      // Kept as how the turn ended, since loading sets every status back to idle. Saved before Rukoo tracked it: read.
+      c.unread = UNREAD.includes(c.unread) ? c.unread : false;
       // Saved before chats could be continued from a newer email: none.
       c.continued = Array.isArray(c.continued) ? c.continued.filter((e) => isObj(e) && typeof e.id === 'string' && e.id).map((e) => ({ ...e, pending: e.pending === true })) : [];
       // Saved before chats had a model and effort of their own: they follow the agent's default.
@@ -578,10 +587,12 @@ class AgentHub extends EventEmitter {
     return this.cfg.displayName(agent);
   }
 
+  // Newest message first, for the panel's chat list (agent/panel.js chatItems).
   list() {
     return [...this.conversations.values()]
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map((c) => {
+      .map((c) => ({ c, lastAt: lastMessageAt(c) }))
+      .sort((a, b) => b.lastAt - a.lastAt)
+      .map(({ c, lastAt }) => {
         const last = [...c.items].reverse().find((i) => (i.type === 'assistant' && !i.interim) || i.type === 'user');
         // A message with only attachments reads as their names.
         const text = last ? last.text || [...(last.files || []).map((f) => f.name), ...(last.emails || []).map((e) => e.subject)].join(', ') : '';
@@ -592,10 +603,31 @@ class AgentHub extends EventEmitter {
           message: c.message,
           origin: c.origin,
           updatedAt: c.updatedAt,
+          lastAt,
           status: c.status,
+          // 'reply' or 'error': how the turn the user has not seen ended. null when they have seen it.
+          unread: c.unread || null,
+          // An approval card in it waits for the user.
+          waiting: c.items.some((i) => i.type === 'approval' && i.status === 'pending'),
           preview: clip(String(text || '').replace(/\s+/g, ' ').trim(), 140)
         };
       });
+  }
+
+  // The panel shows this chat (null: none, or the panel is closed). Showing it reads its answer.
+  watch(id) {
+    const c = id ? this.conversations.get(id) : null;
+    this.watching = c ? c.id : null;
+    if (c && c.unread) this.markUnread(c, false);
+    return true;
+  }
+
+  // unread: false, 'reply' or 'error'. Without touching updatedAt.
+  markUnread(c, unread) {
+    if (c.unread === unread) return;
+    c.unread = unread;
+    this.scheduleSave();
+    this.emitEvent({ kind: 'conversation', conversation: { id: c.id, unread } });
   }
 
   get(id) {
@@ -815,6 +847,8 @@ class AgentHub extends EventEmitter {
       // Set when the agent lost its session and started a new one; until a turn reaches that one, every message
       // carries the email and a recap of the chat (see startOver()).
       needsRecap: false,
+      // 'reply' or 'error' when a turn ended while the chat was not on screen, until the user opens it (watch()).
+      unread: false,
       // Newer emails in the same thread the user continued this chat from, oldest first (see continueFrom()).
       continued: [],
       // Files the user attached to its messages, in the chat's folder (chatfiles.js); read_chat_file reads them.
@@ -865,6 +899,7 @@ class AgentHub extends EventEmitter {
     this.convTokens.delete(c.id);
     for (const [threadId, cid] of this.threads) if (cid === c.id) this.threads.delete(threadId);
     this.conversations.delete(c.id);
+    if (this.watching === c.id) this.watching = null;
     this.files.remove(c.id);
     const adapter = this.adapters.get(c.agent);
     // Optional adapter hook: lets Claude kill the process that belongs to this conversation.
@@ -1582,6 +1617,8 @@ class AgentHub extends EventEmitter {
       if (!turn.errorShown) this.addItem(c, { type: 'notice', text: ERROR_TEXT[error.code], detail: error.detail, tone: 'error', code: error.code, undo: null });
     }
     this.setStatus(c, status === 'error' ? 'error' : 'idle', error);
+    // An answer or an error in a chat that is not on screen waits in the panel's chat list. Stop was the user's own doing.
+    if (status !== 'stopped' && this.watching !== c.id) this.markUnread(c, status === 'error' ? 'error' : 'reply');
     if (error && ['offline', 'unauthorized', 'not-configured', 'not-installed', 'spawn-failed'].includes(error.code)) {
       this.refreshStatus().catch(() => {});
     }
@@ -2141,6 +2178,16 @@ class AgentHub extends EventEmitter {
 
 function oneLine(v) {
   return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+}
+
+// When the chat's last message came (MESSAGE_TYPES); a chat without one counts from when it was made. Items are kept in
+// the order they came, so the last message is the newest.
+function lastMessageAt(c) {
+  for (let i = c.items.length - 1; i >= 0; i--) {
+    const item = c.items[i];
+    if (MESSAGE_TYPES.has(item.type) && Number(item.at)) return Number(item.at);
+  }
+  return Number(c.createdAt) || Number(c.updatedAt) || 0;
 }
 
 // A model name as the agent takes it, or null for the agent's default. strict: throw on anything else (the

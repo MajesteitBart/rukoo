@@ -245,6 +245,14 @@
 .bui-dot--busy {
   background: var(--orange);
 }
+/* Not in BUI: a chat with an answer you have not seen, blue like unread mail. */
+.bui-dot--unread {
+  background: var(--accent);
+}
+/* An empty slot that keeps a row's text in line with the rows that have a dot. */
+.bui-dot--none {
+  visibility: hidden;
+}
 
 /* Buttons: pill shaped, press snaps to .96 like the original (scale is not transitioned). */
 .bui-btn {
@@ -2304,6 +2312,48 @@
 }
 .bui-menu__row.is-checked .bui-menu__check {
   visibility: visible;
+}
+/* Not in BUI: a row with a second line, such as a chat in the chat list with its agent and what it is doing. The
+ * status mark and the check sit on the first line. 6 + 18 + 2 + 16 + 6 = 48px. */
+.bui-menu__row--two {
+  height: auto;
+  align-items: flex-start;
+  padding: 6px 8px;
+}
+.bui-menu__mark,
+.bui-menu__row--two .bui-menu__check {
+  display: flex;
+  height: 18px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+.bui-menu__mark {
+  width: 12px;
+}
+.bui-menu__text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.bui-menu__top {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+.bui-menu__row--two .bui-menu__label {
+  line-height: 18px;
+}
+.bui-menu__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--ink-3);
 }
 .bui-menu__sep {
   margin: 4px 0;

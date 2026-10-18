@@ -1216,44 +1216,72 @@ export function offerRow({ label, sub, monogram: mono, title, onClick } = {}) {
 
 let openMenu = null;
 
+// The agents' connection states, and a chat's: 'unread' (an answer you have not seen), 'waiting' (for your approval),
+// 'error', and 'none' (an empty slot that keeps the rows aligned).
+const DOT_TONES = { ready: 'ready', offline: 'offline', unauthorized: 'offline', error: 'offline', busy: 'busy', waiting: 'busy', unread: 'unread', none: 'none' };
 function statusDot(status) {
   if (status === 'running') return icon('spinner');
-  const tone = status === 'ready' ? 'ready' : status === 'offline' || status === 'unauthorized' ? 'offline' : status === 'busy' ? 'busy' : null;
+  const tone = DOT_TONES[status] || null;
   return h('span', { class: 'bui-dot' + (tone ? ` bui-dot--${tone}` : ''), 'aria-hidden': 'true' });
 }
 
+// A row with sub has a second line under its label, and its tag sits on the first line, after the label.
+function menuRow(it, pick) {
+  const label = h('span', { class: 'bui-menu__label', text: it.label || '' });
+  const tag = it.tag ? h('span', { class: 'bui-menu__tag', text: it.tag }) : null;
+  const two = Boolean(it.sub);
+  const row = h(
+    'button',
+    {
+      type: 'button',
+      class: 'bui-menu__row' + (two ? ' bui-menu__row--two' : '') + (it.checked ? ' is-checked' : ''),
+      role: 'option',
+      'aria-selected': String(Boolean(it.checked)),
+      'data-menu-row': '',
+      'data-id': it.id == null ? null : String(it.id),
+      title: it.title || null
+    },
+    it.icon ? h('span', { class: 'bui-menu__ico' }, it.icon instanceof Node ? it.icon : icon(it.icon, 14)) : null,
+    it.status ? (two ? h('span', { class: 'bui-menu__mark' }, statusDot(it.status)) : statusDot(it.status)) : null,
+    two ? h('span', { class: 'bui-menu__text' }, h('span', { class: 'bui-menu__top' }, label, tag), h('span', { class: 'bui-menu__sub', text: it.sub })) : label,
+    two ? null : tag,
+    h('span', { class: 'bui-menu__check' }, icon('check', 13, 2.5))
+  );
+  row.disabled = Boolean(it.disabled);
+  row.addEventListener('click', () => pick(it));
+  return row;
+}
+
+// update(items) redraws the rows of a menu that is open, such as the chat list while a chat finishes; the row with
+// the keyboard focus keeps it when it is still there.
 export function glideMenu({ items = [], anchor, onPick, align = 'left', width } = {}) {
   if (openMenu) openMenu.close();
   const hl = h('span', { class: 'bui-glide__hl', 'aria-hidden': 'true' });
   const list = h('div', { class: 'bui-menu__list bui-glide', role: 'listbox' }, hl);
-  const rows = [];
-  for (const it of items) {
-    if (!it) continue;
-    if (it.separator) {
-      list.append(h('div', { class: 'bui-menu__sep', role: 'separator' }));
-      continue;
+  let rows = [];
+  const pick = (it) => {
+    close();
+    if (onPick) onPick(it.id, it);
+  };
+  function fill(next) {
+    rows = [];
+    list.replaceChildren(hl);
+    for (const it of next) {
+      if (!it) continue;
+      if (it.separator) {
+        list.append(h('div', { class: 'bui-menu__sep', role: 'separator' }));
+        continue;
+      }
+      if (it.heading) {
+        list.append(h('div', { class: 'bui-menu__heading', text: it.heading }));
+        continue;
+      }
+      const row = menuRow(it, pick);
+      rows.push(row);
+      list.append(row);
     }
-    if (it.heading) {
-      list.append(h('div', { class: 'bui-menu__heading', text: it.heading }));
-      continue;
-    }
-    const row = h(
-      'button',
-      { type: 'button', class: 'bui-menu__row' + (it.checked ? ' is-checked' : ''), role: 'option', 'aria-selected': String(Boolean(it.checked)), 'data-menu-row': '', title: it.title || null },
-      it.icon ? h('span', { class: 'bui-menu__ico' }, it.icon instanceof Node ? it.icon : icon(it.icon, 14)) : null,
-      it.status ? statusDot(it.status) : null,
-      h('span', { class: 'bui-menu__label', text: it.label || '' }),
-      it.tag ? h('span', { class: 'bui-menu__tag', text: it.tag }) : null,
-      h('span', { class: 'bui-menu__check' }, icon('check', 13, 2.5))
-    );
-    row.disabled = Boolean(it.disabled);
-    row.addEventListener('click', () => {
-      close();
-      if (onPick) onPick(it.id, it);
-    });
-    rows.push(row);
-    list.append(row);
   }
+  fill(items);
   const el = h('div', { class: 'bui bui-menu', style: width ? { width: `${width}px` } : null }, list);
 
   function moveTo(target) {
@@ -1309,7 +1337,16 @@ export function glideMenu({ items = [], anchor, onPick, align = 'left', width } 
       close();
     }
   }
-  const menu = { el, close };
+  function update(next) {
+    if (openMenu !== menu) return;
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.id : undefined;
+    fill(next);
+    hl.style.opacity = '0';
+    if (focused === undefined) return;
+    // When the row that had the focus is gone, the first row takes it, so the focus stays in the menu.
+    (rows.find((r) => r.dataset.id === focused && !r.disabled) || rows.find((r) => !r.disabled))?.focus();
+  }
+  const menu = { el, close, update };
   openMenu = menu;
   document.body.append(el);
 

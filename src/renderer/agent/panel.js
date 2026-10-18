@@ -184,7 +184,11 @@ export function mountAgentPanel(ctx) {
     draft: { model: null, effort: null },
     // agent → the models and efforts main offers (agentModels), and the agents whose list is loading.
     models: {},
-    loadingModels: new Set()
+    loadingModels: new Set(),
+    // Main's list of chats, newest message first (agentList), for the bell and its menu.
+    sessions: [],
+    // The chat main last heard is on screen (agentWatch): undefined until the panel has told it.
+    watching: undefined
   };
 
   pane.innerHTML = `
@@ -194,7 +198,7 @@ export function mountAgentPanel(ctx) {
         <div class="ap-line"><span class="ap-agent"></span><span class="ap-dot" data-state="starting"></span></div>
         <div class="ap-title"></div>
       </div>
-      <button class="icon-btn sm" data-ap="history" aria-haspopup="menu">${icons.clock}</button>
+      <button class="icon-btn sm ap-bell" data-ap="history" aria-haspopup="menu">${icons.bell}<span class="ap-count" aria-hidden="true" hidden></span></button>
       <button class="icon-btn sm" data-ap="new">${icons.plus}</button>
       <button class="icon-btn sm" data-ap="close">${icons.close}</button>
     </header>
@@ -281,11 +285,13 @@ export function mountAgentPanel(ctx) {
   }
 
   function localizeChrome() {
-    for (const [action, key] of [['history', 'agent.panel.history'], ['new', 'agent.panel.new'], ['close', 'agent.panel.close'], ['jump', 'agent.panel.jump']]) {
+    for (const [action, key] of [['new', 'agent.panel.new'], ['close', 'agent.panel.close'], ['jump', 'agent.panel.jump']]) {
       const b = $(`[data-ap="${action}"]`, pane);
       b.title = t(key);
       b.setAttribute('aria-label', t(key));
     }
+    // The bell's label says how many chats have news.
+    renderNews();
     transcript.setAttribute('aria-label', t('agent.panel.transcript'));
     $('.ap-drop-label', pane).textContent = t('agent.panel.dropHere');
   }
@@ -904,6 +910,7 @@ export function mountAgentPanel(ctx) {
     renderHead();
     renderTranscript();
     refreshComposer();
+    watch();
   }
 
   function showEmpty() {
@@ -912,6 +919,7 @@ export function mountAgentPanel(ctx) {
     renderHead();
     renderEmpty();
     refreshComposer();
+    watch();
   }
 
   // Only before the chat starts: the email went to the agent with the first message, so a chat keeps it.
@@ -1605,24 +1613,92 @@ export function mountAgentPanel(ctx) {
       .catch((err) => showError(err));
   }
 
-  // ---------- history ----------
+  // ---------- chats ----------
 
-  async function showHistory(anchor) {
-    let list = [];
+  // Several chats can run at once: the user starts one, opens another email, and the first goes on. The bell in the
+  // header counts the chats with news, and its menu lists every chat, newest message first, with what each is doing.
+  const onScreen = (id) => ctx.agentOpen() && Boolean(P.conv) && P.conv.id === id;
+  // News: an answer the user has not seen, or an approval waiting for them. The chat on screen has none.
+  const news = () => P.sessions.filter((s) => (s.unread || s.waiting) && !onScreen(s.id));
+
+  function renderNews() {
+    const list = news();
+    const bell = $('[data-ap="history"]', pane);
+    const count = $('.ap-count', bell);
+    const tone = list.some((s) => s.waiting) ? 'waiting' : 'unread';
+    bell.classList.toggle('has-news', list.length > 0);
+    bell.dataset.tone = tone;
+    count.hidden = !list.length;
+    count.textContent = list.length > 99 ? '99+' : String(list.length);
+    const label = list.length ? t('agent.panel.historyNews', { count: list.length }) : t('agent.panel.history');
+    bell.title = label;
+    bell.setAttribute('aria-label', label);
+    // With the panel closed, the title bar button says there is news.
+    ctx.agentNews?.(list.length ? tone : null);
+  }
+
+  // Tells main which chat is on screen: an answer that comes in it is read, one in any other chat waits in the list.
+  function watch() {
+    const id = ctx.agentOpen() && P.conv ? P.conv.id : null;
+    if (id !== P.watching) {
+      P.watching = id;
+      api('agentWatch', id).catch(() => {});
+    }
+    const shown = id && P.sessions.find((s) => s.id === id);
+    if (shown) shown.unread = null;
+    renderNews();
+  }
+
+  // Read again a moment after anything that changes a chat in the list: a turn starts or ends, an approval comes or is
+  // answered, a chat is read, named, started or deleted.
+  let sessionsTimer = null;
+  let chatsMenu = null;
+  function loadSessions() {
+    clearTimeout(sessionsTimer);
+    sessionsTimer = setTimeout(async () => {
+      try {
+        P.sessions = await api('agentList');
+      } catch (_) {
+        return;
+      }
+      renderNews();
+      chatsMenu?.update(chatItems());
+    }, 120);
+  }
+
+  // What a chat is doing, in the order it matters to the user. unread says how the turn ended ('reply' or 'error'), also
+  // after a restart, when every chat's status is idle again.
+  const chatState = (s) => (s.waiting ? 'waiting' : s.status === 'running' ? 'running' : s.unread === 'error' ? 'error' : s.unread ? 'unread' : 'none');
+  const STATE_TEXT = { waiting: 'agent.items.waiting', running: 'agent.panel.chatWorking', unread: 'agent.panel.chatReady', error: 'agent.panel.chatFailed' };
+  // The preview starts an answer, which can be Markdown: on one line its list marks, heading marks and bold are noise.
+  const plain = (text) => String(text || '').replace(/^\s*(?:[-*+>]|#{1,6}|\d+[.)])\s+/, '').replace(/\*\*|__|`/g, '');
+
+  // Every chat, newest message first (main keeps at most 170): one the bell counts is always in the list, which scrolls.
+  function chatItems() {
+    const items = P.sessions.map((s) => {
+      const state = chatState(s);
+      const what = STATE_TEXT[state] ? t(STATE_TEXT[state]) : plain(s.preview);
+      return {
+        id: s.id,
+        label: s.title || t('agent.panel.newChat'),
+        tag: listTime(s.lastAt || s.updatedAt),
+        sub: what ? `${agentName(s.agent)} · ${what}` : agentName(s.agent),
+        status: state,
+        checked: Boolean(P.conv && s.id === P.conv.id)
+      };
+    });
+    if (!items.length) items.push({ id: '', label: t('agent.panel.noHistory'), tag: '', disabled: true });
+    return items;
+  }
+
+  async function showChats(anchor) {
     try {
-      list = await api('agentList');
+      P.sessions = await api('agentList');
     } catch (err) {
       return showError(err);
     }
-    const items = list.slice(0, 40).map((c) => ({
-      id: c.id,
-      label: c.title || t('agent.panel.newChat'),
-      tag: `${agentName(c.agent)} · ${listTime(c.updatedAt)}`,
-      status: c.status === 'running' ? 'running' : c.status === 'error' ? 'offline' : undefined,
-      checked: Boolean(P.conv && c.id === P.conv.id)
-    }));
-    if (!items.length) items.push({ id: '', label: t('agent.panel.noHistory'), tag: '', disabled: true });
-    B.glideMenu({ items, anchor, align: 'right', onPick: (id) => id && pickConversation(id) });
+    renderNews();
+    chatsMenu = B.glideMenu({ items: chatItems(), anchor, align: 'right', width: Math.min(300, window.innerWidth - 16), onPick: (id) => id && openChat(id) });
   }
 
   // A chat you chose stays while the email on screen finishes loading.
@@ -1631,9 +1707,30 @@ export function mountAgentPanel(ctx) {
     P.keepFor = m ? m.id : S.selectedId || null;
   }
 
-  function pickConversation(id) {
+  // A chat picked from the list opens with its email: the newest email it has, which may have moved since (main finds
+  // it again by its Message-ID). The chat shows first; its email follows unless the user went on meanwhile.
+  async function openChat(id) {
     keepChat();
-    return openConversation(id);
+    const before = S.selectedId;
+    await openConversation(id);
+    const conv = P.conv;
+    if (!conv || conv.id !== id) return;
+    const refs = [...(conv.continued || [])].reverse().concat(conv.message ? [conv.message] : []);
+    if (!refs.length) return;
+    let target = null;
+    for (const ref of refs) {
+      try {
+        target = await api('agentLocate', { id: ref.id, messageHeader: ref.messageId || null, accountId: ref.accountId || null });
+      } catch (_) {
+        target = null;
+      }
+      if (target) break;
+    }
+    if (!P.conv || P.conv.id !== id || S.selectedId !== before) return;
+    if (!target) return toast(t('agent.panel.sourceGone'));
+    if (target === S.selectedId) return;
+    P.keepFor = target;
+    ctx.openMessage(target);
   }
 
   // ---------- scrolling ----------
@@ -1670,7 +1767,7 @@ export function mountAgentPanel(ctx) {
     if (!b || !pane.contains(b)) return;
     switch (b.dataset.ap) {
       case 'history':
-        return showHistory(b);
+        return showChats(b);
       case 'new':
         P.detached = false;
         P.draft = { model: null, effort: null };
@@ -1740,6 +1837,8 @@ export function mountAgentPanel(ctx) {
   });
 
   function onConversation(conv) {
+    // Started, deleted, named, read or left unread: the bell and the chat list follow.
+    loadSessions();
     if (conv.removed) {
       if (P.conv && P.conv.id === conv.id) showEmpty();
       return;
@@ -1764,6 +1863,9 @@ export function mountAgentPanel(ctx) {
     if (item.type === 'approval' && item.status === 'pending' && (!ctx.agentOpen() || !P.conv || P.conv.id !== conversationId)) {
       toast(t('agent.panel.needsYou'), { action: { label: t('agent.panel.show'), run: () => reveal(conversationId) } });
     }
+    // A message moves its chat up the list (main's lastMessageAt), and an approval card waits for the user. New text
+    // comes as deltas, which leave the order alone.
+    if (item.type === 'approval' || item.type === 'user' || item.type === 'assistant') loadSessions();
     if (!P.conv || P.conv.id !== conversationId) return;
     // Main names an untitled chat after its first message without a conversation event; follow suit.
     if (item.type === 'user' && !P.conv.title && item.text) {
@@ -1808,6 +1910,8 @@ export function mountAgentPanel(ctx) {
   }
 
   function onStatus({ conversationId, status, error }) {
+    // Any chat: the list shows which ones are working.
+    loadSessions();
     if (!P.conv || P.conv.id !== conversationId) return;
     P.conv.status = status;
     chat.setRunning(status === 'running');
@@ -1980,18 +2084,29 @@ export function mountAgentPanel(ctx) {
   refreshComposer();
   loadAgents();
   loadSkills();
+  // After a reload main may still think the chat from before is on screen.
+  watch();
+  loadSessions();
   // Open since the last session: follow the email that is already on screen.
   if (ctx.agentOpen()) sync();
 
   return {
     // The panel became visible: catch up with the email on screen.
     opened({ focus = false } = {}) {
-      sync();
+      // Main hears which chat is on screen only once the panel has caught up with the email on screen: while it was
+      // closed it kept the chat from before, which may be about another email, and that chat's reply is still unread.
+      sync()
+        .catch(() => {})
+        .then(() => watch());
       loadSkills();
       loadModels(currentAgent(), true);
       loadOwnSkills(currentAgent());
       if (focus) chat.focus();
       follow(true);
+    },
+    // The panel was closed: an answer in the chat it showed is news again.
+    closed() {
+      watch();
     },
     // What is on screen changed (an email, the composer): follow it, and let draft cards check their composer.
     sync() {

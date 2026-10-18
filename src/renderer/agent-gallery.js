@@ -724,6 +724,36 @@ async function check() {
   document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
   ok(!document.querySelector('.bui-menu'), 'outside pointerdown closes the picker');
 
+  // The chat list under the bell: two-line rows with a status mark and the time on the first line. update() redraws
+  // an open menu, and the row with the focus keeps it.
+  const bell = document.createElement('button');
+  document.body.append(bell);
+  const chats = (doing) => [
+    { id: 'a', label: 'Call on Thursday', tag: '10:42', sub: `Claude · ${doing}`, status: doing === 'Working…' ? 'running' : 'unread' },
+    { id: 'b', label: 'Your parcel is on its way', tag: '10:40', sub: 'Hermes · Waiting for you', status: 'waiting' }
+  ];
+  const pickedChats = [];
+  const chatList = bui.glideMenu({ items: chats('Working…'), anchor: bell, onPick: (id) => pickedChats.push(id) });
+  const chatRow = (id) => chatList.el.querySelector(`.bui-menu__row[data-id="${id}"]`);
+  ok(
+    chatRow('a').classList.contains('bui-menu__row--two') &&
+      chatRow('a').querySelector('.bui-menu__mark .bui-spin') &&
+      chatRow('a').querySelector('.bui-menu__top .bui-menu__tag')?.textContent === '10:42' &&
+      chatRow('a').querySelector('.bui-menu__sub')?.textContent === 'Claude · Working…',
+    'a two-line row has its mark, the time on its first line and its second line'
+  );
+  ok(chatRow('b').querySelector('.bui-dot--busy'), 'a chat waiting for approval has an orange dot');
+  key(document.activeElement, 'ArrowDown');
+  ok(document.activeElement === chatRow('b'), 'ArrowDown moves to the second chat');
+  chatList.update(chats('Reply ready'));
+  ok(chatRow('a').querySelector('.bui-dot--unread') && chatRow('a').querySelector('.bui-menu__sub').textContent === 'Claude · Reply ready', 'update() redraws the rows of the open menu');
+  ok(document.activeElement === chatRow('b'), 'the row with the focus keeps it after update()');
+  chatRow('a').click();
+  ok(pickedChats[0] === 'a' && !document.querySelector('.bui-menu'), 'picking a chat reports its id and closes the list');
+  chatList.update(chats('Working…'));
+  ok(!document.querySelector('.bui-menu'), 'update() on a closed menu draws nothing');
+  bell.remove();
+
   // attachments: a ready one has its x; a pending one has none, is busy and says what is being added. A holding
   // composer sends nothing, starts no command and keeps the text; Send comes back once it stops holding.
   const removed = [];
