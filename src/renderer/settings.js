@@ -696,8 +696,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.notifications'), desc: t('settings.general.notificationsHelp'), action: 'toggle:notifications', toggle: s.notifications })}
           ${row({ title: t('settings.general.badge'), value: labelOf(BADGES, s.badge), action: 'badge' })}
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
-          ${row({ title: t('settings.general.closeToTray'), desc: t('settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: s.closeToTray })}
-          ${row({ title: t('settings.general.minimizeToTray'), desc: t('settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
+          ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
+          ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
           ${mailtoRow()}
           ${row({ title: t('settings.general.signature'), value: esc(s.signature || t('common.values.none')), action: 'signature' })}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
@@ -883,6 +883,12 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a.startsWith('account:')) return go('account', { id: a.slice(8) });
     if (a.startsWith('toggle:')) {
       const key = a.slice(7);
+      if (window.mail.platform === 'darwin' && key === 'closeToTray') {
+        // Minimizing to the menu bar also needs the icon. Removing it turns that behavior off.
+        return set(s.closeToTray || s.minimizeToTray
+          ? { closeToTray: false, minimizeToTray: false }
+          : { closeToTray: true });
+      }
       await set({ [key]: !s[key] });
       if (key === 'fitContent' || key === 'darkEmails') ctx.redrawMail();
       return;

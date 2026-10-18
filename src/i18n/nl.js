@@ -1021,6 +1021,10 @@
   "native.menu.undo": "Maak ongedaan",
   "native.menu.redo": "Opnieuw",
   "native.menu.selectAll": "Selecteer alles",
+  "settings.general.macMenuBarIcon": "Toon menubalkicoon",
+  "settings.general.macMenuBarIconHelp": "Voeg Rukoo toe aan de menubalk. Rukoo blijft altijd actief wanneer je het venster sluit; open het opnieuw via het Dock. Druk op ⌘+Q om te stoppen. Als je dit uitzet, wordt minimaliseren naar de menubalk ook uitgezet.",
+  "settings.general.macMinimize": "Minimaliseren naar menubalk",
+  "settings.general.macMinimizeHelp": "Verberg het geminimaliseerde venster en toon een menubalkicoon. Open Rukoo opnieuw via dat icoon of het Dock.",
   "setup.title": "E-mail instellen"
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

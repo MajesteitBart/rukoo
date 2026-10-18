@@ -3862,6 +3862,22 @@
     "message": "Select all",
     "description": "macOS native Edit menu command. src/main/main.js."
   },
+  "settings.general.macMenuBarIcon": {
+    "message": "Show menu bar icon",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macMenuBarIconHelp": {
+    "message": "Add Rukoo to the menu bar. Closing the window always keeps Rukoo running; reopen it from the Dock. Press ⌘+Q to quit. Turning this off also turns off minimizing to the menu bar.",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macMinimize": {
+    "message": "Minimize to menu bar",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macMinimizeHelp": {
+    "message": "Hide the minimized window and show a menu bar icon. Reopen Rukoo from that icon or the Dock.",
+    "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
   "setup.title": {
     "message": "Set up email",
     "description": "setup. src/renderer/setup.js (showGrid)"

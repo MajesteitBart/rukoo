@@ -26,6 +26,16 @@ test.afterEach(async () => {
   }
   removeDir(profile);
 });
+// Playwright's page screenshot clips zoomed Electron pages to CSS-pixel dimensions.
+// Capture the compositor surface to keep the complete window at every zoom level.
+async function capture(page, filename) {
+  const png = await app.evaluate(async ({ BrowserWindow }, url) => {
+    const window = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL() === url);
+    return (await window.webContents.capturePage()).toPNG().toString('base64');
+  }, page.url());
+  fs.writeFileSync(path.join(evidence, filename), Buffer.from(png, 'base64'));
+}
+
 async function demo() {
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible();
@@ -43,7 +53,7 @@ test('native Mac layout, localized Command hints and zoom work in both windows',
   await demo();
   fs.mkdirSync(evidence, { recursive: true });
   await expect(win.locator('html')).toHaveAttribute('data-platform', 'darwin');
-  await win.screenshot({ path: path.join(evidence, 'inbox.png') });
+  await capture(win, 'inbox.png');
   const editor = await compose();
   await editor.locator('[data-field="subject"]').fill('Mac desktop support');
   await editor.locator('.editor').fill('Hi Sanne,\n\nThis is a demo draft in Rukoo on macOS.');
@@ -58,8 +68,13 @@ test('native Mac layout, localized Command hints and zoom work in both windows',
     await expect.poll(() => win.locator('[data-mailto-help]').textContent()).toContain('macOS');
     await win.waitForTimeout(300);
     await win.locator('[data-mailto]').scrollIntoViewIfNeeded();
-    await win.screenshot({ path: path.join(evidence, `settings-${theme}-${language}-${zoom}.png`) });
-    await editor.screenshot({ path: path.join(evidence, `compose-${theme}-${language}-${zoom}.png`) });
+    await capture(win, `settings-${theme}-${language}-${zoom}.png`);
+    expect(await editor.evaluate(() => {
+      const footer = document.querySelector('.composer-bar').getBoundingClientRect();
+      const send = document.querySelector('[data-c="send"]').getBoundingClientRect();
+      return footer.bottom <= innerHeight + 1 && send.right <= innerWidth + 1;
+    })).toBe(true);
+    await capture(editor, `compose-${theme}-${language}-${zoom}.png`);
   }
 });
 
@@ -148,3 +163,18 @@ for (const answer of ["Don't save", 'Save']) {
     }
   });
 }
+
+test('menu bar icon setting reflects minimize behavior without changing normal Mac close behavior', async () => {
+  await demo();
+  await win.click('[data-action="settings"]');
+  const icon = win.locator('[data-a="toggle:closeToTray"]');
+  await expect(icon).toContainText('Show menu bar icon');
+  await expect(icon).toContainText('Dock');
+  await win.click('[data-a="toggle:minimizeToTray"]');
+  await expect(icon.locator('.switch')).toHaveClass(/on/);
+  await icon.click();
+  expect(await win.evaluate(() => window.mail.call('state').then(({ settings }) => [settings.closeToTray, settings.minimizeToTray]))).toEqual([false, false]);
+  await expect(icon.locator('.switch')).not.toHaveClass(/on/);
+  await icon.click();
+  expect(await win.evaluate(() => window.mail.call('state').then(({ settings }) => [settings.closeToTray, settings.minimizeToTray]))).toEqual([true, false]);
+});
