@@ -16,7 +16,7 @@ Translation labels have descriptive keys and screen context in the [English sour
 | --- | --- | --- |
 | Windows 10 and 11, x64 | Supported | Installer and portable `.exe` |
 | Linux, x64 | Supported | `.deb` for Ubuntu and Debian, AppImage for other distributions. See [Linux](#linux). |
-| macOS 13 or newer, Apple Silicon and Intel | Experimental | DMG and ZIP, not notarized. See [macOS](#macos-experimental). |
+| macOS 13 or newer, Apple Silicon and Intel | Experimental | DMG and ZIP, notarized only when the release notes say so. See [macOS](#macos-experimental). |
 
 Releases up to v1.2.0 contain only Windows packages; later releases add Linux and macOS packages. You can also [run Rukoo from source](#run-it) on all three.
 
@@ -153,7 +153,7 @@ npm run dist
 
 ## macOS (experimental)
 
-macOS support is experimental. Native CI runs the tests on Apple Silicon and Intel, but few people have used Rukoo on a real Mac yet, and the builds aren't notarized. If you try it, please report your findings in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74): what works, what breaks, your Mac model and your macOS version.
+macOS support is experimental. Native CI runs the tests on Apple Silicon and Intel, but few people have used Rukoo on a real Mac yet, and builds are only notarized when the release notes say so. If you try it, please report your findings in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74): what works, what breaks, your Mac model and your macOS version.
 
 macOS 13 or newer is required by the bundled Electron version. Choose `arm64` for Apple Silicon or `x64` for Intel. Open the DMG, drag Rukoo Mail to Applications and launch it there; ZIP builds contain the same app bundle. To build both architectures on a Mac:
 
