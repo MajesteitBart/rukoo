@@ -150,6 +150,10 @@ test('attachment names cannot escape the folder or hide an executable', () => {
   for (const suffix of ['sh', 'bash', 'zsh', 'fish', 'ksh', 'csh', 'desktop', 'AppImage', 'run']) {
     assert.ok(RISKY.test(safeName(`invoice.pdf.${suffix}`)), `${suffix} attachments cannot open directly`);
   }
+  // macOS: installers, scripts, Terminal settings (which can run a startup command) and location files.
+  for (const suffix of ['dmg', 'pkg', 'mpkg', 'command', 'tool', 'terminal', 'scpt', 'scptd', 'applescript', 'workflow', 'app', 'prefPane', 'fileloc', 'inetloc', 'webloc']) {
+    assert.ok(RISKY.test(safeName(`invoice.pdf.${suffix}`)), `${suffix} attachments cannot open directly`);
+  }
   assert.ok(!RISKY.test(safeName('Contract-confirmation.pdf')));
   assert.equal(safeName(''), 'attachment');
 });
