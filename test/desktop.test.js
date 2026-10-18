@@ -39,11 +39,14 @@ test('Mac default mail registration is explicit and never changes a source or is
 
 test('Mac menus retain native quit, editing and window actions while routing mail shortcuts', () => {
   const actions = [];
-  const menu = macMenu(t, (action) => actions.push(action));
+  const zooms = [];
+  const menu = macMenu(t, (action) => actions.push(action), (action) => zooms.push(action));
   assert.equal(menu[0].role, 'appMenu');
   const edit = menu[1].submenu;
   for (const item of edit.filter((item) => item.click)) item.click();
   assert.deepEqual(actions, ['undo', 'redo', 'selectAll']);
   assert.ok(edit.some((item) => item.role === 'copy'));
-  assert.ok(menu[2].submenu.some((item) => item.role === 'close'));
+  for (const item of menu[2].submenu) item.click();
+  assert.deepEqual(zooms, ['in', 'in', 'out', 'reset']);
+  assert.ok(menu[3].submenu.some((item) => item.role === 'close'));
 });

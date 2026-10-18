@@ -34,7 +34,7 @@ class MacMailClient {
   register() { return this.available && this.app.setAsDefaultProtocolClient('mailto'); }
 }
 
-function macMenu(t, edit) {
+function macMenu(t, edit, zoom) {
   return [
     { role: 'appMenu' },
     { label: t('native.menu.edit'), submenu: [
@@ -44,6 +44,12 @@ function macMenu(t, edit) {
       { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'pasteAndMatchStyle' },
       { type: 'separator' },
       { label: t('native.menu.selectAll'), accelerator: 'Command+A', click: () => edit('selectAll') }
+    ] },
+    { label: t('native.menu.view'), submenu: [
+      { label: t('native.menu.zoomIn'), accelerator: 'Command+=', click: () => zoom('in') },
+      { label: t('native.menu.zoomIn'), accelerator: 'Command+Plus', visible: false, acceleratorWorksWhenHidden: true, click: () => zoom('in') },
+      { label: t('native.menu.zoomOut'), accelerator: 'Command+-', click: () => zoom('out') },
+      { label: t('native.menu.actualSize'), accelerator: 'Command+0', click: () => zoom('reset') }
     ] },
     { role: 'windowMenu', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }, { type: 'separator' }, { role: 'front' }] }
   ];

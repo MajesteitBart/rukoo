@@ -15,7 +15,7 @@ const context = require('../src/main/agents/context');
 const { pdfText, glyphText, parseCMap } = require('../src/main/pdftext');
 const { ChatFiles, decodeText, FILE_MAX, FILE_TEXT_INLINE, STAGED_TTL } = require('../src/main/agents/chatfiles');
 const { makePdf, hostilePdfs, manyOpsPdf, silentCaps } = require('./fixtures/make-pdf');
-const { PdfReader } = require('../src/main/pdfread');
+const { PdfReader, TIMEOUT: PDF_TIMEOUT } = require('../src/main/pdfread');
 
 const made = [];
 const tmp = (prefix) => {
@@ -72,8 +72,8 @@ async function setup({ dataDir = null, pdf } = {}) {
   await hub.start();
   const acc = engine.accounts[0];
   const find = (subject, view = 'inbox') => engine.listMessages({ scope: acc.id, view }).find((m) => m.subject === subject);
-  const idle = async (cid) => {
-    for (const end = Date.now() + 5000; hub.turns.has(cid); ) {
+  const idle = async (cid, timeout = 5000) => {
+    for (const end = Date.now() + timeout; hub.turns.has(cid); ) {
       if (Date.now() > end) throw new Error('turn did not finish');
       await new Promise((r) => setTimeout(r, 10));
     }
@@ -671,14 +671,17 @@ test('pdfText: words split by kerning and placed apart, glyph names, and ToUnico
 
 // Runs pdfText itself (not pdfread.js) on each file in a child with a 128 MB heap and a time limit, a few at a
 // time, so a reader that hangs or runs out of memory again fails here instead of hanging or crashing the test run.
-// ms: the time pdfText took; maxRss: the child's peak memory, Buffers included.
+// cpuMs measures parser work independently of other test files competing for CI cores. Each child
+// still has the hard wall-clock timeout above. maxRss: the child's peak memory, Buffers included.
 async function pdfTextInChildren(files, { maxChars = 20000, timeout = 15000 } = {}) {
   const script = [
     `const { pdfText } = require(${JSON.stringify(path.join(__dirname, '..', 'src', 'main', 'pdftext'))});`,
     'const data = require("fs").readFileSync(process.argv[1]);',
     'const started = Date.now();',
+    'const cpuStarted = process.cpuUsage();',
     `const r = pdfText(data, { maxChars: ${maxChars} });`,
-    'process.stdout.write(JSON.stringify({ ...r, text: r.text.slice(0, 60), end: r.text.slice(-20), length: r.text.length, ms: Date.now() - started, maxRss: process.resourceUsage().maxRSS * 1024 }));'
+    'const cpu = process.cpuUsage(cpuStarted);',
+    'process.stdout.write(JSON.stringify({ ...r, text: r.text.slice(0, 60), end: r.text.slice(-20), length: r.text.length, ms: Date.now() - started, cpuMs: (cpu.user + cpu.system) / 1000, maxRss: process.resourceUsage().maxRSS * 1024 }));'
   ].join('\n');
   const queue = Object.entries(files);
   const results = {};
@@ -725,7 +728,7 @@ test('pdfText stays within its caps on PDFs built to hang it or run it out of me
   // Content counts before it is copied: three hundred references to one megabyte stay far below 300 MB.
   assert.ok(r.repeatedStream.maxRss < 250 * 1024 * 1024, `repeatedStream peaked at ${Math.round(r.repeatedStream.maxRss / 1048576)} MB`);
   // A bomb uses up what may still be inflated, so its other references stop at once instead of inflating it again.
-  assert.ok(r.rawBomb.ms < 3000, `rawBomb took ${r.rawBomb.ms} ms`);
+  assert.ok(r.rawBomb.cpuMs < 3000, `rawBomb took ${r.rawBomb.cpuMs} ms CPU (${r.rawBomb.ms} ms elapsed)`);
 });
 
 test('every limit of the reader that drops content says partial, and the text before it stays; short of the limits nothing is partial', async () => {
@@ -912,7 +915,7 @@ test('finding where inline images end stays within the caps: data full of EIs, w
   fs.writeFileSync(files.unclear, page(`BI /W 1 /H 1 /F /DCT ID x EI${' '.repeat(1100)}`.repeat(210), `${' '.repeat(40 * 1024 * 1024)}BT /F1 12 Tf 72 700 Td (after) Tj ET`));
   const r = await pdfTextInChildren(files);
   for (const name of Object.keys(files)) assert.equal(r[name].error, undefined, `${name}: ${r[name].error}`);
-  for (const name of Object.keys(files)) assert.ok(r[name].ms < 3000, `${name} took ${r[name].ms} ms`);
+  for (const name of Object.keys(files)) assert.ok(r[name].cpuMs < 3000, `${name} took ${r[name].cpuMs} ms CPU (${r[name].ms} ms elapsed)`);
   for (const name of ['eis', 'badZlib', 'hex', 'unclear']) assert.deepEqual([r[name].text, r[name].partial], ['start', true], name);
   // No size is followed by its EI, so each end is a guess: the text is read, and partial.
   assert.deepEqual([r.spaces.text, r.spaces.partial], ['start\nafter', true]);
@@ -1138,7 +1141,8 @@ test('the agent hears when text is only a preview and when the reader stopped ea
     const c = t.hub.create({ agent: 'clark', message: null });
     const long = makePdf([Array(1200).fill('A line of text that repeats')]);
     t.hub.send(c.id, { text: 'Two PDFs', files: [t.hub.stageFile('long.pdf', long).id, t.hub.stageFile('ops.pdf', manyOpsPdf()).id] });
-    await t.idle(c.id);
+    // The two PDF reads may legitimately take longer than the ordinary 5s fake-agent wait on CI.
+    await t.idle(c.id, PDF_TIMEOUT + 5000);
     const input = t.turns.at(-1).input;
     assert.doesNotMatch(input, /returns the rest|in full/);
     // Longer than goes along: read_chat_file has more.

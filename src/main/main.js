@@ -932,7 +932,7 @@ function updateApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(macMenu(t, (action) => {
     const focused = BrowserWindow.getFocusedWindow();
     if (focused) focused.webContents.send('mail:event', { type: 'menu-edit', payload: { action } });
-  })));
+  }, (action) => setZoom(nextZoom(engine.settings.zoomLevel, action)))));
 }
 
 function createWindow({ hidden = false } = {}) {

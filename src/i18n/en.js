@@ -3842,6 +3842,10 @@
     "message": "Rukoo cannot securely save credentials. Unlock your login keychain in Keychain Access, then restart Rukoo and try again.",
     "description": "macOS credential storage error. src/main/secrets.js."
   },
+  "native.menu.view": {"message": "View", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
+  "native.menu.zoomIn": {"message": "Zoom in", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
+  "native.menu.zoomOut": {"message": "Zoom out", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
+  "native.menu.actualSize": {"message": "Actual size", "description": "Native macOS View menu, src/main/desktop.js (macMenu)."},
   "native.menu.edit": {
     "message": "Edit",
     "description": "macOS native Edit menu command. src/main/main.js."

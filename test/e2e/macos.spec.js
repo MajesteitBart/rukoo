@@ -21,6 +21,7 @@ test.beforeEach(async () => {
 });
 test.afterEach(async () => {
   if (app) {
+    if (test.info().status !== test.info().expectedStatus) console.log('Mac key events:', await app.evaluate(() => global.__macInputs || []).catch(() => []));
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
     await app.close().catch(() => {});
   }
@@ -99,6 +100,10 @@ test('Command zoom persists and native Edit menu selects mailbox messages', asyn
   await expect.poll(() => app.evaluate(({ app }) => app.dock.getBadge())).toMatch(/^[1-9][0-9]*$/);
   await win.evaluate(() => window.mail.call('updateSettings', { badge: 'none' }));
   await expect.poll(() => app.evaluate(({ app }) => app.dock.getBadge())).toBe('');
+  await app.evaluate(({ BrowserWindow }) => {
+    global.__macInputs = [];
+    BrowserWindow.getAllWindows()[0].webContents.on('before-input-event', (_event, input) => global.__macInputs.push(input));
+  });
   await win.keyboard.press('Meta+=');
   await expect.poll(() => win.evaluate(() => window.mail.call('state').then((s) => s.settings.zoomLevel))).toBe(110);
   await win.keyboard.press('Meta+0');
