@@ -329,8 +329,8 @@ test('openclaw: config keeps the token encrypted, checks the agent id, and the s
   try {
     const file = path.join(dir, 'agents.json');
     const cfg = new AgentConfig({ file, secrets }).load();
-    assert.deepEqual(cfg.publicView().openclaw, { enabled: true, url: 'http://127.0.0.1:18789', agent: '', model: '', hasKey: false });
-    assert.equal(cfg.openclawSetup(47800), '', 'no token, no setup');
+    assert.deepEqual(cfg.publicView().openclaw, { enabled: true, url: 'http://127.0.0.1:18789', agent: '', model: '', remote: false, hasKey: false });
+    assert.equal(cfg.openclawSetup({ port: 47800 }), '', 'no token, no setup');
     cfg.update({ defaultAgent: 'openclaw', openclaw: { url: 'http://127.0.0.1:18789/', agent: 'research', model: 'openai/gpt-6-astra' } });
     assert.throws(() => cfg.update({ openclaw: { agent: 'not an id' } }), (e) => /agent id/.test(e.detail));
     assert.throws(() => cfg.update({ openclaw: { url: 'ftp://gateway' } }), (e) => /http/.test(e.detail));
@@ -346,8 +346,22 @@ test('openclaw: config keeps the token encrypted, checks the agent id, and the s
     const token = openclawTokenFor(TOKEN);
     assert.notEqual(token, TOKEN);
     assert.equal(cfg.openclawToken(), token);
-    const setup = cfg.openclawSetup(47811);
+    const setup = cfg.openclawSetup({ port: 47811 });
     assert.equal(setup, `openclaw mcp set rukoo '{"url":"http://127.0.0.1:47811/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer ${token}"}}'\n`);
+    // The remote token is another one, and there is none until the user allows a gateway on another computer.
+    const remote = openclawTokenFor(TOKEN, true);
+    assert.notEqual(remote, token);
+    assert.equal(cfg.openclawToken(true), '');
+    assert.equal(cfg.openclawSetup({ remote: true, host: '100.64.0.5', port: 47800 }), '');
+    assert.throws(() => cfg.update({ openclaw: { remote: 'yes' } }), (e) => /true or false/.test(e.detail));
+    cfg.update({ openclaw: { remote: true } });
+    assert.equal(cfg.publicView().openclaw.remote, true);
+    assert.equal(cfg.openclawToken(true), remote);
+    assert.equal(
+      cfg.openclawSetup({ remote: true, host: '100.64.0.5', port: 47800 }),
+      `openclaw mcp set rukoo '{"url":"http://100.64.0.5:47800/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer ${remote}"}}'\n`
+    );
+    assert.equal(cfg.openclawSetup({ remote: true, host: '', port: 47800 }), '', 'no address, no setup');
     // A file edited by hand with an agent id the gateway would refuse falls back to the default agent.
     fs.writeFileSync(file, JSON.stringify({ ...stored, openclaw: { ...stored.openclaw, agent: '../x' } }));
     assert.equal(new AgentConfig({ file, secrets }).load().data.openclaw.agent, '');
@@ -403,8 +417,8 @@ test('openclaw: through the hub, a chat streams from the gateway and OpenClaw’
     await waitFor(() => gw.state.cancelled.length === 1);
 
     // The setup command OpenClaw runs, and the token in it, which Rukoo's loopback listener accepts.
-    assert.equal(hub.copyOpenClawSetup(), true);
     const port = hub.mcp.ports().local;
+    assert.deepEqual(hub.copyOpenClawSetup(), { remote: false, url: `http://127.0.0.1:${port}/mcp` });
     const token = openclawTokenFor(TOKEN);
     assert.ok(clipboard.text.includes(`http://127.0.0.1:${port}/mcp`));
     assert.ok(clipboard.text.includes(`Bearer ${token}`));
@@ -430,6 +444,113 @@ test('openclaw: through the hub, a chat streams from the gateway and OpenClaw’
     await hub.dispose();
     await engine.close();
     gw.server.close();
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+// A plain request to an MCP listener, with any Host header (fetch() won't send another host's name).
+function mcpRequest(port, token, { host = `127.0.0.1:${port}`, body = { jsonrpc: '2.0', id: 1, method: 'tools/list' } } = {}) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), Host: host };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/mcp', headers, agent: false }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        let json = null;
+        try {
+          json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {}
+        resolve({ status: res.statusCode, json });
+      });
+    });
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
+test('openclaw: a gateway on another computer gets Rukoo’s tools on the Tailscale listener, only while the user allows it', async () => {
+  const dir = tempDir('rukoo-openclaw-remote-');
+  const engine = new Engine({ dataDir: dir }).init();
+  const probe = http.createServer();
+  await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+  const free = probe.address().port;
+  await new Promise((r) => probe.close(r));
+  // remoteHost stands in for this computer's Tailscale address; the listener itself goes on loopback below.
+  fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({ mcp: { port: free < 1024 ? 47897 : free, remoteHost: '100.64.0.9' } }));
+  const clipboard = { text: '', writeText: (s) => (clipboard.text = s) };
+  const hub = new AgentHub({ engine, dataDir: dir, secrets, deps: { appVersion: '1.0.0', clipboard }, adapters: {} });
+  await hub.start();
+  const listen = hub.mcp.listen.bind(hub.mcp);
+  hub.mcp.listen = (opts) => listen(opts.remote ? { ...opts, host: '127.0.0.1', port: 0 } : opts);
+  const remotePort = () => hub.mcp.ports().remote;
+  const local = hub.mcp.ports().local;
+  try {
+    hub.setSecret('openclaw', TOKEN);
+    hub.setSecret('clark', 'hermes-key');
+    const localToken = openclawTokenFor(TOKEN);
+    const remoteToken = openclawTokenFor(TOKEN, true);
+    const hermes = hub.cfg.remoteToken();
+    const chat = hub.issueToken({ agent: 'claude', conversationId: null });
+
+    // Off by default: no Tailscale listener, no remote OpenClaw token, and the copied setup is for this computer.
+    assert.equal(remotePort(), null);
+    assert.equal(hub.identify(remoteToken), null);
+    assert.deepEqual(hub.copyOpenClawSetup(), { remote: false, url: `http://127.0.0.1:${local}/mcp` });
+    assert.ok(clipboard.text.includes(`Bearer ${localToken}`));
+
+    // Allowing it opens the Tailscale listener, which takes the remote token and not the local one.
+    await hub.updateConfig({ openclaw: { remote: true } });
+    assert.ok(remotePort(), 'the Tailscale listener is open');
+    assert.deepEqual(hub.identify(remoteToken), { agent: 'openclaw', conversationId: null, remote: true });
+    const listed = await mcpRequest(remotePort(), remoteToken);
+    assert.equal(listed.status, 200);
+    assert.ok(listed.json.result.tools.some((t) => t.name === 'write_draft'));
+    assert.equal((await mcpRequest(remotePort(), localToken)).status, 401, 'the local token is no use from the tailnet');
+    assert.equal((await mcpRequest(local, remoteToken)).status, 401, 'the remote token is no use on loopback');
+    assert.equal((await mcpRequest(local, localToken)).status, 200, 'a gateway on this computer keeps working');
+    // Clark's token needs "Let Clark use Rukoo", also now that the listener is open; a chat's works on loopback only.
+    assert.equal((await mcpRequest(remotePort(), hermes)).status, 401);
+    assert.equal((await mcpRequest(local, hermes)).status, 401);
+    assert.equal((await mcpRequest(remotePort(), chat)).status, 401);
+    assert.equal((await mcpRequest(local, chat)).status, 200);
+    assert.equal((await mcpRequest(remotePort(), null)).status, 401);
+    // The DNS-rebinding guard: a Host that isn't this listener's name is refused, token or not.
+    assert.equal((await mcpRequest(remotePort(), remoteToken, { host: `evil.example:${remotePort()}` })).status, 403);
+    assert.equal((await mcpRequest(remotePort(), remoteToken, { host: `127.0.0.1:${remotePort() + 1}` })).status, 403);
+
+    // The copied setup now names Rukoo's Tailscale address and the listener's real port, with the remote token.
+    assert.deepEqual(hub.copyOpenClawSetup(), { remote: true, url: `http://100.64.0.9:${remotePort()}/mcp` });
+    assert.ok(clipboard.text.includes(`"url":"http://100.64.0.9:${remotePort()}/mcp"`));
+    assert.ok(clipboard.text.includes(`Bearer ${remoteToken}`));
+    assert.ok(!clipboard.text.includes(localToken) && !clipboard.text.includes(TOKEN));
+
+    // A new gateway token gives new MCP tokens; the old ones stop working at once.
+    hub.setSecret('openclaw', 'another-token');
+    assert.equal((await mcpRequest(remotePort(), remoteToken)).status, 401);
+    assert.equal((await mcpRequest(remotePort(), openclawTokenFor('another-token', true))).status, 200);
+    hub.setSecret('openclaw', TOKEN);
+
+    // Turned off again: the listener closes, as nothing else wants it.
+    await hub.updateConfig({ openclaw: { remote: false } });
+    assert.equal(remotePort(), null);
+    assert.equal(hub.identify(remoteToken), null);
+    // With Clark's listener open, the remote OpenClaw token still gets nowhere while the user doesn't allow it.
+    await hub.updateConfig({ mcp: { remote: true } });
+    assert.ok(remotePort());
+    assert.equal((await mcpRequest(remotePort(), remoteToken)).status, 401);
+    assert.equal((await mcpRequest(remotePort(), hermes)).status, 200);
+    await hub.updateConfig({ mcp: { remote: false } });
+    assert.equal(remotePort(), null);
+    // OpenClaw turned off: no listener for it, even with the remote toggle on.
+    await hub.updateConfig({ openclaw: { remote: true, enabled: false } });
+    assert.equal(remotePort(), null);
+    await hub.updateConfig({ openclaw: { enabled: true } });
+    assert.ok(remotePort());
+  } finally {
+    await hub.dispose();
+    await engine.close();
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

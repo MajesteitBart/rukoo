@@ -1248,8 +1248,26 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   // The token stays in main: the config the window gets says only that there is one.
   expect(JSON.stringify(await win.evaluate(() => window.mail.call('agentConfig')))).not.toContain('gateway-token-123');
   // What the copy row puts on the clipboard (not clicked here: the clipboard is the desktop's own).
-  const setup = await app.evaluate(() => global.__semAgents.cfg.openclawSetup(global.__semAgents.mcp.ports().local));
+  const setup = await app.evaluate(() => global.__semAgents.cfg.openclawSetup({ port: global.__semAgents.mcp.ports().local }));
   expect(setup).toMatch(/^openclaw mcp set rukoo '\{"url":"http:\/\/127\.0\.0\.1:\d+\/mcp","transport":"streamable-http","headers":\{"Authorization":"Bearer [A-Za-z0-9_-]+"\}\}'\n$/);
+  // A gateway on another computer: an explicit opt-in that opens the Tailscale listener. This test machine gets an
+  // address nobody has (TEST-NET), so nothing listens on a real tailnet; the card says so, and nothing is copied.
+  await app.evaluate(() => global.__semAgents.updateConfig({ mcp: { remoteHost: '192.0.2.1' } }));
+  const remoteRow = win.locator('.page.settings [data-a="agent-openclaw-remote"]');
+  const copyDesc = win.locator('.page.settings [data-a="agent-copy-openclaw"] .desc');
+  await expect(remoteRow).toContainText('Let OpenClaw use Rukoo from another computer');
+  await expect(remoteRow).toContainText('For a gateway elsewhere in your tailnet.');
+  await expect(copyDesc).toContainText('A command for this computer');
+  await remoteRow.click();
+  await expect(remoteRow.locator('.switch')).toHaveClass(/on/);
+  await expect.poll(() => win.evaluate(() => window.mail.call('agentConfig').then((c) => c.openclaw.remote))).toBe(true);
+  await expect(remoteRow.locator('[data-openclaw-address]')).toContainText('Could not listen on 192.0.2.1');
+  await expect(copyDesc).toContainText("with Rukoo's Tailscale address");
+  await win.locator('.page.settings .row', { hasText: 'Copy OpenClaw setup' }).click();
+  await expect(win.locator('#toast')).toContainText("Rukoo isn't listening on a Tailscale address.");
+  await remoteRow.click();
+  await expect(remoteRow.locator('.switch')).not.toHaveClass(/on/);
+  await expect(copyDesc).toContainText('A command for this computer');
   await win.click('.page.settings [data-a="back"]');
   await win.click('.page.settings [data-a="back"]');
 

@@ -1493,6 +1493,8 @@ async function fakeRukoo({ key, idle = 0, chats = [] }) {
   const hub = {
     tokens: [],
     remoteHash: token ? crypto.createHash('sha256').update(token).digest() : null,
+    // "Let Clark use Rukoo" is on.
+    cfg: { data: { mcp: { remote: true } } },
     conversations: new Map(chats.map((id) => [id, { id, agent: 'clark' }])),
     deps: { idleSeconds: () => idle },
     identify(t) {
