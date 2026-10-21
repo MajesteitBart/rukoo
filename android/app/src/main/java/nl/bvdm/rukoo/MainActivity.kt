@@ -6,17 +6,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import nl.bvdm.rukoo.settings.ThemeMode
 import nl.bvdm.rukoo.ui.Mailto
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.root.RukooRoot
+import nl.bvdm.rukoo.ui.theme.Rk
+import nl.bvdm.rukoo.ui.theme.RukooTheme
 
 class MainActivity : ComponentActivity() {
     private val container: AppContainer get() = appContainer
@@ -30,14 +27,8 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
             val settings by container.settingsSnapshot.collectAsStateWithLifecycle()
-            val dark = when (settings.theme) {
-                ThemeMode.SYSTEM -> isSystemInDarkTheme()
-                ThemeMode.LIGHT -> false
-                ThemeMode.DARK -> true
-            }
-            // Plain Material until the Rukoo theme lands; then RukooTheme(settings.theme) wraps the root.
-            MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
-                Surface(color = MaterialTheme.colorScheme.background) { RukooRoot(app) }
+            RukooTheme(settings.theme) {
+                Surface(color = Rk.colors.bg) { RukooRoot(app) }
             }
         }
     }

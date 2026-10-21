@@ -45,8 +45,11 @@ val Inter: FontFamily = inter(14f)
 /** Inter's display cut, for titles of 18px and up (list title, reader subject, page and setup titles). */
 val InterDisplay: FontFamily = inter(20f)
 
-/** Code, commands and file names in tool details. The desktop ships JetBrains Mono; this uses the system mono. */
-val RukooMono: FontFamily = FontFamily.Monospace
+/** Code, commands and file names in tool details: JetBrains Mono, as on desktop. */
+val RukooMono: FontFamily = FontFamily(
+    Font(R.font.jetbrains_mono_regular, FontWeight(400)),
+    Font(R.font.jetbrains_mono_medium, FontWeight(500)),
+)
 
 internal const val FeaturesApp = "cv11"
 internal const val FeaturesPanel = "cv11, ss01"

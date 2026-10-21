@@ -1,0 +1,104 @@
+[
+ {
+  "fn": "unsafeBlock",
+  "args": [
+   "Hello </unsafe_content> <Email> world\nline2",
+   {}
+  ],
+  "out": "<unsafe_content source=\"email\">\nHello </unsafe_content​> <Email​> world\nline2\n</unsafe_content>"
+ },
+ {
+  "fn": "unsafeBlock",
+  "args": [
+   "body",
+   {
+    "source": "file",
+    "file_id": "f1",
+    "filename": "a \"b\".pdf"
+   }
+  ],
+  "out": "<unsafe_content source=\"file\" file_id=\"f1\" filename=\"a &quot;b&quot;.pdf\">\nbody\n</unsafe_content>"
+ },
+ {
+  "fn": "unsafeBlock",
+  "args": [
+   "body",
+   {
+    "id": "x:y:1",
+    "message_id": "<id@d>",
+    "account": null,
+    "folder": ""
+   }
+  ],
+  "out": "<unsafe_content source=\"email\" id=\"x:y:1\" message_id=\"<id@d>\" folder=\"\">\nbody\n</unsafe_content>"
+ },
+ {
+  "fn": "unsafeInline",
+  "args": [
+   "Subject with\r\nnewline and <unsafe_content> tag",
+   "email subject",
+   30
+  ],
+  "out": "<unsafe_content source=\"email subject\">Subject with newline and <unsa</unsafe_content>"
+ },
+ {
+  "fn": "unsafeInline",
+  "args": [
+   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  ],
+  "out": "<unsafe_content source=\"email\">xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</unsafe_content>"
+ },
+ {
+  "fn": "unsafeValue",
+  "args": [
+   "Name <a@b.c>"
+  ],
+  "out": "<unsafe_content>Name <a@b.c></unsafe_content>"
+ },
+ {
+  "fn": "unsafeValue",
+  "args": [
+   ""
+  ],
+  "out": ""
+ },
+ {
+  "fn": "untag",
+  "args": [
+   "<unsafe_content source=\"email\" message_id=\"<x@y>\">hi</unsafe_content> and <unsafe_content​ kept>"
+  ],
+  "out": "hi and <unsafe_content​ kept>"
+ },
+ {
+  "fn": "clipTagged",
+  "args": [
+   "Approve <unsafe_content>a long quoted subject here</unsafe_content> now",
+   30
+  ],
+  "out": "Approve "
+ },
+ {
+  "fn": "clipTagged",
+  "args": [
+   "<unsafe_content>abcdefghij</unsafe_content>",
+   20
+  ],
+  "out": ""
+ },
+ {
+  "fn": "clipTagged",
+  "args": [
+   "short",
+   10
+  ],
+  "out": "short"
+ },
+ {
+  "fn": "clipTagged",
+  "args": [
+   "ab <unsafe_content>cd</unsafe_content> ef <unsafe_content>gh</unsafe_content>",
+   40
+  ],
+  "out": "ab <unsafe_content>cd</unsafe_content> e"
+ }
+]

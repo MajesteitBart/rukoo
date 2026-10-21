@@ -119,7 +119,7 @@ import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.theme.AccountColors
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.RukooTheme
-import nl.bvdm.rukoo.ui.theme.ThemeMode
+import nl.bvdm.rukoo.settings.ThemeMode
 import nl.bvdm.rukoo.ui.theme.rkSurface
 import nl.bvdm.rukoo.ui.theme.medium
 import nl.bvdm.rukoo.ui.theme.panel

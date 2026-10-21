@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import nl.bvdm.rukoo.settings.ThemeMode
 
 val LocalRukooColors = staticCompositionLocalOf { RukooColors.Dark }
 val LocalRukooType = staticCompositionLocalOf { RukooType.Default }
