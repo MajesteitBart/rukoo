@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 let app;
 let win;
@@ -47,11 +48,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  if (running) {
-    // An editor with unsaved changes keeps its window open and asks first; skip that in tests.
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-    await app.close();
-  }
+  if (running) await closeApp(app);
   removeDir(dataDir);
 });
 

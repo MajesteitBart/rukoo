@@ -3,6 +3,7 @@
 const { test, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 let app;
 let win;
@@ -28,8 +29,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-  await app.close().catch(() => {});
+  await closeApp(app);
   removeDir(dataDir);
 });
 

@@ -4,6 +4,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 const LINK =
   'mailto:anna@example.com,%22Doe%2C%20Jane%22%20%3Cjane@example.com%3E?cc=joris@example.com&bcc=sanne@example.com&subject=1+1%3D2&body=First%20line%0D%0ASecond%20line';
@@ -25,9 +26,7 @@ async function launch(args = [], settings = {}) {
 }
 
 async function quit() {
-  if (!app) return;
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-  await app.close();
+  await closeApp(app);
   app = null;
 }
 
