@@ -227,6 +227,49 @@ test('a refused request is answered after its body is in, so a late body cannot 
   }
 });
 
+// A paired phone's routes (agents/phonehost.js) branch off before /mcp, only on the Tailscale listener and after the
+// Origin and Host checks; /mcp answers as before.
+test('/phone/ goes to the hub on the Tailscale listener only; /mcp is unchanged', async () => {
+  const seen = [];
+  const hub = {
+    ...fakeHub(),
+    phoneRequest(entry, req, res, pathname) {
+      seen.push({ remote: entry.remote, pathname, method: req.method });
+      if (pathname === '/phone/v1/boom') throw new Error('kaput');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"phone":true}');
+    }
+  };
+  const server = new McpServer({ hub });
+  const local = await server.listen({ host: '127.0.0.1', port: 0, remote: false });
+  const remote = await server.listen({ host: '127.0.0.1', port: 0, remote: true });
+  try {
+    const ok = await request(remote, { method: 'GET', path: '/phone/v1/hello?x=1', token: null });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.json, { phone: true });
+    assert.deepEqual(seen, [{ remote: true, pathname: '/phone/v1/hello', method: 'GET' }]);
+    const loopback = await request(local, { method: 'GET', path: '/phone/v1/hello', token: null });
+    assert.equal(loopback.status, 404);
+    assert.deepEqual(loopback.json, { error: 'not found' });
+    assert.equal((await request(remote, { method: 'GET', path: '/phone/v1/hello', token: null, headers: { origin: 'https://evil.example' } })).status, 403);
+    assert.equal((await request(remote, { method: 'GET', path: '/phone/v1/hello', token: null, headers: { host: `evil.example:${remote}` } })).status, 403);
+    assert.equal(seen.length, 1, 'refused before the hub sees them');
+    const boom = await request(remote, { method: 'GET', path: '/phone/v1/boom', token: null });
+    assert.equal(boom.status, 500);
+    assert.equal((await request(remote, { body: rpc(1, 'ping'), token: REMOTE })).status, 200, '/mcp as before');
+    assert.equal((await request(remote, { path: '/phonebook', body: rpc(1, 'ping'), token: REMOTE })).status, 404);
+  } finally {
+    await server.close();
+  }
+  const without = new McpServer({ hub: fakeHub() });
+  const port = await without.listen({ host: '127.0.0.1', port: 0, remote: true });
+  try {
+    assert.equal((await request(port, { method: 'GET', path: '/phone/v1/hello', token: null })).status, 404, 'a hub without phone routes');
+  } finally {
+    await without.close();
+  }
+});
+
 test('tools/list and tools/call: happy path, unknown tool and a throwing handler', () =>
   withServer(async (port, hub) => {
     const list = await request(port, { body: rpc(1, 'tools/list', { _meta: { progressToken: 0 } }) });

@@ -803,6 +803,11 @@ Object.assign(api, {
   agentStatus: () => agentHub().status(),
   agentCopyHermesSetup: () => agentHub().copyHermesSetup(),
   agentCopyOpenClawSetup: () => agentHub().copyOpenClawSetup(),
+  // A phone that runs Claude Code and Codex chats here (agents/phonehost.js).
+  agentPhonePair: (opts) => agentHub().phonePairStart({ allowExport: agentPlain(opts).allowExport === true }),
+  agentPhonePairCancel: () => agentHub().phonePairCancel(),
+  agentPhoneUnpair: (id) => agentHub().phoneUnpair(agentId(id)),
+  agentPhoneAllowExport: (id) => agentHub().phoneAllowExport(agentId(id)),
   agentList: () => agentHub().list(),
   agentGet: (id) => agentHub().get(agentId(id)),
   agentFindFor: (ref) => {

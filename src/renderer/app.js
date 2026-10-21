@@ -2286,6 +2286,10 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
+  // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
+  if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {
+    toast(t('settings.phone.exported', { name: (payload.pairing && payload.pairing.name) || '' }), 6000);
+  }
   if (type === 'theme') {
     applyTheme(S.data?.settings.theme);
     if (S.message) renderReader();

@@ -39,8 +39,44 @@ const DEFAULTS = {
   // for x-openclaw-model ('' for the agent's own). remote: the user lets a gateway on another computer use Rukoo's
   // tools over Tailscale, which opens the Tailscale listener (see hub.wantsRemote()).
   openclaw: { enabled: true, url: OPENCLAW_URL, key: null, agent: '', model: '', remote: false },
-  mcp: { port: 47800, remote: false, remoteHost: '' }
+  mcp: { port: 47800, remote: false, remoteHost: '' },
+  // enabled: "Let my phone use this computer", which opens the Tailscale listener for the phone routes
+  // (phonehost.js). pairings: the phones paired with a code, see loadPairings().
+  phone: { enabled: false, pairings: [] }
 };
+
+// A phone's pairing as stored. id has no ':' because Settings actions split on it. tokenHash is the SHA-256 (hex) of
+// the token the phone got at pairing: the desktop only ever compares tokens, so it never needs the token back.
+const PAIRING_ID = /^ph_[a-z0-9]{10}$/;
+const TOKEN_HASH = /^[0-9a-f]{64}$/;
+const MAX_PAIRINGS = 20;
+// lastSeenAt is written at most this often, so a phone polling every few seconds doesn't rewrite agents.json.
+const SEEN_SAVE_MS = 60 * 1000;
+
+const oneLine = (v, max) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
+const time = (v) => (Number.isFinite(v) && v > 0 ? v : null);
+
+// Pairings from the file: mergeSection would copy the array without looking at its entries.
+function loadPairings(list) {
+  const out = [];
+  for (const p of Array.isArray(list) ? list : []) {
+    if (out.length >= MAX_PAIRINGS) break;
+    if (!isObj(p) || !PAIRING_ID.test(p.id) || typeof p.name !== 'string' || !TOKEN_HASH.test(p.tokenHash)) continue;
+    if (out.some((x) => x.id === p.id)) continue;
+    out.push({
+      id: p.id,
+      name: oneLine(p.name, 60) || 'Phone',
+      platform: oneLine(p.platform, 20) || 'android',
+      model: oneLine(p.model, 60),
+      createdAt: time(p.createdAt) || Date.now(),
+      lastSeenAt: time(p.lastSeenAt),
+      lastExportAt: time(p.lastExportAt),
+      exportUntil: time(p.exportUntil),
+      tokenHash: p.tokenHash
+    });
+  }
+  return out;
+}
 
 // Clark's bridge signs in with a token made from the Hermes API key. Every Rukoo needs that key to chat with
 // Clark anyway, so one bridge setup reaches Rukoo on any of the user's devices.
@@ -185,6 +221,8 @@ class AgentConfig {
     this.data = clone(DEFAULTS);
     // Filled in by the hub once the MCP listeners are up; never persisted.
     this.runtime = { localPort: null, remotePort: null, note: '' };
+    // Per pairing, when its lastSeenAt was last written to the file (touchPairing()).
+    this.seenSaved = new Map();
   }
 
   load() {
@@ -204,7 +242,8 @@ class AgentConfig {
       claude: mergeSection(DEFAULTS.claude, s.claude),
       codex: mergeSection(DEFAULTS.codex, s.codex),
       openclaw: mergeSection(DEFAULTS.openclaw, s.openclaw),
-      mcp: mergeSection(DEFAULTS.mcp, s.mcp)
+      mcp: mergeSection(DEFAULTS.mcp, s.mcp),
+      phone: { enabled: isObj(s.phone) && s.phone.enabled === true, pairings: loadPairings(isObj(s.phone) ? s.phone.pairings : []) }
     };
     if (this.data.openclaw.agent && !OPENCLAW_AGENT.test(this.data.openclaw.agent)) this.data.openclaw.agent = '';
     for (const id of ['claude', 'codex']) if (!ACCESS.includes(this.data[id].access)) this.data[id].access = 'ask';
@@ -266,6 +305,20 @@ class AgentConfig {
         localPort: this.runtime.localPort,
         remotePort: this.runtime.remotePort,
         note: this.runtime.note || ''
+      },
+      // Never the token hash.
+      phone: {
+        enabled: d.phone.enabled,
+        pairings: d.phone.pairings.map((p) => ({
+          id: p.id,
+          name: p.name,
+          platform: p.platform,
+          model: p.model,
+          createdAt: p.createdAt,
+          lastSeenAt: p.lastSeenAt,
+          lastExportAt: p.lastExportAt,
+          exportOpen: Boolean(p.exportUntil && p.exportUntil > Date.now())
+        }))
       }
     };
   }
@@ -333,9 +386,74 @@ class AgentConfig {
         s.remoteHost = host;
       }
     });
+    // Pairings change only through the phone routes and their own methods below, never from a renderer patch.
+    section('phone', (p, s) => {
+      if ('enabled' in p) s.enabled = bool(p.enabled, 'phone.enabled');
+    });
     this.data = next;
     this.save();
     return this.publicView();
+  }
+
+  // ---------- phone pairings (phonehost.js) ----------
+
+  pairing(id) {
+    return this.data.phone.pairings.find((p) => p.id === id) || null;
+  }
+
+  // tokenHash: the SHA-256 (hex) of the phone's token. Returns the stored pairing, or null when the list is full.
+  addPairing({ id, name, platform, model, tokenHash, exportUntil = null, now = Date.now() }) {
+    if (this.data.phone.pairings.length >= MAX_PAIRINGS) return null;
+    const p = {
+      id,
+      name: oneLine(name, 60) || 'Phone',
+      platform: oneLine(platform, 20) || 'android',
+      model: oneLine(model, 60),
+      createdAt: now,
+      lastSeenAt: now,
+      lastExportAt: null,
+      exportUntil: time(exportUntil),
+      tokenHash
+    };
+    this.data.phone.pairings.push(p);
+    this.seenSaved.set(id, now);
+    this.save();
+    return p;
+  }
+
+  removePairing(id) {
+    const before = this.data.phone.pairings.length;
+    this.data.phone.pairings = this.data.phone.pairings.filter((p) => p.id !== id);
+    if (this.data.phone.pairings.length === before) return false;
+    this.save();
+    return true;
+  }
+
+  // Returns whether it saved, so the hub can tell Settings that "Last seen" moved. Counted from the last save, so a
+  // phone that asks every few seconds still gets saved once a minute.
+  touchPairing(id, at = Date.now()) {
+    const p = this.pairing(id);
+    if (!p) return false;
+    p.lastSeenAt = at;
+    const saved = this.seenSaved.get(id);
+    if (saved !== undefined && at - saved < SEEN_SAVE_MS) return false;
+    this.seenSaved.set(id, at);
+    this.save();
+    return true;
+  }
+
+  // until: when the phone may no longer fetch the export, or null to close it. exported: it was just sent.
+  setExportWindow(id, until, { exported = false, now = Date.now() } = {}) {
+    const p = this.pairing(id);
+    if (!p) return null;
+    p.exportUntil = time(until);
+    if (exported) p.lastExportAt = now;
+    this.save();
+    return p;
+  }
+
+  pairingHashes() {
+    return this.data.phone.pairings.map((p) => ({ id: p.id, hash: Buffer.from(p.tokenHash, 'hex') }));
   }
 
   setSecret(agent, value) {
@@ -398,4 +516,19 @@ class AgentConfig {
   }
 }
 
-module.exports = { AgentConfig, AgentError, AGENT_IDS, SECRET_AGENTS, EFFORTS, DEFAULTS, SHORTCUT_ICONS, SHORTCUTS_MAX, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor, openclawTokenFor };
+module.exports = {
+  AgentConfig,
+  AgentError,
+  AGENT_IDS,
+  SECRET_AGENTS,
+  EFFORTS,
+  DEFAULTS,
+  SHORTCUT_ICONS,
+  SHORTCUTS_MAX,
+  MAX_PAIRINGS,
+  writeJsonAtomic,
+  tailscaleAddress,
+  isTailscale,
+  remoteTokenFor,
+  openclawTokenFor
+};

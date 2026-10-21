@@ -406,6 +406,44 @@ class Engine extends EventEmitter {
     };
   }
 
+  // The accounts with their secrets in plain text, for the one export a paired phone may fetch (agents/phonehost.js).
+  // This is the only method that hands out a password or a Google refresh token; nothing else may call it. A secret
+  // that does not decrypt here (stored under another Windows user or on another computer) is left out and marked, so
+  // the phone can ask for it instead. Demo accounts have no secret.
+  exportAccounts() {
+    return this.accounts.map((acc) => {
+      const auth = acc.auth || (acc.type === 'demo' ? 'none' : 'password');
+      const out = {
+        id: acc.id,
+        type: acc.type,
+        provider: acc.provider,
+        auth,
+        email: acc.email,
+        name: acc.name,
+        label: acc.label || acc.email,
+        color: acc.color,
+        signature: acc.signature == null ? null : acc.signature,
+        signatureHtml: acc.signatureHtml || null,
+        imap: acc.imap ? { ...acc.imap } : null,
+        smtp: acc.smtp ? { ...acc.smtp } : null,
+        caldav: acc.caldav ? { ...acc.caldav } : null,
+        aliases: Array.isArray(acc.aliases) ? acc.aliases.map((a) => ({ ...a })) : [],
+        defaultFrom: acc.defaultFrom || null,
+        scopes: Array.isArray(acc.scopes) ? [...acc.scopes] : [],
+        createdAt: acc.createdAt || null
+      };
+      if (acc.type === 'demo' || !acc.secret) return out;
+      try {
+        const secret = this.secrets.decrypt(acc.secret);
+        if (auth === 'oauth2') out.refreshToken = secret;
+        else out.password = secret;
+      } catch (_) {
+        out.secretError = 'decrypt-failed';
+      }
+      return out;
+    });
+  }
+
   state() {
     return {
       accounts: this.accounts.map((a) => this.publicAccount(a)),
