@@ -283,6 +283,13 @@ function harden(w) {
       openUrl(e.url);
     }
   });
+  // Electron's own listener for these events asks the window whether it is visible, which throws once the window is
+  // destroyed. macOS can still report a visibility change for a window that just closed, and the error then opens
+  // Electron's error box, which holds up the main process, a quit included, until it is closed. A closed window needs
+  // none of these events.
+  w.once('closed', () => {
+    for (const event of ['show', 'hide', 'minimize', 'maximize', 'restore']) w.removeAllListeners(event);
+  });
 }
 
 // One zoom level for the main window and every compose window. Settings follows it through the 'zoom' event;

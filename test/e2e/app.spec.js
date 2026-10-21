@@ -299,6 +299,29 @@ test('the editor can move into a window of its own', async () => {
   await composerGone();
 });
 
+// macOS can report a visibility change for a window that just closed. Electron's own listener then threw "Object has
+// been destroyed", and its error box held up the main process and the quit.
+test('a visibility change for a window that has closed is ignored', async () => {
+  const c = await composer(() => win.click('[data-action="compose"]'));
+  const [popped] = await Promise.all([app.waitForEvent('window'), c.click('[data-c="popout"]')]);
+  await popped.waitForSelector('.compose .editor');
+  const errors = await app.evaluate(({ BrowserWindow }) => {
+    const thrown = [];
+    for (const w of BrowserWindow.getAllWindows()) {
+      w.destroy();
+      for (const event of ['show', 'hide', 'minimize', 'maximize', 'restore']) {
+        try {
+          w.emit(event);
+        } catch (err) {
+          thrown.push(`${event}: ${err.message}`);
+        }
+      }
+    }
+    return thrown;
+  });
+  expect(errors).toEqual([]);
+});
+
 test('a draft opens only once', async () => {
   await win.click('[data-view="drafts"]');
   await win.locator('.item').first().click();
