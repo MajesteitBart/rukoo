@@ -4,6 +4,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 let app;
 let win;
@@ -18,9 +19,7 @@ async function launch() {
 }
 
 async function quit() {
-  // An editor with unsaved changes keeps its window open and asks first; skip that in tests.
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-  await app.close();
+  await closeApp(app);
 }
 
 test.beforeEach(async () => {

@@ -5,6 +5,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 const { LONG_COMMAND, LONG_COMMAND_TAIL } = require('../../src/main/agents/fake');
 const { Skills } = require('../../src/main/agents/skills');
 const { makePdf } = require('../fixtures/make-pdf');
@@ -31,9 +32,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  // An editor with unsaved changes keeps its window open and asks first; skip that in tests.
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-  await app.close().catch(() => {});
+  await closeApp(app);
   removeDir(dataDir);
 });
 

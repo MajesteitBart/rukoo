@@ -3,6 +3,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 test.skip(process.platform !== 'darwin', 'Requires native macOS');
 const root = path.join(__dirname, '../..');
@@ -20,10 +21,7 @@ test.beforeEach(async () => {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1400, 950));
 });
 test.afterEach(async () => {
-  if (app) {
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-    await app.close().catch(() => {});
-  }
+  await closeApp(app);
   removeDir(profile);
 });
 // Playwright's page screenshot clips zoomed Electron pages to CSS-pixel dimensions.
