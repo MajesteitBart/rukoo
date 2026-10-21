@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The interface languages, for Android's per-app language setting. English is the default (res/values). -->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en-GB" />
+    <locale android:name="nl-NL" />
+</locale-config>

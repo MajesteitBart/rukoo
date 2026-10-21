@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files Rukoo shares with other apps through the FileProvider: opened attachments (cache) and attachments
+     kept with chats and drafts (files). Nothing else in the app's storage is reachable. -->
+<paths>
+    <cache-path name="cache_attachments" path="attachments/" />
+    <files-path name="files_attachments" path="attachments/" />
+</paths>

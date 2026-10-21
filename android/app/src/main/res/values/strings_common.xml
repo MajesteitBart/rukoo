@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shared strings (desktop catalog keys with . and - as _, spec 6 §6.1), notification channels, and the
+     preview engine's errors. Strings named scaffold_* are placeholder text of the wave-0 panes: the track
+     that replaces a pane moves what it keeps into its own file and deletes the rest. -->
+<resources>
+    <string name="common_actions_add">Add</string>
+    <string name="common_actions_archive">Archive</string>
+    <string name="common_actions_back">Back</string>
+    <string name="common_actions_cancel">Cancel</string>
+    <string name="common_actions_clear">Clear</string>
+    <string name="common_actions_close">Close</string>
+    <string name="common_actions_delete">Delete</string>
+    <string name="common_actions_more_options">More options</string>
+    <string name="common_actions_move">Move</string>
+    <string name="common_actions_ok">OK</string>
+    <string name="common_actions_retry">Retry</string>
+    <string name="common_actions_save">Save</string>
+    <string name="common_actions_undo">Undo</string>
+    <string name="common_dates_today">Today</string>
+    <string name="common_dates_yesterday">Yesterday</string>
+    <string name="common_errors_invalid_email">Invalid email address</string>
+    <string name="common_errors_invalid_email_value">Invalid email address: %1$s</string>
+    <string name="common_status_saving">Saving...</string>
+    <string name="common_values_none">None</string>
+    <string name="common_values_none_lower">none</string>
+
+    <string name="notification_channel_mail">New mail</string>
+    <string name="notification_channel_mail_description">New emails in your inboxes</string>
+    <string name="notification_channel_agents">Agents</string>
+    <string name="notification_channel_agents_description">Answers, drafts and approval requests from your agents while their chat isn\'t open</string>
+    <string name="notification_channel_service">Agent access</string>
+    <string name="notification_channel_service_description">Shown while agents can use Rukoo on this phone</string>
+
+    <string name="preview_error_message_missing">Message not found.</string>
+    <string name="preview_error_attachment_missing">Attachment not found.</string>
+    <string name="preview_error_folder_missing">Folder not found.</string>
+    <string name="preview_error_folder_exists">There is already a folder with that name.</string>
+    <string name="preview_error_accounts">The preview mailbox can\'t add accounts.</string>
+
+    <string name="scaffold_folders">Folders</string>
+    <string name="scaffold_recent_chats">Recent chats</string>
+    <string name="scaffold_chat_with_agent">Chat with an agent</string>
+    <string name="scaffold_settings">Settings</string>
+    <string name="scaffold_new_message">New message</string>
+    <string name="scaffold_unread_count">%1$d unread</string>
+    <string name="scaffold_view_inbox">Inbox</string>
+    <string name="scaffold_view_unread">Unread</string>
+    <string name="scaffold_view_vip">VIPs</string>
+    <string name="scaffold_view_starred">Starred</string>
+    <string name="scaffold_view_drafts">Drafts</string>
+    <string name="scaffold_view_sent">Sent</string>
+    <string name="scaffold_view_archive">Archive</string>
+    <string name="scaffold_view_junk">Spam</string>
+    <string name="scaffold_view_trash">Trash</string>
+    <string name="scaffold_view_everything">All folders</string>
+    <string name="scaffold_no_subject">(no subject)</string>
+    <string name="scaffold_unknown_sender">(Unknown sender)</string>
+    <string name="scaffold_empty_folder">No emails</string>
+    <string name="scaffold_reader_empty">No email selected</string>
+    <string name="scaffold_loading">Loading...</string>
+    <string name="scaffold_reply">Reply</string>
+    <string name="scaffold_reply_all">Reply all</string>
+    <string name="scaffold_forward">Forward</string>
+    <string name="scaffold_composer_to">To</string>
+    <string name="scaffold_composer_subject">Subject</string>
+    <string name="scaffold_composer_body">Message</string>
+    <string name="scaffold_drafted_by">Written by %1$s</string>
+    <string name="scaffold_new_chat">New chat</string>
+    <string name="scaffold_chat_placeholder">Ask %1$s...</string>
+    <string name="scaffold_send">Send</string>
+    <string name="scaffold_show_list">Show the list</string>
+    <string name="scaffold_no_chats">No chats yet</string>
+    <string name="scaffold_theme">Theme</string>
+    <string name="scaffold_theme_system">System</string>
+    <string name="scaffold_theme_light">Light</string>
+    <string name="scaffold_theme_dark">Dark</string>
+    <string name="scaffold_language">Language</string>
+    <string name="scaffold_language_system">System language</string>
+    <string name="scaffold_language_en" translatable="false">English</string>
+    <string name="scaffold_language_nl" translatable="false">Nederlands</string>
+    <string name="scaffold_setup_title">Set up email</string>
+    <string name="scaffold_setup_demo">Use the demo account</string>
+</resources>
