@@ -1260,6 +1260,40 @@ test('a chat that is not on screen never overwrites your own words, even after t
   await expect(editor()).not.toContainText('Agent text.');
 });
 
+test('agent text goes above a formatted signature and leaves it as it is', async () => {
+  await win.evaluate(() =>
+    window.mail.call('updateSettings', {
+      signatureHtml: '<table><tr><td><b style="color:#1c2340">Demo Sender</b><br><a href="https://example.com/team">example.com/team</a></td></tr></table>'
+    })
+  );
+  await win.reload();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await openChat('Call on Thursday');
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked', { timeout: 10000 });
+  const cid = await conversationId();
+  const layout = () =>
+    editor().evaluate((el) => ({
+      first: el.firstElementChild.textContent,
+      last: el.lastElementChild.className,
+      signature: el.querySelector(':scope > .signature').innerHTML
+    }));
+  expect((await tool(cid, 'write_draft', { mode: 'reply', body: 'Agent text.' })).error).toBeNull();
+  await expect(editor()).toContainText('Agent text.');
+  const before = await layout();
+  expect(before.first).toBe('Agent text.');
+  expect(before.last).toBe('signature');
+  expect(before.signature).toContain('<b style="color:#1c2340">Demo Sender</b>');
+  expect(before.signature).toContain('<a href="https://example.com/team">');
+  // A rewrite replaces the text above the signature only.
+  expect((await tool(cid, 'write_draft', { mode: 'reply', format: 'html', body: '<p>Second <b>version</b>.</p>' })).error).toBeNull();
+  await expect(editor()).toContainText('Second version.');
+  await expect(editor()).not.toContainText('Agent text.');
+  const after = await layout();
+  expect(after.first).toBe('Second version.');
+  expect(after.signature).toBe(before.signature);
+});
+
 test('a reopened reply-all draft with only a new To still drops the old Cc', async () => {
   await openChat('Call on Thursday');
   await say('Hello there');

@@ -2,6 +2,7 @@
 
 const libqp = require('libqp');
 const iconv = require('iconv-lite');
+const crypto = require('crypto');
 const { convert } = require('html-to-text');
 const { t } = require('../i18n');
 
@@ -140,7 +141,10 @@ function convertHtml(html) {
       { selector: 'script', format: 'skip' },
       { selector: 'head', format: 'skip' },
       ...['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].map((h) => ({ selector: h, options: { uppercase: false } })),
-      { selector: 'table', format: 'block' }
+      { selector: 'table', format: 'block' },
+      // Table cells on lines of their own, so a signature's name and phone number don't run together.
+      { selector: 'td', format: 'block', options: { leadingLineBreaks: 1, trailingLineBreaks: 1 } },
+      { selector: 'th', format: 'block', options: { leadingLineBreaks: 1, trailingLineBreaks: 1 } }
     ]
   });
 }
@@ -185,6 +189,35 @@ function sanitizeHtml(html) {
     .replace(/<meta[^>]+http-equiv[^>]*>/gi, '')
     .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     .replace(/(href|src|action)\s*=\s*(["']?)\s*javascript:[^"'\s>]*\2/gi, '$1="#"');
+}
+
+// Pictures in the editor (a signature's logo, an inserted image) are inline data. Mail apps such as Gmail and
+// Outlook drop data: images, so they go out as inline attachments the HTML refers to by Content-ID; on reading,
+// mailparser turns those back into data. The same picture twice is attached once. (Nodemailer's attachDataUrls
+// only works when sending through its transport, not for MailComposer, which builds Rukoo's messages.)
+const DATA_IMAGE = /(<img\b[^>]*?\ssrc\s*=\s*)(["'])data:image\/(png|jpe?g|gif|webp);base64,([a-z0-9+/=\s]+)\2/gi;
+
+function inlineDataImages(html) {
+  const attachments = [];
+  const byData = new Map();
+  const out = String(html || '').replace(DATA_IMAGE, (_match, prefix, quote, type, data) => {
+    const base64 = data.replace(/\s+/g, '');
+    let cid = byData.get(base64);
+    if (!cid) {
+      cid = `${crypto.randomBytes(10).toString('hex')}@rukoo`;
+      byData.set(base64, cid);
+      const ext = type.toLowerCase() === 'jpg' ? 'jpeg' : type.toLowerCase();
+      attachments.push({
+        filename: `image-${attachments.length + 1}.${ext === 'jpeg' ? 'jpg' : ext}`,
+        content: Buffer.from(base64, 'base64'),
+        contentType: `image/${ext}`,
+        cid,
+        contentDisposition: 'inline'
+      });
+    }
+    return `${prefix}${quote}cid:${cid}${quote}`;
+  });
+  return { html: out, attachments };
 }
 
 function escapeHtml(text) {
@@ -233,6 +266,7 @@ module.exports = {
   addressFromEnvelope,
   addressFromParsed,
   sanitizeHtml,
+  inlineDataImages,
   escapeHtml,
   textToHtml
 };

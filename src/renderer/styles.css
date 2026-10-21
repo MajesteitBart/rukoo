@@ -53,6 +53,11 @@
   --accent: #7aa5f5;
   --accent-soft: rgba(122, 165, 245, 0.15);
   --link: #8ab0ff;
+  /* A signature is drawn as it will be sent, on light paper, and turned dark the way the reader turns mail
+     dark: colors inverted and hues turned back. Its ink and links are light-theme values for that reason. */
+  --signature-ink: #565c69;
+  --signature-link: #2f63c8;
+  --signature-filter: invert(1) hue-rotate(180deg);
   --primary: #e9ecf5;
   --on-primary: #15171c;
   --danger: #ff6b6b;
@@ -89,6 +94,9 @@
   --accent: #2f66d6;
   --accent-soft: rgba(47, 102, 214, 0.1);
   --link: #2f63c8;
+  --signature-ink: var(--text-2);
+  --signature-link: var(--link);
+  --signature-filter: none;
   --primary: #1c2340;
   --on-primary: #ffffff;
   --danger: #d23b3b;
@@ -2929,8 +2937,20 @@ body.compose-window {
   content: attr(data-placeholder);
   color: var(--text-3);
 }
-.editor .signature {
-  color: var(--text-2);
+/* Signatures in the editor and in Settings; see the --signature tokens. */
+.editor .signature,
+.sig-render {
+  color: var(--signature-ink);
+  filter: var(--signature-filter);
+}
+.editor .signature img,
+.sig-render img {
+  max-width: 100%;
+  filter: var(--signature-filter);
+}
+.editor .signature a,
+.sig-render a {
+  color: var(--signature-link);
 }
 .editor img {
   max-width: 100%;
@@ -4493,4 +4513,114 @@ body.calendar-mode .titlebar-search {
   .cal-pop {
     animation: none;
   }
+}
+
+/* ---------- signature ---------- */
+
+/* The signature as it will be sent, under its Settings row. Tall ones are cut off; the editor shows all of it. */
+.sig-preview {
+  margin-top: 6px;
+  max-height: 132px;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.sig-preview p {
+  margin: 0;
+}
+.sig-dialog .sig-help {
+  font-size: 12.5px;
+  margin: 0 0 12px;
+  text-wrap: pretty;
+}
+.sig-frame {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.sig-frame:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.sig-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.sig-toolbar .sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 5px;
+  flex: none;
+}
+.sig-toolbar .spacer {
+  flex: 1;
+}
+.sig-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.sig-linkbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sig-linkbar input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+  user-select: text;
+}
+.sig-linkbar input:focus {
+  border-color: var(--accent);
+}
+.sig-editor {
+  /* Keeps any positioned content from a pasted signature inside the editor. */
+  contain: layout paint;
+  position: relative;
+  min-height: 140px;
+  max-height: min(320px, 50vh);
+  overflow: auto;
+  padding: 12px 14px;
+  outline: none;
+  font-size: 14.5px;
+  line-height: 1.6;
+  user-select: text;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+.sig-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-3);
+}
+.sig-source {
+  display: block;
+  width: 100%;
+  min-height: 200px;
+  max-height: min(320px, 50vh);
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: 12px/1.5 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  resize: vertical;
+  outline: none;
+  user-select: text;
 }

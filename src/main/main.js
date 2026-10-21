@@ -19,6 +19,7 @@ const {
   screen
 } = require('electron');
 const { Engine } = require('./engine');
+const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
@@ -563,6 +564,8 @@ const api = {
   },
   addAccount: (input) => engine.addAccount(input),
   updateAccount: (id, patch) => engine.updateAccount(id, patch),
+  // The signature editor in Settings shows pasted HTML the way it will be stored.
+  cleanSignature: (html) => cleanSignatureHtml(typeof html === 'string' ? html : ''),
   removeAccount: (id) => engine.removeAccount(id),
   updateSettings: (patch) => {
     const s = engine.updateSettings(patch);

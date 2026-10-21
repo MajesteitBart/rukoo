@@ -25,6 +25,9 @@ Dark is the default on `:root`. Light overrides it on `:root.light`, which `ui.j
 | `--accent` | `#7aa5f5` | `#2f66d6` | Unread dot, unread stack count, accent marks |
 | `--accent-soft` | blue at 15% | blue at 10% | Accent tint behind selected or active items |
 | `--link` | `#8ab0ff` | `#2f63c8` | Links and link buttons |
+| `--signature-ink` | `#565c69` | `var(--text-2)` | Signature text in the composer and Settings; dark mode inverts it, so it holds the light value |
+| `--signature-link` | `#2f63c8` | `var(--link)` | Links in a signature, inverted in dark mode like the ink |
+| `--signature-filter` | `invert(1) hue-rotate(180deg)` | `none` | Turns a signature dark the way the reader turns mail dark; pictures get it again to turn back |
 | `--primary` | `#e9ecf5` | `#1c2340` | The one filled button, the active quick filter |
 | `--on-primary` | `#15171c` | `#ffffff` | Text on `--primary` |
 | `--danger` | `#ff6b6b` | `#d23b3b` | Destructive actions and errors |

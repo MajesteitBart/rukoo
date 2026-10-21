@@ -405,7 +405,8 @@ class DemoAccount {
         unread: !m.flags.includes('\\Seen'),
         starred: m.flags.includes('\\Flagged'),
         answered: m.flags.includes('\\Answered'),
-        hasAttachments: (m.attachments || []).length > 0,
+        // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
+        hasAttachments: (m.attachments || []).some((a) => !a.cid),
         size: (m.html || m.text || '').length
       }))
     };
