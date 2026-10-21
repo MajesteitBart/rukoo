@@ -4,6 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 let app;
 let win;
@@ -25,9 +26,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  // An editor with unsaved changes keeps its window open and asks first; skip that in tests.
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-  await app.close();
+  await closeApp(app);
   // Each profile is a few MB; a full run would otherwise leave them all in the temp folder.
   removeDir(dataDir);
 });
@@ -298,6 +297,29 @@ test('the editor can move into a window of its own', async () => {
   await expect(popped.locator('[data-field="subject"]')).toHaveValue('Separate window');
   await expect(popped.locator('#compose-title')).toHaveText('Separate window');
   await composerGone();
+});
+
+// macOS can report a visibility change for a window that just closed. Electron's own listener then threw "Object has
+// been destroyed", and its error box held up the main process and the quit.
+test('a visibility change for a window that has closed is ignored', async () => {
+  const c = await composer(() => win.click('[data-action="compose"]'));
+  const [popped] = await Promise.all([app.waitForEvent('window'), c.click('[data-c="popout"]')]);
+  await popped.waitForSelector('.compose .editor');
+  const errors = await app.evaluate(({ BrowserWindow }) => {
+    const thrown = [];
+    for (const w of BrowserWindow.getAllWindows()) {
+      w.destroy();
+      for (const event of ['show', 'hide', 'minimize', 'maximize', 'restore']) {
+        try {
+          w.emit(event);
+        } catch (err) {
+          thrown.push(`${event}: ${err.message}`);
+        }
+      }
+    }
+    return thrown;
+  });
+  expect(errors).toEqual([]);
 });
 
 test('a draft opens only once', async () => {

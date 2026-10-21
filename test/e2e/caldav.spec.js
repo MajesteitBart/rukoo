@@ -4,6 +4,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 const { caldavServer } = require('../fixtures/caldav-server');
 
 const ME = 'me@example.com';
@@ -57,8 +58,7 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-  await app.close();
+  await closeApp(app);
   await server.close();
   removeDir(dataDir);
 });

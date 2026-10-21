@@ -58,6 +58,34 @@ async function prefetched(engine, acc) {
   while (engine.prefetching.has(acc.id)) await new Promise((r) => setTimeout(r, 5));
 }
 
+// Playwright quits Rukoo through the inspector, which can run the quit's flush() inside a running timer: here between the
+// cache save's write and its rename. An error thrown from that timer opened Electron's error box, and the macOS quit hung.
+test('a quit that flushes in the middle of a cache save leaves the save without an error and the cache saved', async () => {
+  const { engine, acc, dir } = await freshEngine();
+  engine.flush();
+  const file = path.join(dir, 'cache', `${acc.id}.json`);
+  const rename = fs.renameSync;
+  let flushed = false;
+  fs.renameSync = (from, to) => {
+    if (!flushed && to === file) {
+      flushed = true;
+      engine.flush();
+    }
+    return rename(from, to);
+  };
+  try {
+    engine.persistCache(acc.id);
+    await until(() => flushed);
+    // The timer finishes after its interrupted rename; an error from it would fail this test as uncaught.
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    fs.renameSync = rename;
+  }
+  assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).boxes);
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith('.tmp')), []);
+  await engine.close();
+});
+
 const bodies = (dir, acc) => {
   const d = path.join(dir, 'bodies', acc.id);
   return fs.existsSync(d) ? fs.readdirSync(d).filter((f) => f.endsWith('.eml')) : [];

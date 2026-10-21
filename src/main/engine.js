@@ -194,7 +194,15 @@ class Engine extends EventEmitter {
       accountId,
       setTimeout(() => {
         const cache = this.caches.get(accountId);
-        if (cache) writeJson(this.file('cache', `${accountId}.json`), cache);
+        // A save that fails here is made again with the next change and by flush() at quit. Thrown from a timer, the
+        // error would open Electron's error box, which holds up the main process, a quit included, until it is closed.
+        // The Electron tests quit Rukoo through the inspector, which can run flush() between this save's write and
+        // its rename: the flush then has moved the temp file already.
+        try {
+          if (cache) writeJson(this.file('cache', `${accountId}.json`), cache);
+        } catch (_) {
+          // Saved later.
+        }
       }, 250)
     );
   }
