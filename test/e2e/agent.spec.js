@@ -1189,7 +1189,7 @@ test('agent-written HTML loses controls, images, styles and unsafe links', async
 
 test('Settings has an Agents page with status and a way back', async () => {
   await win.click('[data-action="settings"]');
-  await win.locator('.page.settings .row', { hasText: 'Claude Code and Codex' }).click();
+  await win.locator('.page.settings .row', { hasText: 'Claude Code, Codex and OpenClaw' }).click();
   await expect(win.locator('.page.settings h1')).toHaveText('Agents');
   await expect(win.locator('[data-agent-status="clark"] .title')).toHaveText('Ready');
   await expect(win.locator('[data-agent-field="clark.name"]')).toHaveValue('Hermes');
@@ -1213,6 +1213,56 @@ test('Settings has an Agents page with status and a way back', async () => {
   // The new name is what the chat calls the agent.
   await win.keyboard.press('Control+j');
   await expect(win.locator('.agentpane .ap-agent')).toHaveText('Clark');
+});
+
+test('OpenClaw has a card in Settings and answers in the chat like the other agents', async () => {
+  await win.click('[data-action="settings"]');
+  await win.locator('.page.settings .row', { hasText: 'Claude Code, Codex and OpenClaw' }).click();
+  const status = win.locator('[data-agent-status="openclaw"]');
+  await expect(status.locator('.title')).toHaveText('Ready');
+  await expect(status.getByRole('button')).toHaveText('Test connection');
+  await expect(win.locator('[data-agent-field="openclaw.url"]')).toHaveValue('http://127.0.0.1:18789');
+  // The copied setup needs the token, which goes into a field of its own, next to Hermes' key.
+  await win.locator('.page.settings .row', { hasText: 'Copy OpenClaw setup' }).click();
+  await expect(win.locator('#toast')).toContainText('Save the gateway token first.');
+  const token = win.locator('[data-agent-key="openclaw"]');
+  await expect(token).toHaveAttribute('placeholder', 'Paste the gateway token or password');
+  await token.fill('gateway-token-123');
+  await token.press('Enter');
+  if (process.platform === 'linux') {
+    // Playwright starts Electron with password-store=basic, and on Linux Rukoo saves no credential without a real
+    // keyring. The token is put in the profile the way an older Rukoo stored one instead.
+    await expect(win.locator('#toast')).toContainText('Rukoo cannot securely save credentials.');
+    await app.evaluate(() => {
+      const hub = global.__semAgents;
+      hub.cfg.data.openclaw.key = `plain:${Buffer.from('gateway-token-123').toString('base64')}`;
+      hub.refreshRemoteHash();
+    });
+  } else {
+    await expect(win.locator('[data-agent-key-box="openclaw"]')).toContainText('Token saved');
+    await expect(win.locator('[data-agent-key="clark"]')).toBeVisible();
+  }
+  await win.locator('[data-agent-field="openclaw.agent"]').fill('research');
+  await win.locator('[data-agent-field="openclaw.agent"]').press('Enter');
+  await expect.poll(() => win.evaluate(() => window.mail.call('agentConfig').then((c) => c.openclaw))).toMatchObject({ agent: 'research', hasKey: true });
+  // The token stays in main: the config the window gets says only that there is one.
+  expect(JSON.stringify(await win.evaluate(() => window.mail.call('agentConfig')))).not.toContain('gateway-token-123');
+  // What the copy row puts on the clipboard (not clicked here: the clipboard is the desktop's own).
+  const setup = await app.evaluate(() => global.__semAgents.cfg.openclawSetup(global.__semAgents.mcp.ports().local));
+  expect(setup).toMatch(/^openclaw mcp set rukoo '\{"url":"http:\/\/127\.0\.0\.1:\d+\/mcp","transport":"streamable-http","headers":\{"Authorization":"Bearer [A-Za-z0-9_-]+"\}\}'\n$/);
+  await win.click('.page.settings [data-a="back"]');
+  await win.click('.page.settings [data-a="back"]');
+
+  await openChat('Call on Thursday');
+  await win.click('.agentpane [data-ap="new"]');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row').filter({ has: win.locator('.bui-menu__label', { hasText: /^OpenClaw$/ }) }).click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('OpenClaw');
+  await say('Hello OpenClaw');
+  await expect(transcript()).toContainText('You asked', { timeout: 10000 });
+  const got = await app.evaluate(() => global.__semAgents.adapters.get('openclaw').received.at(-1));
+  expect(got.text).toBe('Hello OpenClaw');
+  expect(await app.evaluate(() => global.__semAgents.list()[0].agent)).toBe('openclaw');
 });
 
 test('a reopened reply-all draft rewritten as a private reply loses the old Cc', async () => {

@@ -67,14 +67,14 @@ const hostOf = (url) => {
   }
 };
 
-const AGENT_IDS = ['clark', 'claude', 'codex'];
-const AGENT_PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex' };
+const AGENT_IDS = ['clark', 'claude', 'codex', 'openclaw'];
+const AGENT_PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex', openclaw: 'OpenClaw' };
 const AGENT_STATES = ['starting', 'ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'unknown'];
 const ACCESS = [
   { value: 'ask', get label() { return t('settings.agents.accessAsk'); }, get hint() { return t('settings.agents.accessAskHint'); } },
   { value: 'full', get label() { return t('settings.agents.accessFull'); }, get hint() { return t('settings.agents.accessFullHint'); } }
 ];
-const agentName = (config, id) => (id === 'clark' ? (config && config.clark && config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : 'Codex');
+const agentName = (config, id) => (id === 'clark' ? (config && config.clark && config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'openclaw' ? 'OpenClaw' : 'Codex');
 const agentStateOf = (status, id) => {
   const s = status && status[id] ? status[id].state : 'starting';
   return AGENT_STATES.includes(s) ? s : 'unknown';
@@ -316,7 +316,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
 
   // { config, status } as shown on the agents page; config never holds secrets.
   let agentState = null;
-  let keyEditing = false;
+  // Per agent with a secret (clark, openclaw): whether its field is open for a new one.
+  let keyEditing = {};
   // The config is local and quick. Status can wait on the network (an offline Hermes server takes seconds),
   // so pages draw with the last known status and refreshAgentStatus() fills it in afterwards.
   const loadAgents = () =>
@@ -346,7 +347,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     <div class="row static agent-status" data-agent-status="${id}">
       <span class="agent-dot" aria-hidden="true"></span>
       <div class="text"><div class="title"></div><div class="desc agent-detail"></div></div>
-      ${id === 'clark'
+      ${id === 'clark' || id === 'openclaw'
         ? `<button class="btn sm secondary" data-a="agent-test:${id}" data-i18n="settings.agents.testConnection">${esc(t('settings.agents.testConnection'))}</button>`
         : `<button class="btn sm secondary" data-a="agent-test:${id}" data-i18n="settings.agents.test">${esc(t('settings.agents.test'))}</button>`}
     </div>`;
@@ -369,15 +370,21 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const found = agentState.config[id].detectedExe || (/[\\/].+\.exe$/i.test(detail) ? detail : '');
     return found || t('settings.agents.exeHint', { exe });
   };
-  const keyHtml = () => {
-    const saved = agentState.config.clark.hasKey;
-    if (saved && !keyEditing) {
-      return `<div class="agent-key"><span class="agent-key-label">${esc(t('settings.agents.key'))}</span>
-        <span class="agent-key-saved">${icons.check}<span>${esc(t('settings.agents.keySaved'))}</span></span>
-        <button class="link-btn" data-a="agent-key-replace">${esc(t('settings.agents.keyReplace'))}</button></div>`;
+  // The secret's labels: Hermes has an API key, OpenClaw a gateway token (or password).
+  const KEY_TEXT = {
+    clark: { label: 'settings.agents.key', placeholder: 'settings.agents.keyPlaceholder', saved: 'settings.agents.keySaved', save: 'settings.agents.keySave', show: 'settings.agents.keyShow', hide: 'settings.agents.keyHide', stored: 'settings.agents.keyStored' },
+    openclaw: { label: 'settings.agents.token', placeholder: 'settings.agents.tokenPlaceholder', saved: 'settings.agents.tokenSaved', save: 'settings.agents.tokenSave', show: 'settings.agents.tokenShow', hide: 'settings.agents.tokenHide', stored: 'settings.agents.tokenStored' }
+  };
+  const keyHtml = (id) => {
+    const k = KEY_TEXT[id];
+    const saved = agentState.config[id].hasKey;
+    if (saved && !keyEditing[id]) {
+      return `<div class="agent-key"><span class="agent-key-label">${esc(t(k.label))}</span>
+        <span class="agent-key-saved">${icons.check}<span>${esc(t(k.saved))}</span></span>
+        <button class="link-btn" data-a="agent-key-replace:${id}">${esc(t('settings.agents.keyReplace'))}</button></div>`;
     }
-    return `<label>${esc(t('settings.agents.key'))}<span class="pw"><input type="password" data-agent-key autocomplete="off" spellcheck="false" placeholder="${esc(t('settings.agents.keyPlaceholder'))}"/><button class="icon-btn sm" data-a="agent-key-reveal" title="${esc(t('settings.agents.keyShow'))}">${icons.eye}</button></span></label>
-      <div class="agent-key-actions"><button class="btn sm" data-a="agent-key-save">${esc(t('settings.agents.keySave'))}</button>${saved ? `<button class="link-btn" data-a="agent-key-cancel">${esc(t('common.actions.cancel'))}</button>` : ''}</div>`;
+    return `<label>${esc(t(k.label))}<span class="pw"><input type="password" data-agent-key="${id}" autocomplete="off" spellcheck="false" placeholder="${esc(t(k.placeholder))}"/><button class="icon-btn sm" data-a="agent-key-reveal:${id}" title="${esc(t(k.show))}">${icons.eye}</button></span></label>
+      <div class="agent-key-actions"><button class="btn sm" data-a="agent-key-save:${id}">${esc(t(k.save))}</button>${saved ? `<button class="link-btn" data-a="agent-key-cancel:${id}">${esc(t('common.actions.cancel'))}</button>` : ''}</div>`;
   };
   // The port the remote listener really got (it moves when the chosen one is taken), the same as in the
   // copied Hermes setup, with main's note about the move. Clark signs in with the API key, so without one it can't.
@@ -408,7 +415,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         <div class="form agent-form">
           ${agentField('clark', 'name', t('settings.agents.name'), c.clark.name, 'Hermes')}
           ${agentField('clark', 'url', t('settings.agents.url'), c.clark.url, 'http://100.64.0.1:8642')}
-          <div class="agent-key-box">${keyHtml()}</div>
+          <div class="agent-key-box" data-agent-key-box="clark">${keyHtml('clark')}</div>
           ${agentField('clark', 'model', t('settings.agents.model'), c.clark.model, t('settings.agents.optional'))}
         </div>
         ${row({ title: t('settings.agents.remote', { name: nameSpan('clark') }), desc: `<span data-agent-address>${remoteDesc()}</span>`, action: 'agent-remote', toggle: Boolean(c.mcp && c.mcp.remote) })}
@@ -434,6 +441,18 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${agentField('codex', 'model', t('settings.agents.model'), c.codex.model, t('settings.agents.optional'))}
         </div>
         ${accessRow('codex')}
+      </div>
+      ${head('openclaw')}
+      <div class="card agent-card">
+        ${statusRow('openclaw')}
+        ${row({ title: t('settings.agents.enabled', { name: 'OpenClaw' }), action: 'agent-enabled:openclaw', toggle: c.openclaw.enabled !== false })}
+        <div class="form agent-form">
+          ${agentField('openclaw', 'url', t('settings.agents.gatewayUrl'), c.openclaw.url, 'http://127.0.0.1:18789')}
+          <div class="agent-key-box" data-agent-key-box="openclaw">${keyHtml('openclaw')}</div>
+          ${agentField('openclaw', 'agent', t('settings.agents.openclawAgent'), c.openclaw.agent, t('settings.agents.openclawAgentHint'))}
+          ${agentField('openclaw', 'model', t('settings.agents.model'), c.openclaw.model, t('settings.agents.modelHint', { example: 'openai/gpt-5.4' }))}
+        </div>
+        ${row({ title: t('settings.agents.copyOpenClaw'), desc: t('settings.agents.copyOpenClawHelp'), action: 'agent-copy-openclaw' })}
       </div>`;
   }
 
@@ -596,36 +615,45 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           toast(err.message, 5000);
         }
         return;
+      case 'agent-copy-openclaw':
+        if (!c.openclaw.hasKey) return toast(t('settings.agents.tokenFirst'), 5000);
+        try {
+          await api('agentCopyOpenClawSetup');
+          toast(t('settings.agents.copiedOpenClaw'), 8000);
+        } catch (err) {
+          toast(err.message, 5000);
+        }
+        return;
       case 'agent-key-replace':
       case 'agent-key-cancel':
-        keyEditing = name === 'agent-key-replace';
-        page.querySelector('.agent-key-box').innerHTML = keyHtml();
-        page.querySelector('[data-agent-key]')?.focus();
+        keyEditing[id] = name === 'agent-key-replace';
+        page.querySelector(`[data-agent-key-box="${id}"]`).innerHTML = keyHtml(id);
+        page.querySelector(`[data-agent-key="${id}"]`)?.focus();
         return;
       case 'agent-key-reveal': {
-        const input = page.querySelector('[data-agent-key]');
+        const input = page.querySelector(`[data-agent-key="${id}"]`);
         const show = input.type === 'password';
         input.type = show ? 'text' : 'password';
         b.innerHTML = show ? icons.eyeOff : icons.eye;
-        b.title = show ? t('settings.agents.keyHide') : t('settings.agents.keyShow');
+        b.title = t(show ? KEY_TEXT[id].hide : KEY_TEXT[id].show);
         return;
       }
       case 'agent-key-save': {
-        const input = page.querySelector('[data-agent-key]');
+        const input = page.querySelector(`[data-agent-key="${id}"]`);
         const value = input.value.trim();
         if (!value) return input.focus();
         try {
-          await api('agentSetSecret', 'clark', value);
+          await api('agentSetSecret', id, value);
           agentState.config = await api('agentConfig');
         } catch (err) {
           return toast(err.message, 5000);
         }
-        keyEditing = false;
-        page.querySelector('.agent-key-box').innerHTML = keyHtml();
+        keyEditing[id] = false;
+        page.querySelector(`[data-agent-key-box="${id}"]`).innerHTML = keyHtml(id);
         const address = page.querySelector('[data-agent-address]');
         if (address) address.innerHTML = remoteDesc();
-        toast(t('settings.agents.keyStored'));
-        return testAgent('clark');
+        toast(t(KEY_TEXT[id].stored));
+        return testAgent(id);
       }
     }
   }
@@ -646,7 +674,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const def = page.querySelector('[data-agent-default]');
       if (def) def.textContent = agentName(agentState.config, agentState.config.defaultAgent);
     }
-    if (key === 'url' || key === 'exe') testAgent(id);
+    if (key === 'url' || key === 'exe' || (id === 'openclaw' && key === 'agent')) testAgent(id);
   }
 
   page.addEventListener('change', (e) => {
@@ -656,7 +684,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   page.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     if (e.target.matches && e.target.matches('[data-agent-field]')) e.target.blur();
-    if (e.target.matches && e.target.matches('[data-agent-key]')) page.querySelector('[data-a="agent-key-save"]')?.click();
+    if (e.target.matches && e.target.matches('[data-agent-key]')) page.querySelector(`[data-a="agent-key-save:${e.target.dataset.agentKey}"]`)?.click();
   });
 
   async function render() {
@@ -819,7 +847,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
 
     if (view === 'agents') {
       title = t('settings.agents.title');
-      keyEditing = false;
+      keyEditing = {};
       body = agentState ? agentsHtml() : `<p class="empty">${esc(t('settings.agents.unavailable'))}</p>`;
     }
 

@@ -795,6 +795,7 @@ Object.assign(api, {
   agentTest: (agent) => agentHub().test(agentId(agent)),
   agentStatus: () => agentHub().status(),
   agentCopyHermesSetup: () => agentHub().copyHermesSetup(),
+  agentCopyOpenClawSetup: () => agentHub().copyOpenClawSetup(),
   agentList: () => agentHub().list(),
   agentGet: (id) => agentHub().get(agentId(id)),
   agentFindFor: (ref) => {

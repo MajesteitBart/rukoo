@@ -1,6 +1,6 @@
 'use strict';
 
-// A deterministic stand-in for all three agents, used when SEM_AGENT_FAKE=1 (e2e tests, screenshots).
+// A deterministic stand-in for all four agents, used when SEM_AGENT_FAKE=1 (e2e tests, screenshots).
 // It calls Rukoo's real tool handlers through hub.callTool, the same code the MCP server runs.
 
 const { untag } = require('./context');
@@ -61,7 +61,9 @@ const MODELS = {
     ],
     efforts: LEVELS,
     custom: LEVELS
-  }
+  },
+  // OpenClaw's gateway lists agents, not models, and takes no effort: the menu has Default and the model in Settings.
+  openclaw: { models: [], efforts: [], custom: [] }
 };
 
 // Each agent's own skills for the $ menu, in the shape ownskills.cleanList() takes: Hermes skills with a
@@ -80,7 +82,9 @@ const SKILLS = {
   codex: [
     { name: 'gh-fix-ci', description: 'Debug failing GitHub Actions checks on a pull request.', scope: 'user' },
     { name: 'openai-docs', description: 'Look things up in the OpenAI developer docs.', scope: 'system' }
-  ]
+  ],
+  // The gateway has no endpoint that lists skills.
+  openclaw: []
 };
 
 class FakeAdapter {

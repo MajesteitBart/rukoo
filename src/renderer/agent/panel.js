@@ -9,9 +9,9 @@ import { shortcutList, shortcutByKey, actionsFor, commandsFor, skillCommands } f
 import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
 
-const AGENTS = ['clark', 'claude', 'codex'];
+const AGENTS = ['clark', 'claude', 'codex', 'openclaw'];
 // Product names, not translated.
-const PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex' };
+const PRODUCTS = { clark: 'Hermes Agent', claude: 'Claude Code', codex: 'Codex', openclaw: 'OpenClaw' };
 const STATES = ['starting', 'ready', 'offline', 'unconfigured', 'disabled', 'missing', 'unauthorized', 'unknown'];
 // Until these are fixed in Settings the agent cannot take a message.
 const BLOCKED = new Set(['unconfigured', 'disabled', 'missing', 'unauthorized']);
@@ -224,7 +224,7 @@ export function mountAgentPanel(ctx) {
   // ---------- agents ----------
 
   const currentAgent = () => (P.conv ? P.conv.agent : P.agentId);
-  const agentName = (id) => (id === 'clark' ? (P.config && P.config.clark && P.config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'codex' ? 'Codex' : String(id || ''));
+  const agentName = (id) => (id === 'clark' ? (P.config && P.config.clark && P.config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'codex' ? 'Codex' : id === 'openclaw' ? 'OpenClaw' : String(id || ''));
   const stateOf = (id) => {
     const s = P.unavailable ? 'unknown' : P.status && P.status[id] ? P.status[id].state : 'starting';
     return STATES.includes(s) ? s : 'unknown';
