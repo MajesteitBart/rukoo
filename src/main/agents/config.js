@@ -36,8 +36,9 @@ const DEFAULTS = {
   claude: { enabled: true, exe: '', configDir: '', model: '', access: 'ask' },
   codex: { enabled: true, exe: '', model: '', access: 'ask' },
   // agent: the OpenClaw agent id a new chat goes to ('' for the gateway's default agent). model: a backend model
-  // for x-openclaw-model ('' for the agent's own).
-  openclaw: { enabled: true, url: OPENCLAW_URL, key: null, agent: '', model: '' },
+  // for x-openclaw-model ('' for the agent's own). remote: the user lets a gateway on another computer use Rukoo's
+  // tools over Tailscale, which opens the Tailscale listener (see hub.wantsRemote()).
+  openclaw: { enabled: true, url: OPENCLAW_URL, key: null, agent: '', model: '', remote: false },
   mcp: { port: 47800, remote: false, remoteHost: '' }
 };
 
@@ -47,10 +48,12 @@ function remoteTokenFor(key) {
   return key ? crypto.createHmac('sha256', key).update('rukoo-mcp-v1').digest('base64url') : '';
 }
 
-// The token OpenClaw's MCP client sends to Rukoo, made from the gateway token: it changes with that token, and it
-// doesn't give away the gateway token itself. Rukoo accepts it only on 127.0.0.1.
-function openclawTokenFor(key) {
-  return key ? crypto.createHmac('sha256', key).update('rukoo-mcp-openclaw-v1').digest('base64url') : '';
+// The tokens OpenClaw's MCP client sends to Rukoo, made from the gateway token: they change with that token, and
+// they don't give away the gateway token itself. There are two, so each works on one listener only: the local one on
+// 127.0.0.1, the remote one on the Tailscale listener, and that one only while the user allows a remote gateway.
+// A local token that leaks from this computer is then of no use from the tailnet.
+function openclawTokenFor(key, remote = false) {
+  return key ? crypto.createHmac('sha256', key).update(remote ? 'rukoo-mcp-openclaw-remote-v1' : 'rukoo-mcp-openclaw-v1').digest('base64url') : '';
 }
 
 // An OpenClaw agent id as the gateway takes it in `openclaw/<agentId>` (lowercase letters, digits, - and _).
@@ -315,6 +318,7 @@ class AgentConfig {
         s.agent = agent;
       }
       if ('model' in p) s.model = text(p.model, 100, 'openclaw.model');
+      if ('remote' in p) s.remote = bool(p.remote, 'openclaw.remote');
     });
     section('mcp', (p, s) => {
       if ('port' in p) {
@@ -348,19 +352,23 @@ class AgentConfig {
     return remoteTokenFor(this.get('clark').key);
   }
 
-  // The token OpenClaw's MCP client sends; empty until the gateway token is set.
-  openclawToken() {
-    return openclawTokenFor(this.get('openclaw').key);
+  // A token OpenClaw's MCP client sends (see openclawTokenFor); empty until the gateway token is set. The remote one
+  // also stays empty while the user doesn't allow a gateway on another computer, so the Tailscale listener, which
+  // may be open for Hermes, takes no OpenClaw token then.
+  openclawToken(remote = false) {
+    if (remote && !this.data.openclaw.remote) return '';
+    return openclawTokenFor(this.get('openclaw').key, remote);
   }
 
-  // The command that adds Rukoo to OpenClaw's MCP servers (docs.openclaw.ai/cli/mcp): Streamable HTTP on this
-  // computer's loopback, with the token above. OpenClaw leaves a URL server on SSE unless transport says otherwise.
-  // port: the port Rukoo's local listener really got. The command holds a token, unlike the Hermes block: OpenClaw
-  // can't compute it from its gateway token. It is only of use on this computer.
-  openclawSetup(port = this.runtime.localPort || this.data.mcp.port) {
-    const token = this.openclawToken();
-    if (!token) return '';
-    const server = { url: `http://127.0.0.1:${port}/mcp`, transport: 'streamable-http', headers: { Authorization: `Bearer ${token}` } };
+  // The command that adds Rukoo to OpenClaw's MCP servers (docs.openclaw.ai/cli/mcp): Streamable HTTP with the
+  // token for that listener. OpenClaw leaves a URL server on SSE unless transport says otherwise.
+  // {remote: false, port}: this computer's loopback, the port Rukoo's local listener really got.
+  // {remote: true, host, port}: Rukoo's Tailscale address and the port its Tailscale listener really got.
+  // The command holds a token, unlike the Hermes block: OpenClaw can't compute it from its gateway token.
+  openclawSetup({ remote = false, host = '127.0.0.1', port = this.runtime.localPort || this.data.mcp.port } = {}) {
+    const token = this.openclawToken(remote);
+    if (!token || !host || !port) return '';
+    const server = { url: `http://${host}:${port}/mcp`, transport: 'streamable-http', headers: { Authorization: `Bearer ${token}` } };
     return `openclaw mcp set rukoo '${JSON.stringify(server)}'\n`;
   }
 

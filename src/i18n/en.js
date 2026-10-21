@@ -3026,7 +3026,7 @@
   },
   "settings.agents.copyOpenClawHelp": {
     "message": "A command for this computer that lets OpenClaw use Rukoo's tools. It holds a token, so don't share it.",
-    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row. The copied command (openclaw mcp set) contains Rukoo's MCP token for OpenClaw."
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row for a gateway on this computer. The copied command (openclaw mcp set) contains Rukoo's MCP token for OpenClaw."
   },
   "settings.agents.copiedOpenClaw": {
     "message": "Copied. Run it in a terminal on this computer, then restart the OpenClaw gateway.",
@@ -3075,6 +3075,30 @@
   "settings.agents.tokenStored": {
     "message": "Token saved. Rukoo keeps it encrypted on this computer.",
     "description": "Settings, Agents page: toast after the OpenClaw gateway token was stored."
+  },
+  "settings.agents.copyOpenClawRemoteHelp": {
+    "message": "A command for the gateway's computer, with Rukoo's Tailscale address. It holds a token, so don't share it.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row while a gateway on another computer may use Rukoo. The copied command (openclaw mcp set) contains Rukoo's Tailscale address and its MCP token for OpenClaw."
+  },
+  "settings.agents.copiedOpenClawRemote": {
+    "message": "Copied with {url}. Run it on the gateway's computer, then restart the OpenClaw gateway.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on another computer. url is Rukoo's MCP address on Tailscale, such as http://100.64.0.5:47800/mcp."
+  },
+  "settings.agents.openclawNoListener": {
+    "message": "Rukoo isn't listening on a Tailscale address. Check that Tailscale runs on this computer.",
+    "description": "Settings, Agents page: toast when the OpenClaw setup for another computer is copied while Rukoo has no Tailscale listener."
+  },
+  "settings.agents.openclawRemote": {
+    "message": "Let OpenClaw use Rukoo from another computer",
+    "description": "Settings, Agents page, OpenClaw card: toggle that lets an OpenClaw gateway on another computer in the user's tailnet call Rukoo's tools over Tailscale."
+  },
+  "settings.agents.openclawRemoteHelp": {
+    "message": "For a gateway elsewhere in your tailnet. Rukoo then also listens on its Tailscale address.",
+    "description": "Settings, Agents page, OpenClaw card: description under the remote toggle while it is off."
+  },
+  "settings.agents.openclawRemoteNeedsToken": {
+    "message": "OpenClaw signs in with a token Rukoo makes from the gateway token above. Enter it first.",
+    "description": "Settings, Agents page, OpenClaw card: note under the remote toggle when it is on but no gateway token is saved."
   },
   "settings.agents.default": {
     "message": "Default agent",

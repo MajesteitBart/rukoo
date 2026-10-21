@@ -158,6 +158,7 @@ class AgentHub extends EventEmitter {
     this.convTokens = new Map();
     this.remoteHash = null;
     this.openclawHash = null;
+    this.openclawRemoteHash = null;
     this.threads = new Map();
     this.uiPending = new Map();
     // Per conversation, the chain of mail work whose outcome goes into the notes, and what on it still runs; see
@@ -298,7 +299,7 @@ class AgentHub extends EventEmitter {
     // Tailscale often comes up after Rukoo (login items); keep trying while the user wants remote access.
     clearInterval(this.remoteTimer);
     this.remoteTimer = setInterval(() => {
-      if (this.disposed || !this.mcp || !this.cfg.data.mcp.remote || this.mcp.ports().remote || this.remoteStarting) return;
+      if (this.disposed || !this.mcp || !this.wantsRemote() || this.mcp.ports().remote || this.remoteStarting) return;
       this.remoteStarting = true;
       this.startRemote()
         .then(() => this.mcp && this.mcp.ports().remote && this.refreshStatus({ force: true }))
@@ -318,14 +319,22 @@ class AgentHub extends EventEmitter {
     return run;
   }
 
+  // Whether the Tailscale listener should be open: for Clark's bridge ("Let Clark use Rukoo"), or for an OpenClaw
+  // gateway on another computer ("Let OpenClaw use Rukoo from another computer", while OpenClaw is on). Each is an
+  // explicit opt-in, because the listener offers the mailbox to the tailnet.
+  wantsRemote() {
+    const { mcp, openclaw } = this.cfg.data;
+    return Boolean(mcp.remote || (openclaw.remote && openclaw.enabled !== false));
+  }
+
   // The Tailscale listener, only when the user turned it on and this machine has an address.
   async openRemote() {
     const mcp = this.mcp;
     if (!mcp || mcp.closed) return;
     await mcp.closeRemote();
     this.cfg.runtime.remotePort = null;
-    const { remote, remoteHost, port } = this.cfg.data.mcp;
-    if (!remote) return;
+    const { remoteHost, port } = this.cfg.data.mcp;
+    if (!this.wantsRemote()) return;
     const detected = tailscaleAddress(this.cfg.interfaces);
     const literal = /^\d+\.\d+\.\d+\.\d+$/.test(remoteHost);
     const host = literal ? remoteHost : detected || remoteHost;
@@ -1925,9 +1934,12 @@ class AgentHub extends EventEmitter {
     const hash = sha256(token);
     let found = null;
     for (const t of this.tokens) if (crypto.timingSafeEqual(t.hash, hash)) found = t.identity;
-    if (this.remoteHash && crypto.timingSafeEqual(this.remoteHash, hash)) found = { agent: 'clark', conversationId: null, remote: true };
-    // OpenClaw's MCP client, on this computer (the loopback listener takes only tokens that aren't remote).
+    // Clark's token only while "Let Clark use Rukoo" is on: the Tailscale listener can also be open for OpenClaw alone.
+    if (this.remoteHash && crypto.timingSafeEqual(this.remoteHash, hash) && this.cfg.data.mcp.remote) found = { agent: 'clark', conversationId: null, remote: true };
+    // OpenClaw's MCP client: on this computer with the local token (the loopback listener takes only tokens that
+    // aren't remote), or on another computer with the remote one, which only the Tailscale listener takes.
     if (this.openclawHash && crypto.timingSafeEqual(this.openclawHash, hash)) found = { agent: 'openclaw', conversationId: null, remote: false };
+    if (this.openclawRemoteHash && crypto.timingSafeEqual(this.openclawRemoteHash, hash)) found = { agent: 'openclaw', conversationId: null, remote: true };
     return found ? { ...found } : null;
   }
 
@@ -1936,7 +1948,7 @@ class AgentHub extends EventEmitter {
   // covers the address this Rukoo took the connection on, so a listener elsewhere that relays the challenge here
   // gets a proof for this address, not its own.
   proof(challenge, endpoint) {
-    if (!this.remoteHash || !endpoint) return '';
+    if (!this.remoteHash || !this.cfg.data.mcp.remote || !endpoint) return '';
     return crypto.createHmac('sha256', this.remoteHash).update(`rukoo-proof:${endpoint}:${challenge}`).digest('base64url');
   }
 
@@ -2086,13 +2098,16 @@ class AgentHub extends EventEmitter {
 
   async updateConfig(patch) {
     const before = JSON.stringify(this.cfg.data.mcp);
+    const wanted = this.wantsRemote();
     this.cfg.update(patch);
+    // Allowing a remote OpenClaw gateway, or no longer, gives or takes its remote token.
+    this.refreshRemoteHash();
     // Shortcuts change nothing about the agents themselves: the panel only needs to draw them again.
     if (isObj(patch) && Object.keys(patch).every((k) => k === 'shortcuts')) {
       this.emitEvent({ kind: 'agents', status: this.statuses });
       return this.config();
     }
-    if (JSON.stringify(this.cfg.data.mcp) !== before && this.mcp) {
+    if ((JSON.stringify(this.cfg.data.mcp) !== before || this.wantsRemote() !== wanted) && this.mcp) {
       if (this.cfg.data.mcp.port !== JSON.parse(before).port) {
         await this.mcp.close();
         await this.startMcp().catch((err) => {
@@ -2119,6 +2134,9 @@ class AgentHub extends EventEmitter {
     this.remoteHash = token ? sha256(token) : null;
     const openclaw = this.cfg.openclawToken();
     this.openclawHash = openclaw ? sha256(openclaw) : null;
+    // Empty while the user doesn't allow a remote gateway (config.openclawToken).
+    const openclawRemote = this.cfg.openclawToken(true);
+    this.openclawRemoteHash = openclawRemote ? sha256(openclawRemote) : null;
   }
 
   copyHermesSetup() {
@@ -2126,13 +2144,26 @@ class AgentHub extends EventEmitter {
     return true;
   }
 
-  // The command that adds Rukoo's MCP server to OpenClaw, with the port the local listener really has.
+  // The command that adds Rukoo's MCP server to OpenClaw. For a gateway on this computer: 127.0.0.1 and the port the
+  // local listener really has. With a remote gateway allowed: Rukoo's Tailscale address (or the host name in
+  // remoteHost) and the port the Tailscale listener really has. Returns {remote, url}, so Settings can say which one
+  // went on the clipboard; never the token.
+  //
+  // OpenClaw gets no proof step like Clark's bridge. The bridge looks for Rukoo on every device in the tailnet and
+  // must not hand its token to whichever answers, so Rukoo proves first that it has the same key. OpenClaw gets one
+  // fixed URL from the user, the Tailscale address of this device, and Tailscale makes sure that address belongs to
+  // this device (WireGuard keys). Its MCP client also has no way to ask for a proof.
   copyOpenClawSetup() {
-    const port = this.mcp ? this.mcp.ports().local : null;
-    const setup = this.cfg.openclawSetup(port || undefined);
+    const remote = Boolean(this.cfg.data.openclaw.remote);
+    const ports = this.mcp ? this.mcp.ports() : { local: null, remote: null };
+    if (!this.cfg.get('openclaw').key) throw new AgentError('not-configured', 'Save the gateway token first');
+    const host = remote ? this.cfg.address() : '127.0.0.1';
+    const port = remote ? ports.remote : ports.local || this.cfg.data.mcp.port;
+    if (!host || !port) throw new AgentError('not-configured', 'Rukoo is not listening on a Tailscale address');
+    const setup = this.cfg.openclawSetup({ remote, host, port });
     if (!setup) throw new AgentError('not-configured', 'Save the gateway token first');
     if (this.deps.clipboard) this.deps.clipboard.writeText(setup);
-    return true;
+    return { remote, url: `http://${host}:${port}/mcp` };
   }
 
   configChanged() {

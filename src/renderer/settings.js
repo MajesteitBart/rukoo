@@ -395,6 +395,27 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     return note ? `${url}<span class="agent-note">${esc(note)}</span>` : url;
   };
 
+  // The OpenClaw card's remote row: off, what it is for; on, the address a remote gateway uses (the Tailscale
+  // listener's real port, as in the copied setup), with main's note. OpenClaw's token comes from the gateway token.
+  const openclawRemoteDesc = () => {
+    const { mcp = {}, openclaw = {} } = agentState.config;
+    if (!openclaw.remote) return esc(t('settings.agents.openclawRemoteHelp'));
+    const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}/mcp`) : esc(t('settings.agents.noAddress'));
+    const note = !openclaw.hasKey ? t('settings.agents.openclawRemoteNeedsToken') : mcp.note;
+    return note ? `${url}<span class="agent-note">${esc(note)}</span>` : url;
+  };
+  // Which command the copy row puts on the clipboard: for this computer, or for the gateway's computer.
+  const openclawCopyDesc = () => t(agentState.config.openclaw.remote ? 'settings.agents.copyOpenClawRemoteHelp' : 'settings.agents.copyOpenClawHelp');
+  // Both cards show the Tailscale listener; a toggle on one can open or close it for the other.
+  const showAddresses = () => {
+    const hermes = page.querySelector('[data-agent-address]');
+    if (hermes) hermes.innerHTML = remoteDesc();
+    const openclaw = page.querySelector('[data-openclaw-address]');
+    if (openclaw) openclaw.innerHTML = openclawRemoteDesc();
+    const copy = page.querySelector('[data-a="agent-copy-openclaw"] .desc');
+    if (copy) copy.textContent = openclawCopyDesc();
+  };
+
   function agentsHtml() {
     const c = agentState.config;
     const accessRow = (id) => row({ title: t('settings.agents.access'), value: esc(labelOf(ACCESS, c[id].access)), action: `agent-access:${id}` });
@@ -452,7 +473,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${agentField('openclaw', 'agent', t('settings.agents.openclawAgent'), c.openclaw.agent, t('settings.agents.openclawAgentHint'))}
           ${agentField('openclaw', 'model', t('settings.agents.model'), c.openclaw.model, t('settings.agents.modelHint', { example: 'openai/gpt-5.4' }))}
         </div>
-        ${row({ title: t('settings.agents.copyOpenClaw'), desc: t('settings.agents.copyOpenClawHelp'), action: 'agent-copy-openclaw' })}
+        ${row({ title: t('settings.agents.openclawRemote'), desc: `<span data-openclaw-address>${openclawRemoteDesc()}</span>`, action: 'agent-openclaw-remote', toggle: Boolean(c.openclaw.remote) })}
+        ${row({ title: t('settings.agents.copyOpenClaw'), desc: esc(openclawCopyDesc()), action: 'agent-copy-openclaw' })}
       </div>`;
   }
 
@@ -602,7 +624,13 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       case 'agent-remote':
         if (await updateAgents({ mcp: { remote: !(c.mcp && c.mcp.remote) } })) {
           flip(b, Boolean(agentState.config.mcp.remote));
-          b.querySelector('[data-agent-address]').innerHTML = remoteDesc();
+          showAddresses();
+        }
+        return;
+      case 'agent-openclaw-remote':
+        if (await updateAgents({ openclaw: { remote: !c.openclaw.remote } })) {
+          flip(b, Boolean(agentState.config.openclaw.remote));
+          showAddresses();
         }
         return;
       case 'agent-test':
@@ -617,9 +645,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         return;
       case 'agent-copy-openclaw':
         if (!c.openclaw.hasKey) return toast(t('settings.agents.tokenFirst'), 5000);
+        if (c.openclaw.remote && !(c.mcp && c.mcp.address && c.mcp.remotePort)) return toast(t('settings.agents.openclawNoListener'), 6000);
         try {
-          await api('agentCopyOpenClawSetup');
-          toast(t('settings.agents.copiedOpenClaw'), 8000);
+          const copied = await api('agentCopyOpenClawSetup');
+          toast(copied && copied.remote ? t('settings.agents.copiedOpenClawRemote', { url: copied.url }) : t('settings.agents.copiedOpenClaw'), 8000);
         } catch (err) {
           toast(err.message, 5000);
         }
@@ -650,8 +679,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         }
         keyEditing[id] = false;
         page.querySelector(`[data-agent-key-box="${id}"]`).innerHTML = keyHtml(id);
-        const address = page.querySelector('[data-agent-address]');
-        if (address) address.innerHTML = remoteDesc();
+        showAddresses();
         toast(t(KEY_TEXT[id].stored));
         return testAgent(id);
       }

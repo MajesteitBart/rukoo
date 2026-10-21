@@ -117,13 +117,15 @@ Rukoo uses the gateway's [OpenAI-compatible HTTP API](https://docs.openclaw.ai/g
    ```json5
    { gateway: { http: { endpoints: { chatCompletions: { enabled: true } } } } }
    ```
-2. **Connect Rukoo.** In Settings → Agents → OpenClaw, check the gateway URL (`http://127.0.0.1:18789` when the gateway runs on this computer) and paste the gateway token, or the password when the gateway uses password auth. The card shows whether the gateway answers and accepts the token. "Test connection" checks it again.
+2. **Connect Rukoo.** In Settings → Agents → OpenClaw, check the gateway URL (`http://127.0.0.1:18789` when the gateway runs on this computer, or its Tailscale address when it runs elsewhere) and paste the gateway token, or the password when the gateway uses password auth. The card shows whether the gateway answers and accepts the token. "Test connection" checks it again.
 3. **Pick an agent** (optional). Without an agent ID, a chat goes to the gateway's default agent (`openclaw/default`). A chat keeps the agent it started with when you change this later.
 4. **Let OpenClaw use Rukoo** (optional). "Copy OpenClaw setup" copies a command such as:
    ```sh
    openclaw mcp set rukoo '{"url":"http://127.0.0.1:47800/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer <token>"}}'
    ```
-   Run it on the computer where Rukoo runs, then restart the gateway so its agents load the tools. `openclaw mcp doctor rukoo --probe` checks the connection. Each chat tells OpenClaw its `conversation_id`, so the tools act on the chat you are in.
+   Run it where the gateway runs, then restart the gateway so its agents load the tools. `openclaw mcp doctor rukoo --probe` checks the connection. Each chat tells OpenClaw its `conversation_id`, so the tools act on the chat you are in.
+
+   For a gateway on another computer, such as a Mac mini, a home server or a VPS in your tailnet, first turn on "Let OpenClaw use Rukoo from another computer" in the OpenClaw card. Rukoo then also listens on this computer's Tailscale address, and the card shows that address (`http://<Tailscale IP>:47800/mcp`). "Copy OpenClaw setup" now copies a command with that address and a token of its own; the toast says which address went on the clipboard. Run it on the gateway's computer. Windows asks once whether Rukoo may accept connections; allow it for private networks. Rukoo has to be open (it can stay in the tray) for OpenClaw to reach its tools.
 
 How it works and what it can't do:
 
@@ -134,7 +136,9 @@ How it works and what it can't do:
 - The gateway has no endpoint that lists an agent's skills, so `$` offers none. OpenClaw still uses its skills on its own. Rukoo's skills work as slash commands, and through `read_skill` once OpenClaw has Rukoo's tools.
 - Rukoo can't tell when OpenClaw lost a chat's session, so it doesn't send a recap then. An archived session stops the chat with an error until you restore it in OpenClaw's Control UI.
 - The gateway token gives full operator access to the gateway. Rukoo keeps it encrypted, like the Hermes key, and sends it only to the gateway URL.
-- The MCP token in the copied command is made from the gateway token; it doesn't give access to the gateway. Rukoo accepts it on `127.0.0.1` only, so OpenClaw can use Rukoo's tools only when the gateway runs on the same computer. A new gateway token makes a new MCP token; copy the setup again. If Rukoo's MCP port changes (Settings shows a note), copy it again too.
+- The MCP token in the copied command is made from the gateway token; it doesn't give access to the gateway. There are two: the one for a gateway on this computer works only on `127.0.0.1`, and the one for another computer works only on the Tailscale address, and only while "Let OpenClaw use Rukoo from another computer" is on. A new gateway token makes new MCP tokens; copy the setup again. If Rukoo's MCP port changes (Settings shows a note), copy it again too.
+- Any device in your tailnet that can reach this computer can try the Tailscale address, as for Hermes; only the token gets in. Use Tailscale's access controls to narrow which devices can reach it.
+- How OpenClaw's MCP client handles Rukoo being closed (it then can't reach the tools) depends on OpenClaw; restarting the gateway or `openclaw mcp doctor rukoo --probe` connects again.
 
 ## Model and effort
 
@@ -258,7 +262,8 @@ There are three kinds:
 - Files you attach are treated like email. A file you got from someone else can hold their instructions, so its name and its text reach the agent inside `<unsafe_content>`, in the message and in `read_chat_file`. An image can't carry tags, and a screenshot can show anyone's text. So wherever an image reaches the agent, Rukoo says just before it that it is untrusted data and not instructions: before each image that goes with a message, and in the result of `read_chat_file` and `read_attachment`. An email you add goes by its Rukoo id only, and Rukoo checks that the id is one of your own emails. The agent reads it with `read_message`, tags and all.
 - Agent-written drafts are sanitized before they reach the composer. Links stay; images, form controls, styles and scripts go.
 - Local agents get a token per chat or per process. Hermes signs in with a token made from its API server key, so every device with that key accepts it. Rukoo accepts that token only on the Tailscale address, and the local tokens only on `127.0.0.1`. A new API key replaces it. Before the bridge sends the token to a device, Rukoo there has to prove it has the same key.
-- OpenClaw's MCP client signs in with a token made from the gateway token. Rukoo accepts it only on `127.0.0.1`, and a new gateway token replaces it.
+- OpenClaw's MCP client signs in with a token made from the gateway token: one for a gateway on this computer, accepted only on `127.0.0.1`, and one for a gateway on another computer, accepted only on the Tailscale address while you allow it in the OpenClaw card. A new gateway token replaces both. Unlike Clark's bridge, OpenClaw gets no proof step: the bridge searches the tailnet for Rukoo and must not hand its token to whatever answers, while OpenClaw gets the one address you copied, which Tailscale ties to this device.
+- The Tailscale listener runs only while "Let Clark use Rukoo" or "Let OpenClaw use Rukoo from another computer" is on, and only on this computer's Tailscale address. Each toggle lets in its own agent only: with just the OpenClaw toggle on, Clark's token gets nowhere, and the other way round.
 - The Hermes API key and the OpenClaw gateway token are encrypted in `data/agents.json` inside your Rukoo profile, using Windows DPAPI, the Linux desktop keyring, or macOS Keychain. Linux requires an available GNOME Secret Service or KWallet keyring to save credentials. Chats are in `conversations.json` in the same folder. They hold what you and the agent wrote, not the emails Rukoo sent along. Files you attached are in `agent-workspace/files`, next to the data folder.
 
 ## Limits
