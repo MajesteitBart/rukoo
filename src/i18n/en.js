@@ -3610,6 +3610,26 @@
     "message": "General: {signature}",
     "description": "settings > signature. src/renderer/settings.js (render)"
   },
+  "settings.signature.help": {
+    "message": "Paste a signature from another mail app or a web page, or write and format it here.",
+    "description": "settings > signature. Help text above the signature editor in the Signature dialog. src/renderer/signature.js (editSignature)"
+  },
+  "settings.signature.placeholder": {
+    "message": "Your name, role and contact details",
+    "description": "settings > signature. Placeholder in the empty signature editor. src/renderer/signature.js (editSignature)"
+  },
+  "settings.signature.source": {
+    "message": "Edit HTML",
+    "description": "settings > signature. Tooltip and accessible name of the toolbar button that switches the signature editor to its HTML source, and of the source field. src/renderer/signature.js (editSignature)"
+  },
+  "settings.signature.tooLarge": {
+    "message": "This signature is too large. Use smaller images, or images from the web.",
+    "description": "settings > signature. Error when a pasted or saved signature exceeds the size limit, mostly because of embedded images. src/main/signature.js (cleanSignatureHtml)"
+  },
+  "settings.signature.usesGeneral": {
+    "message": "Uses the general signature",
+    "description": "settings > signature. Account settings: the account has no signature of its own and uses the general one, which is previewed below. src/renderer/settings.js (render)"
+  },
   "settings.signature.useGeneral": {
     "message": "Use general signature",
     "description": "settings > signature. src/renderer/settings.js (openSettings)"

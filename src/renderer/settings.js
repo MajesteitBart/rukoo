@@ -13,6 +13,8 @@ import {
   SHORTCUT_LABEL_MAX,
   SHORTCUT_PROMPT_MAX
 } from './agent/actions.js';
+import { signatureHtml, accountSignatureHtml, usesGeneralSignature } from './composer.js';
+import { editSignature, signaturePreview } from './signature.js';
 
 const THEMES = [
   { value: 'system', get label() { return t('settings.theme.system'); } },
@@ -239,13 +241,26 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   };
   document.addEventListener('keydown', onKey, true);
 
-  const row = ({ title, desc, value, action, toggle, sep, cls = '', lead = '' }) => `
+  // preview: markup shown under the value, such as a signature as it will be sent.
+  const row = ({ title, desc, value, preview, action, toggle, sep, cls = '', lead = '' }) => `
     <button class="row ${cls}" ${action ? `data-a="${action}"` : ''}>
       ${lead}
       <div class="text"><div class="title ${cls.includes('danger') ? 'danger' : ''}">${title}</div>
-      ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}</div>
+      ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}${preview || ''}</div>
       ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
     </button>`;
+
+  // A signature row: the signature as it will be sent, or None.
+  const signatureRow = (html, action) =>
+    row({ title: t('settings.general.signature'), value: html ? '' : esc(t('common.values.none')), preview: html && signaturePreview(html), action });
+  // An account without a signature of its own: says so, and shows the general one.
+  const generalSignatureRow = (html) =>
+    row({
+      title: t('settings.general.signature'),
+      value: esc(html ? t('settings.signature.usesGeneral') : t('settings.signature.generalValue', { signature: t('common.values.noneLower') })),
+      preview: html && signaturePreview(html),
+      action: 'acc-signature'
+    });
 
   // A static row, because the reset button can't sit inside a row button.
   const zoomRow = (level) => `
@@ -699,7 +714,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
           ${mailtoRow()}
-          ${row({ title: t('settings.general.signature'), value: esc(s.signature || t('common.values.none')), action: 'signature' })}
+          ${signatureRow(signatureHtml(s.signature, s.signatureHtml), 'signature')}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
@@ -721,7 +736,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         <div class="settings-group-title" data-i18n="settings.groups.account">${esc(t('settings.groups.account'))}</div>
         <div class="card">
           ${row({ title: t('settings.account.name'), value: esc(a.name || ''), action: 'acc-name' })}
-          ${row({ title: t('settings.general.signature'), value: esc(a.signature ?? t('settings.signature.generalValue', { signature: s.signature || t('common.values.noneLower') })), action: 'acc-signature' })}
+          ${usesGeneralSignature(a) ? generalSignatureRow(signatureHtml(s.signature, s.signatureHtml)) : signatureRow(accountSignatureHtml(a, s), 'acc-signature')}
           ${row({ title: t('settings.account.color'), value: labelOf(COLORS, a.color), action: 'acc-color' })}
           ${row({ title: t('settings.account.from'), value: esc(a.defaultFrom), action: 'acc-from' })}
           ${row({ title: t('settings.account.identities'), desc: a.identities.length > 1 ? t('settings.aliases.count', { count: a.identities.length - 1 }) : t('settings.account.noAliases'), action: 'acc-aliases' })}
@@ -972,8 +987,13 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         return;
       }
       case 'signature': {
-        const v = await promptDialog(t('settings.general.signature'), s.signature || '', { multiline: true });
-        if (v !== null) set({ signature: v });
+        const v = await editSignature({ html: signatureHtml(s.signature, s.signatureHtml) });
+        if (!v) return;
+        try {
+          await set({ signatureHtml: v.html });
+        } catch (err) {
+          toast(err.message, 5000);
+        }
         return;
       }
       case 'about': {
@@ -1001,19 +1021,12 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         return;
       }
       case 'acc-signature': {
-        const v = await dialog({
-          title: t('settings.general.signature'),
-          buttons: [
-            { get label() { return t('settings.signature.useGeneral'); }, value: { reset: true } },
-            { get label() { return t('common.actions.cancel'); }, value: null },
-            { get label() { return t('common.actions.save'); }, value: (scrim) => ({ text: scrim.querySelector('textarea').value }) }
-          ],
-          render(body) {
-            body.innerHTML = `<div class="form" style="padding:0"><textarea>${esc(acc.signature ?? s.signature ?? '')}</textarea></div>`;
-          }
+        const v = await editSignature({
+          html: accountSignatureHtml(acc, s),
+          buttons: [{ get label() { return t('settings.signature.useGeneral'); }, value: { reset: true }, left: true }]
         });
         if (!v) return;
-        update({ signature: v.reset ? null : v.text });
+        update(v.reset ? { signature: null } : { signatureHtml: v.html });
         return;
       }
       case 'acc-color': {

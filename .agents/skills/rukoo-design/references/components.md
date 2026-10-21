@@ -38,6 +38,7 @@ App code builds HTML in template strings. Every value in them goes through `esc(
 - `.page`, `.page-bar`, `.page-inner` and `.page-scroll` are the full-window pages.
 - `.row` is a settings row: a title on the left, its value or action on the right. This is Beautiful UI's text row.
 - `.switch` (with `.on`) is the toggle, `.radio` and `.radio-row` are single choices, and `.field` and `.form` hold inputs.
+- `editSignature()` in `signature.js` is the small rich editor for signatures: the composer's `formatButtons()` plus color, image and an HTML source toggle, in a `.sig-frame` inside a wide dialog. `signaturePreview()` shows a signature under its row. Both, and the signature in the composer, draw it as it will be sent: `.sig-render` uses the `--signature-*` tokens, which turn it dark in dark mode the way the reader turns mail dark.
 - `.card`, `.note` and `.error` group content and messages on a page. `.provider` and `.provider-grid` are the account provider picker in setup.
 - `.spinner` is the app's loading spinner.
 

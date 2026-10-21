@@ -12,6 +12,7 @@ const { DemoAccount, DEMO_EMAIL } = require('./demo');
 const { serverDefaults, publicProviders } = require('./providers');
 const { discoverCalDav, serverUrl } = require('./calendar/caldav');
 const util = require('./mailutil');
+const { cleanSignatureHtml, signatureText } = require('./signature');
 const { normalizeZoom } = require('./zoom');
 
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
@@ -47,6 +48,9 @@ const DEFAULT_SETTINGS = {
   spam: [],
   defaultAccountId: null,
   signature: '',
+  // The formatted signature, already cleaned; '' for a plain-text one. signature then holds its text, which is what
+  // earlier versions show. See signature.js.
+  signatureHtml: '',
   senderLogos: true,
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
@@ -62,6 +66,25 @@ function normalizeSettings(s) {
   s.zoomLevel = normalizeZoom(s.zoomLevel);
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
+  s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
+}
+
+// A stored signature is cleaned again on loading, in case settings.json or accounts.json was edited by hand.
+function reclean(html) {
+  try {
+    return cleanSignatureHtml(html);
+  } catch (_) {
+    return '';
+  }
+}
+
+// What a signature patch stores: a formatted signature with its text, or plain text without HTML.
+function signatureFields(patch) {
+  if (patch.signatureHtml !== undefined && patch.signatureHtml !== null) {
+    const html = cleanSignatureHtml(patch.signatureHtml);
+    return { signature: signatureText(html), signatureHtml: html };
+  }
+  return { signature: String(patch.signature ?? ''), signatureHtml: '' };
 }
 
 function readJson(file, fallback) {
@@ -146,6 +169,8 @@ class Engine extends EventEmitter {
       this.settings.signatureOptIn = true;
       if (fs.existsSync(this.file('settings.json'))) this.persistSettings();
     }
+    if (this.settings.signatureHtml) this.settings.signatureHtml = reclean(this.settings.signatureHtml);
+    for (const acc of this.accounts) if (acc.signatureHtml) acc.signatureHtml = reclean(acc.signatureHtml);
     this.saved = readJson(this.file('saved.json'), []);
     for (const acc of this.accounts) {
       this.caches.set(acc.id, readJson(this.file('cache', `${acc.id}.json`), { folders: [], boxes: {}, lastSync: null }));
@@ -351,7 +376,9 @@ class Engine extends EventEmitter {
       name: acc.name,
       label: acc.label || acc.email,
       color: acc.color,
+      // null for both: the account uses the general signature.
       signature: acc.signature,
+      signatureHtml: acc.signatureHtml || null,
       auth: acc.auth || (acc.type === 'demo' ? 'none' : 'password'),
       identities: this.identities(acc),
       defaultFrom: this.identity(acc).address,
@@ -433,8 +460,15 @@ class Engine extends EventEmitter {
 
   async updateAccount(id, patch) {
     const acc = this.account(id);
+    // Cleaned before anything changes, so a signature that is too large leaves the account as it was.
+    // null resets the account to the general signature.
+    const reset = patch.signature === null || patch.signatureHtml === null;
+    const signature = patch.signature !== undefined || patch.signatureHtml !== undefined ? (reset ? { signature: null, signatureHtml: '' } : signatureFields(patch)) : null;
     if (patch.name !== undefined) acc.name = String(patch.name);
-    if (patch.signature !== undefined) acc.signature = patch.signature;
+    if (signature) {
+      acc.signature = signature.signature;
+      acc.signatureHtml = signature.signatureHtml || null;
+    }
     if (patch.color) acc.color = patch.color;
     if (patch.aliases) {
       // Validate the whole list before touching the account, so a typo cannot wipe existing aliases.
@@ -532,6 +566,7 @@ class Engine extends EventEmitter {
 
   // quiet: save without 'updated', for a change no list or count depends on (zoom), so the windows don't redraw.
   updateSettings(patch, { quiet = false } = {}) {
+    if (patch.signature !== undefined || patch.signatureHtml !== undefined) patch = { ...patch, ...signatureFields(patch) };
     this.settings = { ...this.settings, ...patch };
     normalizeSettings(this.settings);
     setLanguage(this.settings.language);
@@ -1225,13 +1260,14 @@ class Engine extends EventEmitter {
         .filter((a) => a.address);
     const from = this.identity(acc, payload.from || null);
     if (!from) throw new Error(t('errors.send.identity', { address: payload.from }));
+    const inline = util.inlineDataImages(payload.html || '');
     return {
       from: { name: from.name || acc.name || '', address: from.address },
       to: addrs(payload.to),
       cc: addrs(payload.cc),
       bcc: addrs(payload.bcc),
       subject: payload.subject || '',
-      html: payload.html || undefined,
+      html: inline.html || undefined,
       text: payload.text || (payload.html ? util.htmlToPlain(payload.html) : ''),
       inReplyTo: payload.inReplyTo || undefined,
       references: payload.references && payload.references.length ? payload.references : undefined,
@@ -1242,7 +1278,8 @@ class Engine extends EventEmitter {
             ? { filename: a.filename || path.basename(a.path), path: a.path }
             : { filename: a.filename, content: Buffer.from(a.content, 'base64'), contentType: a.contentType }
         ),
-        ...(await this.forwardAttachments(payload))
+        ...(await this.forwardAttachments(payload)),
+        ...inline.attachments
       ]
     };
   }

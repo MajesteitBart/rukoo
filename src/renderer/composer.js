@@ -92,6 +92,18 @@ function splitQuote(html) {
   return { body: html, quoted: null };
 }
 
+// A signature as HTML: the formatted one, or plain text the way the composer has always shown it.
+export function signatureHtml(text, html) {
+  return html || (text ? esc(text).replace(/\n/g, '<br>') : '');
+}
+
+// An account without a signature of its own (both null) uses the general one.
+export const usesGeneralSignature = (acc) => acc.signature == null && !acc.signatureHtml;
+
+export function accountSignatureHtml(acc, settings) {
+  return usesGeneralSignature(acc) ? signatureHtml(settings.signature, settings.signatureHtml) : signatureHtml(acc.signature, acc.signatureHtml);
+}
+
 // Cc, Bcc and a rich body can be seeded too (by an agent); they come on top of what the mode filled in.
 function initialState(data, opts, m) {
   const s = modeState(data, opts, m);
@@ -133,8 +145,9 @@ function modeState(data, opts, m) {
     dirty: false,
     savedAt: null
   };
-  const signature = acc.signature ?? data.settings.signature ?? '';
-  const sigHtml = signature ? `<div><br></div><div class="signature">${esc(signature).replace(/\n/g, '<br>')}</div>` : '';
+  // Stored signatures are cleaned by the main process (signature.js there).
+  const signature = accountSignatureHtml(acc, data.settings);
+  const sigHtml = signature ? `<div><br></div><div class="signature">${signature}</div>` : '';
   const body = opts.html != null ? sanitizeAgentHtml(opts.html) || '<div><br></div>' : `<div>${esc(opts.body || '').replace(/\n/g, '<br>') || '<br>'}</div>`;
   s.bodyHtml = `${body}${sigHtml}`;
 
@@ -232,7 +245,8 @@ function recipientsHtml(list) {
     .join('');
 }
 
-const formatButtons = () => `
+// Shared with the signature editor in Settings (signature.js).
+export const formatButtons = () => `
   <button class="icon-btn sm" data-cmd="bold" data-i18n-title="composer.format.bold" title="${esc(t('composer.format.bold'))}">${icons.bold}</button>
   <button class="icon-btn sm" data-cmd="italic" data-i18n-title="composer.format.italic" title="${esc(t('composer.format.italic'))}">${icons.italic}</button>
   <button class="icon-btn sm" data-cmd="underline" data-i18n-title="composer.format.underline" title="${esc(t('composer.format.underline'))}">${icons.underline}</button>
