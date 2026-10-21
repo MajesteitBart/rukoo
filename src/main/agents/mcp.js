@@ -121,6 +121,17 @@ class McpServer {
     if (req.headers.origin !== undefined) return this.reject(req, res, 403, { error: 'forbidden' });
     if (!this.hostAllowed(entry, req)) return this.reject(req, res, 403, { error: 'forbidden' });
     const pathname = String(req.url || '').split('?')[0];
+    // A paired phone's routes (phonehost.js), on the Tailscale listener only, after the Origin and Host checks.
+    if (pathname.startsWith('/phone/')) {
+      if (!entry.remote || !this.hub.phoneRequest) return this.reject(req, res, 404, { error: 'not found' });
+      try {
+        return this.hub.phoneRequest(entry, req, res, pathname);
+      } catch (err) {
+        this.log('phone request failed', err && err.message);
+        if (!res.headersSent) return this.reject(req, res, 500, { error: 'unknown' });
+        return res.destroy();
+      }
+    }
     if (pathname !== '/mcp') return this.reject(req, res, 404, { error: 'not found' });
     if (req.method !== 'POST') return this.reject(req, res, 405, { error: 'method not allowed' }, { Allow: 'POST' });
     const identity = this.hub.identify(bearer(req));
@@ -257,4 +268,4 @@ class McpServer {
   }
 }
 
-module.exports = { McpServer, INSTRUCTIONS, PROTOCOLS, MAX_BODY };
+module.exports = { McpServer, INSTRUCTIONS, PROTOCOLS, MAX_BODY, MAX_ABSURD, json, bearer };
