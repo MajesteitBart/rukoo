@@ -5,7 +5,11 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const AGENT_IDS = ['clark', 'claude', 'codex'];
+const AGENT_IDS = ['clark', 'claude', 'codex', 'openclaw'];
+// Agents that keep a secret (the Hermes API key, the OpenClaw gateway token), encrypted in the file as `key`.
+const SECRET_AGENTS = ['clark', 'openclaw'];
+// Where an OpenClaw gateway listens unless it was told otherwise (docs.openclaw.ai/gateway/config-gateway).
+const OPENCLAW_URL = 'http://127.0.0.1:18789';
 const ACCESS = ['ask', 'full'];
 // Every effort level an agent may offer, lowest first. Each agent offers its own subset (see models()).
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
@@ -31,6 +35,9 @@ const DEFAULTS = {
   clark: { enabled: true, name: 'Hermes', url: '', key: null, model: '' },
   claude: { enabled: true, exe: '', configDir: '', model: '', access: 'ask' },
   codex: { enabled: true, exe: '', model: '', access: 'ask' },
+  // agent: the OpenClaw agent id a new chat goes to ('' for the gateway's default agent). model: a backend model
+  // for x-openclaw-model ('' for the agent's own).
+  openclaw: { enabled: true, url: OPENCLAW_URL, key: null, agent: '', model: '' },
   mcp: { port: 47800, remote: false, remoteHost: '' }
 };
 
@@ -39,6 +46,15 @@ const DEFAULTS = {
 function remoteTokenFor(key) {
   return key ? crypto.createHmac('sha256', key).update('rukoo-mcp-v1').digest('base64url') : '';
 }
+
+// The token OpenClaw's MCP client sends to Rukoo, made from the gateway token: it changes with that token, and it
+// doesn't give away the gateway token itself. Rukoo accepts it only on 127.0.0.1.
+function openclawTokenFor(key) {
+  return key ? crypto.createHmac('sha256', key).update('rukoo-mcp-openclaw-v1').digest('base64url') : '';
+}
+
+// An OpenClaw agent id as the gateway takes it in `openclaw/<agentId>` (lowercase letters, digits, - and _).
+const OPENCLAW_AGENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 // Errors that reach the renderer carry a code from SPEC 4.6; the message is the bare code so the
 // renderer can localize it from Error.message after the IPC round trip.
@@ -184,8 +200,10 @@ class AgentConfig {
       clark: mergeSection(DEFAULTS.clark, s.clark),
       claude: mergeSection(DEFAULTS.claude, s.claude),
       codex: mergeSection(DEFAULTS.codex, s.codex),
+      openclaw: mergeSection(DEFAULTS.openclaw, s.openclaw),
       mcp: mergeSection(DEFAULTS.mcp, s.mcp)
     };
+    if (this.data.openclaw.agent && !OPENCLAW_AGENT.test(this.data.openclaw.agent)) this.data.openclaw.agent = '';
     for (const id of ['claude', 'codex']) if (!ACCESS.includes(this.data[id].access)) this.data[id].access = 'ask';
     const port = this.data.mcp.port;
     if (!Number.isInteger(port) || port < 1024 || port > 65535) this.data.mcp.port = DEFAULTS.mcp.port;
@@ -209,14 +227,14 @@ class AgentConfig {
 
   // Raw section for main-process code, with the secret decrypted. Never send this to the renderer.
   get(section) {
-    if (section === 'clark') return { ...this.data.clark, key: this.decrypt(this.data.clark.key) };
+    if (SECRET_AGENTS.includes(section)) return { ...this.data[section], key: this.decrypt(this.data[section].key) };
     if (this.data[section] && isObj(this.data[section])) return { ...this.data[section] };
     return null;
   }
 
   displayName(agent) {
     if (agent === 'clark') return this.data.clark.name || DEFAULTS.clark.name;
-    return agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex' : String(agent || '');
+    return agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex' : agent === 'openclaw' ? 'OpenClaw' : String(agent || '');
   }
 
   // remoteHost wins; otherwise the first Tailscale IPv4 on this machine.
@@ -227,6 +245,7 @@ class AgentConfig {
   publicView() {
     const d = this.data;
     const { key, ...clark } = d.clark;
+    const { key: openclawKey, ...openclaw } = d.openclaw;
     return {
       version: 1,
       defaultAgent: d.defaultAgent,
@@ -235,6 +254,7 @@ class AgentConfig {
       clark: { ...clark, hasKey: Boolean(key) },
       claude: { ...d.claude },
       codex: { ...d.codex },
+      openclaw: { ...openclaw, hasKey: Boolean(openclawKey) },
       mcp: {
         port: d.mcp.port,
         remote: d.mcp.remote,
@@ -253,7 +273,7 @@ class AgentConfig {
     if (!isObj(patch)) throw new AgentError('invalid', 'patch must be an object');
     const next = clone(this.data);
     if ('defaultAgent' in patch) {
-      if (!AGENT_IDS.includes(patch.defaultAgent)) throw new AgentError('invalid', 'defaultAgent must be clark, claude or codex');
+      if (!AGENT_IDS.includes(patch.defaultAgent)) throw new AgentError('invalid', 'defaultAgent must be clark, claude, codex or openclaw');
       next.defaultAgent = patch.defaultAgent;
     }
     if ('autoMailActions' in patch) next.autoMailActions = bool(patch.autoMailActions, 'autoMailActions');
@@ -286,6 +306,16 @@ class AgentConfig {
       if ('model' in p) s.model = text(p.model, 100, 'codex.model');
       if ('access' in p) s.access = access(p.access, 'codex.access');
     });
+    section('openclaw', (p, s) => {
+      if ('enabled' in p) s.enabled = bool(p.enabled, 'openclaw.enabled');
+      if ('url' in p) s.url = httpUrl(p.url, 'openclaw.url');
+      if ('agent' in p) {
+        const agent = text(p.agent, 64, 'openclaw.agent');
+        if (agent && !OPENCLAW_AGENT.test(agent)) throw new AgentError('invalid', 'openclaw.agent is an agent id: letters, digits, - and _');
+        s.agent = agent;
+      }
+      if ('model' in p) s.model = text(p.model, 100, 'openclaw.model');
+    });
     section('mcp', (p, s) => {
       if ('port' in p) {
         const port = Number(p.port);
@@ -305,10 +335,10 @@ class AgentConfig {
   }
 
   setSecret(agent, value) {
-    if (agent !== 'clark') throw new AgentError('invalid', 'only clark has a secret');
+    if (!SECRET_AGENTS.includes(agent)) throw new AgentError('invalid', 'only clark and openclaw have a secret');
     if (typeof value !== 'string' || value.length > 4000) throw new AgentError('invalid', 'key must be text');
     const v = value.trim();
-    this.data.clark.key = v ? this.secrets.encrypt(v) : null;
+    this.data[agent].key = v ? this.secrets.encrypt(v) : null;
     this.save();
     return this.publicView();
   }
@@ -316,6 +346,22 @@ class AgentConfig {
   // The token Clark's bridge sends; empty until the API key is set.
   remoteToken() {
     return remoteTokenFor(this.get('clark').key);
+  }
+
+  // The token OpenClaw's MCP client sends; empty until the gateway token is set.
+  openclawToken() {
+    return openclawTokenFor(this.get('openclaw').key);
+  }
+
+  // The command that adds Rukoo to OpenClaw's MCP servers (docs.openclaw.ai/cli/mcp): Streamable HTTP on this
+  // computer's loopback, with the token above. OpenClaw leaves a URL server on SSE unless transport says otherwise.
+  // port: the port Rukoo's local listener really got. The command holds a token, unlike the Hermes block: OpenClaw
+  // can't compute it from its gateway token. It is only of use on this computer.
+  openclawSetup(port = this.runtime.localPort || this.data.mcp.port) {
+    const token = this.openclawToken();
+    if (!token) return '';
+    const server = { url: `http://127.0.0.1:${port}/mcp`, transport: 'streamable-http', headers: { Authorization: `Bearer ${token}` } };
+    return `openclaw mcp set rukoo '${JSON.stringify(server)}'\n`;
   }
 
   // The block for ~/.hermes/config.yaml on Clark's machine. It holds no secret and is the same on every device:
@@ -344,4 +390,4 @@ class AgentConfig {
   }
 }
 
-module.exports = { AgentConfig, AgentError, AGENT_IDS, EFFORTS, DEFAULTS, SHORTCUT_ICONS, SHORTCUTS_MAX, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor };
+module.exports = { AgentConfig, AgentError, AGENT_IDS, SECRET_AGENTS, EFFORTS, DEFAULTS, SHORTCUT_ICONS, SHORTCUTS_MAX, writeJsonAtomic, tailscaleAddress, isTailscale, remoteTokenFor, openclawTokenFor };

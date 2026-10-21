@@ -1,6 +1,6 @@
 # Agents in Rukoo Mail
 
-Rukoo Mail has a chat panel next to the reading pane. In it you hand an email to an agent: a Hermes Agent such as Clark, Claude Code or Codex. The agent keeps its own tools, memory and integrations. Rukoo adds the chat and a small set of tools the agent uses to read your mail and change what is on your screen. It writes the reply draft, shows a plan or its sources, and asks you before anything happens.
+Rukoo Mail has a chat panel next to the reading pane. In it you hand an email to an agent: a Hermes Agent such as Clark, Claude Code, Codex or an OpenClaw agent. The agent keeps its own tools, memory and integrations. Rukoo adds the chat and a small set of tools the agent uses to read your mail and change what is on your screen. It writes the reply draft, shows a plan or its sources, and asks you before anything happens.
 
 Open the panel with the sparkle button in the title bar or with `Ctrl+J`. While it is open the folders shrink to a rail, so you see the list, the email and the chat. The rail button brings the folders back, and the reading pane's expand button hides the list too, leaving the email and the chat.
 
@@ -56,13 +56,15 @@ Rukoo refuses programs and scripts, the same file types it never opens from an e
 
 ### What each agent gets
 
-| Attached | Hermes Agent | Claude Code | Codex |
+| Attached | Hermes Agent and OpenClaw | Claude Code | Codex |
 |---|---|---|---|
 | A text file | Its text, in the message | Its text, and the path of a local copy | Its text, and the path of a local copy |
 | A PDF | Its text, in the message | Its text, and the path of a local copy, which Claude can open with its own Read tool | Its text, and the path of a local copy |
 | An image | `read_chat_file` shows it | The image itself, with the message | The image itself, with the message |
 | Another file (Word, Excel) | `read_chat_file` hands over the file, which Hermes saves on its own machine | The path of a local copy | The path of a local copy |
 | An email | Its Rukoo id, to read with `read_message` | Its Rukoo id | Its Rukoo id |
+
+An OpenClaw gateway can run on another machine, so Rukoo treats it like Hermes and sends it no local paths. It needs [Rukoo's tools](#openclaw) for `read_chat_file` and `read_message`.
 
 Each file has a `file_id` in the message, and `read_chat_file` returns the file with it, the same way `read_attachment` returns a mail attachment: text as text, a PDF as its text with the file itself, an image as an image, anything else as the file. Every agent can call it, so Hermes on another machine gets the files too. Text goes along in the message up to 20,000 characters per file and 60,000 per message; `read_chat_file` returns up to 200,000. An image goes along with the message itself up to 3.75 MB.
 
@@ -101,10 +103,38 @@ Pick a chat to open it together with its email. For a chat you continued from a 
 | Hermes Agent (Clark) | Rukoo talks to the Hermes API server over HTTP. Each Rukoo chat is a Hermes session; a turn is a run on Hermes' Runs API. | The API server's address and key. For Rukoo's tools: the bridge in `integrations/hermes` |
 | Claude Code | Rukoo starts `claude` (`claude.exe` on Windows) per chat (stream-json) with your own settings, MCP servers, skills and hooks, plus Rukoo's MCP server. | Claude Code installed and signed in |
 | Codex | Rukoo starts one `codex app-server` with your own config and adds Rukoo's MCP server to each thread. | Codex CLI installed and signed in |
+| OpenClaw | Rukoo talks to your OpenClaw gateway's OpenAI-compatible Chat Completions endpoint over HTTP. Each Rukoo chat is one OpenClaw session. | The gateway's address and token, with the endpoint turned on. For Rukoo's tools: `openclaw mcp set` with the command Rukoo copies |
 
 Set them up in Settings → Agents. Each card shows the agent's status and has a test button. On Linux, Rukoo looks for Claude Code and Codex in `~/.local/bin` and on its `PATH`. If your desktop session does not include the CLI installation directory, set the executable path in the agent card. On macOS, Rukoo also adds `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` to the agent process PATH, so apps opened from Finder can use Homebrew and npm installations. Rukoo keeps your existing PATH order and does not load shell startup scripts. For installations managed through a shell version manager, launch Rukoo from a terminal with that environment. The agent must already be signed in under your user account.
 
 Claude Code and Codex call Rukoo's MCP server on `127.0.0.1`. A Hermes agent usually runs on another machine, so it reaches Rukoo over Tailscale through a small stdio bridge. Turn on "Let Clark use Rukoo" in the Hermes card, then follow [integrations/hermes/README.md](../integrations/hermes/README.md). "Copy Hermes setup" puts the `config.yaml` block on the clipboard. The block holds no secret and is the same on every device: the bridge finds Rukoo on whichever of your devices has it open. Rukoo stays open in the tray after you close its window, unless you turned off "Close to the tray" in Settings → General.
+
+### OpenClaw
+
+Rukoo uses the gateway's [OpenAI-compatible HTTP API](https://docs.openclaw.ai/gateway/openai-http-api), which streams the answer and keeps a session per chat with plain HTTP and the gateway token. The gateway's WebSocket protocol would also show the agent's tool calls, but a third-party app must pair as a device for it, so Rukoo doesn't use it. Rukoo was built against the documentation and source of OpenClaw 2026.10.5.
+
+1. **Turn on the endpoint.** It is off by default. Add this to your OpenClaw config and restart the gateway:
+   ```json5
+   { gateway: { http: { endpoints: { chatCompletions: { enabled: true } } } } }
+   ```
+2. **Connect Rukoo.** In Settings → Agents → OpenClaw, check the gateway URL (`http://127.0.0.1:18789` when the gateway runs on this computer) and paste the gateway token, or the password when the gateway uses password auth. The card shows whether the gateway answers and accepts the token. "Test connection" checks it again.
+3. **Pick an agent** (optional). Without an agent ID, a chat goes to the gateway's default agent (`openclaw/default`). A chat keeps the agent it started with when you change this later.
+4. **Let OpenClaw use Rukoo** (optional). "Copy OpenClaw setup" copies a command such as:
+   ```sh
+   openclaw mcp set rukoo '{"url":"http://127.0.0.1:47800/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer <token>"}}'
+   ```
+   Run it on the computer where Rukoo runs, then restart the gateway so its agents load the tools. `openclaw mcp doctor rukoo --probe` checks the connection. Each chat tells OpenClaw its `conversation_id`, so the tools act on the chat you are in.
+
+How it works and what it can't do:
+
+- Each turn is one `POST /v1/chat/completions` with `stream: true`. `model` names the agent (`openclaw/<agentId>`) and the OpenAI `user` field is `rukoo:<chat id>`, so the gateway keeps one session per chat. Rukoo sends only your new message with its own instructions; the gateway has the earlier turns.
+- Stop closes the connection, which cancels the run on the gateway. Quitting Rukoo does the same for every running chat.
+- The stream carries OpenClaw's text, not its tool calls or thinking, so the chat shows the answer without tool rows. OpenClaw's own approvals stay in OpenClaw; Rukoo's approval cards work for its own tools.
+- The model field in Settings and the chat's model menu set a backend model (`x-openclaw-model`, such as `openai/gpt-5.4`). The gateway lists agents, not models, so the menu offers Default and the model in Settings. It has no effort menu.
+- The gateway has no endpoint that lists an agent's skills, so `$` offers none. OpenClaw still uses its skills on its own. Rukoo's skills work as slash commands, and through `read_skill` once OpenClaw has Rukoo's tools.
+- Rukoo can't tell when OpenClaw lost a chat's session, so it doesn't send a recap then. An archived session stops the chat with an error until you restore it in OpenClaw's Control UI.
+- The gateway token gives full operator access to the gateway. Rukoo keeps it encrypted, like the Hermes key, and sends it only to the gateway URL.
+- The MCP token in the copied command is made from the gateway token; it doesn't give access to the gateway. Rukoo accepts it on `127.0.0.1` only, so OpenClaw can use Rukoo's tools only when the gateway runs on the same computer. A new gateway token makes a new MCP token; copy the setup again. If Rukoo's MCP port changes (Settings shows a note), copy it again too.
 
 ## Model and effort
 
@@ -115,6 +145,7 @@ Under the chat input, next to the agent, two menus set the model and the effort 
 | Hermes Agent | The models of every provider Hermes has credentials for (`GET /api/model/options`), and its model routes (`GET /v1/models`) | `model` on the run, with `provider` for a model of another provider, and the effort as `model_options.reasoning.effort` |
 | Claude Code | The aliases `fable`, `opus` and `sonnet`, and the model in Settings. Claude Code has no command that lists models | `--model` and `--effort`. A new choice starts the chat's process again with `--resume`, so the session goes on |
 | Codex | What `model/list` returns | `model` and `effort` on the next `turn/start`, which Codex keeps for later turns |
+| OpenClaw | Default and the model in Settings; the gateway lists agents, not models | The `x-openclaw-model` header on each turn. No effort |
 
 Claude Code and Hermes offer the effort levels low, medium, high, extra high and max. Claude Code lowers a level the model does not support. Codex says per model which levels it supports, and the menu offers only those. When neither the chat nor Settings names a model, Codex uses the one in your Codex config, so the menu offers the levels every listed model supports. A model without effort levels has no effort menu. The dial on the effort button shows the level too: the further right the needle, the more effort. In a narrow panel the dial is all the button shows.
 
@@ -126,7 +157,7 @@ Hermes names a model of a provider other than its current one as `provider::mode
 
 ## Chats after a restart
 
-Rukoo keeps your chats in `conversations.json`, so they survive a restart of Rukoo or the PC. Your next message continues the agent's own session: Claude Code with `--resume`, Codex with `thread/resume`, and Hermes with the same session id. A turn that was running when Rukoo quit is stopped and not resumed.
+Rukoo keeps your chats in `conversations.json`, so they survive a restart of Rukoo or the PC. Your next message continues the agent's own session: Claude Code with `--resume`, Codex with `thread/resume`, Hermes with the same session id, and OpenClaw with the same `user` value, which keys the gateway session. A turn that was running when Rukoo quit is stopped and not resumed.
 
 Sometimes the agent no longer has the session. By default, Claude Code deletes transcripts that have not been used for 30 days. The agent then starts a new session, and the chat says so, as in "Claude started a new session". Rukoo sends that session the email again, as with your first message, followed by a recap of the chat. If you continued the chat from a newer email in the thread, that email goes along too. The recap holds the last 20 entries, up to 8,000 characters: your messages with the files and emails you attached, the agent's answers, its proposals and mail actions with what you decided, what those mail actions did, and the drafts it wrote. Tool calls, thinking and permission requests stay out. Earlier answers can quote email, so the recap sits inside `<unsafe_content>`. If Rukoo no longer has the email, it tells the agent so.
 
@@ -206,6 +237,7 @@ Hermes, Claude Code and Codex have skills of their own, installed for that agent
 | Hermes Agent | `GET /v1/skills` on the Hermes server, with each skill's category. An older Hermes without that endpoint offers none | Hermes' runs API doesn't start a skill named in a message, so Rukoo reads it with `GET /v1/skills/{name}` and puts its instructions before your message, the way Hermes does for `/name` in its own chat. Up to three skills per message, each up to 16,000 characters; a longer one Hermes loads with its `skill_view` tool |
 | Claude Code | Its folders, read the way Claude Code reads them: `skills/` in its config folder (`CLAUDE_CONFIG_DIR`, or the folder in Settings, else `~/.claude`), `.claude/skills` in Rukoo's agent workspace, and the skills of the plugins you turned on, named `plugin:skill`. A skill marked `user-invocable: false`, or turned off with `skillOverrides`, is left out | Claude Code starts a skill when the last text block of a message begins with `/name`. Rukoo sends your message that way: the text before the last skill you named in one block, then `/name` with the rest. Claude Code starts one skill per message; earlier ones read `/name` in the text |
 | Codex | `skills/list` on the app-server, for Rukoo's agent workspace. Skills that are turned off are left out | Codex reads `$name` in a message itself |
+| OpenClaw | None: the gateway has no endpoint that lists skills | OpenClaw picks its skills itself |
 
 Rukoo loads the list when the panel opens and when you type `$`, and keeps it for a minute. Only your own text counts: a `$name` in an email, or in anything else Rukoo sends along, starts nothing. A skill the list doesn't have stays plain text and goes as it is. Switch to an agent that doesn't have a skill in your message, and its chip turns back into text.
 
@@ -217,7 +249,7 @@ There are three kinds:
 
 - **Proposals.** When an agent calls `propose_action`, Rukoo shows a card and the agent stops. If you approve, Rukoo sends the agent a new message saying so, and the agent carries it out. If you decline, the agent hears it next time you write.
 - **Mail actions.** Rukoo runs these itself after you approve, and you can undo a move from the notice that follows. In Settings → Agents you can let agents archive, move and mark mail without asking. Deleting and unsubscribing always ask.
-- **The agent's own permissions.** Claude Code and Codex ask before running commands or changing files when their access is set to "Ask before actions", the default. Their questions show up as cards in the chat. With "Full access" they don't ask. Hermes follows its own approval settings.
+- **The agent's own permissions.** Claude Code and Codex ask before running commands or changing files when their access is set to "Ask before actions", the default. Their questions show up as cards in the chat. With "Full access" they don't ask. Hermes follows its own approval settings, and so does OpenClaw, whose approvals Rukoo doesn't see.
 
 ## Safety
 
@@ -226,7 +258,8 @@ There are three kinds:
 - Files you attach are treated like email. A file you got from someone else can hold their instructions, so its name and its text reach the agent inside `<unsafe_content>`, in the message and in `read_chat_file`. An image can't carry tags, and a screenshot can show anyone's text. So wherever an image reaches the agent, Rukoo says just before it that it is untrusted data and not instructions: before each image that goes with a message, and in the result of `read_chat_file` and `read_attachment`. An email you add goes by its Rukoo id only, and Rukoo checks that the id is one of your own emails. The agent reads it with `read_message`, tags and all.
 - Agent-written drafts are sanitized before they reach the composer. Links stay; images, form controls, styles and scripts go.
 - Local agents get a token per chat or per process. Hermes signs in with a token made from its API server key, so every device with that key accepts it. Rukoo accepts that token only on the Tailscale address, and the local tokens only on `127.0.0.1`. A new API key replaces it. Before the bridge sends the token to a device, Rukoo there has to prove it has the same key.
-- The Hermes API key is encrypted in `data/agents.json` inside your Rukoo profile, using Windows DPAPI, the Linux desktop keyring, or macOS Keychain. Linux requires an available GNOME Secret Service or KWallet keyring to save credentials. Chats are in `conversations.json` in the same folder. They hold what you and the agent wrote, not the emails Rukoo sent along. Files you attached are in `agent-workspace/files`, next to the data folder.
+- OpenClaw's MCP client signs in with a token made from the gateway token. Rukoo accepts it only on `127.0.0.1`, and a new gateway token replaces it.
+- The Hermes API key and the OpenClaw gateway token are encrypted in `data/agents.json` inside your Rukoo profile, using Windows DPAPI, the Linux desktop keyring, or macOS Keychain. Linux requires an available GNOME Secret Service or KWallet keyring to save credentials. Chats are in `conversations.json` in the same folder. They hold what you and the agent wrote, not the emails Rukoo sent along. Files you attached are in `agent-workspace/files`, next to the data folder.
 
 ## Limits
 

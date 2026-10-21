@@ -1,7 +1,7 @@
 'use strict';
 
 // Live smoke test of one agent adapter against the real agent, outside Electron:
-//   node scripts/agent-smoke.js clark|claude|codex [--all] [--allow]
+//   node scripts/agent-smoke.js clark|claude|codex|openclaw [--all] [--allow]
 //
 // It starts Rukoo's MCP server (src/main/agents/mcp.js) on a random loopback port behind a minimal hub
 // stand-in that offers one tool, get_context, returning a fixed demo email. Then it runs one turn,
@@ -11,10 +11,14 @@
 // --all adds a second turn (does the agent remember the first?), an approval turn for Claude and Codex
 // (a harmless file write that the script denies, or allows with --allow), and a turn stopped halfway.
 // Clark cannot reach this MCP server (its Hermes is not set up for Rukoo), so for Clark the script
-// always checks streaming, two-turn session continuity and stop instead.
+// always checks streaming, two-turn session continuity and stop instead. So does OpenClaw: its gateway reaches
+// Rukoo's tools only through `openclaw mcp set`, which this script doesn't change.
 //
 // Clark: key from RUKOO_CLARK_KEY or ~/.rukoo-dev/clark.key, URL from RUKOO_CLARK_URL
-// (default http://100.91.52.84:8642). Claude: CLAUDE_CONFIG_DIR as set in the environment.
+// (default http://100.91.52.84:8642). Claude: CLAUDE_CONFIG_DIR as set in the environment. OpenClaw: the gateway
+// token from RUKOO_OPENCLAW_TOKEN or ~/.rukoo-dev/openclaw.token, URL from RUKOO_OPENCLAW_URL (default
+// http://127.0.0.1:18789), agent from RUKOO_OPENCLAW_AGENT (default: the gateway's default agent). The gateway needs
+// gateway.http.endpoints.chatCompletions.enabled. Its session (agent:<id>:openai-user:rukoo:c_smoke_...) stays.
 // Afterwards the script deletes what it created: the Hermes session, the Claude transcript, the Codex thread.
 const crypto = require('crypto');
 const fs = require('fs');
@@ -22,12 +26,12 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 
-const AGENTS = ['clark', 'claude', 'codex'];
+const AGENTS = ['clark', 'claude', 'codex', 'openclaw'];
 const agent = process.argv[2];
 const ALL = process.argv.includes('--all');
 const ALLOW = process.argv.includes('--allow');
 if (!AGENTS.includes(agent)) {
-  console.error('usage: node scripts/agent-smoke.js clark|claude|codex [--all] [--allow]');
+  console.error('usage: node scripts/agent-smoke.js clark|claude|codex|openclaw [--all] [--allow]');
   process.exit(2);
 }
 
@@ -178,6 +182,13 @@ function clarkConfig() {
   return { enabled: true, name: 'Clark', url: process.env.RUKOO_CLARK_URL || 'http://100.91.52.84:8642', key, model: '' };
 }
 
+function openclawConfig() {
+  const tokenFile = path.join(os.homedir(), '.rukoo-dev', 'openclaw.token');
+  const key = (process.env.RUKOO_OPENCLAW_TOKEN || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8') : '')).trim();
+  if (!key) throw new Error(`No gateway token: set RUKOO_OPENCLAW_TOKEN or create ${tokenFile}`);
+  return { enabled: true, url: process.env.RUKOO_OPENCLAW_URL || 'http://127.0.0.1:18789', key, agent: process.env.RUKOO_OPENCLAW_AGENT || '', model: '' };
+}
+
 function makeAdapter(hub) {
   const log = (...args) => say('log:', ...args.map((a) => (a instanceof Error ? a.message : a)));
   const paths = { workspace: WORKSPACE };
@@ -185,6 +196,11 @@ function makeAdapter(hub) {
     const { HermesAdapter } = require(path.join(ROOT, 'src', 'main', 'agents', 'hermes.js'));
     const config = clarkConfig();
     return { adapter: new HermesAdapter({ id: 'clark', config: () => config, hub, log, paths }), name: 'Clark' };
+  }
+  if (agent === 'openclaw') {
+    const { OpenClawAdapter } = require(path.join(ROOT, 'src', 'main', 'agents', 'openclaw.js'));
+    const config = openclawConfig();
+    return { adapter: new OpenClawAdapter({ id: 'openclaw', config: () => config, hub, log }), name: 'OpenClaw' };
   }
   if (agent === 'claude') {
     const { ClaudeAdapter } = require(path.join(ROOT, 'src', 'main', 'agents', 'claude.js'));
@@ -306,10 +322,11 @@ async function main() {
     say(`${ok ? 'PASS' : 'FAIL'} ${label}${extra ? ' ' + extra : ''}`);
   };
   try {
-    if (agent === 'clark') {
+    if (agent === 'clark' || agent === 'openclaw') {
       const t1 = await runTurn(ctx, 'This is a short test from Rukoo. Remember the word mango. Reply with just OK.');
       check('turn 1 streams and completes', t1.result.status === 'done' && t1.text.length > 0);
-      check('turn 1 created a Hermes session', Boolean(conversation.provider.sessionId), conversation.provider.sessionId);
+      if (agent === 'clark') check('turn 1 created a Hermes session', Boolean(conversation.provider.sessionId), conversation.provider.sessionId);
+      else check('turn 1 keyed an OpenClaw session', Boolean(conversation.provider.sessionUser), `${conversation.provider.agent} ${conversation.provider.sessionUser}`);
       const t2 = await runTurn(ctx, 'Which word did I ask you to remember? Reply with just that word.');
       check('turn 2 remembers turn 1 (same session)', t2.result.status === 'done' && /mango/i.test(t2.text), JSON.stringify(t2.text.trim()));
       const t3 = await runTurn(ctx, 'Count from 1 to 300 in English words, one number per line. Do not use any tools.', { stopAfter: 40 });

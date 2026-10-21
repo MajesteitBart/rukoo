@@ -53,7 +53,7 @@ const OWN_SKILLS_TTL_MS = 60 * 1000;
 const OWN_SKILLS_RETRY_MS = 10 * 1000;
 // Message actions whose text Rukoo wrote (an approval) or that is a whole skill already: no $name in them counts.
 const NO_MENTIONS = new Set(['approved', 'declined', 'skill']);
-const ADAPTERS = { clark: ['./hermes', 'HermesAdapter'], claude: ['./claude', 'ClaudeAdapter'], codex: ['./codex', 'CodexAdapter'] };
+const ADAPTERS = { clark: ['./hermes', 'HermesAdapter'], claude: ['./claude', 'ClaudeAdapter'], codex: ['./codex', 'CodexAdapter'], openclaw: ['./openclaw', 'OpenClawAdapter'] };
 const DENY_IDS = new Set(['deny', 'decline', 'cancel']);
 // English fallbacks for error notices; the renderer localizes by code.
 const ERROR_TEXT = {
@@ -157,6 +157,7 @@ class AgentHub extends EventEmitter {
     this.tokens = [];
     this.convTokens = new Map();
     this.remoteHash = null;
+    this.openclawHash = null;
     this.threads = new Map();
     this.uiPending = new Map();
     // Per conversation, the chain of mail work whose outcome goes into the notes, and what on it still runs; see
@@ -1223,9 +1224,10 @@ class AgentHub extends EventEmitter {
   }
 
   // Hermes usually runs on another machine and reaches Rukoo through its bridge, so a path on this PC means nothing
-  // to it, and its Runs API takes text only. Claude Code and Codex run here.
+  // to it, and its Runs API takes text only. An OpenClaw gateway can be elsewhere too, and Rukoo sends it text only.
+  // Claude Code and Codex run here.
   localAgent(c) {
-    return c.agent !== 'clark';
+    return c.agent !== 'clark' && c.agent !== 'openclaw';
   }
 
   async runTurn(c, turn, { text, action, firstTurn, recap = false, display = '' }) {
@@ -1924,6 +1926,8 @@ class AgentHub extends EventEmitter {
     let found = null;
     for (const t of this.tokens) if (crypto.timingSafeEqual(t.hash, hash)) found = t.identity;
     if (this.remoteHash && crypto.timingSafeEqual(this.remoteHash, hash)) found = { agent: 'clark', conversationId: null, remote: true };
+    // OpenClaw's MCP client, on this computer (the loopback listener takes only tokens that aren't remote).
+    if (this.openclawHash && crypto.timingSafeEqual(this.openclawHash, hash)) found = { agent: 'openclaw', conversationId: null, remote: false };
     return found ? { ...found } : null;
   }
 
@@ -2104,7 +2108,7 @@ class AgentHub extends EventEmitter {
 
   setSecret(agent, value) {
     this.cfg.setSecret(agent, value);
-    // A new key means a new token for Clark's bridge, and the old one stops working.
+    // A new key means a new token for Clark's bridge (or OpenClaw's MCP client), and the old one stops working.
     this.refreshRemoteHash();
     this.configChanged();
     return this.config();
@@ -2113,10 +2117,21 @@ class AgentHub extends EventEmitter {
   refreshRemoteHash() {
     const token = this.cfg.remoteToken();
     this.remoteHash = token ? sha256(token) : null;
+    const openclaw = this.cfg.openclawToken();
+    this.openclawHash = openclaw ? sha256(openclaw) : null;
   }
 
   copyHermesSetup() {
     if (this.deps.clipboard) this.deps.clipboard.writeText(this.cfg.hermesSetup());
+    return true;
+  }
+
+  // The command that adds Rukoo's MCP server to OpenClaw, with the port the local listener really has.
+  copyOpenClawSetup() {
+    const port = this.mcp ? this.mcp.ports().local : null;
+    const setup = this.cfg.openclawSetup(port || undefined);
+    if (!setup) throw new AgentError('not-configured', 'Save the gateway token first');
+    if (this.deps.clipboard) this.deps.clipboard.writeText(setup);
     return true;
   }
 

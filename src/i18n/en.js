@@ -3020,6 +3020,62 @@
     "message": "The block for {name}'s config.yaml. It's the same for all your devices.",
     "description": "Settings, Agents page: description of the copy setup row."
   },
+  "settings.agents.copyOpenClaw": {
+    "message": "Copy OpenClaw setup",
+    "description": "Settings, Agents page, OpenClaw card: row that copies the command that adds Rukoo's MCP server to OpenClaw."
+  },
+  "settings.agents.copyOpenClawHelp": {
+    "message": "A command for this computer that lets OpenClaw use Rukoo's tools. It holds a token, so don't share it.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row. The copied command (openclaw mcp set) contains Rukoo's MCP token for OpenClaw."
+  },
+  "settings.agents.copiedOpenClaw": {
+    "message": "Copied. Run it in a terminal on this computer, then restart the OpenClaw gateway.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup command."
+  },
+  "settings.agents.gatewayUrl": {
+    "message": "Gateway URL",
+    "description": "Settings, Agents page, OpenClaw card: field for the address of the OpenClaw gateway."
+  },
+  "settings.agents.openclawAgent": {
+    "message": "Agent ID (optional)",
+    "description": "Settings, Agents page, OpenClaw card: field for the id of the OpenClaw agent a new chat goes to."
+  },
+  "settings.agents.openclawAgentHint": {
+    "message": "Empty for the gateway's default agent",
+    "description": "Settings, Agents page, OpenClaw card: placeholder of the agent id field."
+  },
+  "settings.agents.token": {
+    "message": "Gateway token",
+    "description": "Settings, Agents page, OpenClaw card: label of the gateway token (or password) field."
+  },
+  "settings.agents.tokenFirst": {
+    "message": "Save the gateway token first.",
+    "description": "Settings, Agents page: toast when the OpenClaw setup is copied before a gateway token is saved."
+  },
+  "settings.agents.tokenHide": {
+    "message": "Hide token",
+    "description": "Settings, Agents page: tooltip of the eye button while the OpenClaw gateway token is visible."
+  },
+  "settings.agents.tokenPlaceholder": {
+    "message": "Paste the gateway token or password",
+    "description": "Settings, Agents page: placeholder of the OpenClaw gateway token field."
+  },
+  "settings.agents.tokenSave": {
+    "message": "Save token",
+    "description": "Settings, Agents page: button that stores the OpenClaw gateway token."
+  },
+  "settings.agents.tokenSaved": {
+    "message": "Token saved",
+    "description": "Settings, Agents page: shown instead of the OpenClaw gateway token once it is stored."
+  },
+  "settings.agents.tokenShow": {
+    "message": "Show token",
+    "description": "Settings, Agents page: tooltip of the eye button on the OpenClaw gateway token field."
+  },
+  "settings.agents.tokenStored": {
+    "message": "Token saved. Rukoo keeps it encrypted on this computer.",
+    "description": "Settings, Agents page: toast after the OpenClaw gateway token was stored."
+  },
   "settings.agents.default": {
     "message": "Default agent",
     "description": "Settings, Agents page: which agent a new chat goes to."
@@ -3078,7 +3134,7 @@
   },
   "settings.agents.modelHint": {
     "message": "Empty for the default, for example {example}",
-    "description": "Settings, Agents page: placeholder of the Claude model field; example is a model name."
+    "description": "Settings, Agents page: placeholder of the Claude and OpenClaw model fields; example is a model name."
   },
   "settings.agents.name": {
     "message": "Name",
@@ -3105,7 +3161,7 @@
     "description": "Settings overview row description: default agent and its status."
   },
   "settings.agents.rowTitle": {
-    "message": "{name}, Claude Code and Codex",
+    "message": "{name}, Claude Code, Codex and OpenClaw",
     "description": "Settings overview row that opens the agents page; name is the Hermes agent name."
   },
   "settings.agents.saved": {
@@ -3118,7 +3174,7 @@
   },
   "settings.agents.testConnection": {
     "message": "Test connection",
-    "description": "Settings, Agents page: button that checks the connection to Hermes."
+    "description": "Settings, Agents page: button that checks the connection to Hermes or the OpenClaw gateway."
   },
   "settings.agents.testing": {
     "message": "Testing...",
@@ -3126,7 +3182,7 @@
   },
   "settings.agents.title": {
     "message": "Agents",
-    "description": "Settings: title of the page where you set up Hermes, Claude Code and Codex."
+    "description": "Settings: title of the page where you set up Hermes, Claude Code, Codex and OpenClaw."
   },
   "settings.agents.unavailable": {
     "message": "Agents aren't available in this version.",
