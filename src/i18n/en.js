@@ -3100,6 +3100,122 @@
     "message": "OpenClaw signs in with a token Rukoo makes from the gateway token above. Enter it first.",
     "description": "Settings, Agents page, OpenClaw card: note under the remote toggle when it is on but no gateway token is saved."
   },
+  "settings.phone.title": {
+    "message": "Phone",
+    "description": "Settings, Agents page: heading of the group that lets Rukoo on a phone use this computer."
+  },
+  "settings.phone.host": {
+    "message": "Let my phone use this computer",
+    "description": "Settings, Agents page, Phone group: toggle that lets paired phones run Claude Code and Codex chats on this computer over Tailscale."
+  },
+  "settings.phone.hostHelp": {
+    "message": "Your phone runs Claude Code and Codex chats here over Tailscale. Rukoo then also listens on its Tailscale address.",
+    "description": "Settings, Agents page, Phone group: description under the toggle while it is off."
+  },
+  "settings.phone.noListener": {
+    "message": "Rukoo isn't listening on a Tailscale address. Check that Tailscale runs on this computer.",
+    "description": "Settings, Agents page, Phone group: toast when the user starts pairing but Rukoo has no Tailscale listener to show."
+  },
+  "settings.phone.pair": {
+    "message": "Pair a phone",
+    "description": "Settings, Agents page, Phone group: row that starts pairing a phone; also the title of the dialog that asks what the phone may receive."
+  },
+  "settings.phone.pairHelp": {
+    "message": "Shows a code to enter in Rukoo on your phone",
+    "description": "Settings, Agents page, Phone group: description under the Pair a phone row."
+  },
+  "settings.phone.pairWithExport": {
+    "message": "Pair and send my accounts and agent settings",
+    "description": "Pairing dialog: choice that pairs the phone and lets it fetch the accounts and agent settings once."
+  },
+  "settings.phone.pairWithExportHint": {
+    "message": "Includes passwords, Google sign-ins and agent keys",
+    "description": "Pairing dialog and phone menu: note under the choice that sends the accounts, saying that secrets go along."
+  },
+  "settings.phone.pairOnly": {
+    "message": "Pair only",
+    "description": "Pairing dialog: choice that pairs the phone without sending accounts or settings."
+  },
+  "settings.phone.pairOnlyHint": {
+    "message": "Accounts and keys stay on this computer",
+    "description": "Pairing dialog: note under the Pair only choice."
+  },
+  "settings.phone.pairTitle": {
+    "message": "Pair a phone",
+    "description": "Title of the dialog that shows the pairing code and this computer's address."
+  },
+  "settings.phone.pairSteps": {
+    "message": "Open Rukoo on your phone, choose to pair with a computer, and enter this address and code.",
+    "description": "Pairing code dialog: what the user does on the phone."
+  },
+  "settings.phone.address": {
+    "message": "Address",
+    "description": "Pairing code dialog: label of this computer's address, such as http://100.64.0.5:47800."
+  },
+  "settings.phone.code": {
+    "message": "Code",
+    "description": "Pairing code dialog: label of the 8-character pairing code."
+  },
+  "settings.phone.pairExportNote": {
+    "message": "Your phone can then fetch your accounts and agent settings once, in the next 10 minutes.",
+    "description": "Pairing code dialog: note shown when the user chose to send the accounts and agent settings."
+  },
+  "settings.phone.pairExpires": {
+    "message": { "one": "The code works for {count} more minute.", "other": "The code works for {count} more minutes." },
+    "description": "Pairing code dialog: how long the code still works; count is whole minutes, rounded up."
+  },
+  "settings.phone.pairExpired": {
+    "message": "The code has expired. Start again.",
+    "description": "Pairing code dialog: shown in place of the code once it has expired."
+  },
+  "settings.phone.pairBurned": {
+    "message": "The code was entered wrong too often. Start again.",
+    "description": "Pairing code dialog: shown in place of the code after five wrong tries on the phone."
+  },
+  "settings.phone.paired": {
+    "message": "Paired with {name}",
+    "description": "Toast after a phone paired; name is the phone's name, such as Galaxy Z Fold7."
+  },
+  "settings.phone.lastSeen": {
+    "message": "Last seen {date} {time}",
+    "description": "Settings, Agents page, Phone group: when a paired phone last reached this computer; date and time are formatted."
+  },
+  "settings.phone.neverSeen": {
+    "message": "Not connected yet",
+    "description": "Settings, Agents page, Phone group: shown for a paired phone that has not reached this computer yet."
+  },
+  "settings.phone.exportPending": {
+    "message": "Can fetch your accounts and settings now",
+    "description": "Settings, Agents page, Phone group: shown under a paired phone while it may fetch the accounts and settings."
+  },
+  "settings.phone.exportAgain": {
+    "message": "Send accounts and settings again",
+    "description": "Phone menu: choice that lets the phone fetch the accounts and agent settings once more in the next 10 minutes."
+  },
+  "settings.phone.exportOpen": {
+    "message": "Your phone can fetch them in the next 10 minutes",
+    "description": "Toast after Send accounts and settings again."
+  },
+  "settings.phone.exported": {
+    "message": "Sent your accounts and settings to {name}",
+    "description": "Toast when a paired phone fetched the accounts and settings; name is the phone's name."
+  },
+  "settings.phone.remove": {
+    "message": "Remove this phone",
+    "description": "Phone menu: choice that unpairs the phone; also the title of the confirmation."
+  },
+  "settings.phone.removeConfirm": {
+    "message": "{name} can no longer use this computer. Accounts it already has stay on the phone.",
+    "description": "Confirmation before unpairing a phone; name is the phone's name."
+  },
+  "settings.phone.removeOk": {
+    "message": "Remove",
+    "description": "Button in the confirmation that unpairs a phone."
+  },
+  "settings.phone.removed": {
+    "message": "Removed {name}",
+    "description": "Toast after a phone was unpaired; name is the phone's name."
+  },
   "settings.agents.default": {
     "message": "Default agent",
     "description": "Settings, Agents page: which agent a new chat goes to."

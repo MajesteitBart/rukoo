@@ -392,16 +392,18 @@ export function confirmDialog(title, message, okLabel = t('common.actions.ok'), 
   });
 }
 
-export function choiceDialog(title, options, current) {
+// stacked: each hint goes under its label instead of beside it, for labels that are sentences.
+export function choiceDialog(title, options, current, { stacked = false } = {}) {
+  const hint = (o) => (o.hint ? `<span class="rh">${esc(o.hint)}</span>` : '');
   return dialog({
     title,
     buttons: [{ get label() { return t('common.actions.cancel'); }, value: null }],
     render(body, done) {
-      body.innerHTML = `<div class="choices" role="radiogroup">${options
+      body.innerHTML = `<div class="choices ${stacked ? 'stacked' : ''}" role="radiogroup">${options
         .map(
           (o, i) =>
-            `<button class="radio-row" role="radio" aria-checked="${o.value === current}" data-i="${i}"><span class="radio ${o.value === current ? 'on' : ''}"></span><span class="rl">${esc(o.label)}</span>${
-              o.hint ? `<span class="rh">${esc(o.hint)}</span>` : ''
+            `<button class="radio-row" role="radio" aria-checked="${o.value === current}" data-i="${i}"><span class="radio ${o.value === current ? 'on' : ''}"></span>${
+              stacked ? `<span class="rt"><span class="rl">${esc(o.label)}</span>${hint(o)}</span>` : `<span class="rl">${esc(o.label)}</span>${hint(o)}`
             }</button>`
         )
         .join('')}</div>`;
