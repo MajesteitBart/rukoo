@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default labels of the base components in ui/components. Callers may pass their own. Wording from the
+     desktop catalog (src/i18n/en.js); the desktop key is in each comment. -->
+<resources>
+    <!-- common.actions.undo -->
+    <string name="components_undo">Undo</string>
+    <!-- common.actions.clear: clears a search field -->
+    <string name="components_clear">Clear</string>
+    <!-- common.actions.close -->
+    <string name="components_close">Close</string>
+    <!-- common.actions.back -->
+    <string name="components_back">Back</string>
+    <!-- common.actions.moreOptions -->
+    <string name="components_more_options">More options</string>
+    <!-- setup.fields.showPassword: eye button in a password field -->
+    <string name="components_show_password">Show password</string>
+    <!-- setup.fields.hidePassword -->
+    <string name="components_hide_password">Hide password</string>
+    <!-- agent.approval.showAll: unfolds a long value -->
+    <string name="components_show_all">Show all</string>
+    <!-- agent.approval.showLess -->
+    <string name="components_show_less">Show less</string>
+</resources>
