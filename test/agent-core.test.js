@@ -1250,6 +1250,10 @@ test('status: disabled, broken and ready adapters; tokens and identities', async
     assert.equal(hub.proof('challenge-0123456789', '100.64.0.3:47800'), '');
     hub.setSecret('clark', 'hermes-key');
     const remote = hub.cfg.remoteToken();
+    // Only while the user lets Clark use Rukoo: the Tailscale listener can be open for OpenClaw alone.
+    assert.equal(hub.identify(remote), null);
+    assert.equal(hub.proof('challenge-0123456789', '100.64.0.3:47800'), '');
+    hub.cfg.update({ mcp: { remote: true } });
     assert.deepEqual(hub.identify(remote), { agent: 'clark', conversationId: null, remote: true });
     // The proof Clark's bridge checks before it sends the token: tied to the challenge and to the address Rukoo took
     // the connection on, and no use as a token.
