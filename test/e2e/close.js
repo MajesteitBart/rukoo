@@ -8,9 +8,15 @@
 // test nobody closes that box. So the close gets CLOSE_WAIT; after that this instance's own processes are killed and
 // the test fails, so the hang still shows. Only its own: Playwright starts Electron as the leader of a new process
 // group outside Windows, and taskkill /T follows the process tree on Windows.
+//
+// Windows gets longer. There Rukoo's own part of a quit ends within about 2 s, but Electron's process can live on
+// for a while after its last JavaScript has run, while Chromium shuts down: up to 9 s on a CI runner that was busy,
+// and past 15 s when the runner stalled (#87). The test's timeout grows by the wait, so a close that runs out of time
+// still ends here, with its own error, instead of in a hook timeout that also takes the worker down.
 const { execFileSync } = require('child_process');
+const { test } = require('@playwright/test');
 
-const CLOSE_WAIT = 15000;
+const CLOSE_WAIT = process.platform === 'win32' ? 45000 : 15000;
 
 function wait(ms) {
   let timer;
@@ -35,6 +41,13 @@ async function closeApp(app) {
   } catch (_) {
     // Closed already, by the test itself.
     return;
+  }
+  // Called in a hook or a test; outside one (a script) there is no timeout to grow.
+  try {
+    const info = test.info();
+    if (info.timeout) info.setTimeout(info.timeout + CLOSE_WAIT + 5000);
+  } catch (_) {
+    // Not in a test.
   }
   const closing = (async () => {
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
