@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dutch for strings_components.xml, from src/i18n/nl.js. -->
+<resources>
+    <string name="components_undo">Ongedaan maken</string>
+    <string name="components_clear">Wissen</string>
+    <string name="components_close">Sluiten</string>
+    <string name="components_back">Terug</string>
+    <string name="components_more_options">Meer opties</string>
+    <string name="components_show_password">Wachtwoord weergeven</string>
+    <string name="components_hide_password">Wachtwoord verbergen</string>
+    <string name="components_show_all">Alles tonen</string>
+    <string name="components_show_less">Minder tonen</string>
+</resources>
