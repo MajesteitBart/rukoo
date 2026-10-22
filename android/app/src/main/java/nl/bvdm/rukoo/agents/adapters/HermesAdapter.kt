@@ -27,7 +27,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
@@ -148,7 +150,7 @@ class HermesAdapter internal constructor(
         if (!s.enabled) return AgentStatus(AgentState.DISABLED, "")
         if (s.url.isEmpty()) return AgentStatus(AgentState.UNCONFIGURED, texts.get(R.string.adapters_hermes_no_url))
         if (s.key.isEmpty()) return AgentStatus(AgentState.UNCONFIGURED, texts.get(R.string.adapters_hermes_no_key))
-        return statusCache.get(s.url + "\u0000" + sha256Hex(s.key), force) { check(s) }
+        return statusCache.get(s.url + "\u0000" + sha256Hex(s.key), force) { check(s) }.redacted(s.key)
     }
 
     /** /health says the server is there (no key), /v1/capabilities that the key works and the Runs API is on. */
@@ -188,7 +190,21 @@ class HermesAdapter internal constructor(
      * The model_routes aliases (GET /v1/models) and the models of each provider Hermes has credentials for
      * (GET /api/model/options), named provider::model. Either list can be missing; the menu has the other one.
      */
-    override suspend fun models(): ModelOptions = coroutineScope {
+    override suspend fun models(): ModelOptions = redacting { loadModels() }
+
+    override suspend fun skills(): List<OwnSkill> = redacting { loadSkills() }
+
+    /** Errors whose text came from the server, without the key. */
+    private suspend fun <T> redacting(block: suspend () -> T): T {
+        val secret = s().key
+        return try {
+            block()
+        } catch (e: AgentException) {
+            throw e.redacted(secret)
+        }
+    }
+
+    private suspend fun loadModels(): ModelOptions = coroutineScope {
         val s = s()
         val server = ready(s)
         val routes = async { runCatching { request("GET", server, "/v1/models") } }
@@ -207,7 +223,7 @@ class HermesAdapter internal constructor(
     }
 
     /** For the `$` menu: the skills installed on the Hermes server. An older Hermes has no such endpoint and offers none. */
-    override suspend fun skills(): List<OwnSkill> {
+    private suspend fun loadSkills(): List<OwnSkill> {
         val s = s()
         val server = ready(s)
         val key = s.url + "\u0000" + sha256Hex(s.key)
@@ -241,15 +257,20 @@ class HermesAdapter internal constructor(
 
     // ---------- a turn ----------
 
-    override suspend fun runTurn(turn: TurnHandle): TurnResult = try {
-        turn(turn)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: AgentException) {
-        if (e.code == ErrorCodes.STOPPED) TurnResult.STOPPED else TurnResult.error(e.code, e.detail)
-    } catch (e: Exception) {
-        AppLog.w(TAG, "turn failed", e)
-        TurnResult.error(ErrorCodes.UNKNOWN, clip(describe(e), 200))
+    override suspend fun runTurn(turn: TurnHandle): TurnResult {
+        // Whatever the server says reaches the chat without the key: events, errors and the result.
+        val secret = s().key
+        val result = try {
+            turn(turn.redacting(secret))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AgentException) {
+            if (e.code == ErrorCodes.STOPPED) TurnResult.STOPPED else TurnResult.error(e.code, e.detail)
+        } catch (e: Exception) {
+            AppLog.w(TAG, "turn failed", e)
+            TurnResult.error(ErrorCodes.UNKNOWN, clip(describe(e), 200))
+        }
+        return result.redacted(secret)
     }
 
     private suspend fun turn(turn: TurnHandle): TurnResult {
@@ -421,7 +442,7 @@ class HermesAdapter internal constructor(
                             stream(state, this)
                         } catch (e: AgentException) {
                             if (e.code != ErrorCodes.OFFLINE) throw e
-                            AppLog.i(TAG, "event stream failed: ${e.detail}")
+                            AppLog.i(TAG, "event stream failed (${e.code})")
                             null
                         }
                         if (state.terminal != null || state.isAborted) break
@@ -458,7 +479,12 @@ class HermesAdapter internal constructor(
             // where Stop no longer reaches it. watch() and the answer path already sent their own stop.
             if (state.terminal == null && !state.stopping) {
                 state.stopping = true
-                if (!sendStop(server, runId)) keepStopping(server, runId)
+                // A turn that is being cancelled can't send it itself; the app scope can.
+                if (currentCoroutineContext().isActive) {
+                    if (!sendStop(server, runId)) keepStopping(server, runId)
+                } else {
+                    scope.launch { if (!sendStop(server, runId, timing.connect)) keepStopping(server, runId) }
+                }
             }
             throw e
         } finally {
@@ -505,7 +531,7 @@ class HermesAdapter internal constructor(
         }
         if (!res.isSuccessful) {
             // The connect deadline is over once the headers are in, so the body gets a deadline of its own.
-            val err = httpError(HttpAnswer.of(res.code, readCapped(call, res, timing.errorBody)))
+            val err = httpError(HttpAnswer.of(res.code, readCapped(call, res, timing.errorBody), state.server.key))
             // A server or gateway error, a timeout or a rate limit can pass and says nothing about the run: like a
             // dropped connection, the stream is tried again and the run then followed by its status.
             if (res.code >= 500 || res.code == 408 || res.code == 429) throw AgentException(ErrorCodes.OFFLINE, err.detail)
@@ -535,7 +561,7 @@ class HermesAdapter internal constructor(
         return when (d.str("status")) {
             "completed" -> Poll(Terminal(TurnStatus.DONE, output = d["output"]?.takeIf { it.truthy() }?.let(HermesWire::jsText).orEmpty()))
             "cancelled" -> Poll(Terminal(TurnStatus.STOPPED))
-            "failed", "interrupted" -> Poll(Terminal(TurnStatus.ERROR, error = failure(d)))
+            "failed", "interrupted" -> Poll(Terminal(TurnStatus.ERROR, error = failure(d, state.server.key)))
             "queued", "running", "waiting_for_approval", "stopping" -> Poll(null)
             else -> null
         }
@@ -572,8 +598,8 @@ class HermesAdapter internal constructor(
         return null
     }
 
-    private fun failure(data: JsonObject): AgentErrorInfo {
-        val (code, detail) = HermesWire.failure(data, texts.get(R.string.adapters_hermes_run_failed))
+    private fun failure(data: JsonObject, secret: String): AgentErrorInfo {
+        val (code, detail) = HermesWire.failure(data, texts.get(R.string.adapters_hermes_run_failed), secret)
         return AgentErrorInfo(code, detail)
     }
 
@@ -591,6 +617,8 @@ class HermesAdapter internal constructor(
         } catch (e: Exception) {
             AppLog.w(TAG, "could not handle $event", e)
         }
+        // The run is over: a server that keeps the stream open with keepalives must not hold the turn.
+        if (state.terminal != null) state.call?.cancel()
     }
 
     private fun onEvent(state: RunState, runScope: CoroutineScope, event: String, data: JsonObject) {
@@ -620,7 +648,7 @@ class HermesAdapter internal constructor(
                 val key = "$tool#$n"
                 state.open.getOrPut(tool) { ArrayDeque() }.addLast(key)
                 state.segment = StringBuilder()
-                turn.emit(AdapterEvent.ToolStart(key, tool, HermesWire.preview(data.str("preview"))))
+                turn.emit(AdapterEvent.ToolStart(key, tool, HermesWire.preview(data.str("preview"), state.server.key)))
             }
             "tool.completed", "tool.failed" -> {
                 val tool = toolName(data)
@@ -635,7 +663,7 @@ class HermesAdapter internal constructor(
                 val error = event == "tool.failed" || data["error"].truthy()
                 val preview = data["preview"]?.takeIf { it.truthy() }?.let(HermesWire::jsText)
                 state.segment = StringBuilder()
-                turn.emit(AdapterEvent.ToolEnd(key, error, if (error && preview != null) clip(preview, 200) else null))
+                turn.emit(AdapterEvent.ToolEnd(key, error, if (error && preview != null) clipSafe(preview, state.server.key, 200) else null))
             }
             "subagent.start" -> {
                 val n = (state.counters["subagent"] ?: 0) + 1
@@ -645,7 +673,7 @@ class HermesAdapter internal constructor(
                 state.subagents[sid] = key
                 state.segment = StringBuilder()
                 val goal = listOf("goal", "preview").firstNotNullOfOrNull { data[it]?.takeIf { v -> v.truthy() }?.let(HermesWire::jsText) }.orEmpty()
-                turn.emit(AdapterEvent.ToolStart(key, "subagent", clip(goal, 200)))
+                turn.emit(AdapterEvent.ToolStart(key, "subagent", clipSafe(goal, state.server.key, 200)))
             }
             "subagent.complete" -> {
                 var sid = listOf("subagent_id", "delegation_id").firstNotNullOfOrNull { data[it]?.takeIf { v -> v.truthy() }?.let(HermesWire::jsText) }.orEmpty()
@@ -688,10 +716,10 @@ class HermesAdapter internal constructor(
                 if (data["usage"].truthy()) turn.emit(AdapterEvent.Usage)
             }
             "run.cancelled" -> state.terminal = Terminal(TurnStatus.STOPPED)
-            "run.failed", "run.interrupted" -> state.terminal = Terminal(TurnStatus.ERROR, error = failure(data))
+            "run.failed", "run.interrupted" -> state.terminal = Terminal(TurnStatus.ERROR, error = failure(data, state.server.key))
             "error" -> {
                 val message = data["message"]?.takeIf { it.truthy() }?.let(HermesWire::jsText) ?: texts.get(R.string.adapters_hermes_reported_error)
-                state.terminal = Terminal(TurnStatus.ERROR, error = AgentErrorInfo(ErrorCodes.UNKNOWN, clip(message, 200)))
+                state.terminal = Terminal(TurnStatus.ERROR, error = AgentErrorInfo(ErrorCodes.UNKNOWN, clipSafe(message, state.server.key, 200)))
             }
             // reasoning.available and tool.progress repeat the visible text; the rest is bookkeeping.
             else -> Unit

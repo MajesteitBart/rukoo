@@ -8,6 +8,7 @@ package nl.bvdm.rukoo.agents.adapters
 import java.io.IOException
 import java.io.InterruptedIOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -108,7 +109,8 @@ internal fun readSseBlocking(call: Call, source: BufferedSource, parser: SsePars
         return SseOutcome.END
     } catch (e: InterruptedIOException) {
         return if (call.isCanceled()) SseOutcome.ABORTED else SseOutcome.IDLE
-    } catch (e: IOException) {
+    } catch (e: Exception) {
+        // A cancelled call can fail the read in other ways than IOException; it was Rukoo's own doing either way.
         if (call.isCanceled()) return SseOutcome.ABORTED
         throw e
     }
@@ -121,7 +123,8 @@ internal fun readSseBlocking(call: Call, source: BufferedSource, parser: SsePars
  */
 internal suspend fun streamSse(call: Call, response: Response, onFrame: (SseFrame) -> Unit): SseOutcome = coroutineScope {
     val frames = Channel<SseFrame>(Channel.UNLIMITED)
-    val reader = async(Dispatchers.IO) {
+    // Atomic: a Stop before the reader runs must still reach its finally, which closes the response.
+    val reader = async(Dispatchers.IO, start = CoroutineStart.ATOMIC) {
         try {
             response.use { readSseBlocking(call, it.body!!.source(), SseParser { frame -> frames.trySend(frame) }) }
         } finally {

@@ -63,9 +63,9 @@ internal object HermesWire {
     }
 
     /** What a failed or interrupted run says (hermes.js failure). [fallback] is "The run failed" in the user's language. */
-    fun failure(data: JsonObject, fallback: String): Pair<String, String> {
+    fun failure(data: JsonObject, fallback: String, secret: String? = null): Pair<String, String> {
         val reason = listOf("error", "message", "turn_exit_reason").firstNotNullOfOrNull { k -> data[k]?.takeIf { it.truthy() }?.let(::jsText) }
-        val detail = clip(reason ?: fallback, 200)
+        val detail = clipSafe(reason ?: fallback, secret, 200)
         val code = when {
             RATE_LIMIT.containsMatchIn(detail) -> ErrorCodes.RATE_LIMITED
             data.str("event") == "run.interrupted" || data.str("status") == "interrupted" -> ErrorCodes.OFFLINE
@@ -213,7 +213,7 @@ internal object HermesWire {
     }
 
     /** A tool chip's detail from a Hermes preview: tags the agent copied from a tool result go (Unsafe.untag). */
-    fun preview(text: String?): String = clip(Unsafe.untag(text), 200)
+    fun preview(text: String?, secret: String? = null): String = clipSafe(Unsafe.untag(text), secret, 200)
 }
 
 private fun JsonArray?.orEmpty(): List<JsonElement> = this ?: emptyList()

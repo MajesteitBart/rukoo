@@ -184,6 +184,100 @@ class HermesAdapterTest {
     }
 
     @Test
+    fun stopDuringAStalledErrorBodyIsNotHeldUp() = runBlocking {
+        standardRun()
+        val asked = CountDownLatch(1)
+        val stopped = CountDownLatch(1)
+        on("POST /v1/runs/r1/stop", { _ -> stopped.countDown(); MockResponse().setBody("{}") })
+        on("GET /v1/runs/r1/events", { _ ->
+            asked.countDown()
+            // A 500 whose body stops half-way: reading it waits on the socket.
+            MockResponse().setResponseCode(500).setBody("x".repeat(2_000)).throttleBody(1_000, 5, TimeUnit.SECONDS)
+        })
+        val job = async { adapter(fast.copy(errorBody = 4_000)).runTurn(RecordingTurn()) }
+        // Suspending waits only: runBlocking's one thread also runs the turn.
+        eventually { asked.count == 0L }
+        kotlinx.coroutines.delay(300)
+        assertTrue("the turn is reading the error body", job.isActive)
+        val started = System.nanoTime()
+        job.cancel()
+        try {
+            job.await()
+            fail("cancelled")
+        } catch (_: CancellationException) {
+        }
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 1_500)
+        assertTrue("stop was sent; requests: ${bodies.map { it.first }}", stopped.await(5, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun aKeyTheServerEchoesIsRedacted() = runBlocking {
+        on("POST /api/sessions", json("""{"session":{"id":"s1"}}"""))
+        // JSON-escaped, so only the decoded text shows the key.
+        on("POST /v1/runs", json("""{"error":"Rejected Bearer secret-key for this profile"}""", 400))
+        val result = adapter().runTurn(RecordingTurn())
+        assertEquals("HTTP 400: Rejected Bearer [redacted] for this profile", result.error?.detail)
+        on("POST /v1/runs", json("""{"run_id":"r1"}""", 202))
+        on(
+            "GET /v1/runs/r1/events",
+            sse("""{"event":"tool.started","seq":1,"tool":"terminal","preview":"curl -H 'Bearer secret-key'"}""", """{"event":"run.failed","seq":2,"error":"auth secret-key expired"}"""),
+        )
+        val turn = RecordingTurn()
+        assertEquals("auth [redacted] expired", adapter().runTurn(turn).error?.detail)
+        assertEquals("curl -H 'Bearer [redacted]'", turn.events.filterIsInstance<AdapterEvent.ToolStart>().single().detail)
+        assertEquals("auth [redacted] expired", turn.events.filterIsInstance<AdapterEvent.Error>().single().detail)
+
+        // Where the 200-character clip would cut the key in half.
+        val long = "x".repeat(190)
+        on("POST /v1/runs", json("""{"error":"${long}secret-key!"}""", 400))
+        val clipped = adapter().runTurn(RecordingTurn()).error!!.detail
+        assertFalse(clipped, clipped.contains("secret-k"))
+        on("POST /v1/runs", json("""{"run_id":"r1"}""", 202))
+        on("GET /v1/runs/r1/events", sse("""{"event":"tool.started","seq":1,"tool":"terminal","preview":"${long}secret-key"}""", """{"event":"run.cancelled","seq":2}"""))
+        val previewed = RecordingTurn()
+        adapter().runTurn(previewed)
+        val preview = previewed.events.filterIsInstance<AdapterEvent.ToolStart>().single().detail
+        assertFalse(preview, preview.contains("secret-k"))
+
+        on("GET /v1/models", json("""{"error":"no models for secret-key"}""", 400))
+        on("GET /api/model/options", json("{}", 500))
+        try {
+            adapter().models()
+            fail("both lists failed")
+        } catch (e: AgentException) {
+            assertEquals("HTTP 400: no models for [redacted]", e.detail)
+        }
+    }
+
+    @Test
+    fun aKeyInsideProtocolDataIsLeftAlone() = runBlocking {
+        // A short key that also occurs in the session and run ids: redaction must not touch what the adapter parses.
+        settings = settings.copy(key = "r1")
+        on("POST /api/sessions", json("""{"session":{"id":"sr1"}}"""))
+        on("POST /v1/runs", json("""{"run_id":"r1"}""", 202))
+        on("GET /v1/runs/r1/events", sse("""{"event":"message.delta","seq":1,"delta":"Fine"}""", """{"event":"run.completed","seq":2,"output":"Fine"}"""))
+        val turn = RecordingTurn()
+        assertEquals(TurnStatus.DONE, adapter().runTurn(turn).status)
+        assertEquals("Fine", turn.text())
+        assertEquals(mapOf("sessionId" to "sr1"), turn.providers.single())
+        assertEquals("sr1", bodyOf("POST /v1/runs")["session_id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun aStreamLeftOpenAfterTheEndDoesNotHoldTheTurn() = runBlocking {
+        standardRun()
+        val end = "data: {\"event\":\"run.completed\",\"seq\":1,\"output\":\"ok\"}\n\n"
+        on("GET /v1/runs/r1/events", { _ ->
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody("$end: keepalive\n\n").throttleBody(end.length.toLong(), 5, TimeUnit.SECONDS)
+        })
+        val started = System.nanoTime()
+        val turn = RecordingTurn()
+        assertEquals(TurnStatus.DONE, withTimeout(10_000) { adapter().runTurn(turn) }.status)
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 3_000)
+        assertEquals("ok", turn.text())
+    }
+
+    @Test
     fun aLostSessionStartsANewOneWithANoticeAndARecap() = runBlocking {
         on("GET /api/sessions/old%20one", json("""{"error":"not found"}""", 404))
         on("POST /api/sessions", json("""{"error":"title exists"}""", 400), json("""{"session":{"id":"s2"}}"""))

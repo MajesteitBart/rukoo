@@ -294,9 +294,12 @@ class ComputerAdapter internal constructor(
             var droppedAt: Long? = null
             var attempt = 0
             while (true) {
-                val before = lastSeq
+                // Any line, a ping included, means the stream was attached: the computer's grace starts afresh at the
+                // next drop, as desktop's attach() clears its timer.
+                var attached = false
                 val failure: Exception? = try {
                     flow.takeWhile { line ->
+                        attached = true
                         handle(runScope, line)
                         done == null
                     }.collect()
@@ -315,7 +318,7 @@ class ComputerAdapter internal constructor(
                 }
                 // The computer no longer has the turn (it ended over two minutes ago, or the grace ran out).
                 if (failure is DesktopException && (failure.status == 404 || failure.code == "not-found")) throw lost()
-                if (lastSeq > before) {
+                if (attached) {
                     droppedAt = null
                     attempt = 0
                 }

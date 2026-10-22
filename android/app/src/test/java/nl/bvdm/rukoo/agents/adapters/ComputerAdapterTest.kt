@@ -286,6 +286,30 @@ class ComputerAdapterTest {
     }
 
     @Test
+    fun aReattachThatOnlyGetsPingsStartsAFreshGraceAtTheNextDrop() = runBlocking {
+        desktop.streams.add {
+            emit(line("""{"seq":1,"type":"started","turnId":"t_1","conversationId":"c","agent":"claude"}"""))
+            emit(line("""{"seq":2,"type":"text","delta":"One "}"""))
+            throw DesktopException("offline", "connection reset")
+        }
+        // Attached again, but the agent works quietly past the test's 2 s window before the stream drops once more.
+        desktop.streams.add {
+            emit(line("""{"type":"ping"}"""))
+            kotlinx.coroutines.delay(2_500)
+            throw DesktopException("offline", "connection reset")
+        }
+        desktop.streams.add {
+            emit(line("""{"seq":3,"type":"text","delta":"two"}"""))
+            emit(line("""{"seq":4,"type":"done","status":"done"}"""))
+        }
+        val turn = turn()
+        val result = withTimeout(10_000) { adapter().runTurn(turn) }
+        assertEquals(TurnStatus.DONE, result.status)
+        assertEquals("One two", turn.text())
+        assertTrue(desktop.stops.isEmpty())
+    }
+
+    @Test
     fun aTurnTheComputerNoLongerHasFailsAsOffline() = runBlocking {
         desktop.streams.add {
             emit(line("""{"seq":1,"type":"started","turnId":"t_1","conversationId":"c","agent":"claude"}"""))

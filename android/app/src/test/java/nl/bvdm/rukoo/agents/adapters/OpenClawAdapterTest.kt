@@ -146,6 +146,54 @@ class OpenClawAdapterTest {
     }
 
     @Test
+    fun stopDuringAStalledErrorBodyIsNotHeldUp() = runBlocking {
+        // A 500 whose body stops half-way; the first period is longer than the request, so only the answer stalls.
+        server.enqueue(MockResponse().setResponseCode(500).setBody("x".repeat(2_000)).throttleBody(1_000, 5, TimeUnit.SECONDS))
+        val job = async { adapter(OpenClawAdapter.Timing(headers = 2_000, errorBody = 4_000)).runTurn(RecordingTurn(conversation = Conversation(id = "c9", agent = "openclaw"))) }
+        // Suspending waits only: runBlocking's one thread also runs the turn.
+        eventually { server.requestCount > 0 }
+        kotlinx.coroutines.delay(300)
+        assertTrue("the turn is reading the error body", job.isActive)
+        val started = System.nanoTime()
+        job.cancel()
+        try {
+            job.await()
+            fail("cancelled")
+        } catch (_: CancellationException) {
+        }
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 1_500)
+    }
+
+    @Test
+    fun aTokenTheGatewayEchoesIsRedacted() = runBlocking {
+        // JSON-escaped, so only the decoded text shows the token.
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":{"message":"bad token gw-token"}}"""))
+        assertEquals("HTTP 401: bad token [redacted]", adapter().runTurn(RecordingTurn(conversation = Conversation(id = "c10", agent = "openclaw"))).error?.detail)
+        server.enqueue(stream("data: {\"error\":{\"message\":\"token gw-token was revoked\"}}\n\n"))
+        val turn = RecordingTurn(conversation = Conversation(id = "c11", agent = "openclaw"))
+        assertEquals("token [redacted] was revoked", adapter().runTurn(turn).error?.detail)
+        assertEquals(AdapterEvent.Error(ErrorCodes.UNKNOWN, "token [redacted] was revoked"), turn.events.single())
+        // Where the 200-character clip would cut the token in half.
+        server.enqueue(stream("data: {\"error\":{\"message\":\"${"z".repeat(193)}gw-token gone\"}}\n\n"))
+        val clipped = adapter().runTurn(RecordingTurn(conversation = Conversation(id = "c14", agent = "openclaw"))).error!!.detail
+        assertTrue(clipped, !clipped.contains("gw-to"))
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"gw-token is not allowed here"}"""))
+        assertEquals(AgentStatus(AgentState.UNKNOWN, "HTTP 400: [redacted] is not allowed here"), adapter().status(true))
+    }
+
+    @Test
+    fun aTokenInsideProtocolDataIsLeftAlone() = runBlocking {
+        // A gateway password that is also a field name of every chunk.
+        settings = settings.copy(token = "choices")
+        server.enqueue(stream(chunk("Still") + chunk(" here", "stop") + "data: [DONE]\n\n"))
+        val turn = RecordingTurn(conversation = Conversation(id = "c12", agent = "openclaw"))
+        assertEquals(TurnStatus.DONE, adapter().runTurn(turn).status)
+        assertEquals("Still here", turn.text())
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"bad password choices"}"""))
+        assertEquals("HTTP 401: bad password [redacted]", adapter().runTurn(RecordingTurn(conversation = Conversation(id = "c13", agent = "openclaw"))).error?.detail)
+    }
+
+    @Test
     fun stopCancelsTheCall() = runBlocking {
         val first = slow("Working")
         server.enqueue(stream(first + chunk(" on it")).throttleBody(first.length.toLong(), 5, TimeUnit.SECONDS))

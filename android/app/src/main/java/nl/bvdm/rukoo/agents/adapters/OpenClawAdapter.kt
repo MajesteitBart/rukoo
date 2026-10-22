@@ -106,7 +106,7 @@ class OpenClawAdapter internal constructor(
         if (s.url.isEmpty()) return AgentStatus(AgentState.UNCONFIGURED, texts.get(R.string.adapters_openclaw_no_url))
         if (s.key.isEmpty()) return AgentStatus(AgentState.UNCONFIGURED, texts.get(R.string.adapters_openclaw_no_token))
         val key = listOf(s.url, s.agent, sha256Hex(s.key)).joinToString("\u0000")
-        return statusCache.get(key, force) { check(s) }
+        return statusCache.get(key, force) { check(s) }.redacted(s.key)
     }
 
     /**
@@ -135,15 +135,20 @@ class OpenClawAdapter internal constructor(
         AgentStatus(AgentState.OFFLINE, clip(describe(e), 200))
     }
 
-    override suspend fun runTurn(turn: TurnHandle): TurnResult = try {
-        turn(turn)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: AgentException) {
-        if (e.code == ErrorCodes.STOPPED) TurnResult.STOPPED else TurnResult.error(e.code, e.detail)
-    } catch (e: Exception) {
-        AppLog.w(TAG, "turn failed", e)
-        TurnResult.error(ErrorCodes.UNKNOWN, clip(describe(e), 200))
+    override suspend fun runTurn(turn: TurnHandle): TurnResult {
+        // Whatever the server says reaches the chat without the token: events, errors and the result.
+        val secret = s().key
+        val result = try {
+            turn(turn.redacting(secret))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AgentException) {
+            if (e.code == ErrorCodes.STOPPED) TurnResult.STOPPED else TurnResult.error(e.code, e.detail)
+        } catch (e: Exception) {
+            AppLog.w(TAG, "turn failed", e)
+            TurnResult.error(ErrorCodes.UNKNOWN, clip(describe(e), 200))
+        }
+        return result.redacted(secret)
     }
 
     private suspend fun turn(turn: TurnHandle): TurnResult {
@@ -193,28 +198,29 @@ class OpenClawAdapter internal constructor(
         } catch (e: IOException) {
             throw networkError(e, base.host, timing.headers, texts)
         }
-        if (!res.isSuccessful) throw failed(res.code, readCapped(call, res, timing.errorBody))
+        if (!res.isSuccessful) throw failed(res.code, readCapped(call, res, timing.errorBody), s.key)
         // The gateway has the message: the next one isn't a first turn again, even when this one is stopped now.
         turn.accepted()
-        return follow(turn, call, res)
+        return follow(turn, call, res, s.key)
     }
 
     /** An answer other than the event stream, as an error with the gateway's own text. */
-    private fun failed(status: Int, text: String): AgentException {
-        val answer = HttpAnswer.of(status, text)
+    private fun failed(status: Int, text: String, secret: String): AgentException {
+        val answer = HttpAnswer.of(status, text, secret)
         return when (status) {
             // A gateway without the endpoint answers a plain 404 before it looks at the token.
             404 -> endpointOff()
             409 -> AgentException(
                 ErrorCodes.UNKNOWN,
-                "${errorText(answer.data).ifEmpty { texts.get(R.string.adapters_openclaw_archived) }}. ${texts.get(R.string.adapters_openclaw_restore)}",
+                "${errorText(answer.data, secret).ifEmpty { texts.get(R.string.adapters_openclaw_archived) }}. ${texts.get(R.string.adapters_openclaw_restore)}",
             )
             502, 503, 504 -> AgentException(ErrorCodes.OFFLINE, httpError(answer).detail)
             else -> httpError(answer)
         }
     }
 
-    private class StreamState {
+    /** [key] is the token, kept out of the error texts the stream reports. */
+    private class StreamState(val key: String) {
         var done = false
         var finished = false
         var error: AgentErrorInfo? = null
@@ -222,8 +228,8 @@ class OpenClawAdapter internal constructor(
     }
 
     /** Reads the event stream into the turn until [DONE], an error, or Stop. */
-    private suspend fun follow(turn: TurnHandle, call: okhttp3.Call, res: okhttp3.Response): TurnResult {
-        val state = StreamState()
+    private suspend fun follow(turn: TurnHandle, call: okhttp3.Call, res: okhttp3.Response, key: String): TurnResult {
+        val state = StreamState(key)
         val outcome = try {
             streamSse(call, res) { frame -> onFrame(turn, state, frame) }
         } catch (e: IOException) {
@@ -252,7 +258,7 @@ class OpenClawAdapter internal constructor(
         }
         val data = runCatching { RukooJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return
         if (data["error"].truthy()) {
-            val detail = clip(errorText(data).ifEmpty { texts.get(R.string.adapters_openclaw_reported_error) }, 200)
+            val detail = clip(errorText(data, state.key).ifEmpty { texts.get(R.string.adapters_openclaw_reported_error) }, 200)
             val code = if (HermesWire.RATE_LIMIT.containsMatchIn(detail)) ErrorCodes.RATE_LIMITED else ErrorCodes.UNKNOWN
             // An archived session is reported in the stream once it has started.
             state.error = AgentErrorInfo(code, if (ARCHIVED.containsMatchIn(detail)) "$detail. ${texts.get(R.string.adapters_openclaw_restore)}" else detail)

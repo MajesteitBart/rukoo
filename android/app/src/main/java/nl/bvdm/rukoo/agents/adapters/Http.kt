@@ -10,12 +10,13 @@ import java.security.MessageDigest
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -25,6 +26,10 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.AgentException
+import nl.bvdm.rukoo.agents.TurnHandle
+import nl.bvdm.rukoo.agents.TurnResult
+import nl.bvdm.rukoo.agents.model.AdapterEvent
+import nl.bvdm.rukoo.agents.model.AgentStatus
 import nl.bvdm.rukoo.agents.model.ErrorCodes
 import nl.bvdm.rukoo.core.RukooJson
 import okhttp3.Call
@@ -90,13 +95,18 @@ internal class ServerBase private constructor(private val root: HttpUrl, val pre
 }
 
 /** A server's answer: the status and the body, parsed as JSON when it is JSON, else as a JSON string of the text. */
-internal data class HttpAnswer(val status: Int, val data: JsonElement?) {
+internal data class HttpAnswer(
+    val status: Int,
+    val data: JsonElement?,
+    /** The key or token of the request, so error texts drop it before they are clipped. */
+    val secret: String? = null,
+) {
     val ok: Boolean get() = status in 200..299
 
     val obj: JsonObject? get() = data as? JsonObject
 
     companion object {
-        fun of(status: Int, text: String): HttpAnswer = HttpAnswer(status, parseBody(text))
+        fun of(status: Int, text: String, secret: String? = null): HttpAnswer = HttpAnswer(status, parseBody(text), secret)
 
         /** JSON.parse or the text itself, as desktop reads a body. A bare word such as `starting` is text, not JSON. */
         fun parseBody(text: String): JsonElement? {
@@ -111,19 +121,25 @@ internal data class HttpAnswer(val status: Int, val data: JsonElement?) {
     }
 }
 
-/** The error text in a server's answer (http.js errorText), at most 200 characters. */
-internal fun errorText(data: JsonElement?): String {
+/**
+ * The error text in a server's answer (http.js errorText), at most 200 characters. [secret] goes before the text is
+ * clipped: a cut could otherwise leave most of it standing.
+ */
+internal fun errorText(data: JsonElement?, secret: String? = null): String {
     if (data == null) return ""
-    if (data is JsonPrimitive) return if (data.isString) clip(data.content.trim(), 200) else ""
+    if (data is JsonPrimitive) return if (data.isString) clipSafe(data.content.trim(), secret, 200) else ""
     val o = data as? JsonObject ?: return ""
     val e = o["error"]
     val fromError = (e as? JsonObject)?.str("message")?.takeIf { it.isNotEmpty() } ?: (e as? JsonPrimitive)?.takeIf { it.isString }?.content
-    return clip(fromError?.takeIf { it.isNotEmpty() } ?: o.str("message")?.takeIf { it.isNotEmpty() } ?: o.str("detail").orEmpty(), 200)
+    return clipSafe(fromError?.takeIf { it.isNotEmpty() } ?: o.str("message")?.takeIf { it.isNotEmpty() } ?: o.str("detail").orEmpty(), secret, 200)
 }
+
+/** [clip] of server text without [secret]: redacted first, so the cut can't leave part of it standing. */
+internal fun clipSafe(text: String?, secret: String?, max: Int): String = clip(redact(text ?: "", secret), max)
 
 /** http.js httpError: 401/403 unauthorized, 429 rate-limited, the rest protocol, with `HTTP <status>: <text>`. */
 internal fun httpError(answer: HttpAnswer): AgentException {
-    val text = errorText(answer.data)
+    val text = errorText(answer.data, answer.secret)
     val detail = "HTTP ${answer.status}${if (text.isNotEmpty()) ": $text" else ""}"
     val code = when (answer.status) {
         401, 403 -> ErrorCodes.UNAUTHORIZED
@@ -222,22 +238,67 @@ internal suspend fun readCapped(call: Call, response: Response, ms: Long, limit:
         delay(ms)
         call.cancel()
     }
-    try {
-        withContext(Dispatchers.IO) {
-            val source = response.body?.source() ?: return@withContext
-            try {
-                while (out.size < limit) {
-                    if (source.read(out, limit - out.size) == -1L) break
-                }
-            } catch (_: IOException) {
-                // A body that broke off: what came is enough for an error text.
+    // The reader owns the response and closes it: closed from here while it reads, the read would fail with an
+    // IllegalStateException, which would then replace the cancellation as the reason this scope ended.
+    // Atomic: a Stop before the reader runs must still reach its finally, which closes the response.
+    val reader = async(Dispatchers.IO, start = CoroutineStart.ATOMIC) {
+        try {
+            val source = response.body?.source()
+            while (source != null && out.size < limit) {
+                if (source.read(out, limit - out.size) == -1L) break
             }
+        } catch (_: Exception) {
+            // A body that broke off, or a read the deadline or Stop cancelled: what came is enough for an error text.
+        } finally {
+            runCatching { response.close() }
         }
+    }
+    try {
+        reader.await()
+    } catch (e: CancellationException) {
+        // A blocking read doesn't notice cancellation; cancelling the call ends it, so Stop isn't held up.
+        call.cancel()
+        throw e
     } finally {
         timer.cancel()
-        response.close()
     }
     out.readUtf8(minOf(out.size, limit))
+}
+
+/**
+ * Text without the connection's [secret]: a server whose error or event echoes the key or token must not carry it
+ * into a notice, a status or a log. Applied to what an adapter hands out, after parsing, never to the protocol data
+ * it parses: the secret may well appear in a field name or an id there.
+ */
+internal fun redact(text: String, secret: String?): String =
+    if (secret.isNullOrEmpty() || !text.contains(secret)) text else text.replace(secret, "[redacted]")
+
+internal fun AgentException.redacted(secret: String?): AgentException {
+    val clean = redact(detail, secret)
+    return if (clean == detail) this else AgentException(code, clean)
+}
+
+internal fun TurnResult.redacted(secret: String?): TurnResult = error?.let { copy(error = it.copy(detail = redact(it.detail, secret))) } ?: this
+
+internal fun AgentStatus.redacted(secret: String?): AgentStatus = copy(detail = redact(detail, secret))
+
+/** The texts of an event the user sees. The answer's own text deltas pass as the agent wrote them. */
+internal fun AdapterEvent.redacted(secret: String?): AdapterEvent = when (this) {
+    is AdapterEvent.Error -> copy(detail = redact(detail, secret))
+    is AdapterEvent.Notice -> copy(text = redact(text, secret))
+    is AdapterEvent.Commentary -> copy(text = redact(text, secret))
+    is AdapterEvent.ToolStart -> copy(detail = redact(detail, secret))
+    is AdapterEvent.ToolEnd -> copy(detail = detail?.let { redact(it, secret) })
+    else -> this
+}
+
+/** The turn as the adapter's own code sees it, with every emitted event redacted. */
+internal fun TurnHandle.redacting(secret: String?): TurnHandle {
+    if (secret.isNullOrEmpty()) return this
+    val inner = this
+    return object : TurnHandle by inner {
+        override fun emit(event: AdapterEvent) = inner.emit(event.redacted(secret))
+    }
 }
 
 /** A short JSON request to a configured server; a request body when [body] isn't null. */
@@ -263,7 +324,7 @@ internal suspend fun OkHttpClient.jsonRequest(
     } catch (e: IOException) {
         throw networkError(e, base.host, timeoutMs, texts)
     }
-    return HttpAnswer.of(status, text)
+    return HttpAnswer.of(status, text, bearer)
 }
 
 // Tolerant JSON reading: servers send loosely typed payloads, so read by hand (as dudan's HermesModels does).
