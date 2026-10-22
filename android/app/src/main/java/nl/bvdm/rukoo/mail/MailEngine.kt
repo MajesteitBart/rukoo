@@ -2,8 +2,16 @@ package nl.bvdm.rukoo.mail
 
 import java.io.File
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import nl.bvdm.rukoo.mail.compose.ComposerFields
+import nl.bvdm.rukoo.mail.compose.ReplyBuilder
+import nl.bvdm.rukoo.mail.google.GoogleSignIn
+import nl.bvdm.rukoo.mail.model.MailPrefs
+import nl.bvdm.rukoo.mail.model.ReplyKind
+import nl.bvdm.rukoo.mail.model.Signature
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountPatch
 import nl.bvdm.rukoo.mail.model.Address
@@ -133,7 +141,53 @@ interface MailEngine {
     suspend fun updateAccount(id: String, patch: AccountPatch): Account
 
     suspend fun removeAccount(id: String)
+
+    // Added by the mail engine (track A). Defaults keep other implementations compiling.
+
+    /** VIP and spam addresses and the general signature (desktop settings, imported from the computer). */
+    val prefs: StateFlow<MailPrefs> get() = NO_PREFS
+
+    suspend fun updatePrefs(transform: (MailPrefs) -> MailPrefs): MailPrefs = prefs.value
+
+    /** Adds [address] to the VIPs or takes it off; returns whether it is a VIP now. */
+    suspend fun toggleVip(address: String): Boolean = false
+
+    /** Puts the senders on the spam list and moves the messages to the account's Spam folder, when it has one. */
+    suspend fun markSpam(ids: List<String>): MoveResult = MoveResult()
+
+    /** The signature an account sends with: its own, else the general one; null for none. */
+    fun signatureFor(accountId: String): Signature? = null
+
+    /**
+     * What the composer starts with to reply to, forward or reopen [id] ([kind] REPLY, REPLY_ALL,
+     * FORWARD or DRAFT): recipients, subject, the account's signature, the quote and threading headers.
+     */
+    suspend fun replyFields(id: String, kind: ReplyKind): ComposerFields {
+        val m = fullMessage(id)
+        val account = accounts.value.firstOrNull { it.id == m.accountId } ?: throw MailException("Account not found.")
+        return ReplyBuilder.build(kind, m, account, identities(account.id), signatureFor(account.id))
+    }
+
+    /**
+     * Stores [message] in the account's Drafts folder, replacing [OutgoingMessage.draftId]. Returns the
+     * new draft's id, or null when the server didn't report where it went.
+     */
+    suspend fun saveDraft(message: OutgoingMessage): String? = null
+
+    /** Deletes a stored draft for good. */
+    suspend fun discardDraft(id: String) = Unit
+
+    /** Empties a folder: for good inside Trash, to Trash elsewhere. Returns how many messages it handled. */
+    suspend fun emptyFolder(accountId: String, path: String): Int = 0
+
+    /** Google sign-in, for engines with real accounts. */
+    val google: GoogleSignIn? get() = null
+
+    /** Signs a Google account in again with new [tokens]; the email must be the account's. */
+    suspend fun reauthorizeGoogle(accountId: String, tokens: GoogleTokens): Account = throw MailException("Google sign-in is unavailable.")
 }
+
+private val NO_PREFS: StateFlow<MailPrefs> = MutableStateFlow(MailPrefs()).asStateFlow()
 
 /** A mail failure with a message fit for the user (desktop's friendlyError). [code] is for logic, not for display. */
 class MailException(message: String, val code: String? = null, cause: Throwable? = null) : Exception(message, cause)

@@ -81,7 +81,11 @@ class AppContainer(context: Context) : AppServices {
 
     // The preview engine and hub stand in until the real ones land (tracks A and C swap them in here).
     override val mail: MailEngine by lazy {
-        if (BuildConfig.USE_PREVIEW_MAIL) PreviewMailEngine(clock, appContext.cacheDir, resources = appContext.resources) else error("no mail engine yet")
+        if (BuildConfig.USE_PREVIEW_MAIL) {
+            PreviewMailEngine(clock, appContext.cacheDir, resources = appContext.resources)
+        } else {
+            nl.bvdm.rukoo.mail.MailModule.create(appContext, appScope, settings, settingsSnapshot, http)
+        }
     }
 
     override val agents: AgentHub by lazy {

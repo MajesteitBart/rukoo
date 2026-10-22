@@ -26,7 +26,7 @@ android {
         versionName = "0.1.0"
         // The in-memory preview mail engine and agent hub stand in until the real ones land; the mail and
         // agent tracks turn these off (debug builds can keep the preview for screenshots).
-        buildConfigField("boolean", "USE_PREVIEW_MAIL", "true")
+        buildConfigField("boolean", "USE_PREVIEW_MAIL", "false")
         buildConfigField("boolean", "USE_PREVIEW_AGENTS", "true")
     }
 
