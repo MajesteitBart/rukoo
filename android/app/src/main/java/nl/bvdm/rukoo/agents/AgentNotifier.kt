@@ -107,7 +107,7 @@ class AgentNotifier(
         if (openComposer) open.putExtra(AgentIntents.EXTRA_OPEN_COMPOSER, true)
         val pending = PendingIntent.getActivity(context, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val builder = NotificationCompat.Builder(context, Notifications.CHANNEL_AGENTS)
-            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setSmallIcon(R.drawable.ic_stat_rukoo)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))

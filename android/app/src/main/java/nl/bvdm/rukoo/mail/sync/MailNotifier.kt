@@ -97,7 +97,7 @@ class MailNotifier(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val builder = NotificationCompat.Builder(context, Notifications.CHANNEL_MAIL)
-            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setSmallIcon(R.drawable.ic_stat_rukoo)
             .setCategory(NotificationCompat.CATEGORY_EMAIL)
             .setAutoCancel(true)
             .setContentIntent(pending)

@@ -139,7 +139,7 @@ class RukooMcpService : Service() {
     private fun notification(status: McpStatus): Notification {
         val open = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return NotificationCompat.Builder(this, Notifications.CHANNEL_SERVICE)
-            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setSmallIcon(R.drawable.ic_stat_rukoo)
             .setContentTitle(getString(R.string.mcp_notification_title))
             .setContentText(McpTexts.notification(this, status))
             .setContentIntent(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE))

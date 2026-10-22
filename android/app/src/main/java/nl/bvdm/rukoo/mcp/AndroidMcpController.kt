@@ -256,7 +256,7 @@ class PageOpener(private val context: Context, private val screen: ScreenState) 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
         val id = NOTIFY_BASE + (url.hashCode() and 0xffff)
         val notification = NotificationCompat.Builder(context, Notifications.CHANNEL_AGENTS)
-            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setSmallIcon(R.drawable.ic_stat_rukoo)
             .setContentTitle(context.getString(R.string.mcp_unsubscribe_title))
             .setContentText(context.getString(R.string.mcp_unsubscribe_text))
             .setContentIntent(PendingIntent.getActivity(context, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))

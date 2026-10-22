@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon: the pigeon from rukoo-icon.svg as one white silhouette, eyes and beak cut out. Android
+     draws only its alpha. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="300"
+    android:viewportHeight="300">
+    <group
+        android:translateX="15.5"
+        android:translateY="16">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M212.99 123L197 123L162 190L132 268L220.5 268C244.45 220.08 233.2 169.21 212.99 123Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M182.05 63.04L162 95L112 165L92 225L132 250L152.5 231.5C200 197.23 201.99 176.12 212.99 123C203.72 101.79 192.56 81.55 182.05 63.04Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M175.46 268L40.54 268C48.13 237.81 75.45 215.45 108 215.45C140.55 215.45 167.87 237.81 175.46 268Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M182.05 63.04C182.68 66.93 183 70.93 183 75C183 132.92 172.21 187.45 110.5 215.5L122 240L87 265L53.32 242.01C57.92 231.19 66.18 220.66 74.24 210.38C91.84 187.95 108.51 166.7 84.4 146.21C74.58 142.96 65.67 137.74 58.12 131.01C42.7 117.26 33 97.26 33 75C33 33.58 66.58 0 108 0C145.35 0 176.32 27.3 182.05 63.04ZM162 36C162 47.6 152.6 57 141 57C129.4 57 120 47.6 120 36C120 24.4 129.4 15 141 15C152.6 15 162 24.4 162 36ZM89 100C89 111.6 79.6 121 68 121C56.4 121 47 111.6 47 100C47 88.4 56.4 79 68 79C79.6 79 89 88.4 89 100ZM138.25 110.55L107.56 97.48C99.41 94.01 94.74 85.37 96.3 76.65C97.86 67.93 105.24 61.45 114.08 61.02C122.93 60.59 130.9 66.34 133.29 74.86L142.31 106.98C142.99 109.4 140.56 111.54 138.25 110.55Z" />
+    </group>
+</vector>
