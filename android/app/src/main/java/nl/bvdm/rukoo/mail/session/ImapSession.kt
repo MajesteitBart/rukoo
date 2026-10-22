@@ -8,7 +8,10 @@ import jakarta.mail.internet.MimeMessage
 import jakarta.mail.internet.MimeUtility
 import java.io.ByteArrayInputStream
 import java.util.Properties
+import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.mail.MailException
@@ -165,10 +168,15 @@ class ImapSession(
     private suspend fun <T> execute(line: Line, store: IMAPStore, block: (IMAPStore) -> T): T {
         if (closed) throw closedError()
         return try {
-            withContext(Dispatchers.IO) { block(store) }
+            withContext(ImapThreads.dispatcher) { block(store) }
         } catch (e: Exception) {
             if (!withContext(Dispatchers.IO) { runCatching { store.isConnected }.getOrDefault(false) }) line.store = null
             throw e
+        } catch (e: StackOverflowError) {
+            // The response reader stopped halfway through a reply, so the connection can't be trusted for the next command.
+            withContext(Dispatchers.IO) { runCatching { store.close() } }
+            line.store = null
+            throw MailException(strings.get(R.string.engine_errors_connection_too_deep), "too-deep")
         }
     }
 
@@ -575,4 +583,17 @@ class CopyUid(val uidValidity: String, val map: Map<Long, Long>) {
             return CopyUid(m.groupValues[1], from.zip(to).toMap())
         }
     }
+}
+
+/**
+ * Threads for IMAP commands. Angus Mail parses a message's BODYSTRUCTURE recursively, without a depth limit, so a
+ * crafted, deeply nested message could overflow a normal thread's stack during sync. These threads have a large
+ * stack; an overflow that happens anyway becomes a mail error in [ImapSession].
+ */
+internal object ImapThreads {
+    private const val STACK_BYTES = 32L * 1024 * 1024
+
+    val dispatcher: CoroutineDispatcher = Executors.newCachedThreadPool { work ->
+        Thread(null, work, "rukoo-imap", STACK_BYTES).apply { isDaemon = true }
+    }.asCoroutineDispatcher()
 }

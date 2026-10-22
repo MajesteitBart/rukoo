@@ -12,6 +12,7 @@
     <string name="engine_errors_connection_auth">Sign-in failed. Check your email address and password or app password.</string>
     <string name="engine_errors_connection_certificate">The server certificate is not trusted.</string>
     <string name="engine_errors_connection_closed">The connection to the mail server was closed. Try again.</string>
+    <string name="engine_errors_connection_too_deep">The server sent a message nested too deeply to read. Rukoo skipped this sync; the message can be deleted in another app.</string>
     <string name="engine_errors_connection_host">Server not found. Check the server name.</string>
     <string name="engine_errors_connection_refused">Connection refused. Check the server and port.</string>
     <string name="engine_errors_connection_timeout">The connection to the server timed out.</string>

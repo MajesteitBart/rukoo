@@ -10,6 +10,7 @@
     <string name="engine_errors_connection_auth">Aanmelden mislukt. Controleer je e-mailadres en (app-)wachtwoord.</string>
     <string name="engine_errors_connection_certificate">Het certificaat van de server is niet vertrouwd.</string>
     <string name="engine_errors_connection_closed">De verbinding met de mailserver is gesloten. Probeer het opnieuw.</string>
+    <string name="engine_errors_connection_too_deep">De server stuurde een bericht dat te diep genest is om te lezen. Rukoo heeft deze synchronisatie overgeslagen; verwijder het bericht in een andere app.</string>
     <string name="engine_errors_connection_host">Server niet gevonden. Controleer de servernaam.</string>
     <string name="engine_errors_connection_refused">Verbinding geweigerd. Controleer de server en poort.</string>
     <string name="engine_errors_connection_timeout">Er is een time-out opgetreden bij het verbinden met de server.</string>
