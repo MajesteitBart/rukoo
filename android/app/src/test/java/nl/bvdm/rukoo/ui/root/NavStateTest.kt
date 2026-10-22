@@ -111,4 +111,46 @@ class NavStateTest {
         val json = RukooJson.encodeToString(NavState.serializer(), s)
         assertEquals(s, RukooJson.decodeFromString(NavState.serializer(), json))
     }
+
+    @Test
+    fun choosingAViewStartsTheListOver() {
+        val s = start.openMessage("m1").setFilter(nl.bvdm.rukoo.mail.model.QuickFilter.UNREAD).openSearch().setQuery("call").toggleChecked("m2")
+        val next = s.selectView(MailView(ViewKind.STARRED))
+        assertEquals(nl.bvdm.rukoo.mail.model.QuickFilter.ALL, next.filter)
+        assertFalse(next.searching)
+        assertEquals("", next.query)
+        assertTrue(next.checked.isEmpty())
+        // The open email would look like it belongs to Starred.
+        assertNull(next.openMessageId)
+        // Unless the chat beside it is about it.
+        val chat = start.openMessage("m1").openChat(null, "m1").selectView(MailView(ViewKind.SENT))
+        assertEquals("m1", chat.openMessageId)
+    }
+
+    @Test
+    fun backClearsTheSelectionThenTheSearch() {
+        val s = start.openSearch().setQuery("x").toggleChecked("m1").toggleChecked("m2")
+        assertEquals(listOf("m1", "m2"), s.checked)
+        val unchecked = s.back(twoPane = false)!!
+        assertTrue(unchecked.checked.isEmpty())
+        assertTrue(unchecked.searching)
+        val closed = unchecked.back(twoPane = false)!!
+        assertFalse(closed.searching)
+        assertEquals("", closed.activeQuery)
+        assertNull(closed.back(twoPane = false))
+        // In two panes the chat closes before the search does.
+        val two = start.openSearch().setQuery("x").openChat("c1", null)
+        assertFalse(two.back(twoPane = true)!!.chatOpen)
+        assertTrue(two.back(twoPane = true)!!.searching)
+    }
+
+    @Test
+    fun checksAndStacksToggle() {
+        val s = start.toggleChecked("a").toggleChecked("b").toggleChecked("a")
+        assertEquals(listOf("b"), s.checked)
+        assertEquals(listOf("k"), start.toggleStack("k").openStacks)
+        assertTrue(start.toggleStack("k").toggleStack("k").openStacks.isEmpty())
+        assertEquals("", start.setQuery("call").activeQuery)
+        assertEquals("call", start.openSearch().setQuery(" call ").activeQuery)
+    }
 }
