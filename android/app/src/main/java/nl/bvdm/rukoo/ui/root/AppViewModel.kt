@@ -40,6 +40,7 @@ import nl.bvdm.rukoo.mail.compose.toOutgoing
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailView
+import nl.bvdm.rukoo.mail.model.OutgoingAttachment
 import nl.bvdm.rukoo.mail.model.ReplyKind
 import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.mail.model.QuickFilter as ListFilter
@@ -381,30 +382,47 @@ class AppViewModel(
     /**
      * Keeps [d]. A draft reopened from the account's Drafts folder ([ComposerState.draftId]) goes back there in
      * place of the stored copy, so desktop sees the change (its draft round-trip); the composer then carries the
-     * new copy's id for the next save. Any other draft is kept on this phone, and so is a server draft the
-     * server refused, so nothing is lost. False when it couldn't be kept at all.
+     * new copy's id, and its attachments point at the new copy, for the next save. Any other draft is kept on
+     * this phone, and so is a server draft the server refused, so nothing is lost. Returns what was kept, as the
+     * composer now holds it when nothing changed meanwhile; null when it couldn't be kept at all.
      */
-    private suspend fun keep(d: ComposerState): Boolean {
+    private suspend fun keep(d: ComposerState): ComposerState? {
         val stored = d.draftId
         val accountId = sendAccount(d)
         val from = d.from ?: accountId?.let(::defaultFrom)
         if (stored != null && accountId != null && from != null) {
             try {
                 val newId = services.mail.saveDraft(d.toOutgoing(accountId, from))
-                services.composer.update { if (it.id == d.id) it.copy(draftId = newId) else it }
+                val rebound = rebound(d, stored, newId)
+                fun ComposerState.moved() = copy(draftId = newId, attachments = attachments.map { a -> rebound[a] ?: a })
+                services.composer.update { if (it.id == d.id) it.moved() else it }
                 storedDraftReplaced(stored, newId)
                 // A copy kept on this phone before is out of date now.
                 if (services.drafts.contains(d.id)) services.drafts.remove(d.id)
-                return true
+                return d.moved()
             } catch (e: Exception) {
                 mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_save_server, e.message ?: e.javaClass.simpleName))
             }
         }
         if (!services.drafts.save(d)) {
             saveFailed()
-            return false
+            return null
         }
-        return true
+        return d
+    }
+
+    /**
+     * The attachments of [d] that came from the stored draft [oldId], pointed at the copy [newId] that replaced
+     * it (desktop's remapAttachments): the old copy is deleted, so a second save or Send would find nothing there.
+     * The new copy lists the composer's attachments in the order they were saved.
+     */
+    private suspend fun rebound(d: ComposerState, oldId: String, newId: String?): Map<OutgoingAttachment, OutgoingAttachment> {
+        if (newId == null || d.attachments.none { it.sourceMessageId == oldId }) return emptyMap()
+        val saved = runCatching { services.mail.fullMessage(newId).attachments }.getOrNull() ?: return emptyMap()
+        if (saved.size < d.attachments.size) return emptyMap()
+        return d.attachments.withIndex()
+            .filter { (_, a) -> a.sourceMessageId == oldId }
+            .associate { (i, a) -> a to a.copy(sourceMessageId = newId, sourceIndex = saved[i].index) }
     }
 
     /** The reader showed the stored draft [oldId], which is gone now: it shows its new copy [newId], or nothing. */
@@ -426,9 +444,9 @@ class AppViewModel(
         repeat(SAVE_TRIES) { attempt ->
             if (attempt == 0) flushRecipients()
             val d = services.composer.current()?.takeIf { it.id == id } ?: return false
-            if (!keep(d)) return false
+            val kept = keep(d) ?: return false
             val now = services.composer.current()?.takeIf { it.id == id } ?: return false
-            if (now.content() == d.content()) {
+            if (now.content() == kept.content()) {
                 closeComposerNow()
                 return true
             }
@@ -454,8 +472,8 @@ class AppViewModel(
                     if (parked?.id == draft.id) return@withLock showComposer()
                     if (parked == null || !hasUnsaved(parked)) return@withLock showNewComposer(draft)
                     if (attempt == 0) flushRecipients()
-                    val kept = services.composer.current() ?: return@withLock showNewComposer(draft)
-                    if (!keep(kept)) return@withLock
+                    val parking = services.composer.current() ?: return@withLock showNewComposer(draft)
+                    val kept = keep(parking) ?: return@withLock
                     val now = services.composer.current()
                     if (now == null || (now.id == kept.id && now.content() == kept.content())) {
                         mailUi.toasts.showToast(mailUi.strings.get(R.string.composer_status_saved_closed))
@@ -490,6 +508,18 @@ class AppViewModel(
      * is shown under the text and goes along when it is sent.
      */
     fun newMessage(fields: MailtoFields? = null) {
+        // A mailto: link can start the app before the accounts are read; it waits for them rather than getting lost.
+        if (!services.mail.loaded.value) {
+            viewModelScope.launch {
+                withTimeoutOrNull(LOAD_WAIT_MS) { services.mail.loaded.first { it } }
+                newMessageNow(fields)
+            }
+            return
+        }
+        newMessageNow(fields)
+    }
+
+    private fun newMessageNow(fields: MailtoFields?) {
         val accountId = defaultAccountId()
         if (accountId == null) {
             mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_no_account))

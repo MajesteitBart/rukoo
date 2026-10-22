@@ -208,14 +208,20 @@ class MailUi(
         }
     }
 
-    private suspend fun offerUndo(moved: List<Moved>, message: String, reopen: Boolean) {
+    /**
+     * "Moved to Trash" with Undo. A [failure] the server reported for some of the emails takes the message's
+     * place, so it stays readable (one toast shows at a time), and Undo still reverts the ones that moved.
+     */
+    private suspend fun offerUndo(moved: List<Moved>, message: String, reopen: Boolean, failure: String? = null) {
         val undoable = moved.filter { it.undoable && mail.canUndo(it.oldId) }.map { it.oldId }
         if (undoable.isEmpty()) {
-            toasts.showToast(message)
+            if (failure != null) toasts.showError(failure) else toasts.showToast(message)
             return
         }
-        toasts.showToast(message, strings.get(R.string.common_actions_undo)) { undo(undoable, reopen) }
+        toasts.showToast(failure ?: message, strings.get(R.string.common_actions_undo)) { undo(undoable, reopen) }
     }
+
+    private fun reason(e: Throwable) = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 
     /** Desktop undoMoves: back where they were, then "Restored" with the count; one restored message opens again if it was open. */
     fun undo(oldIds: List<String>, reopen: Boolean) {
@@ -287,15 +293,18 @@ class MailUi(
                     }
                 }
             } catch (e: Exception) {
-                error(e)
+                if (failed == null) failed = reason(e)
             }
-            failed?.let { toasts.showError(it) }
+            // One toast at a time: a failure wins over "Deleted", and keeps the Undo of what went to Trash.
+            val failure = failed
             when {
                 moved.isNotEmpty() -> offerUndo(
                     moved,
                     if (moved.size == 1) strings.get(R.string.mailbox_delete_moved_one) else strings.plural(R.plurals.mailbox_delete_moved_count, moved.size, moved.size),
                     reopen,
+                    failure,
                 )
+                failure != null -> toasts.showError(failure)
                 deleted > 0 -> toasts.showToast(if (deleted == 1) strings.get(R.string.mailbox_delete_deleted_one) else strings.plural(R.plurals.mailbox_delete_deleted_count, deleted, deleted))
             }
         }
@@ -329,17 +338,24 @@ class MailUi(
         scope.launch {
             val reopen = host.detach(plan.map { it.first.id })
             val moved = mutableListOf<Moved>()
+            var failure: String? = null
             for ((path, group) in plan.groupBy({ it.second }, { it.first })) {
                 try {
                     val result = if (archive) mail.archive(group.map { it.id }) else mail.move(group.map { it.id }, path)
                     moved += result.moved
-                    result.failed.firstOrNull()?.let { toasts.showError(it.error) }
+                    if (failure == null) failure = result.failed.firstOrNull()?.error
                 } catch (e: Exception) {
-                    error(e)
+                    if (failure == null) failure = reason(e)
                 }
             }
-            if (moved.isNotEmpty()) {
-                offerUndo(moved, if (moved.size == 1) strings.get(R.string.mailbox_move_one, label) else strings.plural(R.plurals.mailbox_move_count, moved.size, moved.size, label), reopen)
+            when {
+                moved.isNotEmpty() -> offerUndo(
+                    moved,
+                    if (moved.size == 1) strings.get(R.string.mailbox_move_one, label) else strings.plural(R.plurals.mailbox_move_count, moved.size, moved.size, label),
+                    reopen,
+                    failure,
+                )
+                failure != null -> toasts.showError(failure!!)
             }
         }
     }

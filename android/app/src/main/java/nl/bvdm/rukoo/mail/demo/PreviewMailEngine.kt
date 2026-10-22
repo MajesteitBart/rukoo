@@ -281,6 +281,7 @@ class PreviewMailEngine(
         val text = s.text ?: s.html?.let { Jsoup.parse(it).wholeText().replace(Regex("\n{3,}"), "\n\n").trim() } ?: ""
         return FullMessage(
             summary = summaryOf(folder, m),
+            bcc = s.bcc,
             references = s.references,
             html = s.html ?: textToHtml(s.text ?: ""),
             isHtml = s.html != null,
@@ -427,6 +428,9 @@ class PreviewMailEngine(
 
     // The same body the real engine sends: the text, the signature, the quote. Returns the new message's id.
     private fun append(folder: String, message: OutgoingMessage, unread: Boolean): String {
+        // Forwarded and draft attachments are fetched from their source, as the real engine does: a source that is
+        // gone fails the same way.
+        for (a in message.attachments) if (a.sourceMessageId != null) require(a.sourceMessageId)
         val body = ComposeBody.build(message.text, if (message.signature) signatureFor(message.accountId) else null, message.quote)
         var uid = 0L
         mutate { s ->
@@ -437,6 +441,7 @@ class PreviewMailEngine(
                 attachments = message.attachments.map { it.filename },
                 messageId = "<demo-${clock.now()}-${s.nextUid}@example.com>", unread = unread, starred = false,
                 inReplyTo = message.inReplyTo, references = message.references,
+                bcc = if (folder == "Drafts") message.bcc else emptyList(),
             )
             s.copy(boxes = s.boxes + (folder to (s.boxes[folder].orEmpty() + Stored(seeded, unread, false))), nextUid = s.nextUid + 1)
         }
@@ -462,9 +467,11 @@ class PreviewMailEngine(
         }
     }
 
+    // Stored first, then the old copy goes, as the real engine does: the new copy is made from the old one's attachments.
     override suspend fun saveDraft(message: OutgoingMessage): String? {
+        val id = append("Drafts", message, unread = false)
         message.draftId?.let(::drop)
-        return append("Drafts", message, unread = false)
+        return id
     }
 
     override suspend fun discardDraft(id: String) {

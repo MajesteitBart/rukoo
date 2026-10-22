@@ -52,6 +52,8 @@ internal object PreviewData {
         val inReplyTo: String? = null,
         val references: List<String> = emptyList(),
         val unsubscribe: Unsubscribe? = null,
+        /** Only drafts have one, as on a real server. */
+        val bcc: List<Address> = emptyList(),
     )
 
     private class Item(val title: String, val text: String)

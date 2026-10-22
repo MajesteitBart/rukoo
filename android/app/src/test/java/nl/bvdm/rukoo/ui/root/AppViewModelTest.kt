@@ -22,8 +22,11 @@ import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.AgentIntents
 import nl.bvdm.rukoo.agents.AgentSettingsStore
 import nl.bvdm.rukoo.core.Change
+import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.compose.toOutgoing
+import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountPatch
+import nl.bvdm.rukoo.mail.model.OutgoingMessage
 import nl.bvdm.rukoo.mail.sync.MailNotifier
 import nl.bvdm.rukoo.ui.Mailto
 import nl.bvdm.rukoo.agents.preview.PreviewAgentHub
@@ -68,8 +71,13 @@ class AppViewModelTest {
         override fun plural(id: Int, count: Int, vararg args: Any) = (listOf(id) + args).joinToString("|")
     }
 
-    private class Services(dir: File, scope: CoroutineScope, override val drafts: DraftStore) : AppServices {
-        override val mail = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
+    private class Services(
+        dir: File,
+        scope: CoroutineScope,
+        override val drafts: DraftStore,
+        val preview: PreviewMailEngine = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam")),
+        override val mail: MailEngine = preview,
+    ) : AppServices {
         override val agents = PreviewAgentHub(scope) { 1761130000000 }
         override val composer = ComposerController()
         override val screen = ScreenState()
@@ -86,8 +94,13 @@ class AppViewModelTest {
         override val mcp = StubMcpController()
     }
 
-    private fun TestScope.setup(twoPane: Boolean = false, drafts: DraftStore = DraftStore(null)): Pair<Services, AppViewModel> {
-        val services = Services(Files.createTempDirectory("rukoo-vm").toFile(), backgroundScope, drafts)
+    private fun TestScope.setup(
+        twoPane: Boolean = false,
+        drafts: DraftStore = DraftStore(null),
+        preview: PreviewMailEngine = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam")),
+        mail: MailEngine = preview,
+    ): Pair<Services, AppViewModel> {
+        val services = Services(Files.createTempDirectory("rukoo-vm").toFile(), backgroundScope, drafts, preview, mail)
         val vm = AppViewModel(services)
         vm.mailUi.strings = Fake
         vm.onLayout(twoPane)
@@ -421,6 +434,58 @@ class AppViewModelTest {
         vm.openChat(withoutEmail = true)
         assertNull(vm.state.value.chatEmailId)
         assertNull(vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun aServerDraftSavedTwiceInARowKeepsItsAttachments() = runTest(main) {
+        val preview = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
+        var duringSave: (() -> Unit)? = null
+        // The user types while the save is under way, so keepAndClose saves a second time.
+        val mail = object : MailEngine by preview {
+            override suspend fun saveDraft(message: OutgoingMessage): String? = preview.saveDraft(message).also {
+                duringSave?.invoke()
+                duringSave = null
+            }
+        }
+        val (s, vm) = setup(preview = preview, mail = mail)
+        val sanne = s.mail.listMessages(MailView.AllInboxes).first { it.subject == "Call on Thursday" }
+        val forward = s.mail.replyFields(sanne.id, ReplyKind.FORWARD).toComposerState()
+            .copy(to = listOf(Address("", "joris@example.com")), bcc = listOf(Address("", "me@example.com")), body = "FYI")
+        val stored = s.mail.saveDraft(forward.toOutgoing("demo", Address("Demo User", "demo@example.com")))!!
+        vm.editDraft(stored)
+        // Reopened, its attachment comes from the stored draft, and its Bcc is still there.
+        assertEquals(stored, s.composer.current()!!.attachments.single().sourceMessageId)
+        assertEquals(listOf("me@example.com"), s.composer.current()!!.bcc.map { it.address })
+        duringSave = { s.composer.update { it.copy(body = it.body + " Thanks", dirty = true) } }
+        s.composer.update { it.copy(body = "FYI.", dirty = true) }
+        vm.saveDraft()
+        assertNull(s.composer.current())
+        // Both saves reached the server; nothing fell back to this phone.
+        assertTrue(s.drafts.drafts.value.isEmpty())
+        val saved = s.mail.listMessages(MailView(ViewKind.DRAFTS)).single { it.subject == "Fwd: Call on Thursday" }
+        val full = s.mail.fullMessage(saved.id)
+        assertTrue(full.text.startsWith("FYI. Thanks"))
+        assertEquals(listOf("Proposal-v3.pdf"), full.attachments.map { it.filename })
+    }
+
+    @Test
+    fun aMailtoBeforeTheAccountsAreReadWaitsForThem() = runTest(main) {
+        val preview = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
+        val loaded = MutableStateFlow(false)
+        val accounts = MutableStateFlow(emptyList<Account>())
+        val mail = object : MailEngine by preview {
+            override val loaded = loaded
+            override val accounts = accounts
+        }
+        val (s, vm) = setup(preview = preview, mail = mail)
+        vm.newMessage(Mailto.parse("mailto:help@x.com?subject=Bug"))
+        assertNull(s.composer.current())
+        accounts.value = preview.accounts.value
+        loaded.value = true
+        val d = s.composer.current()!!
+        assertEquals("demo", d.accountId)
+        assertEquals("Bug", d.subject)
+        assertEquals(listOf("help@x.com"), d.to.map { it.address })
     }
 
     private fun <T> assertNotNullAndGet(value: T?): T {

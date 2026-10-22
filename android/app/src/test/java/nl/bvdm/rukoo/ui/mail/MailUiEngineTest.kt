@@ -101,6 +101,31 @@ class MailUiEngineTest {
     }
 
     @Test
+    fun aPartlyFailedPermanentDeleteStillShowsTheFailure() = runBlocking {
+        val ok = FakeServer(FakeServer.STANDARD).apply { add("Trash", ServerMessage(1, "Goes")) }
+        val refuses = FakeServer(FakeServer.STANDARD).apply { add("Trash", ServerMessage(1, "Stays")) }
+        val engine = engine(mapOf("me@example.com" to ok, "you@example.com" to refuses))
+        val me = engine.add("me@example.com")
+        val you = engine.add("you@example.com")
+        engine.openFolder(me.id, "Trash")
+        engine.openFolder(you.id, "Trash")
+        val both = eventually {
+            runBlocking { engine.listMessages(MailView.folder(me.id, "Trash")) + engine.listMessages(MailView.folder(you.id, "Trash")) }.takeIf { it.size == 2 }
+        }
+        val ui = MailUi(engine, scope, Host).also { it.strings = Fake }
+        refuses.failNext = "deleteForever" to IOException("Connection reset")
+
+        ui.delete(both)
+        eventually { ui.dialog }.answer(DialogChoice.CONFIRM)
+        val toast = eventually { ui.toasts.current }
+        // One toast shows at a time: the failure, not "Deleted", which would hide it.
+        assertEquals(5000L, toast.durationMs)
+        assertNotEquals("${R.string.mailbox_delete_deleted_one}", toast.message)
+        assertNull(engine.summary(both.first { it.accountId == me.id }.id))
+        assertNotNull(engine.summary(both.first { it.accountId == you.id }.id))
+    }
+
+    @Test
     fun confirmingTheNoTrashWarningKeepsUndoForTheEmailsThatWentToTrash() = runBlocking {
         val withTrash = FakeServer(FakeServer.STANDARD).apply { add("INBOX", ServerMessage(1, "Has a Trash")) }
         val noTrash = FakeServer(listOf(FolderRecord("INBOX", "INBOX", "/", null, FolderRole.INBOX))).apply { add("INBOX", ServerMessage(1, "No Trash")) }
