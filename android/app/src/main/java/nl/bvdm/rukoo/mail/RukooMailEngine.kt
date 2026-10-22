@@ -723,7 +723,14 @@ class RukooMailEngine(
         val key = "${l.id}|${l.box.uidValidity}"
         parsedCache[key]?.let { return it }
         val raw = rawSourceNow(l)
-        val parsed = withContext(Dispatchers.Default) { MimeParser.parse(raw) }
+        val parsed = withContext(Dispatchers.Default) {
+            try {
+                MimeParser.parse(raw)
+            } catch (_: StackOverflowError) {
+                // A crafted message the mail library still parses recursively: an error, not a crash.
+                throw MailException(strings.get(R.string.engine_errors_message_too_deep), "too-deep")
+            }
+        }
         parsedCache[key] = parsed
         return parsed
     }

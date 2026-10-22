@@ -1,5 +1,7 @@
 package nl.bvdm.rukoo.mail
 
+import jakarta.mail.Session
+import jakarta.mail.internet.MimeMessage
 import java.io.ByteArrayInputStream
 import java.io.OutputStream
 import java.io.PrintStream
@@ -42,6 +44,40 @@ class DeepNestingTest {
         sb.append("--b${levels - 1}\r\nContent-Type: text/plain\r\n\r\nHello from the bottom\r\n")
         for (i in levels - 1 downTo 0) sb.append("--b$i--\r\n")
         return sb.toString().toByteArray()
+    }
+
+    /** "Hi café" in quoted-printable with [breaks] soft line breaks between the words; 50,000 make 150 KB. */
+    private fun softBreaks(breaks: Int) = "Hi" + "=\r\n".repeat(breaks) + " caf=C3=A9"
+
+    private fun softBreakMessage(breaks: Int, attachment: Boolean): ByteArray {
+        val type = if (attachment) {
+            "Content-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\n"
+        } else {
+            "Content-Type: text/plain; charset=utf-8\r\n"
+        }
+        return (
+            "From: a@example.com\r\nSubject: Soft\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n" +
+                "--b\r\n${type}Content-Transfer-Encoding: quoted-printable\r\n\r\n${softBreaks(breaks)}\r\n--b--\r\n"
+            ).toByteArray()
+    }
+
+    @Test
+    fun `quoted-printable made of 50,000 soft line breaks decodes as text, as an attachment and as a whole message`() {
+        val single = (
+            "From: a@example.com\r\nSubject: Soft\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+                "Content-Transfer-Encoding: quoted-printable\r\n\r\n${softBreaks(50_000)}\r\n"
+            ).toByteArray()
+        // Angus Mail's decoder calls itself once per soft line break and runs out of stack on this.
+        val angus = onSmallStack {
+            runCatching { MimeMessage(Session.getInstance(Properties()), ByteArrayInputStream(single)).inputStream.use { it.readBytes() } }.exceptionOrNull()
+        }
+        assertTrue(angus is StackOverflowError)
+
+        assertEquals("Hi café", onSmallStack { MimeParser.parse(single) }.text?.trim())
+        assertEquals("Hi café", onSmallStack { MimeParser.parse(softBreakMessage(50_000, attachment = false)) }.text?.trim())
+        val pdf = onSmallStack { MimeParser.parse(softBreakMessage(50_000, attachment = true)) }.attachments.single()
+        assertEquals("a.pdf", pdf.filename)
+        assertEquals("Hi café", String(pdf.bytes, Charsets.UTF_8))
     }
 
     /** 4,000 nested divs: 44 KB. */

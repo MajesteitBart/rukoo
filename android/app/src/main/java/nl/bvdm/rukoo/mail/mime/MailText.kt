@@ -74,34 +74,73 @@ object MailText {
         else -> bytes
     }
 
+    /**
+     * Quoted-printable as libqp decodes it for desktop's decodeTransfer, in its two steps: [joinLines], then "=XX"
+     * becomes a byte and anything else stays as it is, so an escape a soft line break cuts in two still decodes.
+     * Loops only, unlike Angus Mail's decoder, which a part made of soft line breaks runs out of stack.
+     */
     fun decodeQuotedPrintable(bytes: ByteArray): ByteArray {
-        val out = java.io.ByteArrayOutputStream(bytes.size)
+        val joined = joinLines(bytes)
+        val out = java.io.ByteArrayOutputStream(joined.size)
         var i = 0
-        while (i < bytes.size) {
-            val b = bytes[i].toInt() and 0xff
-            if (b != '='.code) {
-                out.write(b)
-                i++
-                continue
-            }
-            // Soft line break: "=" at the end of a line.
-            if (i + 1 < bytes.size && (bytes[i + 1] == '\r'.code.toByte() || bytes[i + 1] == '\n'.code.toByte())) {
-                i += if (i + 2 < bytes.size && bytes[i + 1] == '\r'.code.toByte() && bytes[i + 2] == '\n'.code.toByte()) 3 else 2
-                continue
-            }
-            val hi = if (i + 1 < bytes.size) Character.digit(bytes[i + 1].toInt(), 16) else -1
-            val lo = if (i + 2 < bytes.size) Character.digit(bytes[i + 2].toInt(), 16) else -1
-            if (hi >= 0 && lo >= 0) {
+        while (i < joined.size) {
+            val b = joined[i]
+            val hi = if (b == EQUALS && i + 2 < joined.size) Character.digit(joined[i + 1].toInt(), 16) else -1
+            val lo = if (hi >= 0) Character.digit(joined[i + 2].toInt(), 16) else -1
+            if (lo >= 0) {
                 out.write((hi shl 4) or lo)
                 i += 3
             } else {
                 // A broken escape (or one cut off by a partial fetch) stays as it is.
-                out.write(b)
+                out.write(b.toInt())
                 i++
             }
         }
         return out.toByteArray()
     }
+
+    /** libqp's first step: spaces and tabs at the end of a line go, and "=" at the end of a line or of the text joins two lines. */
+    private fun joinLines(bytes: ByteArray): ByteArray {
+        val out = java.io.ByteArrayOutputStream(bytes.size)
+        val n = bytes.size
+        fun blank(j: Int) = j < n && (bytes[j] == SPACE || bytes[j] == TAB)
+        fun lineEnd(j: Int) = j >= n || bytes[j] == CR || bytes[j] == LF
+        var i = 0
+        while (i < n) {
+            val b = bytes[i]
+            if (blank(i)) {
+                var j = i
+                while (blank(j)) j++
+                if (!lineEnd(j)) out.write(bytes, i, j - i)
+                i = j
+                continue
+            }
+            if (b == EQUALS) {
+                // A soft line break: "=", perhaps padding, then the end of the line or of the text.
+                var j = i + 1
+                while (blank(j)) j++
+                val next = when {
+                    j >= n -> j
+                    bytes[j] == LF -> j + 1
+                    bytes[j] == CR && j + 1 < n && bytes[j + 1] == LF -> j + 2
+                    else -> -1
+                }
+                if (next >= 0) {
+                    i = next
+                    continue
+                }
+            }
+            out.write(b.toInt())
+            i++
+        }
+        return out.toByteArray()
+    }
+
+    private const val SPACE = ' '.code.toByte()
+    private const val TAB = '\t'.code.toByte()
+    private const val CR = '\r'.code.toByte()
+    private const val LF = '\n'.code.toByte()
+    private const val EQUALS = '='.code.toByte()
 
     /** Bytes in the part's charset; an unknown charset reads as UTF-8 (mailutil.js decodeCharset). */
     fun decodeCharset(bytes: ByteArray, charset: String?): String = String(bytes, charsetOf(charset))

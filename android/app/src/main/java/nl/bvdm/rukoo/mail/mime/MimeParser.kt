@@ -141,12 +141,27 @@ object MimeParser {
 
     private fun disposition(part: Part): String? = runCatching { part.disposition }.getOrNull()?.lowercase()
 
-    private fun bytes(part: Part): ByteArray = try {
-        part.inputStream.use { it.readBytes() }
-    } catch (e: Exception) {
-        // A broken transfer encoding: keep the bytes as they are rather than lose the part.
-        runCatching { (part as? jakarta.mail.internet.MimeBodyPart)?.rawInputStream?.use { it.readBytes() } }.getOrNull() ?: ByteArray(0)
+    private fun bytes(part: Part): ByteArray {
+        // Angus decodes quoted-printable with a call per soft line break, so a part made of thousands of them runs
+        // out of stack. MailText decodes it in one pass instead.
+        val encoding = runCatching { (part as? MimePart)?.encoding }.getOrNull()?.trim()?.lowercase()
+        if (encoding == "quoted-printable") raw(part)?.let { return MailText.decodeQuotedPrintable(it) }
+        return try {
+            part.inputStream.use { it.readBytes() }
+        } catch (e: Exception) {
+            // A broken transfer encoding: keep the bytes as they are rather than lose the part.
+            raw(part) ?: ByteArray(0)
+        }
     }
+
+    /** The part's content before its transfer encoding is undone. */
+    private fun raw(part: Part): ByteArray? = runCatching {
+        when (part) {
+            is jakarta.mail.internet.MimeBodyPart -> part.rawInputStream
+            is MimeMessage -> part.rawInputStream
+            else -> null
+        }?.use { it.readBytes() }
+    }.getOrNull()
 
     private fun walk(part: Part, body: Body, inRelated: Boolean, depth: Int = 0) {
         val type = contentType(part)

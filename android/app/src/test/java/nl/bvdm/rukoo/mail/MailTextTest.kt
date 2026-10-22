@@ -1,6 +1,10 @@
 package nl.bvdm.rukoo.mail
 
 import java.util.Base64
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import nl.bvdm.rukoo.mail.mime.MailText
 import nl.bvdm.rukoo.mail.mime.PartNode
 import nl.bvdm.rukoo.mail.mime.Structure
@@ -48,6 +52,52 @@ class MailTextTest {
         // 11 characters: the last incomplete group of four goes, leaving 8 characters, 6 bytes.
         assertEquals("Hello ", String(MailText.decodeTransfer(cut, "base64")))
         assertEquals("café = fine", String(MailText.decodeTransfer("caf=C3=A9 =3D fi=\r\nne".toByteArray(), "quoted-printable"), Charsets.UTF_8))
+    }
+
+    @Test
+    fun `quoted-printable decodes as libqp does for desktop`() {
+        // Inputs and what libqp 2's decode makes of them, byte for byte (latin1).
+        val cases = listOf(
+            "caf=C3=A9 =3D fi=\r\nne" to "cafÃ© = fine",
+            "soft=\nbreak" to "softbreak",
+            "padded  \r\nline\t\nend" to "padded\r\nline\nend",
+            "padded soft=  \r\nbreak" to "padded softbreak",
+            "tab soft=\t\nbreak" to "tab softbreak",
+            "ends with equals=" to "ends with equals",
+            "ends with spaces   " to "ends with spaces",
+            "broken =4" to "broken =4",
+            "broken =G1 and =" to "broken =G1 and ",
+            "lowercase =c3=a9" to "lowercase Ã©",
+            "lone =\rcarriage" to "lone =\rcarriage",
+            "space before cr  \rx" to "space before cr\rx",
+            "= x not a break" to "= x not a break",
+            "mixed\r\n\r\n=\r\n=\r\nend" to "mixed\r\n\r\nend",
+            "==3D" to "==",
+            // An escape a soft line break cuts in two.
+            "=4=\r\n1" to "A",
+            "=4=  \r\n1" to "A",
+            "==\r\n41" to "A",
+            "x  =\r\n\ny" to "x  \ny",
+            "=\r\n=\r\n=3D" to "=",
+            "=4\r\n1" to "=4\r\n1",
+        )
+        for ((input, expected) in cases) {
+            val decoded = MailText.decodeQuotedPrintable(input.toByteArray(Charsets.ISO_8859_1))
+            assertEquals(input, expected, String(decoded, Charsets.ISO_8859_1))
+        }
+    }
+
+    @OptIn(ExperimentalStdlibApi::class)
+    @Test
+    fun `quoted-printable decodes as libqp does for random input`() {
+        // Written by src/test/mail-fixtures/make-qp-vectors.js from libqp's output, as hex.
+        val cases = Json.parseToJsonElement(javaClass.getResource("/mail/qp-vectors.json")!!.readText()).jsonArray
+        assertEquals(500, cases.size)
+        for (case in cases) {
+            val input = case.jsonObject["input"]!!.jsonPrimitive.content
+            val expected = case.jsonObject["output"]!!.jsonPrimitive.content
+            assertEquals(input, expected, MailText.decodeQuotedPrintable(input.hexToByteArray()).toHexString())
+        }
     }
 
     @Test
