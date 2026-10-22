@@ -70,7 +70,16 @@ private class ComposerBusy : Exception("The user is writing another email in the
 internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLookup) {
     private val writes = AtomicInteger()
 
-    suspend fun write(args: JsonObject, call: ToolCall): JsonObject {
+    /**
+     * Desktop gives the composer 20 seconds; finding and loading the email can wait for the server, so the whole
+     * write has that limit here. The composer is only changed after the last wait, so a write that ran out of time
+     * leaves it as it was.
+     */
+    suspend fun write(args: JsonObject, call: ToolCall): JsonObject =
+        withTimeoutOrNull(d.draftWaitMs) { writeNow(args, call) }
+            ?: throw ToolError("Rukoo did not respond in time, so the draft could not be shown. Check with get_draft before trying again.")
+
+    private suspend fun writeNow(args: JsonObject, call: ToolCall): JsonObject {
         val bound = call.conversation
         val mode = args.str("mode")
         var messageId: String? = null
@@ -110,17 +119,14 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         // The phone's composer is plain text: the body as the user will see it.
         val bodyText = (if (format == "text") body else PlainText.fromHtml(html).replace(Regex("\\n{3,}"), "\n\n")).trim()
         val target = if (finalMode == "new") null else messageId
-        // Desktop gives the composer 20 seconds; loading the email can wait for the server, so the same limit holds
-        // here, and nothing is written into the composer after it.
         val source = target?.let { id ->
-            val loaded = try {
-                withTimeoutOrNull(d.draftWaitMs) { d.mail.fullMessage(id) }
+            try {
+                d.mail.fullMessage(id)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 throw ToolError("Rukoo could not update the composer: ${e.message ?: e.javaClass.simpleName}")
             }
-            loaded ?: throw ToolError("Rukoo did not respond in time, so the draft could not be shown. Check with get_draft before trying again.")
         }
         val agentName = d.hub.agentName(call.agent)
         val shown = try {
@@ -163,8 +169,11 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         }
     }
 
-    /** Puts the draft in the composer, or throws [ComposerBusy]; returns what the composer holds now. */
-    private suspend fun place(
+    /**
+     * Puts the draft in the composer, or throws [ComposerBusy]; returns what the composer holds now. Not a suspend
+     * function, so the write deadline can never stop it halfway.
+     */
+    private fun place(
         c: Conversation,
         mode: String,
         source: FullMessage?,

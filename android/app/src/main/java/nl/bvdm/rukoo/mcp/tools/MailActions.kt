@@ -380,7 +380,10 @@ internal class MailActions(private val d: ToolDeps, private val lookup: MailLook
         val to = DraftWriter.people(listOf(JsonPrimitive(r.to)), "to")?.firstOrNull()?.address
             ?: throw Fail("This sender only takes unsubscribe requests by email.")
         val open = d.composer.current()
-        val empty = open == null || (open.draftedBy == null && !open.dirty && open.body.isBlank() && open.to.isEmpty() && open.subject.isBlank())
+        val empty = open == null || (
+            open.draftedBy == null && !open.dirty && open.body.isBlank() && open.subject.isBlank() && open.quote.isBlank() &&
+                open.to.isEmpty() && open.cc.isEmpty() && open.bcc.isEmpty() && open.attachments.isEmpty()
+            )
         if (!empty) throw Fail("Rukoo's composer holds another email, so the unsubscribe email was not opened. Ask the user to send or close it first.")
         val identity = d.mail.identities(accountId).let { ids -> ids.firstOrNull { it.primary } ?: ids.firstOrNull() }
         d.composer.open(

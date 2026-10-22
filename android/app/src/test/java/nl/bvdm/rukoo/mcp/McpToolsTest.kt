@@ -539,6 +539,35 @@ class McpToolsTest {
         }.error()
         assertEquals("Rukoo did not respond in time, so the draft could not be shown. Check with get_draft before trying again.", error)
         assertNull(composer.current())
+        // Finding the email counts too, not only loading it.
+        val slowLookup = object : MailEngine by mail {
+            override suspend fun summary(id: String): MessageSummary? {
+                delay(5_000)
+                return mail.summary(id)
+            }
+        }
+        val lookupTools = McpTools(ToolDeps(slowLookup, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope, draftWaitMs = 200))
+        val late = runBlocking {
+            lookupTools.callTool(clark, "write_draft", Json.parseToJsonElement("""{"message_id":"$call","body":"Hi"}""").jsonObject, JsonObject(emptyMap()))
+        }.error()
+        assertEquals("Rukoo did not respond in time, so the draft could not be shown. Check with get_draft before trying again.", late)
+        assertNull(composer.current())
+    }
+
+    @Test
+    fun anUnsubscribeEmailLeavesAComposerWithRecipientsAlone() {
+        chat()
+        composer.open(ComposerState(cc = listOf(Address("", "person@example.com"))))
+        val mailOnly = object : MailEngine by mail {
+            override suspend fun unsubscribe(id: String): UnsubscribeResult = UnsubscribeResult.SendEmail("unsubscribe@vandebron.nl", "unsubscribe", "")
+        }
+        val other = McpTools(ToolDeps(mailOnly, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope))
+        runBlocking {
+            other.callTool(clark, "mail_action", Json.parseToJsonElement("""{"conversation_id":"c_1","action":"unsubscribe","message_ids":["$contractA"]}""").jsonObject, JsonObject(emptyMap()))
+            hub.decide("c_1", hub.items("c_1").last().id, "approve")
+        }
+        assertTrue((hub.items("c_1").last() as Item.Notice).text.startsWith("Could not unsubscribe 1 email. 1 failed: Rukoo's composer holds another email"))
+        assertEquals(listOf("person@example.com"), composer.current()!!.cc.map { it.address })
     }
 
     @Test
