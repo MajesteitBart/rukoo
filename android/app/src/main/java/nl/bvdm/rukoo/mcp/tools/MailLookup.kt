@@ -43,7 +43,7 @@ class MailLookup(private val mail: MailEngine) {
     fun account(id: String?): Account? = id?.let { a -> accounts().firstOrNull { it.id == a } }
 
     fun publicFolders(accountId: String): List<PublicFolder> =
-        AgentFolders.visible(mail.folders.value[accountId].orEmpty()).map { PublicFolder(it.path, it.name, agentRole(it.role)) }
+        AgentFolders.visible(mail.folders.value[accountId].orEmpty(), mail.archiveFolder(accountId)).map { PublicFolder(it.path, it.name, agentRole(it.role)) }
 
     /**
      * Turns what an agent passes as message_id into a current Rukoo id: a live id or a Message-ID header. The phone
@@ -87,7 +87,7 @@ class MailLookup(private val mail: MailEngine) {
      */
     fun resolveFolder(acc: Account, value: String?): String? = try {
         // The hub's rule, so a folder the tool accepts is the folder the hub's action moves to.
-        AgentFolders.resolve(mail.folders.value[acc.id].orEmpty(), value)
+        AgentFolders.resolve(mail.folders.value[acc.id].orEmpty(), mail.archiveFolder(acc.id), value)
     } catch (e: AmbiguousFolder) {
         throw ToolError(
             "More than one folder in ${acc.email} is called ${Unsafe.value(value.orEmpty().trim())}: ${e.paths.joinToString(", ")}. Pass the full path.",

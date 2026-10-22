@@ -10,6 +10,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -104,6 +106,7 @@ class McpTools(private val d: ToolDeps) : McpBackend {
     private val lookup = MailLookup(d.mail)
     private val drafts = DraftWriter(d, lookup)
     private val mailActions = MailActions(d, lookup)
+    private val plans = Mutex()
 
     // Skills come from the hub's port of skills.js, the same list the chat's `/` menu shows.
     override fun listTools(): JsonArray = ToolList.list { d.hub.skillToolDescription() }
@@ -427,7 +430,11 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         )
     }
 
-    private suspend fun showPlan(args: JsonObject, call: ToolCall): JsonObject {
+    // Tool calls run side by side off the main thread. A plan update reads the plan and writes it back whole, so two
+    // at once would undo each other's tasks or pick the same plan id: they take turns.
+    private suspend fun showPlan(args: JsonObject, call: ToolCall): JsonObject = plans.withLock { updatePlan(args, call) }
+
+    private suspend fun updatePlan(args: JsonObject, call: ToolCall): JsonObject {
         val tasks = args.list("tasks").orEmpty().map { it as JsonObject }
         // With no conversation to update, every task is new: checked before one is made, so a bad call from outside
         // a chat leaves nothing behind.

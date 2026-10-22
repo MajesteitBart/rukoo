@@ -100,8 +100,13 @@ object AgentFolders {
         "trash" to "trash", "deleted" to "trash", "bin" to "trash", "junk" to "junk", "spam" to "junk",
     )
 
-    /** Starred and Important are views, not folders an agent can move mail to. */
-    fun visible(folders: List<Folder>): List<Folder> = folders.filter { it.role != FolderRole.FLAGGED && it.role != FolderRole.IMPORTANT }
+    /**
+     * Starred and Important are views, not folders an agent can move mail to. Gmail's All Mail only counts when it is
+     * the account's archive ([archive], the engine's archiveFolder), so `archive` never means All Mail while the
+     * account has an Archive folder of its own.
+     */
+    fun visible(folders: List<Folder>, archive: String?): List<Folder> =
+        folders.filter { it.role != FolderRole.FLAGGED && it.role != FolderRole.IMPORTANT && (it.role != FolderRole.ALL || it.path == archive) }
 
     /** Gmail's All Mail is `archive` to agents; only the cache keeps `all`. A user folder is null. */
     fun role(role: FolderRole): String? = if (role == FolderRole.ALL) "archive" else role.wire
@@ -110,10 +115,10 @@ object AgentFolders {
      * The folder [value] names: the exact path wins; a path in another case or a name must fit one folder only, else
      * [AmbiguousFolder]; then a role word. Null when nothing fits.
      */
-    fun resolve(folders: List<Folder>, value: String?): String? {
+    fun resolve(folders: List<Folder>, archive: String?, value: String?): String? {
         val v = value.orEmpty().trim()
         val lv = v.lowercase()
-        val shown = visible(folders)
+        val shown = visible(folders, archive)
         shown.firstOrNull { it.path == v }?.let { return it.path }
         for (same in listOf<(Folder) -> Boolean>({ it.path.lowercase() == lv }, { it.name.lowercase() == lv })) {
             val hits = shown.filter(same)
@@ -153,8 +158,10 @@ class MailActions(
 
         fun emails(n: Int) = "$n email${if (n == 1) "" else "s"}"
 
-        // Desktop's samePin: a missing pin is no check, but an email the cache can't pin any more is not the same one.
-        private fun samePin(pin: MessagePin?, now: MessagePin?): Boolean = pin == null || pin.matches(now ?: MessagePin())
+        // Desktop's samePin: a missing or empty pin is no check, but an email the cache can't pin any more is not the
+        // same one.
+        private fun samePin(pin: MessagePin?, now: MessagePin?): Boolean =
+            pin == null || (pin.messageId == null && pin.uidValidity == null) || (now != null && pin.matches(now))
     }
 
     /** From the email, so one line and short: it ends up in card titles and in the agent's notes. */
@@ -181,7 +188,8 @@ class MailActions(
     }
 
     /** A folder of an account by what an agent passed (tools.js resolveFolder); throws [AmbiguousFolder]. */
-    fun resolveFolder(accountId: String, value: String): String? = AgentFolders.resolve(mail.folders.value[accountId].orEmpty(), value)
+    fun resolveFolder(accountId: String, value: String): String? =
+        AgentFolders.resolve(mail.folders.value[accountId].orEmpty(), mail.archiveFolder(accountId), value)
 
     private fun accountEmail(accountId: String) = mail.accounts.value.firstOrNull { it.id == accountId }?.email ?: accountId
 

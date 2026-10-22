@@ -1,8 +1,11 @@
 package nl.bvdm.rukoo.mcp
 
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -23,6 +26,7 @@ import nl.bvdm.rukoo.agents.model.ApprovalKind
 import nl.bvdm.rukoo.agents.model.ApprovalStatus
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.MessageRef
+import nl.bvdm.rukoo.agents.model.TaskStatus
 import nl.bvdm.rukoo.agents.model.Tone
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageIds
@@ -191,6 +195,28 @@ class HubToolsSeamTest {
         advanceUntilIdle()
         assertEquals(ApprovalStatus.APPROVED, s.items(news.id).filterIsInstance<Item.Approval>().single().status)
         assertEquals("Unsubscribed from ANWB Newsletter", s.items(news.id).filterIsInstance<Item.Notice>().single().text)
+    }
+
+    // Tool calls run side by side off the main thread: plan updates at the same time must not undo each other.
+    @Test
+    fun plansChangedAtTheSameTimeKeepEveryChange() = runTest {
+        val k = HubKit(this)
+        runCurrent()
+        k.hub.ready()
+        val tools = McpTools(ToolDeps(k.mail, k.hub, k.screen, k.composer, { settings }, workContext = Dispatchers.Default))
+        suspend fun plan(args: String) = tools.callTool(clark, "show_plan", Json.parseToJsonElement(args).jsonObject, JsonObject(emptyMap()))
+        val c = k.hub.create("clark", null)
+        plan("""{"conversation_id":"${c.id}","title":"All","tasks":[${(1..20).joinToString(",") { """{"id":"t$it","title":"Task $it"}""" }}]}""").data()
+        coroutineScope {
+            (1..20).map { i -> async(Dispatchers.Default) { plan("""{"conversation_id":"${c.id}","plan_id":"p1","tasks":[{"id":"t$i","status":"done"}]}""") } }.awaitAll()
+        }
+        val all = k.hub.get(c.id)!!.items.filterIsInstance<Item.Plan>().single()
+        assertTrue(all.tasks.all { it.status == TaskStatus.DONE })
+        coroutineScope {
+            (1..10).map { i -> async(Dispatchers.Default) { plan("""{"conversation_id":"${c.id}","title":"P$i","tasks":[{"title":"x"}]}""") } }.awaitAll()
+        }
+        val ids = k.hub.get(c.id)!!.items.filterIsInstance<Item.Plan>().map { it.planId }
+        assertEquals(11, ids.toSet().size)
     }
 
     // After boot the socket can be up before conversations.json is read: hello still knows the stored chat.
