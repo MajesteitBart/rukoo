@@ -6,7 +6,7 @@ The app's code is in [`android/`](../android). It is a native Kotlin and Jetpack
 
 ## What it does
 
-- Mail accounts on the phone: Gmail with Google sign-in, other providers with an app password or password, and the demo account. Inbox, folders, unified views, search, swipe and selection actions with Undo, a reader for HTML mail, a composer for replies, forwards and new mail, drafts saved to the account's Drafts folder, and new-mail notifications.
+- Mail accounts on the phone: Gmail with Google sign-in, other providers with an app password or password, and the demo account. Inbox, folders, unified views, search, swipe and selection actions with Undo, a reader for HTML mail, a composer with formatting for replies, forwards and new mail, drafts saved to the account's Drafts folder, and new-mail notifications.
 - The agent chat next to the email, with every desktop quick action, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
 - Rukoo's twelve MCP tools served by the phone, so an agent can read the phone's mail, write into its composer and ask for approval on its screen.
 - Pairing with Rukoo on your computer, which brings over your accounts and agent settings once and lets the phone use the computer's Claude Code and Codex.
@@ -60,6 +60,18 @@ Samsung phones stop apps in the background to save battery, and then agents can'
 - Inner screen: the list next to the email. With the chat open, the email moves left and the chat sits to its right, so you watch an agent write into the composer. Two columns start at 600dp wide, which covers the inner screen in both orientations; a phone in split screen gets them too when it is wide enough.
 - Folding and unfolding keeps the open email, chat and draft. The pane you touched last is the one you see after folding.
 
+## Formatting in the composer
+
+The composer writes bold, italic, underline, strikethrough, links, bulleted and numbered lists and one heading level. There are three ways in:
+
+- Select text: the text menu that pops up has B, I and U next to Cut, Copy and Paste, and Link (in its overflow when the screen is narrow).
+- While you type in the message, a format row sits above the keyboard: bold, italic, underline, strikethrough, heading, bullets, numbers, link and clear formatting. Its buttons light up for what the cursor is in. With nothing selected, a button applies to what you type next.
+- Markdown while you type: `- ` or `* ` at the start of a line starts a bulleted list, `1. ` a numbered one and `# ` a heading; `**bold**`, `*italic*`, `_italic_` and `~~struck~~` format when you type the closing characters.
+
+In a list, Enter starts the next item and Enter on an empty item ends the list. Backspace at the start of an item or heading takes the bullet, number or heading off first. Clear formatting removes bold, italic, underline and strikethrough, as on desktop; links, lists and headings stay. Pasted text arrives without the other app's formatting.
+
+The mail goes out as HTML in the same structure desktop's composer writes (a `<div>` per line, `<ul>`/`<ol>`, `<h2>`, `<b>`, `<i>`, `<u>`, `<s>`, `<a>`), with a plain-text part that writes lists as ` * item` and `1. item` and a link's address in brackets after its text. Drafts keep their formatting on this phone and in the account's Drafts folder, and desktop opens them formatted. A draft written elsewhere opens with what fits this set; other markup, such as colors, font sizes, quotes and images, comes in as plain text. An agent's draft in Markdown or HTML arrives formatted too. Agents still read the text through `get_draft`, as on desktop.
+
 ## Sync and notifications
 
 Mail syncs when the app opens, every few minutes while it is open (Settings > Accounts, five minutes by default), and every 15 minutes in the background, which is the shortest interval Android allows. New mail gives one notification per account. An agent's reply, a waiting approval and a draft an agent wrote while you were elsewhere give a notification that opens the chat.
@@ -76,7 +88,7 @@ Mail syncs when the app opens, every few minutes while it is open (Settings > Ac
 ## Limits
 
 - No calendar on the phone yet.
-- The composer writes plain text. Replies keep the original as an HTML quote, and the account's signature, plain or HTML, is added when the mail goes out.
+- The composer has no text color, highlight, indent or inline images, which desktop's composer has. A desktop draft that uses them loses them when it is opened and saved on the phone; its words stay.
 - No push (IMAP IDLE): the background sync runs every 15 minutes.
 - The phone has no PDF reader, so `read_attachment` and `read_chat_file` give agents a PDF as a file without its text. Clark can read it on its own machine.
 - Photos keep the format the camera saved them in. A HEIC photo goes to the agent as a file, not as an image.

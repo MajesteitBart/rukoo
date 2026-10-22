@@ -15,6 +15,7 @@ import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.Origin
 import nl.bvdm.rukoo.core.Unsafe
 import nl.bvdm.rukoo.mail.compose.ComposerFields
+import nl.bvdm.rukoo.mail.compose.RichText
 import nl.bvdm.rukoo.mail.compose.ReplyBuilder
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.ReplyKind
@@ -82,8 +83,11 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             throw ToolError("The draft is too long for the composer: ${html.length} characters once formatted, the limit is $DRAFT_HTML_MAX. Write a shorter one.")
         }
         val c = ensureConversation(d, lookup, call)
-        // The phone's composer is plain text: the body as the user will see it.
-        val bodyText = (if (format == "text") body else PlainText.fromHtml(html).replace(Regex("\\n{3,}"), "\n\n")).trim()
+        // Markdown and HTML arrive formatted, reduced to the composer's subset (desktop's sanitizeAgentHtml keeps a
+        // little more: quotes and code read as text here). The plain projection is what the agent and the card get.
+        val rich = if (format == "text") null else RichText.trim(RichText.parse(html))
+        val bodyText = if (rich == null) body.trim() else RichText.plain(rich)
+        val bodyHtml = rich?.takeUnless { it.isPlain }?.let(RichText::toHtml)
         val target = if (finalMode == "new") null else messageId
         val kind = KINDS.getValue(finalMode)
         val fields = target?.let { id ->
@@ -100,7 +104,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         // composer changed without its card.
         val shown = withContext(NonCancellable + d.mainContext) {
             val placed = try {
-                place(c, kind, fields, agentName, bodyText, to, cc, bcc, subject)
+                place(c, kind, fields, agentName, bodyText, bodyHtml, to, cc, bcc, subject)
             } catch (_: ComposerBusy) {
                 null
             }
@@ -113,7 +117,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
                         mode = DraftMode.entries.first { it.name.lowercase() == finalMode },
                         to = s.to,
                         subject = s.subject,
-                        summary = bodyText.replace(Regex("\\s+"), " ").take(160),
+                        summary = bodyText.replace(Regex("\\s+"), " ").trim().take(160),
                         messageRef = target,
                         // The composer that holds this draft. The composer's Undo and the card's Show and Undo compare
                         // it with ComposerState.id.
@@ -153,6 +157,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         fields: ComposerFields?,
         agentName: String,
         body: String,
+        bodyHtml: String?,
         to: List<Address>?,
         cc: List<Address>?,
         bcc: List<Address>?,
@@ -185,6 +190,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
                     bcc = bcc ?: current.bcc,
                     subject = subject ?: current.subject,
                     body = body,
+                    bodyHtml = bodyHtml,
                     draftedBy = agentName,
                     draftedIn = c.id,
                     dirty = true,
@@ -199,7 +205,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             // another agent) wrote in it.
             if (background || ((current.dirty || theirs) && !mine)) throw ComposerBusy()
         }
-        val fresh = build(fields, agentName, c.id, body, to, cc, bcc, subject)
+        val fresh = build(fields, agentName, c.id, body, bodyHtml, to, cc, bcc, subject)
         d.composer.open(fresh)
         return fresh
     }
@@ -221,6 +227,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         agentName: String,
         conversationId: String,
         body: String,
+        bodyHtml: String?,
         to: List<Address>?,
         cc: List<Address>?,
         bcc: List<Address>?,
@@ -232,7 +239,8 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             val from = account?.let { ReplyBuilder.defaultIdentity(it, d.mail.identities(it.id)) }?.let { Address(it.name, it.address) }
             return ComposerState(
                 accountId = accountId, from = from, to = to.orEmpty(), cc = cc.orEmpty(), bcc = bcc.orEmpty(),
-                subject = subject.orEmpty(), body = body, replyKind = ReplyKind.NEW, draftedBy = agentName, draftedIn = conversationId, dirty = true,
+                subject = subject.orEmpty(), body = body, bodyHtml = bodyHtml, replyKind = ReplyKind.NEW, draftedBy = agentName,
+                draftedIn = conversationId, dirty = true,
             )
         }
         // A reply or forward starts with an empty body; the engine adds the account's signature when it is sent.
@@ -242,6 +250,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             bcc = bcc ?: fields.bcc,
             subject = subject ?: fields.subject,
             body = body,
+            bodyHtml = bodyHtml,
             draftedBy = agentName,
             draftedIn = conversationId,
             dirty = true,

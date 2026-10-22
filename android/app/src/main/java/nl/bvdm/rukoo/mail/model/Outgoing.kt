@@ -28,7 +28,8 @@ data class OutgoingAttachment(
 )
 
 /**
- * A message to send or save (spec 4 §3.2). [text] is what the user typed, without signature or quote;
+ * A message to send or save (spec 4 §3.2). [text] is what the user typed, without signature or quote, and
+ * [html] the same with its formatting when it has any;
  * the engine builds the HTML and plain bodies from it, the account's signature and [quote], the way
  * desktop's composer lays them out. Threading headers come from the source.
  */
@@ -56,4 +57,6 @@ data class OutgoingMessage(
     val signature: Boolean = true,
     /** The Rukoo id of the stored draft this message replaces; it is deleted after sending or saving again. */
     val draftId: String? = null,
+    /** [text] with its formatting, in the composer's HTML subset (mail.compose.RichText); null for plain text. */
+    val html: String? = null,
 )

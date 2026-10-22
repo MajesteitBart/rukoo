@@ -19,6 +19,8 @@ import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.Ids
 import nl.bvdm.rukoo.core.JsonFiles
+import nl.bvdm.rukoo.mail.compose.RichDoc
+import nl.bvdm.rukoo.mail.compose.RichText
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.OutgoingAttachment
 import nl.bvdm.rukoo.mail.model.ReplyKind
@@ -27,8 +29,10 @@ import nl.bvdm.rukoo.mail.model.ReplyKind
  * The composer's content. [id] is the composer key a draft card refers to; it stays the same while
  * the composer is open. [body] is the plain text the user (or an agent) wrote, without the signature
  * and without the quote: the engine adds the account's signature under it when the mail goes, unless
- * [signatureExcluded]. [quote] is the quoted original of a reply or forward as desktop's HTML block
- * (mail.compose.Quote). [draftedBy] names the agent that wrote the current text, null when the user did.
+ * [signatureExcluded]. [bodyHtml] is the same text with its formatting, null while it has none; [body] stays
+ * its plain projection (RichText.plain), so everything that reads text keeps working. [quote] is the quoted
+ * original of a reply or forward as desktop's HTML block (mail.compose.Quote). [draftedBy] names the agent that
+ * wrote the current text, null when the user did.
  */
 @Serializable
 data class ComposerState(
@@ -74,7 +78,18 @@ data class ComposerState(
     val draftId: String? = null,
     /** Attachments that still point at a stored copy a save replaced; settled before the next save or Send. */
     val rebind: PendingRebind? = null,
-)
+    /** [body] with its formatting in the composer's HTML subset (mail.compose.RichText); null for plain text. */
+    val bodyHtml: String? = null,
+) {
+    /**
+     * [bodyHtml] while it still holds [body]'s words, else null. Code that only sets [body] (an Undo back to
+     * nothing, a plain text from a mailto link) leaves an older HTML behind; that one must not be sent or shown.
+     */
+    fun richHtml(): String? = bodyHtml?.takeIf { RichText.sameText(RichText.plain(RichText.parse(it)), body) }
+
+    /** The text as the editor shows it: [richHtml] read back, or [body] as plain text. */
+    fun richDoc(): RichDoc = richHtml()?.let(RichText::parse) ?: RichText.fromText(body)
+}
 
 /**
  * A save replaced the stored draft [from] with [to], but the attachments that came from [from] couldn't be
@@ -164,7 +179,7 @@ class ComposerController(
     private fun remember(before: ComposerState?, after: ComposerState) {
         if (after.draftedBy == null) return
         val agentsOwn = before != null && before.id == after.id && before.draftedBy != null
-        if (agentsOwn && (beforeAgent?.first == after.id || before!!.body == after.body)) return
+        if (agentsOwn && (beforeAgent?.first == after.id || (before!!.body == after.body && before.bodyHtml == after.bodyHtml))) return
         beforeAgent = after.id to before
         beforeAgentAt = clock.now()
     }
@@ -187,7 +202,7 @@ class ComposerController(
         val snapshot = beforeAgent?.takeIf { it.first == current.id }
         val since = if (snapshot != null) beforeAgentAt else 0L
         beforeAgent = null
-        _state.value = snapshot?.second ?: current.copy(body = "", draftedBy = null, editedAgent = null, dirty = true)
+        _state.value = snapshot?.second ?: current.copy(body = "", bodyHtml = null, draftedBy = null, editedAgent = null, dirty = true)
         return since
     }
 

@@ -112,6 +112,9 @@ object RukooIcons {
             "bold" to spec { path("M7 4.5h6a3.5 3.5 0 0 1 0 7H7zM7 11.5h7a4 4 0 0 1 0 8H7z", width = 2.4f) },
             "italic" to spec { path("M10 4.5h8M6 19.5h8M15 4.5l-6 15") },
             "underline" to spec { path("M7 4v7a5 5 0 0 0 10 0V4M5 20.5h14") },
+            // Phone only: the composer's format row has strikethrough and a heading, which desktop's editor doesn't.
+            "strike" to spec { path("M16.5 7.2c-.6-1.6-2.3-2.7-4.5-2.7-2.6 0-4.4 1.4-4.4 3.3 0 1.2.6 2.1 1.9 2.8M4.5 12h15M8 16.5c.5 1.9 2.2 3 4.4 3 2.7 0 4.6-1.4 4.6-3.5 0-.6-.1-1.1-.4-1.5") },
+            "heading" to spec { path("M6.5 4.5v15M17.5 4.5v15M6.5 12h11") },
             "textColor" to spec {
                 path("M6 4.5h12M12 4.5v11")
                 path("M5 20.5h14", width = 2.4f)
@@ -312,6 +315,8 @@ object RukooIcons {
     val Bold: ImageVector get() = named("bold")
     val Italic: ImageVector get() = named("italic")
     val Underline: ImageVector get() = named("underline")
+    val Strike: ImageVector get() = named("strike")
+    val Heading: ImageVector get() = named("heading")
     val TextColor: ImageVector get() = named("textColor")
     val Highlight: ImageVector get() = named("highlight")
     val Ol: ImageVector get() = named("ol")

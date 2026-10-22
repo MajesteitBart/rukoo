@@ -11,8 +11,9 @@ import org.junit.Test
 class IconsTest {
     @Test
     fun everyDesktopIconIsPorted() {
-        // icons.js has 81 icons and bui.js ICONS 40; a missing one would send a track to Material icons.
-        assertEquals(81, RukooIcons.names.size)
+        // icons.js has 81 icons and bui.js ICONS 40; a missing one would send a track to Material icons. The phone adds
+        // two for its composer's format row: strike and heading.
+        assertEquals(83, RukooIcons.names.size)
         assertEquals(40, PanelIcons.names.size)
         for (name in listOf("sparkle", "bell", "vip", "mailOpen", "markUnread", "unsubscribe", "textFormat", "chevronUpDown")) {
             assertTrue(name, name in RukooIcons.names)

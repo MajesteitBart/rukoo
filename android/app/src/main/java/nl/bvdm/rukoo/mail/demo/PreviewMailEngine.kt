@@ -431,7 +431,7 @@ class PreviewMailEngine(
         // Forwarded and draft attachments are fetched from their source, as the real engine does: a source that is
         // gone fails the same way.
         for (a in message.attachments) if (a.sourceMessageId != null) require(a.sourceMessageId)
-        val body = ComposeBody.build(message.text, if (message.signature) signatureFor(message.accountId) else null, message.quote)
+        val body = ComposeBody.build(message.text, if (message.signature) signatureFor(message.accountId) else null, message.quote, message.html)
         var uid = 0L
         mutate { s ->
             uid = s.nextUid

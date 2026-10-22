@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="composer_format_label">Opmaak</string>
+    <string name="composer_format_bold">Vet</string>
+    <string name="composer_format_italic">Cursief</string>
+    <string name="composer_format_underline">Onderstrepen</string>
+    <string name="composer_format_strikethrough">Doorhalen</string>
+    <string name="composer_format_heading">Kop</string>
+    <string name="composer_format_bullets">Opsomming</string>
+    <string name="composer_format_numbered">Genummerde lijst</string>
+    <string name="composer_format_link">Link</string>
+    <string name="composer_format_clear">Opmaak wissen</string>
+
+    <string name="composer_link_title">Link invoegen</string>
+    <string name="composer_link_edit_title">Link bewerken</string>
+    <string name="composer_link_address">Adres</string>
+    <string name="composer_link_text">Tekst</string>
+    <string name="composer_link_text_hint">Optioneel</string>
+    <string name="composer_link_insert">Invoegen</string>
+    <string name="composer_link_remove">Link verwijderen</string>
+    <string name="composer_link_invalid">Vul een webadres of e-mailadres in.</string>
+</resources>

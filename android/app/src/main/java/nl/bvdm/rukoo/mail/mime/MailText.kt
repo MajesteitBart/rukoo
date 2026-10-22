@@ -16,6 +16,7 @@ object MailText {
     private val SPACES = Regex("[$JS_SPACE]+")
     private val INVISIBLE = Regex("[\\u00A0\\u200C\\u200B\\u034F\\uFEFF]")
     private val URL = Regex("(https?://[^\\s<]+[^\\s<.,;:!?)\\]'\"])")
+    private val LINK_URL = Regex("^(https?:|mailto:)", RegexOption.IGNORE_CASE)
 
     /** How many elements deep [htmlToPlain] keeps the layout; the same limit as signatures. */
     private const val MAX_DEPTH = 100
@@ -48,12 +49,13 @@ object MailText {
     /**
      * HTML as readable text, like html-to-text with desktop's options: no word wrap, links without their
      * address, images, styles, scripts and the head left out, headings as they are, and table cells on
-     * lines of their own so a signature's name and phone number don't run together.
+     * lines of their own so a signature's name and phone number don't run together. With [linkUrls] a link's
+     * web or mail address follows its text in brackets, html-to-text's default, unless the text is the address.
      */
-    fun htmlToPlain(html: String): String {
+    fun htmlToPlain(html: String, linkUrls: Boolean = false): String {
         if (html.isBlank()) return ""
         return try {
-            PlainWriter().apply { walk(Jsoup.parse(html).body()) }.result()
+            PlainWriter(linkUrls).apply { walk(Jsoup.parse(html).body()) }.result()
         } catch (e: Exception) {
             // A preview is never worth failing a sync over; strip tags instead.
             html.replace(Regex("<(style|script|head)[\\s\\S]*?</\\1>", RegexOption.IGNORE_CASE), " ")
@@ -161,7 +163,7 @@ object MailText {
     }
 
     /** Writes a DOM as text with html-to-text's block spacing. */
-    private class PlainWriter {
+    private class PlainWriter(private val linkUrls: Boolean = false) {
         private val out = StringBuilder()
         private var breaks = 0
         private var space = false
@@ -286,6 +288,19 @@ object MailText {
                     block(1)
                     walk(el, pre, list, depth)
                     block(1)
+                }
+                "a" -> {
+                    val from = out.length
+                    walk(el, pre, list, depth)
+                    val href = el.attr("href").trim()
+                    if (linkUrls && LINK_URL.containsMatchIn(href)) {
+                        val text = out.substring(minOf(from, out.length)).trim()
+                        val bare = href.removePrefix("mailto:").removeSuffix("/")
+                        if (text != href && text != bare && text.removeSuffix("/") != bare.substringAfter("://")) {
+                            space = true
+                            word("[${href.removePrefix("mailto:")}]")
+                        }
+                    }
                 }
                 else -> walk(el, pre, list, depth)
             }

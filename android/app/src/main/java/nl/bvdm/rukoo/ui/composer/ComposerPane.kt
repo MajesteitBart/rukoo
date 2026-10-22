@@ -56,11 +56,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -102,9 +100,10 @@ import nl.bvdm.rukoo.ui.theme.weight
 
 /**
  * The composer (spec 6 §4.7 and §5.2), on the shared ComposerController: a top bar with Close and the title;
- * From, To, Cc, Bcc and Subject; a plain-text editor; the quoted original behind its "···" pill;
- * attachments from the system picker; and the bottom bar with Attach, Delete, More, the agent's mark and
- * Send. It opens beside the list on the inner screen and full screen on the cover screen.
+ * From, To, Cc, Bcc and Subject; the formatted text editor (RichBodyField) with its format row while it has
+ * focus; the quoted original behind its "···" pill; attachments from the system picker; and the bottom bar with
+ * Attach, Delete, More, the agent's mark and Send. It opens beside the list on the inner screen and full screen
+ * on the cover screen.
  */
 @Composable
 fun ComposerPane(app: AppViewModel, modifier: Modifier = Modifier) {
@@ -138,7 +137,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
     val toFocus = remember { FocusRequester() }
     val ccFocus = remember { FocusRequester() }
     val bccFocus = remember { FocusRequester() }
-    val bodyFocus = remember { FocusRequester() }
+    val body = remember(d.id) { RichBodyState() }
     // Asking for Cc or Bcc puts the cursor there, once; it isn't saved, so folding doesn't move the cursor again.
     var focusNext by remember { mutableStateOf<FocusRequester?>(null) }
     LaunchedEffect(focusNext) {
@@ -233,7 +232,9 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
         }
         SubjectField(d.subject, readOnly = locked) { text -> edit { it.copy(subject = text) } }
 
-        BodyField(d, bodyFocus, readOnly = locked) { text -> edit { it.copy(body = text) } }
+        RichBodyField(composer, d, body, readOnly = locked, onFocus = { app.interacted(Pane.COMPOSER) }) { text, html ->
+            edit { it.copy(body = text, bodyHtml = html) }
+        }
 
         // The account's signature, as it goes under the text; it follows the From's account.
         val accounts by mail.accounts.collectAsStateWithLifecycle()
@@ -254,8 +255,14 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
         Spacer(Modifier.heightIn(min = 24.dp))
     }
 
+    // While the text has focus, the format row sits above the bottom bar: right above the keyboard.
+    if (body.focused && !locked) {
+        Hairline()
+        FormatRow(body)
+    }
     Hairline()
     BottomBar(app, d, locked, onAttach = { picker.launch(arrayOf("*/*")) }, onShowCc = askCc, onShowBcc = askBcc)
+    LinkDialog(body)
 
     // Replies start in the text, a new message or a forward at To; only the first time this draft opens. A composer
     // an agent opened isn't focused: the user didn't ask to type, so the keyboard stays down until they tap.
@@ -264,7 +271,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
         focused = true
         if (d.draftedBy != null) return@LaunchedEffect
         runCatching {
-            if (d.to.isEmpty() || d.replyKind == ReplyKind.FORWARD) toFocus.requestFocus() else bodyFocus.requestFocus()
+            if (d.to.isEmpty() || d.replyKind == ReplyKind.FORWARD) toFocus.requestFocus() else body.focus()
         }
     }
 }
@@ -477,32 +484,6 @@ private fun SubjectField(subject: String, readOnly: Boolean, onChange: (String) 
     }
 }
 
-/** The editor: 14.5 at line height 1.6, "Write your message" until there is text. */
-@Composable
-private fun BodyField(d: ComposerState, focus: FocusRequester, readOnly: Boolean, onChange: (String) -> Unit) {
-    val c = Rk.colors
-    var value by remember { mutableStateOf(TextFieldValue(d.body, TextRange(0))) }
-    LaunchedEffect(d.body) { if (d.body != value.text) value = TextFieldValue(d.body, TextRange(d.body.length)) }
-    val label = stringResource(R.string.composer_body_label)
-    Box(Modifier.fillMaxWidth().padding(top = 14.dp)) {
-        if (value.text.isEmpty()) Text(stringResource(R.string.composer_body_placeholder), style = Rk.type.emailBody, color = c.text3)
-        BasicTextField(
-            value = value,
-            onValueChange = {
-                val changed = it.text != value.text
-                value = it
-                if (changed) onChange(it.text)
-            },
-            readOnly = readOnly,
-            textStyle = Rk.type.emailBody.copy(color = c.text),
-            cursorBrush = SolidColor(c.accent),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-            minLines = 5,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp).focusRequester(focus).semantics { contentDescription = label },
-        )
-    }
-}
-
 /**
  * The signature under the text, as desktop puts it below an empty line (composer.js:96-98): in the body's
  * type, dimmed, so it reads as part of the mail but not as text to edit. Remove takes it off this message;
@@ -530,8 +511,8 @@ private fun SignatureBlock(text: String, excluded: Boolean, enabled: Boolean, on
 /**
  * The quoted original (styles.css:2961-3018): behind a "···" pill; opened, it sits by a 2dp rail with
  * "Previous message" and the Exclude or Include link. An excluded quote is struck through on the pill and
- * dimmed when open; it is left out when the mail goes. The quote is desktop's HTML block; the plain-text
- * composer shows its header and text.
+ * dimmed when open; it is left out when the mail goes. The quote is desktop's HTML block; the composer shows
+ * its header and text.
  */
 @Composable
 private fun Quote(d: ComposerState, onExclude: (Boolean) -> Unit) {

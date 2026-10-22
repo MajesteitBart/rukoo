@@ -282,6 +282,39 @@ class McpToolsTest {
         assertEquals(listOf(state.id, composer.current()!!.id, composer.current()!!.id), keys)
     }
 
+    @Test
+    fun writeDraftArrivesFormatted() {
+        chat()
+        screen.update { it.copy(foreground = true, chatConversationId = "c_1") }
+        composer.open(ComposerState(replyKind = ReplyKind.NEW, body = "", dirty = false))
+        val before = composer.current()!!
+        run("write_draft", """{"conversation_id":"c_1","mode":"new","body":"Thursday **works**.\n\n- I'll call\n- see [the plan](https://example.com/plan)\n\n# Agenda"}""").data()
+        val state = composer.current()!!
+        // Markdown is formatted in the composer, reduced to its subset: desktop's markdown turns a heading into a bold line.
+        assertEquals(
+            "<div>Thursday <b>works</b>.</div><div><br></div><ul><li>I&#39;ll call</li><li>see <a href=\"https://example.com/plan\">the plan</a></li></ul><div><br></div><div><b>Agenda</b></div>",
+            state.bodyHtml,
+        )
+        assertEquals("Thursday works.\n\n * I'll call\n * see the plan\n\nAgenda", state.body)
+        assertEquals(state.bodyHtml, state.richHtml())
+        assertEquals("Clark", state.draftedBy)
+        // HTML from an agent is cleaned to the same subset: no scripts, images or unsafe links.
+        run("write_draft", """{"conversation_id":"c_1","mode":"new","format":"html","body":"<p>Hi <strong>there</strong></p><script>x()</script><img src=\"https://t.example/p.gif\"><a href=\"javascript:x()\">click</a>"}""").data()
+        // A paragraph's margin is an empty line.
+        assertEquals("<div>Hi <b>there</b></div><div><br></div><div>click</div>", composer.current()!!.bodyHtml)
+        // Plain text stays plain.
+        run("write_draft", """{"conversation_id":"c_1","mode":"new","format":"text","body":"Just **this**"}""").data()
+        assertEquals("Just **this**", composer.current()!!.body)
+        assertNull(composer.current()!!.bodyHtml)
+        // The user's edit makes it "Drafted by Clark · edited"; Undo still goes back to before the agent.
+        run("write_draft", """{"conversation_id":"c_1","mode":"new","body":"**Bold** start"}""").data()
+        composer.update { it.copy(body = "Bold start, mine", bodyHtml = "<div><b>Bold</b> start, mine</div>", dirty = true, draftedBy = null, editedAgent = it.draftedBy) }
+        assertEquals("Clark", composer.current()!!.editedAgent)
+        assertTrue(composer.undoAgentDraft())
+        assertEquals(before.body, composer.current()!!.body)
+        assertNull(composer.current()!!.bodyHtml)
+    }
+
     // The composer's body never holds the signature: the engine adds it when the draft is sent or saved. So the agent's
     // text is all write_draft puts in, and an untouched reply the user opened is still free for an agent to write in.
     @Test

@@ -1,10 +1,10 @@
 package nl.bvdm.rukoo.mcp
 
 import kotlinx.serialization.json.Json
+import nl.bvdm.rukoo.mail.compose.RichText
 import nl.bvdm.rukoo.mcp.tools.DraftHtml
 import nl.bvdm.rukoo.mcp.tools.DraftWriter
 import nl.bvdm.rukoo.mcp.tools.MailLookup
-import nl.bvdm.rukoo.mcp.tools.PlainText
 import nl.bvdm.rukoo.mcp.tools.ToolError
 import nl.bvdm.rukoo.mcp.tools.ToolList
 import nl.bvdm.rukoo.mcp.tools.Validator
@@ -61,7 +61,7 @@ class ToolHelpersTest {
         )
         assertEquals("<div>line &lt;1&gt;</div><div><br></div><div>line &quot;2&quot;</div>", DraftHtml.toHtml("line <1>\n\nline \"2\"", "text"))
         assertEquals("<b>raw</b>", DraftHtml.toHtml("<b>raw</b>", "html"))
-        assertEquals("Hi Sanne,\n\n * one\n * two\n\n> quoted", PlainText.fromHtml(DraftHtml.toHtml("Hi **Sanne**,\n\n- one\n- two\n\n> quoted")))
+        assertEquals("Hi Sanne,\n\n * one\n * two\n\n> quoted", RichText.plain(RichText.parse(DraftHtml.toHtml("Hi **Sanne**,\n\n- one\n- two\n\n> quoted"))))
     }
 
     @Test

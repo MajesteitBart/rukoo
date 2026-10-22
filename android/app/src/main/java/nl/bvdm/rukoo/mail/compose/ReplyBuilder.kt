@@ -40,6 +40,8 @@ data class ComposerFields(
     val draftId: String? = null,
     /** A reopened draft that was saved without a signature stays without one. */
     val signatureExcluded: Boolean = false,
+    /** [body] with its formatting (RichText's subset), null for plain text: a reopened formatted draft. */
+    val bodyHtml: String? = null,
 ) {
     /**
      * The composer for these fields. A stored draft gets a composer key of its own, so opening the same
@@ -62,6 +64,7 @@ data class ComposerFields(
         attachments = attachments,
         signatureExcluded = signatureExcluded,
         draftId = draftId,
+        bodyHtml = bodyHtml,
     )
 }
 
@@ -86,6 +89,7 @@ fun ComposerState.toOutgoing(accountId: String, from: Address): OutgoingMessage 
     quote = if (quoteExcluded) "" else quote,
     signature = !signatureExcluded,
     draftId = draftId,
+    html = richHtml(),
 )
 
 /** Reply, reply-all, forward and reopen-draft, ported from desktop's composer (composer.js:18-237, spec 4 §3.6, §3.8). */
@@ -197,14 +201,16 @@ object ReplyBuilder {
      * A stored draft opened again (composer.js modeState 'draft'): its From when it is one of the account's
      * addresses, recipients, subject and threading headers; the text without the quote, which comes back
      * as the quote block, and without its signature block, which the account's signature replaces when it
-     * goes (a draft saved without one stays without); its attachments by index.
+     * goes (a draft saved without one stays without); its attachments by index. Its formatting comes back as
+     * far as the composer's subset reaches (RichText.parse); the rest of the markup leaves its text.
      */
     fun draft(m: FullMessage, account: Account, identities: List<Identity>): ComposerFields {
         val fallback = defaultIdentity(account, identities)
         val split = Quote.split(m.html)
         val quote = if (split.head != null && split.quoteHtml != null) Quote.block(split.head, split.quoteHtml) else ""
         val (body, signed) = if (m.isHtml) withoutSignature(split.body) else split.body to false
-        val text = if (m.isHtml) MailText.htmlToPlain(body) else m.text
+        val rich = if (m.isHtml) RichText.trim(RichText.parse(body)) else null
+        val text = if (rich != null) RichText.plain(rich) else m.text
         return ComposerFields(
             accountId = account.id,
             from = addressOf(identities, m.from.address, fallback),
@@ -223,6 +229,7 @@ object ReplyBuilder {
             },
             draftId = m.id,
             signatureExcluded = !signed,
+            bodyHtml = rich?.takeUnless { it.isPlain }?.let(RichText::toHtml),
         )
     }
 

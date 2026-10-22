@@ -6,13 +6,13 @@ import java.io.ByteArrayInputStream
 import java.io.OutputStream
 import java.io.PrintStream
 import java.util.Properties
+import nl.bvdm.rukoo.mail.compose.RichText
 import nl.bvdm.rukoo.mail.html.MailHtml
 import nl.bvdm.rukoo.mail.mime.MailText
 import nl.bvdm.rukoo.mail.mime.MimeParser
 import nl.bvdm.rukoo.mail.mime.PartNode
 import nl.bvdm.rukoo.mail.mime.Structure
 import nl.bvdm.rukoo.mail.session.ImapSession
-import nl.bvdm.rukoo.mcp.tools.PlainText
 import nl.bvdm.rukoo.ui.reader.MailFrame
 import org.eclipse.angus.mail.iap.Protocol
 import org.eclipse.angus.mail.imap.protocol.BODYSTRUCTURE
@@ -118,7 +118,7 @@ class DeepNestingTest {
     fun `html nested 4,000 divs deep becomes text and a safe reader page`() {
         assertEquals(44_009, deepDivs.length)
         assertEquals("Deep text", onSmallStack { MailText.htmlToPlain(deepDivs) })
-        assertEquals("Deep text", onSmallStack { PlainText.fromHtml(deepDivs) })
+        assertEquals("Deep text", onSmallStack { RichText.plain(RichText.parse(deepDivs)) })
         // The sanitizer and the reader's page go through jsoup's own loops; they keep all of it.
         val clean = onSmallStack { MailHtml.sanitize(deepDivs) }
         assertTrue(clean.contains("Deep text"))
@@ -133,10 +133,10 @@ class DeepNestingTest {
     fun `past the limit text keeps its spaces and line breaks and still leaves out what is hidden`() {
         val inline = "a" + "<span>".repeat(102) + " b <title>Hidden</title><style>p{}</style>" + "</span>".repeat(102) + "c"
         assertEquals("a b c", MailText.htmlToPlain(inline))
-        assertEquals("a b c", PlainText.fromHtml(inline))
+        assertEquals("a b c", RichText.plain(RichText.parse(inline)))
         val blocks = "<div>".repeat(102) + "<div>one</div><div>two<br>three</div>" + "</div>".repeat(102)
         assertEquals("one\ntwo\nthree", MailText.htmlToPlain(blocks))
-        assertEquals("one\ntwo\nthree", PlainText.fromHtml(blocks))
+        assertEquals("one\ntwo\nthree", RichText.plain(RichText.parse(blocks)))
         // A list item right at the limit keeps its text beside its bullet.
         assertEquals("* item", MailText.htmlToPlain("<div>".repeat(99) + "<ul><li>item</li></ul>" + "</div>".repeat(99)))
         assertEquals("1. item", MailText.htmlToPlain("<div>".repeat(99) + "<ol><li>item</li></ol>" + "</div>".repeat(99)))

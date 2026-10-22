@@ -1073,7 +1073,7 @@ class RukooMailEngine(
     private suspend fun buildMail(acc: Account, message: OutgoingMessage, keepBcc: Boolean): ComposedMail {
         val identity = MailViews.identity(acc, message.from.address.trim().ifEmpty { null })
             ?: strings.fail(R.string.engine_errors_send_identity, message.from.address, code = "identity")
-        val body = ComposeBody.build(message.text, if (message.signature) signatureFor(acc.id) else null, message.quote)
+        val body = ComposeBody.build(message.text, if (message.signature) signatureFor(acc.id) else null, message.quote, message.html)
         val (html, inline) = ComposeBody.inlineDataImages(body.html)
         val files = message.attachments.map { a ->
             if (a.sourceMessageId != null && a.sourceIndex != null) {

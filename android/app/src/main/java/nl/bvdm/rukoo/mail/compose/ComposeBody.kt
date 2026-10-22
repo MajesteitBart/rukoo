@@ -6,30 +6,40 @@ import nl.bvdm.rukoo.mail.mime.MailAttachment
 import nl.bvdm.rukoo.mail.mime.MailText
 import nl.bvdm.rukoo.mail.model.Signature
 
-/** The HTML and plain-text bodies of a message written in the phone's plain-text composer. */
+/** The HTML and plain-text bodies of a message written in the phone's composer. */
 data class ComposedBody(val html: String, val text: String)
 
 /**
- * Builds what desktop's composer sends (composer.js payload, spec 4 §3.6-3.10) from plain text: the
+ * Builds what desktop's composer sends (composer.js payload, spec 4 §3.6-3.10) from the typed text: the
  * typed lines, the account's signature as `<div class="signature">`, the quote block, all inside
  * desktop's font wrapper, so a draft or a sent mail looks the same and reopens the same on desktop.
  */
 object ComposeBody {
     /**
-     * [text] is what the user typed. The composer keeps the signature out of it, so an agent's draft that
+     * [text] is what the user typed, as plain text; [html] is the same text formatted (RichText's subset), or
+     * null when it has no formatting. The composer keeps the signature out of both, so an agent's draft that
      * replaces the text never takes the signature along; [signature] always goes under the text, formatted,
      * above the quote as desktop places it (composer.js:96-98, 1121-1126). Null leaves it out.
      */
-    fun build(text: String, signature: Signature?, rawQuote: String): ComposedBody {
+    fun build(text: String, signature: Signature?, rawQuote: String, html: String? = null): ComposedBody {
         val quote = Quote.normalize(rawQuote)
-        val typed = text.replace("\r\n", "\n").trimEnd()
         val sigHtml = signature?.html?.takeIf { it.isNotBlank() }
         val signatureBlock = sigHtml?.let { "<div><br></div><div class=\"signature\">$it</div>" }.orEmpty()
-        val body = "<div>${MailText.esc(typed).replace("\n", "<br>").ifEmpty { "<br>" }}</div>"
-        val html = "${Quote.WRAPPER_OPEN}$body$signatureBlock$quote</div>"
+        // Formatted text is read onto the subset again, so only the composer's own markup goes out.
+        val rich = html?.let { RichText.trimEnd(RichText.parse(it)) }?.takeUnless { it.isPlain && it.text.isEmpty() }
+        val typed: String
+        val body: String
+        if (rich != null) {
+            body = RichText.toHtml(rich)
+            typed = RichText.textPart(body)
+        } else {
+            typed = text.replace("\r\n", "\n").trimEnd()
+            body = "<div>${MailText.esc(typed).replace("\n", "<br>").ifEmpty { "<br>" }}</div>"
+        }
+        val out = "${Quote.WRAPPER_OPEN}$body$signatureBlock$quote</div>"
         val sigText = if (sigHtml != null) signature.text.trim() else ""
         val plain = listOf(typed, sigText, Quote.plain(quote)).filter { it.isNotEmpty() }.joinToString("\n\n")
-        return ComposedBody(html, plain)
+        return ComposedBody(out, plain)
     }
 
     private val DATA_IMAGE = Regex(

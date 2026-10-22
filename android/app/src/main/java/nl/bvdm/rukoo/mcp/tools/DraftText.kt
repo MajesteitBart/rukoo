@@ -1,12 +1,5 @@
 package nl.bvdm.rukoo.mcp.tools
 
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Element
-import org.jsoup.nodes.Node
-import org.jsoup.nodes.TextNode
-import org.jsoup.select.NodeFilter
-import org.jsoup.select.NodeTraversor
-
 /**
  * An agent's draft body as the HTML structure Rukoo's composer uses (desktop markdown.js, ported one to one): one
  * `<div>` per line, `<div><br></div>` for an empty line, a small markdown subset with safe links only.
@@ -143,104 +136,5 @@ object DraftHtml {
         "html" -> text
         "text" -> textToHtml(text)
         else -> markdownToHtml(text)
-    }
-}
-
-/**
- * HTML as plain text for the phone's plain-text composer, close to what desktop's html-to-text gives (mailutil.js
- * htmlToPlain with wordwrap off): block elements on lines of their own, list items with bullets or numbers,
- * quotes with `> `, links as their text, images left out.
- */
-object PlainText {
-    private val BLOCKS = setOf(
-        "div", "p", "li", "ul", "ol", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "table", "tr",
-        "td", "th", "section", "article", "header", "footer", "address",
-    )
-    private val SPACED = setOf("p", "ul", "ol", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6", "table")
-    private val SKIP = setOf("img", "style", "script", "head", "title")
-
-    /** How deep the layout is kept; below it only text and line breaks, so HTML nested thousands deep can't exhaust the stack. */
-    private const val MAX_DEPTH = 100
-
-    fun fromHtml(html: String): String {
-        val out = StringBuilder()
-        render(Jsoup.parseBodyFragment(html).body(), out, pre = false)
-        return out.toString()
-            .lines()
-            .joinToString("\n") { it.trimEnd() }
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .trim()
-    }
-
-    private fun breakLine(out: StringBuilder) {
-        if (out.isNotEmpty() && !out.endsWith("\n")) out.append('\n')
-    }
-
-    private fun blankLine(out: StringBuilder) {
-        breakLine(out)
-        if (out.isNotEmpty() && !out.endsWith("\n\n")) out.append('\n')
-    }
-
-    private fun render(node: Node, out: StringBuilder, pre: Boolean, depth: Int = 0) {
-        when (node) {
-            is TextNode -> {
-                val text = if (pre) node.wholeText else node.text().replace('\u00a0', ' ')
-                if (!pre && text.isBlank()) {
-                    if (text.isNotEmpty() && out.isNotEmpty() && !out.endsWith("\n") && !out.endsWith(" ")) out.append(' ')
-                    return
-                }
-                out.append(if (pre) text else text.replace(Regex("\\s+"), " "))
-            }
-            is Element -> {
-                val tag = node.normalName()
-                if (tag in SKIP) return
-                if (depth > MAX_DEPTH) return flat(node, out, pre)
-                if (tag == "br") {
-                    out.append('\n')
-                    return
-                }
-                if (tag == "hr") {
-                    blankLine(out)
-                    out.append("---")
-                    blankLine(out)
-                    return
-                }
-                val block = tag in BLOCKS
-                if (tag in SPACED) blankLine(out) else if (block) breakLine(out)
-                when (tag) {
-                    "li" -> {
-                        val parent = node.parent()
-                        if (parent?.normalName() == "ol") out.append("${node.elementSiblingIndex() + 1}. ") else out.append(" * ")
-                        node.childNodes().forEach { render(it, out, pre, depth + 1) }
-                    }
-                    "blockquote" -> {
-                        val inner = StringBuilder()
-                        node.childNodes().forEach { render(it, inner, pre, depth + 1) }
-                        out.append(inner.toString().trim('\n').lines().joinToString("\n") { "> $it".trimEnd() })
-                    }
-                    else -> node.childNodes().forEach { render(it, out, pre || tag == "pre", depth + 1) }
-                }
-                if (tag in SPACED) blankLine(out) else if (block) breakLine(out)
-            }
-        }
-    }
-
-    /** [render] past the limit: the text and its line breaks, through jsoup's traversal, which is a loop. */
-    private fun flat(root: Element, out: StringBuilder, pre: Boolean) {
-        NodeTraversor.filter(object : NodeFilter {
-            override fun head(node: Node, depth: Int): NodeFilter.FilterResult {
-                if (node is TextNode) render(node, out, pre)
-                if (node is Element) {
-                    if (node.normalName() in SKIP) return NodeFilter.FilterResult.SKIP_ENTIRELY
-                    if (node.normalName() in BLOCKS || node.normalName() == "br") breakLine(out)
-                }
-                return NodeFilter.FilterResult.CONTINUE
-            }
-
-            override fun tail(node: Node, depth: Int): NodeFilter.FilterResult {
-                if (node is Element && node.normalName() in BLOCKS) breakLine(out)
-                return NodeFilter.FilterResult.CONTINUE
-            }
-        }, root)
     }
 }
