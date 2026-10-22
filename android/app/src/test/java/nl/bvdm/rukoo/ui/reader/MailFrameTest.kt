@@ -93,6 +93,14 @@ class MailFrameTest {
     }
 
     @Test
+    fun theFallbackShowsTheSourceAsText() {
+        val doc = MailFrame.unprocessed("<form action=\"x\"><meta http-equiv=\"refresh\" content=\"0;url=x\">A & B</form>", light = true)
+        val body = Jsoup.parse(doc).body()
+        assertTrue(body.select("form, meta").isEmpty())
+        assertEquals("<form action=\"x\"><meta http-equiv=\"refresh\" content=\"0;url=x\">A & B</form>", body.wholeText())
+    }
+
+    @Test
     fun colors() {
         assertTrue(MailFrame.neutral(MailFrame.parseColor("#fff")!!))
         assertTrue(MailFrame.neutral(MailFrame.parseColor("rgb(242, 242, 242)")!!))

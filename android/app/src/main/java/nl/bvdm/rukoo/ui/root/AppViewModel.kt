@@ -3,7 +3,6 @@ package nl.bvdm.rukoo.ui.root
 import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.SavedStateHandle
@@ -24,6 +23,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import nl.bvdm.rukoo.AppServices
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.model.Item
@@ -182,13 +186,19 @@ class AppViewModel(
     }
 
     // Where each list (view, folder, search) was scrolled to, so going back to a folder finds the same place
-    // (spec 6 §5.6). The list on screen also keeps its own place across recreation (rememberSaveable).
-    private val listPositions = HashMap<String, Pair<Int, Int>>()
+    // (spec 6 §5.6), also after the process was gone: they are kept in the SavedStateHandle. The list on
+    // screen keeps its own place (rememberSaveable). Oldest first, so the oldest go once there are too many.
+    private val listPositions: LinkedHashMap<String, List<Int>> = LinkedHashMap(
+        saved.get<String>(POSITIONS)?.let { runCatching { RukooJson.decodeFromString(POSITIONS_SERIALIZER, it) }.getOrNull() }.orEmpty(),
+    )
 
-    fun listPosition(key: String): Pair<Int, Int>? = listPositions[key]
+    fun listPosition(key: String): Pair<Int, Int>? = listPositions[key]?.takeIf { it.size == 2 }?.let { it[0] to it[1] }
 
     fun keepListPosition(key: String, index: Int, offset: Int) {
-        listPositions[key] = index to offset
+        listPositions.remove(key)
+        listPositions[key] = listOf(index, offset)
+        while (listPositions.size > MAX_POSITIONS) listPositions.remove(listPositions.keys.first())
+        saved[POSITIONS] = RukooJson.encodeToString(POSITIONS_SERIALIZER, listPositions)
     }
 
     /** The email above or below the open one in the list; null at either end. */
@@ -286,26 +296,25 @@ class AppViewModel(
 
     // Composer
 
-    /**
-     * Text typed in To, Cc or Bcc that isn't a chip yet, by [pendingKey]. It lives here rather than in the field
-     * so Send can take it along (desktop flushInputs) and folding doesn't lose it.
-     */
-    val pendingRecipients = mutableStateMapOf<String, String>()
+    // Saving, deleting and sending the open draft wait for each other, so one finishing can't close or replace
+    // a composer another is still working on.
+    private val composerWork = Mutex()
 
-    /** Turns typed recipient text into recipients of the open draft, as leaving the field does. */
+    /**
+     * Turns the recipient text typed in To, Cc and Bcc ([ComposerState.typed]) into recipients of the open
+     * draft, as leaving the field does (desktop flushInputs).
+     */
     private fun flushRecipients() {
-        val d = services.composer.current() ?: return
-        val typed = listOf("to", "cc", "bcc").associateWith { pendingRecipients[pendingKey(d.id, it)].orEmpty() }
-        if (typed.values.all { it.isBlank() }) return
         services.composer.update { s ->
+            if (s.typed.isEmpty()) return@update s
             s.copy(
-                to = Recipients.merge(s.to, Recipients.parse(typed.getValue("to"))),
-                cc = Recipients.merge(s.cc, Recipients.parse(typed.getValue("cc"))),
-                bcc = Recipients.merge(s.bcc, Recipients.parse(typed.getValue("bcc"))),
-                dirty = true,
+                to = Recipients.merge(s.to, Recipients.parse(s.typed["to"].orEmpty())),
+                cc = Recipients.merge(s.cc, Recipients.parse(s.typed["cc"].orEmpty())),
+                bcc = Recipients.merge(s.bcc, Recipients.parse(s.typed["bcc"].orEmpty())),
+                typed = emptyMap(),
+                dirty = s.dirty || s.typed.values.any { it.isNotBlank() },
             )
         }
-        typed.keys.forEach { pendingRecipients.remove(pendingKey(d.id, it)) }
     }
 
     /** Files picked for the draft [composerId], copied in this scope so folding during a large copy loses nothing. */
@@ -325,25 +334,70 @@ class AppViewModel(
     private fun hasWords(d: ComposerState): Boolean =
         d.body.isNotBlank() || d.subject.isNotBlank() || d.to.isNotEmpty() || d.cc.isNotEmpty() || d.bcc.isNotEmpty() || d.attachments.isNotEmpty()
 
+    /**
+     * Whether [d] holds something closing it would lose: recipient text not yet turned into chips, changed
+     * words, or an agent's draft that isn't in Drafts as it is now (write_draft may open it clean).
+     */
+    private fun hasUnsaved(d: ComposerState): Boolean {
+        if (d.typed.values.any { it.isNotBlank() }) return true
+        if (!hasWords(d)) return false
+        if (d.dirty) return true
+        return (d.draftedBy != null || d.editedAgent != null) && services.drafts.get(d.id)?.content() != d.content()
+    }
+
     private fun saveFailed() = mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_save_local))
 
     /**
+     * Keeps the open draft [id] in Drafts and closes it, but only once what was kept is what the composer still
+     * holds: a word typed, an attachment arriving or an agent writing during the save is saved again rather than
+     * thrown away with the composer. False when it couldn't be kept (it stays open) or is no longer open.
+     * Runs under [composerWork].
+     */
+    private suspend fun keepAndClose(id: String): Boolean {
+        repeat(SAVE_TRIES) { attempt ->
+            if (attempt == 0) flushRecipients()
+            val d = services.composer.current()?.takeIf { it.id == id } ?: return false
+            if (!services.drafts.save(d)) {
+                saveFailed()
+                return false
+            }
+            val now = services.composer.current()?.takeIf { it.id == id } ?: return false
+            if (now.content() == d.content()) {
+                closeComposerNow()
+                return true
+            }
+        }
+        // Still changing after several saves: it stays open, so nothing is lost.
+        return false
+    }
+
+    /**
      * Opens [draft] in front. An open draft with unsaved words is kept in Drafts first, as desktop saves on
-     * leaving; when that save fails, the open draft stays and the new one doesn't open.
+     * leaving; when that save fails, the open draft stays and the new one doesn't open. While a save or Send
+     * of the open draft runs, the new one waits for it.
      */
     fun openComposer(draft: ComposerState = ComposerState()) {
         val open = services.composer.current()
-        if (open != null && open.id != draft.id && open.dirty && hasWords(open)) {
-            viewModelScope.launch {
-                flushRecipients()
-                val parked = services.composer.current() ?: open
-                if (!services.drafts.save(parked)) return@launch saveFailed()
-                mailUi.toasts.showToast(mailUi.strings.get(R.string.composer_status_saved_closed))
-                showNewComposer(draft)
+        // The same draft open already is the newer copy (edits, or an agent's rewrite): it only comes to the front.
+        if (open?.id == draft.id) return showComposer()
+        if (!composerWork.isLocked && (open == null || !hasUnsaved(open))) return showNewComposer(draft)
+        viewModelScope.launch {
+            composerWork.withLock {
+                repeat(SAVE_TRIES) { attempt ->
+                    val parked = services.composer.current()
+                    if (parked?.id == draft.id) return@withLock showComposer()
+                    if (parked == null || !hasUnsaved(parked)) return@withLock showNewComposer(draft)
+                    if (attempt == 0) flushRecipients()
+                    val kept = services.composer.current() ?: return@withLock showNewComposer(draft)
+                    if (!services.drafts.save(kept)) return@withLock saveFailed()
+                    val now = services.composer.current()
+                    if (now == null || (now.id == kept.id && now.content() == kept.content())) {
+                        mailUi.toasts.showToast(mailUi.strings.get(R.string.composer_status_saved_closed))
+                        return@withLock showNewComposer(draft)
+                    }
+                }
             }
-            return
         }
-        showNewComposer(draft)
     }
 
     private fun showNewComposer(draft: ComposerState) {
@@ -410,15 +464,8 @@ class AppViewModel(
     /** The chat's draft card: bring the composer the agent filled to the front. */
     fun showComposer() = set { it.showComposer() }
 
-    /**
-     * Whether closing the composer now would ask "Save draft?" first: unsaved words, which includes an agent's
-     * draft the user hasn't touched (write_draft may open it clean), and recipient text not yet turned into chips.
-     */
-    fun composerAsks(): Boolean {
-        val d = services.composer.current() ?: return false
-        val typed = listOf("to", "cc", "bcc").any { !pendingRecipients[pendingKey(d.id, it)].isNullOrBlank() }
-        return typed || (hasWords(d) && (d.dirty || d.draftedBy != null || d.editedAgent != null))
-    }
+    /** Whether closing the composer now would ask "Save draft?" first: whether it holds anything unsaved. */
+    fun composerAsks(): Boolean = services.composer.current()?.let(::hasUnsaved) == true
 
     /**
      * Close (X) or Back on the composer. Unsaved words ask Save, Don't save or Cancel (composer.js:1046-1063);
@@ -444,18 +491,14 @@ class AppViewModel(
                 ),
             )
             when (answer.choice) {
-                DialogChoice.CONFIRM -> {
-                    flushRecipients()
-                    val now = services.composer.current() ?: return@launch
-                    // The composer (and its own copy on disk) closes only once the draft is safely kept.
-                    if (!services.drafts.save(now)) return@launch saveFailed()
-                    mailUi.toasts.showToast(s.get(R.string.composer_status_saved_closed))
-                    closeComposerNow()
+                // The composer (and its own copy on disk) closes only once the draft is safely kept.
+                DialogChoice.CONFIRM -> composerWork.withLock {
+                    if (keepAndClose(d.id)) mailUi.toasts.showToast(s.get(R.string.composer_status_saved_closed))
                 }
-                DialogChoice.OTHER -> {
-                    val now = services.composer.current() ?: return@launch
-                    if (services.drafts.contains(now.id)) {
-                        if (!services.drafts.remove(now.id)) return@launch saveFailed()
+                DialogChoice.OTHER -> composerWork.withLock {
+                    if (services.composer.current()?.id != d.id) return@withLock
+                    if (services.drafts.contains(d.id)) {
+                        if (!services.drafts.remove(d.id)) return@withLock deleteFailed()
                         mailUi.toasts.showToast(s.get(R.string.composer_status_deleted))
                     }
                     closeComposerNow()
@@ -465,8 +508,9 @@ class AppViewModel(
         }
     }
 
+    private fun deleteFailed() = mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_delete_local))
+
     private fun closeComposerNow() {
-        services.composer.current()?.let { d -> listOf("to", "cc", "bcc").forEach { pendingRecipients.remove(pendingKey(d.id, it)) } }
         set { it.composerClosed() }
         services.composer.close()
     }
@@ -476,7 +520,7 @@ class AppViewModel(
         if (sending) return
         val d = services.composer.current() ?: return
         val kept = services.drafts.contains(d.id)
-        if (!kept && !hasWords(d)) return closeComposerNow()
+        if (!kept && !hasWords(d) && d.typed.values.all { it.isBlank() }) return closeComposerNow()
         viewModelScope.launch {
             val s = mailUi.strings
             val answer = mailUi.ask(
@@ -489,21 +533,23 @@ class AppViewModel(
                 ),
             )
             if (answer.choice != DialogChoice.CONFIRM) return@launch
-            if (!services.drafts.remove(d.id)) return@launch saveFailed()
-            closeComposerNow()
-            if (kept) mailUi.toasts.showToast(s.get(R.string.composer_status_deleted))
+            composerWork.withLock {
+                if (services.composer.current()?.id != d.id) return@withLock
+                if (!services.drafts.remove(d.id)) return@withLock deleteFailed()
+                closeComposerNow()
+                if (kept) mailUi.toasts.showToast(s.get(R.string.composer_status_deleted))
+            }
         }
     }
 
     /** "Save to Drafts" from the composer's menu: keeps it and closes, like desktop's Ctrl+S then Close. */
     fun saveDraft() {
         if (sending) return
+        val id = services.composer.current()?.id ?: return
         viewModelScope.launch {
-            flushRecipients()
-            val d = services.composer.current() ?: return@launch
-            if (!services.drafts.save(d)) return@launch saveFailed()
-            mailUi.toasts.showToast(mailUi.strings.get(R.string.composer_status_saved_to_drafts))
-            closeComposerNow()
+            composerWork.withLock {
+                if (keepAndClose(id)) mailUi.toasts.showToast(mailUi.strings.get(R.string.composer_status_saved_to_drafts))
+            }
         }
     }
 
@@ -546,25 +592,34 @@ class AppViewModel(
                 )
                 if (answer.choice != DialogChoice.CONFIRM) return@launch
             }
-            val current = services.composer.current()?.takeIf { it.id == d.id } ?: return@launch
-            sendProblem(current)?.let { return@launch mailUi.toasts.showError(it) }
-            val accountId = sendAccount(current) ?: return@launch
-            val from = current.from ?: defaultFrom(accountId) ?: return@launch
-            sending = true
-            mailUi.toasts.showToast(s.get(R.string.composer_status_sending))
-            try {
-                val originalHtml = current.sourceMessageId?.takeIf { current.quote.isNotBlank() && !current.quoteExcluded }?.let { id ->
-                    runCatching { services.mail.fullMessage(id).html }.getOrNull()?.takeIf { it.isNotBlank() }
+            // A save of this draft that is still writing finishes first; it can't close the composer under Send.
+            composerWork.withLock {
+                if (sending) return@withLock
+                flushRecipients()
+                val current = services.composer.current()?.takeIf { it.id == d.id } ?: return@withLock
+                sendProblem(current)?.let { return@withLock mailUi.toasts.showError(it) }
+                val accountId = sendAccount(current) ?: return@withLock
+                val from = current.from ?: defaultFrom(accountId) ?: return@withLock
+                sending = true
+                mailUi.toasts.showToast(s.get(R.string.composer_status_sending))
+                try {
+                    try {
+                        val originalHtml = current.sourceMessageId?.takeIf { current.quote.isNotBlank() && !current.quoteExcluded }?.let { id ->
+                            runCatching { services.mail.fullMessage(id).html }.getOrNull()?.takeIf { it.isNotBlank() }
+                        }
+                        services.mail.send(replies.outgoing(current, accountId, from, originalHtml))
+                    } catch (e: Exception) {
+                        return@withLock mailUi.toasts.showError(e.message?.let { s.get(R.string.composer_errors_send_reason, it) } ?: s.get(R.string.composer_errors_send))
+                    }
+                    // The mail is out; from here nothing may suggest it wasn't. A copy left in Drafts is said so.
+                    val cleaned = services.drafts.remove(current.id)
+                    val after = services.composer.current()
+                    if (after?.id == current.id && after.content() == current.content()) closeComposerNow()
+                    if (cleaned) mailUi.toasts.showToast(s.get(R.string.composer_status_sent))
+                    else mailUi.toasts.showError(s.get(R.string.composer_status_sent_draft_kept))
+                } finally {
+                    sending = false
                 }
-                services.mail.send(replies.outgoing(current, accountId, from, originalHtml))
-                services.drafts.remove(current.id)
-                val after = services.composer.current()
-                if (after?.id == current.id && after.content() == current.content()) closeComposerNow()
-                mailUi.toasts.showToast(s.get(R.string.composer_status_sent))
-            } catch (e: Exception) {
-                mailUi.toasts.showError(e.message?.let { s.get(R.string.composer_errors_send_reason, it) } ?: s.get(R.string.composer_errors_send))
-            } finally {
-                sending = false
             }
         }
     }
@@ -631,9 +686,12 @@ class AppViewModel(
 
     companion object {
         private const val KEY = "nav"
+        private const val POSITIONS = "list_positions"
+        private const val MAX_POSITIONS = 40
+        private val POSITIONS_SERIALIZER = MapSerializer(String.serializer(), ListSerializer(Int.serializer()))
 
-        /** The [pendingRecipients] key of one field ("to", "cc", "bcc") of one composer. */
-        fun pendingKey(composerId: String, field: String) = "$composerId|$field"
+        // How often a save is repeated while the draft keeps changing under it before the composer just stays open.
+        private const val SAVE_TRIES = 3
 
         fun factory(services: AppServices): ViewModelProvider.Factory = viewModelFactory {
             initializer { AppViewModel(services, createSavedStateHandle()) }

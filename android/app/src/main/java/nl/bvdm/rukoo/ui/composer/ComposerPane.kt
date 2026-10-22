@@ -131,8 +131,10 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
     val contacts by produceState(emptyList<Address>()) { value = runCatching { mail.contacts() }.getOrDefault(emptyList()) }
     var askedCc by rememberSaveable(d.id) { mutableStateOf(false) }
     var askedBcc by rememberSaveable(d.id) { mutableStateOf(false) }
-    val showCc = askedCc || d.cc.isNotEmpty()
-    val showBcc = askedBcc || d.bcc.isNotEmpty()
+    // Typed text counts too: a draft restored from disk has no "asked" flags, and Send would otherwise take
+    // along an address the user can't see.
+    val showCc = askedCc || d.cc.isNotEmpty() || !d.typed["cc"].isNullOrBlank()
+    val showBcc = askedBcc || d.bcc.isNotEmpty() || !d.typed["bcc"].isNullOrBlank()
     val toFocus = remember { FocusRequester() }
     val ccFocus = remember { FocusRequester() }
     val bccFocus = remember { FocusRequester() }
@@ -158,10 +160,13 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
         // Copied in the view model's scope, so folding while a large file comes in doesn't lose it.
         if (uris.isNotEmpty()) app.attachFiles(context.applicationContext, uris, d.id)
     }
-    // Text typed in a recipient field that isn't a chip yet lives in the view model: Send takes it along.
-    fun pending(field: String) = app.pendingRecipients[AppViewModel.pendingKey(d.id, field)].orEmpty()
+    // Text typed in a recipient field that isn't a chip yet is part of the draft: saved with it, sent with it.
+    fun pending(field: String) = d.typed[field].orEmpty()
     fun setPending(field: String, text: String) {
-        app.pendingRecipients[AppViewModel.pendingKey(d.id, field)] = text
+        composer.update {
+            if (it.id != d.id || it.typed[field].orEmpty() == text) it
+            else it.copy(typed = if (text.isEmpty()) it.typed - field else it.typed + (field to text)).edited()
+        }
     }
 
     // Top bar: Close and the title (spec 6 §4.7, "On a phone").
@@ -327,11 +332,20 @@ private fun RecipientField(
 ) {
     val c = Rk.colors
     var hasFocus by remember { mutableStateOf(false) }
-    val suggestions = remember(text, contacts, list) { Recipients.suggest(contacts, text, list) }
+    // The field types into local state and reports each change; the draft's copy follows a frame later. While
+    // the field has focus only a clear comes back in (Send turning the text into recipients): an older echo of
+    // the user's own typing must not overwrite what they typed since.
+    var local by remember { mutableStateOf(text) }
+    LaunchedEffect(text) { if (text != local && (!hasFocus || text.isEmpty())) local = text }
+    fun setText(value: String) {
+        local = value
+        onText(value)
+    }
+    val suggestions = remember(local, contacts, list) { Recipients.suggest(contacts, local, list) }
     fun commit() {
-        val more = Recipients.parse(text)
+        val more = Recipients.parse(local)
         if (more.isNotEmpty()) onChange(Recipients.merge(list, more))
-        onText("")
+        setText("")
     }
     val focus = focusRequester ?: remember { FocusRequester() }
     Column {
@@ -346,11 +360,11 @@ private fun RecipientField(
             ) {
                 for (a in list) RecipientChip(a, removable = enabled) { onChange(list - a) }
                 BasicTextField(
-                    value = text,
+                    value = local,
                     onValueChange = { value ->
                         val (done, rest) = Recipients.split(value)
                         if (done.isNotEmpty()) onChange(Recipients.merge(list, done))
-                        onText(rest)
+                        setText(rest)
                     },
                     enabled = enabled,
                     singleLine = true,
@@ -389,7 +403,7 @@ private fun RecipientField(
                             .heightIn(min = 44.dp)
                             .rkClickable(Rk.shapes.chip) {
                                 onChange(Recipients.merge(list, listOf(s)))
-                                onText("")
+                                setText("")
                             }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                     ) {

@@ -38,9 +38,11 @@ class DraftStore(
 
     fun contains(id: String): Boolean = get(id) != null
 
-    // Writes the new list first and shows it after, so the list on screen is never ahead of the file.
+    // Writes the new list first and shows it after, so the list on screen is never ahead of the file. The
+    // change is worked out under the lock too, so a remove can't slip past a save that is still writing.
     private suspend fun commit(next: (List<ComposerState>) -> List<ComposerState>): Boolean = writes.withLock {
         val list = next(_drafts.value)
+        if (list == _drafts.value) return@withLock true
         if (file != null) {
             try {
                 withContext(io) { JsonFiles.write(file, SERIALIZER, list) }
@@ -59,7 +61,7 @@ class DraftStore(
         return commit { list -> listOf(kept) + list.filterNot { it.id == draft.id } }
     }
 
-    suspend fun remove(id: String): Boolean = if (!contains(id)) true else commit { list -> list.filterNot { it.id == id } }
+    suspend fun remove(id: String): Boolean = commit { list -> list.filterNot { it.id == id } }
 
     companion object {
         const val FILE_NAME = "drafts.json"

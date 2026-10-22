@@ -52,6 +52,11 @@ data class ComposerState(
     val editedAgent: String? = null,
     /** When it was last kept as a draft on this phone (the Drafts list's date); 0 while it never was. */
     val savedAt: Long = 0,
+    /**
+     * Recipient text typed in "to", "cc" or "bcc" that isn't a recipient yet (no comma or Enter so far). It is
+     * part of the draft so it is saved with it; Send and Save turn it into recipients first.
+     */
+    val typed: Map<String, String> = emptyMap(),
 )
 
 /**

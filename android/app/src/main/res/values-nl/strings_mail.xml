@@ -221,6 +221,7 @@
     <string name="composer_discard_unsaved_help">Wat je hebt geschreven gaat verloren.</string>
     <string name="composer_errors_autosave">Automatisch opslaan mislukt</string>
     <string name="composer_errors_save_local">Rukoo kon het concept niet op deze telefoon bewaren.</string>
+    <string name="composer_errors_delete_local">Rukoo kon het concept niet van deze telefoon verwijderen.</string>
     <string name="composer_errors_no_account">Voeg in Rukoo Mail eerst een e-mailaccount toe voordat je een e-mail schrijft.</string>
     <string name="composer_errors_no_recipients">Voeg minstens één ontvanger toe</string>
     <string name="composer_errors_send">Verzenden mislukt</string>
@@ -247,6 +248,7 @@
     <string name="composer_status_saved_to_drafts">Opgeslagen in Concepten</string>
     <string name="composer_status_sending">Verzenden...</string>
     <string name="composer_status_sent">E-mail verzonden</string>
+    <string name="composer_status_sent_draft_kept">De e-mail is verzonden, maar het concept kon niet van deze telefoon worden verwijderd. Je kunt het verwijderen in Concepten.</string>
     <string name="composer_titles_draft">Concept</string>
     <string name="composer_titles_forward">Doorsturen</string>
     <string name="composer_titles_new">Nieuw bericht</string>

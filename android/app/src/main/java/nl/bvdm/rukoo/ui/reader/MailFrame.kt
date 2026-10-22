@@ -74,14 +74,27 @@ $invertCss
     }
 
     /**
-     * The frame without any parsing, for mail [document] fails on. The WebView still runs it without
-     * JavaScript, file or content access, and links still leave through the reader's link handler.
+     * The frame for mail [document] fails on: the mail's source as text. It never went through the clean-up, so
+     * none of it may run or render as markup (forms, frames, a meta refresh); reading the source beats nothing.
      */
     fun unprocessed(html: String, light: Boolean): String {
         val textColor = if (light) "#15171c" else "#e6e8ee"
         return "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">" +
             "<style>html,body{background:transparent}body{margin:0;padding:0 2px 8px;color:$textColor;" +
-            "font:14.5px/1.6 system-ui,sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}</style></head><body>$html</body></html>"
+            "font:14.5px/1.6 system-ui,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body>" +
+            escapeText(html) + "</body></html>"
+    }
+
+    private fun escapeText(text: String): String = buildString(text.length) {
+        for (ch in text) {
+            when (ch) {
+                '&' -> append("&amp;")
+                '<' -> append("&lt;")
+                '>' -> append("&gt;")
+                '"' -> append("&quot;")
+                else -> append(ch)
+            }
+        }
     }
 
     /**

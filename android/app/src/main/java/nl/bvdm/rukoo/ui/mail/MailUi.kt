@@ -185,11 +185,12 @@ class MailUi(
     fun markAllRead(view: MailView) {
         scope.launch {
             try {
-                // Which ones were unread, so Undo can mark exactly those again.
-                val before = mail.listMessages(view).filter { it.unread }.map { it.id }
-                val n = mail.markAllRead(view)
-                if (n > 0 && before.isNotEmpty()) offerFlagUndo(before, unread = false)
-                else toasts.showToast(strings.get(R.string.mailbox_actions_already_read))
+                // The unread ones in the view are marked by id rather than through markAllRead, so a sync landing
+                // in between can't make Undo mark a different set unread again than the one this changed.
+                val unread = mail.listMessages(view).filter { it.unread }.map { it.id }
+                if (unread.isEmpty()) return@launch toasts.showToast(strings.get(R.string.mailbox_actions_already_read))
+                mail.setFlags(unread, unread = false)
+                offerFlagUndo(unread, unread = false)
             } catch (e: Exception) {
                 error(e)
             }

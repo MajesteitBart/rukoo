@@ -233,6 +233,7 @@
     <string name="composer_errors_autosave">Autosave failed</string>
     <!-- phone: drafts.json couldn't be written; the composer stays open -->
     <string name="composer_errors_save_local">Rukoo couldn\'t keep the draft on this phone.</string>
+    <string name="composer_errors_delete_local">Rukoo couldn\'t delete the draft from this phone.</string>
     <string name="composer_errors_no_account">Add an email account in Rukoo Mail before you write an email.</string>
     <string name="composer_errors_no_recipients">Add at least one recipient</string>
     <string name="composer_errors_send">Sending failed</string>
@@ -261,6 +262,7 @@
     <string name="composer_status_saved_to_drafts">Saved to Drafts</string>
     <string name="composer_status_sending">Sending...</string>
     <string name="composer_status_sent">Email sent</string>
+    <string name="composer_status_sent_draft_kept">The email was sent, but its draft couldn\'t be removed from this phone. You can delete it in Drafts.</string>
     <string name="composer_titles_draft">Draft</string>
     <string name="composer_titles_forward">Forward</string>
     <string name="composer_titles_new">New message</string>
