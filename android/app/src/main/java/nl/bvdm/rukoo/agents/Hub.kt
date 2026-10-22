@@ -836,7 +836,16 @@ class Hub(
             return fresh as T
         }
         pending.start()
-        val value = pending.await()
+        val value = try {
+            pending.await()
+        } catch (e: Throwable) {
+            // A load that failed isn't kept, or every later call would get the same failure; the list before stays.
+            // A caller that was cancelled while the load runs leaves it for the others.
+            if (pending.isCompleted) {
+                locked { lists[agent]?.takeIf { it.pending === pending }?.let { lists[agent] = Cached(it.at, it.value, null) } }
+            }
+            throw e
+        }
         locked {
             if (lists[agent]?.pending === pending) lists[agent] = Cached(clock.now(), value, null)
         }

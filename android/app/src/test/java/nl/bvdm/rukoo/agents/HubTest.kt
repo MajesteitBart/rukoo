@@ -814,6 +814,17 @@ class HubTest {
     }
 
     @Test
+    fun aModelListThatFailedToLoadIsLoadedAgainNextTime() = runTest {
+        // An Error, which loadModels doesn't turn into a list with an error, fails the shared load itself.
+        val k = kit { clark.modelsError = StackOverflowError("deep") }
+        assertTrue(runCatching { k.hub.models("clark") }.exceptionOrNull() is StackOverflowError)
+        k.clark.modelsError = null
+        k.clark.modelList = ModelOptions("clark", listOf(ModelOption("p::m", "m")))
+        assertEquals(listOf("p::m"), k.hub.models("clark").models.map { it.id })
+        assertEquals(2, k.clark.modelCalls)
+    }
+
+    @Test
     fun theSettingsModelIsTheDefaultEvenWhenTheAgentDoesntListIt() = runTest {
         val k = HubKit(this, settings = AgentSettings(clark = ClarkSettings(url = "u", key = "k", model = "my-model")))
         k.clark.modelList = ModelOptions("clark", listOf(ModelOption("other", efforts = listOf("low"))), efforts = listOf("low"), custom = listOf("high"))

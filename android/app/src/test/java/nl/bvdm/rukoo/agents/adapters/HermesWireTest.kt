@@ -1,6 +1,9 @@
 package nl.bvdm.rukoo.agents.adapters
 
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import nl.bvdm.rukoo.agents.model.ChoiceKind
 import nl.bvdm.rukoo.agents.model.ErrorCodes
 import nl.bvdm.rukoo.agents.model.ToolKind
@@ -12,6 +15,42 @@ import org.junit.Test
 
 class HermesWireTest {
     private fun obj(json: String) = RukooJson.parseToJsonElement(json) as JsonObject
+
+    @Test
+    fun jsTextShowsValuesAsJavaScriptsStringDoes() {
+        // What String(v) gives in node for each value.
+        fun text(json: String) = HermesWire.jsText(RukooJson.parseToJsonElement(json))
+        assertEquals("abc", text("\"abc\""))
+        assertEquals("2.5", text("2.5"))
+        assertEquals("[object Object]", text("{\"a\":1}"))
+        assertEquals("1,2,3,4", text("[1,[2,3],4]"))
+        assertEquals(",1", text("[[],1]"))
+        assertEquals("true,,2.5", text("[true,null,2.5]"))
+        assertEquals("[object Object],x", text("[{\"a\":1},\"x\"]"))
+        assertEquals("", text("[[[[]]]]"))
+    }
+
+    @Test
+    fun jsTextTakesAServersDeepestNestingOnASmallStack() {
+        var objects: JsonElement = JsonPrimitive(1)
+        var arrays: JsonElement = JsonPrimitive(1)
+        repeat(100_000) {
+            objects = JsonObject(mapOf("a" to objects))
+            arrays = JsonArray(listOf(arrays))
+        }
+        // JSON text recurses once per level, which is what the version from /health and the like used to go through.
+        assertTrue(onSmallStack { runCatching { objects.toString() }.exceptionOrNull() } is StackOverflowError)
+        assertEquals("[object Object]", onSmallStack { HermesWire.jsText(objects) })
+        assertEquals("1", onSmallStack { HermesWire.jsText(arrays) })
+    }
+
+    private fun <T> onSmallStack(block: () -> T): T {
+        var result: Result<T>? = null
+        val thread = Thread(null, { result = runCatching(block) }, "small-stack", 256L * 1024)
+        thread.start()
+        thread.join()
+        return result!!.getOrThrow()
+    }
 
     @Test
     fun splitModelNamesAProviderOnlyWhenItLooksLikeOne() {

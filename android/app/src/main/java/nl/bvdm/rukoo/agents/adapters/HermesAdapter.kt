@@ -380,6 +380,17 @@ class HermesAdapter internal constructor(
      * is stopped, so nothing the user stopped goes on unseen.
      */
     private suspend fun stopSubmitted(turn: TurnHandle, pending: Deferred<Result<HttpAnswer>>, body: JsonObject, key: String, server: Server) {
+        try {
+            stopSubmittedRun(turn, pending, body, key, server)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // It runs in the app's scope after the turn has ended, so nothing above it would catch this.
+            AppLog.w(TAG, "stopping a run being started failed", e)
+        }
+    }
+
+    private suspend fun stopSubmittedRun(turn: TurnHandle, pending: Deferred<Result<HttpAnswer>>, body: JsonObject, key: String, server: Server) {
         var runId = runIdOf(pending.await().getOrNull())
         if (runId == null) {
             runId = try {

@@ -38,6 +38,9 @@ class ScriptedAdapter(override val id: String, var script: suspend (TurnHandle) 
     var skillList = emptyList<OwnSkill>()
     var modelCalls = 0
 
+    /** What models() throws instead of answering, while set. */
+    var modelsError: Throwable? = null
+
     /** The refresh flag of every models() and skills() call, in order. */
     val refreshes: MutableList<Boolean> = Collections.synchronizedList(mutableListOf())
 
@@ -51,6 +54,7 @@ class ScriptedAdapter(override val id: String, var script: suspend (TurnHandle) 
     override suspend fun models(refresh: Boolean): ModelOptions {
         modelCalls++
         refreshes += refresh
+        modelsError?.let { throw it }
         return modelList
     }
 

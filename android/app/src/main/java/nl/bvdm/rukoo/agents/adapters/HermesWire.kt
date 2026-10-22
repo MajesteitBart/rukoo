@@ -5,6 +5,7 @@ package nl.bvdm.rukoo.agents.adapters
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import nl.bvdm.rukoo.agents.model.ApprovalChoice
@@ -76,8 +77,42 @@ internal object HermesWire {
 
     val RATE_LIMIT = Regex("\\b429\\b|rate.?limit", RegexOption.IGNORE_CASE)
 
-    /** A value as JavaScript's String() would show it in a template: strings as they are, the rest as JSON. */
-    fun jsText(v: JsonElement): String = if (v is JsonPrimitive && v.isString) v.content else v.toString()
+    /**
+     * A value as JavaScript's String() shows it (hermes.js): a string as it is, an object as "[object Object]" and an
+     * array as its items joined with commas, arrays in it flattened and null as nothing. Arrays are walked with a
+     * stack: a server can nest them, or the objects JSON text would recurse into, as deep as it likes.
+     */
+    fun jsText(v: JsonElement): String = when (v) {
+        is JsonNull -> "null"
+        is JsonPrimitive -> v.content
+        is JsonObject -> OBJECT_TEXT
+        is JsonArray -> {
+            val out = StringBuilder()
+            val levels = ArrayDeque<ArrayLevel>()
+            levels.addLast(ArrayLevel(v))
+            while (levels.isNotEmpty()) {
+                val level = levels.last()
+                if (level.next == level.items.size) {
+                    levels.removeLast()
+                    continue
+                }
+                if (level.next > 0) out.append(',')
+                when (val item = level.items[level.next++]) {
+                    is JsonNull -> Unit
+                    is JsonPrimitive -> out.append(item.content)
+                    is JsonObject -> out.append(OBJECT_TEXT)
+                    is JsonArray -> levels.addLast(ArrayLevel(item))
+                }
+            }
+            out.toString()
+        }
+    }
+
+    private const val OBJECT_TEXT = "[object Object]"
+
+    private class ArrayLevel(val items: JsonArray) {
+        var next = 0
+    }
 
     /** The model menu from `/api/model/options` and `/v1/models` (hermes.js models). Either may be null. */
     fun models(routes: JsonObject?, options: JsonObject?): Triple<List<ModelOption>, List<String>, List<String>> {
