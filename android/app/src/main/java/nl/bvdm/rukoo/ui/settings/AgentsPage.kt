@@ -97,7 +97,7 @@ fun AgentsPage(app: AppViewModel, model: SetupModel, nav: SettingsNav) {
     }
 }
 
-/** "Claude Code on desktop-zolder" in the interface language, or just the name for agents the phone reaches itself. */
+/** "Claude Code on office-pc" in the interface language, or just the name for agents the phone reaches itself. */
 @Composable
 private fun agentLabel(agent: AgentDescriptor, computers: Map<String, String>): String {
     val where = AgentText.place(agent, computers)?.text() ?: return agent.name

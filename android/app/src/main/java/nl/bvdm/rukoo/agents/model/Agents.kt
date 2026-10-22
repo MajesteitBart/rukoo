@@ -49,7 +49,7 @@ enum class AgentKind { HERMES, OPENCLAW, CLAUDE, CODEX, FAKE }
 
 /**
  * An agent the user can chat with. [name] is the display name ("Clark", "OpenClaw", "Claude Code");
- * [subtitle] says where it runs ("on desktop-zolder"), empty for agents the phone reaches itself.
+ * [subtitle] says where it runs ("on office-pc"), empty for agents the phone reaches itself.
  */
 data class AgentDescriptor(
     val id: String,

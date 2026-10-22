@@ -6,7 +6,7 @@ object ExportFixtures {
 {
   "version": 1,
   "exportedAt": 1761130100000,
-  "desktop": { "name": "desktop-zolder", "version": "1.4.0" },
+  "desktop": { "name": "office-pc", "version": "1.4.0" },
   "google": { "client_id": "client-id.apps.googleusercontent.com", "client_secret": "client-secret" },
   "accounts": [
     {

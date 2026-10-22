@@ -122,7 +122,7 @@ data class InputModel(
     val agentName: String,
     val agentId: String,
     val agents: List<AgentDescriptor>,
-    /** Pairing id to computer name, for "Claude Code · on desktop-zolder". */
+    /** Pairing id to computer name, for "Claude Code · on office-pc". */
     val computers: Map<String, String>,
     val context: ContextChip?,
     val newer: NewerChip?,
@@ -412,7 +412,7 @@ private fun AgentPicker(controller: ChatController, model: InputModel, modifier:
 
 /**
  * The product when it isn't the agent's name already ("Hermes Agent" for Clark), and for Claude Code and Codex the
- * computer they run on ("on desktop-zolder"). Null when there is nothing to add.
+ * computer they run on ("on office-pc"). Null when there is nothing to add.
  */
 @Composable
 internal fun agentTag(agent: AgentDescriptor, computers: Map<String, String>): String? {

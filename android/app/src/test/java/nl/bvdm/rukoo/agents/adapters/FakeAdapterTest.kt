@@ -227,7 +227,7 @@ class DefaultAdapterFactoryTest {
         val f = factory()
         val id = AgentIds.computer("ph_k3j9x0m2qa", ComputerProgram.CODEX)
         assertNull(f.create(id))
-        store.update { it.copy(computers = listOf(PairedComputer(pairingId = "ph_k3j9x0m2qa", name = "desktop-zolder", address = "100.1.2.3"))) }
+        store.update { it.copy(computers = listOf(PairedComputer(pairingId = "ph_k3j9x0m2qa", name = "office-pc", address = "100.1.2.3"))) }
         val adapter = f.create(id)
         assertTrue(adapter is ComputerAdapter)
         assertEquals(id, adapter!!.id)

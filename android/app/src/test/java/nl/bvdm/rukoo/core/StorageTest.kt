@@ -53,7 +53,7 @@ class StorageTest {
         store.update {
             it.copy(
                 clark = ClarkSettings(name = "Clark", url = "http://100.91.52.84:8642", key = "hermes-key"),
-                computers = listOf(PairedComputer("ph_k3j9x0m2qa", "desktop-zolder", "100.101.102.103", token = "tok", mcpToken = "mcp")),
+                computers = listOf(PairedComputer("ph_k3j9x0m2qa", "office-pc", "100.101.102.103", token = "tok", mcpToken = "mcp")),
             )
         }
         val disk = file.readText()

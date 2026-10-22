@@ -89,12 +89,12 @@ class PreviewAgentHub(private val scope: CoroutineScope, private val clock: Cloc
             AgentDescriptor(AgentIds.CLARK, AgentKind.HERMES, "Clark", status = AgentStatus(AgentState.READY)),
             AgentDescriptor(AgentIds.OPENCLAW, AgentKind.OPENCLAW, "OpenClaw", status = AgentStatus(AgentState.UNCONFIGURED)),
             AgentDescriptor(
-                AgentIds.computer(pairing, ComputerProgram.CLAUDE), AgentKind.CLAUDE, "Claude Code", "on desktop-zolder",
+                AgentIds.computer(pairing, ComputerProgram.CLAUDE), AgentKind.CLAUDE, "Claude Code", "on office-pc",
                 status = AgentStatus(AgentState.READY),
             ),
             AgentDescriptor(
-                AgentIds.computer(pairing, ComputerProgram.CODEX), AgentKind.CODEX, "Codex", "on desktop-zolder",
-                status = AgentStatus(AgentState.OFFLINE, "Could not reach desktop-zolder"),
+                AgentIds.computer(pairing, ComputerProgram.CODEX), AgentKind.CODEX, "Codex", "on office-pc",
+                status = AgentStatus(AgentState.OFFLINE, "Could not reach office-pc"),
             ),
         ),
     ).asStateFlow()

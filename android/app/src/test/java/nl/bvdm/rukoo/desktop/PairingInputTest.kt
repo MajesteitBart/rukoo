@@ -44,8 +44,8 @@ class PairingInputTest {
 
     @Test
     fun addressTakesMagicDnsNames() {
-        assertEquals(DesktopAddress("desktop-zolder", 47800), DesktopAddress.parse("Desktop-Zolder"))
-        assertEquals(DesktopAddress("desktop-zolder.tail1234.ts.net", 47800), DesktopAddress.parse("desktop-zolder.tail1234.ts.net."))
+        assertEquals(DesktopAddress("office-pc", 47800), DesktopAddress.parse("Office-PC"))
+        assertEquals(DesktopAddress("office-pc.tail1234.ts.net", 47800), DesktopAddress.parse("office-pc.tail1234.ts.net."))
     }
 
     @Test

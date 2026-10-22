@@ -15,7 +15,7 @@ import nl.bvdm.rukoo.core.AppLog
  *
  * ```
  * adb shell am broadcast -n nl.bvdm.rukoo.debug/nl.bvdm.rukoo.mcp.DebugMcpReceiver \
- *   --ez enable true --ei port 47801 --es clark_key <test key> --es advertise 100.71.32.55:47801
+ *   --ez enable true --ei port 47801 --es clark_key <test key> --es advertise 100.88.12.34:47801
  * ```
  * Extras, each optional: `enable`, `port`, `advertise` (`host:port`, empty clears it), `clark_key`,
  * `openclaw_token` with `openclaw_remote`, and `computer_id` with `computer_token` (and `computer_name`) for a

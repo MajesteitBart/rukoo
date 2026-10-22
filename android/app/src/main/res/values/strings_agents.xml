@@ -20,7 +20,7 @@
     <string name="agents_action_triage_label">What needs me today?</string>
     <string name="agents_action_triage_description">Go through the inbox, most urgent first</string>
 
-    <!-- Where a computer's Claude Code or Codex runs, under the agent's name: "on desktop-zolder". -->
+    <!-- Where a computer's Claude Code or Codex runs, under the agent's name: "on office-pc". -->
     <string name="agents_on_computer">on %1$s</string>
     <!-- The scripted agent of debug builds. -->
     <string name="agents_fake_name">Test agent</string>

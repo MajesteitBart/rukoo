@@ -39,7 +39,7 @@ interface AgentAlerts {
 
 /** The user-visible words the hub itself puts on agent descriptors. */
 interface HubStrings {
-    /** "on desktop-zolder": where a computer's Claude Code or Codex runs. */
+    /** "on office-pc": where a computer's Claude Code or Codex runs. */
     fun onComputer(name: String): String
 
     /** The debug build's scripted agent. */

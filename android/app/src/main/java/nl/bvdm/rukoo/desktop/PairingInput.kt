@@ -42,7 +42,7 @@ data class DesktopAddress(val host: String, val port: Int = DEFAULT_PORT) {
         private val IPV6 = Regex("^[0-9A-Fa-f:.]+$")
 
         /**
-         * Reads what the user typed: `100.101.102.103`, `desktop-zolder`, `desktop-zolder.tail1234.ts.net`,
+         * Reads what the user typed: `100.101.102.103`, `office-pc`, `office-pc.tail1234.ts.net`,
          * `host:47801`, or the `http://100.101.102.103:47800` the computer's pairing dialog shows (a path such
          * as `/mcp` is dropped). Null when it isn't an address.
          */

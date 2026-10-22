@@ -248,7 +248,7 @@ object AgentText {
     }
 
     /**
-     * Where an agent runs, for its tag in pickers and Settings: "on desktop-zolder" in the interface language for
+     * Where an agent runs, for its tag in pickers and Settings: "on office-pc" in the interface language for
      * Claude Code and Codex on a paired computer (the hub's subtitle is worded once, in English). Null for agents the
      * phone reaches itself.
      */

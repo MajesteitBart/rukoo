@@ -893,7 +893,7 @@ class HubTest {
     @Test
     fun aComputerFindsItsChatInMetaOnly() = runTest {
         val pairing = "ph_abcdefghij"
-        val k = HubKit(this, settings = AgentSettings(computers = listOf(PairedComputer(pairing, "desktop-zolder", "100.64.0.2", mcpToken = "tok"))))
+        val k = HubKit(this, settings = AgentSettings(computers = listOf(PairedComputer(pairing, "office-pc", "100.64.0.2", mcpToken = "tok"))))
         val claudeId = AgentIds.computer(pairing, ComputerProgram.CLAUDE)
         k.adapters[claudeId] = ScriptedAdapter(claudeId)
         runCurrent()
@@ -909,7 +909,7 @@ class HubTest {
         expectCode("invalid") { k.hub.ensureConversation(ToolIdentity("claude", computer = pairing), null, null) }
         val agents = k.hub.agents.value
         assertEquals(listOf("clark", "openclaw", claudeId, AgentIds.computer(pairing, ComputerProgram.CODEX)), agents.map { it.id })
-        assertEquals("on desktop-zolder", agents[2].subtitle)
+        assertEquals("on office-pc", agents[2].subtitle)
         assertEquals("Claude Code", agents[2].name)
         assertEquals("Claude", k.hub.agentName(claudeId))
         // The computer gets the phone's MCP endpoint only while the phone serves it.

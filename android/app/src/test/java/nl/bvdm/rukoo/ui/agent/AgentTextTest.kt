@@ -201,11 +201,11 @@ class AgentTextTest {
 
     @Test
     fun computerAgentsSayWhereTheyRunInTheInterfaceLanguage() {
-        val claude = AgentDescriptor("computer:ph_1:claude", AgentKind.CLAUDE, "Claude Code", subtitle = "on desktop-zolder")
-        assertEquals(Txt.Res(R.string.agentui_panel_on_computer, listOf("desktop-zolder")), AgentText.place(claude, mapOf("ph_1" to "desktop-zolder")))
+        val claude = AgentDescriptor("computer:ph_1:claude", AgentKind.CLAUDE, "Claude Code", subtitle = "on office-pc")
+        assertEquals(Txt.Res(R.string.agentui_panel_on_computer, listOf("office-pc")), AgentText.place(claude, mapOf("ph_1" to "office-pc")))
         // A pairing the settings don't have (yet) falls back to the hub's words.
-        assertEquals(Txt.Raw("on desktop-zolder"), AgentText.place(claude, emptyMap()))
-        assertNull(AgentText.place(AgentDescriptor("clark", AgentKind.HERMES, "Clark"), mapOf("ph_1" to "desktop-zolder")))
+        assertEquals(Txt.Raw("on office-pc"), AgentText.place(claude, emptyMap()))
+        assertNull(AgentText.place(AgentDescriptor("clark", AgentKind.HERMES, "Clark"), mapOf("ph_1" to "office-pc")))
     }
 
     @Test

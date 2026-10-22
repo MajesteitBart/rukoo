@@ -218,7 +218,7 @@ object McpTexts {
         else -> context.getString(R.string.mcp_status_failed)
     }
 
-    /** Who may connect, in the user's language: "Clark", "OpenClaw", "Claude Code and Codex on desktop-zolder". */
+    /** Who may connect, in the user's language: "Clark", "OpenClaw", "Claude Code and Codex on office-pc". */
     fun agents(context: Context, status: McpStatus): List<String> =
         status.agents + status.computers.map { context.getString(R.string.mcp_agents_computer, it) }
 

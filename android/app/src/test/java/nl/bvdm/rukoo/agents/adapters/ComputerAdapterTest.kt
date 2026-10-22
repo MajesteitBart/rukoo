@@ -128,7 +128,7 @@ class ComputerAdapterTest {
     private val desktop = ScriptedDesktop()
     private val scope = testScope()
     private var settings = AgentSettings(
-        computers = listOf(PairedComputer(pairingId = "ph_k3j9x0m2qa", name = "desktop-zolder", address = "100.101.102.103", token = "t", mcpToken = "phone-mcp-token")),
+        computers = listOf(PairedComputer(pairingId = "ph_k3j9x0m2qa", name = "office-pc", address = "100.101.102.103", token = "t", mcpToken = "phone-mcp-token")),
     )
     private val hello = HelloCache(desktop, scope, nl.bvdm.rukoo.core.Clock.System)
 
@@ -351,7 +351,7 @@ class ComputerAdapterTest {
         }
         // No more scripts: reattach answers 404 not-found.
         val result = withTimeout(5_000) { adapter().runTurn(turn()) }
-        assertEquals(ErrorCodes.OFFLINE to "Lost the connection to desktop-zolder during the turn", result.error?.code to result.error?.detail)
+        assertEquals(ErrorCodes.OFFLINE to "Lost the connection to office-pc during the turn", result.error?.code to result.error?.detail)
         eventually { desktop.stops.isNotEmpty() }
         assertEquals(listOf("t_1"), desktop.stops.toList())
     }
@@ -432,18 +432,18 @@ class ComputerAdapterTest {
             )
         }
         assertEquals(AgentStatus(AgentState.READY, "Claude Code 2.1.3"), adapter(ComputerProgram.CLAUDE).status(false))
-        assertEquals(AgentStatus(AgentState.DISABLED, "Turned off on desktop-zolder"), adapter(ComputerProgram.CODEX).status(false))
+        assertEquals(AgentStatus(AgentState.DISABLED, "Turned off on office-pc"), adapter(ComputerProgram.CODEX).status(false))
         assertEquals(1, desktop.hellos)
 
         desktop.hello = { HelloResponse(agents = mapOf("claude" to HostAgentInfo(enabled = true, state = "nonsense"))) }
         assertEquals(AgentState.UNKNOWN, adapter().status(true).state)
         desktop.hello = { HelloResponse() }
-        assertEquals(AgentStatus(AgentState.MISSING, "desktop-zolder does not offer Claude Code"), adapter().status(true))
+        assertEquals(AgentStatus(AgentState.MISSING, "office-pc does not offer Claude Code"), adapter().status(true))
         desktop.hello = { throw DesktopException("unauthorized", "", 401) }
-        assertEquals(AgentStatus(AgentState.UNAUTHORIZED, "desktop-zolder no longer knows this phone. Pair it again."), adapter().status(true))
+        assertEquals(AgentStatus(AgentState.UNAUTHORIZED, "office-pc no longer knows this phone. Pair it again."), adapter().status(true))
         desktop.hello = { throw DesktopException("offline", "") }
         assertEquals(
-            AgentStatus(AgentState.OFFLINE, "Rukoo isn't reachable on desktop-zolder. Check that it's open and that Tailscale is on."),
+            AgentStatus(AgentState.OFFLINE, "Rukoo isn't reachable on office-pc. Check that it's open and that Tailscale is on."),
             adapter().status(true),
         )
 

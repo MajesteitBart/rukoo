@@ -64,7 +64,7 @@ class HttpDesktopLinkTest {
         }
 
     private fun pairAnswer(address: String = "127.0.0.1", port: Int = server.port, exportUntil: String = "1761130600000") =
-        """{"pairingId":"ph_k3j9x0m2qa","token":"phone-token-123","desktop":{"name":"desktop-zolder","version":"1.4.0","platform":"win32","address":"$address","port":$port},"exportUntil":$exportUntil}"""
+        """{"pairingId":"ph_k3j9x0m2qa","token":"phone-token-123","desktop":{"name":"office-pc","version":"1.4.0","platform":"win32","address":"$address","port":$port},"exportUntil":$exportUntil}"""
 
     private suspend fun paired(): PairedComputer {
         server.enqueue(json(200, pairAnswer()))
@@ -101,7 +101,7 @@ class HttpDesktopLinkTest {
         assertEquals("android", sent["platform"]!!.jsonPrimitive.content)
 
         assertEquals("ph_k3j9x0m2qa", c.pairingId)
-        assertEquals("desktop-zolder", c.name)
+        assertEquals("office-pc", c.name)
         assertEquals("127.0.0.1", c.address)
         assertEquals(server.port, c.port)
         assertEquals("phone-token-123", c.token)
@@ -122,7 +122,7 @@ class HttpDesktopLinkTest {
     // The address that just worked is kept, except that a name gives way to the computer's Tailscale IP.
     @Test
     fun pairingKeepsATypedIpAddressWhateverTheComputerReports() = runBlocking {
-        server.enqueue(json(200, pairAnswer(address = "100.71.32.55", port = 47800)))
+        server.enqueue(json(200, pairAnswer(address = "100.88.12.34", port = 47800)))
         val c = link.pair("127.0.0.1:${server.port}", "K7QM-2XPA")
         assertEquals("127.0.0.1", c.address)
         assertEquals(server.port, c.port)
@@ -130,9 +130,9 @@ class HttpDesktopLinkTest {
 
     @Test
     fun pairingByNameStoresTheComputersTailscaleIp() = runBlocking {
-        server.enqueue(json(200, pairAnswer(address = "100.71.32.55", port = 47800)))
+        server.enqueue(json(200, pairAnswer(address = "100.88.12.34", port = 47800)))
         val c = link.pair("localhost:${server.port}", "K7QM-2XPA")
-        assertEquals("100.71.32.55", c.address)
+        assertEquals("100.88.12.34", c.address)
         assertEquals(47800, c.port)
     }
 
@@ -225,7 +225,7 @@ class HttpDesktopLinkTest {
         server.enqueue(
             json(
                 200,
-                """{"desktop":{"name":"desktop-zolder","version":"1.4.1"},"pairingId":"ph_k3j9x0m2qa","exportUntil":null,
+                """{"desktop":{"name":"office-pc","version":"1.4.1"},"pairingId":"ph_k3j9x0m2qa","exportUntil":null,
                    "agents":{"claude":{"enabled":true,"state":"ready","detail":"","model":"opus","access":"ask"},
                              "codex":{"enabled":false,"state":"disabled","detail":"","model":"","access":"ask"}}}""",
             ),
@@ -357,7 +357,7 @@ class HttpDesktopLinkTest {
     @Test
     fun aTurnNeverReusesAPooledConnection() = runBlocking {
         val c = paired()
-        server.enqueue(json(200, """{"desktop":{"name":"desktop-zolder","version":"1.4.0"},"pairingId":"${c.pairingId}","exportUntil":null,"agents":{}}"""))
+        server.enqueue(json(200, """{"desktop":{"name":"office-pc","version":"1.4.0"},"pairingId":"${c.pairingId}","exportUntil":null,"agents":{}}"""))
         link.hello(c.pairingId)
         server.takeRequest()
         server.enqueue(MockResponse().setHeader("Content-Type", "application/x-ndjson").setBody("""{"seq":1,"type":"done","status":"done"}""" + "\n"))

@@ -219,7 +219,7 @@
     <string name="settings_phone_tools_reachable">Agents can reach this phone at %1$s</string>
     <string name="settings_phone_tools_no_tailnet">Tailscale isn\'t connected on this phone, so agents can\'t reach it.</string>
     <string name="settings_phone_tools_starting">Starting...</string>
-    <!-- Under "Agents can reach this phone at ...": who may connect; %1$s lists them ("Clark, Claude Code and Codex on desktop-zolder"). -->
+    <!-- Under "Agents can reach this phone at ...": who may connect; %1$s lists them ("Clark, Claude Code and Codex on office-pc"). -->
     <string name="settings_phone_tools_for">For %1$s</string>
     <string name="settings_phone_tools_no_agents">No agent is set up to connect yet.</string>
     <string name="settings_phone_tools_port">Port</string>
