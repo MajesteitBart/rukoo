@@ -234,22 +234,23 @@
     <!-- phone: drafts.json couldn't be written; the composer stays open -->
     <string name="composer_errors_save_local">Rukoo couldn\'t keep the draft on this phone.</string>
     <string name="composer_errors_delete_local">Rukoo couldn\'t delete the draft from this phone.</string>
+    <!-- phone: a draft reopened from the server's Drafts folder couldn't be saved back there; %1$s is the server's error -->
+    <string name="composer_errors_save_server">Rukoo couldn\'t save the draft in Drafts (%1$s), so it\'s kept on this phone.</string>
+    <!-- phone: the signature sits under the plain-text editor, apart from the text an agent may replace -->
+    <string name="composer_signature_label">Signature</string>
+    <string name="composer_signature_remove">Remove signature</string>
+    <string name="composer_signature_add">Add signature</string>
     <string name="composer_errors_no_account">Add an email account in Rukoo Mail before you write an email.</string>
     <string name="composer_errors_no_recipients">Add at least one recipient</string>
     <string name="composer_errors_send">Sending failed</string>
     <!-- phone: the engine's reason after desktop's "Sending failed" -->
     <string name="composer_errors_send_reason">Sending failed: %1$s</string>
-    <string name="composer_quote_date">Date: %1$s</string>
     <string name="composer_quote_exclude">Exclude from message</string>
     <string name="composer_quote_excluded_pill">··· excluded</string>
-    <string name="composer_quote_from">From: %1$s</string>
     <string name="composer_quote_hide">Hide previous messages</string>
     <string name="composer_quote_include">Include in message</string>
-    <string name="composer_quote_marker">-------- Original message --------</string>
     <string name="composer_quote_show">Show previous messages</string>
-    <string name="composer_quote_subject">Subject: %1$s</string>
     <string name="composer_quote_title">Previous message</string>
-    <string name="composer_quote_to">To: %1$s</string>
     <!-- phone -->
     <string name="composer_recipient_remove">Remove %1$s</string>
     <string name="composer_send_no_subject_help">Send this email without a subject?</string>
@@ -270,9 +271,7 @@
     <string name="composer_titles_reply_all">Reply all</string>
 
     <!-- The agent's way in from the mail screens (desktop agent.panel.*, without the keyboard shortcut) -->
-    <string name="mail_agent_entry">Chat with an agent</string>
     <string name="mail_agent_history">Recent chats</string>
-    <string name="mail_agent_history_news">Recent chats, %1$d new</string>
     <string name="mail_agent_add_to_chat">Add to chat</string>
     <!-- phone: the reader's agent pill -->
     <string name="mail_agent_chat_about">Chat with %1$s about this email</string>

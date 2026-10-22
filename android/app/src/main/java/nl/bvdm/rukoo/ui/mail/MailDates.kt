@@ -69,15 +69,6 @@ class MailDates(
 
     fun numericDate(ts: Long): String = numeric.format(at(ts))
 
-    /** The quote header's date: "08/10/2026 14:45 (GMT+02:00)" with the offset of that moment. */
-    fun quoteDate(ts: Long): String {
-        val d = at(ts)
-        val seconds = d.offset.totalSeconds
-        val sign = if (seconds >= 0) "+" else "-"
-        val abs = kotlin.math.abs(seconds) / 60
-        return "${numericDate(ts)} ${time(ts)} (GMT$sign${"%02d".format(abs / 60)}:${"%02d".format(abs % 60)})"
-    }
-
     /** Whether two moments fall on the same calendar day here. */
     fun sameDay(a: Long, b: Long): Boolean = at(a).toLocalDate() == at(b).toLocalDate()
 

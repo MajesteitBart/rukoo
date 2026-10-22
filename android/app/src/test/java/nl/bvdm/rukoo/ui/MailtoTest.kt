@@ -24,6 +24,36 @@ class MailtoTest {
     }
 
     @Test
+    fun androidsComposeIntentExtrasFillABareMailto() {
+        // Intent(ACTION_SENDTO, "mailto:").putExtra(EXTRA_EMAIL, ...).putExtra(EXTRA_SUBJECT, ...): the usual "Contact support".
+        val m = Mailto.withExtras(
+            Mailto.parse("mailto:"),
+            to = arrayOf("help@x.com", "\"Support, NL\" <nl@x.com>"),
+            cc = arrayOf("a@x.com, b@x.com"),
+            bcc = null,
+            subject = "Bug",
+            text = "Steps:\r\n1. Open",
+        )
+        assertEquals(listOf(Address("", "help@x.com"), Address("Support, NL", "nl@x.com")), m.to)
+        assertEquals(listOf(Address("", "a@x.com"), Address("", "b@x.com")), m.cc)
+        assertEquals("Bug", m.subject)
+        assertEquals("Steps:\n1. Open", m.body)
+    }
+
+    @Test
+    fun theLinksOwnFieldsWinAndRecipientsAreNotDoubled() {
+        val m = Mailto.withExtras(
+            Mailto.parse("mailto:help@x.com?subject=From%20link&body=Link%20body"),
+            to = arrayOf("HELP@x.com", "more@x.com"),
+            subject = "From extra",
+            text = "Extra body",
+        )
+        assertEquals(listOf("help@x.com", "more@x.com"), m.to.map { it.address })
+        assertEquals("From link", m.subject)
+        assertEquals("Link body", m.body)
+    }
+
+    @Test
     fun ignoresOtherLinks() {
         assertEquals(MailtoFields(), Mailto.parse("https://example.com"))
         assertEquals(MailtoFields(), Mailto.parse(null))

@@ -1,11 +1,5 @@
 package nl.bvdm.rukoo.mail.google
 
-import android.app.Activity
-import android.content.ActivityNotFoundException
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import androidx.browser.customtabs.CustomTabsIntent
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -16,10 +10,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,26 +30,6 @@ import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-/** "Sign in with Google" for the settings and onboarding screens. */
-interface GoogleSignIn {
-    /** True once a Google OAuth client is set up on this phone. */
-    val available: StateFlow<Boolean>
-
-    /** Stores the client from a JSON file the user picked; throws a [MailException] when it isn't one. */
-    fun importClient(json: String)
-
-    fun setClient(client: GoogleClient)
-
-    /**
-     * Opens Google's consent page in a Custom Tab and waits (up to five minutes) for the browser to come
-     * back to the loopback address. Throws a [MailException] with a text for the user on failure.
-     */
-    suspend fun signIn(context: Context, loginHint: String? = null): GoogleTokens
-
-    /** Ends a sign-in that is waiting for the browser. */
-    fun cancel()
-}
-
 /** A fresh access token from a refresh, and what the grant still covers when Google says so. */
 data class TokenGrant(val accessToken: String, val expiresAt: Long, val scopes: List<String>?) {
     override fun toString() = "TokenGrant(expiresAt=$expiresAt, scopes=$scopes)"
@@ -69,18 +39,17 @@ data class TokenGrant(val accessToken: String, val expiresAt: Long, val scopes: 
  * OAuth 2.0 for installed apps with a loopback redirect and PKCE, ported from desktop's google.js
  * (spec 4 §4). The same Desktop-type client works on the phone: a ServerSocket on 127.0.0.1 receives
  * the redirect, and its page sends the browser on to `rukoo-oauth://done` so Rukoo comes back to the
- * front. Google refuses sign-in inside WebViews; a Custom Tab is a real browser.
+ * front. Google refuses sign-in inside WebViews; a Custom Tab is a real browser. The engine's
+ * signInWithGoogle is the way in; this class only talks to Google.
  */
 class GoogleAuth(
     private val clients: GoogleClientStore,
     http: OkHttpClient,
     private val strings: MailStrings,
-    scope: CoroutineScope,
     private val clock: Clock = Clock.System,
     private val tokenEndpoint: String = GoogleOAuth.TOKEN_ENDPOINT,
     private val authEndpoint: String = GoogleOAuth.AUTH_ENDPOINT,
-    private val openBrowser: (Context, String) -> Unit = ::openCustomTab,
-) : GoogleSignIn {
+) {
     private val http = http.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
@@ -88,29 +57,28 @@ class GoogleAuth(
         .callTimeout(GoogleOAuth.TOKEN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
 
-    override val available: StateFlow<Boolean> = clients.client.map { it != null }.stateIn(scope, SharingStarted.Eagerly, clients.client.value != null)
-
     @Volatile
     private var pending: CompletableDeferred<String>? = null
 
     private fun oauthError(message: String, code: String) = MailException(message, code)
 
-    override fun importClient(json: String) {
-        val client = GoogleOAuth.parseClient(json) ?: throw oauthError(strings.get(R.string.engine_errors_google_invalid_client), "invalid_client")
-        clients.set(client)
-    }
-
-    override fun setClient(client: GoogleClient) = clients.set(client)
+    fun setClient(client: GoogleClient) = clients.set(client)
 
     fun client(): GoogleClient? = clients.client.value
 
-    override fun cancel() {
+    /** Ends a sign-in that is still waiting for the browser; the next one takes over. */
+    private fun cancelWaiting() {
         pending?.completeExceptionally(oauthError(strings.get(R.string.engine_errors_google_cancelled), "cancelled"))
     }
 
-    override suspend fun signIn(context: Context, loginHint: String?): GoogleTokens {
+    /**
+     * Opens Google's consent page through [openUrl] (a Custom Tab) and waits, up to five minutes, for the
+     * browser to come back to the loopback address. Throws a [MailException] with a text for the user on
+     * failure; cancelling the caller ends the wait and closes the loopback socket.
+     */
+    suspend fun signIn(openUrl: (String) -> Unit, loginHint: String? = null): GoogleTokens {
         val client = client() ?: throw oauthError(strings.get(R.string.engine_errors_google_not_configured), "no_client")
-        cancel()
+        cancelWaiting()
         val pkce = GoogleOAuth.Pkce.create()
         val server = withContext(Dispatchers.IO) { ServerSocket(0, 8, InetAddress.getByName("127.0.0.1")) }
         val redirectUri = "http://127.0.0.1:${server.localPort}/"
@@ -121,7 +89,7 @@ class GoogleAuth(
             val code = coroutineScope {
                 val acceptor = launch(Dispatchers.IO) { serve(server, pkce.state, waiting, open) }
                 try {
-                    openBrowser(context, GoogleOAuth.authUrl(client, redirectUri, pkce, loginHint, authEndpoint))
+                    openUrl(GoogleOAuth.authUrl(client, redirectUri, pkce, loginHint, authEndpoint))
                     withTimeout(GoogleOAuth.SIGN_IN_TIMEOUT_MS) { waiting.await() }
                 } catch (e: TimeoutCancellationException) {
                     throw oauthError(strings.get(R.string.engine_errors_google_timeout), "timeout")
@@ -339,18 +307,5 @@ class GoogleAuth(
             "<body style=\"font:16px system-ui,'Segoe UI',sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0\">\n" +
             "<div style=\"text-align:center;max-width:420px;padding:0 24px\"><h1 style=\"font-weight:600;font-size:24px\">$t</h1>" +
             "<p style=\"color:#aaa\">$p</p>$link</div></body></html>"
-    }
-
-    companion object {
-        fun openCustomTab(context: Context, url: String) {
-            val uri = Uri.parse(url)
-            val tab = CustomTabsIntent.Builder().setShowTitle(true).build()
-            if (context !is Activity) tab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            try {
-                tab.launchUrl(context, uri)
-            } catch (e: ActivityNotFoundException) {
-                context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }
-        }
     }
 }

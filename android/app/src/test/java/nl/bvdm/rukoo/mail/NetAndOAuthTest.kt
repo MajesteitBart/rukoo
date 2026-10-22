@@ -116,12 +116,7 @@ class NetAndOAuthTest {
     }
 
     @Test
-    fun `client files in Google's and the flat shape are read`() {
-        assertEquals(GoogleClient("a", "b"), GoogleOAuth.parseClient("{\"installed\":{\"client_id\":\"a\",\"client_secret\":\"b\",\"redirect_uris\":[]}}"))
-        assertEquals(GoogleClient("a", "b"), GoogleOAuth.parseClient("{\"web\":{\"client_id\":\"a\",\"client_secret\":\"b\"}}"))
-        assertEquals(GoogleClient("a", "b"), GoogleOAuth.parseClient("{\"client_id\":\"a\",\"client_secret\":\"b\"}"))
-        assertNull(GoogleOAuth.parseClient("{\"client_id\":\"a\"}"))
-        assertNull(GoogleOAuth.parseClient("not json"))
+    fun `the id token's payload is read`() {
         val payload = Base64.getUrlEncoder().withoutPadding().encodeToString("{\"email\":\"me@gmail.com\",\"name\":\"Me\"}".toByteArray())
         assertEquals("me@gmail.com", GoogleOAuth.decodeJwtPayload("h.$payload.s")["email"]?.toString()?.trim('"'))
     }
@@ -129,7 +124,7 @@ class NetAndOAuthTest {
     private fun auth(server: MockWebServer, scope: CoroutineScope): GoogleAuth {
         val store = GoogleClientStore(tmp.newFile("client.json").also { it.delete() }, FakeCipher)
         store.set(GoogleClient("cid", "secret"))
-        return GoogleAuth(store, OkHttpClient(), TestStrings, scope, Clock { 1_000 }, tokenEndpoint = server.url("/token").toString())
+        return GoogleAuth(store, OkHttpClient(), TestStrings, Clock { 1_000 }, tokenEndpoint = server.url("/token").toString())
     }
 
     @Test
@@ -187,7 +182,8 @@ class NetAndOAuthTest {
             val store = GoogleClientStore(tmp.newFile("c.json").also { it.delete() }, FakeCipher).apply { set(GoogleClient("cid", "secret")) }
             val pages = java.util.Collections.synchronizedList(mutableListOf<String>())
             var browser: Thread? = null
-            val google = GoogleAuth(store, OkHttpClient(), TestStrings, scope, tokenEndpoint = server.url("/token").toString(), openBrowser = { _, url ->
+            val google = GoogleAuth(store, OkHttpClient(), TestStrings, tokenEndpoint = server.url("/token").toString())
+            val tokens = google.signIn({ url ->
                 val params = url.substringAfter('?').split('&').associate { p -> p.substringBefore('=') to UriComponent.decode(p.substringAfter('='))!! }
                 val port = params.getValue("redirect_uri").substringAfter("127.0.0.1:").trimEnd('/').toInt()
                 browser = Thread {
@@ -199,7 +195,6 @@ class NetAndOAuthTest {
                     idle.close()
                 }.also { it.start() }
             })
-            val tokens = google.signIn(android.content.ContextWrapper(null))
             browser!!.join(10_000)
             assertEquals("me@gmail.com", tokens.email)
             assertTrue(pages[0].startsWith("HTTP/1.1 200") && pages[0].contains("Invalid request. Start sign-in again from Rukoo Mail."))

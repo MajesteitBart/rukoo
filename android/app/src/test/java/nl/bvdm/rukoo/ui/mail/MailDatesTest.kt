@@ -46,12 +46,6 @@ class MailDatesTest {
     }
 
     @Test
-    fun quoteDateCarriesTheOffsetOfThatMoment() {
-        assertEquals("08/10/2026 14:45 (GMT+02:00)", en.quoteDate(at(2026, 10, 8)))
-        assertEquals("08-12-2026 14:45 (GMT+01:00)", nl.quoteDate(at(2026, 12, 8)))
-    }
-
-    @Test
     fun fileSizes() {
         assertEquals("192 B", MailDates.fileSize(192, Locale.UK))
         assertEquals("12 kB", MailDates.fileSize(12 * 1024, Locale.UK))

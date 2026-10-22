@@ -28,8 +28,9 @@ data class OutgoingAttachment(
 )
 
 /**
- * A message to send (spec 4 §3.2). [text] is the plain body; [html], when set, is the HTML body the
- * composer built from it (quote and signature included). Threading headers come from the source.
+ * A message to send or save (spec 4 §3.2). [text] is what the user typed, without signature or quote;
+ * the engine builds the HTML and plain bodies from it, the account's signature and [quote], the way
+ * desktop's composer lays them out. Threading headers come from the source.
  */
 @Serializable
 data class OutgoingMessage(
@@ -40,7 +41,6 @@ data class OutgoingMessage(
     val bcc: List<Address> = emptyList(),
     val subject: String = "",
     val text: String = "",
-    val html: String? = null,
     val inReplyTo: String? = null,
     val references: List<String> = emptyList(),
     val attachments: List<OutgoingAttachment> = emptyList(),
@@ -49,9 +49,11 @@ data class OutgoingMessage(
     val sourceMessageId: String? = null,
     /**
      * The quoted original as an HTML block (desktop's `data-rukoo-quote` header and blockquote, see
-     * mail.compose.Quote), appended after [text] when [html] is null. Empty for no quote.
+     * mail.compose.Quote), appended after the text and signature. Empty for no quote.
      */
     val quote: String = "",
+    /** Whether the account's signature (MailEngine.signatureFor) goes under the text. */
+    val signature: Boolean = true,
     /** The Rukoo id of the stored draft this message replaces; it is deleted after sending or saving again. */
     val draftId: String? = null,
 )

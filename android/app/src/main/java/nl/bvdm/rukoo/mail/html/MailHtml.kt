@@ -84,10 +84,4 @@ object MailHtml {
         val styles = doc.head().select("style, link[rel=stylesheet]").joinToString("") { it.outerHtml() }
         return styles + doc.body().html()
     }
-
-    /** The body element's own attributes that carry presentation, for wrapping the body elsewhere. */
-    internal val BODY_ATTRS = setOf("style", "bgcolor", "background", "text", "link", "vlink", "alink", "dir", "lang", "class", "data-rukoo-canvas")
-
-    internal fun bodyAttributes(body: Element): String =
-        body.attributes().asList().filter { it.key.lowercase() in BODY_ATTRS }.joinToString("") { " ${it.html()}" }
 }

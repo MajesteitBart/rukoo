@@ -1,7 +1,6 @@
 package nl.bvdm.rukoo.mail
 
 import nl.bvdm.rukoo.mail.html.MailHtml
-import nl.bvdm.rukoo.mail.html.ReaderHtml
 import nl.bvdm.rukoo.mail.html.SignatureHtml
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -48,54 +47,6 @@ class HtmlTest {
         assertTrue(out.contains("url(data:image/gif;base64,BBBB)"))
         // Remote images load, like desktop.
         assertTrue(out.contains("https://remote.example/a.png"))
-    }
-
-    @Test
-    fun `the reader inverts html mail in the dark theme and turns images back`() {
-        val dark = ReaderHtml.document("<p>Hello</p>", isHtml = true, light = false, darkEmails = true)
-        assertTrue(dark.contains("html{filter:invert(1) hue-rotate(180deg);background:#e2e3e8}"))
-        assertTrue(dark.contains("img,picture,video,svg,[style*=\"background-image\"]:not([data-rukoo-canvas]),[background]{filter:invert(1) hue-rotate(180deg)}"))
-        assertTrue(dark.contains("color-scheme:light;color:#15171c"))
-        assertTrue(dark.contains("a{color:#1a5fd0}"))
-
-        val plainDark = ReaderHtml.document("<p>Hello</p>", isHtml = false, light = false)
-        assertFalse(plainDark.contains("invert"))
-        assertTrue(plainDark.contains("color-scheme:dark;color:#e6e8ee"))
-        assertTrue(plainDark.contains("a{color:#8ab0ff}"))
-
-        val light = ReaderHtml.document("<p>Hello</p>", isHtml = true, light = true)
-        assertFalse(light.contains("invert"))
-        assertTrue(light.contains("a{color:#2f63c8}"))
-
-        val ownColors = ReaderHtml.document("<p>Hello</p>", isHtml = true, light = false, darkEmails = false)
-        assertFalse(ownColors.contains("invert"))
-        assertTrue(ownColors.contains("<meta name=\"viewport\""))
-        assertTrue(ownColors.endsWith("<p>Hello</p></body></html>"))
-    }
-
-    @Test
-    fun `a newsletter's grey canvas becomes transparent but its white card stays`() {
-        val html = "<html><body style=\"margin:0;background:#f2f2f2\"><table width=\"100%\" style=\"background:#f2f2f2\"><tr><td align=\"center\">" +
-            "<table width=\"600\" style=\"background:#ffffff\"><tr><td>Card</td></tr></table></td></tr></table></body></html>"
-        val doc = ReaderHtml.document(html, isHtml = true, light = false)
-        val parsed = Jsoup.parse(doc)
-        assertTrue(parsed.body().attr("style").contains("background-color:transparent !important"))
-        assertTrue(parsed.body().hasAttr("data-rukoo-canvas"))
-        val outer = parsed.selectFirst("table[width=100%]")!!
-        assertTrue(outer.attr("style").endsWith("background-color:transparent !important"))
-        val card = parsed.selectFirst("table[width=600]")!!
-        assertEquals("background:#ffffff", card.attr("style"))
-    }
-
-    @Test
-    fun `wide mail is zoomed to fit, down to four fifths`() {
-        val wide = "<table width=\"600\"><tr><td>x</td></tr></table>"
-        assertTrue(ReaderHtml.document(wide, isHtml = true, light = true, availableWidth = 560).contains("body{zoom:0.927}"))
-        assertTrue(ReaderHtml.document(wide, isHtml = true, light = true, availableWidth = 300).contains("body{zoom:0.800}"))
-        assertFalse(ReaderHtml.document(wide, isHtml = true, light = true, availableWidth = 700).contains("zoom"))
-        assertNull(ReaderHtml.parseColor("not a colour"))
-        assertEquals(listOf(242, 242, 242, 255), ReaderHtml.parseColor("#f2f2f2")!!.toList())
-        assertEquals(listOf(255, 255, 255, 127), ReaderHtml.parseColor("rgba(255, 255, 255, .5)")!!.toList())
     }
 
     @Test

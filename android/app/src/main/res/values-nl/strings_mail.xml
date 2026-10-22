@@ -222,21 +222,20 @@
     <string name="composer_errors_autosave">Automatisch opslaan mislukt</string>
     <string name="composer_errors_save_local">Rukoo kon het concept niet op deze telefoon bewaren.</string>
     <string name="composer_errors_delete_local">Rukoo kon het concept niet van deze telefoon verwijderen.</string>
+    <string name="composer_errors_save_server">Rukoo kon het concept niet in Concepten bewaren (%1$s), dus het staat nu op deze telefoon.</string>
+    <string name="composer_signature_label">Handtekening</string>
+    <string name="composer_signature_remove">Handtekening weghalen</string>
+    <string name="composer_signature_add">Handtekening toevoegen</string>
     <string name="composer_errors_no_account">Voeg in Rukoo Mail eerst een e-mailaccount toe voordat je een e-mail schrijft.</string>
     <string name="composer_errors_no_recipients">Voeg minstens één ontvanger toe</string>
     <string name="composer_errors_send">Verzenden mislukt</string>
     <string name="composer_errors_send_reason">Verzenden mislukt: %1$s</string>
-    <string name="composer_quote_date">Datum: %1$s</string>
     <string name="composer_quote_exclude">Niet meesturen</string>
     <string name="composer_quote_excluded_pill">··· niet meegestuurd</string>
-    <string name="composer_quote_from">Van: %1$s</string>
     <string name="composer_quote_hide">Vorige berichten verbergen</string>
     <string name="composer_quote_include">Toch meesturen</string>
-    <string name="composer_quote_marker">-------- Oorspronkelijk bericht --------</string>
     <string name="composer_quote_show">Vorige berichten tonen</string>
-    <string name="composer_quote_subject">Onderwerp: %1$s</string>
     <string name="composer_quote_title">Vorig bericht</string>
-    <string name="composer_quote_to">Aan: %1$s</string>
     <string name="composer_recipient_remove">%1$s verwijderen</string>
     <string name="composer_send_no_subject_help">Wil je deze e-mail zonder onderwerp verzenden?</string>
     <string name="composer_send_no_subject_title">Geen onderwerp</string>
@@ -256,9 +255,7 @@
     <string name="composer_titles_reply_all">Allen beantwoorden</string>
 
     <!-- The agent's way in from the mail screens -->
-    <string name="mail_agent_entry">Chatten met een agent</string>
     <string name="mail_agent_history">Recente chats</string>
-    <string name="mail_agent_history_news">Recente chats, %1$d nieuw</string>
     <string name="mail_agent_add_to_chat">Toevoegen aan chat</string>
     <string name="mail_agent_chat_about">Chat met %1$s over deze e-mail</string>
     <string name="mail_drafts_local">Op deze telefoon</string>

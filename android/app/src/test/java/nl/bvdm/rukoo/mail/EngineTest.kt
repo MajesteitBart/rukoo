@@ -13,7 +13,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import nl.bvdm.rukoo.mail.compose.toOutgoing
+import nl.bvdm.rukoo.core.Change
 import nl.bvdm.rukoo.mail.model.Account
+import nl.bvdm.rukoo.mail.model.AccountPatch
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.AuthKind
 import nl.bvdm.rukoo.mail.model.DeleteOutcome
@@ -308,7 +310,7 @@ class EngineTest {
         val original = engine.inbox().first()
         val fields = engine.replyFields(original.id, ReplyKind.REPLY)
         assertEquals(listOf(Address("Sender", "sender@example.com")), fields.to)
-        val outgoing = fields.toComposerState().copy(body = "Thanks!").toOutgoing(Address("Me", "me@example.com"))
+        val outgoing = fields.toComposerState().copy(body = "Thanks!").toOutgoing(acc.id, Address("Me", "me@example.com"))
         engine.send(outgoing)
 
         val sent = server.sent.single()
@@ -339,6 +341,47 @@ class EngineTest {
         } catch (e: MailException) {
             assertEquals("Invalid email address: broken", e.message)
         }
+    }
+
+    @Test
+    fun `sent mail carries the account's HTML signature, or the general one, and none when left out`() = runBlocking {
+        val server = server()
+        val engine = engine(server)
+        val acc = added(engine)
+        val original = engine.inbox().first()
+        val logo = "<b>Bart</b><br><img src=\"https://bvdm.ai/logo.png\" width=\"80\">"
+        engine.updateAccount(acc.id, AccountPatch(signatureHtml = Change(logo)))
+        val fields = engine.replyFields(original.id, ReplyKind.REPLY)
+        // The composer's text never holds the signature; an agent's draft replaces only the text.
+        assertEquals("", fields.body)
+        engine.send(fields.toComposerState().copy(body = "Thanks!").toOutgoing(acc.id, Address("Me", "me@example.com")))
+        val html = server.sent.last().html!!
+        assertTrue(html.contains("<div>Thanks!</div><div><br></div><div class=\"signature\"><b>Bart</b><br><img src=\"https://bvdm.ai/logo.png\" width=\"80\"></div>"))
+        assertTrue(html.indexOf("class=\"signature\"") < html.indexOf("data-rukoo-quote"))
+
+        // No signature of its own: the general one, as desktop's usesGeneralSignature.
+        engine.updateAccount(acc.id, AccountPatch(signature = Change(null)))
+        engine.updatePrefs { it.copy(signature = "", signatureHtml = "<i>Sent with Rukoo</i>") }
+        engine.send(OutgoingMessage(acc.id, Address("Me", "me@example.com"), to = listOf(Address("", "x@example.com")), subject = "Hi", text = "Hello"))
+        assertTrue(server.sent.last().html!!.contains("<div class=\"signature\"><i>Sent with Rukoo</i></div>"))
+        assertTrue(server.sent.last().text.startsWith("Hello\n\nSent with Rukoo"))
+
+        engine.send(OutgoingMessage(acc.id, Address("Me", "me@example.com"), to = listOf(Address("", "x@example.com")), subject = "Hi", text = "Hello", signature = false))
+        assertFalse(server.sent.last().html!!.contains("class=\"signature\""))
+    }
+
+    @Test
+    fun `sending an edited desktop draft removes it from Drafts`() = runBlocking {
+        val server = server()
+        val engine = engine(server)
+        val acc = added(engine)
+        val stored = engine.saveDraft(OutgoingMessage(acc.id, Address("", "me@example.com"), to = listOf(Address("", "x@example.com")), subject = "Plan", text = "Draft"))!!
+        val state = engine.replyFields(stored, ReplyKind.DRAFT).toComposerState()
+        assertEquals(stored, state.draftId)
+        engine.send(state.copy(body = "Draft, finished").toOutgoing(acc.id, Address("", "me@example.com")))
+        assertTrue(server.box("Drafts").messages.isEmpty())
+        assertNull(engine.summary(stored))
+        assertTrue(server.sent.last().text.startsWith("Draft, finished"))
     }
 
     @Test

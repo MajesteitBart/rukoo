@@ -84,16 +84,4 @@ object GoogleOAuth {
     }
 
     fun JsonObject.string(key: String): String? = this[key]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
-
-    /**
-     * A client from a file the user picked or desktop sent: Google's download (`installed` or `web`) or
-     * the flat `{client_id, client_secret}` form. Null when it isn't one.
-     */
-    fun parseClient(text: String): GoogleClient? = runCatching {
-        val root = Json.parseToJsonElement(text).jsonObject
-        val c = (root["installed"] ?: root["web"])?.jsonObject ?: root
-        val id = c.string("client_id")
-        val secret = c.string("client_secret")
-        if (id.isNullOrBlank() || secret.isNullOrBlank()) null else GoogleClient(id, secret)
-    }.getOrNull()
 }

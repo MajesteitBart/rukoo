@@ -30,7 +30,6 @@
     <string name="engine_errors_google_connection">Cannot reach Google. Check your internet connection.</string>
     <string name="engine_errors_google_denied">You did not grant access.</string>
     <string name="engine_errors_google_expired">Your Google access has expired or been revoked. Sign in again through Settings.</string>
-    <string name="engine_errors_google_invalid_client">This file does not contain a Google OAuth client.</string>
     <string name="engine_errors_google_no_email">Google did not return an email address.</string>
     <string name="engine_errors_google_no_refresh_token">Google did not return a refresh token. Try again.</string>
     <string name="engine_errors_google_not_configured">Google sign-in is not set up on this phone.</string>
@@ -81,12 +80,4 @@
     <string name="engine_google_page_close_tab">You can close this tab.</string>
     <string name="engine_google_page_open">Open Rukoo Mail</string>
 
-    <!-- Provider presets on the add-account screen (desktop providers.js). -->
-    <string name="engine_setup_providers_google_note">Use an app password from your Google account (myaccount.google.com/apppasswords). IMAP must be enabled in Gmail.</string>
-    <string name="engine_setup_providers_yahoo_note">Yahoo requires an app password (Account security &gt; Generate app password).</string>
-    <string name="engine_setup_providers_outlook_note">Only works if your account allows IMAP with a password or app password.</string>
-    <string name="engine_setup_providers_exchange_note">Enter the IMAP and SMTP servers for your Exchange environment.</string>
-    <string name="engine_setup_providers_office365_note">Your administrator must enable IMAP and SMTP AUTH for your mailbox.</string>
-    <string name="engine_setup_providers_other_label">Other</string>
-    <string name="engine_setup_providers_other_note">We suggest servers based on your domain. Adjust them if needed.</string>
 </resources>

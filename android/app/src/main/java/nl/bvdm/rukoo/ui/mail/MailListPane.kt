@@ -49,7 +49,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import nl.bvdm.rukoo.R
-import nl.bvdm.rukoo.agents.model.Unread
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageSummary
@@ -57,9 +56,10 @@ import nl.bvdm.rukoo.mail.model.SortOrder
 import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.mail.model.QuickFilter as ListFilter
 import nl.bvdm.rukoo.settings.Density
+import nl.bvdm.rukoo.ui.agent.AgentEntryButton
+import nl.bvdm.rukoo.ui.agent.rememberAgentNews
 import nl.bvdm.rukoo.ui.components.EmptyState
 import nl.bvdm.rukoo.ui.components.Hairline
-import nl.bvdm.rukoo.ui.components.NewsTone
 import nl.bvdm.rukoo.ui.components.QuickFilter
 import nl.bvdm.rukoo.ui.components.QuickFilterRow
 import nl.bvdm.rukoo.ui.components.RkBottomSheet
@@ -329,7 +329,6 @@ private fun GroupHead(label: String) {
 @Composable
 private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSummary>, accounts: List<Pair<String, String>>, folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>) {
     val c = Rk.colors
-    val nav by app.state.collectAsStateWithLifecycle()
     val where = view.accountId?.let { id -> accounts.firstOrNull { it.first == id }?.second }
         ?: accounts.singleOrNull()?.second
         ?: stringResource(R.string.mailbox_search_all_accounts)
@@ -339,13 +338,7 @@ private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSumm
     var menu by remember { mutableStateOf(false) }
     var sort by remember { mutableStateOf(false) }
     val settings by app.services.settingsSnapshot.collectAsStateWithLifecycle()
-    val rows by app.services.agents.conversations.collectAsStateWithLifecycle()
-    val news = rows.filter { (it.unread != Unread.NONE || it.waiting) && !(app.chatOnScreen(nav) && it.id == nav.chatConversationId) }
-    val tone = when {
-        news.any { it.waiting } -> NewsTone.WAITING
-        news.isNotEmpty() -> NewsTone.UNREAD
-        else -> null
-    }
+    val news = rememberAgentNews(app)
     RkTopBar(
         title = viewTitle(view, folders),
         subtitle = sub,
@@ -355,13 +348,9 @@ private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSumm
         navigation = { RkIconButton(RukooIcons.Menu, stringResource(R.string.mailbox_layout_folders), onClick = app::openDrawer) },
         actions = {
             RkIconButton(RukooIcons.Search, stringResource(R.string.mailbox_search_label), onClick = app::openSearch)
-            // With news the sparkle opens the chat list, where the news is; otherwise a chat.
-            RkIconButton(
-                RukooIcons.Sparkle,
-                if (news.isEmpty()) stringResource(R.string.mail_agent_entry) else stringResource(R.string.mail_agent_history_news, news.size),
-                onClick = { if (news.isEmpty()) app.openChat() else app.openChatList() },
-                news = tone,
-            )
+            // The chat UI's entry: a chat about the selected email, with the news dot; the news itself is in the
+            // chat's bell and under More.
+            AgentEntryButton(app, emailId = null)
             Box {
                 RkIconButton(RukooIcons.More, stringResource(R.string.common_actions_more_options), onClick = { menu = true })
                 RkDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -386,7 +375,7 @@ private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSumm
                         menu = false
                         sort = true
                     })
-                    RkMenuItem(stringResource(R.string.mail_agent_history), icon = RukooIcons.Bell, tag = news.size.takeIf { it > 0 }?.toString(), onClick = {
+                    RkMenuItem(stringResource(R.string.mail_agent_history), icon = RukooIcons.Bell, tag = news.count.takeIf { it > 0 }?.toString(), onClick = {
                         menu = false
                         app.openChatList()
                     })

@@ -17,6 +17,7 @@ import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageSummary
 import nl.bvdm.rukoo.mail.model.DeleteOutcome
+import nl.bvdm.rukoo.mail.model.DeleteResult
 import nl.bvdm.rukoo.mail.model.Moved
 import nl.bvdm.rukoo.mail.model.UnsubscribeResult
 import nl.bvdm.rukoo.ui.Mailto
@@ -251,37 +252,44 @@ class MailUi(
             val reopen = host.detach(list.map { it.id })
             val moved = mutableListOf<Moved>()
             var deleted = 0
+            var failed: String? = null
+            // What a delete did: the ones moved to Trash can be undone, the ones the server refused are back in
+            // the list (the engine puts them back), only the rest are gone for good.
+            fun count(ids: List<String>, result: DeleteResult) {
+                moved += result.move.moved
+                val notGone = result.move.moved.map { it.oldId }.toSet() + result.move.failed.map { it.id }
+                deleted += ids.count { it !in notGone }
+                if (failed == null) failed = result.move.failed.firstOrNull()?.error
+            }
             try {
                 if (permanent.isNotEmpty()) {
-                    mail.delete(permanent.map { it.id }, force = true)
-                    deleted += permanent.size
+                    val ids = permanent.map { it.id }
+                    count(ids, mail.delete(ids, force = true))
                 }
                 val rest = list.filter { it.role != FolderRole.TRASH }
                 if (rest.isNotEmpty()) {
-                    val result = mail.delete(rest.map { it.id })
+                    val ids = rest.map { it.id }
+                    val result = mail.delete(ids)
                     when (result.outcome) {
-                        DeleteOutcome.TRASHED -> {
-                            moved += result.move.moved
-                            result.move.failed.firstOrNull()?.let { toasts.showError(it.error) }
-                        }
-                        DeleteOutcome.DELETED -> deleted += rest.size
+                        DeleteOutcome.TRASHED, DeleteOutcome.DELETED -> count(ids, result)
                         DeleteOutcome.NEEDS_CONFIRM -> {
+                            // Only the ones that would go for good are counted in the question (desktop asks per message).
+                            val forever = rest.filter { mail.folders.value[it.accountId]?.none { f -> f.role == FolderRole.TRASH } != false }
+                            val n = forever.size.coerceAtLeast(1)
                             val ok = confirm(
                                 strings.get(R.string.mailbox_delete_title),
-                                if (rest.size == 1) strings.get(R.string.mailbox_delete_no_trash) else strings.plural(R.plurals.mailbox_delete_no_trash_count, rest.size, rest.size),
+                                if (n == 1) strings.get(R.string.mailbox_delete_no_trash) else strings.plural(R.plurals.mailbox_delete_no_trash_count, n, n),
                                 strings.get(R.string.common_actions_delete),
                                 danger = true,
                             )
-                            if (ok) {
-                                mail.delete(rest.map { it.id }, force = true)
-                                deleted += rest.size
-                            }
+                            if (ok) count(ids, mail.delete(ids, force = true))
                         }
                     }
                 }
             } catch (e: Exception) {
                 error(e)
             }
+            failed?.let { toasts.showError(it) }
             when {
                 moved.isNotEmpty() -> offerUndo(
                     moved,

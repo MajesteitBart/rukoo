@@ -17,8 +17,15 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import nl.bvdm.rukoo.AppServices
+import nl.bvdm.rukoo.NotificationRoute
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.agents.AgentIntents
 import nl.bvdm.rukoo.agents.AgentSettingsStore
+import nl.bvdm.rukoo.core.Change
+import nl.bvdm.rukoo.mail.compose.toOutgoing
+import nl.bvdm.rukoo.mail.model.AccountPatch
+import nl.bvdm.rukoo.mail.sync.MailNotifier
+import nl.bvdm.rukoo.ui.Mailto
 import nl.bvdm.rukoo.agents.preview.PreviewAgentHub
 import nl.bvdm.rukoo.core.SecretCipher
 import nl.bvdm.rukoo.desktop.StubDesktopLink
@@ -296,9 +303,120 @@ class AppViewModelTest {
         assertEquals("Re: Call on Thursday", d.subject)
         assertEquals(listOf("sanne@example.com"), d.to.map { it.address })
         assertEquals(listOf("joris@example.com"), d.cc.map { it.address })
-        assertTrue(d.quote.startsWith("${R.string.composer_quote_marker}\n"))
+        // The engine's quote: desktop's marked header and the original in a blockquote.
+        assertTrue(d.quote.startsWith("<br><div data-rukoo-quote"))
+        assertTrue(d.quote.contains("-------- Original message --------"))
+        assertTrue(d.quote.contains("<blockquote"))
         assertEquals(sanne.messageId, d.inReplyTo)
         assertTrue(vm.state.value.composerOpen)
+    }
+
+    @Test
+    fun theSignatureStaysOutOfTheTextSoAnAgentsDraftKeepsIt() = runTest(main) {
+        val (s, vm) = setup()
+        s.mail.updateAccount("demo", AccountPatch(signature = Change("Demo User\nRukoo Mail")))
+        vm.newMessage()
+        // An untouched new message has no text of its own: write_draft treats it as free, not as the user's words.
+        assertEquals("", s.composer.current()!!.body)
+        assertFalse(vm.composerAsks())
+        // What write_draft does: the agent's text replaces the body.
+        s.composer.update { it.copy(to = listOf(Address("Sanne", "sanne@example.com")), subject = "Plan", body = "Thursday works.", draftedBy = "Clark") }
+        vm.send()
+        val sent = s.mail.listMessages(MailView(ViewKind.SENT)).first { it.subject == "Plan" }
+        val html = s.mail.fullMessage(sent.id).html
+        assertTrue(html.contains("<div>Thursday works.</div><div><br></div><div class=\"signature\">Demo User<br>Rukoo Mail</div>"))
+    }
+
+    @Test
+    fun aSignatureLeftOutStaysOut() = runTest(main) {
+        val (s, vm) = setup()
+        s.mail.updateAccount("demo", AccountPatch(signature = Change("Demo User")))
+        vm.newMessage()
+        s.composer.update { it.copy(to = listOf(Address("Sanne", "sanne@example.com")), subject = "Short", body = "Ok", signatureExcluded = true) }
+        vm.send()
+        val sent = s.mail.listMessages(MailView(ViewKind.SENT)).first { it.subject == "Short" }
+        assertFalse(s.mail.fullMessage(sent.id).html.contains("class=\"signature\""))
+    }
+
+    @Test
+    fun anEditedServerDraftKeepsItsQuoteAndReplacesTheStoredCopy() = runTest(main) {
+        val (s, vm) = setup()
+        val sanne = s.mail.listMessages(MailView.AllInboxes).first { it.subject == "Call on Thursday" }
+        // A reply saved in Drafts (as desktop would), opened again with Edit.
+        val reply = s.mail.replyFields(sanne.id, ReplyKind.REPLY).toComposerState().copy(body = "Thursday at 10?")
+        val stored = s.mail.saveDraft(reply.toOutgoing("demo", Address("Demo User", "demo@example.com")))!!
+        vm.editDraft(stored)
+        val d = s.composer.current()!!
+        assertEquals(stored, d.draftId)
+        assertEquals("Thursday at 10?", d.body)
+        assertTrue(d.quote.contains("<blockquote"))
+        assertEquals("demo@example.com", d.from!!.address)
+
+        // Saving it again replaces the stored copy instead of adding one on this phone.
+        s.composer.update { it.copy(body = "Thursday at 11?", dirty = true) }
+        vm.saveDraft()
+        val drafts = s.mail.listMessages(MailView(ViewKind.DRAFTS))
+        assertNull(s.mail.summary(stored))
+        val again = drafts.single { it.subject == "Re: Call on Thursday" }
+        assertTrue(s.drafts.drafts.value.isEmpty())
+
+        // Sending it removes the draft from Drafts.
+        vm.editDraft(again.id)
+        s.composer.update { it.copy(body = "Thursday at 11 then.", dirty = true) }
+        vm.send()
+        assertNull(s.mail.summary(again.id))
+        val sent = s.mail.listMessages(MailView(ViewKind.SENT)).first { it.subject == "Re: Call on Thursday" }
+        assertTrue(s.mail.fullMessage(sent.id).html.contains("data-rukoo-quote"))
+    }
+
+    @Test
+    fun notificationTapsOpenTheMessageTheInboxOrTheChat() = runTest(main) {
+        val (s, vm) = setup()
+        val m = s.mail.listMessages(MailView.AllInboxes).first()
+        // The new-mail notifier's extras, read the way MainActivity reads them.
+        val one = MailNotifier.extras("demo", listOf(m))
+        vm.openRoute(NotificationRoute.of({ one[it] }, { false })!!)
+        assertEquals(m.id, vm.state.value.openMessageId)
+        assertEquals(Pane.READER, vm.state.value.top)
+
+        val several = MailNotifier.extras("demo", listOf(m, m.copy(id = "other")))
+        assertEquals(NotificationRoute.Inbox("demo"), NotificationRoute.of({ several[it] }, { false }))
+        vm.openRoute(NotificationRoute.Inbox("demo"))
+        assertEquals(MailView(ViewKind.INBOX), vm.state.value.view)
+
+        // The agent notifier's extras: a draft notification whose composer has closed opens its chat.
+        val agent = mapOf(AgentIntents.EXTRA_CONVERSATION_ID to "c_1", AgentIntents.EXTRA_MESSAGE_ID to m.id)
+        val route = NotificationRoute.of({ agent[it] }, { it == AgentIntents.EXTRA_OPEN_COMPOSER })!!
+        assertEquals(NotificationRoute.Composer(NotificationRoute.Chat("c_1", m.id)), route)
+        vm.openRoute(route)
+        assertTrue(vm.state.value.chatOpen)
+        assertEquals("c_1", vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun aMailtoLinkGetsTheDefaultAccountAndFrom() = runTest(main) {
+        val (s, vm) = setup()
+        vm.newMessage(Mailto.withExtras(Mailto.parse("mailto:"), to = arrayOf("help@x.com"), subject = "Bug"))
+        val d = s.composer.current()!!
+        assertEquals("demo", d.accountId)
+        assertEquals("demo@example.com", d.from!!.address)
+        assertEquals(listOf("help@x.com"), d.to.map { it.address })
+        assertEquals("Bug", d.subject)
+    }
+
+    @Test
+    fun followingAnEmailDoesntBringTheChatForward() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat("c_1", "a")
+        vm.interacted(Pane.READER)
+        vm.followEmail("c_2", "b")
+        assertEquals("c_2", vm.state.value.chatConversationId)
+        assertEquals("b", vm.state.value.chatEmailId)
+        assertEquals(Pane.READER, vm.state.value.lastInteracted)
+        vm.openMessage("x")
+        vm.openChat(withoutEmail = true)
+        assertNull(vm.state.value.chatEmailId)
+        assertNull(vm.state.value.chatConversationId)
     }
 
     private fun <T> assertNotNullAndGet(value: T?): T {

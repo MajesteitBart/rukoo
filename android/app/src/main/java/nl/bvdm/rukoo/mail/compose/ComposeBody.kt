@@ -15,25 +15,20 @@ data class ComposedBody(val html: String, val text: String)
  * desktop's font wrapper, so a draft or a sent mail looks the same and reopens the same on desktop.
  */
 object ComposeBody {
-    /** The text the composer starts with for an account with [signature]: an empty line, then the signature. */
-    fun initialText(signature: Signature?): String = signature?.text?.takeIf { it.isNotBlank() }?.let { "\n\n" + it } ?: ""
-
     /**
-     * [text] is what the user typed. While its end is still the [signature] text the composer put
-     * there, that tail becomes the formatted signature; an edited signature stays plain text. A
-     * signature without text (only a logo) can't show in the plain-text composer and always goes along.
+     * [text] is what the user typed. The composer keeps the signature out of it, so an agent's draft that
+     * replaces the text never takes the signature along; [signature] always goes under the text, formatted,
+     * above the quote as desktop places it (composer.js:96-98, 1121-1126). Null leaves it out.
      */
-    fun build(text: String, signature: Signature?, quote: String): ComposedBody {
-        var typed = text
-        var signatureHtml = ""
-        val sigText = signature?.text?.trim().orEmpty()
-        if (signature != null && signature.html.isNotBlank() && (sigText.isEmpty() || text.trimEnd().endsWith(sigText))) {
-            if (sigText.isNotEmpty()) typed = text.trimEnd().removeSuffix(sigText).trimEnd('\n', ' ', '\t', '\r')
-            signatureHtml = "<div><br></div><div class=\"signature\">${signature.html}</div>"
-        }
-        val body = "<div>${MailText.esc(typed).replace("\r\n", "\n").replace("\n", "<br>").ifEmpty { "<br>" }}</div>"
-        val html = "${Quote.WRAPPER_OPEN}$body$signatureHtml$quote</div>"
-        val plain = listOf(text.trimEnd(), Quote.plain(quote)).filter { it.isNotEmpty() }.joinToString("\n\n")
+    fun build(text: String, signature: Signature?, rawQuote: String): ComposedBody {
+        val quote = Quote.normalize(rawQuote)
+        val typed = text.replace("\r\n", "\n").trimEnd()
+        val sigHtml = signature?.html?.takeIf { it.isNotBlank() }
+        val signatureBlock = sigHtml?.let { "<div><br></div><div class=\"signature\">$it</div>" }.orEmpty()
+        val body = "<div>${MailText.esc(typed).replace("\n", "<br>").ifEmpty { "<br>" }}</div>"
+        val html = "${Quote.WRAPPER_OPEN}$body$signatureBlock$quote</div>"
+        val sigText = if (sigHtml != null) signature.text.trim() else ""
+        val plain = listOf(typed, sigText, Quote.plain(quote)).filter { it.isNotEmpty() }.joinToString("\n\n")
         return ComposedBody(html, plain)
     }
 

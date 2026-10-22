@@ -92,6 +92,20 @@ object Quote {
         "<br><div data-rukoo-quote style=\"$HEAD_STYLE\">${MailText.esc(head).replace("\n", "<br>")}</div><br>" +
             "<blockquote style=\"$BLOCKQUOTE_STYLE\">$originalHtml</blockquote>"
 
+    private const val BLOCK_START = "<br><div data-rukoo-quote"
+
+    /**
+     * [quote] as desktop's block. A quote that arrives as plain text (header lines, an empty line, the quoted
+     * text), as an agent tool may still write one into the composer, is escaped into a block, so text from an
+     * email never becomes markup in the mail that goes out.
+     */
+    fun normalize(quote: String): String {
+        if (quote.isBlank() || quote.startsWith(BLOCK_START)) return quote
+        val head = quote.substringBefore("\n\n").trim()
+        val text = quote.substringAfter("\n\n", "")
+        return block(head, MailText.textToHtml(text))
+    }
+
     /** The quote block of [m], with its sanitized HTML as a fragment. */
     fun of(m: FullMessage, labels: QuoteLabels, zone: ZoneId, locale: Locale): String =
         block(header(m, labels, zone, locale), MailHtml.fragment(m.html))
@@ -99,14 +113,24 @@ object Quote {
     /** The quote as plain text for the text part: header, then the original with "> " before each line. */
     fun plain(quoteHtml: String): String {
         if (quoteHtml.isBlank()) return ""
-        val doc = Jsoup.parse(quoteHtml)
+        val (head, quoted) = parts(quoteHtml)
+        val body = if (quoted.isEmpty()) "" else quoted.lines().joinToString("\n") { if (it.isEmpty()) ">" else "> $it" }
+        return listOf(head, body).filter { it.isNotBlank() }.joinToString("\n\n")
+    }
+
+    /**
+     * The header lines and the quoted text of a quote block, as plain text: what the phone's composer shows
+     * of the quote it sends as HTML.
+     */
+    fun parts(quoteHtml: String): Pair<String, String> {
+        if (quoteHtml.isBlank()) return "" to ""
+        val doc = Jsoup.parse(normalize(quoteHtml))
         val head = doc.selectFirst("div[data-rukoo-quote]")?.let { el ->
             el.select("br").forEach { it.replaceWith(org.jsoup.nodes.TextNode("\n")) }
             el.wholeText().trim()
         }.orEmpty()
         val quoted = doc.selectFirst("blockquote")?.html()?.let { MailText.htmlToPlain(it) }.orEmpty()
-        val body = quoted.lines().joinToString("\n") { if (it.isEmpty()) ">" else "> $it" }
-        return listOf(head, body).filter { it.isNotBlank() }.joinToString("\n\n")
+        return head to quoted.trim()
     }
 
     /**

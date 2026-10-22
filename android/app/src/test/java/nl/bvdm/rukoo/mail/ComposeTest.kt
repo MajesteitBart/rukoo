@@ -62,7 +62,7 @@ class ComposeTest {
 
     @Test
     fun `reply goes to the sender, reply-all adds everyone but you`() {
-        val reply = ReplyBuilder.build(ReplyKind.REPLY, call, account, identities, null, QuoteLabels.ENGLISH, zone, Locale.UK)
+        val reply = ReplyBuilder.build(ReplyKind.REPLY, call, account, identities, QuoteLabels.ENGLISH, zone, Locale.UK)
         assertEquals(listOf(sanne), reply.to)
         assertTrue(reply.cc.isEmpty())
         assertEquals("Re: Call on Thursday", reply.subject)
@@ -71,7 +71,7 @@ class ComposeTest {
         assertEquals("acc:INBOX:12", reply.sourceMessageId)
         assertEquals(me, reply.from)
 
-        val all = ReplyBuilder.build(ReplyKind.REPLY_ALL, call, account, identities, null, QuoteLabels.ENGLISH, zone, Locale.UK)
+        val all = ReplyBuilder.build(ReplyKind.REPLY_ALL, call, account, identities, QuoteLabels.ENGLISH, zone, Locale.UK)
         assertEquals(listOf(sanne), all.to)
         assertEquals(listOf(joris), all.cc)
     }
@@ -112,7 +112,7 @@ class ComposeTest {
 
     @Test
     fun `forward carries the attachments and no threading headers`() {
-        val fwd = ReplyBuilder.build(ReplyKind.FORWARD, call, account, identities, null, QuoteLabels.ENGLISH, zone, Locale.UK)
+        val fwd = ReplyBuilder.build(ReplyKind.FORWARD, call, account, identities, QuoteLabels.ENGLISH, zone, Locale.UK)
         assertEquals("Fwd: Call on Thursday", fwd.subject)
         assertTrue(fwd.to.isEmpty())
         assertEquals(null, fwd.inReplyTo)
@@ -123,36 +123,78 @@ class ComposeTest {
     }
 
     @Test
-    fun `the body keeps the signature formatted while its text is untouched`() {
+    fun `a reply starts empty and the formatted signature goes between the text and the quote`() {
         val signature = Signature("Bart\nbvdm.ai", "<b>Bart</b><br><a href=\"https://bvdm.ai\">bvdm.ai</a>")
-        val reply = ReplyBuilder.build(ReplyKind.REPLY, call, account, identities, signature, QuoteLabels.ENGLISH, zone, Locale.UK)
-        assertEquals("\n\nBart\nbvdm.ai", reply.body)
+        val reply = ReplyBuilder.build(ReplyKind.REPLY, call, account, identities, QuoteLabels.ENGLISH, zone, Locale.UK)
+        // The signature isn't text an agent's draft could replace: the composer keeps it apart.
+        assertEquals("", reply.body)
+        assertFalse(reply.signatureExcluded)
 
-        val typed = "Thursday works.\n\nBart\nbvdm.ai"
-        val body = ComposeBody.build(typed, signature, reply.quote)
+        val body = ComposeBody.build("Thursday works.\n", signature, reply.quote)
         assertTrue(body.html.startsWith("<div style=\"font-family:'Segoe UI',Arial,sans-serif;font-size:12pt\"><div>Thursday works.</div><div><br></div><div class=\"signature\"><b>Bart</b>"))
-        assertTrue(body.html.contains("<div data-rukoo-quote"))
+        assertTrue(body.html.indexOf("class=\"signature\"") < body.html.indexOf("<div data-rukoo-quote"))
         assertTrue(body.html.endsWith("</blockquote></div>"))
         assertTrue(body.text.startsWith("Thursday works.\n\nBart\nbvdm.ai\n\n-------- Original message --------"))
         assertTrue(body.text.contains("> Shall we have a call?"))
 
-        val edited = ComposeBody.build("Thursday works.\n\nBart (mobile)", signature, "")
-        assertFalse(edited.html.contains("class=\"signature\""))
-        assertTrue(edited.html.contains("<div>Thursday works.<br><br>Bart (mobile)</div>"))
+        val without = ComposeBody.build("Thursday works.", null, "")
+        assertFalse(without.html.contains("class=\"signature\""))
+        assertEquals("Thursday works.", without.text)
     }
 
     @Test
-    fun `a signature with only a logo always goes along`() {
+    fun `a plain-text quote from an agent tool is escaped into desktop's block`() {
+        val plain = "-------- Original message --------\nFrom: Sanne\n\nHi <img src=x onerror=alert(1)> there"
+        val body = ComposeBody.build("Sure.", null, plain)
+        assertTrue(body.html.contains("<div data-rukoo-quote"))
+        assertTrue(body.html.contains("Hi &lt;img src=x onerror=alert(1)&gt; there"))
+        assertFalse(body.html.contains("<img"))
+        assertEquals("-------- Original message --------\nFrom: Sanne" to "Hi <img src=x onerror=alert(1)> there", Quote.parts(plain))
+        // Desktop's block itself passes through untouched.
+        val block = Quote.block("-------- Original message --------", "<p>Hi</p>")
+        assertEquals(block, Quote.normalize(block))
+    }
+
+    @Test
+    fun `a signature with only a logo goes along too`() {
         val logo = Signature("", "<img src=\"https://bvdm.ai/logo.png\" width=\"80\">")
-        assertEquals("", ComposeBody.initialText(logo))
         val body = ComposeBody.build("Hi", logo, "")
         assertTrue(body.html.contains("<div>Hi</div><div><br></div><div class=\"signature\"><img src=\"https://bvdm.ai/logo.png\" width=\"80\"></div>"))
         assertEquals("Hi", body.text)
     }
 
     @Test
+    fun `a desktop draft reopens without its signature block and keeps From and attachments`() {
+        val html = Quote.WRAPPER_OPEN + "<div>See the PDF.</div><div><br></div><div class=\"signature\"><b>Hello desk</b></div>" +
+            Quote.block("-------- Original message --------\nFrom: Sanne", "<p>Old</p>") + "</div>"
+        val draft = call.copy(
+            summary = call.summary.copy(id = "acc:Drafts:7", folder = "Drafts", from = Address("Hello desk", "hello@example.com")),
+            from = Address("Hello desk", "hello@example.com"),
+            html = html,
+        )
+        val reopened = ReplyBuilder.build(ReplyKind.DRAFT, draft, account, identities)
+        assertEquals("See the PDF.", reopened.body)
+        assertFalse(reopened.signatureExcluded)
+        assertEquals("hello@example.com", reopened.from.address)
+        assertEquals(listOf("acc:Drafts:7" to 1), reopened.attachments.map { it.sourceMessageId to it.sourceIndex })
+        assertTrue(reopened.quote.contains("<blockquote"))
+
+        // A draft saved without a signature doesn't get one.
+        val bare = draft.copy(html = Quote.WRAPPER_OPEN + "<div>Just text.</div></div>")
+        assertTrue(ReplyBuilder.build(ReplyKind.DRAFT, bare, account, identities).signatureExcluded)
+
+        // Opening it twice gives the same composer key, so its composer comes to the front instead of a second one.
+        assertEquals(reopened.toComposerState().id, reopened.toComposerState().id)
+        val out = reopened.toComposerState().copy(quoteExcluded = true).toOutgoing("acc", me)
+        assertEquals("acc:Drafts:7", out.draftId)
+        assertEquals("", out.quote)
+        assertTrue(out.signature)
+        assertEquals("hello@example.com", out.from.address)
+    }
+
+    @Test
     fun `a saved reply reopens with its quote split off and round-trips`() {
-        val reply = ReplyBuilder.build(ReplyKind.REPLY, call, account, identities, null, QuoteLabels.ENGLISH, zone, Locale.UK)
+        val reply = ReplyBuilder.build(ReplyKind.REPLY, call, account, identities, QuoteLabels.ENGLISH, zone, Locale.UK)
         val html = ComposeBody.build("Yes, 10:00 is fine.", null, reply.quote).html
         val draft = call.copy(
             summary = call.summary.copy(id = "acc:Drafts:5", folder = "Drafts", from = me, to = listOf(sanne), cc = emptyList(), subject = "Re: Call on Thursday"),
@@ -165,7 +207,7 @@ class ComposeTest {
             references = reply.references,
             attachments = emptyList(),
         )
-        val reopened = ReplyBuilder.build(ReplyKind.DRAFT, draft, account, identities, null)
+        val reopened = ReplyBuilder.build(ReplyKind.DRAFT, draft, account, identities)
         assertEquals("Yes, 10:00 is fine.", reopened.body)
         assertEquals("acc:Drafts:5", reopened.draftId)
         assertEquals(reply.quote.substringAfter("<blockquote"), reopened.quote.substringAfter("<blockquote"))
@@ -174,9 +216,13 @@ class ComposeTest {
         assertEquals("<demo-13@example.com>", reopened.inReplyTo)
 
         val state = reopened.toComposerState()
-        val outgoing = state.toOutgoing(me)
+        assertEquals("acc:Drafts:5", state.draftId)
+        // Saved without a signature, it stays without one.
+        assertTrue(state.signatureExcluded)
+        val outgoing = state.toOutgoing("acc", me)
         assertEquals("acc:Drafts:5", outgoing.draftId)
         assertEquals(reopened.quote, outgoing.quote)
+        assertFalse(outgoing.signature)
     }
 
     @Test

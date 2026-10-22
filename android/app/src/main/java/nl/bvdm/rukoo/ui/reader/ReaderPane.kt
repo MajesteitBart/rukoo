@@ -179,16 +179,8 @@ private fun Reader(app: AppViewModel, id: String) {
             )
             if (m != null) {
                 if (draft) {
-                    RkToolbarButton(stringResource(R.string.reader_actions_edit), RukooIcons.Edit, primary = true, onClick = {
-                        full?.let { f ->
-                            app.openComposer(
-                                ComposerState(
-                                    accountId = f.accountId, to = f.to, cc = f.cc, bcc = f.bcc, subject = f.subject, body = f.text,
-                                    replyKind = ReplyKind.DRAFT, inReplyTo = f.inReplyTo, references = f.references,
-                                ),
-                            )
-                        }
-                    })
+                    // The draft's From, attachments and quote come along; sending or saving replaces the stored copy.
+                    RkToolbarButton(stringResource(R.string.reader_actions_edit), RukooIcons.Edit, primary = true, onClick = { app.editDraft(m.id) })
                     RkIconButton(RukooIcons.Trash, stringResource(R.string.common_actions_delete), onClick = { ui.delete(listOf(m)) })
                 } else {
                     if (canArchive) RkIconButton(RukooIcons.Archive, stringResource(R.string.common_actions_archive), onClick = { ui.archive(listOf(m)) })
@@ -223,7 +215,7 @@ private fun Reader(app: AppViewModel, id: String) {
                         light = !c.isDark,
                         darkEmails = settings.darkEmails,
                         label = stringResource(R.string.reader_content_label),
-                        onLink = { uri -> openMailLink(context, uri) { url -> app.openComposer(Mailto.parse(url).toComposer()) } },
+                        onLink = { uri -> openMailLink(context, uri) { url -> app.newMessage(Mailto.parse(url)) } },
                     )
                 }
             }

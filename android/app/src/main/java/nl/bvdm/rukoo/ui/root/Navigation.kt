@@ -124,6 +124,13 @@ data class NavState(
         lastInteracted = Pane.CHAT,
     ).push(Pane.CHAT)
 
+    /**
+     * The open chat switches to [conversationId] about [emailId] (the reader beside it moved on) without
+     * coming forward: the stack and the pane used last stay as they are.
+     */
+    fun followEmail(conversationId: String?, emailId: String?): NavState =
+        if (!chatOpen) this else copy(chatConversationId = conversationId, chatEmailId = emailId)
+
     fun chatCreated(conversationId: String): NavState = if (chatOpen) copy(chatConversationId = conversationId) else this
 
     fun closeChat(): NavState =
