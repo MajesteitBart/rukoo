@@ -1284,7 +1284,8 @@ test('tools: what the phone answers besides a result becomes a tool error that n
   env.hub.cfg.update({ phone: { enabled: true } });
   const seen = phone.seen.length;
   await phone.close();
-  assert.match(text(await run()), /^Rukoo on your phone could not run get_context: .*ECONN(REFUSED|RESET)/);
+  // Refused, or on Linux a kept-alive socket the closed server dropped (undici's UND_ERR_SOCKET).
+  assert.match(text(await run()), /^Rukoo on your phone could not run get_context: .*(ECONN(REFUSED|RESET)|UND_ERR_SOCKET)/);
   assert.equal(phone.seen.length, seen);
 });
 
