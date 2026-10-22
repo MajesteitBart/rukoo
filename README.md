@@ -17,6 +17,7 @@ Translation labels have descriptive keys and screen context in the [English sour
 | Windows 10 and 11, x64 | Supported | Installer and portable `.exe` |
 | Linux, x64 | Supported | `.deb` for Ubuntu and Debian, AppImage for other distributions. See [Linux](#linux). |
 | macOS 13 or newer, Apple Silicon and Intel | Experimental | DMG and ZIP, notarized only when the release notes say so. See [macOS](#macos-experimental). |
+| Android 12 or newer, built for the Galaxy Z Fold7 | Experimental | APK, built from `android/`. See [Rukoo for Android](docs/android.md). |
 
 Releases up to v1.2.0 contain only Windows packages; later releases add Linux and macOS packages. You can also [run Rukoo from source](#run-it) on all three.
 

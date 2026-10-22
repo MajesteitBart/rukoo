@@ -6,10 +6,13 @@ Rukoo Mail is an open-source Windows desktop email client built with Electron. I
 
 The main process handles accounts, mail, calendar data, local storage and agent connections. The renderer uses plain HTML, CSS and JavaScript modules, without a frontend framework or bundler. Start with [README.md](README.md) for the product and architecture, and [docs/agents.md](docs/agents.md) for agent integrations.
 
+The repository also holds Rukoo for Android in `android/`: a native Kotlin and Jetpack Compose app that ports the desktop's mail engine, agent hub, MCP tools and design to a phone, built for the Galaxy Z Fold7. It reaches Hermes and OpenClaw itself and runs Claude Code and Codex through desktop Rukoo (`src/main/agents/phonehost.js`). [docs/android.md](docs/android.md) describes it.
+
 ## What makes this project special?
 
 - **It is a desktop client connected to real accounts.** A test can change a real mailbox, even when the app runs locally. Choose the profile and account deliberately; use the test-data rules below.
 - **One interface serves several integrations.** Mail has real and demo implementations; agent chat supports Hermes, Claude Code and Codex. A shared change needs checking at the affected adapters, not just in the provider used during development.
+- **Two apps share one behavior.** The Android app ports the desktop's MCP tools (names, schemas, descriptions), turn text, quick action prompts and `<unsafe_content>` rules, and Clark's bridge caches one tool list for every device. A change to those on one side needs the same change on the other, or a note in the PR saying why not.
 - **Several surfaces share behavior.** Composing works inline and in a separate window. Theme, language and zoom affect multiple windows. A change that works in the main window can still be incomplete.
 - **The repository is public.** Code, documentation and evidence must be usable without Bart's credentials, private mail or local machine state. Keep private data out of GitHub and retain third-party license notices when adapting components.
 
@@ -83,6 +86,7 @@ Run focused checks during development and before pushing finished work. Run both
 - **Translations:** run `npm run i18n:check`; add the relevant Electron checks when labels or language changes affect layout or behavior.
 - **Changes across several areas:** run `npm test` and `npm run test:e2e` once the focused checks pass.
 - **Packaging:** run `npm run dist` for installer or packaging changes. Outputs belong in ignored `dist/`.
+- **Android:** from `android/`, run `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. For UI changes, install the debug APK on an emulator and check the cover size (`adb shell wm size 1080x2520`) and the inner size (1968x2184 at density 420), dark and light, English and Dutch; the debug "Test agent" exercises the chat without a network. Use an emulator of your own: other emulators on Bart's machine belong to other work. A change to the phone host or the bridge also needs `node --test test/agent-phonehost.test.js` or the bridge's tests.
 - **Documentation only:** check referenced files, links and commands. Application suites are not required.
 
 Add or update focused tests for changed behavior. Check the actual outcome of asynchronous work, such as the saved draft, synchronized state or completed agent turn. Report failures, skipped tests and unavailable live integrations separately from passing checks. Use the commands in `package.json`; this repo has no lint or typecheck script to borrow from RevenueOS.
@@ -143,6 +147,7 @@ The agent hub coordinates conversations and providers, and Rukoo exposes its own
 - `src/renderer/agent/bui.js` and `src/renderer/agent.css`: locally maintained Beautiful UI ports. These are editable source, not an installed component package. Preserve license notices. Main-app styles live in `src/renderer/styles.css`.
 - `src/i18n/`: English source catalog, Dutch translations and locale registry. Read its nested `AGENTS.md` and [docs/translations.md](docs/translations.md) before catalog work.
 - `.agents/skills/rukoo-design/`: development design guidance and references. `skills/` contains user-facing skills shipped with the app; follow [skills/README.md](skills/README.md) for those.
+- `android/`: Rukoo for Android. `app/src/main/java/nl/bvdm/rukoo/` has `mail/`, `agents/`, `mcp/`, `desktop/` and `ui/`, mirroring the desktop's main process and renderer; [docs/android.md](docs/android.md) has the code map. Release signing reads the ignored `android/signing.properties`.
 - `scripts/`: launch and capture helpers. `dist/`, `test-results/`, `playwright-report/` and `tmp/` are local outputs, not implementation source.
 
 ## Taste
