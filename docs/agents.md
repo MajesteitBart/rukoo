@@ -178,7 +178,8 @@ Deleting a chat on the phone closes its Claude Code process here.
 
 - The phone's routes exist only on the Tailscale listener, only while "Let my phone use this computer" is on, and only for connections from a Tailscale address. Anything else gets the same 404 as an unknown address. Turning the switch off stops running phone turns and the code on screen.
 - At pairing the phone gets a random 256-bit token. Rukoo keeps only its SHA-256 hash in `data/agents.json`, which also works on Linux without a keyring. The token opens the phone's routes, not Rukoo's MCP server.
-- Pairing allows five tries a minute from one address and ten a minute in total. Twenty wrong tokens within a minute lock that address out for five minutes. Each phone gets 60 requests a minute besides its streams, four turns at once and one turn per chat.
+- Pairing allows five tries a minute from one address and ten a minute in total. Twenty wrong tokens within a minute lock that address out for five minutes. Each phone gets 60 requests a minute besides its streams, four turns at once and one turn per chat. A turn counts from the moment its upload starts, and all phones together get eight.
+- A phone can only continue the Claude Code sessions and Codex threads this computer started for that phone's own chats. Rukoo keeps that list in `data/phone-sessions.json`, so it survives a restart; deleting the chat on the phone or removing the phone clears its entries. Any other session or thread the phone names is dropped, and the turn starts a new one, as for a lost session.
 - A paired phone can run Claude Code and Codex on this computer, with your sign-ins and files. That is why its turns always ask before they act. Tailscale's access controls can narrow which devices reach this computer's port 47800.
 - If you lose the phone, remove it in Settings → Agents → Phone: its token stops working at once. Accounts and keys it already fetched stay on the phone, so change those passwords, remove Rukoo's access in your Google account, and give Hermes and OpenClaw new keys. The phone can also unpair itself.
 
@@ -192,7 +193,7 @@ Everything is under `/phone/v1` on the Tailscale listener, JSON unless noted, wi
 | `GET /hello` | This computer's name and version, the export window, and Claude Code's and Codex's status, model and access |
 | `GET /export` | The export above, once; `403 export-closed` outside the window |
 | `GET /agents/{claude,codex}/{models,skills}` | The model and skill lists, as the chat panel gets them; `?refresh=1` loads them again |
-| `POST /turns` | Runs a turn and streams NDJSON (below); `409 busy` while the chat has a turn, `422 invalid` for a bad request |
+| `POST /turns` | Runs a turn and streams NDJSON (below); `409 busy` while the chat has a turn, `422 invalid` for a bad request, `429 rate-limited` while four turns of this phone, or eight of all phones, run or upload |
 | `GET /turns/:turnId/events?after=<seq>` | Reconnects to a running turn, or one that ended less than two minutes ago |
 | `POST /turns/:turnId/approvals/:approvalId` `{choice}` | Answers an approval card |
 | `POST /turns/:turnId/stop` | Stops the turn; the stream carries the outcome |

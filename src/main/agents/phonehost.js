@@ -15,7 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { AgentError, EFFORTS, MAX_PAIRINGS, isTailscale } = require('./config');
+const { AgentError, EFFORTS, MAX_PAIRINGS, isTailscale, writeJsonAtomic } = require('./config');
 const { json, bearer, MAX_ABSURD } = require('./mcp');
 const { describe } = require('./http');
 const { INLINE_IMAGE_MAX, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
@@ -36,10 +36,16 @@ const PAIR_LIMIT_SOURCE = 5;
 // A token that fails this often from one address in a minute locks that address out for five minutes.
 const AUTH_FAILURES = 20;
 const AUTH_BLOCK_MS = 5 * 60 * 1000;
-// Per phone: requests other than the two streams, per minute, and turns at once.
+// Per phone: requests other than the two streams, per minute, and turns at once. A turn counts from the moment its
+// upload starts, and all phones together get MAX_TURNS_ALL.
 const REQUESTS_PER_MINUTE = 60;
 const MAX_TURNS_PER_PHONE = 4;
+const MAX_TURNS_ALL = 8;
 const MINUTE = 60 * 1000;
+// The Claude Code sessions and Codex threads this computer gave phone chats, next to agents.json (see bindProvider).
+const PROVIDER_FILE = 'phone-sessions.json';
+const PROVIDER_KINDS = ['sessionId', 'threadId'];
+const MAX_PROVIDER_IDS = 2000;
 // The phone may fetch the export this long after pairing, or after "Send accounts and settings again".
 const EXPORT_WINDOW_MS = 10 * 60 * 1000;
 
@@ -118,6 +124,7 @@ const oneLine = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
 const peerOf = (req) => String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
 const line = (event) => `${JSON.stringify(event)}\n`;
 const hubModule = () => require('./hub');
+const providerId = (v) => typeof v === 'string' && v.length > 0 && v.length <= 200 && !/[\u0000-\u001f\u007f]/.test(v);
 
 function fail(res, status, code, detail = '', extra = {}) {
   json(res, status, detail ? { error: code, detail } : { error: code }, extra);
@@ -234,6 +241,12 @@ class PhoneHost {
     this.chats = new Map();
     // host conversation id → the token Claude Code signs in with on the loopback listener.
     this.tokens = new Map();
+    // pairing id → its turns whose body is still being read. They hold a turn's place (see dispatch()).
+    this.uploads = new Map();
+    // "<kind>\n<id>" → { kind, id, pairingId, conversationId, agent }: which phone chat this computer gave a Claude
+    // Code session or Codex thread to, oldest first. Kept in PROVIDER_FILE, so a restart keeps the check.
+    this.providerFile = path.join(hub.dataDir, PROVIDER_FILE);
+    this.providerIds = this.loadProviderIds();
     this.refresh();
     this.sweeper = setInterval(() => this.sweep(), MINUTE);
     if (this.sweeper.unref) this.sweeper.unref();
@@ -305,6 +318,7 @@ class PhoneHost {
     const prefix = `p_${id}_`;
     for (const [hostCid, r] of [...this.routes]) if (r.pairingId === id) this.forgetChat(hostCid, r.agent);
     for (const hostCid of [...this.tokens.keys()]) if (hostCid.startsWith(prefix)) this.forgetChat(hostCid, null);
+    this.dropProviderIds((r) => r.pairingId === id);
     this.hub.cfg.removePairing(id);
     this.refresh();
     this.emit({ event: 'removed', pairing: { id, name: p.name }, by });
@@ -394,14 +408,45 @@ class PhoneHost {
       return this.refuse(req, res, 429, 'rate-limited', `At most ${REQUESTS_PER_MINUTE} requests a minute`, { 'Retry-After': this.requests.retryAfter(pairing.id) });
     }
     if (this.hub.cfg.touchPairing(pairing.id, this.now())) this.emit({ event: 'changed' });
-    const [max, isJson] = BODIES[name];
-    const body = isJson ? await this.readJson(req, res, max) : await this.readCapped(req, res, max);
-    if (body === undefined) return;
-    // A body can take a while to arrive. The phone may have been removed, or the switch turned off, meanwhile: then
-    // nothing runs and nothing goes out.
-    const current = this.enabled() && !this.hub.disposed ? this.hub.cfg.pairing(pairing.id) : null;
-    if (!current) return fail(res, this.enabled() ? 401 : 404, this.enabled() ? 'unauthorized' : 'not found');
-    return this[name](req, res, { pairing: current, ip, params, query, body });
+    // A turn's body can be 52 MB, so it takes its turn's place before it is read: uploads count as running turns.
+    // The place comes free when the request ends, however it ends; a turn it started counts itself from then on.
+    const upload = name === 'startTurn';
+    if (upload) {
+      const full = this.turnsFull(pairing.id);
+      if (full) return this.refuse(req, res, 429, 'rate-limited', full);
+      this.uploads.set(pairing.id, (this.uploads.get(pairing.id) || 0) + 1);
+    }
+    try {
+      const [max, isJson] = BODIES[name];
+      const body = isJson ? await this.readJson(req, res, max) : await this.readCapped(req, res, max);
+      if (body === undefined) return;
+      // A body can take a while to arrive. The phone may have been removed, or the switch turned off, meanwhile: then
+      // nothing runs and nothing goes out.
+      const current = this.enabled() && !this.hub.disposed ? this.hub.cfg.pairing(pairing.id) : null;
+      if (!current) return fail(res, this.enabled() ? 401 : 404, this.enabled() ? 'unauthorized' : 'not found');
+      return await this[name](req, res, { pairing: current, ip, params, query, body });
+    } finally {
+      if (upload) {
+        const left = (this.uploads.get(pairing.id) || 1) - 1;
+        if (left > 0) this.uploads.set(pairing.id, left);
+        else this.uploads.delete(pairing.id);
+      }
+    }
+  }
+
+  // Why the phone can't start another turn now, or null. Running turns and turns still uploading both count.
+  turnsFull(pairingId) {
+    let mine = this.uploads.get(pairingId) || 0;
+    let all = 0;
+    for (const n of this.uploads.values()) all += n;
+    for (const turn of this.turns.values()) {
+      if (turn.done) continue;
+      all++;
+      if (turn.pairingId === pairingId) mine++;
+    }
+    if (mine >= MAX_TURNS_PER_PHONE) return `At most ${MAX_TURNS_PER_PHONE} turns from one phone run at once`;
+    if (all >= MAX_TURNS_ALL) return `At most ${MAX_TURNS_ALL} turns from phones run at once`;
+    return null;
   }
 
   // The pairing a bearer token belongs to. Every entry is compared, in constant time, as in hub.identify().
@@ -441,6 +486,8 @@ class PhoneHost {
       });
       req.on('error', () => resolve(TOO_BIG));
       req.on('end', () => resolve(tooBig ? TOO_BIG : Buffer.concat(chunks)));
+      // Closed before the end (the phone hung up): settled anyway, so a turn's place comes free.
+      req.on('close', () => resolve(TOO_BIG));
     });
   }
 
@@ -624,8 +671,6 @@ class PhoneHost {
     }
     const hostCid = `p_${pairing.id}_${t.conversation.id}`;
     if (this.byConversation.has(hostCid)) return fail(res, 409, 'busy', 'A turn of this chat is still running');
-    const running = [...this.turns.values()].filter((x) => x.pairingId === pairing.id && !x.done).length;
-    if (running >= MAX_TURNS_PER_PHONE) return fail(res, 429, 'rate-limited', `At most ${MAX_TURNS_PER_PHONE} turns from one phone run at once`);
     const turn = {
       id: `t_${rand(12)}`,
       pairingId: pairing.id,
@@ -683,12 +728,14 @@ class PhoneHost {
     // An effort the agent's current list no longer offers for the model goes, as hub.turnEffort() does.
     const offered = t.effort ? hub.effortsFor(t.agent, t.model) : null;
     const effort = offered && !offered.includes(t.effort) ? null : t.effort;
-    // A Codex thread the phone names is this chat's. One of this computer's own chats stays theirs.
-    if (t.conversation.provider.threadId) {
-      if (hub.threads.has(t.conversation.provider.threadId)) delete t.conversation.provider.threadId;
-      else this.threads.set(t.conversation.provider.threadId, turn.hostCid);
-    }
-    const conversation = { id: turn.hostCid, agent: t.agent, title: t.conversation.title, provider: { ...t.conversation.provider }, message: null, items: [] };
+    // Only a session or thread this computer gave this chat of this phone. Any other could be a desktop chat's or
+    // another phone's: resuming it would hand that chat's history to this phone, and a thread's tool calls with it.
+    // Without one the agent starts a new session, as for a lost one.
+    const provider = this.ownProvider(turn, t.conversation.provider);
+    if (provider.threadId) this.mapThread(provider.threadId, turn.hostCid);
+    const kind = t.agent === 'codex' ? 'threadId' : 'sessionId';
+    const dropped = !t.firstTurn && Boolean(t.conversation.provider[kind]) && !provider[kind];
+    const conversation = { id: turn.hostCid, agent: t.agent, title: t.conversation.title, provider, message: null, items: [] };
     const port = hub.mcp ? hub.mcp.ports().local : null;
     // The agent calls this Rukoo's loopback listener, as in a chat of its own; route() sends the calls to the phone.
     // The phone's token never reaches a command line or a Codex rollout file. Claude gets a token for this chat alone;
@@ -719,6 +766,7 @@ class PhoneHost {
         for (const k of ['sessionId', 'threadId']) if (typeof patch[k] === 'string' && patch[k]) clean[k] = clip(patch[k], 200);
         if (!Object.keys(clean).length) return;
         Object.assign(conversation.provider, clean);
+        this.bindProvider(turn, clean);
         if (clean.threadId) this.mapThread(clean.threadId, turn.hostCid);
         this.push(turn, { type: 'provider', patch: clean });
       },
@@ -730,6 +778,12 @@ class PhoneHost {
       startOver: () => this.startOver(turn, handle),
       signal: turn.controller.signal
     };
+    // As the adapter does for a lost session: the new one gets the email and a recap from the phone.
+    if (dropped) {
+      const text = t.agent === 'codex' ? 'Codex started a new thread' : 'Claude started a new session';
+      this.push(turn, { type: 'notice', tone: 'info', code: t.agent === 'codex' ? 'new-thread' : 'new-session', text });
+      await this.startOver(turn, handle);
+    }
     let result;
     try {
       result = turn.controller.signal.aborted ? { status: 'stopped' } : await Promise.race([adapter.runTurn(handle), turn.forced]);
@@ -772,6 +826,86 @@ class PhoneHost {
   mapThread(threadId, hostCid) {
     const key = String(threadId || '');
     if (key && !this.hub.threads.has(key)) this.threads.set(key, hostCid);
+  }
+
+  // ---------- sessions and threads ----------
+
+  // What PROVIDER_FILE holds, without ids of pairings that are gone.
+  loadProviderIds() {
+    let stored = null;
+    try {
+      stored = JSON.parse(fs.readFileSync(this.providerFile, 'utf8'));
+    } catch (_) {
+      stored = null;
+    }
+    const ids = new Map();
+    for (const r of isObj(stored) && Array.isArray(stored.ids) ? stored.ids.slice(-MAX_PROVIDER_IDS) : []) {
+      if (!isObj(r) || !PROVIDER_KINDS.includes(r.kind) || !providerId(r.id) || !PHONE_AGENTS.includes(r.agent)) continue;
+      if (typeof r.conversationId !== 'string' || !CONVERSATION_ID.test(r.conversationId) || typeof r.pairingId !== 'string' || !this.hub.cfg.pairing(r.pairingId)) continue;
+      ids.set(`${r.kind}\n${r.id}`, { kind: r.kind, id: r.id, pairingId: r.pairingId, conversationId: r.conversationId, agent: r.agent });
+    }
+    return ids;
+  }
+
+  saveProviderIds() {
+    try {
+      writeJsonAtomic(this.providerFile, { version: 1, ids: [...this.providerIds.values()] });
+    } catch (err) {
+      this.log('could not save the sessions of phone chats:', err && err.message);
+    }
+  }
+
+  // The adapter gave the turn's chat a session or thread: the phone may send it back for this chat, and only this one.
+  bindProvider(turn, patch) {
+    // A turn of a phone removed meanwhile is still stopping.
+    if (!this.hub.cfg.pairing(turn.pairingId)) return;
+    let changed = false;
+    for (const kind of PROVIDER_KINDS) {
+      if (!providerId(patch[kind])) continue;
+      const key = `${kind}\n${patch[kind]}`;
+      const was = this.providerIds.get(key);
+      const r = { kind, id: patch[kind], pairingId: turn.pairingId, conversationId: turn.phoneCid, agent: turn.agent };
+      this.providerIds.delete(key);
+      this.providerIds.set(key, r);
+      if (!was || was.pairingId !== r.pairingId || was.conversationId !== r.conversationId || was.agent !== r.agent) changed = true;
+    }
+    if (!changed) return;
+    // Past the cap, the chats used longest ago start a new session next time.
+    for (const key of this.providerIds.keys()) {
+      if (this.providerIds.size <= MAX_PROVIDER_IDS) break;
+      this.providerIds.delete(key);
+    }
+    this.saveProviderIds();
+  }
+
+  // The session and thread the phone sent back, as far as this computer gave them to this turn's chat: the same
+  // phone, chat and agent. The rest go. An id one of this computer's own chats has never counts.
+  ownProvider(turn, provider) {
+    const out = {};
+    for (const kind of PROVIDER_KINDS) {
+      const id = provider[kind];
+      const key = `${kind}\n${id}`;
+      const r = id ? this.providerIds.get(key) : null;
+      if (!r || r.pairingId !== turn.pairingId || r.conversationId !== turn.phoneCid || r.agent !== turn.agent || this.desktopHas(kind, id)) continue;
+      out[kind] = id;
+      // In use again: the last to go past the cap.
+      this.providerIds.delete(key);
+      this.providerIds.set(key, r);
+    }
+    return out;
+  }
+
+  desktopHas(kind, id) {
+    if (kind === 'threadId' && this.hub.threads.has(id)) return true;
+    for (const c of this.hub.conversations.values()) if (c.provider && c.provider[kind] === id) return true;
+    return false;
+  }
+
+  // The phone deleted a chat, or was removed: its sessions and threads may not be resumed from a phone again.
+  dropProviderIds(match) {
+    const before = this.providerIds.size;
+    for (const [key, r] of [...this.providerIds]) if (match(r)) this.providerIds.delete(key);
+    if (this.providerIds.size !== before) this.saveProviderIds();
   }
 
   // The adapter's events as the phone's hub takes them (hub.js onAdapterEvent), with their strings clipped.
@@ -1035,6 +1169,7 @@ class PhoneHost {
       return fail(res, 422, 'invalid', 'Send {agent: "claude" or "codex", conversationId}');
     }
     this.forgetChat(`p_${pairing.id}_${body.conversationId}`, body.agent);
+    this.dropProviderIds((r) => r.pairingId === pairing.id && r.conversationId === body.conversationId && r.agent === body.agent);
     json(res, 200, { ok: true });
   }
 
@@ -1186,10 +1321,7 @@ function turnRequest(body, ip) {
   if (typeof c.id !== 'string' || !CONVERSATION_ID.test(c.id)) bad('conversation.id must be 1 to 100 letters, digits, - or _');
   const provider = {};
   if (isObj(c.provider)) {
-    for (const k of ['sessionId', 'threadId']) {
-      const v = c.provider[k];
-      if (typeof v === 'string' && v && v.length <= 200 && !/[\u0000-\u001f\u007f]/.test(v)) provider[k] = v;
-    }
+    for (const k of PROVIDER_KINDS) if (providerId(c.provider[k])) provider[k] = c.provider[k];
   }
   const skills = body.skills == null ? [] : body.skills;
   if (!Array.isArray(skills) || skills.length > MAX_SKILLS) bad(`skills must be a list of at most ${MAX_SKILLS}`);
@@ -1283,5 +1415,7 @@ module.exports = {
   STOP_GRACE_MS,
   START_OVER_WAIT_MS,
   PHONE_TURN_MAX,
-  MAX_TURNS_PER_PHONE
+  MAX_TURNS_PER_PHONE,
+  MAX_TURNS_ALL,
+  MAX_PROVIDER_IDS
 };

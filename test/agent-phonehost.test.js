@@ -18,7 +18,7 @@ const { Engine } = require('../src/main/engine');
 const { ClaudeAdapter } = require('../src/main/agents/claude');
 const { CodexAdapter } = require('../src/main/agents/codex');
 const context = require('../src/main/agents/context');
-const { normalizeCode, imageType } = require('../src/main/agents/phonehost');
+const { PhoneHost, normalizeCode, imageType, MAX_PROVIDER_IDS } = require('../src/main/agents/phonehost');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
@@ -781,6 +781,10 @@ function slowCall(port, method, p, { token, body }) {
     finish() {
       req.end(data.subarray(10));
       return answer;
+    },
+    // The phone hangs up halfway through the upload.
+    drop() {
+      req.destroy();
     }
   };
 }
@@ -821,6 +825,207 @@ test('turn: a request authenticated before the phone was removed does nothing on
   release();
   await s.ended;
   assert.equal(s.events.at(-1).status, 'done');
+});
+
+async function until(pred, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!pred()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await sleep(10);
+  }
+}
+
+test('turn: an upload takes its turn place before the body is read, four per phone and eight in all; refusals, hang-ups and the end free it', async (t) => {
+  const env = await setup(t);
+  const a = await pair(env);
+  const b = await pair(env, { device: { ...DEVICE, name: 'Pixel' } });
+  const c = await pair(env, { device: { ...DEVICE, name: 'Tablet' } });
+  const chat = (i, extra = {}) => turnBody(null, { conversation: { id: `c_upload_${i}`, provider: {} }, ...extra });
+  const start = (who, i, extra) => call(env.remote, 'POST', '/phone/v1/turns', { token: who.token, body: chat(i, extra) });
+  const upload = (who, i) => slowCall(env.remote, 'POST', '/phone/v1/turns', { token: who.token, body: chat(i) });
+
+  // Four uploads are as many turns as one phone may run: a fifth is refused before its body is kept.
+  const fromA = [1, 2, 3, 4].map((i) => upload(a, i));
+  await sleep(150);
+  const fifth = await start(a, 5);
+  assert.equal(fifth.status, 429, fifth.text);
+  assert.equal(fifth.json.error, 'rate-limited');
+  assert.match(fifth.json.detail, /At most 4 turns from one phone/);
+  // Eight for all phones together.
+  const fromB = [6, 7, 8, 9].map((i) => upload(b, i));
+  await sleep(150);
+  const ninth = await start(c, 10);
+  assert.equal(ninth.status, 429, ninth.text);
+  assert.match(ninth.json.detail, /At most 8 turns from phones/);
+  assert.equal(env.adapters.claude.turns.length, 0);
+
+  // A phone that hangs up halfway frees its place.
+  fromA.shift().drop();
+  await sleep(100);
+  assert.equal((await start(c, 10)).status, 200);
+  // So do refused turns, however many.
+  for (let i = 0; i < 6; i++) assert.equal((await start(a, 11, { input: '' })).status, 422);
+  assert.equal((await start(a, 11)).status, 200);
+
+  // Uploaded, the turns run and keep their places until they end.
+  let open;
+  const gate = new Promise((r) => {
+    open = r;
+  });
+  env.adapters.claude.script = (turn) => Promise.race([gate.then(() => ({ status: 'done' })), new Promise((r) => turn.signal.addEventListener('abort', () => r({ status: 'stopped' })))]);
+  const answers = [...fromA, ...fromB].map((u) => u.finish());
+  await until(() => env.adapters.claude.turns.length === 9);
+  const eighth = stream(env.remote, 'POST', '/phone/v1/turns', { token: c.token, body: chat(12) });
+  await eighth.next((e) => e.type === 'started');
+  const full = await start(c, 13);
+  assert.equal(full.status, 429, full.text);
+  assert.match(full.json.detail, /At most 8 turns from phones/);
+  open();
+  for (const answer of await Promise.all(answers)) assert.equal(answer.status, 200);
+  await eighth.ended;
+  assert.equal(eighth.events.at(-1).status, 'done');
+  assert.equal(env.hub.phoneHost.uploads.size, 0);
+  assert.equal((await start(a, 14)).status, 200, 'free again once they ended');
+});
+
+test('turn: a phone resumes only the sessions and threads this computer gave that chat of that phone', async (t) => {
+  const env = await setup(t);
+  const answerAs = (text) => (msg) => ({ body: { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } } });
+  const phoneA = await phoneServer(answerAs('phone A'));
+  const phoneB = await phoneServer(answerAs('phone B'));
+  t.after(() => Promise.all([phoneA.close(), phoneB.close()]));
+  const a = await pair(env);
+  const b = await pair(env, { device: { ...DEVICE, name: 'Pixel' } });
+  // What this computer gave phone A: a Claude Code session and a Codex thread.
+  env.adapters.claude.script = async (turn) => {
+    turn.setProvider({ sessionId: 'sess-a' });
+    return { status: 'done' };
+  };
+  await stream(env.remote, 'POST', '/phone/v1/turns', { token: a.token, body: turnBody(phoneA) }).ended;
+  env.adapters.codex.script = async (turn) => {
+    turn.setProvider({ threadId: 'thr-a' });
+    return { status: 'done' };
+  };
+  await stream(env.remote, 'POST', '/phone/v1/turns', { token: a.token, body: turnBody(phoneA, { agent: 'codex', conversation: { id: 'c_codex_a', provider: {} } }) }).ended;
+  // And one of this computer's own chats.
+  const desk = env.hub.create({ agent: 'claude' });
+  env.hub.conversations.get(desk.id).provider.sessionId = 'sess-desk';
+
+  let given = null;
+  env.adapters.claude.script = env.adapters.codex.script = async (turn) => {
+    given = { ...turn.conversation.provider };
+    return { status: 'done' };
+  };
+  const resume = async (who, phone, agent, id, provider) => {
+    given = null;
+    const s = stream(env.remote, 'POST', '/phone/v1/turns', { token: who.token, body: turnBody(phone, { agent, conversation: { id, provider } }) });
+    await s.ended;
+    assert.equal(s.events.at(-1).status, 'done');
+    return given;
+  };
+  assert.deepEqual(await resume(a, phoneA, 'claude', PHONE_CID, { sessionId: 'sess-a' }), { sessionId: 'sess-a' }, 'its own chat');
+  assert.deepEqual(await resume(b, phoneB, 'claude', PHONE_CID, { sessionId: 'sess-a' }), {}, 'another phone, with the same chat id');
+  assert.deepEqual(await resume(a, phoneA, 'claude', 'c_other_000001', { sessionId: 'sess-a' }), {}, 'another chat of the same phone');
+  assert.deepEqual(await resume(a, phoneA, 'codex', PHONE_CID, { sessionId: 'sess-a' }), {}, 'another agent');
+  assert.deepEqual(await resume(a, phoneA, 'claude', PHONE_CID, { sessionId: 'sess-desk' }), {}, "a desktop chat's session");
+  assert.deepEqual(await resume(a, phoneA, 'claude', PHONE_CID, { sessionId: 'made-up' }), {}, 'one this computer never gave out');
+
+  // Phone B names phone A's thread: it gets a new one, and the tool calls of A's thread still go to phone A.
+  assert.deepEqual(await resume(b, phoneB, 'codex', 'c_codex_a', { threadId: 'thr-a' }), {});
+  const codex = env.hub.identify(env.hub.issueToken({ agent: 'codex', conversationId: null }));
+  const res = await env.hub.callTool(codex, 'get_context', {}, { 'x-codex-turn-metadata': { thread_id: 'thr-a' } });
+  assert.equal(res.content[0].text, 'phone A');
+  assert.equal(phoneB.seen.length, 0);
+  assert.deepEqual(await resume(a, phoneA, 'codex', 'c_codex_a', { threadId: 'thr-a' }), { threadId: 'thr-a' });
+
+  // On a later turn a dropped session goes as a lost one: the new session gets the email and a recap from the phone.
+  let input = null;
+  env.adapters.claude.script = async (turn) => {
+    given = { ...turn.conversation.provider };
+    input = turn.input;
+    return { status: 'done' };
+  };
+  const later = stream(env.remote, 'POST', '/phone/v1/turns', { token: b.token, body: turnBody(phoneB, { conversation: { id: PHONE_CID, provider: { sessionId: 'sess-a' } }, firstTurn: false }) });
+  const so = await later.next((e) => e.type === 'start-over');
+  await call(env.remote, 'POST', `/phone/v1/turns/${later.events[0].turnId}/start-over/${so.requestId}`, { token: b.token, body: { input: 'FIRST TURN WITH THE EMAIL AND A RECAP' } });
+  await later.ended;
+  assert.deepEqual(later.types(), ['started', 'notice', 'start-over', 'done']);
+  assert.equal(later.events[1].code, 'new-session');
+  assert.deepEqual(given, {});
+  assert.equal(input, 'FIRST TURN WITH THE EMAIL AND A RECAP');
+  // Its own session goes on without one.
+  const own = stream(env.remote, 'POST', '/phone/v1/turns', { token: a.token, body: turnBody(phoneA, { conversation: { id: PHONE_CID, provider: { sessionId: 'sess-a' } }, firstTurn: false }) });
+  await own.ended;
+  assert.deepEqual(own.types(), ['started', 'done']);
+  assert.deepEqual(given, { sessionId: 'sess-a' });
+});
+
+test('turn: the sessions phones got survive a restart, go with the chat or the phone, and stay under the cap', async (t) => {
+  const env = await setup(t);
+  const a = await pair(env);
+  const b = await pair(env, { device: { ...DEVICE, name: 'Pixel' } });
+  const file = path.join(env.data, 'phone-sessions.json');
+  const stored = () => JSON.parse(fs.readFileSync(file, 'utf8')).ids;
+  // As after a restart of Rukoo: the phone host starts again from the file.
+  const restart = () => {
+    env.hub.phoneHost.dispose();
+    env.hub.phoneHost = new PhoneHost(env.hub, env.hub.deps.phone);
+  };
+  let give = null;
+  let given = null;
+  env.adapters.claude.script = env.adapters.codex.script = async (turn) => {
+    given = { ...turn.conversation.provider };
+    if (give) turn.setProvider(give);
+    return { status: 'done' };
+  };
+  const run = async (who, agent, id, provider, gives = null) => {
+    give = gives;
+    given = null;
+    await stream(env.remote, 'POST', '/phone/v1/turns', { token: who.token, body: turnBody(null, { agent, conversation: { id, provider } }) }).ended;
+    return given;
+  };
+  await run(a, 'claude', PHONE_CID, {}, { sessionId: 'sess-a' });
+  await run(a, 'codex', 'c_codex_a', {}, { threadId: 'thr-a' });
+  await run(b, 'claude', PHONE_CID, {}, { sessionId: 'sess-b' });
+  assert.deepEqual(stored(), [
+    { kind: 'sessionId', id: 'sess-a', pairingId: a.pairingId, conversationId: PHONE_CID, agent: 'claude' },
+    { kind: 'threadId', id: 'thr-a', pairingId: a.pairingId, conversationId: 'c_codex_a', agent: 'codex' },
+    { kind: 'sessionId', id: 'sess-b', pairingId: b.pairingId, conversationId: PHONE_CID, agent: 'claude' }
+  ]);
+
+  restart();
+  assert.deepEqual(await run(a, 'claude', PHONE_CID, { sessionId: 'sess-a' }), { sessionId: 'sess-a' });
+  assert.deepEqual(await run(b, 'claude', PHONE_CID, { sessionId: 'sess-a' }), {});
+  assert.deepEqual(await run(a, 'codex', 'c_codex_a', { threadId: 'thr-a' }), { threadId: 'thr-a' });
+
+  // A chat the phone deleted, and a phone that was removed, take their ids along.
+  await call(env.remote, 'POST', '/phone/v1/conversations/forget', { token: a.token, body: { agent: 'claude', conversationId: PHONE_CID } });
+  assert.deepEqual(await run(a, 'claude', PHONE_CID, { sessionId: 'sess-a' }), {});
+  env.hub.phoneUnpair(b.pairingId);
+  assert.deepEqual(
+    stored().map((r) => r.id),
+    ['thr-a']
+  );
+
+  // What doesn't belong to a paired phone's chat is not loaded.
+  const own = { kind: 'sessionId', id: 'kept', pairingId: a.pairingId, conversationId: 'c_kept', agent: 'claude' };
+  fs.writeFileSync(file, JSON.stringify({ version: 1, ids: [own, { ...own, id: 'of-b', pairingId: b.pairingId }, { ...own, id: 'odd', kind: 'cookie' }, { ...own, id: 'odd', agent: 'clark' }, { ...own, id: 'odd', conversationId: 'has space' }, { ...own, id: 'odd\n' }, 'junk'] }));
+  restart();
+  assert.equal(env.hub.phoneHost.providerIds.size, 1);
+  assert.deepEqual(await run(a, 'claude', 'c_kept', { sessionId: 'kept' }), { sessionId: 'kept' });
+
+  // At most MAX_PROVIDER_IDS: past it, the ones used longest ago go first.
+  const old = (i) => ({ ...own, id: `old-${i}`, conversationId: `c_old_${i}` });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, ids: Array.from({ length: MAX_PROVIDER_IDS + 5 }, (_, i) => old(i)) }));
+  restart();
+  assert.equal(env.hub.phoneHost.providerIds.size, MAX_PROVIDER_IDS);
+  assert.deepEqual(await run(a, 'claude', 'c_old_4', { sessionId: 'old-4' }), {}, 'past the cap when loaded');
+  assert.deepEqual(await run(a, 'claude', 'c_old_5', { sessionId: 'old-5' }), { sessionId: 'old-5' }, 'now used most recently');
+  await run(a, 'claude', 'c_new', {}, { sessionId: 'new' });
+  const ids = stored().map((r) => r.id);
+  assert.equal(ids.length, MAX_PROVIDER_IDS);
+  assert.deepEqual(ids.slice(0, 2), ['old-7', 'old-8'], 'old-6 went for the new one');
+  assert.deepEqual(ids.slice(-2), ['old-5', 'new']);
 });
 
 test('turn: stop expires a pending approval with cancel; an adapter that ignores stop is closed after the grace time', async (t) => {
