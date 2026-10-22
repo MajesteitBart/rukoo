@@ -46,6 +46,11 @@ data class ComposerState(
     val draftedBy: String? = null,
     /** Changed since it was opened or last saved. */
     val dirty: Boolean = false,
+    /**
+     * The chat whose agent wrote the current text (write_draft), null when the user did. The UI clears it
+     * together with [draftedBy] when the user edits, so a background chat never overwrites the user's words.
+     */
+    val draftedIn: String? = null,
 )
 
 /**
