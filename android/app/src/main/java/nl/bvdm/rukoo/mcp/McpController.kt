@@ -19,8 +19,10 @@ data class McpStatus(
      * emulator behind `adb forward` and a relay). The server treats it as its own address.
      */
     val advertised: String? = null,
-    /** The agents that may connect now, by name ("Clark", "OpenClaw", "Claude Code and Codex on desktop-zolder"). */
+    /** Agents that may connect now by their own name ("Clark", "OpenClaw"); [McpTexts.agents] adds the computers. */
     val agents: List<String> = emptyList(),
+    /** Paired computers whose Claude Code and Codex may connect now, by computer name. */
+    val computers: List<String> = emptyList(),
     /** The detail of a `failed` error, for logs and the settings screen; never contains a secret. */
     val detail: String? = null,
 ) {

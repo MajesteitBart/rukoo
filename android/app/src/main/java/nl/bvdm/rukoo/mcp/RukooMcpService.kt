@@ -41,7 +41,9 @@ class RukooMcpService : Service() {
     private val scope = MainScope()
     private var runtime: McpRuntime? = null
     private var starting: Job? = null
-    private var shown: Pair<String?, List<String>>? = null
+    // What the notification shows now: address and agents. Rebuilt in the current language on every start.
+    private var shown: List<Any?>? = null
+    private val watchers = mutableListOf<Job>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -77,8 +79,6 @@ class RukooMcpService : Service() {
         return START_STICKY
     }
 
-    private val watchers = mutableListOf<Job>()
-
     private suspend fun startServer(control: AndroidMcpController) {
         val port = control.port()
         val candidate = control.runtime(port)
@@ -110,11 +110,11 @@ class RukooMcpService : Service() {
             }
         }
         watchers += scope.launch {
-            control.status.map { (it.advertised ?: it.address) to it.agents }.distinctUntilChanged().collect { update(it) }
+            control.status.map { listOf(it.advertised ?: it.address, it.agents, it.computers) }.distinctUntilChanged().collect { update(it) }
         }
     }
 
-    private fun update(state: Pair<String?, List<String>>) {
+    private fun update(state: List<Any?>) {
         if (state == shown) return
         shown = state
         val manager = getSystemService(NotificationManager::class.java) ?: return

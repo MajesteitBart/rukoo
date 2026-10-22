@@ -65,7 +65,9 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
             }
         }
         scope.launch {
-            container.agentSettings.settings.map(::agentNames).distinctUntilChanged().collect { names -> _status.update { it.copy(agents = names) } }
+            container.agentSettings.settings.map { agentNames(it) to computerNames(it) }.distinctUntilChanged().collect { (names, computers) ->
+                _status.update { it.copy(agents = names, computers = computers) }
+            }
         }
         scope.launch(Dispatchers.Main) {
             ProcessLifecycleOwner.get().lifecycle.addObserver(
@@ -177,8 +179,9 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
     private fun agentNames(s: AgentSettings): List<String> = buildList {
         if (s.clark.key.isNotBlank()) add(s.clark.name.ifBlank { "Hermes" })
         if (s.openclaw.remote && s.openclaw.token.isNotBlank()) add("OpenClaw")
-        for (computer in s.computers) if (computer.mcpToken.isNotEmpty()) add(context.getString(R.string.mcp_agents_computer, computer.name))
     }
+
+    private fun computerNames(s: AgentSettings): List<String> = s.computers.filter { it.mcpToken.isNotEmpty() }.map { it.name }
 
     // The name the user gave the phone, for rukoo/hello; the bridge only shows it in logs.
     private fun deviceName(): String =
@@ -199,13 +202,18 @@ object McpTexts {
         else -> context.getString(R.string.mcp_status_failed)
     }
 
+    /** Who may connect, in the user's language: "Clark", "OpenClaw", "Claude Code and Codex on desktop-zolder". */
+    fun agents(context: Context, status: McpStatus): List<String> =
+        status.agents + status.computers.map { context.getString(R.string.mcp_agents_computer, it) }
+
     fun notification(context: Context, status: McpStatus): String {
         val at = status.advertised ?: status.address?.let { "$it:${status.port}" }
             ?: return context.getString(R.string.mcp_notification_no_tailnet)
-        return if (status.agents.isEmpty()) {
+        val agents = agents(context, status)
+        return if (agents.isEmpty()) {
             context.getString(R.string.mcp_notification_no_agents, at)
         } else {
-            context.getString(R.string.mcp_notification_listening, at, status.agents.joinToString(", "))
+            context.getString(R.string.mcp_notification_listening, at, agents.joinToString(", "))
         }
     }
 }
