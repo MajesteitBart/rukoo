@@ -392,6 +392,7 @@ class AppViewModel(
             try {
                 val newId = services.mail.saveDraft(d.toOutgoing(accountId, from))
                 services.composer.update { if (it.id == d.id) it.copy(draftId = newId) else it }
+                storedDraftReplaced(stored, newId)
                 // A copy kept on this phone before is out of date now.
                 if (services.drafts.contains(d.id)) services.drafts.remove(d.id)
                 return true
@@ -404,6 +405,15 @@ class AppViewModel(
             return false
         }
         return true
+    }
+
+    /** The reader showed the stored draft [oldId], which is gone now: it shows its new copy [newId], or nothing. */
+    private fun storedDraftReplaced(oldId: String, newId: String?) = set { s ->
+        when {
+            s.openMessageId != oldId -> s
+            newId != null -> s.copy(openMessageId = newId)
+            else -> s.messageGone(oldId)
+        }
     }
 
     /**
@@ -598,6 +608,7 @@ class AppViewModel(
                         // Gone from the server already is what the user asked for.
                         if (e.code != "missing") return@withLock mailUi.toasts.showError(e.message ?: s.get(R.string.composer_errors_delete_local))
                     }
+                    storedDraftReplaced(stored, null)
                 }
                 if (!services.drafts.remove(d.id)) return@withLock deleteFailed()
                 closeComposerNow()
@@ -675,6 +686,7 @@ class AppViewModel(
                         return@withLock mailUi.toasts.showError(e.message?.let { s.get(R.string.composer_errors_send_reason, it) } ?: s.get(R.string.composer_errors_send))
                     }
                     // The mail is out; from here nothing may suggest it wasn't. A copy left in Drafts is said so.
+                    current.draftId?.let { storedDraftReplaced(it, null) }
                     val cleaned = services.drafts.remove(current.id)
                     val after = services.composer.current()
                     if (after?.id == current.id && after.content() == current.content()) closeComposerNow()

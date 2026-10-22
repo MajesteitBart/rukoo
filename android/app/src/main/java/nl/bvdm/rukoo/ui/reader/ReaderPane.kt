@@ -96,7 +96,8 @@ private sealed interface Load {
 
     data class Ready(val message: FullMessage) : Load
 
-    data class Failed(val error: String) : Load
+    /** [gone]: the message no longer exists (deleted, moved, a draft replaced by its new copy). */
+    data class Failed(val error: String, val gone: Boolean = false) : Load
 }
 
 /**
@@ -136,9 +137,11 @@ private fun Reader(app: AppViewModel, id: String) {
         value = try {
             Load.Ready(mail.fullMessage(id))
         } catch (e: Exception) {
-            Load.Failed(e.message ?: e.javaClass.simpleName)
+            Load.Failed(e.message ?: e.javaClass.simpleName, gone = (e as? nl.bvdm.rukoo.mail.MailException)?.code == "missing")
         }
     }
+    // A message that isn't there any more closes the reader, as one that leaves while it is open does.
+    LaunchedEffect(load) { if ((load as? Load.Failed)?.gone == true) app.messageGone(id) }
     // The row as it is now (star, read), and whether it is still there.
     var seen by remember { mutableStateOf(false) }
     val live by produceState<MessageSummary?>(null, id) {

@@ -345,6 +345,7 @@ class AppViewModelTest {
         // A reply saved in Drafts (as desktop would), opened again with Edit.
         val reply = s.mail.replyFields(sanne.id, ReplyKind.REPLY).toComposerState().copy(body = "Thursday at 10?")
         val stored = s.mail.saveDraft(reply.toOutgoing("demo", Address("Demo User", "demo@example.com")))!!
+        vm.openMessage(stored)
         vm.editDraft(stored)
         val d = s.composer.current()!!
         assertEquals(stored, d.draftId)
@@ -359,12 +360,15 @@ class AppViewModelTest {
         assertNull(s.mail.summary(stored))
         val again = drafts.single { it.subject == "Re: Call on Thursday" }
         assertTrue(s.drafts.drafts.value.isEmpty())
+        // The reader that showed the old copy shows the new one.
+        assertEquals(again.id, vm.state.value.openMessageId)
 
-        // Sending it removes the draft from Drafts.
+        // Sending it removes the draft from Drafts, and from the reader.
         vm.editDraft(again.id)
         s.composer.update { it.copy(body = "Thursday at 11 then.", dirty = true) }
         vm.send()
         assertNull(s.mail.summary(again.id))
+        assertNull(vm.state.value.openMessageId)
         val sent = s.mail.listMessages(MailView(ViewKind.SENT)).first { it.subject == "Re: Call on Thursday" }
         assertTrue(s.mail.fullMessage(sent.id).html.contains("data-rukoo-quote"))
     }
