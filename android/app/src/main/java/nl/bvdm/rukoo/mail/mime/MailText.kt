@@ -6,6 +6,8 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
+import org.jsoup.select.NodeFilter
+import org.jsoup.select.NodeTraversor
 
 /** Text helpers ported from desktop's mailutil.js (spec 4 §2.7, §6.1). */
 object MailText {
@@ -14,6 +16,12 @@ object MailText {
     private val SPACES = Regex("[$JS_SPACE]+")
     private val INVISIBLE = Regex("[\\u00A0\\u200C\\u200B\\u034F\\uFEFF]")
     private val URL = Regex("(https?://[^\\s<]+[^\\s<.,;:!?)\\]'\"])")
+
+    /** How many elements deep [htmlToPlain] keeps the layout; the same limit as signatures. */
+    private const val MAX_DEPTH = 100
+
+    /** Elements [htmlToPlain] leaves out with everything in them. */
+    private val SKIP = setOf("img", "style", "script", "head", "title", "meta", "link", "template", "noscript")
 
     /** Desktop's escapeHtml: `& < > "`. */
     fun escapeHtml(text: String): String =
@@ -171,32 +179,56 @@ object MailText {
             breaks = 0
         }
 
-        fun walk(node: Node, pre: Boolean = false, list: ListState? = null) {
+        fun walk(node: Node, pre: Boolean = false, list: ListState? = null, depth: Int = 0) {
+            // Real mail never nests this deep; a crafted one does to exhaust the stack.
+            if (depth > MAX_DEPTH && node is Element) return flat(node, pre)
             for (child in node.childNodes()) {
                 when (child) {
                     is TextNode -> text(if (pre) child.wholeText else child.wholeText, pre)
-                    is Element -> element(child, pre, list)
+                    is Element -> element(child, pre, list, depth + 1)
                 }
             }
         }
 
+        /**
+         * [walk] past the limit: the text and its line breaks, through jsoup's traversal, which is a loop. [root]
+         * itself was laid out by [element] already (a list item has its bullet), so only what is inside it breaks.
+         */
+        private fun flat(root: Element, pre: Boolean) {
+            NodeTraversor.filter(object : NodeFilter {
+                override fun head(node: Node, depth: Int): NodeFilter.FilterResult {
+                    if (node is TextNode) text(node.wholeText, pre)
+                    if (node is Element && node !== root) {
+                        if (node.normalName() in SKIP) return NodeFilter.FilterResult.SKIP_ENTIRELY
+                        if (node.isBlock || node.normalName() == "br") block(1)
+                    }
+                    return NodeFilter.FilterResult.CONTINUE
+                }
+
+                override fun tail(node: Node, depth: Int): NodeFilter.FilterResult {
+                    if (node is Element && node !== root && node.isBlock) block(1)
+                    return NodeFilter.FilterResult.CONTINUE
+                }
+            }, root)
+        }
+
         private class ListState(val ordered: Boolean, var n: Int)
 
-        private fun element(el: Element, pre: Boolean, list: ListState?) {
+        private fun element(el: Element, pre: Boolean, list: ListState?, depth: Int) {
             when (val tag = el.normalName()) {
-                "img", "style", "script", "head", "title", "meta", "link", "template", "noscript" -> return
+                in SKIP -> return
                 "br" -> {
                     if (breaks > 0) flushBreaks()
                     lineBreak()
                 }
                 "p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "hr" -> {
                     block(2)
-                    if (tag != "hr") walk(el, pre || tag == "pre", list)
+                    if (tag != "hr") walk(el, pre || tag == "pre", list, depth)
                     block(2)
                 }
                 "ul", "ol" -> {
                     block(2)
-                    walk(el, pre, ListState(tag == "ol", el.attr("start").toIntOrNull() ?: 1))
+                    walk(el, pre, ListState(tag == "ol", el.attr("start").toIntOrNull() ?: 1), depth)
                     block(2)
                 }
                 "li" -> {
@@ -206,17 +238,17 @@ object MailText {
                     out.append(prefix)
                     atLineStart = true
                     space = false
-                    walk(el, pre, list)
+                    walk(el, pre, list, depth)
                     block(1)
                 }
                 "td", "th", "div", "table", "tr", "section", "article", "header", "footer", "nav", "aside", "address",
                 "center", "dl", "dt", "dd", "figure", "figcaption", "form", "fieldset", "main", "caption", "tbody",
                 "thead", "tfoot" -> {
                     block(1)
-                    walk(el, pre, list)
+                    walk(el, pre, list, depth)
                     block(1)
                 }
-                else -> walk(el, pre, list)
+                else -> walk(el, pre, list, depth)
             }
         }
     }
