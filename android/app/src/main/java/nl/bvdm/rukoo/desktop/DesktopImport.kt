@@ -5,6 +5,7 @@ import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.agents.AgentSettingsStore
 import nl.bvdm.rukoo.agents.ClarkSettings
 import nl.bvdm.rukoo.agents.OpenClawSettings
+import nl.bvdm.rukoo.agents.QuickActions
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.ComputerProgram
 import nl.bvdm.rukoo.core.AppLog
@@ -149,7 +150,8 @@ object DesktopImport {
         val settings = current.copy(
             defaultAgent = default,
             autoMailActions = exported.autoMailActions,
-            shortcuts = exported.shortcuts ?: current.shortcuts,
+            // Only shortcuts that pass the rules, rebuilt from what was checked rather than stored as they came.
+            shortcuts = exported.shortcuts?.let { QuickActions.entries(it) }?.let(QuickActions::stored) ?: current.shortcuts,
             clark = clark,
             openclaw = openclaw,
         )

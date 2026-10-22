@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.model.QuickAction
 import nl.bvdm.rukoo.agents.model.RukooSkill
@@ -73,6 +75,23 @@ object QuickActions {
         }
         return out
     }
+
+    /** [entries] as the list to store, in the shape desktop's shortcutList gives them. */
+    fun stored(entries: List<Entry>): JsonArray = JsonArray(
+        entries.map { e ->
+            buildJsonObject {
+                put("key", e.key)
+                if (e.custom) put("custom", true)
+                if (e.hidden) put("hidden", true)
+                if (e.label.isNotEmpty()) put("label", e.label)
+                if (e.prompt.isNotEmpty()) put("prompt", e.prompt)
+                if (e.custom) {
+                    put("icon", e.icon)
+                    put("when", if (e.always) "always" else "email")
+                }
+            }
+        },
+    )
 
     private fun builtIn(key: String) = QuickAction.BUILT_IN.firstOrNull { it.key == key }
 

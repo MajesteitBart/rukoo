@@ -115,6 +115,24 @@ class DesktopImportTest {
     }
 
     @Test
+    fun shortcutsComeOverAsTheRulesKeepThem() {
+        val exported = RukooJson.parseToJsonElement(
+            """[{"key":"Standup","custom":true,"label":"Standup","prompt":"What's new?","icon":"nope","when":"always","extra":{"a":{"a":[1]}}},""" +
+                """{"key":"reply","hidden":true,"label":""}]""",
+        )
+        val stored = DesktopImport.agents(bundle.copy(agents = bundle.agents.copy(shortcuts = exported)), AgentSettings(), pairing).settings.shortcuts
+        assertEquals(
+            RukooJson.parseToJsonElement(
+                """[{"key":"standup","custom":true,"label":"Standup","prompt":"What's new?","icon":"sparkle","when":"always"},{"key":"reply","hidden":true}]""",
+            ),
+            stored,
+        )
+        // A list that breaks the rules leaves the phone's as it is.
+        val broken = bundle.copy(agents = bundle.agents.copy(shortcuts = RukooJson.parseToJsonElement("""[{"key":"Not a key"}]""")))
+        assertEquals(stored, DesktopImport.agents(broken, AgentSettings(shortcuts = stored), pairing).settings.shortcuts)
+    }
+
+    @Test
     fun theOpenClawPhoneSwitchStaysThePhones() {
         val remote = bundle.copy(agents = bundle.agents.copy(openclaw = ExportedOpenClaw(url = "http://100.64.0.9:18789", key = "gw", agent = "main")))
         val current = AgentSettings(openclaw = nl.bvdm.rukoo.agents.OpenClawSettings(remote = true))
