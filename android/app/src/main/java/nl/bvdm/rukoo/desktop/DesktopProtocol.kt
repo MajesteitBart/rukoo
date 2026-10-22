@@ -135,7 +135,8 @@ data class HostTurnRequest(
     val effort: String? = null,
     val files: List<HostFile> = emptyList(),
     val emails: List<String> = emptyList(),
-    val mcp: HostMcp,
+    /** The phone's MCP endpoint and the token for this computer; null (left out) when the phone serves no tools now. */
+    val mcp: HostMcp? = null,
 )
 
 @Serializable

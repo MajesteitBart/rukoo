@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="adapters_turned_off">%1$s staat uit</string>
+    <string name="adapters_url_invalid">De server-URL is ongeldig</string>
+    <string name="adapters_url_scheme">De server-URL moet met http:// of https:// beginnen</string>
+    <string name="adapters_no_answer">Geen antwoord van %1$s binnen %2$d s</string>
+    <string name="adapters_new_session">%1$s is een nieuwe sessie begonnen</string>
+    <string name="adapters_approval_too_long">Afgewezen zonder te vragen: %1$s. Een deel is te lang om hier te tonen, dus je kon het niet controleren.</string>
+
+    <string name="adapters_hermes_no_url">Geen server-URL</string>
+    <string name="adapters_hermes_no_key">Geen API-sleutel</string>
+    <string name="adapters_health_http">De statuscontrole antwoordde HTTP %1$d</string>
+    <string name="adapters_hermes_key_refused">De server accepteert de API-sleutel niet</string>
+    <string name="adapters_capabilities_http">De capabilities-controle antwoordde HTTP %1$d</string>
+    <string name="adapters_hermes_no_runs">Deze versie van Hermes heeft geen Runs-API</string>
+    <string name="adapters_hermes_no_run_id">De server gaf geen run-id terug</string>
+    <string name="adapters_hermes_no_session">Rukoo kon geen Hermes-sessie aanmaken</string>
+    <string name="adapters_hermes_lost_stopped">De verbinding met %1$s viel weg tijdens de beurt; Rukoo heeft de run gestopt</string>
+    <string name="adapters_hermes_lost_stopping">De verbinding met %1$s viel weg tijdens de beurt; Rukoo blijft vragen de run te stoppen</string>
+    <string name="adapters_hermes_run_failed">De run is mislukt</string>
+    <string name="adapters_hermes_reported_error">Hermes meldde een fout</string>
+    <string name="adapters_hermes_answer_lost">Je antwoord kwam niet aan bij Hermes, dus Rukoo vraagt de run te stoppen.</string>
+
+    <string name="adapters_openclaw_no_url">Geen gateway-URL</string>
+    <string name="adapters_openclaw_no_token">Geen gateway-token</string>
+    <string name="adapters_openclaw_token_refused">De gateway accepteert het token niet</string>
+    <string name="adapters_openclaw_endpoint_off">De gateway heeft geen Chat Completions-endpoint. Zet gateway.http.endpoints.chatCompletions.enabled aan in de OpenClaw-config</string>
+    <string name="adapters_openclaw_not_gateway">De server op dit adres is geen OpenClaw-gateway</string>
+    <string name="adapters_openclaw_no_agent">De gateway heeft geen agent \"%1$s\"</string>
+    <string name="adapters_openclaw_ready">OpenClaw-gateway, agent %1$s</string>
+    <string name="adapters_openclaw_archived">OpenClaw heeft de sessie van deze chat gearchiveerd</string>
+    <string name="adapters_openclaw_restore">Zet de sessie terug in de Control UI van OpenClaw, of begin een nieuwe chat.</string>
+    <string name="adapters_openclaw_reported_error">OpenClaw meldde een fout</string>
+    <plurals name="adapters_openclaw_silent">
+        <item quantity="one">OpenClaw stuurde %d minuut niets; Rukoo heeft de verbinding gesloten, en dat stopt de run</item>
+        <item quantity="other">OpenClaw stuurde %d minuten niets; Rukoo heeft de verbinding gesloten, en dat stopt de run</item>
+    </plurals>
+    <string name="adapters_openclaw_closed">De verbinding met OpenClaw werd gesloten voordat het antwoord compleet was</string>
+    <string name="adapters_openclaw_broke_off">De verbinding met OpenClaw brak af: %1$s</string>
+
+    <string name="adapters_computer_unpaired">Deze computer is niet meer gekoppeld</string>
+    <string name="adapters_computer_unreachable">Rukoo is niet bereikbaar op %1$s. Controleer of Rukoo daar open is en of Tailscale aan staat.</string>
+    <string name="adapters_computer_unauthorized">%1$s kent deze telefoon niet meer. Koppel hem opnieuw.</string>
+    <string name="adapters_computer_no_program">%2$s biedt %1$s niet aan</string>
+    <string name="adapters_computer_off_there">Staat uit op %1$s</string>
+    <string name="adapters_computer_lost">De verbinding met %1$s viel weg tijdens de beurt</string>
+    <string name="adapters_computer_answer_lost">Je antwoord kwam niet aan bij %1$s, dus Rukoo vraagt de beurt te stoppen.</string>
+    <string name="adapters_computer_no_tools">%1$s werkt deze beurt zonder de tools van Rukoo: deze telefoon biedt ze nu niet aan.</string>
+</resources>
