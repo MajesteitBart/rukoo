@@ -470,14 +470,15 @@ class AppViewModelTest {
         assertEquals(listOf("Proposal-v3.pdf"), full.attachments.map { it.filename })
     }
 
-    @Test
-    fun attachmentsThatCantBeFoundOnTheNewCopyKeepTheComposerOpen() = runTest(main) {
+    /** A forward kept in Drafts, opened with Edit, saved once while the new copy can't be read back. */
+    private suspend fun TestScope.unsettledDraft(): Triple<Services, AppViewModel, () -> Unit> {
         val preview = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
         var newCopy: String? = null
+        var offline = true
         val mail = object : MailEngine by preview {
             override suspend fun saveDraft(message: OutgoingMessage): String? = preview.saveDraft(message).also { newCopy = it }
 
-            override suspend fun fullMessage(id: String) = if (id == newCopy) throw MailException("offline") else preview.fullMessage(id)
+            override suspend fun fullMessage(id: String) = if (offline && id == newCopy) throw MailException("offline") else preview.fullMessage(id)
         }
         val (s, vm) = setup(preview = preview, mail = mail)
         val sanne = s.mail.listMessages(MailView.AllInboxes).first { it.subject == "Call on Thursday" }
@@ -487,10 +488,42 @@ class AppViewModelTest {
         s.composer.update { it.copy(body = "FYI", dirty = true) }
         vm.saveDraft()
         // Saved, but not closed as if all was well, and nothing kept on this phone with references to a deleted copy.
-        assertNotNull(s.composer.current())
-        assertEquals(newCopy, s.composer.current()!!.draftId)
+        val d = s.composer.current()!!
+        assertEquals(newCopy, d.draftId)
+        assertEquals(stored, d.rebind!!.from)
         assertEquals("${R.string.composer_errors_draft_attachments}", vm.mailUi.toasts.current!!.message)
         assertTrue(s.drafts.drafts.value.isEmpty())
+        // Still unreadable: Save neither falls back to this phone nor closes.
+        vm.saveDraft()
+        assertNotNull(s.composer.current())
+        assertTrue(s.drafts.drafts.value.isEmpty())
+        return Triple(s, vm) { offline = false }
+    }
+
+    @Test
+    fun attachmentsThatCantBeFoundOnTheNewCopyAreSettledBeforeTheNextSave() = runTest(main) {
+        val (s, vm, online) = unsettledDraft()
+        online()
+        vm.saveDraft()
+        assertNull(s.composer.current())
+        assertTrue(s.drafts.drafts.value.isEmpty())
+        val saved = s.mail.listMessages(MailView(ViewKind.DRAFTS)).single { it.subject == "Fwd: Call on Thursday" }
+        assertEquals(listOf("Proposal-v3.pdf"), s.mail.fullMessage(saved.id).attachments.map { it.filename })
+    }
+
+    @Test
+    fun attachmentsThatCantBeFoundOnTheNewCopyAreSettledBeforeSend() = runTest(main) {
+        val (s, vm, online) = unsettledDraft()
+        vm.send()
+        // Not yet: nothing goes with an attachment Rukoo can't find.
+        assertNotNull(s.composer.current())
+        assertTrue(s.mail.listMessages(MailView(ViewKind.SENT)).none { it.subject == "Fwd: Call on Thursday" })
+        online()
+        vm.send()
+        assertNull(s.composer.current())
+        val sent = s.mail.listMessages(MailView(ViewKind.SENT)).first { it.subject == "Fwd: Call on Thursday" }
+        assertEquals(listOf("Proposal-v3.pdf"), s.mail.fullMessage(sent.id).attachments.map { it.filename })
+        assertTrue(s.mail.listMessages(MailView(ViewKind.DRAFTS)).none { it.subject == "Fwd: Call on Thursday" })
     }
 
     @Test

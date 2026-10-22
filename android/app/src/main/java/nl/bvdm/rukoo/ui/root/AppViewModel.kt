@@ -45,6 +45,7 @@ import nl.bvdm.rukoo.mail.model.ReplyKind
 import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.mail.model.QuickFilter as ListFilter
 import nl.bvdm.rukoo.ui.ComposerState
+import nl.bvdm.rukoo.ui.PendingRebind
 import nl.bvdm.rukoo.ui.MailtoFields
 import nl.bvdm.rukoo.ui.composer.ComposerFiles
 import nl.bvdm.rukoo.ui.composer.Recipients
@@ -386,7 +387,9 @@ class AppViewModel(
      * this phone, and so is a server draft the server refused, so nothing is lost. Returns what was kept, as the
      * composer now holds it when nothing changed meanwhile; null when it couldn't be kept at all.
      */
-    private suspend fun keep(d: ComposerState): ComposerState? {
+    private suspend fun keep(input: ComposerState): ComposerState? {
+        // An earlier save's attachments are pointed at their copy first; until then nothing saves with them.
+        val d = settled(input) ?: return null
         val stored = d.draftId
         val accountId = sendAccount(d)
         val from = d.from ?: accountId?.let(::defaultFrom)
@@ -394,16 +397,21 @@ class AppViewModel(
             try {
                 // Null: the server didn't say where the new copy went, and the engine kept the old one.
                 val newId = services.mail.saveDraft(d.toOutgoing(accountId, from))
-                val rebound = rebound(d, stored, newId)
-                fun ComposerState.moved() = copy(draftId = newId ?: stored, attachments = attachments.map { a -> rebound.orEmpty()[a] ?: a })
+                val pending = newId?.let { PendingRebind(stored, it, d.attachments) }
+                val rebound = if (pending == null) emptyMap() else rebound(pending)
+                fun ComposerState.moved() = copy(
+                    draftId = newId ?: stored,
+                    attachments = attachments.map { a -> rebound?.get(a) ?: a },
+                    rebind = if (rebound == null) pending else null,
+                )
                 services.composer.update { if (it.id == d.id) it.moved() else it }
                 if (newId != null) storedDraftReplaced(stored, newId)
                 // A copy kept on this phone before is out of date now.
                 if (services.drafts.contains(d.id)) services.drafts.remove(d.id)
                 if (rebound == null) {
-                    // Saved, but its attachments couldn't be found on the new copy: the composer stays open rather
-                    // than closing as if the next save or Send would work; Drafts has the whole draft.
-                    mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_draft_attachments))
+                    // Saved, but its attachments couldn't be found on the new copy yet: the composer stays open, and
+                    // the next save or Send settles them first. Drafts has the whole draft.
+                    attachmentsUnsettled()
                     return null
                 }
                 return d.moved()
@@ -419,19 +427,33 @@ class AppViewModel(
     }
 
     /**
-     * The attachments of [d] that came from the stored draft [oldId], pointed at the copy [newId] that replaced
-     * it (desktop's remapAttachments): the old copy is deleted, so a second save or Send would find nothing there.
-     * The new copy lists the composer's attachments in the order they were saved; the engine keeps its body, so
-     * reading it back needs no download. Null when they couldn't be found on it.
+     * The saved attachments that came from the stored draft [PendingRebind.from], pointed at the copy that
+     * replaced it (desktop's remapAttachments): the old copy is deleted, so a second save or Send would find
+     * nothing there. The new copy lists them in the order they were saved; the engine keeps its body, so reading
+     * it back needs no download. Null when they couldn't be found on it.
      */
-    private suspend fun rebound(d: ComposerState, oldId: String, newId: String?): Map<OutgoingAttachment, OutgoingAttachment>? {
-        if (newId == null || d.attachments.none { it.sourceMessageId == oldId }) return emptyMap()
-        val saved = runCatching { services.mail.fullMessage(newId).attachments }.getOrNull() ?: return null
-        if (saved.size < d.attachments.size) return null
-        return d.attachments.withIndex()
-            .filter { (_, a) -> a.sourceMessageId == oldId }
-            .associate { (i, a) -> a to a.copy(sourceMessageId = newId, sourceIndex = saved[i].index) }
+    private suspend fun rebound(p: PendingRebind): Map<OutgoingAttachment, OutgoingAttachment>? {
+        if (p.saved.none { it.sourceMessageId == p.from }) return emptyMap()
+        val copy = runCatching { services.mail.fullMessage(p.to).attachments }.getOrNull() ?: return null
+        if (copy.size < p.saved.size) return null
+        return p.saved.withIndex()
+            .filter { (_, a) -> a.sourceMessageId == p.from }
+            .associate { (i, a) -> a to a.copy(sourceMessageId = p.to, sourceIndex = copy[i].index) }
     }
+
+    /**
+     * [d] with an earlier save's attachments pointed at their copy ([ComposerState.rebind]), also in the open
+     * composer; null, with the error shown, while that copy still can't be read.
+     */
+    private suspend fun settled(d: ComposerState): ComposerState? {
+        val p = d.rebind ?: return d
+        val rebound = rebound(p) ?: return null.also { attachmentsUnsettled() }
+        fun ComposerState.bound() = copy(attachments = attachments.map { a -> rebound[a] ?: a }, rebind = null)
+        services.composer.update { if (it.id == d.id) it.bound() else it }
+        return d.bound()
+    }
+
+    private fun attachmentsUnsettled() = mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_draft_attachments))
 
     /** The reader showed the stored draft [oldId], which is gone now: it shows its new copy [newId], or nothing. */
     private fun storedDraftReplaced(oldId: String, newId: String?) = set { s ->
@@ -710,7 +732,9 @@ class AppViewModel(
             composerWork.withLock {
                 if (sending) return@withLock
                 flushRecipients()
-                val current = services.composer.current()?.takeIf { it.id == d.id } ?: return@withLock
+                val open = services.composer.current()?.takeIf { it.id == d.id } ?: return@withLock
+                // Attachments an earlier save left pointing at a replaced copy are settled first, or nothing goes.
+                val current = settled(open) ?: return@withLock
                 sendProblem(current)?.let { return@withLock mailUi.toasts.showError(it) }
                 val accountId = sendAccount(current) ?: return@withLock
                 val from = current.from ?: defaultFrom(accountId) ?: return@withLock

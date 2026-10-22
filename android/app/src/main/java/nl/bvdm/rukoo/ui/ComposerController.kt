@@ -71,7 +71,16 @@ data class ComposerState(
      * the server, or saved there since). Sending deletes it; saving again replaces it.
      */
     val draftId: String? = null,
+    /** Attachments that still point at a stored copy a save replaced; settled before the next save or Send. */
+    val rebind: PendingRebind? = null,
 )
+
+/**
+ * A save replaced the stored draft [from] with [to], but the attachments that came from [from] couldn't be
+ * pointed at [to] yet. [saved] is the attachment list as it was saved: [to] lists them in that order.
+ */
+@Serializable
+data class PendingRebind(val from: String, val to: String, val saved: List<OutgoingAttachment>)
 
 /**
  * The single composer, shared by the UI and the agent tools (write_draft, get_draft): an open draft
