@@ -1,3 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The agent hub's strings (track C1). Quick action labels and descriptions come from desktop's
+     agent.actions.* catalog entries; the notification texts from agent.panel.* and agent.draft.*. Names
+     start with agents_ so they can't collide with the chat UI's agent_* strings. -->
 <resources>
+    <string name="agents_action_reply_label">Draft a reply</string>
+    <string name="agents_action_reply_description">Write a reply in the composer</string>
+    <string name="agents_action_brief_label">Brief me</string>
+    <string name="agents_action_brief_description">Who this is and what you should know</string>
+    <string name="agents_action_tasks_label">Plan follow-ups</string>
+    <string name="agents_action_tasks_description">Turn the email into tasks</string>
+    <string name="agents_action_team_label">Tell the team</string>
+    <string name="agents_action_team_description">Share the key points with your team</string>
+    <string name="agents_action_update_label">Update systems</string>
+    <string name="agents_action_update_description">Record it in your CRM, notes or tasks</string>
+    <string name="agents_action_unsubscribe_label">Unsubscribe</string>
+    <string name="agents_action_unsubscribe_description">Stop mail from this sender</string>
+    <string name="agents_action_summary_label">Summarize</string>
+    <string name="agents_action_summary_description">The email and its thread in three bullets</string>
+    <string name="agents_action_triage_label">What needs me today?</string>
+    <string name="agents_action_triage_description">Go through the inbox, most urgent first</string>
+
+    <!-- Where a computer's Claude Code or Codex runs, under the agent's name: "on desktop-zolder". -->
+    <string name="agents_on_computer">on %1$s</string>
+    <!-- The scripted agent of debug builds. -->
+    <string name="agents_fake_name">Test agent</string>
+
+    <string name="agents_notify_reply">Reply ready</string>
+    <string name="agents_notify_failed">Stopped with an error</string>
+    <string name="agents_notify_approval">An agent is waiting for your approval</string>
+    <string name="agents_draft_reply">Wrote a reply</string>
+    <string name="agents_draft_reply_all">Wrote a reply to all</string>
+    <string name="agents_draft_forward">Wrote a forward</string>
+    <string name="agents_draft_new">Wrote a new email</string>
+    <string name="agents_notify_show">Show</string>
 </resources>

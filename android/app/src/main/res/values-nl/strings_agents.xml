@@ -1,3 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="agents_action_reply_label">Antwoord opstellen</string>
+    <string name="agents_action_reply_description">Schrijft een antwoord in het opstelvenster</string>
+    <string name="agents_action_brief_label">Praat me bij</string>
+    <string name="agents_action_brief_description">Wie dit is en wat je moet weten</string>
+    <string name="agents_action_tasks_label">Vervolgstappen plannen</string>
+    <string name="agents_action_tasks_description">Maakt taken van de e-mail</string>
+    <string name="agents_action_team_label">Team inlichten</string>
+    <string name="agents_action_team_description">Deelt de kern met je team</string>
+    <string name="agents_action_update_label">Systemen bijwerken</string>
+    <string name="agents_action_update_description">Legt het vast in je CRM, notities of taken</string>
+    <string name="agents_action_unsubscribe_label">Uitschrijven</string>
+    <string name="agents_action_unsubscribe_description">Geen mail meer van deze afzender</string>
+    <string name="agents_action_summary_label">Samenvatten</string>
+    <string name="agents_action_summary_description">De e-mail en de draad in drie punten</string>
+    <string name="agents_action_triage_label">Wat vraagt vandaag mijn aandacht?</string>
+    <string name="agents_action_triage_description">Loopt de inbox door, het dringendste eerst</string>
+
+    <string name="agents_on_computer">op %1$s</string>
+    <string name="agents_fake_name">Testagent</string>
+
+    <string name="agents_notify_reply">Antwoord klaar</string>
+    <string name="agents_notify_failed">Gestopt met een fout</string>
+    <string name="agents_notify_approval">Een agent wacht op je akkoord</string>
+    <string name="agents_draft_reply">Antwoord geschreven</string>
+    <string name="agents_draft_reply_all">Antwoord aan iedereen geschreven</string>
+    <string name="agents_draft_forward">Doorstuurbericht geschreven</string>
+    <string name="agents_draft_new">Nieuwe e-mail geschreven</string>
+    <string name="agents_notify_show">Tonen</string>
 </resources>

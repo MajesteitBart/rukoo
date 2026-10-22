@@ -5,7 +5,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import nl.bvdm.rukoo.agents.model.AgentDescriptor
+import nl.bvdm.rukoo.agents.model.MailApproval
 import nl.bvdm.rukoo.agents.model.AgentStatus
 import nl.bvdm.rukoo.agents.model.ApprovalRequest
 import nl.bvdm.rukoo.agents.model.Conversation
@@ -159,4 +164,36 @@ interface AgentHub {
 
     /** Queues a line for the agent's next turn ("Since your last turn: ..."). */
     fun addNote(conversationId: String, note: String)
+
+    // Added by the hub track (all with defaults, so other implementations keep compiling).
+
+    /** Checks every agent's status again, in the background (the picker opened). */
+    fun refreshAgents() {}
+
+    /**
+     * read_skill (skills.js read()): without a name the list, with [file] that file, otherwise SKILL.md and the
+     * text files next to it, as the desktop's JSON. Throws [SkillException] with the desktop's texts.
+     */
+    fun readSkill(name: String? = null, file: String? = null): JsonObject {
+        if (!name.isNullOrEmpty()) throw SkillException("There is no skill named \"$name\".")
+        return buildJsonObject {
+            putJsonArray("skills") {
+                for (s in skills()) addJsonObject { put("name", s.name); put("description", s.description); put("source", s.source) }
+            }
+        }
+    }
+
+    /** The skills part of Rukoo's MCP instructions in at most [room] characters, or "" (skills.js instructions()). */
+    fun skillInstructions(room: Int): String = RukooSkills.instructions(skills(), room)
+
+    /** read_skill's tool description with the skill list (skills.js toolDescription()). */
+    fun skillToolDescription(): String = RukooSkills.toolDescription(skills())
+
+    /**
+     * mail_action without a card (autoMailActions): runs on the chat's mail chain and adds the result notice.
+     * Returns the outcome within [waitMs], or null when it still runs; its outcome then becomes a note for the
+     * agent's next message (tools.js mailAction()).
+     */
+    suspend fun runMailAction(conversationId: String, mail: MailApproval, title: String, waitMs: Long = 90_000): MailOutcome? =
+        throw AgentException("unknown", "mail actions are not available")
 }

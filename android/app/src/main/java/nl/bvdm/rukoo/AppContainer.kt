@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -15,9 +16,18 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import nl.bvdm.rukoo.agents.AdapterDeps
 import nl.bvdm.rukoo.agents.AgentHub
+import nl.bvdm.rukoo.agents.AgentNotifier
 import nl.bvdm.rukoo.agents.AgentSettingsStore
+import nl.bvdm.rukoo.agents.AndroidHubStrings
+import nl.bvdm.rukoo.agents.Hub
+import nl.bvdm.rukoo.agents.RukooSkills
+import nl.bvdm.rukoo.agents.adapters.DefaultAdapterFactory
 import nl.bvdm.rukoo.agents.preview.PreviewAgentHub
+import nl.bvdm.rukoo.mail.model.Address
+import nl.bvdm.rukoo.mail.model.UnsubscribeResult
+import nl.bvdm.rukoo.ui.ComposerState
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretBox
 import nl.bvdm.rukoo.desktop.DesktopLink
@@ -85,7 +95,39 @@ class AppContainer(context: Context) : AppServices {
     }
 
     override val agents: AgentHub by lazy {
-        if (BuildConfig.USE_PREVIEW_AGENTS) PreviewAgentHub(appScope, clock) else error("no agent hub yet")
+        if (BuildConfig.USE_PREVIEW_AGENTS) {
+            PreviewAgentHub(appScope, clock)
+        } else {
+            lateinit var hub: Hub
+            hub = Hub(
+                scope = appScope,
+                mail = mail,
+                screen = screen,
+                settings = agentSettings,
+                factory = DefaultAdapterFactory(AdapterDeps(appContext, agentSettings, desktop, mcp, http, clock, appContext.filesDir, appScope)),
+                dataDir = appContext.filesDir,
+                rukooSkills = RukooSkills.forApp(appContext.assets, appContext.filesDir),
+                alerts = AgentNotifier(appContext, settingsSnapshot, screen) { hub.agentName(it) },
+                strings = AndroidHubStrings(appContext),
+                mcpUrl = { mcp.status.value.url },
+                // An approved unsubscribe that needs the user: the sender's page in the browser, or its email in the composer.
+                openUnsubscribe = { result ->
+                    when (result) {
+                        is UnsubscribeResult.OpenPage -> runCatching {
+                            appContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }.isSuccess
+                        is UnsubscribeResult.SendEmail -> {
+                            composer.open(ComposerState(to = listOf(Address("", result.to)), subject = result.subject, body = result.body))
+                            true
+                        }
+                        else -> false
+                    }
+                },
+                clock = clock,
+                includeFake = BuildConfig.DEBUG,
+            )
+            hub
+        }
     }
 
     override val mcp: McpController by lazy { StubMcpController() }

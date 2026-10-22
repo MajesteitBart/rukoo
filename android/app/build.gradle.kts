@@ -1,4 +1,5 @@
 import java.util.Properties
+import javax.inject.Inject
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -27,7 +28,7 @@ android {
         // The in-memory preview mail engine and agent hub stand in until the real ones land; the mail and
         // agent tracks turn these off (debug builds can keep the preview for screenshots).
         buildConfigField("boolean", "USE_PREVIEW_MAIL", "true")
-        buildConfigField("boolean", "USE_PREVIEW_AGENTS", "true")
+        buildConfigField("boolean", "USE_PREVIEW_AGENTS", "false")
     }
 
     signingConfigs {
@@ -80,6 +81,38 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
+// Rukoo's own skills (the repository's skills/ folder) ship in the APK's assets under skills/, so the phone
+// offers the same /name skills as desktop Rukoo.
+abstract class BundleSkills : DefaultTask() {
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val skills: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val assets: DirectoryProperty
+
+    @get:Inject
+    abstract val files: FileSystemOperations
+
+    @TaskAction
+    fun bundle() {
+        files.sync {
+            from(skills) { exclude("README.md") }
+            into(assets.get().dir("skills").asFile)
+        }
+    }
+}
+
+val bundleSkills = tasks.register<BundleSkills>("bundleSkills") {
+    skills.set(rootProject.layout.projectDirectory.dir("../skills"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(bundleSkills, BundleSkills::assets)
     }
 }
 
