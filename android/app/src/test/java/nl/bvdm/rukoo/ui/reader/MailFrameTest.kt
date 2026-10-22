@@ -16,7 +16,8 @@ class MailFrameTest {
     @Test
     fun darkThemeInvertsHtmlMailAndTurnsImagesBack() {
         val doc = MailFrame.document(newsletter, isHtml = true, light = false, darkEmails = true)
-        assertTrue(doc.contains("filter:invert(1) hue-rotate(180deg);background:#e2e3e8"))
+        assertTrue(doc.contains("[data-rukoo-mail]{filter:invert(1) hue-rotate(180deg);background:#e2e3e8}"))
+        assertTrue(doc.contains("html,body{background:transparent}"))
         assertTrue(doc.contains("[style*=\"background-image\"]:not([data-rukoo-canvas])"))
         assertTrue(doc.contains("color:#15171c"))
         assertTrue(doc.contains("a{color:#1a5fd0}"))
@@ -38,13 +39,24 @@ class MailFrameTest {
     @Test
     fun theGreyCanvasBecomesTransparentAndTheCardStays() {
         val doc = Jsoup.parse(MailFrame.document(newsletter, isHtml = true, light = true, darkEmails = true))
-        val body = doc.body()
-        assertTrue(body.attr("style").endsWith("background-color:transparent !important"))
-        assertTrue(body.hasAttr("data-rukoo-canvas"))
-        val outer = body.selectFirst("table")!!
+        // The mail's body attributes moved to the wrapper, so the page canvas stays transparent.
+        assertTrue(doc.body().attributes().isEmpty)
+        val wrapper = doc.selectFirst("[data-rukoo-mail]")!!
+        assertTrue(wrapper.attr("style").startsWith("margin:0;background:#f2f2f2;"))
+        assertTrue(wrapper.attr("style").endsWith("background-color:transparent !important"))
+        assertTrue(wrapper.hasAttr("data-rukoo-canvas"))
+        val outer = wrapper.selectFirst("table")!!
         assertTrue(outer.attr("style").contains("transparent !important"))
         val card = doc.select("table[width=600]").first()!!
         assertEquals("background:#ffffff;max-width:600px", card.attr("style"))
+    }
+
+    @Test
+    fun aBodyColourBecomesWrapperCss() {
+        val doc = Jsoup.parse(MailFrame.document("<html><body bgcolor=\"#003366\" text=\"#ffffff\">x</body></html>", true, false, true))
+        val wrapper = doc.selectFirst("[data-rukoo-mail]")!!
+        assertEquals("background-color:#003366;color:#ffffff;", wrapper.attr("style"))
+        assertTrue(doc.body().attributes().isEmpty)
     }
 
     @Test

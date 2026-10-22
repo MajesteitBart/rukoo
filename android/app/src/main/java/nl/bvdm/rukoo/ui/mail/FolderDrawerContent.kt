@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -77,7 +77,7 @@ fun FolderDrawerContent(app: AppViewModel, modifier: Modifier = Modifier) {
     val scoped = if (scope == null) accounts else accounts.filter { it.id == scope }
     var switching by remember { mutableStateOf(false) }
 
-    Column(modifier.background(c.bg).windowInsetsPadding(WindowInsets.statusBars)) {
+    Column(modifier.background(c.bg).windowInsetsPadding(WindowInsets.systemBars)) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 10.dp)) {
             // The account switch (styles.css:655-694).
             val account = scope?.let { id -> accounts.firstOrNull { it.id == id } } ?: accounts.singleOrNull()

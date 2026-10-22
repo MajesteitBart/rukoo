@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -162,6 +164,7 @@ fun MailCheckbox(checked: Boolean, modifier: Modifier = Modifier, partial: Boole
  * 16/650, text in `text2`, buttons on the right. The last button is the filled one (red when [DialogRequest.danger]);
  * a third choice ("Don't save") sits on the left.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MailDialog(request: DialogRequest) {
     val c = Rk.colors
@@ -203,17 +206,20 @@ fun MailDialog(request: DialogRequest) {
                 LaunchedEffect(request) { runCatching { focus.requestFocus() } }
             }
             Spacer(Modifier.height(4.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Right-aligned, wrapping onto a second line when Dutch labels don't fit next to each other.
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (request.otherLabel != null) {
-                    RkButton(request.otherLabel, { request.answer(DialogChoice.OTHER, text) }, kind = RkButtonKind.SECONDARY, modifier = Modifier.weight(1f, fill = false))
+                    RkButton(request.otherLabel, { request.answer(DialogChoice.OTHER, text) }, kind = RkButtonKind.SECONDARY)
                 }
-                Spacer(Modifier.weight(1f))
-                RkButton(request.cancelLabel, { request.answer(DialogChoice.CANCEL) }, kind = RkButtonKind.SECONDARY, modifier = Modifier.weight(1f, fill = false))
+                RkButton(request.cancelLabel, { request.answer(DialogChoice.CANCEL) }, kind = RkButtonKind.SECONDARY)
                 RkButton(
                     request.confirmLabel,
                     { request.answer(DialogChoice.CONFIRM, text) },
                     kind = if (request.danger) RkButtonKind.DANGER else RkButtonKind.PRIMARY,
-                    modifier = Modifier.weight(1f, fill = false),
                 )
             }
         }

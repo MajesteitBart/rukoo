@@ -159,9 +159,11 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
             val canBack = nav.back(twoPane) != null && !setup
             var backProgress by remember { mutableFloatStateOf(0f) }
             val scope = rememberCoroutineScope()
-            val compactState = remember { SeekableTransitionState(nav.compactSlot()) }
+            // A fresh transition each time the window becomes one pane: one animated while it wasn't composed
+            // (in two panes) would stay on the old slot after folding.
+            val compactState = remember(twoPane) { SeekableTransitionState(nav.compactSlot()) }
             val target = nav.compactSlot()
-            LaunchedEffect(target) { compactState.animateTo(target) }
+            if (!twoPane) LaunchedEffect(target, compactState) { compactState.animateTo(target) }
 
             PredictiveBackHandler(enabled = canBack) { events ->
                 // Back that stops at "Save draft?" doesn't preview the pane behind the composer.

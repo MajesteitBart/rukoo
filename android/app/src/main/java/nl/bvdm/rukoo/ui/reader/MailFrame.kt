@@ -11,6 +11,26 @@ import org.jsoup.nodes.Element
  * script-free page could still act on (forms, frames, meta refreshes).
  */
 object MailFrame {
+    private data class Key(val html: String, val isHtml: Boolean, val light: Boolean, val darkEmails: Boolean)
+
+    // The reader leaves the screen whenever the composer or the chat takes it, and comes back with a new
+    // WebView; the last few documents are kept so coming back doesn't parse the mail again.
+    private val recent = object : LinkedHashMap<Key, String>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, String>?) = size > 6
+    }
+
+    /** A document [document] made before for the same mail and theme, or null. */
+    fun cached(html: String, isHtml: Boolean, light: Boolean, darkEmails: Boolean): String? =
+        synchronized(recent) { recent[Key(html, isHtml, light, darkEmails)] }
+
+    /** [document], remembered for [cached]. */
+    fun documentCached(html: String, isHtml: Boolean, light: Boolean, darkEmails: Boolean): String {
+        cached(html, isHtml, light, darkEmails)?.let { return it }
+        val doc = document(html, isHtml, light, darkEmails)
+        synchronized(recent) { recent[Key(html, isHtml, light, darkEmails)] = doc }
+        return doc
+    }
+
     /**
      * [light] is the app theme; [darkEmails] the setting. Dark theme plus dark emails inverts HTML mail and
      * turns images back, so a light newsletter reads dark with its hues intact (mailframe.js:4-33).
@@ -20,8 +40,11 @@ object MailFrame {
         val invert = !light && darkEmails && isHtml
         val textColor = if (light || invert) "#15171c" else "#e6e8ee"
         val link = if (invert) "#1a5fd0" else if (light) "#2f63c8" else "#8ab0ff"
+        // Desktop filters the html element. The Android WebView paints the root's background as a canvas the
+        // filter doesn't reach, and paints it past the view's own edges, so here the mail sits in a wrapper
+        // that carries the filter and the background, and the page canvas stays transparent.
         val invertCss = if (invert) {
-            "html{filter:invert(1) hue-rotate(180deg);background:#e2e3e8}\n" +
+            "[data-rukoo-mail]{filter:invert(1) hue-rotate(180deg);background:#e2e3e8}\n" +
                 "img,picture,video,svg,[style*=\"background-image\"]:not([data-rukoo-canvas]),[background]{filter:invert(1) hue-rotate(180deg)}"
         } else {
             ""
@@ -31,18 +54,36 @@ object MailFrame {
         // (the WebView's overview mode), which stands in for desktop's "fit content to window".
         val doc = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <style>
-html{color-scheme:$scheme;color:$textColor;background:transparent}
+html,body{background:transparent}
+html{color-scheme:$scheme}
 body{margin:0;padding:0 2px 8px;font:14.5px/1.6 'Segoe UI',system-ui,sans-serif;overflow-wrap:anywhere}
+[data-rukoo-mail]{color:$textColor}
 a{color:$link}
 img{max-width:100%;height:auto}
 pre{white-space:pre-wrap}
 blockquote{border-left:3px solid rgba(128,128,128,.45);margin:0 0 0 2px;padding-left:12px}
 $invertCss
-</style></head><body>$html</body></html>"""
+</style></head><body><div data-rukoo-mail>$html</div></body></html>"""
         val parsed = Jsoup.parse(doc)
+        val wrapper = parsed.selectFirst("[data-rukoo-mail]")!!
+        liftBody(parsed.body(), wrapper)
         defuse(parsed)
-        if (isHtml) clearCanvas(parsed)
+        if (isHtml) clearCanvas(wrapper)
         return parsed.outerHtml()
+    }
+
+    /**
+     * The mail's own `<body>` attributes merge into the frame's body when it is parsed. A body background
+     * would become the page canvas again, so they move to the wrapper, as CSS (a div knows no bgcolor).
+     */
+    private fun liftBody(body: Element, wrapper: Element) {
+        val css = StringBuilder()
+        body.attr("bgcolor").takeIf { it.isNotBlank() }?.let { css.append("background-color:").append(it.trim()).append(';') }
+        body.attr("text").takeIf { it.isNotBlank() }?.let { css.append("color:").append(it.trim()).append(';') }
+        body.attr("background").takeIf { it.isNotBlank() && !it.contains('"') }?.let { css.append("background-image:url(\"").append(it.trim()).append("\");") }
+        body.attr("style").takeIf { it.isNotBlank() }?.let { css.append(it.trim().trimEnd(';')).append(';') }
+        if (css.isNotEmpty()) wrapper.attr("style", css.toString())
+        for (key in body.attributes().asList().map { it.key }) body.removeAttr(key)
     }
 
     // What a page without script can still do: submit forms, load frames, refresh itself. JavaScript is
@@ -66,13 +107,13 @@ $invertCss
     private val SKIP = setOf("style", "script", "meta", "link", "title")
 
     /**
-     * Desktop's clearCanvas without layout: walk down from body through single children that span the
-     * page (no width, or 100%), at most five deep; each with a neutral light background loses it.
+     * Desktop's clearCanvas without layout: walk down from the mail's top ([root], where its body's
+     * attributes now are) through single children that span the page (no width, or 100%), at most five
+     * deep; each with a neutral light background loses it.
      */
-    fun clearCanvas(doc: Document) {
-        val body = doc.body()
-        val chain = mutableListOf<Element>(body)
-        var el: Element = body
+    fun clearCanvas(root: Element) {
+        val chain = mutableListOf(root)
+        var el: Element = root
         for (depth in 0 until 5) {
             val kids = el.children().filter { it.tagName().lowercase() !in SKIP }
             if (kids.size != 1 || !spans(kids[0])) break

@@ -325,28 +325,29 @@ private fun Header(app: AppViewModel, full: FullMessage, m: MessageSummary, onPe
             Avatar(who.name, who.address, size = AvatarSize.Large)
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (draft) {
-                        Text(stringResource(R.string.composer_titles_draft), style = Rk.type.text13.semibold, color = c.danger)
-                    } else {
-                        Text(
-                            ListModel.person(full.from).ifEmpty { stringResource(R.string.mailbox_message_unknown_sender) },
-                            style = Rk.type.text13_5.title,
-                            color = c.text,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false).rkClickable(Rk.shapes.chip) { onPerson(full.from) },
-                        )
-                        if (m.vip) {
-                            Spacer(Modifier.width(6.dp))
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        if (draft) {
+                            Text(stringResource(R.string.composer_titles_draft), style = Rk.type.text13.semibold, color = c.danger)
+                        } else {
                             Text(
-                                stringResource(R.string.mailbox_message_vip),
-                                style = Rk.type.text11.weight(650),
-                                color = c.accent,
-                                modifier = Modifier.background(c.accentSoft, RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 1.dp),
+                                ListModel.person(full.from).ifEmpty { stringResource(R.string.mailbox_message_unknown_sender) },
+                                style = Rk.type.text13_5.title,
+                                color = c.text,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false).rkClickable(Rk.shapes.chip) { onPerson(full.from) },
                             )
+                            if (m.vip) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    stringResource(R.string.mailbox_message_vip),
+                                    style = Rk.type.text11.weight(650),
+                                    color = c.accent,
+                                    modifier = Modifier.background(c.accentSoft, RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 1.dp),
+                                )
+                            }
                         }
                     }
-                    Spacer(Modifier.weight(1f))
                     Text(dates.readerDate(full.date, now), style = Rk.type.text12, color = c.text3, maxLines = 1, modifier = Modifier.padding(start = 8.dp))
                 }
                 RecipientSummary(full, own, details) { details = !details }

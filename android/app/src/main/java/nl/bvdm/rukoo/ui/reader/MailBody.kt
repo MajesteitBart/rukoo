@@ -56,8 +56,10 @@ fun MailBody(
     modifier: Modifier = Modifier,
 ) {
     // Parsing a large newsletter takes a moment: off the main thread, with the loading bar meanwhile.
-    val doc by produceState<String?>(null, html, isHtml, light, darkEmails) {
-        value = withContext(Dispatchers.Default) { MailFrame.document(html, isHtml, light, darkEmails) }
+    val doc by produceState(MailFrame.cached(html, isHtml, light, darkEmails), html, isHtml, light, darkEmails) {
+        // On a theme change the state still holds the old document: always resolve the current one.
+        value = MailFrame.cached(html, isHtml, light, darkEmails)
+            ?: withContext(Dispatchers.Default) { MailFrame.documentCached(html, isHtml, light, darkEmails) }
     }
     val fontScale = LocalDensity.current.fontScale
     val current = doc

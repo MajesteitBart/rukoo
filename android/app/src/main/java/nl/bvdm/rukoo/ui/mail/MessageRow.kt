@@ -259,12 +259,15 @@ private fun androidx.compose.foundation.layout.RowScope.Body(
                 stacked -> if (unread) c.text2 else c.text3
                 else -> c.text
             }
-            Text(line, style = senderStyle, color = senderColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            if (stack != null && !(stack.open && stack.forced)) {
-                Spacer(Modifier.width(6.dp))
-                StackButton(stack, line, actions.toggleStack)
+            // The sender takes what it needs and the stack button follows it; the meta keeps to the right.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Text(line, style = senderStyle, color = senderColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (stack != null && !(stack.open && stack.forced)) {
+                    Spacer(Modifier.width(6.dp))
+                    StackButton(stack, line, actions.toggleStack)
+                }
             }
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (m.answered) RkIcon(RukooIcons.Replied, stringResource(R.string.mailbox_message_replied), size = 13.dp, tint = c.text3)
                 if (m.hasAttachments) RkIcon(RukooIcons.Clip, stringResource(R.string.mailbox_message_attachment), size = 13.dp, tint = c.text3)
@@ -278,9 +281,8 @@ private fun androidx.compose.foundation.layout.RowScope.Body(
                 color = if (unread) c.text else c.text2,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.weight(1f))
             Pills(m, look)
         }
         if (!look.compact) {

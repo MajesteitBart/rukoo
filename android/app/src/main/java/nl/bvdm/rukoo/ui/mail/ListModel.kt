@@ -42,7 +42,8 @@ object ListModel {
         ),
         Regex("^(beste|hoi|hallo|hi|hey|hello|dear|geachte|goedemorgen|goedemiddag|goedenavond)\\b[^,!\\n]{0,40}[,!]\\s*", RegexOption.IGNORE_CASE),
     )
-    private val SPACES = Regex("(?U)\\s+")
+    // Unicode spaces too (newsletters are full of NBSP). Android's ICU regex has no (?U) flag, so they are listed.
+    private val SPACES = Regex("[\\s\\u00A0\\u1680\\u2000-\\u200B\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+")
 
     /** Up to four passes over the noise; when everything goes, the raw text stays. */
     fun cleanPreview(text: String): String {

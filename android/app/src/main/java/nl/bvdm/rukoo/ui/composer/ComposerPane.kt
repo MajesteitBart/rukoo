@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -131,7 +134,23 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
     val showCc = askedCc || d.cc.isNotEmpty()
     val showBcc = askedBcc || d.bcc.isNotEmpty()
     val toFocus = remember { FocusRequester() }
+    val ccFocus = remember { FocusRequester() }
+    val bccFocus = remember { FocusRequester() }
     val bodyFocus = remember { FocusRequester() }
+    // Asking for Cc or Bcc puts the cursor there, once; it isn't saved, so folding doesn't move the cursor again.
+    var focusNext by remember { mutableStateOf<FocusRequester?>(null) }
+    LaunchedEffect(focusNext) {
+        focusNext?.let { runCatching { it.requestFocus() } }
+        focusNext = null
+    }
+    val askCc = {
+        askedCc = true
+        focusNext = ccFocus
+    }
+    val askBcc = {
+        askedBcc = true
+        focusNext = bccFocus
+    }
     var focused by rememberSaveable(d.id) { mutableStateOf(false) }
     val failedAttach = stringResource(R.string.composer_attachments_failed, "%s")
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -163,6 +182,19 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
             maxLines = 1,
             modifier = Modifier.weight(1f).padding(start = 6.dp),
         )
+        // The save state lives up here on a phone: the bottom bar has no room for it beside Send.
+        val savedAt by composer.savedAt.collectAsStateWithLifecycle()
+        val dates = rememberMailDates()
+        savedAt?.takeIf { d.dirty }?.let { at ->
+            Text(
+                stringResource(R.string.composer_status_saved_at, dates.time(at)),
+                style = Rk.type.text12,
+                color = c.text3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(end = 12.dp),
+            )
+        }
     }
     Hairline()
 
@@ -175,12 +207,12 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
             contacts = contacts,
             focusRequester = toFocus,
             trailing = {
-                if (!showCc) RkLinkButton(stringResource(R.string.reader_headers_cc), { askedCc = true }, style = Rk.type.text12_5, color = c.text2)
-                if (!showBcc) RkLinkButton(stringResource(R.string.reader_headers_bcc), { askedBcc = true }, style = Rk.type.text12_5, color = c.text2)
+                if (!showCc) RkLinkButton(stringResource(R.string.reader_headers_cc), askCc, style = Rk.type.text12_5, color = c.text2)
+                if (!showBcc) RkLinkButton(stringResource(R.string.reader_headers_bcc), askBcc, style = Rk.type.text12_5, color = c.text2)
             },
         )
-        if (showCc) RecipientField(stringResource(R.string.reader_headers_cc), d.cc, { list -> edit { it.copy(cc = list) } }, contacts)
-        if (showBcc) RecipientField(stringResource(R.string.reader_headers_bcc), d.bcc, { list -> edit { it.copy(bcc = list) } }, contacts)
+        if (showCc) RecipientField(stringResource(R.string.reader_headers_cc), d.cc, { list -> edit { it.copy(cc = list) } }, contacts, ccFocus)
+        if (showBcc) RecipientField(stringResource(R.string.reader_headers_bcc), d.bcc, { list -> edit { it.copy(bcc = list) } }, contacts, bccFocus)
         SubjectField(d.subject) { text -> edit { it.copy(subject = text) } }
 
         BodyField(d, bodyFocus) { text -> edit { it.copy(body = text) } }
@@ -196,7 +228,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
     }
 
     Hairline()
-    BottomBar(app, d, onAttach = { picker.launch(arrayOf("*/*")) }, onShowCc = { askedCc = true }, onShowBcc = { askedBcc = true })
+    BottomBar(app, d, onAttach = { picker.launch(arrayOf("*/*")) }, onShowCc = askCc, onShowBcc = askBcc)
 
     // Replies start in the text, a new message or a forward at To; only the first time this draft opens.
     LaunchedEffect(d.id) {
@@ -246,13 +278,16 @@ private fun FromField(app: AppViewModel, d: ComposerState) {
     }
 }
 
-/** A composer field (styles.css:2798-2835): a 76dp label column, then the input, over a hairline. */
+// Desktop's 76px label column, wide enough for Dutch "Onderwerp" at the phone's larger type.
+private val LabelWidth = 84.dp
+
+/** A composer field (styles.css:2798-2835): the label column, then the input, over a hairline. */
 @Composable
 private fun FieldRow(label: String, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
     val c = Rk.colors
     Column {
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, style = Rk.type.text12_5.medium, color = c.text2, modifier = Modifier.width(64.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, style = Rk.type.text12_5.medium, color = c.text2, modifier = Modifier.width(LabelWidth), maxLines = 1, overflow = TextOverflow.Ellipsis)
             content()
         }
         Hairline()
@@ -283,11 +318,13 @@ private fun RecipientField(
         if (more.isNotEmpty()) onChange(Recipients.merge(list, more))
         text = ""
     }
+    val focus = focusRequester ?: remember { FocusRequester() }
     Column {
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, style = Rk.type.text12_5.medium, color = c.text2, modifier = Modifier.width(64.dp), maxLines = 1)
+            Text(label, style = Rk.type.text12_5.medium, color = c.text2, modifier = Modifier.width(LabelWidth), maxLines = 1)
             FlowRow(
-                Modifier.weight(1f),
+                // A tap anywhere beside the chips types in the field.
+                Modifier.weight(1f).heightIn(min = 36.dp).pointerInput(Unit) { detectTapGestures { runCatching { focus.requestFocus() } } },
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 itemVerticalAlignment = Alignment.CenterVertically,
@@ -305,10 +342,12 @@ private fun RecipientField(
                     cursorBrush = SolidColor(c.accent),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next, autoCorrectEnabled = false),
                     keyboardActions = KeyboardActions(onNext = { commit() }),
+                    // As wide as its text, at least 80dp: it stays on the chips' line until the text no longer fits.
                     modifier = Modifier
                         .widthIn(min = 80.dp)
+                        .width(IntrinsicSize.Max)
                         .heightIn(min = 32.dp)
-                        .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                        .focusRequester(focus)
                         .onFocusChanged {
                             if (hasFocus && !it.isFocused) commit()
                             hasFocus = it.isFocused
@@ -322,7 +361,7 @@ private fun RecipientField(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 56.dp, bottom = 6.dp)
+                    .padding(start = LabelWidth - 8.dp, bottom = 6.dp)
                     .background(c.raised, Rk.shapes.card)
                     .border(1.dp, c.border, Rk.shapes.card)
                     .padding(4.dp),
@@ -506,8 +545,6 @@ private fun AttachmentChip(a: OutgoingAttachment, onRemove: () -> Unit) {
 @Composable
 private fun BottomBar(app: AppViewModel, d: ComposerState, onAttach: () -> Unit, onShowCc: () -> Unit, onShowBcc: () -> Unit) {
     val c = Rk.colors
-    val savedAt by app.services.composer.savedAt.collectAsStateWithLifecycle()
-    val dates = rememberMailDates()
     var menu by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val narrow = maxWidth < 440.dp
@@ -550,8 +587,6 @@ private fun BottomBar(app: AppViewModel, d: ComposerState, onAttach: () -> Unit,
                         )
                     }
                     RkLinkButton(stringResource(R.string.composer_agent_undo), app::undoAgentDraft, style = Rk.type.text12)
-                } else if (savedAt != null && d.dirty) {
-                    Text(stringResource(R.string.composer_status_saved_at, dates.time(savedAt!!)), style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             RkButton(
@@ -578,7 +613,7 @@ private fun copyIn(context: Context, uri: Uri, composerId: String): OutgoingAtta
         }
     }
     // A name from another app is a file name here, never a path.
-    val safe = name.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().ifEmpty { "file" }.take(150)
+    val safe = name.replace(Regex("[\\\\/:*?\"<>|\\p{Cc}]"), "_").trim().ifEmpty { "file" }.take(150)
     val dir = File(context.filesDir, "attachments/compose/$composerId/${Ids.rand(8)}").apply { mkdirs() }
     val file = File(dir, safe)
     resolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } } ?: return null

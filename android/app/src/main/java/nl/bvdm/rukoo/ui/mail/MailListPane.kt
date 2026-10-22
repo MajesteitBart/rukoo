@@ -206,7 +206,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
                 }
             }
         }
-        if (!selecting) {
+        if (!selecting && !nav.searching) {
             NewMessageButton(
                 expanded = !listState.lastScrolledForward || !listState.canScrollBackward,
                 onClick = { app.newMessage() },
