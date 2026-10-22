@@ -257,10 +257,12 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
     Hairline()
     BottomBar(app, d, locked, onAttach = { picker.launch(arrayOf("*/*")) }, onShowCc = askCc, onShowBcc = askBcc)
 
-    // Replies start in the text, a new message or a forward at To; only the first time this draft opens.
+    // Replies start in the text, a new message or a forward at To; only the first time this draft opens. A composer
+    // an agent opened isn't focused: the user didn't ask to type, so the keyboard stays down until they tap.
     LaunchedEffect(d.id) {
         if (focused) return@LaunchedEffect
         focused = true
+        if (d.draftedBy != null) return@LaunchedEffect
         runCatching {
             if (d.to.isEmpty() || d.replyKind == ReplyKind.FORWARD) toFocus.requestFocus() else bodyFocus.requestFocus()
         }
@@ -651,16 +653,15 @@ private fun BottomBar(app: AppViewModel, d: ComposerState, locked: Boolean, onAt
                 val agent = d.draftedBy ?: d.editedAgent
                 if (agent != null) {
                     RkIcon(RukooIcons.Sparkle, null, size = 14.dp, tint = c.accent)
-                    if (!narrow) {
-                        Text(
-                            stringResource(if (d.draftedBy != null) R.string.composer_agent_drafted else R.string.composer_agent_drafted_edited, agent),
-                            style = Rk.type.text12,
-                            color = c.text2,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                    }
+                    // A narrow bar keeps the agent's name next to the sparkle, so it still says who wrote the text.
+                    Text(
+                        if (narrow) agent else stringResource(if (d.draftedBy != null) R.string.composer_agent_drafted else R.string.composer_agent_drafted_edited, agent),
+                        style = Rk.type.text12,
+                        color = c.text2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     RkLinkButton(stringResource(R.string.composer_agent_undo), app::undoAgentDraft, style = Rk.type.text12)
                 }
             }
