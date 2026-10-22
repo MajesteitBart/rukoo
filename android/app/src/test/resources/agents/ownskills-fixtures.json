@@ -1,0 +1,67 @@
+{
+ "mentions": [
+  {
+   "text": "Use $pdf, then $todoist and $pdf again",
+   "names": [
+    "pdf",
+    "todoist",
+    "docx"
+   ],
+   "expected": [
+    "pdf",
+    "todoist",
+    "pdf"
+   ]
+  },
+  {
+   "text": "Costs $50 or $1.5k, not $pdf.",
+   "names": [
+    "pdf",
+    "50"
+   ],
+   "expected": [
+    "pdf"
+   ]
+  },
+  {
+   "text": "email$pdf and ($pdf) and $plugin:skill!",
+   "names": [
+    "pdf",
+    "plugin:skill"
+   ],
+   "expected": [
+    "plugin:skill"
+   ]
+  },
+  {
+   "text": "$a-b_c? $unknown",
+   "names": [
+    "a-b_c"
+   ],
+   "expected": [
+    "a-b_c"
+   ]
+  },
+  {
+   "text": "line\n$pdf",
+   "names": [
+    "pdf"
+   ],
+   "expected": [
+    "pdf"
+   ]
+  }
+ ],
+ "cleaned": [
+  {
+   "name": "pdf",
+   "description": "Read PDFs",
+   "scope": "tools"
+  },
+  {
+   "name": "ok:name_1",
+   "description": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd…",
+   "scope": "sssssssssssssssssssssssssssssssssssssss…"
+  }
+ ]
+}
