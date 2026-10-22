@@ -1,11 +1,13 @@
 package nl.bvdm.rukoo.desktop
 
+import kotlin.coroutines.cancellation.CancellationException
 import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.agents.AgentSettingsStore
 import nl.bvdm.rukoo.agents.ClarkSettings
 import nl.bvdm.rukoo.agents.OpenClawSettings
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.ComputerProgram
+import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.MailException
 import nl.bvdm.rukoo.mail.model.Account
@@ -13,6 +15,7 @@ import nl.bvdm.rukoo.mail.model.AccountType
 import nl.bvdm.rukoo.mail.model.AuthKind
 import nl.bvdm.rukoo.mail.model.GoogleClient
 import nl.bvdm.rukoo.mail.model.ImportedAccount
+import nl.bvdm.rukoo.mail.model.MailPrefs
 import nl.bvdm.rukoo.mail.model.SortOrder
 import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.Density
@@ -56,12 +59,10 @@ data class AgentImport(val settings: AgentSettings, val clark: Boolean, val open
 object DesktopImport {
     /**
      * The accounts to hand to [MailEngine.importAccounts]. The demo account stays on the computer (the phone
-     * has its own), accounts without a secret are reported instead of added, and accounts that use the
-     * computer's general signature get it as their own, since the phone has no general signature.
+     * has its own), and accounts without a secret are reported instead of added. An account on the computer's
+     * general signature stays on it: the engine keeps the general signature too ([prefs]).
      */
     fun accounts(bundle: ExportBundle): Pair<List<ImportedAccount>, List<SkippedAccount>> {
-        val signature = bundle.settings.signature?.takeIf { it.isNotBlank() }
-        val signatureHtml = bundle.settings.signatureHtml?.takeIf { it.isNotBlank() }
         val skipped = mutableListOf<SkippedAccount>()
         val out = mutableListOf<ImportedAccount>()
         for (a in bundle.accounts) {
@@ -71,13 +72,26 @@ object DesktopImport {
                 skipped += SkippedAccount(a.email, SkipReason.NO_SECRET)
                 continue
             }
-            out += if (a.signature == null && a.signatureHtml == null && (signature != null || signatureHtml != null)) {
-                a.copy(signature = signature, signatureHtml = signatureHtml)
-            } else {
-                a
-            }
+            out += a
         }
         return out to skipped
+    }
+
+    /**
+     * The mail settings desktop keeps in settings.json, for [MailEngine.updatePrefs]: the computer's VIPs and spam
+     * addresses join the phone's, and its general signature replaces the phone's when it has one.
+     */
+    fun prefs(exported: ExportedSettings, current: MailPrefs): MailPrefs {
+        fun join(a: List<String>, b: List<String>) = (a + b).map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
+        val text = exported.signature.orEmpty()
+        val html = exported.signatureHtml.orEmpty()
+        val signed = text.isNotBlank() || html.isNotBlank()
+        return current.copy(
+            vips = join(current.vips, exported.vips),
+            spam = join(current.spam, exported.spam),
+            signature = if (signed) text else current.signature,
+            signatureHtml = if (signed) html else current.signatureHtml,
+        )
     }
 
     /** The Google client, when the computer has a complete one. */
@@ -181,8 +195,8 @@ object DesktopImport {
     }
 
     /**
-     * Runs an import: agents and the Google client first, then the accounts, then the app settings. The
-     * accounts go late because adding the first one closes the setup screen; the language goes last
+     * Runs an import: agents, the Google client and the mail settings first, then the accounts, then the app
+     * settings. The accounts go late because adding the first one closes the setup screen; the language goes last
      * because changing it recreates the activity. A mail failure doesn't undo the rest.
      */
     suspend fun apply(
@@ -197,6 +211,7 @@ object DesktopImport {
         agentStore.update { current -> agents(bundle, current, pairingId).also { agentImport = it }.settings }
         val client = googleClient(bundle)
         val clientSet = client != null && runCatching { mail.setGoogleClient(client) }.isSuccess
+        importPrefs(bundle.settings, mail)
         val (accounts, skipped) = accounts(bundle)
         val before = mail.accounts.value.map { it.email.lowercase() }.toSet()
         var accountError: MailException? = null
@@ -224,6 +239,31 @@ object DesktopImport {
             accountError = accountError,
         )
     }
+
+    /**
+     * VIPs, spam addresses and the general signature. The engine refuses an HTML signature it can't keep (too
+     * large); the lists and the signature's text still come over then. Never fails the import.
+     */
+    private suspend fun importPrefs(exported: ExportedSettings, mail: MailEngine) {
+        try {
+            mail.updatePrefs { prefs(exported, it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: MailException) {
+            AppLog.w(TAG, "the computer's HTML signature didn't come over", e)
+            try {
+                mail.updatePrefs { prefs(exported.copy(signatureHtml = null), it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w(TAG, "the computer's mail settings didn't come over", e)
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "the computer's mail settings didn't come over", e)
+        }
+    }
+
+    private const val TAG = "DesktopImport"
 
     private fun sameServer(a: String, b: String) = a.trim().trimEnd('/').equals(b.trim().trimEnd('/'), ignoreCase = true)
 }

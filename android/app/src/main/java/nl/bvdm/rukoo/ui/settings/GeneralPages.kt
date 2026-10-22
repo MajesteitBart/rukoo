@@ -3,7 +3,6 @@ package nl.bvdm.rukoo.ui.settings
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import android.text.format.Formatter
@@ -23,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -55,14 +53,18 @@ fun NotificationsPage(app: AppViewModel) {
     val scope = rememberCoroutineScope()
     val settings by s.settingsSnapshot.collectAsStateWithLifecycle()
     val needsPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-    var granted by remember { mutableStateOf(notificationsAllowed(context)) }
+    var granted by remember { mutableStateOf(NotificationPermission.granted(context)) }
     var asked by remember { mutableStateOf(false) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     // The user can change it in the system settings and come back.
-    LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { granted = notificationsAllowed(context) } }
+    LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { granted = NotificationPermission.granted(context) } }
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         granted = ok
         asked = true
+    }
+    // Turning a notification on is when it needs the permission: Android asks once, then only its settings can.
+    fun turnedOn() {
+        if (!asked && NotificationPermission.shouldAsk(Build.VERSION.SDK_INT, granted, wanted = true)) request.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     SettingsPageBody {
@@ -83,13 +85,19 @@ fun NotificationsPage(app: AppViewModel) {
                 title = stringResource(R.string.settings_notifications_new_mail),
                 description = stringResource(R.string.settings_notifications_new_mail_help),
                 checked = settings.notifyMail,
-                onCheckedChange = { on -> scope.launch { s.settings.update { it.copy(notifyMail = on) } } },
+                onCheckedChange = { on ->
+                    scope.launch { s.settings.update { it.copy(notifyMail = on) } }
+                    if (on) turnedOn()
+                },
             )
             SettingsSwitchRow(
                 title = stringResource(R.string.settings_notifications_agents_row),
                 description = stringResource(R.string.settings_notifications_agents_help),
                 checked = settings.notifyAgents,
-                onCheckedChange = { on -> scope.launch { s.settings.update { it.copy(notifyAgents = on) } } },
+                onCheckedChange = { on ->
+                    scope.launch { s.settings.update { it.copy(notifyAgents = on) } }
+                    if (on) turnedOn()
+                },
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -102,10 +110,6 @@ fun NotificationsPage(app: AppViewModel) {
         }
     }
 }
-
-private fun notificationsAllowed(context: Context): Boolean =
-    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
 private fun openNotificationSettings(context: Context) {
     val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)

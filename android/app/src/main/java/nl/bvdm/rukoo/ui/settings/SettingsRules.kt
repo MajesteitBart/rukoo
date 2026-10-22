@@ -1,13 +1,7 @@
 package nl.bvdm.rukoo.ui.settings
 
-import java.util.Base64
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 import nl.bvdm.rukoo.core.RukooJson
 import nl.bvdm.rukoo.desktop.UrlHosts
 import nl.bvdm.rukoo.mail.model.GoogleClient
@@ -60,35 +54,5 @@ object GoogleClientFile {
         val secret = field("client_secret")
         if (id.isEmpty() || secret.isEmpty()) return null
         return GoogleClient(id, secret)
-    }
-}
-
-/**
- * The command that adds Rukoo on this phone to OpenClaw's MCP servers, as desktop's openclawSetup
- * (config.js:486-491) writes it for a gateway on another computer: Streamable HTTP to the phone's
- * Tailscale address, with the token Rukoo derives from the gateway token.
- */
-object OpenClawSetup {
-    /** config.js openclawTokenFor(key, remote = true): HMAC-SHA256 of a fixed label under the gateway token, base64url. */
-    fun token(gatewayToken: String): String {
-        if (gatewayToken.isEmpty()) return ""
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(gatewayToken.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        val digest = mac.doFinal("rukoo-mcp-openclaw-remote-v1".toByteArray(Charsets.UTF_8))
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
-    }
-
-    fun url(host: String, port: Int): String = "http://${if (':' in host) "[$host]" else host}:$port/mcp"
-
-    /** `openclaw mcp set rukoo '<json>'`, or empty without a gateway token. */
-    fun command(host: String, port: Int, gatewayToken: String): String {
-        val token = token(gatewayToken)
-        if (token.isEmpty()) return ""
-        val server = buildJsonObject {
-            put("url", url(host, port))
-            put("transport", "streamable-http")
-            putJsonObject("headers") { put("Authorization", "Bearer $token") }
-        }
-        return "openclaw mcp set rukoo '$server'\n"
     }
 }

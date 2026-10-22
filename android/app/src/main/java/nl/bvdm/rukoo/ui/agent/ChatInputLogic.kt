@@ -1,5 +1,6 @@
 package nl.bvdm.rukoo.ui.agent
 
+import nl.bvdm.rukoo.agents.QuickActions
 import nl.bvdm.rukoo.agents.model.OwnSkill
 import nl.bvdm.rukoo.agents.model.QuickAction
 import nl.bvdm.rukoo.agents.model.RukooSkill
@@ -23,7 +24,6 @@ object ChatInputLogic {
     private val SKILL_SENT = Regex("(^|\\s)\\$(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\\s,.;!?)]|$)")
     // While typing, a name at the very end is still being written, so it stays text.
     private val SKILL_TYPED = Regex("(^|\\s)\\$(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\\s,.;!?)])")
-    private val WHOLE_COMMAND = Regex("^/([\\w-]+)$")
     const val SKILL_ROWS_MAX = 200
 
     /** The token just before the caret, at the start of a word. A `$` followed by a digit is an amount, not a skill. */
@@ -37,26 +37,20 @@ object ChatInputLogic {
     }
 
     /**
-     * The `/` menu: the quick actions that make sense here, hidden ones too (actions.js commandsFor); the inbox
-     * overview and the user's shortcuts for always are always there. Then Rukoo's skills, except one whose name a
-     * shortcut already takes.
+     * The `/` menu as rows: the shortcuts and Rukoo's skills the hub offers here. Which ones is the hub's rule
+     * (QuickActions.commands and skillCommands, actions.js commandsFor); this only turns them into rows.
      */
-    fun commands(actions: List<QuickAction>, skills: List<RukooSkill>, emailOpen: Boolean, unsubscribe: Boolean): List<SlashCommand> {
-        val shortcuts = actions
-            .filter { it.key == "triage" || (it.custom && it.always) || it.applies(emailOpen, unsubscribe) }
-            .map { SlashCommand(it.key, it.icon, skill = false, action = it) }
-        val keys = actions.mapTo(HashSet()) { it.key }
-        val own = skills.filter { it.name !in keys }.map { SlashCommand(it.name, "file", skill = true, description = it.description) }
-        return shortcuts + own
-    }
+    fun commands(actions: List<QuickAction>, skills: List<RukooSkill>, emailOpen: Boolean, unsubscribe: Boolean): List<SlashCommand> =
+        QuickActions.commands(actions, emailOpen, unsubscribe).map { SlashCommand(it.key, it.icon, skill = false, action = it) } +
+            QuickActions.skillCommands(skills, actions).map { SlashCommand(it.name, "file", skill = true, description = it.description) }
 
     fun matching(commands: List<SlashCommand>, query: String): List<SlashCommand> =
         commands.filter { it.name.lowercase().startsWith(query) }
 
     /** A message that is just one of the offered commands ("/summary") runs it, like picking it from the menu. */
     fun wholeCommand(text: String, commands: List<SlashCommand>): SlashCommand? {
-        val m = WHOLE_COMMAND.find(text.trim()) ?: return null
-        return commands.firstOrNull { it.name.equals(m.groupValues[1], ignoreCase = true) }
+        val name = QuickActions.slashName(text.trim()) ?: return null
+        return commands.firstOrNull { it.name.equals(name, ignoreCase = true) }
     }
 
     /**

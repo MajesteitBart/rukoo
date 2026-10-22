@@ -126,6 +126,8 @@ data class InputModel(
     val computers: Map<String, String>,
     val context: ContextChip?,
     val newer: NewerChip?,
+    /** Emails added with "Add to chat" that go with the next message. */
+    val emails: List<PendingEmail> = emptyList(),
     val running: Boolean,
     /** Why the agent can't take a message, or null. */
     val blockedNote: Txt?,
@@ -257,7 +259,7 @@ fun ChatInput(controller: ChatController, model: InputModel, actions: InputActio
                     },
                 )
             }
-            BottomRow(controller, model, actions, blocked, value.text.isNotBlank())
+            BottomRow(controller, model, actions, blocked, value.text.isNotBlank() || model.emails.isNotEmpty())
         }
     }
 }
@@ -265,7 +267,8 @@ fun ChatInput(controller: ChatController, model: InputModel, actions: InputActio
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ContextChips(controller: ChatController, model: InputModel) {
-    val context = model.context ?: return
+    val context = model.context
+    if (context == null && model.newer == null && model.emails.isEmpty()) return
     val noSubject = stringResource(R.string.agentui_no_subject)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         when (context) {
@@ -281,6 +284,20 @@ private fun ContextChips(controller: ChatController, model: InputModel) {
                     removeLabel = stringResource(R.string.agentui_panel_remove_context),
                 )
             }
+            null -> Unit
+        }
+        // A mail badge rather than the sender's monogram, so an added email reads as an attachment next to the chat's own.
+        model.emails.forEach { m ->
+            val subject = m.subject.ifBlank { noSubject }
+            val from = ChatFormat.person(m.from)
+            EntityChip(
+                subject,
+                sub = from.takeIf { it.isNotEmpty() },
+                monogram = null,
+                leading = { SourceBadge("", email = true, emailIcon = PanelIcons.Mail, size = 18.dp) },
+                onRemove = { controller.removeEmail(m.id) },
+                removeLabel = stringResource(R.string.agentui_panel_remove_attachment, subject),
+            )
         }
         val newer = model.newer
         if (newer != null) {
@@ -400,8 +417,7 @@ private fun AgentPicker(controller: ChatController, model: InputModel, modifier:
 @Composable
 internal fun agentTag(agent: AgentDescriptor, computers: Map<String, String>): String? {
     val product = AgentText.product(agent.kind).takeIf { !it.equals(agent.name, ignoreCase = true) }
-    val pairing = AgentIds.parseComputer(agent.id)?.first
-    val where = pairing?.let { id -> computers[id]?.let { stringResource(R.string.agentui_panel_on_computer, it) } ?: agent.subtitle.takeIf { it.isNotBlank() } }
+    val where = AgentText.place(agent, computers)?.text()
     return listOfNotNull(product, where).joinToString(" · ").ifEmpty { null }
 }
 

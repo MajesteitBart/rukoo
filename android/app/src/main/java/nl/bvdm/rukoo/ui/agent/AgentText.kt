@@ -8,6 +8,9 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.agents.QuickActions
+import nl.bvdm.rukoo.agents.model.AgentDescriptor
+import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.AgentKind
 import nl.bvdm.rukoo.agents.model.AgentState
 import nl.bvdm.rukoo.agents.model.ApprovalChoice
@@ -56,7 +59,8 @@ data class ShownApproval(
     val choices: List<ShownChoice>,
 )
 
-data class ShownField(val label: Txt, val value: String, val key: String?, val truncated: Int)
+/** [value] is what the agent sent, except the few words Rukoo writes itself on mail cards ("(no subject)"). */
+data class ShownField(val label: Txt, val value: Txt, val key: String?, val truncated: Int)
 
 data class ShownChoice(val id: String, val label: Txt, val kind: nl.bvdm.rukoo.agents.model.ChoiceKind)
 
@@ -132,7 +136,14 @@ object AgentText {
         "undo" to R.plurals.agentui_mail_undo,
     )
 
-    /** Notices from the hub are English; errors and mail results carry a code or counts that can be said in the interface language. */
+    // What the hub writes for a one-click unsubscribe (agents/MailActions.execute); the notice has no sender field.
+    private val UNSUBSCRIBED_MANY = Regex("^Unsubscribed from (\\d+) senders$")
+    private val UNSUBSCRIBED_ONE = Regex("^Unsubscribed from (.+)$")
+
+    /**
+     * Notices from the hub and the adapters are English, and stay so as the agent's notes; errors, mail results and
+     * the coded notices carry a code or counts that can be said in the interface language (panel.js localizeNotice).
+     */
     fun notice(item: Item.Notice, name: String): Txt {
         val title = Unsafe.untag(item.params?.title)
         when (item.code) {
@@ -140,6 +151,9 @@ object AgentText {
             "kept-approval" -> return Txt.Res(R.string.agentui_notices_kept_approval, listOf(title, name))
             "new-session" -> return Txt.Res(R.string.agentui_notices_new_session, listOf(name))
             "new-thread" -> return Txt.Res(R.string.agentui_notices_new_thread, listOf(name))
+            // The phone's own: a computer turn without the phone's tools, and a start-over the computer gave up on.
+            "no-phone-tools" -> return Txt.Res(R.string.agentui_notices_no_phone_tools, listOf(name))
+            "start-over-missed" -> return Txt.Res(R.string.agentui_notices_start_over_missed)
         }
         if (item.code != null && (isErrorCode(item.code) || item.tone == Tone.ERROR)) return error(item.code, name)
         val m = item.mail
@@ -160,8 +174,88 @@ object AgentText {
             if (plural != null && m.count > 0 && (m.action != "move" || !m.folder.isNullOrBlank())) {
                 return Txt.Plural(plural, m.count, listOf(m.count, m.folder.orEmpty()))
             }
+            if (m.action == "unsubscribe" && m.count > 0) {
+                UNSUBSCRIBED_MANY.matchEntire(item.text)?.let { r ->
+                    val n = r.groupValues[1].toInt()
+                    return Txt.Plural(R.plurals.agentui_mail_unsubscribed_senders, n, listOf(n))
+                }
+                UNSUBSCRIBED_ONE.matchEntire(item.text)?.let { return Txt.Res(R.string.agentui_mail_unsubscribed_one, listOf(it.groupValues[1])) }
+            }
         }
         return Txt.Raw(item.text)
+    }
+
+    // A mail card's title per action (tools.js mailTitle), and the verb on its button (tools.js VERBS).
+    private val MAIL_TITLES = mapOf(
+        "archive" to R.plurals.agentui_mail_title_archive,
+        "trash" to R.plurals.agentui_mail_title_trash,
+        "move" to R.plurals.agentui_mail_title_move,
+        "mark_read" to R.plurals.agentui_mail_title_mark_read,
+        "mark_unread" to R.plurals.agentui_mail_title_mark_unread,
+        "star" to R.plurals.agentui_mail_title_star,
+        "unstar" to R.plurals.agentui_mail_title_unstar,
+    )
+
+    private val MAIL_VERBS = mapOf(
+        "archive" to R.string.agentui_mail_verb_archive,
+        "trash" to R.string.agentui_mail_verb_trash,
+        "move" to R.string.agentui_mail_verb_move,
+        "mark_read" to R.string.agentui_mail_verb_mark_read,
+        "mark_unread" to R.string.agentui_mail_verb_mark_unread,
+        "star" to R.string.agentui_mail_verb_star,
+        "unstar" to R.string.agentui_mail_verb_unstar,
+        "unsubscribe" to R.string.agentui_mail_verb_unsubscribe,
+    )
+
+    // What the mail_action tool writes for an unsubscribe card's title and for its rows (tools.js mailTitle, mailAction).
+    private val UNSUBSCRIBE_MANY = Regex("^Unsubscribe from (\\d+) senders$")
+    private val UNSUBSCRIBE_ONE = Regex("^Unsubscribe from (.+)$")
+    private val MORE_ROW = Regex("^and (\\d+) more$")
+    private const val NO_SUBJECT = "(no subject)"
+
+    /**
+     * A mail_action card in the interface language, from what it will do ([Item.Approval.mail]): desktop leaves these
+     * English, the phone says them like the notices. The rows are sender and subject, shown as they are.
+     */
+    private fun mailApproval(item: Item.Approval, mail: nl.bvdm.rukoo.agents.model.MailApproval): ShownApproval? {
+        val n = mail.ids.size
+        val title: Txt = when (mail.action) {
+            "unsubscribe" -> UNSUBSCRIBE_MANY.matchEntire(item.title)?.let { r ->
+                val senders = r.groupValues[1].toInt()
+                Txt.Plural(R.plurals.agentui_mail_title_unsubscribe_senders, senders, listOf(senders))
+            } ?: UNSUBSCRIBE_ONE.matchEntire(item.title)?.let { Txt.Res(R.string.agentui_mail_title_unsubscribe_one, listOf(it.groupValues[1])) }
+            "move" -> if (mail.folder.isNullOrBlank()) null else Txt.Plural(R.plurals.agentui_mail_title_move, n, listOf(n, mail.folder))
+            else -> MAIL_TITLES[mail.action]?.let { Txt.Plural(it, n, listOf(n)) }
+        } ?: return null
+        val fields = item.fields.map { f ->
+            val more = MORE_ROW.matchEntire(f.value)?.takeIf { f.label.isEmpty() }?.groupValues?.get(1)?.toInt()
+            val value = when {
+                more != null -> Txt.Plural(R.plurals.agentui_mail_more, more, listOf(more))
+                f.value == NO_SUBJECT -> Txt.Res(R.string.agentui_no_subject)
+                else -> Txt.Raw(f.value)
+            }
+            ShownField(Txt.Raw(f.label), value, f.key, f.truncated ?: 0)
+        }
+        val choices = item.choices.map { c ->
+            val label = when (c.id) {
+                "approve" -> MAIL_VERBS[mail.action]?.let { Txt.Res(it) }
+                "decline" -> Txt.Res(R.string.agentui_choices_cancel)
+                else -> null
+            } ?: Txt.Raw(c.label)
+            ShownChoice(c.id, label, c.kind)
+        }
+        return ShownApproval(title, item.detail, fields, choices)
+    }
+
+    /**
+     * Where an agent runs, for its tag in pickers and Settings: "on desktop-zolder" in the interface language for
+     * Claude Code and Codex on a paired computer (the hub's subtitle is worded once, in English). Null for agents the
+     * phone reaches itself.
+     */
+    fun place(agent: AgentDescriptor, computers: Map<String, String>): Txt? {
+        val pairing = AgentIds.parseComputer(agent.id)?.first ?: return null
+        val name = computers[pairing]?.takeIf { it.isNotBlank() } ?: return agent.subtitle.takeIf { it.isNotBlank() }?.let { Txt.Raw(it) }
+        return Txt.Res(R.string.agentui_panel_on_computer, listOf(name))
     }
 
     // Runtime approvals name the kind of tool, so the card says in the interface language what the agent wants.
@@ -223,6 +317,8 @@ object AgentText {
      * value is left out.
      */
     fun approval(item: Item.Approval, name: String): ShownApproval {
+        val mail = item.mail
+        if (item.kind == ApprovalKind.MAIL && mail != null) mailApproval(item, mail)?.let { return it }
         val shown: (String) -> String = if (item.kind == ApprovalKind.PROPOSAL) Unsafe::untag else { v -> v }
         val tool = item.tool
         val title: Txt = when {
@@ -233,7 +329,7 @@ object AgentText {
             else -> Txt.Raw(shown(item.title))
         }
         val fields = item.fields.map { field(it, shown) }
-        val detail = shown(item.detail).let { d -> if (d.isNotBlank() && fields.any { it.value.trim() == d.trim() }) "" else d }
+        val detail = shown(item.detail).let { d -> if (d.isNotBlank() && fields.any { (it.value as? Txt.Raw)?.text?.trim() == d.trim() }) "" else d }
         val choices = item.choices.map { choice(it, item.kind) }
         return ShownApproval(title, detail, fields, choices)
     }
@@ -243,7 +339,7 @@ object AgentText {
             // A raw parameter name ("output_mode") reads as words.
             if (RAW_PARAM.matches(raw)) Txt.Raw(raw.replaceFirstChar(Char::uppercaseChar).replace('_', ' ')) else Txt.Raw(raw)
         }
-        return ShownField(label, shown(f.value), f.key, f.truncated ?: 0)
+        return ShownField(label, Txt.Raw(shown(f.value)), f.key, f.truncated ?: 0)
     }
 
     private fun choice(c: ApprovalChoice, kind: ApprovalKind): ShownChoice {
@@ -333,37 +429,18 @@ object AgentText {
 
     private fun unknownTool(running: Boolean) = Txt.Res(if (running) R.string.agentui_tools_running_unknown else R.string.agentui_tools_unknown)
 
-    private val ACTION_LABELS = mapOf(
-        "reply" to R.string.agentui_actions_reply_label,
-        "brief" to R.string.agentui_actions_brief_label,
-        "tasks" to R.string.agentui_actions_tasks_label,
-        "team" to R.string.agentui_actions_team_label,
-        "update" to R.string.agentui_actions_update_label,
-        "unsubscribe" to R.string.agentui_actions_unsubscribe_label,
-        "summary" to R.string.agentui_actions_summary_label,
-        "triage" to R.string.agentui_actions_triage_label,
-    )
-
-    private val ACTION_DESCRIPTIONS = mapOf(
-        "reply" to R.string.agentui_actions_reply_description,
-        "brief" to R.string.agentui_actions_brief_description,
-        "tasks" to R.string.agentui_actions_tasks_description,
-        "team" to R.string.agentui_actions_team_description,
-        "update" to R.string.agentui_actions_update_description,
-        "unsubscribe" to R.string.agentui_actions_unsubscribe_description,
-        "summary" to R.string.agentui_actions_summary_description,
-        "triage" to R.string.agentui_actions_triage_description,
-    )
-
-    /** A quick action's label: the user's own, else Rukoo's in the interface language. */
+    /**
+     * A quick action's label: the user's own, else Rukoo's in the interface language. The words are the hub's
+     * (QuickActions.labelRes, strings_agents.xml); this only keeps them testable as [Txt].
+     */
     fun actionLabel(action: QuickAction): Txt =
-        action.label?.takeIf { it.isNotBlank() }?.let { Txt.Raw(it) } ?: ACTION_LABELS[action.key]?.let { Txt.Res(it) } ?: Txt.Raw(action.key)
+        action.label?.takeIf { it.isNotBlank() }?.let { Txt.Raw(it) } ?: QuickActions.labelRes(action.key)?.let { Txt.Res(it) } ?: Txt.Raw(action.key)
 
-    /** Under a renamed Rukoo action its own name; a shortcut of the user's repeats its label (actions.js makeShortcut). */
+    /** The slash menu's line under a command, as QuickActions.description words it. */
     fun actionDescription(action: QuickAction): Txt = when {
         action.custom -> action.description?.takeIf { it.isNotBlank() }?.let { Txt.Raw(it) } ?: actionLabel(action)
-        !action.label.isNullOrBlank() -> ACTION_LABELS[action.key]?.let { Txt.Res(it) } ?: Txt.Raw(action.key)
-        else -> ACTION_DESCRIPTIONS[action.key]?.let { Txt.Res(it) } ?: Txt.Raw(action.description.orEmpty())
+        !action.label.isNullOrBlank() -> QuickActions.labelRes(action.key)?.let { Txt.Res(it) } ?: Txt.Raw(action.key)
+        else -> QuickActions.descriptionRes(action.key)?.let { Txt.Res(it) } ?: Txt.Raw(action.description.orEmpty())
     }
 
     private val EFFORTS = mapOf(

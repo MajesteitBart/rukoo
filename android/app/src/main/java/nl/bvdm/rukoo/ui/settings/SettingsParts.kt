@@ -115,13 +115,19 @@ fun ErrorLine(text: String, modifier: Modifier = Modifier) {
     Text(text, modifier, style = Rk.type.text13, color = Rk.colors.danger)
 }
 
-/** A status: 8dp dot and label, and the technical detail in mono 11.5 `text3` (styles.css:3517-3525). */
+/**
+ * A status: 8dp dot and label, and the technical detail in mono 11.5 `text3` (styles.css:3517-3525). A [note]
+ * in words (who may connect) reads as prose instead: 12.5 `text2`.
+ */
 @Composable
-fun StatusLine(label: String, tone: DotTone, modifier: Modifier = Modifier, detail: String? = null, pulsing: Boolean = false) {
+fun StatusLine(label: String, tone: DotTone, modifier: Modifier = Modifier, detail: String? = null, pulsing: Boolean = false, note: String? = null) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             StatusDot(tone, size = 8.dp, pulsing = pulsing)
             Text(label, style = Rk.type.text13, color = Rk.colors.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        if (!note.isNullOrBlank()) {
+            Text(note, Modifier.padding(start = 16.dp), style = Rk.type.text12_5, color = Rk.colors.text2)
         }
         if (!detail.isNullOrBlank()) {
             SelectionContainer {

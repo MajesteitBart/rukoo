@@ -5,11 +5,13 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import kotlin.coroutines.cancellation.CancellationException
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.AgentException
+import nl.bvdm.rukoo.agents.Hub
 import nl.bvdm.rukoo.agents.SendRequest
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.ConversationStatus
@@ -25,6 +27,8 @@ import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.ui.ComposerState
 import nl.bvdm.rukoo.ui.Mailto
 import nl.bvdm.rukoo.ui.components.RkToastState
+import nl.bvdm.rukoo.ui.mail.DialogChoice
+import nl.bvdm.rukoo.ui.mail.DialogRequest
 import nl.bvdm.rukoo.ui.root.AppViewModel
 
 /**
@@ -43,6 +47,8 @@ data class ChatLocal(
     val keepFor: String? = null,
     /** The email whose own chat was last looked up, so New chat doesn't jump straight back to it. */
     val lookedUpFor: String? = null,
+    /** Emails added with "Add to chat" for the next message. Like the text in the input, they stay when another chat opens. */
+    val emails: List<PendingEmail> = emptyList(),
 )
 
 /** The latest of what the pane shows, handed to [ChatController] on every composition. */
@@ -107,10 +113,10 @@ class ChatController(
 
     // ---------- sending ----------
 
-    /** Enter or Send. A message that is just one of the offered commands runs it. false: nothing went out. */
+    /** Enter or Send. A message that is just one of the offered commands runs it; added emails alone are a message too. false: nothing went out. */
     fun submit(): Boolean {
         val text = input.value.text.trim()
-        if (text.isEmpty() || snapshot.blocked) return false
+        if ((text.isEmpty() && local.value.emails.isEmpty()) || snapshot.blocked) return false
         ChatInputLogic.wholeCommand(text, commands())?.let { command ->
             if (!runCommand(command)) return false
             clearInput()
@@ -136,25 +142,72 @@ class ChatController(
         return send(SendRequest(text = action.prompt, action = action.action, display = label), restore = null)
     }
 
+    // The added emails go along with whatever is sent; taken here, before anything waits, so they are the ones on screen.
     private fun send(request: SendRequest, restore: String?): Boolean {
         if (sending || snapshot.blocked) return false
         sending = true
+        val attached = local.value.emails
+        if (attached.isNotEmpty()) local.value = local.value.copy(emails = emptyList())
         scope.launch {
             try {
                 val conversation = ensureConversation()
-                hub.send(conversation.id, request)
+                hub.send(conversation.id, request.copy(emails = attached.map { it.id }))
                 onSent()
             } catch (e: CancellationException) {
+                local.value = local.value.copy(emails = ChatAttachments.restore(attached, local.value.emails, emptySet()))
                 throw e
             } catch (e: Exception) {
-                // Not sent: the text comes back unless the user typed something new meanwhile.
+                // Not sent: the emails come back, without any the hub says are gone; so does the text, unless the
+                // user typed something new meanwhile.
+                val gone = ChatAttachments.missing(e)
+                local.value = local.value.copy(emails = ChatAttachments.restore(attached, local.value.emails, gone.orEmpty()))
                 if (restore != null && input.value.text.isEmpty()) input.value = TextFieldValue(restore, TextRange(restore.length))
-                sayError(e)
+                if (gone != null) toast.showToast(Txt.Res(R.string.agentui_files_email_gone).resolve(resources()), durationMs = 6000L) else sayError(e)
             } finally {
                 sending = false
             }
         }
         return true
+    }
+
+    /**
+     * "Add to chat" (panel.js addEmails): the emails go with the next message, up to [Hub.MAX_EMAILS]. One the chat
+     * has already, or the message has, isn't added twice; when none was new, the user hears they are there already.
+     */
+    fun addEmails(ids: List<String>) {
+        if (ids.isEmpty()) return
+        scope.launch {
+            val offered = ids.distinct().mapNotNull { id ->
+                val m = try {
+                    mail.summary(id)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                } ?: return@mapNotNull null
+                PendingEmail(m.id, m.messageId, m.subject, m.from)
+            }
+            val s = snapshot
+            val result = ChatAttachments.add(local.value.emails, offered, Hub.MAX_EMAILS) { e ->
+                ChatAttachments.inChat(e, s.conversation, s.emailId, s.email, detached())
+            }
+            local.value = local.value.copy(emails = result.emails)
+            when {
+                result.full -> toast.showToast(Txt.Res(R.string.agentui_files_too_many_emails, listOf(Hub.MAX_EMAILS)).resolve(resources()), durationMs = 6000L)
+                result.added == 0 && result.had > 0 -> say(Txt.Plural(R.plurals.agentui_panel_in_chat_already, result.had))
+            }
+        }
+    }
+
+    fun removeEmail(id: String) {
+        local.value = local.value.copy(emails = local.value.emails.filter { it.id != id })
+    }
+
+    /** Another chat came on screen: added emails it has itself go (the hub would leave them out anyway). */
+    fun dropEmailsInChat() {
+        val s = snapshot
+        val kept = local.value.emails.filterNot { ChatAttachments.inChat(it, s.conversation, s.emailId, s.email, detached()) }
+        if (kept.size != local.value.emails.size) local.value = local.value.copy(emails = kept)
     }
 
     /** The chat is created with its first message, about the email in the chip (none when it was left out). */
@@ -234,11 +287,8 @@ class ChatController(
 
     // ---------- drafts ----------
 
-    /** The composer a draft card's write went into, while it is still open. Desktop keys are `<composer>:<write>`. */
-    fun composerFor(item: Item.Draft, composer: ComposerState?): ComposerState? {
-        val key = item.composerKey ?: return null
-        return composer?.takeIf { it.id == key || it.id == key.substringBefore(':') }
-    }
+    /** The composer a draft card's write went into, while it is still open. */
+    fun composerFor(item: Item.Draft, composer: ComposerState?): ComposerState? = DraftCards.composerFor(item, composer)
 
     fun showDraft(item: Item.Draft) {
         if (composerFor(item, app.services.composer.current()) != null) {
@@ -256,15 +306,47 @@ class ChatController(
         say(Txt.Res(R.string.agentui_draft_gone))
     }
 
-    /** Undo takes the agent's draft back: the composer it opened closes, and the card says so. */
+    /**
+     * Undo takes the agent's text back out of the composer, as the composer's own Undo does (composer.js undoAgent):
+     * what the composer held before the agent wrote comes back, and the cards of the writes it took back say so.
+     * After the user's own edits the composer's Undo asks first, so the card hands over to it.
+     */
     fun undoDraft(item: Item.Draft) {
-        val conversation = snapshot.conversation ?: return
-        if (composerFor(item, app.services.composer.current()) == null) {
+        val composer = app.services.composer
+        val open = composer.current()
+        if (!DraftCards.canUndo(item, open)) {
             say(Txt.Res(R.string.agentui_draft_gone))
             return
         }
-        app.closeComposer()
-        scope.launch { attempt { hub.patchDraft(conversation.id, item.id, true) } }
+        val edited = open!!.editedAgent
+        if (edited != null) {
+            // After the user's own edits the composer's Undo asks first (composer.js undoAgent), in its words. Run in
+            // the view model's scope: the answer may come after this pane left the screen.
+            app.viewModelScope.launch {
+                val r = resources()
+                val answer = app.mailUi.ask(
+                    DialogRequest(
+                        r.getString(R.string.composer_agent_undo_title, edited),
+                        r.getString(R.string.composer_agent_undo_help),
+                        r.getString(R.string.composer_agent_undo),
+                        r.getString(R.string.common_actions_cancel),
+                    ),
+                )
+                if (answer.choice != DialogChoice.CONFIRM) return@launch
+                // The composer can change while the question is open (sent, closed, written again).
+                if (composer.current()?.id != open.id || !composer.undoAgentDraft()) {
+                    say(Txt.Res(R.string.agentui_draft_gone))
+                    return@launch
+                }
+                attempt { DraftCards.markUndone(hub, open.id) }
+            }
+            return
+        }
+        if (!composer.undoAgentDraft()) {
+            say(Txt.Res(R.string.agentui_draft_gone))
+            return
+        }
+        scope.launch { attempt { DraftCards.markUndone(hub, open.id) } }
     }
 
     // ---------- the chat itself ----------

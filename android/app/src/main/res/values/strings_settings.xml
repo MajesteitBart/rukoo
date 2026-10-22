@@ -218,9 +218,18 @@
     <string name="settings_phone_tools_on_at">On · %1$s</string>
     <string name="settings_phone_tools_reachable">Agents can reach this phone at %1$s</string>
     <string name="settings_phone_tools_no_tailnet">Tailscale isn\'t connected on this phone, so agents can\'t reach it.</string>
-    <string name="settings_phone_tools_port_in_use">Port %1$s is taken by another app.</string>
-    <string name="settings_phone_tools_failed">Phone tools didn\'t start: %1$s</string>
     <string name="settings_phone_tools_starting">Starting...</string>
+    <!-- Under "Agents can reach this phone at ...": who may connect; %1$s lists them ("Clark, Claude Code and Codex on desktop-zolder"). -->
+    <string name="settings_phone_tools_for">For %1$s</string>
+    <string name="settings_phone_tools_no_agents">No agent is set up to connect yet.</string>
+    <string name="settings_phone_tools_port">Port</string>
+    <string name="settings_phone_tools_port_help">Agents connect to this port on the phone\'s Tailscale address.</string>
+    <string name="settings_phone_tools_port_invalid">Use a port from 1024 to 65535.</string>
+    <!-- Debug builds only. -->
+    <string name="settings_phone_tools_debug">For testing</string>
+    <string name="settings_phone_tools_debug_address">Address for agents</string>
+    <string name="settings_phone_tools_debug_address_help">Debug builds only. Agents reach this phone at this host:port instead of its Tailscale address, for an emulator behind adb forward and a relay.</string>
+    <string name="settings_phone_tools_debug_invalid">Use host:port, for example 100.64.0.9:47800.</string>
     <string name="settings_phone_tools_who">Who can connect</string>
     <string name="settings_phone_tools_clark">%1$s, through Rukoo\'s bridge</string>
     <string name="settings_phone_tools_clark_help">The bridge on %1$s\'s machine finds this phone by itself and sends it the calls about chats on this phone.</string>
@@ -236,6 +245,7 @@
     <string name="settings_phone_tools_battery">Battery</string>
     <string name="settings_phone_tools_battery_row">Battery use</string>
     <string name="settings_phone_tools_battery_help">Samsung stops apps in the background to save battery, and then agents can\'t reach Rukoo. Open the battery page and choose Unrestricted.</string>
+    <string name="settings_phone_tools_battery_help_other">Android can stop apps in the background to save battery, and then agents can\'t reach Rukoo. Open the battery page and choose Unrestricted.</string>
     <string name="settings_phone_tools_battery_unrestricted">Unrestricted</string>
     <string name="settings_phone_tools_battery_optimized">Optimized</string>
 

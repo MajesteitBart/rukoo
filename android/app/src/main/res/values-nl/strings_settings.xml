@@ -206,9 +206,16 @@
     <string name="settings_phone_tools_on_at">Aan · %1$s</string>
     <string name="settings_phone_tools_reachable">Agents bereiken deze telefoon op %1$s</string>
     <string name="settings_phone_tools_no_tailnet">Tailscale is niet verbonden op deze telefoon, dus agents kunnen hem niet bereiken.</string>
-    <string name="settings_phone_tools_port_in_use">Poort %1$s is bezet door een andere app.</string>
-    <string name="settings_phone_tools_failed">De telefoontools zijn niet gestart: %1$s</string>
     <string name="settings_phone_tools_starting">Starten...</string>
+    <string name="settings_phone_tools_for">Voor %1$s</string>
+    <string name="settings_phone_tools_no_agents">Er is nog geen agent ingesteld om te verbinden.</string>
+    <string name="settings_phone_tools_port">Poort</string>
+    <string name="settings_phone_tools_port_help">Agents verbinden met deze poort op het Tailscale-adres van de telefoon.</string>
+    <string name="settings_phone_tools_port_invalid">Kies een poort van 1024 tot en met 65535.</string>
+    <string name="settings_phone_tools_debug">Voor testen</string>
+    <string name="settings_phone_tools_debug_address">Adres voor agents</string>
+    <string name="settings_phone_tools_debug_address_help">Alleen in debugversies. Agents bereiken deze telefoon op deze host:poort in plaats van zijn Tailscale-adres, voor een emulator achter adb forward en een relay.</string>
+    <string name="settings_phone_tools_debug_invalid">Gebruik host:poort, bijvoorbeeld 100.64.0.9:47800.</string>
     <string name="settings_phone_tools_who">Wie kan verbinden</string>
     <string name="settings_phone_tools_clark">%1$s, via de bridge van Rukoo</string>
     <string name="settings_phone_tools_clark_help">De bridge op de machine van %1$s vindt deze telefoon zelf en stuurt hem de aanroepen over chats op deze telefoon.</string>
@@ -224,6 +231,7 @@
     <string name="settings_phone_tools_battery">Batterij</string>
     <string name="settings_phone_tools_battery_row">Batterijgebruik</string>
     <string name="settings_phone_tools_battery_help">Samsung stopt apps op de achtergrond om batterij te sparen, en dan kunnen agents Rukoo niet bereiken. Open de batterijpagina en kies Onbeperkt.</string>
+    <string name="settings_phone_tools_battery_help_other">Android kan apps op de achtergrond stoppen om batterij te sparen, en dan kunnen agents Rukoo niet bereiken. Open de batterijpagina en kies Onbeperkt.</string>
     <string name="settings_phone_tools_battery_unrestricted">Onbeperkt</string>
     <string name="settings_phone_tools_battery_optimized">Geoptimaliseerd</string>
 
