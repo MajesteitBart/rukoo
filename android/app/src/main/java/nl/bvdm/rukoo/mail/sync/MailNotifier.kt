@@ -55,11 +55,11 @@ class WaitingMail(private val file: File? = null) {
         return grown
     }
 
-    /** Keeps only the messages in [still] (still new: unread, still there); returns the accounts whose list changed. */
-    fun keepOnly(still: Set<String>): Set<String> {
+    /** Drops the messages in [gone] (read, or no longer there); returns the accounts whose list changed. */
+    fun drop(gone: Set<String>): Set<String> {
         val changed = mutableSetOf<String>()
         for ((accountId, list) in byAccount.toList()) {
-            val kept = list.filter { it.id in still }
+            val kept = list.filter { it.id !in gone }
             if (kept.size == list.size) continue
             changed += accountId
             if (kept.isEmpty()) byAccount.remove(accountId) else byAccount[accountId] = kept
@@ -132,11 +132,12 @@ class MailNotifier(
 
     /**
      * Messages read or gone since they were announced (read on another device, moved by an agent) leave
-     * their notification; one with nothing left goes. [stillNew] tells which of the ids are still unread.
+     * their notification; one with nothing left goes. [gone] are ids from [waitingIds] that are no longer
+     * unread; mail announced while they were looked up stays.
      */
     @Synchronized
-    fun prune(stillNew: Set<String>, accounts: List<Account>) {
-        val changed = waiting.keepOnly(stillNew)
+    fun prune(gone: Set<String>, accounts: List<Account>) {
+        val changed = waiting.drop(gone)
         if (changed.isEmpty()) return
         val manager = NotificationManagerCompat.from(context)
         val inShade = shown()

@@ -36,11 +36,14 @@ class WaitingMailTest {
         val file = File(tmp.root, WaitingMail.FILE_NAME)
         val w = WaitingMail(file)
         w.add(listOf(mail("m1"), mail("m2"), mail("b1", account = "b")))
+        val checked = w.ids
+        // New mail arrives while the read state of the others is looked up: it stays.
+        w.add(listOf(mail("m3", date = 5)))
         // m2 was read on another device; b's only one too.
-        assertEquals(setOf("a", "b"), w.keepOnly(setOf("m1")))
-        assertEquals(listOf("m1"), w.of("a").map { it.id })
+        assertEquals(setOf("a", "b"), w.drop(setOf("m2", "b1").intersect(checked.toSet())))
+        assertEquals(listOf("m3", "m1"), w.of("a").map { it.id })
         assertEquals(setOf("a"), w.accountIds)
-        assertTrue(w.keepOnly(setOf("m1")).isEmpty())
+        assertTrue(w.drop(setOf("m2")).isEmpty())
         WaitingMail(file).clear()
         assertFalse(file.exists())
         assertTrue(WaitingMail(file).ids.isEmpty())

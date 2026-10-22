@@ -75,8 +75,8 @@ object MailModule {
             engine.folders.drop(1).debounce(PRUNE_DELAY_MS).collect {
                 val ids = notifier.waitingIds()
                 if (ids.isEmpty()) return@collect
-                val still = ids.filter { id -> runCatching { engine.summary(id)?.unread == true }.getOrDefault(true) }.toSet()
-                notifier.prune(still, engine.accounts.value)
+                val gone = ids.filter { id -> runCatching { engine.summary(id)?.unread != true }.getOrDefault(false) }.toSet()
+                if (gone.isNotEmpty()) notifier.prune(gone, engine.accounts.value)
             }
         }
         return engine
