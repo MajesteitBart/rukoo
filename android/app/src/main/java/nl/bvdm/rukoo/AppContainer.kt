@@ -20,8 +20,9 @@ import nl.bvdm.rukoo.agents.AgentSettingsStore
 import nl.bvdm.rukoo.agents.preview.PreviewAgentHub
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretBox
+import nl.bvdm.rukoo.desktop.DesktopDevice
 import nl.bvdm.rukoo.desktop.DesktopLink
-import nl.bvdm.rukoo.desktop.StubDesktopLink
+import nl.bvdm.rukoo.desktop.HttpDesktopLink
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mcp.McpController
@@ -90,7 +91,7 @@ class AppContainer(context: Context) : AppServices {
 
     override val mcp: McpController by lazy { StubMcpController() }
 
-    override val desktop: DesktopLink by lazy { StubDesktopLink(agentSettings) }
+    override val desktop: DesktopLink by lazy { HttpDesktopLink(agentSettings, http, { DesktopDevice.info(appContext) }, clock) }
 
     /** OAuth returns that arrive as `rukoo-oauth:` deep links; the sign-in flow collects them. */
     val oauthReturns = MutableSharedFlow<Uri>(extraBufferCapacity = 1)

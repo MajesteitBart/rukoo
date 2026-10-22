@@ -133,6 +133,29 @@ interface MailEngine {
     suspend fun updateAccount(id: String, patch: AccountPatch): Account
 
     suspend fun removeAccount(id: String)
+
+    // Google sign-in (spec 4 §4). The defaults stand in until the engine implements them; settings shows
+    // code `unsupported` as "not available in this version".
+
+    /** The Google OAuth client sign-in uses, or null until one is set (from the computer's export or a client file). */
+    suspend fun googleClient(): GoogleClient? = null
+
+    /** Keeps [client] for Google sign-in, encrypted like the accounts' secrets. [importAccounts] sets it too. */
+    suspend fun setGoogleClient(client: GoogleClient): Unit = throw MailException("Google sign-in is not available.", UNSUPPORTED)
+
+    /**
+     * Signs in with Google (spec 4 §4.3 and §4.7: PKCE, a loopback redirect on 127.0.0.1) and adds the
+     * account, or renews the sign-in of [reauthAccountId]. [openUrl] opens Google's consent page in a Custom
+     * Tab; the call returns once the redirect arrived and the account is saved. Cancelling the caller
+     * cancels the sign-in.
+     */
+    suspend fun signInWithGoogle(openUrl: (String) -> Unit, reauthAccountId: String? = null): Account =
+        throw MailException("Google sign-in is not available.", UNSUPPORTED)
+
+    companion object {
+        /** [MailException.code] of a feature this engine doesn't have. */
+        const val UNSUPPORTED = "unsupported"
+    }
 }
 
 /** A mail failure with a message fit for the user (desktop's friendlyError). [code] is for logic, not for display. */
