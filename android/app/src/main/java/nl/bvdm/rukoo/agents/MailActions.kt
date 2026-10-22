@@ -7,7 +7,6 @@ import nl.bvdm.rukoo.agents.model.MailApproval
 import nl.bvdm.rukoo.agents.model.NoticeMail
 import nl.bvdm.rukoo.agents.model.NoticeUndo
 import nl.bvdm.rukoo.mail.MailEngine
-import nl.bvdm.rukoo.mail.compose.ComposeBody
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.DeleteOutcome
 import nl.bvdm.rukoo.mail.model.Folder
@@ -69,8 +68,8 @@ class ComposerUnsubscribeOpener(
         if (to.isEmpty()) throw IllegalStateException(MailActions.ONLY_BY_EMAIL)
         val ids = mail.identities(accountId)
         val from = (ids.firstOrNull { it.primary } ?: ids.firstOrNull())?.let { Address(it.name, it.address) }
-        // Like any new message, it ends with the account's signature (desktop's compose window adds it too).
-        val body = email.body + ComposeBody.initialText(mail.signatureFor(accountId))
+        // The engine adds the account's signature when it is sent, as for any new message.
+        val body = email.body
         return withContext(main) {
             if (!isEmpty(composer.current())) throw IllegalStateException(COMPOSER_BUSY)
             composer.open(ComposerState(accountId = accountId, from = from, to = to, subject = email.subject, body = body, replyKind = ReplyKind.NEW))

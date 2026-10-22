@@ -14,7 +14,6 @@ import nl.bvdm.rukoo.agents.model.DraftMode
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.Origin
 import nl.bvdm.rukoo.core.Unsafe
-import nl.bvdm.rukoo.mail.compose.ComposeBody
 import nl.bvdm.rukoo.mail.compose.ComposerFields
 import nl.bvdm.rukoo.mail.compose.ReplyBuilder
 import nl.bvdm.rukoo.mail.model.Address
@@ -144,13 +143,6 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         }
     }
 
-    /** The signature the composer put at the end of [state]'s text, with the empty line before it, or "". */
-    private fun signatureTail(state: ComposerState): String {
-        val sig = state.accountId?.let { d.mail.signatureFor(it) }?.text?.trim().orEmpty()
-        if (sig.isEmpty() || !state.body.trimEnd().endsWith(sig)) return ""
-        return "\n\n" + sig
-    }
-
     /**
      * Puts the draft in the composer, or throws [ComposerBusy]; returns what the composer holds now. Not a suspend
      * function, so nothing can stop it halfway.
@@ -174,9 +166,8 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             // This chat's agent wrote what is there.
             val mine = current.draftedBy != null &&
                 (if (current.draftedIn != null) current.draftedIn == c.id else current.draftedBy == agentName)
-            // The signature the composer started with is not the user's writing; the agent's text goes above it.
-            val tail = signatureTail(current)
-            val words = if (tail.isNotEmpty()) current.body.trimEnd().removeSuffix(tail.trim()).trimEnd() else current.body
+            // The composer's body never holds the signature (the engine adds it when sending), so all of it is writing.
+            val words = current.body
             // The user's own words: typed since the composer opened, a draft they reopened, or an agent draft they
             // changed (the UI clears draftedBy then).
             val theirs = current.draftedBy == null && (current.dirty || words.isNotBlank() || current.replyKind == ReplyKind.DRAFT)
@@ -193,7 +184,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
                     cc = cc ?: envelope?.second ?: current.cc,
                     bcc = bcc ?: current.bcc,
                     subject = subject ?: current.subject,
-                    body = body + tail,
+                    body = body,
                     draftedBy = agentName,
                     draftedIn = c.id,
                     dirty = true,
@@ -239,19 +230,18 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             val accountId = d.defaultAccountId()?.takeIf { id -> lookup.accounts().any { it.id == id } } ?: lookup.accounts().firstOrNull()?.id
             val account = lookup.account(accountId)
             val from = account?.let { ReplyBuilder.defaultIdentity(it, d.mail.identities(it.id)) }?.let { Address(it.name, it.address) }
-            val signature = accountId?.let { ComposeBody.initialText(d.mail.signatureFor(it)) }.orEmpty()
             return ComposerState(
                 accountId = accountId, from = from, to = to.orEmpty(), cc = cc.orEmpty(), bcc = bcc.orEmpty(),
-                subject = subject.orEmpty(), body = body + signature, replyKind = ReplyKind.NEW, draftedBy = agentName, draftedIn = conversationId, dirty = true,
+                subject = subject.orEmpty(), body = body, replyKind = ReplyKind.NEW, draftedBy = agentName, draftedIn = conversationId, dirty = true,
             )
         }
-        // fields.body is what the composer starts with: the account's signature after an empty line, or nothing.
+        // A reply or forward starts with an empty body; the engine adds the account's signature when it is sent.
         return fields.toComposerState().copy(
             to = to ?: fields.to,
             cc = cc ?: fields.cc,
             bcc = bcc ?: fields.bcc,
             subject = subject ?: fields.subject,
-            body = body + fields.body,
+            body = body,
             draftedBy = agentName,
             draftedIn = conversationId,
             dirty = true,

@@ -33,7 +33,6 @@ import nl.bvdm.rukoo.agents.model.Origin
 import nl.bvdm.rukoo.agents.model.TaskStatus
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.mail.MailEngine
-import nl.bvdm.rukoo.mail.compose.ComposeBody
 import nl.bvdm.rukoo.mail.compose.ComposerFields
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mail.model.Address
@@ -283,28 +282,28 @@ class McpToolsTest {
         assertEquals(listOf(state.id, composer.current()!!.id, composer.current()!!.id), keys)
     }
 
-    // Desktop puts the agent's text above the signature; a signature the composer started with is not the user's writing.
+    // The composer's body never holds the signature: the engine adds it when the draft is sent or saved. So the agent's
+    // text is all write_draft puts in, and an untouched reply the user opened is still free for an agent to write in.
     @Test
-    fun writeDraftKeepsTheSignatureBelowTheAgentsText() {
+    fun writeDraftLeavesTheSignatureToTheEngine() {
         val signature = Signature("Best,\nDemo", "<b>Best</b>,<br>Demo")
         val signed = object : MailEngine by mail {
             override fun signatureFor(accountId: String): Signature = signature
-            override suspend fun replyFields(id: String, kind: ReplyKind): ComposerFields = mail.replyFields(id, kind).copy(body = ComposeBody.initialText(signature))
         }
         val other = McpTools(ToolDeps(signed, hub, screen, composer, { agentSettings }))
         fun write(args: String) = runBlocking { other.callTool(clark, "write_draft", Json.parseToJsonElement(args).jsonObject, JsonObject(emptyMap())) }
         chat()
         write("""{"conversation_id":"c_1","body":"Thursday works.","format":"text"}""").data()
-        assertEquals("Thursday works.\n\nBest,\nDemo", composer.current()!!.body)
-        // The user opened a reply themselves: only the signature is in it, so even a chat in the background may write.
+        assertEquals("Thursday works.", composer.current()!!.body)
+        assertEquals(false, composer.current()!!.signatureExcluded)
+        // The user opened a reply themselves and typed nothing, so even a chat in the background may write in it.
         composer.close()
         composer.open(runBlocking { signed.replyFields(call, ReplyKind.REPLY) }.toComposerState())
         write("""{"conversation_id":"c_1","body":"Again.","format":"text"}""").data()
-        assertEquals("Again.\n\nBest,\nDemo", composer.current()!!.body)
-        // A new email gets the signature too.
+        assertEquals("Again.", composer.current()!!.body)
         composer.close()
         write("""{"mode":"new","body":"Hello","format":"text"}""").data()
-        assertEquals("Hello\n\nBest,\nDemo", composer.current()!!.body)
+        assertEquals("Hello", composer.current()!!.body)
     }
 
     @Test
