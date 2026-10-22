@@ -1,3 +1,295 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Settings, first-run setup and pairing with Rukoo on a computer (track G). Wording from the desktop catalog
+     (src/i18n/en.js) where it has the key, which follows in the comment; the rest is worded for the phone. -->
 <resources>
+    <!-- Pages and groups -->
+    <string name="settings_title_short">Settings</string><!-- settings.title.short -->
+    <string name="settings_groups_accounts">Accounts</string>
+    <string name="settings_groups_agents">Agents</string>
+    <string name="settings_groups_general">General</string>
+    <string name="settings_groups_about">About</string>
+    <string name="settings_appearance_title">Appearance</string>
+    <string name="settings_on">On</string>
+    <string name="settings_off">Off</string>
+    <string name="settings_done">Done</string>
+    <string name="settings_list_and">" and "</string>
+    <string name="settings_error_generic">Something went wrong. Try again.</string>
+    <string name="settings_server_checking">Checking...</string><!-- settings.server.checking -->
+
+    <!-- Accounts -->
+    <plurals name="settings_accounts_count">
+        <item quantity="one">%1$d account</item>
+        <item quantity="other">%1$d accounts</item>
+    </plurals>
+    <string name="settings_accounts_add">Add account</string><!-- settings.accounts.add -->
+    <string name="settings_account_default_suffix">" (default)"</string><!-- settings.account.defaultSuffix -->
+    <string name="settings_account_last_sync">Last synced on %1$s at %2$s</string><!-- settings.account.lastSync -->
+    <string name="settings_account_syncing">Syncing...</string>
+    <string name="settings_account_make_default">Set as default account</string>
+    <string name="settings_account_make_default_help">New emails will be sent from this account.</string>
+    <string name="settings_account_sync">Sync now</string>
+    <string name="settings_account_google_reauth">Sign in to Google again</string>
+    <string name="settings_account_google_reauth_help">Use this if Google has revoked access.</string>
+    <string name="settings_account_remove">Remove account</string>
+    <string name="settings_account_remove_title">Remove account?</string>
+    <string name="settings_account_remove_help">%1$s and all emails stored for it on this phone will be removed. Everything on the server will be kept.</string>
+    <string name="settings_account_removed">Account removed</string>
+    <string name="settings_general_sync">Sync schedule</string>
+    <string name="settings_sync_help">How often Rukoo checks for new mail while it is open. In the background Android allows every 15 minutes at most.</string>
+    <string name="settings_sync_manual">Manual</string>
+    <string name="settings_sync_minute">Every minute</string>
+    <string name="settings_sync_five_minutes">Every 5 minutes</string>
+    <string name="settings_sync_fifteen_minutes">Every 15 minutes</string>
+    <string name="settings_sync_thirty_minutes">Every 30 minutes</string>
+    <string name="settings_sync_hour">Every hour</string>
+    <plurals name="settings_sync_every">
+        <item quantity="one">Every minute</item>
+        <item quantity="other">Every %1$d minutes</item>
+    </plurals>
+
+    <!-- Account setup (setup.*) -->
+    <string name="settings_setup_title">Set up email</string>
+    <string name="settings_setup_choose_provider">Choose your email provider</string>
+    <string name="settings_setup_account_added">%1$s has been added</string>
+    <string name="settings_setup_demo_action">Try a demo account first</string>
+    <string name="settings_setup_demo_help">Sample emails, nothing leaves the phone</string>
+    <string name="settings_setup_fields_email">Email address</string>
+    <string name="settings_setup_fields_email_example">name@example.com</string>
+    <string name="settings_setup_fields_password">Password</string>
+    <string name="settings_setup_fields_password_hint">Password or app password</string>
+    <string name="settings_setup_fields_username">Username</string>
+    <string name="settings_setup_fields_username_hint">Usually your email address</string>
+    <string name="settings_setup_fields_imap">IMAP server</string>
+    <string name="settings_setup_fields_smtp">SMTP server</string>
+    <string name="settings_setup_fields_port">Port</string>
+    <string name="settings_setup_fields_ssl">Use SSL/TLS (off means STARTTLS)</string>
+    <string name="settings_setup_manual_action">Manual setup</string>
+    <string name="settings_setup_sign_in_action">Sign in</string>
+    <string name="settings_setup_sign_in_pending">Signing in...</string>
+    <string name="settings_setup_sign_in_title">Sign in to %1$s</string>
+    <string name="settings_setup_providers_google_note">Use an app password from your Google account (myaccount.google.com/apppasswords). IMAP must be enabled in Gmail.</string>
+    <string name="settings_setup_providers_yahoo_note">Yahoo requires an app password (Account security &gt; Generate app password).</string>
+    <string name="settings_setup_providers_outlook_note">Only works if your account allows IMAP with a password or app password.</string>
+    <string name="settings_setup_providers_exchange_note">Enter the IMAP and SMTP servers for your Exchange environment.</string>
+    <string name="settings_setup_providers_office365_note">Your administrator must enable IMAP and SMTP AUTH for your mailbox.</string>
+    <string name="settings_setup_providers_other_label">Other</string>
+    <string name="settings_setup_providers_other_note">We suggest servers based on your domain. Adjust them if needed.</string>
+    <string name="settings_setup_google_title">Sign in to Google</string>
+    <string name="settings_setup_google_action">Sign in with Google</string>
+    <string name="settings_setup_google_help">Google\'s sign-in page opens in your browser. Choose your account and allow Rukoo Mail to access Gmail. You then come back here by yourself.</string>
+    <string name="settings_setup_google_wait">Waiting for sign-in in your browser...</string>
+    <string name="settings_setup_google_password_mode">Use an app password</string>
+    <string name="settings_setup_google_ready">Google sign-in is ready</string>
+    <string name="settings_setup_google_no_client">Google sign-in needs an OAuth client, which Rukoo doesn\'t ship. Bring the one from Rukoo on your computer, or choose the client file you downloaded from Google Cloud.</string>
+    <string name="settings_setup_google_from_computer">Get it from your computer</string>
+    <string name="settings_setup_google_choose_file">Choose client file</string>
+    <string name="settings_google_invalid_client">This file does not contain a Google OAuth client.</string><!-- errors.google.invalidClient -->
+    <string name="settings_google_unsupported">Google sign-in isn\'t available in this version yet. Use an app password, or bring the account from your computer.</string>
+    <string name="settings_errors_account_invalid_email">Enter a valid email address.</string>
+    <string name="settings_errors_account_password">Enter your password.</string>
+
+    <!-- Agents (settings.agents.*) -->
+    <string name="settings_agents_title">Agents</string>
+    <string name="settings_agents_help">Agents keep their own tools and memory. Rukoo adds this chat and lets them read mail and write drafts here. The model you set here is where a new chat starts; under the chat input each chat can pick its own model and effort.</string>
+    <string name="settings_agents_default">Default agent</string>
+    <string name="settings_agents_default_none">None set up yet</string>
+    <string name="settings_agents_row_desc">Default: %1$s · %2$s</string>
+    <string name="settings_agents_auto_mail">Let agents archive, move and mark mail without asking</string>
+    <string name="settings_agents_auto_mail_help">Deleting and unsubscribing always ask first.</string>
+    <string name="settings_agents_product_hermes" translatable="false">Hermes Agent</string>
+    <string name="settings_agents_enabled">Use %1$s</string>
+    <string name="settings_agents_name">Name</string>
+    <string name="settings_agents_url">Server URL</string>
+    <string name="settings_agents_gateway_url">Gateway URL</string>
+    <string name="settings_agents_bad_url">Enter an address that starts with http:// or https://.</string>
+    <string name="settings_agents_insecure_url">This http:// address is outside your tailnet, so the API key would travel unencrypted. Use a Tailscale address or https.</string>
+    <string name="settings_agents_insecure_url_token">This http:// address is outside your tailnet, so the gateway token would travel unencrypted. Use a Tailscale address or https.</string>
+    <string name="settings_agents_key">API key</string>
+    <string name="settings_agents_key_placeholder">Paste the API server key</string>
+    <string name="settings_agents_key_show">Show key</string>
+    <string name="settings_agents_key_hide">Hide key</string>
+    <string name="settings_agents_key_stored">Key saved. Rukoo keeps it encrypted on this phone.</string>
+    <string name="settings_agents_token">Gateway token</string>
+    <string name="settings_agents_token_placeholder">Paste the gateway token or password</string>
+    <string name="settings_agents_token_show">Show token</string>
+    <string name="settings_agents_token_hide">Hide token</string>
+    <string name="settings_agents_token_stored">Token saved. Rukoo keeps it encrypted on this phone.</string>
+    <string name="settings_agents_token_first">Save the gateway token first.</string>
+    <string name="settings_agents_model">Default model (optional)</string>
+    <string name="settings_agents_model_hint">Empty for the default, for example %1$s</string>
+    <string name="settings_agents_optional">Empty for the default</string>
+    <string name="settings_agents_openclaw_agent">Agent ID (optional)</string>
+    <string name="settings_agents_openclaw_agent_hint">Empty for the gateway\'s default agent</string>
+    <string name="settings_agents_bad_agent">Use letters, digits, - and _, starting with a letter or digit.</string>
+    <string name="settings_agents_test_connection">Test connection</string>
+    <string name="settings_agents_testing">Testing...</string>
+    <string name="settings_agents_saved">Saved</string>
+    <string name="settings_agents_copy_open_claw">Copy OpenClaw setup</string>
+
+    <!-- Agent states (agent.status.*) -->
+    <string name="settings_agent_status_ready">Ready</string>
+    <string name="settings_agent_status_offline">Can\'t be reached</string>
+    <string name="settings_agent_status_unconfigured">Not set up</string>
+    <string name="settings_agent_status_disabled">Turned off</string>
+    <string name="settings_agent_status_missing">Not installed</string>
+    <string name="settings_agent_status_unauthorized">Key not accepted</string>
+    <string name="settings_agent_status_unknown">Status unknown</string>
+    <string name="settings_agent_status_checking">Checking...</string>
+
+    <!-- Computers: desktop Rukoo running Claude Code and Codex for this phone -->
+    <string name="settings_computers_title">Computers</string>
+    <string name="settings_computers_product" translatable="false">Claude Code, Codex</string>
+    <string name="settings_computers_empty">No computer paired yet</string>
+    <string name="settings_computers_empty_help">Pair with Rukoo on your computer to chat with Claude Code and Codex from this phone.</string>
+    <string name="settings_computers_pair">Pair a computer</string>
+    <string name="settings_computers_pair_help">With the code Rukoo shows on the computer</string>
+    <string name="settings_computers_last_seen">Last seen %1$s %2$s</string><!-- settings.phone.lastSeen -->
+    <string name="settings_computers_never_seen">Not connected yet</string>
+    <string name="settings_computers_removed_there">This phone was removed on that computer</string>
+    <string name="settings_computers_off_there">Phones are turned off on that computer</string>
+    <string name="settings_computers_check">Check connection</string>
+    <string name="settings_computers_export_open">The computer is sending them now</string>
+    <string name="settings_computers_export_again">On %1$s, choose Send accounts and settings again first</string>
+    <string name="settings_computers_forget">Forget this computer</string>
+    <string name="settings_computers_forget_title">Forget %1$s?</string>
+    <string name="settings_computers_forget_help">Claude Code and Codex on %1$s leave this phone\'s agents. Accounts you brought over stay here.</string>
+    <string name="settings_computers_forget_ok">Forget</string>
+    <string name="settings_computers_forgotten">Forgot %1$s</string>
+
+    <!-- Pairing (spec 3 §7.3) -->
+    <string name="settings_pair_title">Pair a computer</string>
+    <string name="settings_pair_steps">On your computer, open Rukoo, go to Settings &gt; Agents &gt; Phone and choose Pair a phone. Enter the address and code it shows.</string>
+    <string name="settings_pair_address">Computer address</string>
+    <string name="settings_pair_address_placeholder">100.101.102.103</string>
+    <string name="settings_pair_address_help">The Tailscale address Rukoo shows, or the computer\'s name in your tailnet</string>
+    <string name="settings_pair_code">Code</string>
+    <string name="settings_pair_code_placeholder">K7QM-2XPA</string>
+    <string name="settings_pair_action">Pair</string>
+    <string name="settings_pair_pending">Pairing...</string>
+    <string name="settings_pair_paired">Paired with %1$s</string><!-- settings.phone.paired -->
+    <string name="settings_pair_error_address">Enter the address Rukoo shows on your computer, such as 100.101.102.103 or the computer\'s name.</string>
+    <string name="settings_pair_error_code">The code has 8 letters and digits, such as K7QM-2XPA.</string>
+    <string name="settings_pair_error_offline">Rukoo isn\'t reachable at %1$s. Check that it\'s open and that Tailscale is on.</string>
+    <string name="settings_pair_error_not_enabled">Rukoo at %1$s doesn\'t let phones in. On the computer, turn on Settings &gt; Agents &gt; Phone &gt; Let my phone use this computer.</string>
+    <string name="settings_pair_error_wrong_code">That isn\'t the code Rukoo shows on the computer. Check it and try again.</string>
+    <string name="settings_pair_error_expired">The code has expired or was entered wrong too often. On the computer, choose Pair a phone again.</string>
+    <string name="settings_pair_error_rate_limited">Too many tries. Wait a minute and try again.</string>
+    <string name="settings_pair_error_full">%1$s has 20 phones paired already. Remove one in its Settings first.</string>
+    <string name="settings_pair_error_export_closed">%1$s isn\'t sending accounts right now. On the computer, open Settings &gt; Agents &gt; Phone, choose this phone and Send accounts and settings again.</string>
+    <string name="settings_pair_error_unauthorized">%1$s no longer knows this phone. Pair it again.</string>
+    <string name="settings_pair_error_unknown_computer">This computer isn\'t paired with this phone any more.</string>
+    <string name="settings_pair_error_protocol">Rukoo on the computer answered something this app doesn\'t understand. Update Rukoo on both.</string>
+    <string name="settings_pair_error_unknown">Something went wrong on the computer. Try again.</string>
+
+    <!-- Importing from the computer (spec 3 §7.10) -->
+    <string name="settings_import_title">Bring over from your computer</string>
+    <string name="settings_import_from_computer">Import from your computer</string>
+    <string name="settings_import_from_computer_help">The accounts and agents set up in Rukoo on your computer</string>
+    <string name="settings_import_offer">Bring over your accounts and agent settings from %1$s? This includes passwords, Google sign-ins and agent keys.</string>
+    <string name="settings_import_closed">%1$s isn\'t sending accounts right now. To bring them over, open Settings &gt; Agents &gt; Phone on %1$s, choose this phone and Send accounts and settings again.</string>
+    <string name="settings_import_action">Import</string>
+    <string name="settings_import_not_now">Not now</string>
+    <string name="settings_import_check">Check again</string>
+    <string name="settings_import_running">Bringing over your accounts and settings...</string>
+    <plurals name="settings_import_accounts_added">
+        <item quantity="one">Added %1$d account</item>
+        <item quantity="other">Added %1$d accounts</item>
+    </plurals>
+    <string name="settings_import_accounts_here">Your accounts were already on this phone.</string>
+    <string name="settings_import_no_accounts">%1$s had no accounts to send.</string>
+    <string name="settings_import_agents">Set up %1$s.</string>
+    <string name="settings_import_agent_clark">Clark</string>
+    <string name="settings_import_agent_openclaw" translatable="false">OpenClaw</string>
+    <plurals name="settings_import_skipped">
+        <item quantity="one">%1$s didn\'t come over: %2$s couldn\'t read its password. Add it again here.</item>
+        <item quantity="other">%1$s didn\'t come over: %2$s couldn\'t read their passwords. Add them again here.</item>
+    </plurals>
+    <string name="settings_import_accounts_failed">Your accounts didn\'t come over.</string>
+    <plurals name="settings_import_local_only">
+        <item quantity="one">%1$s only listens on %2$s itself, so it wasn\'t set up here. Give it a Tailscale address there, or enter one here.</item>
+        <item quantity="other">%1$s only listen on %2$s itself, so they weren\'t set up here. Give them a Tailscale address there, or enter one here.</item>
+    </plurals>
+
+    <!-- Phone tools: Rukoo's MCP server on this phone -->
+    <string name="settings_phone_tools_title">Phone tools</string>
+    <string name="settings_phone_tools_intro">Agents on your other devices can read the mail on this phone and put drafts, plans and approval requests on its screen, over Tailscale. Sending stays your tap.</string>
+    <string name="settings_phone_tools_toggle">Let agents use Rukoo on this phone</string>
+    <string name="settings_phone_tools_toggle_help">Rukoo then listens on this phone\'s Tailscale address, and Android shows that it runs.</string>
+    <string name="settings_phone_tools_on_at">On · %1$s</string>
+    <string name="settings_phone_tools_reachable">Agents can reach this phone at %1$s</string>
+    <string name="settings_phone_tools_no_tailnet">Tailscale isn\'t connected on this phone, so agents can\'t reach it.</string>
+    <string name="settings_phone_tools_port_in_use">Port %1$s is taken by another app.</string>
+    <string name="settings_phone_tools_failed">Phone tools didn\'t start: %1$s</string>
+    <string name="settings_phone_tools_starting">Starting...</string>
+    <string name="settings_phone_tools_who">Who can connect</string>
+    <string name="settings_phone_tools_clark">%1$s, through Rukoo\'s bridge</string>
+    <string name="settings_phone_tools_clark_help">The bridge on %1$s\'s machine finds this phone by itself and sends it the calls about chats on this phone.</string>
+    <string name="settings_phone_tools_clark_off">Set up %1$s under Agents first.</string>
+    <string name="settings_phone_tools_computer">Claude Code and Codex on %1$s</string>
+    <string name="settings_phone_tools_computer_help">While a chat from this phone runs there, its tools work on this phone\'s mail.</string>
+    <string name="settings_phone_tools_computer_off">Without phone tools they chat without Rukoo\'s tools.</string>
+    <string name="settings_phone_tools_openclaw">Let OpenClaw use Rukoo on this phone</string>
+    <string name="settings_phone_tools_openclaw_help">For a gateway in your tailnet. Run the setup below on the gateway\'s computer.</string>
+    <string name="settings_phone_tools_openclaw_needs_token">OpenClaw signs in with a token Rukoo makes from the gateway token. Enter that under Agents first.</string>
+    <string name="settings_phone_tools_copy_open_claw_help">A command for the gateway\'s computer, with this phone\'s Tailscale address. It replaces Rukoo on your computer in OpenClaw\'s tools, and it holds a token, so don\'t share it.</string>
+    <string name="settings_phone_tools_copied_open_claw">Copied with %1$s. Run it on the gateway\'s computer, then restart the OpenClaw gateway.</string>
+    <string name="settings_phone_tools_battery">Battery</string>
+    <string name="settings_phone_tools_battery_row">Battery use</string>
+    <string name="settings_phone_tools_battery_help">Samsung stops apps in the background to save battery, and then agents can\'t reach Rukoo. Open the battery page and choose Unrestricted.</string>
+    <string name="settings_phone_tools_battery_unrestricted">Unrestricted</string>
+    <string name="settings_phone_tools_battery_optimized">Optimized</string>
+
+    <!-- Notifications -->
+    <string name="settings_general_notifications">Notifications</string>
+    <string name="settings_notifications_both">New mail and agent replies</string>
+    <string name="settings_notifications_mail">New mail</string>
+    <string name="settings_notifications_agents">Agent replies</string>
+    <string name="settings_notifications_allow">Allow notifications</string>
+    <string name="settings_notifications_allow_help">Android asks you first. Without it Rukoo can\'t show new mail or agent replies.</string>
+    <string name="settings_notifications_new_mail">New mail</string>
+    <string name="settings_notifications_new_mail_help">Show a notification for new emails.</string>
+    <string name="settings_notifications_agents_row">Agent replies</string>
+    <string name="settings_notifications_agents_help">Answers, drafts and approval requests while their chat isn\'t open.</string>
+    <string name="settings_notifications_system">Notification settings</string>
+    <string name="settings_notifications_system_help">Sounds, the lock screen and each kind of notification, in Android\'s settings</string>
+
+    <!-- Appearance -->
+    <string name="settings_general_theme">Theme</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_system">Follow system setting</string>
+    <string name="settings_general_density">Message list</string>
+    <string name="settings_density_standard">Standard</string>
+    <string name="settings_density_standard_hint">Sender, subject, and preview</string>
+    <string name="settings_density_compact">Compact</string>
+    <string name="settings_density_compact_hint">One line per email</string>
+    <string name="settings_general_dark_emails">Dark email display</string>
+    <string name="settings_general_dark_emails_help">Adjust HTML email colors in dark mode.</string>
+    <string name="settings_general_swipe">Swipe actions</string>
+    <string name="settings_general_swipe_help">Swipe right to mark as read or unread, and left to delete.</string>
+
+    <!-- Language -->
+    <string name="settings_general_language">Language</string>
+    <string name="settings_general_language_help">Choose the language used throughout the app.</string>
+    <string name="settings_language_system">Phone\'s language</string>
+    <string name="settings_language_en" translatable="false">English</string>
+    <string name="settings_language_nl" translatable="false">Nederlands</string>
+    <string name="settings_language_old_android">On Android 12 Rukoo follows the phone\'s language. Choose it in the system settings.</string>
+
+    <!-- About -->
+    <string name="settings_about_version_value">Version %1$s</string>
+    <string name="settings_about_tagline">Email with your own agents</string>
+    <string name="settings_about_storage">Storage</string>
+    <string name="settings_about_storage_help">Mail, chats and settings kept on this phone</string>
+    <string name="settings_about_licenses">Open-source licenses</string>
+
+    <!-- First run -->
+    <string name="onboarding_connect">Connect to Rukoo on your computer</string>
+    <string name="onboarding_connect_help">Pair with the code in Rukoo\'s Settings, then bring over your accounts and agents.</string>
+    <string name="onboarding_import_from">Bring over from %1$s</string>
+    <string name="onboarding_paired_note">Paired with %1$s. Bring your accounts over from it, or add one here.</string>
+    <string name="onboarding_recommended">Recommended</string>
+    <string name="onboarding_add_help">Google, Outlook, Yahoo or any other mail account</string>
+    <string name="onboarding_demo">Try the demo account</string>
+    <string name="onboarding_pair_title">Connect to your computer</string>
 </resources>

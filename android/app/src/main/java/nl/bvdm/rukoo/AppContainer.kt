@@ -30,8 +30,9 @@ import nl.bvdm.rukoo.mail.model.UnsubscribeResult
 import nl.bvdm.rukoo.ui.ComposerState
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretBox
+import nl.bvdm.rukoo.desktop.DesktopDevice
 import nl.bvdm.rukoo.desktop.DesktopLink
-import nl.bvdm.rukoo.desktop.StubDesktopLink
+import nl.bvdm.rukoo.desktop.HttpDesktopLink
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mcp.AndroidMcpController
@@ -137,7 +138,7 @@ class AppContainer(context: Context) : AppServices {
     // Made with the container, not lazily: it starts Rukoo's tools as soon as the app (or the boot receiver) runs.
     override val mcp: McpController = AndroidMcpController(this)
 
-    override val desktop: DesktopLink by lazy { StubDesktopLink(agentSettings) }
+    override val desktop: DesktopLink by lazy { HttpDesktopLink(agentSettings, http, { DesktopDevice.info(appContext) }, clock) }
 
     /** OAuth returns that arrive as `rukoo-oauth:` deep links; the sign-in flow collects them. */
     val oauthReturns = MutableSharedFlow<Uri>(extraBufferCapacity = 1)

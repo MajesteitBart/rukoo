@@ -48,6 +48,8 @@ data class HelloResponse(
 data class ExportedSettings(
     val defaultAccountId: String? = null,
     val language: String? = null,
+    /** `system`, `light` or `dark`; the desktop sends it next to the spec's fields (wave0-api.md F). */
+    val theme: String? = null,
     val signature: String? = null,
     val signatureHtml: String? = null,
     val vips: List<String> = emptyList(),
@@ -120,7 +122,10 @@ data class HostMcp(val url: String, val token: String) {
 @Serializable
 data class HostSkill(val name: String)
 
-/** `POST /phone/v1/turns` body (spec 3 §7.6). [agent] is `claude` or `codex`. */
+/**
+ * `POST /phone/v1/turns` body (spec 3 §7.6). [agent] is `claude` or `codex`. Without [mcp] the agent runs
+ * without Rukoo's tools, as the desktop allows when the phone has no MCP address.
+ */
 @Serializable
 data class HostTurnRequest(
     val agent: String,

@@ -61,6 +61,8 @@ data class PairedComputer(
     val exportUntil: Long? = null,
     val version: String = "",
     val pairedAt: Long = 0,
+    /** When the phone last got an answer from this computer, ms; written at most once a minute. */
+    val lastSeenAt: Long? = null,
 ) {
     val baseUrl: String get() = "http://$address:$port"
 
