@@ -142,7 +142,7 @@ dependencies {
     implementation(libs.commonmark)
     implementation(libs.commonmark.ext.gfm.tables)
     implementation(libs.commonmark.ext.gfm.strikethrough)
-    implementation(libs.commonmark.ext.autolink)
+    implementation(libs.autolink)
     implementation(libs.angus.mail)
     implementation(libs.angus.activation)
     implementation(libs.jsoup)

@@ -50,7 +50,6 @@ import nl.bvdm.rukoo.ui.theme.RukooColors
 import nl.bvdm.rukoo.ui.theme.RukooMono
 import nl.bvdm.rukoo.ui.theme.RukooWeights
 import nl.bvdm.rukoo.ui.theme.lineHeight
-import org.commonmark.ext.autolink.AutolinkExtension
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
 import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension
 import org.commonmark.ext.gfm.tables.TableBlock
@@ -78,14 +77,78 @@ import org.commonmark.node.SoftLineBreak
 import org.commonmark.node.StrongEmphasis
 import org.commonmark.node.ThematicBreak
 import org.commonmark.parser.Parser
+import org.commonmark.parser.PostProcessor
+import org.nibor.autolink.LinkExtractor
+import org.nibor.autolink.LinkSpan
+import org.nibor.autolink.LinkType
+import java.util.EnumSet
 import org.commonmark.node.Text as MdText
 
 private val parser: Parser = Parser.builder()
-    .extensions(listOf(TablesExtension.create(), StrikethroughExtension.create(), AutolinkExtension.create()))
+    .extensions(listOf(TablesExtension.create(), StrikethroughExtension.create()))
+    .postProcessor(Autolinks)
     .build()
 
-/** Parses agent Markdown. HTML stays text: the renderer shows it literally and never interprets it. */
-fun parseMarkdown(text: String): Document = parser.parse(text) as Document
+/**
+ * Parses agent Markdown. HTML stays text: the renderer shows it literally and never interprets it. commonmark's
+ * inline parser recurses once per level of emphasis, link or image when it merges text, so an answer nested deeper
+ * than the stack allows shows as its plain text rather than taking the app down.
+ */
+fun parseMarkdown(text: String): Document =
+    try {
+        parser.parse(text) as Document
+    } catch (_: StackOverflowError) {
+        Document().apply { appendChild(Paragraph().apply { appendChild(MdText(text)) }) }
+    }
+
+/**
+ * Links bare URLs and email addresses the way commonmark's autolink extension does. The extension walks the tree
+ * with a visitor that recurses once per level, so an answer nested thousands deep overflowed it during parsing; this
+ * walks with a stack.
+ */
+private object Autolinks : PostProcessor {
+    private val extractor = LinkExtractor.builder().linkTypes(EnumSet.of(LinkType.URL, LinkType.EMAIL)).build()
+
+    override fun process(node: Node): Node {
+        val texts = ArrayList<MdText>()
+        val stack = ArrayDeque<Node>()
+        stack.addLast(node)
+        while (stack.isNotEmpty()) {
+            when (val n = stack.removeLast()) {
+                // The text of a link is a link already.
+                is Link -> Unit
+                is MdText -> texts += n
+                else -> {
+                    var child = n.firstChild
+                    while (child != null) {
+                        stack.addLast(child)
+                        child = child.next
+                    }
+                }
+            }
+        }
+        texts.forEach(::linkify)
+        return node
+    }
+
+    private fun linkify(original: MdText) {
+        val literal = original.literal
+        val spans = extractor.extractSpans(literal).toList()
+        if (spans.none { it is LinkSpan }) return
+        var last: Node = original
+        for (span in spans) {
+            val text = MdText(literal.substring(span.beginIndex, span.endIndex))
+            val next = if (span is LinkSpan) {
+                Link(if (span.type == LinkType.EMAIL) "mailto:${text.literal}" else text.literal, null).apply { appendChild(text) }
+            } else {
+                text
+            }
+            last.insertAfter(next)
+            last = next
+        }
+        original.unlink()
+    }
+}
 
 private fun Node.children(): List<Node> = generateSequence(firstChild) { it.next }.toList()
 
