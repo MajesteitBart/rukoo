@@ -3,6 +3,8 @@ package nl.bvdm.rukoo.ui.settings
 import nl.bvdm.rukoo.desktop.UrlHosts
 import nl.bvdm.rukoo.mail.model.GoogleClient
 import nl.bvdm.rukoo.mail.model.MailProviders
+import nl.bvdm.rukoo.mcp.McpSetup
+import nl.bvdm.rukoo.mcp.McpStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -88,20 +90,34 @@ class SettingsRulesTest {
     }
 
     @Test
-    fun openClawTokenMatchesDesktop() {
+    fun openClawSetupMatchesDesktop() {
+        // Settings copies the server's command (McpController.openClawSetup); its token must be desktop's:
         // node -e "crypto.createHmac('sha256', key).update('rukoo-mcp-openclaw-remote-v1').digest('base64url')"
-        assertEquals("zH_liMsCMypd2NxR_kgVAU2gmnl7jdrAiIwiXN0sqds", OpenClawSetup.token("gw-token-123"))
-        assertEquals("T0Gh5h4y3LVvMxbJkiUVk0Krw5zpm84nlAUq-yp7xAI", OpenClawSetup.token("another token"))
-        assertEquals("", OpenClawSetup.token(""))
+        val command = McpSetup.openClaw("http://100.64.0.3:47800/mcp", "gw-token-123")
+        assertEquals(
+            "openclaw mcp set rukoo '{\"url\":\"http://100.64.0.3:47800/mcp\",\"transport\":\"streamable-http\",\"headers\":{\"Authorization\":\"Bearer zH_liMsCMypd2NxR_kgVAU2gmnl7jdrAiIwiXN0sqds\"}}'\n",
+            command,
+        )
+        assertTrue(McpSetup.openClaw("http://100.64.0.3:47800/mcp", "another token")!!.contains("Bearer T0Gh5h4y3LVvMxbJkiUVk0Krw5zpm84nlAUq-yp7xAI"))
+        assertNull(McpSetup.openClaw("http://100.64.0.3:47800/mcp", ""))
+        // The toast says where the command points.
+        assertEquals("http://100.64.0.3:47800/mcp", PhoneToolsTexts.setupUrl(command!!))
     }
 
     @Test
-    fun openClawCommandAsDesktopWritesIt() {
-        assertEquals(
-            "openclaw mcp set rukoo '{\"url\":\"http://100.64.0.3:47800/mcp\",\"transport\":\"streamable-http\",\"headers\":{\"Authorization\":\"Bearer zH_liMsCMypd2NxR_kgVAU2gmnl7jdrAiIwiXN0sqds\"}}'\n",
-            OpenClawSetup.command("100.64.0.3", 47800, "gw-token-123"),
-        )
-        assertEquals("", OpenClawSetup.command("100.64.0.3", 47800, ""))
+    fun phoneToolsStatusAndPort() {
+        assertEquals(PhoneToolsTexts.Shown.Reachable, PhoneToolsTexts.status(McpStatus(running = true, address = "100.64.0.3", port = 47800)))
+        // Debug builds: an advertised address is reachable without Tailscale.
+        assertEquals(PhoneToolsTexts.Shown.Reachable, PhoneToolsTexts.status(McpStatus(running = true, port = 47800, advertised = "10.0.2.2:47801")))
+        // On the emulator: the server runs, but there is no Tailscale address to reach it at.
+        assertEquals(PhoneToolsTexts.Shown.Problem, PhoneToolsTexts.status(McpStatus(running = true, port = 47800, error = McpStatus.ERROR_NO_TAILNET)))
+        assertEquals(PhoneToolsTexts.Shown.Problem, PhoneToolsTexts.status(McpStatus(error = McpStatus.ERROR_PORT_IN_USE, port = 47800)))
+        // Just switched on: the service hasn't reported yet.
+        assertEquals(PhoneToolsTexts.Shown.Starting, PhoneToolsTexts.status(McpStatus(error = McpStatus.ERROR_DISABLED)))
+        assertEquals(47801, PhoneToolsTexts.port("47801"))
+        assertNull(PhoneToolsTexts.port("80"))
+        assertNull(PhoneToolsTexts.port("70000"))
+        assertNull(PhoneToolsTexts.port(""))
     }
 
     @Test

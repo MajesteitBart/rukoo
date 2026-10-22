@@ -12,6 +12,7 @@ import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.HubEvent
 import nl.bvdm.rukoo.agents.model.ConversationRow
 import nl.bvdm.rukoo.agents.model.Unread
+import nl.bvdm.rukoo.ui.Screen
 import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.NewsTone
 import nl.bvdm.rukoo.ui.components.RkIconButton
@@ -69,6 +70,13 @@ fun ChatListButton(app: AppViewModel) {
 }
 
 /**
+ * Whether an approval waiting in [event]'s chat gets the in-app toast: only while Rukoo is in the foreground (the
+ * notification covers the background, spec 6 §5.4), and not for the chat on screen, which shows the card itself.
+ */
+internal fun approvalToast(screen: Screen, event: HubEvent.ApprovalWaiting): Boolean =
+    screen.foreground && screen.chatConversationId != event.conversationId
+
+/**
  * In-app notice for agents working off screen (panel.js onItem): "An agent is waiting for your approval" with
  * Show. Put it once at the root, inside the toast host's scope.
  */
@@ -79,8 +87,7 @@ fun AgentToasts(app: AppViewModel) {
     LaunchedEffect(app) {
         app.services.agents.events.collect { event ->
             if (event !is HubEvent.ApprovalWaiting) return@collect
-            val screen = app.services.screen.state.value
-            if (screen.foreground && screen.chatConversationId == event.conversationId) return@collect
+            if (!approvalToast(app.services.screen.state.value, event)) return@collect
             toast.showToast(
                 context.getString(R.string.agentui_panel_needs_you),
                 context.getString(R.string.agentui_panel_show),

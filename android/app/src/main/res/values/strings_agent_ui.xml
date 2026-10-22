@@ -97,23 +97,6 @@
     <string name="agentui_effort_max">Max</string>
     <string name="agentui_effort_ultra">Ultra</string>
 
-    <!-- Quick actions -->
-    <string name="agentui_actions_reply_label">Draft a reply</string>
-    <string name="agentui_actions_reply_description">Write a reply in the composer</string>
-    <string name="agentui_actions_brief_label">Brief me</string>
-    <string name="agentui_actions_brief_description">Who this is and what you should know</string>
-    <string name="agentui_actions_tasks_label">Plan follow-ups</string>
-    <string name="agentui_actions_tasks_description">Turn the email into tasks</string>
-    <string name="agentui_actions_team_label">Tell the team</string>
-    <string name="agentui_actions_team_description">Share the key points with your team</string>
-    <string name="agentui_actions_update_label">Update systems</string>
-    <string name="agentui_actions_update_description">Record it in your CRM, notes or tasks</string>
-    <string name="agentui_actions_unsubscribe_label">Unsubscribe</string>
-    <string name="agentui_actions_unsubscribe_description">Stop mail from this sender</string>
-    <string name="agentui_actions_summary_label">Summarize</string>
-    <string name="agentui_actions_summary_description">The email and its thread in three bullets</string>
-    <string name="agentui_actions_triage_label">What needs me today?</string>
-    <string name="agentui_actions_triage_description">Go through the inbox, most urgent first</string>
 
     <!-- Transcript items -->
     <string name="agentui_items_approved">Approved</string>
@@ -161,6 +144,10 @@
     <string name="agentui_notices_kept_approval">Not done yet: %1$s. %2$s hears about your approval with your next message.</string>
     <string name="agentui_notices_new_session">%1$s started a new session</string>
     <string name="agentui_notices_new_thread">%1$s started a new thread</string>
+    <!-- A computer turn without this phone's tools; %1$s is the program (Claude Code, Codex). -->
+    <string name="agentui_notices_no_phone_tools">%1$s works without Rukoo\'s tools this turn: this phone isn\'t serving them right now.</string>
+    <!-- The computer started a new session and the phone's first message with the email didn't reach it in time. -->
+    <string name="agentui_notices_start_over_missed">The new session didn\'t get the email again.</string>
 
     <!-- Mail results -->
     <plurals name="agentui_mail_archive">
@@ -199,6 +186,71 @@
     <string name="agentui_mail_unsubscribe_email_one">Opened an unsubscribe email to %1$s. Send it to finish.</string>
     <string name="agentui_mail_unsubscribe_page_many">Opened %1$d unsubscribe pages in your browser. Finish there; Rukoo Mail can\'t tell whether they worked.</string>
     <string name="agentui_mail_unsubscribe_page_one">Opened the unsubscribe page for %1$s in your browser. Finish there; Rukoo Mail can\'t tell whether it worked.</string>
+
+    <!-- One-click unsubscribe results (the hub writes these in English). -->
+    <string name="agentui_mail_unsubscribed_one">Unsubscribed from %1$s</string>
+    <plurals name="agentui_mail_unsubscribed_senders">
+        <item quantity="one">Unsubscribed from %1$d sender</item>
+        <item quantity="other">Unsubscribed from %1$d senders</item>
+    </plurals>
+
+    <!-- Mail approval cards: the title (tools.js mailTitle) and the button (tools.js VERBS). -->
+    <plurals name="agentui_mail_title_archive">
+        <item quantity="one">Archive %1$d email</item>
+        <item quantity="other">Archive %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_trash">
+        <item quantity="one">Delete %1$d email</item>
+        <item quantity="other">Delete %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_move">
+        <item quantity="one">Move %1$d email to %2$s</item>
+        <item quantity="other">Move %1$d emails to %2$s</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_read">
+        <item quantity="one">Mark %1$d email as read</item>
+        <item quantity="other">Mark %1$d emails as read</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_unread">
+        <item quantity="one">Mark %1$d email as unread</item>
+        <item quantity="other">Mark %1$d emails as unread</item>
+    </plurals>
+    <plurals name="agentui_mail_title_star">
+        <item quantity="one">Star %1$d email</item>
+        <item quantity="other">Star %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_unstar">
+        <item quantity="one">Unstar %1$d email</item>
+        <item quantity="other">Unstar %1$d emails</item>
+    </plurals>
+    <string name="agentui_mail_title_unsubscribe_one">Unsubscribe from %1$s</string>
+    <plurals name="agentui_mail_title_unsubscribe_senders">
+        <item quantity="one">Unsubscribe from %1$d sender</item>
+        <item quantity="other">Unsubscribe from %1$d senders</item>
+    </plurals>
+    <!-- The last row of a card that lists more than six emails. -->
+    <plurals name="agentui_mail_more">
+        <item quantity="one">and %1$d more</item>
+        <item quantity="other">and %1$d more</item>
+    </plurals>
+    <string name="agentui_mail_verb_archive">Archive</string>
+    <string name="agentui_mail_verb_trash">Delete</string>
+    <string name="agentui_mail_verb_move">Move</string>
+    <string name="agentui_mail_verb_mark_read">Mark as read</string>
+    <string name="agentui_mail_verb_mark_unread">Mark as unread</string>
+    <string name="agentui_mail_verb_star">Star</string>
+    <string name="agentui_mail_verb_unstar">Unstar</string>
+    <string name="agentui_mail_verb_unsubscribe">Unsubscribe</string>
+
+    <!-- Emails added to the message with "Add to chat" (agent.files.*, agent.panel.inChatAlready). -->
+    <string name="agentui_files_too_many_emails">A message takes up to %1$d emails.</string>
+    <string name="agentui_files_email_gone">An email you added is no longer here. Your message was not sent; the other attachments are still there.</string>
+    <plurals name="agentui_panel_in_chat_already">
+        <item quantity="one">That email is in the chat already.</item>
+        <item quantity="other">Those emails are in the chat already.</item>
+    </plurals>
+    <!-- The x on an added email; %1$s is its subject. -->
+    <string name="agentui_panel_remove_attachment">Remove %1$s</string>
 
     <!-- Plan -->
     <string name="agentui_plan_proposed">Proposed</string>

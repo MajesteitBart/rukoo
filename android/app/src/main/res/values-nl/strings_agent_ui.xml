@@ -84,22 +84,6 @@
     <string name="agentui_effort_max">Maximaal</string>
     <string name="agentui_effort_ultra">Ultra</string>
 
-    <string name="agentui_actions_reply_label">Antwoord opstellen</string>
-    <string name="agentui_actions_reply_description">Schrijft een antwoord in het opstelvenster</string>
-    <string name="agentui_actions_brief_label">Praat me bij</string>
-    <string name="agentui_actions_brief_description">Wie dit is en wat je moet weten</string>
-    <string name="agentui_actions_tasks_label">Vervolgstappen plannen</string>
-    <string name="agentui_actions_tasks_description">Maakt taken van de e-mail</string>
-    <string name="agentui_actions_team_label">Team inlichten</string>
-    <string name="agentui_actions_team_description">Deelt de kern met je team</string>
-    <string name="agentui_actions_update_label">Systemen bijwerken</string>
-    <string name="agentui_actions_update_description">Legt het vast in je CRM, notities of taken</string>
-    <string name="agentui_actions_unsubscribe_label">Uitschrijven</string>
-    <string name="agentui_actions_unsubscribe_description">Geen mail meer van deze afzender</string>
-    <string name="agentui_actions_summary_label">Samenvatten</string>
-    <string name="agentui_actions_summary_description">De e-mail en de draad in drie punten</string>
-    <string name="agentui_actions_triage_label">Wat vraagt vandaag mijn aandacht?</string>
-    <string name="agentui_actions_triage_description">Loopt de inbox door, het dringendste eerst</string>
 
     <string name="agentui_items_approved">Goedgekeurd</string>
     <string name="agentui_items_denied">Afgewezen</string>
@@ -141,6 +125,8 @@
     <string name="agentui_notices_kept_approval">Nog niet gedaan: %1$s. %2$s hoort met je volgende bericht dat je akkoord gaf.</string>
     <string name="agentui_notices_new_session">%1$s is een nieuwe sessie begonnen</string>
     <string name="agentui_notices_new_thread">%1$s is een nieuwe thread begonnen</string>
+    <string name="agentui_notices_no_phone_tools">%1$s werkt deze beurt zonder de tools van Rukoo: deze telefoon biedt ze nu niet aan.</string>
+    <string name="agentui_notices_start_over_missed">De nieuwe sessie kreeg de e-mail niet opnieuw.</string>
 
     <plurals name="agentui_mail_archive">
         <item quantity="one">%1$d e-mail gearchiveerd</item>
@@ -178,6 +164,66 @@
     <string name="agentui_mail_unsubscribe_email_one">Uitschrijfmail aan %1$s geopend. Verstuur hem om je af te melden.</string>
     <string name="agentui_mail_unsubscribe_page_many">%1$d uitschrijfpagina\'s geopend in je browser. Rond het daar af; Rukoo Mail kan niet zien of het gelukt is.</string>
     <string name="agentui_mail_unsubscribe_page_one">Uitschrijfpagina van %1$s geopend in je browser. Rond het daar af; Rukoo Mail kan niet zien of het gelukt is.</string>
+
+    <string name="agentui_mail_unsubscribed_one">Uitgeschreven bij %1$s</string>
+    <plurals name="agentui_mail_unsubscribed_senders">
+        <item quantity="one">Uitgeschreven bij %1$d afzender</item>
+        <item quantity="other">Uitgeschreven bij %1$d afzenders</item>
+    </plurals>
+
+    <plurals name="agentui_mail_title_archive">
+        <item quantity="one">%1$d e-mail archiveren</item>
+        <item quantity="other">%1$d e-mails archiveren</item>
+    </plurals>
+    <plurals name="agentui_mail_title_trash">
+        <item quantity="one">%1$d e-mail verwijderen</item>
+        <item quantity="other">%1$d e-mails verwijderen</item>
+    </plurals>
+    <plurals name="agentui_mail_title_move">
+        <item quantity="one">%1$d e-mail naar %2$s verplaatsen</item>
+        <item quantity="other">%1$d e-mails naar %2$s verplaatsen</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_read">
+        <item quantity="one">%1$d e-mail als gelezen markeren</item>
+        <item quantity="other">%1$d e-mails als gelezen markeren</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_unread">
+        <item quantity="one">%1$d e-mail als ongelezen markeren</item>
+        <item quantity="other">%1$d e-mails als ongelezen markeren</item>
+    </plurals>
+    <plurals name="agentui_mail_title_star">
+        <item quantity="one">Ster geven aan %1$d e-mail</item>
+        <item quantity="other">Ster geven aan %1$d e-mails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_unstar">
+        <item quantity="one">Ster weghalen bij %1$d e-mail</item>
+        <item quantity="other">Ster weghalen bij %1$d e-mails</item>
+    </plurals>
+    <string name="agentui_mail_title_unsubscribe_one">Uitschrijven bij %1$s</string>
+    <plurals name="agentui_mail_title_unsubscribe_senders">
+        <item quantity="one">Uitschrijven bij %1$d afzender</item>
+        <item quantity="other">Uitschrijven bij %1$d afzenders</item>
+    </plurals>
+    <plurals name="agentui_mail_more">
+        <item quantity="one">en nog %1$d</item>
+        <item quantity="other">en nog %1$d</item>
+    </plurals>
+    <string name="agentui_mail_verb_archive">Archiveren</string>
+    <string name="agentui_mail_verb_trash">Verwijderen</string>
+    <string name="agentui_mail_verb_move">Verplaatsen</string>
+    <string name="agentui_mail_verb_mark_read">Als gelezen markeren</string>
+    <string name="agentui_mail_verb_mark_unread">Als ongelezen markeren</string>
+    <string name="agentui_mail_verb_star">Ster geven</string>
+    <string name="agentui_mail_verb_unstar">Ster weghalen</string>
+    <string name="agentui_mail_verb_unsubscribe">Uitschrijven</string>
+
+    <string name="agentui_files_too_many_emails">Een bericht neemt maximaal %1$d e-mails mee.</string>
+    <string name="agentui_files_email_gone">Een e-mail die je toevoegde is er niet meer. Je bericht is niet verstuurd; de andere bijlagen staan er nog.</string>
+    <plurals name="agentui_panel_in_chat_already">
+        <item quantity="one">Die e-mail zit al in de chat.</item>
+        <item quantity="other">Die e-mails zitten al in de chat.</item>
+    </plurals>
+    <string name="agentui_panel_remove_attachment">%1$s weghalen</string>
 
     <string name="agentui_plan_proposed">Voorgesteld</string>
     <string name="agentui_plan_todo">Te doen</string>

@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -69,6 +70,7 @@ import nl.bvdm.rukoo.ui.settings.GoogleSetup
 import nl.bvdm.rukoo.ui.settings.ImapAccountForm
 import nl.bvdm.rukoo.ui.settings.NoteBox
 import nl.bvdm.rukoo.ui.settings.NoteTone
+import nl.bvdm.rukoo.ui.settings.NotificationPermission
 import nl.bvdm.rukoo.ui.settings.PairComputerFlow
 import nl.bvdm.rukoo.ui.settings.ProviderGrid
 import nl.bvdm.rukoo.ui.settings.RowIcon
@@ -102,6 +104,7 @@ fun OnboardingScreen(app: AppViewModel, modifier: Modifier = Modifier) {
     val model: SetupModel = viewModel { SetupModel(app.services) }
     var step by rememberSaveable { mutableStateOf(HOME) }
     val toast = rememberRkToastState()
+    val context = LocalContext.current
     DisposableEffect(Unit) {
         onDispose {
             // Adding the first account closes this screen; Settings, which shares the model, mustn't announce it later.
@@ -115,6 +118,9 @@ fun OnboardingScreen(app: AppViewModel, modifier: Modifier = Modifier) {
             if (finished) {
                 model.clearDrafts(SetupModel.DRAFT_PAIR)
                 model.clearDrafts(SetupModel.DRAFT_IMAP)
+                // New mail starts to arrive now, which is when the user can tell why Rukoo asks to notify.
+                val settings = app.services.settingsSnapshot.value
+                NotificationPermission.ask(context, wanted = settings.notifyMail || settings.notifyAgents)
             }
             if (importing && finished) {
                 model.continueImportInSettings()

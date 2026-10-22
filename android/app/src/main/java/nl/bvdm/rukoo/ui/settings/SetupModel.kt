@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,6 +17,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.AppServices
 import nl.bvdm.rukoo.agents.PairedComputer
+import nl.bvdm.rukoo.agents.model.AgentIds
+import nl.bvdm.rukoo.agents.model.ComputerProgram
 import nl.bvdm.rukoo.desktop.DesktopErrors
 import nl.bvdm.rukoo.desktop.DesktopException
 import nl.bvdm.rukoo.desktop.DesktopImport
@@ -241,6 +244,37 @@ class SetupModel(
                 HelloUi(error = e)
             }
             putHello(pairingId, next)
+        }
+    }
+
+    private val _testingComputers = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Computers whose Claude Code and Codex the hub is checking now ([testComputer]). */
+    val testingComputers: StateFlow<Set<String>> = _testingComputers.asStateFlow()
+
+    /** A computer's "Check connection": the hub tests its Claude Code and Codex, and `/hello` says what else it offers. */
+    fun testComputer(pairingId: String) {
+        if (pairingId in _testingComputers.value) return
+        _testingComputers.update { it + pairingId }
+        refreshHello(pairingId)
+        viewModelScope.launch {
+            try {
+                coroutineScope {
+                    for (program in ComputerProgram.entries) {
+                        launch {
+                            try {
+                                services.agents.test(AgentIds.computer(pairingId, program))
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                // The hub keeps the status it found; the row shows it.
+                            }
+                        }
+                    }
+                }
+            } finally {
+                _testingComputers.update { it - pairingId }
+            }
         }
     }
 

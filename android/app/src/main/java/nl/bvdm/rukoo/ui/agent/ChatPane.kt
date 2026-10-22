@@ -59,6 +59,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.agents.QuickActions
 import nl.bvdm.rukoo.agents.model.AgentState
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.ConversationStatus
@@ -218,6 +219,22 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
         if (found != null && app.state.value.chatOpen && app.state.value.chatConversationId == null) app.openChat(found.id, emailId)
     }
 
+    // "Add to chat": the emails go with the message being written. Taken after the composition that shows the chat
+    // they were added for, so the chat's own email (the first, for a new chat) isn't added again.
+    val offered by app.chatEmails.collectAsStateWithLifecycle()
+    LaunchedEffect(offered) {
+        if (offered.isEmpty()) return@LaunchedEffect
+        val ids = app.takeChatEmails()
+        // Added to a started chat, the emails go to that chat: the reader showing the first of them is no reason to
+        // follow it to another chat (below).
+        if (conversationId != null && ids.firstOrNull() == app.state.value.openMessageId) local.value = local.value.copy(keepFor = ids.first())
+        controller.addEmails(ids)
+    }
+    // An added email the chat on screen has itself (its own, or one it continued from) goes with it already.
+    LaunchedEffect(conversation?.id, conversation?.continued?.size, emailId, email?.id) {
+        controller.dropEmailsInChat()
+    }
+
     // Two panes: the chat follows the email in the reader beside it, unless the chat opened that email itself.
     val openId = nav.openMessageId
     val seenOpen = remember { mutableStateOf(openId) }
@@ -308,6 +325,7 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
                 computers = agentSettings.computers.associate { it.pairingId to it.name },
                 context = contextChip,
                 newer = newer,
+                emails = local.value.emails,
                 running = conversation?.status == ConversationStatus.RUNNING,
                 blockedNote = AgentText.setup(agentState, agentName),
                 models = modelList,
@@ -512,7 +530,7 @@ private fun TranscriptRowView(
                 is Item.Notice -> NoticeLine(item, agentName, if (item.undo != null) ({ failed -> controller.undoNotice(item.id, failed) }) else null, animate)
                 is Item.Draft -> DraftCard(
                     item,
-                    canUndo = !item.undone && controller.composerFor(item, composer) != null,
+                    canUndo = DraftCards.canUndo(item, composer),
                     onShow = { controller.showDraft(item) },
                     onUndo = { controller.undoDraft(item) },
                     animate = animate,
@@ -571,7 +589,7 @@ private fun EmptyChat(
             Text(body, style = Rk.type.panelProse, color = c.ink2)
         }
         if (!blocked) {
-            val actions = controller.quickActions().filter { !it.hidden && it.applies(email != null, email?.unsubscribe == true) }
+            val actions = QuickActions.chips(controller.quickActions(), emailOpen = email != null, unsubscribe = email?.unsubscribe == true)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 actions.forEachIndexed { i, action ->
                     SuggestionChip(

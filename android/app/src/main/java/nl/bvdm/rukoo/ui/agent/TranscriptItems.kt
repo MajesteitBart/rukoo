@@ -748,12 +748,13 @@ private fun CodeField(f: ShownField) {
 @Composable
 private fun FoldableValue(f: ShownField, style: TextStyle, color: Color, code: Boolean) {
     val c = Rk.colors
-    val long = f.value.length > LONG_CHARS || f.value.lines().size > LONG_LINES
-    var unfolded by rememberSaveable(f.label, f.value) { mutableStateOf(false) }
+    val value = f.value.text()
+    val long = value.length > LONG_CHARS || value.lines().size > LONG_LINES
+    var unfolded by rememberSaveable(f.label, value) { mutableStateOf(false) }
     val folded = long && !unfolded
     SelectionContainer {
         Text(
-            f.value,
+            value,
             style = style,
             color = color,
             maxLines = if (folded) LONG_LINES else Int.MAX_VALUE,
@@ -985,11 +986,12 @@ fun DraftCard(item: Item.Draft, canUndo: Boolean, onShow: () -> Unit, onUndo: ()
             Box(Modifier.size(22.dp).background(if (undone) c.field else c.accentTint, RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
                 RkIcon(PanelIcons.named("pen", 2f), null, size = 12.dp, tint = if (undone) c.ink3 else c.accentInk)
             }
+            // Two lines: on the cover screen Dutch's "Ongedaan maken" leaves the title little room.
             Text(
                 AgentText.draft(item.mode).text(),
                 style = Rk.type.text13.medium.panel,
                 color = if (undone) c.ink3 else c.ink,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )

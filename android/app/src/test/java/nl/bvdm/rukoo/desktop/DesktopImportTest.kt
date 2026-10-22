@@ -23,6 +23,7 @@ import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.GoogleClient
 import nl.bvdm.rukoo.mail.model.ImportedAccount
+import nl.bvdm.rukoo.mail.model.MailPrefs
 import nl.bvdm.rukoo.mail.model.SortOrder
 import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.Density
@@ -60,12 +61,25 @@ class DesktopImportTest {
     }
 
     @Test
-    fun accountsOnTheGeneralSignatureGetItAsTheirOwn() {
+    fun accountsOnTheGeneralSignatureStayOnIt() {
         val (accounts, _) = DesktopImport.accounts(bundle)
-        // The phone has no general signature, so the computer's becomes the account's.
-        assertEquals("Bart van der Meeren", accounts[0].signature)
+        // The engine keeps the general signature, so an account without its own keeps using it.
+        assertNull(accounts[0].signature)
         assertNull(accounts[0].signatureHtml)
         assertEquals("Groet, Bart", accounts[1].signature)
+    }
+
+    @Test
+    fun mailPrefsJoinThePhonesAndTakeTheGeneralSignature() {
+        val exported = bundle.settings.copy(vips = listOf("Sanne@Example.nl", "anna@example.nl"), spam = listOf("deals@shop.example"))
+        val phone = MailPrefs(vips = listOf("anna@example.nl"), spam = emptyList(), signature = "Old", signatureHtml = "")
+        val next = DesktopImport.prefs(exported, phone)
+        assertEquals(listOf("anna@example.nl", "sanne@example.nl"), next.vips)
+        assertEquals(listOf("deals@shop.example"), next.spam)
+        assertEquals("Bart van der Meeren", next.signature)
+        assertEquals("", next.signatureHtml)
+        // A computer without a general signature leaves the phone's.
+        assertEquals("Old", DesktopImport.prefs(exported.copy(signature = "", signatureHtml = null), phone).signature)
     }
 
     @Test
@@ -159,6 +173,17 @@ class DesktopImportTest {
         override suspend fun setGoogleClient(client: GoogleClient) {
             this.client = client
         }
+
+        var mailPrefs = MailPrefs()
+        var refuseHtml = false
+
+        // As the real engine: an HTML signature it can't keep fails the whole update.
+        override suspend fun updatePrefs(transform: (MailPrefs) -> MailPrefs): MailPrefs {
+            val next = transform(mailPrefs)
+            if (refuseHtml && next.signatureHtml.isNotEmpty()) throw MailException("The signature is too large.", code = "signature")
+            mailPrefs = next
+            return next
+        }
     }
 
     private val identity = object : SecretCipher {
@@ -191,6 +216,21 @@ class DesktopImportTest {
         val app = settings.current()
         assertEquals("phone-acc-google", app.defaultAccountId)
         assertEquals(Language.NL, app.language)
+        // The general signature went to the engine, not onto the accounts.
+        assertEquals("Bart van der Meeren", mail.mailPrefs.signature)
+        assertNull(mail.imported!!.first { it.email == "bart@example.nl" }.signature)
+    }
+
+    @Test
+    fun aSignatureTheEngineRefusesLeavesTheListsAndItsText() = runBlocking {
+        val mail = FakeMail().apply { refuseHtml = true }
+        val (agents, settings) = stores()
+        val html = bundle.copy(settings = bundle.settings.copy(signatureHtml = "<p>Bart</p>", vips = listOf("sanne@example.nl")))
+        val result = DesktopImport.apply(html, pairing, mail, agents, settings, systemLanguage = "en")
+        assertEquals(listOf("sanne@example.nl"), mail.mailPrefs.vips)
+        assertEquals("Bart van der Meeren", mail.mailPrefs.signature)
+        assertEquals("", mail.mailPrefs.signatureHtml)
+        assertEquals(2, result.added.size)
     }
 
     @Test

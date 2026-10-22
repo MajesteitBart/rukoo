@@ -28,6 +28,7 @@ import nl.bvdm.rukoo.agents.model.AgentDescriptor
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.AgentState
 import nl.bvdm.rukoo.agents.model.AgentStatus
+import nl.bvdm.rukoo.agents.model.ComputerProgram
 import nl.bvdm.rukoo.desktop.DesktopErrors
 import nl.bvdm.rukoo.desktop.DesktopException
 import nl.bvdm.rukoo.desktop.HostAgentInfo
@@ -45,6 +46,8 @@ import nl.bvdm.rukoo.ui.components.SheetRow
 import nl.bvdm.rukoo.ui.components.Spinner
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.icons.RukooIcons
+import nl.bvdm.rukoo.ui.agent.AgentText
+import nl.bvdm.rukoo.ui.agent.text
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.theme.Rk
 
@@ -59,6 +62,7 @@ fun AgentsPage(app: AppViewModel, model: SetupModel, nav: SettingsNav) {
     val agents by s.agents.agents.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var defaultSheet by remember { mutableStateOf(false) }
+    val computers = stored.computers.associate { it.pairingId to it.name }
 
     SettingsPageBody {
         SettingsIntro(stringResource(R.string.settings_agents_help))
@@ -67,7 +71,7 @@ fun AgentsPage(app: AppViewModel, model: SetupModel, nav: SettingsNav) {
             val default = agents.firstOrNull { it.id == stored.defaultAgent }
             SettingsRow(
                 title = stringResource(R.string.settings_agents_default),
-                value = default?.let { agentLabel(it) } ?: stringResource(R.string.settings_agents_default_none),
+                value = default?.let { agentLabel(it, computers) } ?: stringResource(R.string.settings_agents_default_none),
                 onClick = { defaultSheet = true },
             )
             SettingsSwitchRow(
@@ -79,13 +83,13 @@ fun AgentsPage(app: AppViewModel, model: SetupModel, nav: SettingsNav) {
         }
         ClarkCard(app, model, stored, agents.firstOrNull { it.id == AgentIds.CLARK })
         OpenClawCard(app, model, stored, agents.firstOrNull { it.id == AgentIds.OPENCLAW })
-        ComputersCard(model, stored.computers, nav)
+        ComputersCard(model, stored.computers, agents, nav)
     }
 
     if (defaultSheet) {
         ChoiceSheet(
             title = stringResource(R.string.settings_agents_default),
-            choices = agents.filter { it.enabled }.map { Choice(it.id, agentLabel(it), stringResource(agentStateLabel(it.status.state))) },
+            choices = agents.filter { it.enabled }.map { Choice(it.id, agentLabel(it, computers), stringResource(agentStateLabel(it.status.state))) },
             selected = stored.defaultAgent,
             onSelect = { id -> scope.launch { s.agentSettings.update { it.copy(defaultAgent = id) } } },
             onDismiss = { defaultSheet = false },
@@ -93,8 +97,12 @@ fun AgentsPage(app: AppViewModel, model: SetupModel, nav: SettingsNav) {
     }
 }
 
-/** "Claude Code on desktop-zolder", or just the name for agents the phone reaches itself. */
-private fun agentLabel(agent: AgentDescriptor): String = if (agent.subtitle.isBlank()) agent.name else "${agent.name} ${agent.subtitle}"
+/** "Claude Code on desktop-zolder" in the interface language, or just the name for agents the phone reaches itself. */
+@Composable
+private fun agentLabel(agent: AgentDescriptor, computers: Map<String, String>): String {
+    val where = AgentText.place(agent, computers)?.text() ?: return agent.name
+    return "${agent.name} $where"
+}
 
 /** The status row of an agent card: the test result while there is one, else the hub's status. */
 @Composable
@@ -311,10 +319,11 @@ private fun FormButtons(testing: Boolean, dirty: Boolean, onSave: () -> Unit, on
     }
 }
 
-/** The paired computers, with their Claude Code and Codex status, and pairing another. */
+/** The paired computers, with their Claude Code and Codex status from the hub, and pairing another. */
 @Composable
-private fun ComputersCard(model: SetupModel, computers: List<PairedComputer>, nav: SettingsNav) {
+private fun ComputersCard(model: SetupModel, computers: List<PairedComputer>, agents: List<AgentDescriptor>, nav: SettingsNav) {
     val hellos by model.hellos.collectAsStateWithLifecycle()
+    val testing by model.testingComputers.collectAsStateWithLifecycle()
     var open by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(computers.map { it.pairingId }) { computers.forEach { model.refreshHello(it.pairingId) } }
     val locale = currentLocale()
@@ -326,11 +335,13 @@ private fun ComputersCard(model: SetupModel, computers: List<PairedComputer>, na
         }
         for (c in computers) {
             val state = hellos[c.pairingId]
+            val claude = agents.firstOrNull { it.id == AgentIds.computer(c.pairingId, ComputerProgram.CLAUDE) }
+            val codex = agents.firstOrNull { it.id == AgentIds.computer(c.pairingId, ComputerProgram.CODEX) }
             val seen = c.lastSeenAt?.let { stringResource(R.string.settings_computers_last_seen, formatDate(it, locale), formatTime(it, locale)) }
                 ?: stringResource(R.string.settings_computers_never_seen)
             SettingsRow(
                 title = c.name,
-                description = listOfNotNull(computerStatus(state), seen).joinToString("\n"),
+                description = listOfNotNull(computerStatus(state, claude, codex, c.pairingId in testing), seen).joinToString("\n"),
                 leading = { RowIcon(PanelIcons.Terminal) },
                 onClick = { open = c.pairingId },
             )
@@ -351,19 +362,25 @@ private fun ComputersCard(model: SetupModel, computers: List<PairedComputer>, na
     }
 }
 
-/** "Claude Code: Ready · Codex: Not installed", "Checking...", or why the computer didn't answer. */
+/**
+ * "Claude Code: Ready · Codex: Not installed" as the hub knows them, "Testing..." while Check runs, or why the
+ * computer itself turned the phone away (removed there, phones off), which goes for both of its agents.
+ */
 @Composable
-private fun computerStatus(state: SetupModel.HelloUi?): String? {
+private fun computerStatus(state: SetupModel.HelloUi?, claude: AgentDescriptor?, codex: AgentDescriptor?, testing: Boolean): String? {
     val hello = state?.hello
     val error = state?.error
+    val refused = when ((error as? DesktopException)?.code) {
+        DesktopErrors.UNAUTHORIZED -> stringResource(R.string.settings_computers_removed_there)
+        DesktopErrors.NOT_ENABLED -> stringResource(R.string.settings_computers_off_there)
+        else -> null
+    }
     return when {
+        refused != null -> refused
+        testing -> stringResource(R.string.settings_agents_testing)
+        claude != null && codex != null -> "Claude Code: ${stringResource(agentStateLabel(claude.status.state))} · Codex: ${stringResource(agentStateLabel(codex.status.state))}"
         hello != null -> "Claude Code: ${hostAgentLabel(hello.agents["claude"])} · Codex: ${hostAgentLabel(hello.agents["codex"])}"
-        error != null -> when ((error as? DesktopException)?.code) {
-            DesktopErrors.OFFLINE -> stringResource(R.string.settings_agent_status_offline)
-            DesktopErrors.UNAUTHORIZED -> stringResource(R.string.settings_computers_removed_there)
-            DesktopErrors.NOT_ENABLED -> stringResource(R.string.settings_computers_off_there)
-            else -> stringResource(R.string.settings_agent_status_unknown)
-        }
+        error != null -> stringResource(if ((error as? DesktopException)?.code == DesktopErrors.OFFLINE) R.string.settings_agent_status_offline else R.string.settings_agent_status_unknown)
         state?.loading == true -> stringResource(R.string.settings_server_checking)
         else -> null
     }
@@ -398,7 +415,7 @@ private fun ComputerSheet(model: SetupModel, c: PairedComputer, state: SetupMode
             hint = "http://${c.address}:${c.port}" + if (c.version.isNotBlank()) " · Rukoo ${c.version}" else "",
             icon = RukooIcons.Sync,
             onClick = {
-                model.refreshHello(c.pairingId)
+                model.testComputer(c.pairingId)
                 dismiss()
             },
         )
