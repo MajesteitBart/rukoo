@@ -734,7 +734,13 @@ class AppViewModel(
                 flushRecipients()
                 val open = services.composer.current()?.takeIf { it.id == d.id } ?: return@withLock
                 // Attachments an earlier save left pointing at a replaced copy are settled first, or nothing goes.
-                val current = settled(open) ?: return@withLock
+                // Settling can wait for the server while the composer is still editable: what goes is what it holds
+                // afterwards, not the copy from before.
+                if (open.rebind != null) {
+                    settled(open) ?: return@withLock
+                    flushRecipients()
+                }
+                val current = services.composer.current()?.takeIf { it.id == d.id && it.rebind == null } ?: return@withLock
                 sendProblem(current)?.let { return@withLock mailUi.toasts.showError(it) }
                 val accountId = sendAccount(current) ?: return@withLock
                 val from = current.from ?: defaultFrom(accountId) ?: return@withLock

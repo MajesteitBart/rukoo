@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import java.io.File
 import java.nio.file.Files
 import java.time.ZoneId
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -28,6 +29,7 @@ import nl.bvdm.rukoo.mail.MailException
 import nl.bvdm.rukoo.mail.compose.toOutgoing
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountPatch
+import nl.bvdm.rukoo.mail.model.FullMessage
 import nl.bvdm.rukoo.mail.model.OutgoingMessage
 import nl.bvdm.rukoo.mail.sync.MailNotifier
 import nl.bvdm.rukoo.ui.Mailto
@@ -524,6 +526,42 @@ class AppViewModelTest {
         val sent = s.mail.listMessages(MailView(ViewKind.SENT)).first { it.subject == "Fwd: Call on Thursday" }
         assertEquals(listOf("Proposal-v3.pdf"), s.mail.fullMessage(sent.id).attachments.map { it.filename })
         assertTrue(s.mail.listMessages(MailView(ViewKind.DRAFTS)).none { it.subject == "Fwd: Call on Thursday" })
+    }
+
+    @Test
+    fun sendAfterSettlingSendsWhatTheComposerHoldsThen() = runTest(main) {
+        val preview = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
+        var newCopy: String? = null
+        var offline = true
+        var gate: CompletableDeferred<Unit>? = null
+        val mail = object : MailEngine by preview {
+            override suspend fun saveDraft(message: OutgoingMessage): String? = preview.saveDraft(message).also { newCopy = it }
+
+            override suspend fun fullMessage(id: String): FullMessage {
+                if (id == newCopy) {
+                    if (offline) throw MailException("offline")
+                    gate?.await()
+                }
+                return preview.fullMessage(id)
+            }
+        }
+        val (s, vm) = setup(preview = preview, mail = mail)
+        val sanne = s.mail.listMessages(MailView.AllInboxes).first { it.subject == "Call on Thursday" }
+        val forward = s.mail.replyFields(sanne.id, ReplyKind.FORWARD).toComposerState().copy(to = listOf(Address("", "joris@example.com")))
+        val stored = s.mail.saveDraft(forward.toOutgoing("demo", Address("Demo User", "demo@example.com")))!!
+        vm.editDraft(stored)
+        s.composer.update { it.copy(body = "FYI", dirty = true) }
+        vm.saveDraft()
+        assertNotNull(s.composer.current()!!.rebind)
+        // Back online, but slow: while Send waits for the copy, the user takes the attachment off.
+        offline = false
+        gate = CompletableDeferred()
+        vm.send()
+        s.composer.update { it.copy(attachments = emptyList(), dirty = true) }
+        gate!!.complete(Unit)
+        assertNull(s.composer.current())
+        val sent = s.mail.listMessages(MailView(ViewKind.SENT)).first { it.subject == "Fwd: Call on Thursday" }
+        assertTrue(s.mail.fullMessage(sent.id).attachments.isEmpty())
     }
 
     @Test
