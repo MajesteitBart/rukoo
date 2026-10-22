@@ -352,6 +352,20 @@ class HttpDesktopLinkTest {
         assertEquals(TurnStatus.DONE, (got[4].host as HostEvent.Done).status)
     }
 
+    // Seen live: a turn that went out on a connection the computer had just closed failed before it was sent, and
+    // turns are never retried. Each turn now opens its own connection.
+    @Test
+    fun aTurnNeverReusesAPooledConnection() = runBlocking {
+        val c = paired()
+        server.enqueue(json(200, """{"desktop":{"name":"desktop-zolder","version":"1.4.0"},"pairingId":"${c.pairingId}","exportUntil":null,"agents":{}}"""))
+        link.hello(c.pairingId)
+        server.takeRequest()
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/x-ndjson").setBody("""{"seq":1,"type":"done","status":"done"}""" + "\n"))
+        link.startTurn(c.pairingId, HostTurnRequest("claude", HostConversation("c_1"), "in", "t")).toList()
+        // The first request on its connection, not one that hello's connection carried before.
+        assertEquals(0, server.takeRequest().sequenceNumber)
+    }
+
     @Test
     fun aRefusedTurnFailsTheFlow() = runBlocking {
         val c = paired()

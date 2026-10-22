@@ -28,6 +28,7 @@ import nl.bvdm.rukoo.core.RukooJson
 import nl.bvdm.rukoo.core.Tailnet
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -47,18 +48,24 @@ class HttpDesktopLink(
     private val device: () -> DeviceInfo,
     private val clock: Clock = Clock.System,
 ) : DesktopLink {
+    // Desktop Rukoo (Node's http server) closes a connection after 5 s without a request. Idle connections go
+    // before that, so a request never starts on one the computer already closed.
     private val client: OkHttpClient = http.newBuilder()
         .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
         .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .followRedirects(false)
+        .connectionPool(ConnectionPool(MAX_IDLE_CONNECTIONS, KEEP_ALIVE_S, TimeUnit.SECONDS))
         .build()
 
     // The computer pings every 15 s while a turn runs, so a read that waits longer than this means the link is gone.
     private val streams: OkHttpClient = client.newBuilder()
         .readTimeout(STREAM_READ_TIMEOUT_S, TimeUnit.SECONDS)
-        // A turn must not be sent twice: the computer would start it twice.
+        // A turn must not be sent twice: the computer would start it twice. So it isn't retried, and it always opens
+        // a connection of its own: a pooled one can have been closed by the computer a moment ago, and then the turn
+        // would fail before it was sent.
         .retryOnConnectionFailure(false)
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
         .build()
 
     override val computers: Flow<List<PairedComputer>> = store.settings.map { it.computers }.distinctUntilChanged()
@@ -318,6 +325,8 @@ class HttpDesktopLink(
 
         private const val CONNECT_TIMEOUT_S = 10L
         private const val READ_TIMEOUT_S = 30L
+        private const val MAX_IDLE_CONNECTIONS = 2
+        private const val KEEP_ALIVE_S = 4L
 
         /** Above the computer's 15 s heartbeat (spec 3 §7.6 step 7). */
         const val STREAM_READ_TIMEOUT_S = 45L
