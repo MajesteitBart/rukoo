@@ -272,7 +272,7 @@ class PreviewAgentHub(private val scope: CoroutineScope, private val clock: Cloc
         return get(id)?.takeIf { it.agent == identity.agent }
     }
 
-    override fun ensureConversation(identity: ToolIdentity, resolved: Conversation?, openMessageId: String?): Conversation {
+    override suspend fun ensureConversation(identity: ToolIdentity, resolved: Conversation?, openMessageId: String?): Conversation {
         if (resolved != null) return resolved
         val now = clock.now()
         val c = Conversation(

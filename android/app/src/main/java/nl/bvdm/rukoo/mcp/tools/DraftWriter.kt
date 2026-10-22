@@ -1,14 +1,10 @@
 package nl.bvdm.rukoo.mcp.tools
 
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -18,44 +14,13 @@ import nl.bvdm.rukoo.agents.model.DraftMode
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.Origin
 import nl.bvdm.rukoo.core.Unsafe
+import nl.bvdm.rukoo.mail.compose.ComposeBody
+import nl.bvdm.rukoo.mail.compose.ComposerFields
+import nl.bvdm.rukoo.mail.compose.ReplyBuilder
 import nl.bvdm.rukoo.mail.model.Address
-import nl.bvdm.rukoo.mail.model.FullMessage
-import nl.bvdm.rukoo.mail.model.Identity
-import nl.bvdm.rukoo.mail.model.OutgoingAttachment
 import nl.bvdm.rukoo.mail.model.ReplyKind
 import nl.bvdm.rukoo.ui.ComposerState
-
-/** The quote header lines a reply carries, in the user's language (desktop composer.quote.*). */
-interface DraftTexts {
-    fun marker(): String
-
-    fun from(sender: String): String
-
-    fun date(date: String): String
-
-    fun to(recipients: String): String
-
-    fun subject(subject: String): String
-
-    /** `<date> <HH:mm> (GMT±hh:mm)`, desktop's quoteDate. */
-    fun quoteDate(ms: Long, zone: ZoneId): String {
-        val at = Instant.ofEpochMilli(ms).atZone(zone)
-        val offset = at.offset.id.let { if (it == "Z") "+00:00" else it }
-        return "${DateTimeFormatter.ofPattern(datePattern()).format(at)} (GMT$offset)"
-    }
-
-    fun datePattern(): String = "dd-MM-yyyy HH:mm"
-
-    /** English, for tests and as the fallback; the app uses its string resources. */
-    object English : DraftTexts {
-        override fun marker() = "-------- Original message --------"
-        override fun from(sender: String) = "From: $sender"
-        override fun date(date: String) = "Date: $date"
-        override fun to(recipients: String) = "To: $recipients"
-        override fun subject(subject: String) = "Subject: $subject"
-        override fun datePattern() = "dd/MM/yyyy HH:mm"
-    }
-}
+import nl.bvdm.rukoo.ui.composer.Recipients
 
 /** The answer a background chat gets when the composer holds something it may not replace (desktop's `busy`). */
 private class ComposerBusy : Exception("The user is writing another email in the composer.")
@@ -66,10 +31,12 @@ private class ComposerBusy : Exception("The user is writing another email in the
  * renderer round trip: a chat that is not on screen never replaces the user's words or a composer that is about
  * something else; the chat on screen may, unless the user or another agent wrote in it. In the background the
  * draft still goes into the composer, and the hub's DraftWritten event lets the user open it from a notification.
+ *
+ * A reply, reply-all or forward starts from what the mail engine gives the composer (recipients, From, subject,
+ * quote, signature), so an agent's draft is the same composer the user would have opened. The agent's text goes
+ * above the signature, as on desktop.
  */
 internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLookup) {
-    private val writes = AtomicInteger()
-
     /**
      * Desktop gives the composer 20 seconds; finding and loading the email can wait for the server, so the whole
      * write has that limit here. The composer is only changed after the last wait, so a write that ran out of time
@@ -119,9 +86,10 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         // The phone's composer is plain text: the body as the user will see it.
         val bodyText = (if (format == "text") body else PlainText.fromHtml(html).replace(Regex("\\n{3,}"), "\n\n")).trim()
         val target = if (finalMode == "new") null else messageId
-        val source = target?.let { id ->
+        val kind = KINDS.getValue(finalMode)
+        val fields = target?.let { id ->
             try {
-                d.mail.fullMessage(id)
+                d.mail.replyFields(id, kind)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -129,27 +97,34 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             }
         }
         val agentName = d.hub.agentName(call.agent)
-        val shown = try {
-            place(c, finalMode, source, agentName, bodyText, to, cc, bcc, subject)
-        } catch (_: ComposerBusy) {
-            throw ToolError(
-                "The user is writing another email in Rukoo's composer, so the draft was not shown. Do not retry on your own: ask the user to finish or close that email, then write the draft again. You can put the text in the chat meanwhile.",
-            )
-        }
-        val key = "${shown.id}:${writes.incrementAndGet()}".take(100)
-        d.hub.addItem(
-            c.id,
-            Item.Draft(
-                id = "",
-                at = 0,
-                mode = DraftMode.entries.first { it.name.lowercase() == finalMode },
-                to = shown.to,
-                subject = shown.subject,
-                summary = bodyText.replace(Regex("\\s+"), " ").take(160),
-                messageRef = target,
-                composerKey = key,
-                undone = false,
-            ),
+        // On the composer's thread, and finished once started: a write the deadline stops halfway would leave a
+        // composer changed without its card.
+        val shown = withContext(NonCancellable + d.mainContext) {
+            val placed = try {
+                place(c, kind, fields, agentName, bodyText, to, cc, bcc, subject)
+            } catch (_: ComposerBusy) {
+                null
+            }
+            placed?.also { s ->
+                d.hub.addItem(
+                    c.id,
+                    Item.Draft(
+                        id = "",
+                        at = 0,
+                        mode = DraftMode.entries.first { it.name.lowercase() == finalMode },
+                        to = s.to,
+                        subject = s.subject,
+                        summary = bodyText.replace(Regex("\\s+"), " ").take(160),
+                        messageRef = target,
+                        // The composer that holds this draft. The composer's Undo and the card's Show and Undo compare
+                        // it with ComposerState.id.
+                        composerKey = s.id,
+                        undone = false,
+                    ),
+                )
+            }
+        } ?: throw ToolError(
+            "The user is writing another email in Rukoo's composer, so the draft was not shown. Do not retry on your own: ask the user to finish or close that email, then write the draft again. You can put the text in the chat meanwhile.",
         )
         // A reply's recipients and subject come from the email, so the agent gets them tagged; the card keeps them plain.
         return buildJsonObject {
@@ -169,14 +144,21 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         }
     }
 
+    /** The signature the composer put at the end of [state]'s text, with the empty line before it, or "". */
+    private fun signatureTail(state: ComposerState): String {
+        val sig = state.accountId?.let { d.mail.signatureFor(it) }?.text?.trim().orEmpty()
+        if (sig.isEmpty() || !state.body.trimEnd().endsWith(sig)) return ""
+        return "\n\n" + sig
+    }
+
     /**
      * Puts the draft in the composer, or throws [ComposerBusy]; returns what the composer holds now. Not a suspend
-     * function, so the write deadline can never stop it halfway.
+     * function, so nothing can stop it halfway.
      */
     private fun place(
         c: Conversation,
-        mode: String,
-        source: FullMessage?,
+        kind: ReplyKind,
+        fields: ComposerFields?,
         agentName: String,
         body: String,
         to: List<Address>?,
@@ -184,25 +166,24 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         bcc: List<Address>?,
         subject: String?,
     ): ComposerState {
-        val kind = KINDS.getValue(mode)
         val screen = d.screen.current
         // A chat that is not on screen, or one an agent started from elsewhere, never closes what the user is writing.
         val background = !(screen.foreground && screen.chatConversationId == c.id) || c.origin == Origin.EXTERNAL
         val current = d.composer.current()
-        var envelope: Pair<List<Address>, List<Address>>? = null
         if (current != null) {
             // This chat's agent wrote what is there.
             val mine = current.draftedBy != null &&
                 (if (current.draftedIn != null) current.draftedIn == c.id else current.draftedBy == agentName)
+            // The signature the composer started with is not the user's writing; the agent's text goes above it.
+            val tail = signatureTail(current)
+            val words = if (tail.isNotEmpty()) current.body.trimEnd().removeSuffix(tail.trim()).trimEnd() else current.body
             // The user's own words: typed since the composer opened, a draft they reopened, or an agent draft they
             // changed (the UI clears draftedBy then).
-            val theirs = current.draftedBy == null && (current.dirty || current.body.isNotBlank() || current.replyKind == ReplyKind.DRAFT)
-            val fit = fits(current, source, kind, mine, theirs)
+            val theirs = current.draftedBy == null && (current.dirty || words.isNotBlank() || current.replyKind == ReplyKind.DRAFT)
+            val fit = fits(current, fields, kind, mine, theirs)
             // A reopened draft keeps no record of reply or reply-all: recipients the agent left out follow the mode,
             // so a private reply never keeps the old Cc.
-            if (fit && current.replyKind == ReplyKind.DRAFT && source != null && (to == null || cc == null)) {
-                envelope = replyEnvelope(d.mail.identities(source.accountId), source, kind)
-            }
+            val envelope = if (fit && current.replyKind == ReplyKind.DRAFT && fields != null && (to == null || cc == null)) fields.to to fields.cc else null
             // A chat that is not on screen leaves the user's words alone even where it would fit; the chat on screen
             // may rewrite them, because the user just asked it to.
             if (background && theirs) throw ComposerBusy()
@@ -212,7 +193,7 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
                     cc = cc ?: envelope?.second ?: current.cc,
                     bcc = bcc ?: current.bcc,
                     subject = subject ?: current.subject,
-                    body = body,
+                    body = body + tail,
                     draftedBy = agentName,
                     draftedIn = c.id,
                     dirty = true,
@@ -227,26 +208,25 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
             // another agent) wrote in it.
             if (background || ((current.dirty || theirs) && !mine)) throw ComposerBusy()
         }
-        val fresh = build(kind, source, agentName, c.id, body, to, cc, bcc, subject)
+        val fresh = build(fields, agentName, c.id, body, to, cc, bcc, subject)
         d.composer.open(fresh)
         return fresh
     }
 
     // The open composer is the one this write is for: the same email in exactly the same mode, a reopened draft that
     // answers it (for reply or reply-all), or for a new email an open new message that is untouched or this chat's.
-    private fun fits(current: ComposerState, source: FullMessage?, kind: ReplyKind, mine: Boolean, theirs: Boolean): Boolean {
-        if (source == null) return current.replyKind == ReplyKind.NEW && (mine || !theirs)
+    private fun fits(current: ComposerState, fields: ComposerFields?, kind: ReplyKind, mine: Boolean, theirs: Boolean): Boolean {
+        if (fields == null) return current.replyKind == ReplyKind.NEW && (mine || !theirs)
         if (current.replyKind == ReplyKind.DRAFT) {
             return (kind == ReplyKind.REPLY || kind == ReplyKind.REPLY_ALL) && !current.inReplyTo.isNullOrEmpty() &&
-                MailLookup.normId(current.inReplyTo) == MailLookup.normId(source.messageId)
+                MailLookup.normId(current.inReplyTo) == MailLookup.normId(fields.inReplyTo)
         }
-        return current.sourceMessageId == source.id && current.replyKind == kind
+        return current.sourceMessageId == fields.sourceMessageId && current.replyKind == kind
     }
 
-    /** A new composer for [kind], filled in from [source] the way the composer does it (spec 4 §3.6). */
+    /** A new composer: the engine's reply or forward fields, or a new email from the default account, with the agent's text. */
     private fun build(
-        kind: ReplyKind,
-        source: FullMessage?,
+        fields: ComposerFields?,
         agentName: String,
         conversationId: String,
         body: String,
@@ -255,72 +235,46 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         bcc: List<Address>?,
         subject: String?,
     ): ComposerState {
-        if (source == null) {
+        if (fields == null) {
             val accountId = d.defaultAccountId()?.takeIf { id -> lookup.accounts().any { it.id == id } } ?: lookup.accounts().firstOrNull()?.id
             val account = lookup.account(accountId)
-            val ids = accountId?.let { d.mail.identities(it) }.orEmpty()
-            val from = (ids.firstOrNull { it.address.equals(account?.defaultFrom, ignoreCase = true) } ?: ids.firstOrNull { it.primary } ?: ids.firstOrNull())
-                ?.let { Address(it.name, it.address) }
+            val from = account?.let { ReplyBuilder.defaultIdentity(it, d.mail.identities(it.id)) }?.let { Address(it.name, it.address) }
+            val signature = accountId?.let { ComposeBody.initialText(d.mail.signatureFor(it)) }.orEmpty()
             return ComposerState(
                 accountId = accountId, from = from, to = to.orEmpty(), cc = cc.orEmpty(), bcc = bcc.orEmpty(),
-                subject = subject.orEmpty(), body = body, replyKind = ReplyKind.NEW, draftedBy = agentName, draftedIn = conversationId, dirty = true,
+                subject = subject.orEmpty(), body = body + signature, replyKind = ReplyKind.NEW, draftedBy = agentName, draftedIn = conversationId, dirty = true,
             )
         }
-        val ids = d.mail.identities(source.accountId)
-        val account = lookup.account(source.accountId)
-        val reply = kind == ReplyKind.REPLY || kind == ReplyKind.REPLY_ALL
-        val envelope = if (reply) replyEnvelope(ids, source, kind) else emptyList<Address>() to emptyList()
-        return ComposerState(
-            accountId = source.accountId,
-            from = replyFrom(ids, source, account?.defaultFrom)?.let { Address(it.name, it.address) },
-            to = to ?: envelope.first,
-            cc = cc ?: envelope.second,
-            bcc = bcc.orEmpty(),
-            subject = subject ?: prefixed(source.subject, if (reply) "Re" else "Fwd"),
-            body = body,
-            quote = quote(source),
-            replyKind = kind,
-            sourceMessageId = source.id,
-            inReplyTo = if (reply) source.messageId else null,
-            references = if (reply) (source.references + listOfNotNull(source.messageId)).filter { it.isNotEmpty() } else emptyList(),
-            // A forward takes the attachments along; the engine fetches them from the source when it sends.
-            attachments = if (kind == ReplyKind.FORWARD) {
-                source.attachments.map { OutgoingAttachment(it.filename, it.contentType, path = "", size = it.size, sourceMessageId = source.id, sourceIndex = it.index) }
-            } else {
-                emptyList()
-            },
+        // fields.body is what the composer starts with: the account's signature after an empty line, or nothing.
+        return fields.toComposerState().copy(
+            to = to ?: fields.to,
+            cc = cc ?: fields.cc,
+            bcc = bcc ?: fields.bcc,
+            subject = subject ?: fields.subject,
+            body = body + fields.body,
             draftedBy = agentName,
             draftedIn = conversationId,
             dirty = true,
         )
     }
 
-    private fun quote(m: FullMessage): String {
-        val t = d.texts
-        val lines = mutableListOf(
-            t.marker(),
-            t.from(m.from.display()),
-            t.date(t.quoteDate(m.date, d.zone())),
-            t.to(m.to.joinToString(", ") { it.display() }),
-        )
-        if (m.cc.isNotEmpty()) lines += "Cc: ${m.cc.joinToString(", ") { it.display() }}"
-        lines += t.subject(m.subject)
-        return lines.joinToString("\n") + "\n\n" + m.text
-    }
-
     /** get_draft: the composer now, the user's edits included, or {open: false}. */
     fun current(): JsonObject = d.composer.current()?.let(::view) ?: buildJsonObject { put("open", false) }
 
-    /** The composer as agents see it: a reply's recipients and subject come from the email, so they are tagged. */
+    /**
+     * The composer as agents see it: a reply's recipients and subject come from the email, so they are tagged.
+     * Recipient text the user typed but didn't finish counts, as Send would turn it into recipients.
+     */
     fun view(state: ComposerState): JsonObject {
         val text = state.body
+        fun with(list: List<Address>, field: String) = Recipients.merge(list, Recipients.parse(state.typed[field].orEmpty()))
         return buildJsonObject {
             put("open", true)
             put("mode", MODE_NAMES.getValue(state.replyKind))
             put("from", state.from?.address?.ifEmpty { null })
-            put("to", MailLookup.people(state.to))
-            put("cc", MailLookup.people(state.cc))
-            put("bcc", MailLookup.people(state.bcc))
+            put("to", MailLookup.people(with(state.to, "to")))
+            put("cc", MailLookup.people(with(state.cc, "cc")))
+            put("bcc", MailLookup.people(with(state.bcc, "bcc")))
             put("subject", Unsafe.value(state.subject))
             put("text", text.take(MailLookup.TEXT_MAX))
             put("truncated", text.length > MailLookup.TEXT_MAX)
@@ -362,44 +316,6 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
                 }
             }
             return out
-        }
-
-        fun prefixed(subject: String, prefix: String): String {
-            val re = if (prefix == "Re") Regex("^(re|antw|aw)\\s*:", RegexOption.IGNORE_CASE) else Regex("^(fwd?|doorst)\\s*:", RegexOption.IGNORE_CASE)
-            return if (re.containsMatchIn(subject.trim())) subject else "$prefix: $subject"
-        }
-
-        private fun same(a: String?, b: String?) = a.orEmpty().trim().equals(b.orEmpty().trim(), ignoreCase = true)
-
-        private fun uniq(list: List<Address>): List<Address> {
-            val seen = HashSet<String>()
-            return list.filter { it.address.isNotBlank() && seen.add(it.address.trim().lowercase()) }
-        }
-
-        /** desktop replyEnvelope (composer.js): who a reply goes to. A reply never fills Cc. */
-        fun replyEnvelope(ids: List<Identity>, m: FullMessage, kind: ReplyKind): Pair<List<Address>, List<Address>> {
-            fun own(address: String?) = ids.any { same(it.address, address) }
-            val fromSelf = own(m.from.address)
-            var to = if (fromSelf) m.to else m.replyTo.ifEmpty { listOf(m.from) }.filter { it.address.isNotBlank() }
-            var cc = emptyList<Address>()
-            if (kind == ReplyKind.REPLY_ALL) {
-                val extra = if (fromSelf) emptyList() else m.to.filter { !own(it.address) }
-                to = uniq(to + extra)
-                cc = uniq(m.cc.filter { a -> !own(a.address) && to.none { same(it.address, a.address) } })
-            }
-            return to to cc
-        }
-
-        /**
-         * desktop replyFrom: the identity that sent the original, else the first alias it was sent to, else the
-         * account address if it was sent there, else the default From.
-         */
-        fun replyFrom(ids: List<Identity>, m: FullMessage, defaultFrom: String?): Identity? {
-            ids.firstOrNull { same(it.address, m.from.address) }?.let { return it }
-            val sentTo = m.to + m.cc
-            ids.filter { !it.primary }.firstOrNull { i -> sentTo.any { same(it.address, i.address) } }?.let { return it }
-            ids.firstOrNull { i -> i.primary && sentTo.any { same(it.address, i.address) } }?.let { return it }
-            return ids.firstOrNull { same(it.address, defaultFrom) } ?: ids.firstOrNull { it.primary } ?: ids.firstOrNull()
         }
     }
 }

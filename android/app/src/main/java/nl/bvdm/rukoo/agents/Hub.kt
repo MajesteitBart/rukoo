@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -87,7 +86,6 @@ import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.FullMessage
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageIds
-import nl.bvdm.rukoo.mail.model.UnsubscribeResult
 import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.ui.ScreenState
 
@@ -113,7 +111,7 @@ class Hub(
     /** The phone's MCP endpoint while it serves Rukoo's tools, for turns on a paired computer. */
     private val mcpUrl: () -> String? = { null },
     /** Opens the unsubscribe page in the browser, or the unsubscribe email in the composer. */
-    openUnsubscribe: suspend (UnsubscribeResult) -> Boolean = { false },
+    unsubscribe: UnsubscribeOpener = UnsubscribeOpener.None,
     private val clock: Clock = Clock.System,
     /** Lists the debug builds' scripted agent. */
     private val includeFake: Boolean = false,
@@ -122,7 +120,7 @@ class Hub(
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : AgentHub {
     private val file = File(dataDir, ConversationStore.FILE_NAME)
-    private val mailActions = MailActions(mail, openUnsubscribe)
+    private val mailActions = MailActions(mail, unsubscribe)
 
     private val lock = Any()
     private var depth = 0
@@ -233,7 +231,7 @@ class Hub(
     }
 
     /** Waits until conversations.json was read. */
-    suspend fun ready() = loaded.await()
+    override suspend fun ready() = loaded.await()
 
     // ---------- state ----------
 
@@ -799,12 +797,12 @@ class Hub(
 
     override suspend fun models(agent: String, refresh: Boolean): ModelOptions {
         if (!AgentIds.isKnown(agent)) throw AgentException(ErrorCodes.INVALID, "unknown agent")
-        return cachedList(modelLists, agent, refresh, MODELS_TTL_MS, MODELS_RETRY_MS, { it.error != null }) { loadModels(agent) }
+        return cachedList(modelLists, agent, refresh, MODELS_TTL_MS, MODELS_RETRY_MS, { it.error != null }) { loadModels(agent, refresh) }
     }
 
     override suspend fun ownSkills(agent: String, refresh: Boolean): OwnSkills {
         if (!AgentIds.isKnown(agent)) throw AgentException(ErrorCodes.INVALID, "unknown agent")
-        return cachedList(skillLists, agent, refresh, OWN_SKILLS_TTL_MS, OWN_SKILLS_RETRY_MS, { it.error != null }) { loadOwnSkills(agent) }
+        return cachedList(skillLists, agent, refresh, OWN_SKILLS_TTL_MS, OWN_SKILLS_RETRY_MS, { it.error != null }) { loadOwnSkills(agent, refresh) }
     }
 
     // A list stays good for its TTL; asked with refresh (a menu opened), or after a failure, it is loaded again
@@ -857,13 +855,16 @@ class Hub(
             throw AgentException(ErrorCodes.UNKNOWN, "$agent cannot list its $what")
         }
 
-    private suspend fun loadModels(agent: String): ModelOptions {
+    // [refresh] goes on to the adapter: a computer then lists afresh too, instead of from its own cache.
+    private suspend fun loadModels(agent: String, refresh: Boolean): ModelOptions {
         val settingsModel = settingsModel(agent).trim()
         var res: ModelOptions? = null
         var error: AgentErrorInfo? = null
         try {
             val adapter = adapterOrThrow(agent, "models")
-            res = timed(MODELS_TIMEOUT_MS) { adapter.models() }
+            res = timed(MODELS_TIMEOUT_MS) { adapter.models(refresh) }
+            // A computer reports its agent's failure inside the list it answers with, as desktop's loadModels does.
+            error = res.error?.let(::toError)
         } catch (e: AgentException) {
             error = toError(e)
         } catch (e: CancellationException) {
@@ -902,10 +903,10 @@ class Hub(
         )
     }
 
-    private suspend fun loadOwnSkills(agent: String): OwnSkills = try {
+    private suspend fun loadOwnSkills(agent: String, refresh: Boolean): OwnSkills = try {
         if (!agentEnabled(agent)) throw AgentException(ErrorCodes.DISABLED, "$agent is turned off")
         val adapter = adapterOrThrow(agent, "skills")
-        OwnSkills(agent, OwnSkillMentions.cleanList(timed(OWN_SKILLS_TIMEOUT_MS) { adapter.skills() }), null)
+        OwnSkills(agent, OwnSkillMentions.cleanList(timed(OWN_SKILLS_TIMEOUT_MS) { adapter.skills(refresh) }), null)
     } catch (e: AgentException) {
         OwnSkills(agent, emptyList(), toError(e))
     } catch (e: CancellationException) {
@@ -1232,11 +1233,13 @@ class Hub(
         }
     }
 
-    // A computer turn gets the phone's MCP endpoint and the token the phone made for that computer.
+    // A computer turn gets the phone's MCP endpoint and the token the phone made for that computer: both, or
+    // neither. The computer refuses a turn whose grant has no token, where it would run one without tools.
     private fun grantFor(c: Conversation): McpGrant {
         val (pairing, _) = AgentIds.parseComputer(c.agent) ?: return McpGrant()
         val computer = settings.current().computer(pairing) ?: return McpGrant()
-        val url = mcpUrl() ?: return McpGrant()
+        val url = mcpUrl()?.takeIf { it.isNotEmpty() } ?: return McpGrant()
+        if (computer.mcpToken.isEmpty()) return McpGrant()
         return McpGrant(url, computer.mcpToken)
     }
 
@@ -1529,12 +1532,14 @@ class Hub(
                 own(Item.Notice(Ids.itemId(), now, ErrorCodes.TEXT.getValue(err.code), err.detail, Tone.ERROR, err.code))
             }
             is AdapterEvent.Notice -> {
-                // Informational lines from an adapter, e.g. "Hermes started a new session".
+                // Informational lines from an adapter, e.g. "Hermes started a new session". The params are what the UI
+                // words a coded notice with in the user's language (the card title of approval-too-long).
                 val text = ToolLabels.oneLine(event.text).take(500)
                 if (text.isEmpty()) return@locked
                 endThinking()
                 endText()
-                own(Item.Notice(Ids.itemId(), now, text, tone = event.tone, code = event.code))
+                val params = event.params?.let { NoticeParams(it.title?.take(200)) }
+                own(Item.Notice(Ids.itemId(), now, text, tone = event.tone, code = event.code, params = params))
             }
             // Token counts and anything newer: ignored.
             AdapterEvent.Usage -> Unit
@@ -1947,13 +1952,15 @@ class Hub(
     private fun metaString(meta: JsonObject?, key: String): String? =
         (meta?.get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotEmpty() }
 
-    override fun ensureConversation(identity: ToolIdentity, resolved: Conversation?, openMessageId: String?): Conversation {
+    override suspend fun ensureConversation(identity: ToolIdentity, resolved: Conversation?, openMessageId: String?): Conversation {
         if (resolved != null) return resolved
         // A computer forwards calls of the phone chat it runs; when that chat is gone the call must not land in
         // another one (spec 3 §7.9), and an agent the phone doesn't know gets no chat of its own.
         if (identity.computer != null || !AgentIds.isKnown(identity.agent)) throw AgentException(ErrorCodes.INVALID, "unknown conversation")
-        // The open email's headers come from the mail cache; tools call this from their own threads.
-        val open = openMessageId?.let { id -> runBlocking { withTimeoutOrNull(MAIL_LOOKUP_MS) { summaryOf(id) } } }
+        // The agent's recent chat may still be loading; a new one made now would be saved over the stored ones.
+        loaded.await()
+        // The open email's headers come from the mail cache, outside the lock.
+        val open = openMessageId?.let { id -> withTimeoutOrNull(MAIL_LOOKUP_MS) { summaryOf(id) } }
         return locked {
             externalForLocked(identity.agent, open?.id, open?.messageId, open?.accountId)?.let { return@locked it }
             val ref = open?.let { MessageRef(it.id, it.messageId, it.accountId, it.subject, it.from, it.date.takeIf { d -> d != 0L }, inReplyTo = it.inReplyTo) }

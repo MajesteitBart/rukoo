@@ -59,7 +59,6 @@ import nl.bvdm.rukoo.desktop.HostFile
 import nl.bvdm.rukoo.desktop.HostMcp
 import nl.bvdm.rukoo.desktop.HostSkill
 import nl.bvdm.rukoo.desktop.HostTurnRequest
-import nl.bvdm.rukoo.mcp.McpStatus
 
 /** `/hello` per paired computer, kept 30 s and shared by its Claude Code and Codex, so a status refresh asks once. */
 internal class HelloCache(private val desktop: DesktopLink, private val scope: CoroutineScope, private val clock: Clock, private val ttlMs: Long = 30_000) {
@@ -86,8 +85,6 @@ class ComputerAdapter internal constructor(
     private val program: ComputerProgram,
     private val settings: () -> AgentSettings,
     private val desktop: DesktopLink,
-    /** The phone's MCP server now: its [McpStatus.url] goes to the computer as mcp.url. */
-    private val mcp: () -> McpStatus,
     private val hello: HelloCache,
     /** The app's scope: a stop for the computer outlives the turn that was cancelled. */
     private val scope: CoroutineScope,
@@ -150,19 +147,21 @@ class ComputerAdapter internal constructor(
         return AgentStatus(if (state == AgentState.CHECKING) AgentState.UNKNOWN else state, info.detail)
     }
 
-    override suspend fun models(): ModelOptions {
+    // [refresh] reaches the computer, which then lists afresh instead of from its own cache (10 minutes for models).
+    // A list the computer answers with an error keeps it; the hub reads it there, as desktop's loadModels does.
+    override suspend fun models(refresh: Boolean): ModelOptions {
         val c = ready()
         return try {
-            desktop.models(pairingId, program.wire).copy(agent = id)
+            desktop.models(pairingId, program.wire, refresh).copy(agent = id)
         } catch (e: DesktopException) {
             throw agentError(e, c.name)
         }
     }
 
-    override suspend fun skills(): List<OwnSkill> {
+    override suspend fun skills(refresh: Boolean): List<OwnSkill> {
         val c = ready()
         val list = try {
-            desktop.skills(pairingId, program.wire)
+            desktop.skills(pairingId, program.wire, refresh)
         } catch (e: DesktopException) {
             throw agentError(e, c.name)
         }
@@ -203,8 +202,8 @@ class ComputerAdapter internal constructor(
 
     /** The request of spec 3 §7.6, within the limits the computer checks, so it isn't refused for size. */
     internal suspend fun request(turn: TurnHandle, computer: PairedComputer): HostTurnRequest {
-        val url = mcp().url
-        val grant = if (url != null && computer.mcpToken.isNotEmpty()) HostMcp(url, computer.mcpToken) else null
+        // The hub hands out the phone's endpoint and this computer's token together, or neither.
+        val grant = turn.mcp.takeIf { it.url.isNotEmpty() && it.token.isNotEmpty() }?.let { HostMcp(it.url, it.token) }
         val conversation = turn.conversation
         val provider = listOf("sessionId", "threadId").mapNotNull { k -> conversation.provider[k]?.takeIf { it.isNotEmpty() }?.let { k to it } }.toMap()
         return HostTurnRequest(
@@ -351,10 +350,16 @@ class ComputerAdapter internal constructor(
                     // Undispatched: the card is up before the next line, which may already expire it.
                     h.status == ApprovalStatus.PENDING -> runScope.launch(start = CoroutineStart.UNDISPATCHED) { guarded("approval") { approve(h) } }
                     h.declinedBy == "rukoo" -> {
-                        // The computer declined it without asking, because a value was too long to show in full.
+                        // The computer declined it without asking, because a value was too long to show in full. Its
+                        // card keeps the cut counts, so the hub records it as a local turn's: the denied card and the
+                        // notice. It is settled, so the refusal the hub answers with goes nowhere.
                         settled.add(h.approvalId)
-                        val title = Unsafe.untag(h.card.title)
-                        turn.emit(AdapterEvent.Notice(texts.get(R.string.adapters_approval_too_long, title), Tone.INFO, "approval-too-long", NoticeParams(title.take(200))))
+                        if (h.card.fields.any { (it.truncated ?: 0) > 0 }) {
+                            runScope.launch(start = CoroutineStart.UNDISPATCHED) { guarded("approval") { approve(h) } }
+                        } else {
+                            val title = Unsafe.untag(h.card.title)
+                            turn.emit(AdapterEvent.Notice(texts.get(R.string.adapters_approval_too_long, title), Tone.INFO, "approval-too-long", NoticeParams(title.take(200))))
+                        }
                     }
                     else -> settled.add(h.approvalId)
                 }

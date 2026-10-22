@@ -3,7 +3,10 @@ package nl.bvdm.rukoo.agents.adapters
 import android.content.ContextWrapper
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import nl.bvdm.rukoo.agents.AdapterDeps
+import nl.bvdm.rukoo.agents.AgentHub
+import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.agents.AgentSettingsStore
 import nl.bvdm.rukoo.agents.PairedComputer
 import nl.bvdm.rukoo.agents.model.AdapterEvent
@@ -18,8 +21,13 @@ import nl.bvdm.rukoo.agents.model.TurnStatus
 import nl.bvdm.rukoo.agents.preview.PreviewAgentHub
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretCipher
+import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mail.model.Address
-import nl.bvdm.rukoo.mcp.StubMcpController
+import nl.bvdm.rukoo.mail.model.MessageIds
+import nl.bvdm.rukoo.mcp.tools.McpTools
+import nl.bvdm.rukoo.mcp.tools.ToolDeps
+import nl.bvdm.rukoo.ui.ComposerController
+import nl.bvdm.rukoo.ui.ScreenState
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -30,12 +38,26 @@ import org.junit.Test
 
 class FakeAdapterTest {
     private val scope = testScope()
-    private val hub = PreviewAgentHub(scope, Clock.System)
-    private fun fake(id: String = AgentIds.FAKE) = FakeAdapter(id, HubFakeTools { hub }, { hub }, scale = 0.01)
+    private val preview = PreviewAgentHub(scope, Clock.System)
 
+    // The preview hub as the chat store, with the fake agent turned on as debug builds have it.
+    private val hub = object : AgentHub by preview {
+        override fun agentEnabled(agent: String) = agent == AgentIds.FAKE || preview.agentEnabled(agent)
+
+        override fun agentName(agent: String) = if (agent == AgentIds.FAKE) "Test agent" else preview.agentName(agent)
+    }
+    private val composer = ComposerController()
+
+    // The phone's real tools, as the app hands them to the fake agent.
+    private val tools = McpTools(ToolDeps(PreviewMailEngine(Clock.System), hub, ScreenState(Clock.System), composer, { AgentSettings() }))
+    private val fakeTools = FakeTools { identity, name, args -> tools.callTool(identity, name, args, JsonObject(emptyMap())) }
+
+    private fun fake(id: String = AgentIds.FAKE) = FakeAdapter(id, fakeTools, { hub }, scale = 0.01)
+
+    // Sanne's "Call on Thursday" in the demo mailbox.
     private suspend fun chat() = hub.create(
         AgentIds.FAKE,
-        MessageRef(id = "demo:INBOX:1", messageId = "<call@example.com>", subject = "Call on Thursday", from = Address("Sanne de Vries", "sanne@example.com")),
+        MessageRef(id = MessageIds.encode("demo", "INBOX", 12), messageId = "<demo-13@example.com>", subject = "Call on Thursday", from = Address("Sanne de Vries", "sanne@example.com")),
     )
 
     @Test
@@ -113,7 +135,9 @@ class FakeAdapterTest {
         val brief = RecordingTurn(conversation = c, action = "brief")
         fake().runTurn(brief)
         val sources = hub.get(c.id)!!.items.filterIsInstance<Item.Sources>().single()
-        assertEquals(listOf("Sanne (CRM)", "Call notes"), sources.sources.map { it.title })
+        // The real search found Sanne's other email; it leads the list.
+        assertEquals(listOf("Email", "CRM", "Obsidian"), sources.sources.map { it.source })
+        assertEquals(listOf("Sanne (CRM)", "Call notes"), sources.sources.drop(1).map { it.title })
         assertTrue(brief.text().startsWith("Sanne wants a call on Thursday"))
 
         val reply = RecordingTurn(conversation = c, action = "reply")
@@ -122,11 +146,17 @@ class FakeAdapterTest {
         assertEquals("Re: Call on Thursday", draft.subject)
         assertEquals(listOf("sanne@example.com"), draft.to.map { it.address })
         assertTrue(reply.text().endsWith("Done. The draft is in the composer."))
+        // write_draft put it in the phone's composer, as the agent's.
+        val open = composer.current()!!
+        assertEquals("Test agent", open.draftedBy)
+        assertEquals(c.id, open.draftedIn)
+        assertEquals(open.id, draft.composerKey)
+        assertTrue(open.body.startsWith("Hi Sanne,"))
     }
 
     @Test
     fun withoutAHubTheToolsSayTheyAreNotConnected() = runBlocking {
-        val a = FakeAdapter(AgentIds.FAKE, HubFakeTools { null }, scale = 0.01)
+        val a = FakeAdapter(AgentIds.FAKE, FakeTools.None, scale = 0.01)
         val turn = RecordingTurn(action = "reply")
         assertEquals(TurnStatus.DONE, a.runTurn(turn).status)
         assertTrue(turn.text().contains("I could not put the draft in the composer: Rukoo's tools are not connected to the fake agent"))
@@ -162,7 +192,6 @@ class DefaultAdapterFactoryTest {
         context = ContextWrapper(null),
         settings = store,
         desktop = ScriptedDesktop(),
-        mcp = StubMcpController(),
         http = OkHttpClient(),
         clock = Clock.System,
         filesDir = dir,

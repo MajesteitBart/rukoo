@@ -88,14 +88,14 @@ class OpenClawAdapter internal constructor(
      * OpenClaw's /v1/models lists agents, not backend models, and the gateway has no list of those over HTTP. So the
      * menu offers Default and the model in Settings (x-openclaw-model); Chat Completions takes no reasoning effort.
      */
-    override suspend fun models(): ModelOptions {
+    override suspend fun models(refresh: Boolean): ModelOptions {
         val s = s()
         ready(s)
         return ModelOptions(agent = id, defaultModel = s.model)
     }
 
     /** The gateway has no endpoint that lists an agent's skills; OpenClaw still uses its skills on its own. */
-    override suspend fun skills(): List<OwnSkill> {
+    override suspend fun skills(refresh: Boolean): List<OwnSkill> {
         ready(s())
         return emptyList()
     }

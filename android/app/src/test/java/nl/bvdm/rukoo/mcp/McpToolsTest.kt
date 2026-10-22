@@ -4,9 +4,6 @@ import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.util.Base64
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -20,6 +17,11 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import nl.bvdm.rukoo.agents.AgentSettings
+import nl.bvdm.rukoo.agents.ComposerUnsubscribeOpener
+import nl.bvdm.rukoo.agents.FileSkillTree
+import nl.bvdm.rukoo.agents.Fixtures
+import nl.bvdm.rukoo.agents.MailActions
+import nl.bvdm.rukoo.agents.RukooSkills
 import nl.bvdm.rukoo.agents.ToolIdentity
 import nl.bvdm.rukoo.agents.model.ApprovalKind
 import nl.bvdm.rukoo.agents.model.ChatFile
@@ -28,19 +30,19 @@ import nl.bvdm.rukoo.agents.model.DraftMode
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.MessageRef
 import nl.bvdm.rukoo.agents.model.Origin
-import nl.bvdm.rukoo.agents.model.RukooSkill
 import nl.bvdm.rukoo.agents.model.TaskStatus
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.mail.MailEngine
+import nl.bvdm.rukoo.mail.compose.ComposeBody
+import nl.bvdm.rukoo.mail.compose.ComposerFields
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mail.model.Address
-import nl.bvdm.rukoo.mail.model.FullMessage
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageIds
 import nl.bvdm.rukoo.mail.model.MessageSummary
 import nl.bvdm.rukoo.mail.model.ReplyKind
+import nl.bvdm.rukoo.mail.model.Signature
 import nl.bvdm.rukoo.mail.model.UnsubscribeResult
-import nl.bvdm.rukoo.mcp.tools.HubSkillSource
 import nl.bvdm.rukoo.mcp.tools.McpTools
 import nl.bvdm.rukoo.mcp.tools.ToolDeps
 import nl.bvdm.rukoo.ui.ComposerController
@@ -66,14 +68,18 @@ class McpToolsTest {
     private val composer = ComposerController()
     private var agentSettings = AgentSettings()
     private val opened = mutableListOf<String>()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private val tools = McpTools(
-        ToolDeps(
-            mail = mail, hub = hub, screen = screen, composer = composer, agentSettings = { agentSettings },
-            skills = HubSkillSource(hub), scope = scope, zone = { zone }, clock = clock,
-            opener = { url -> opened += url; true },
-        ),
+        ToolDeps(mail = mail, hub = hub, screen = screen, composer = composer, agentSettings = { agentSettings }, zone = { zone }, clock = clock),
     )
+
+    // The hub runs mail actions, with the app's opener for the composer and the browser.
+    private fun hubRuns(engine: MailEngine) {
+        hub.mail = MailActions(engine, ComposerUnsubscribeOpener(engine, composer, { url -> opened += url; true }))
+    }
+
+    init {
+        hubRuns(mail)
+    }
 
     private val call = MessageIds.encode("demo", "INBOX", 12) // Sanne's "Call on Thursday", <demo-13@example.com>
     private val contractA = MessageIds.encode("demo", "INBOX", 3)
@@ -185,7 +191,7 @@ class McpToolsTest {
                 return found + found.map { it.copy(id = MessageIds.encode("demo", "Sent", 99), folder = "Sent") }
             }
         }
-        val other = McpTools(ToolDeps(twoCopies, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope))
+        val other = McpTools(ToolDeps(twoCopies, hub, screen, composer, { agentSettings }))
         val error = runBlocking {
             other.callTool(clark, "read_message", Json.parseToJsonElement("""{"message_id":"<demo-13@example.com>"}""").jsonObject, JsonObject(emptyMap()))
         }.error()
@@ -256,12 +262,15 @@ class McpToolsTest {
         assertEquals("Clark", state.draftedBy)
         assertEquals("c_1", state.draftedIn)
         assertEquals("demo@example.com", state.from?.address)
-        assertTrue(state.quote.startsWith("-------- Original message --------\nFrom: Sanne de Vries <sanne@example.com>\nDate: "))
+        // The engine's quote block, the one the composer gets for a reply the user starts.
+        assertEquals(runBlocking { mail.replyFields(call, ReplyKind.REPLY) }.quote, state.quote)
+        assertTrue(state.quote.contains("data-rukoo-quote"))
         val item = hub.items("c_1").last() as Item.Draft
         assertEquals(DraftMode.REPLY, item.mode)
         assertEquals("Re: Call on Thursday", item.subject)
         assertEquals(call, item.messageRef)
-        assertTrue(item.composerKey!!.startsWith(state.id + ":"))
+        // The key the composer's Undo and the card compare: the composer's own id.
+        assertEquals(state.id, item.composerKey)
 
         // A second write rewrites the same composer; reply-all brings Joris in on Cc.
         run("write_draft", """{"conversation_id":"c_1","mode":"reply_all","body":"All of us.","format":"text"}""").data()
@@ -269,6 +278,33 @@ class McpToolsTest {
         run("write_draft", """{"conversation_id":"c_1","mode":"reply_all","body":"Again.","cc":[]}""").data()
         assertEquals(emptyList<Address>(), composer.current()!!.cc)
         assertEquals("Again.", composer.current()!!.body)
+        // Every card names the composer its write went into: reply-all opened a new one, the last write rewrote it.
+        val keys = hub.items("c_1").filterIsInstance<Item.Draft>().map { it.composerKey }
+        assertEquals(listOf(state.id, composer.current()!!.id, composer.current()!!.id), keys)
+    }
+
+    // Desktop puts the agent's text above the signature; a signature the composer started with is not the user's writing.
+    @Test
+    fun writeDraftKeepsTheSignatureBelowTheAgentsText() {
+        val signature = Signature("Best,\nDemo", "<b>Best</b>,<br>Demo")
+        val signed = object : MailEngine by mail {
+            override fun signatureFor(accountId: String): Signature = signature
+            override suspend fun replyFields(id: String, kind: ReplyKind): ComposerFields = mail.replyFields(id, kind).copy(body = ComposeBody.initialText(signature))
+        }
+        val other = McpTools(ToolDeps(signed, hub, screen, composer, { agentSettings }))
+        fun write(args: String) = runBlocking { other.callTool(clark, "write_draft", Json.parseToJsonElement(args).jsonObject, JsonObject(emptyMap())) }
+        chat()
+        write("""{"conversation_id":"c_1","body":"Thursday works.","format":"text"}""").data()
+        assertEquals("Thursday works.\n\nBest,\nDemo", composer.current()!!.body)
+        // The user opened a reply themselves: only the signature is in it, so even a chat in the background may write.
+        composer.close()
+        composer.open(runBlocking { signed.replyFields(call, ReplyKind.REPLY) }.toComposerState())
+        write("""{"conversation_id":"c_1","body":"Again.","format":"text"}""").data()
+        assertEquals("Again.\n\nBest,\nDemo", composer.current()!!.body)
+        // A new email gets the signature too.
+        composer.close()
+        write("""{"mode":"new","body":"Hello","format":"text"}""").data()
+        assertEquals("Hello\n\nBest,\nDemo", composer.current()!!.body)
     }
 
     @Test
@@ -315,6 +351,10 @@ class McpToolsTest {
         assertEquals("Edited", d["text"].str())
         assertTrue(d["agent"] is JsonNull)
         assertEquals(true, d["dirty"]!!.jsonPrimitive.boolean)
+        // An address the user typed but didn't finish goes out with Send, so the agent sees it as a recipient.
+        composer.update { it.copy(typed = mapOf("cc" to "Joris <joris@example.com>, half")) }
+        val typed = run("get_draft").data()
+        assertEquals(listOf("<unsafe_content>joris@example.com</unsafe_content>", "<unsafe_content>half</unsafe_content>"), typed["cc"]!!.jsonArray.map { it.jsonObject["address"].str() })
     }
 
     @Test
@@ -378,8 +418,11 @@ class McpToolsTest {
         assertEquals(listOf("Vandebron" to "Here is another copy of your contract", "Vandebron" to "Here is another copy of your contract"), card.fields.map { it.label to it.value })
         assertEquals(listOf("approve" to "Archive", "decline" to "Cancel"), card.choices.map { it.id to it.label })
         assertEquals("1", card.mail!!.pins[0].uidValidity)
+        // The tool only asks: nothing has moved before the user decides.
+        assertEquals(0, runBlocking { mail.listMessages(MailView.folder("demo", "Archive")) }.count { it.subject == "Here is another copy of your contract" })
         runBlocking { hub.decide("c_1", card.id, "approve") }
-        val notice = hub.items("c_1").last() as Item.Notice
+        // The hub ran it, once: one notice, one note.
+        val notice = hub.items("c_1").filterIsInstance<Item.Notice>().single()
         assertEquals("Archived 2 emails", notice.text)
         assertEquals(listOf(contractA, contractB), notice.undo!!.ids)
         assertEquals(2, notice.mail!!.count)
@@ -410,6 +453,8 @@ class McpToolsTest {
         assertEquals(1, r["done"]!!.jsonPrimitive.int)
         assertEquals("Marked as read: 1 email", r["summary"].str())
         assertEquals(false, runBlocking { mail.summary(call)!!.unread })
+        // On the hub's mail chain, so the chat's next turn waits for it.
+        assertEquals(listOf("c_1" to "Mark 1 email as read"), hub.ranAtOnce)
         assertEquals("waiting_for_user", run("mail_action", """{"conversation_id":"c_1","action":"trash","message_ids":["$call"]}""").data()["status"].str())
         assertEquals("waiting_for_user", run("mail_action", """{"conversation_id":"c_1","action":"move","folder":"trash","message_ids":["$call"]}""").data()["status"].str())
     }
@@ -475,18 +520,20 @@ class McpToolsTest {
 
     @Test
     fun readSkillReadsTheHubsSkills() {
-        hub.skillList = listOf(RukooSkill("data-deletion-request", "Draft a GDPR\nrequest.", "rukoo", "---\nname: data-deletion-request\n---\nSteps."))
-        assertEquals("""{"skills":[{"name":"data-deletion-request","description":"Draft a GDPR request.","source":"rukoo"}]}""", run("read_skill").data().toString())
+        hub.rukooSkills = RukooSkills(FileSkillTree(Fixtures.bundledSkills), null)
+        assertEquals(hub.rukooSkills.read(null, null), run("read_skill").data())
+        // SKILL.md whole, frontmatter included, as desktop sends it.
         val skill = run("read_skill", """{"name":"data-deletion-request"}""").data()
-        assertEquals("---\nname: data-deletion-request\n---\nSteps.", skill["skill_md"].str())
-        assertEquals("[]", skill["files"].toString())
-        assertEquals(42, run("read_skill", """{"name":"data-deletion-request","file":"./SKILL.md"}""").data()["size"]!!.jsonPrimitive.int)
-        assertEquals("There is no skill named \"nope\". Skills: data-deletion-request.", run("read_skill", """{"name":"nope"}""").error())
+        assertEquals(hub.rukooSkills.read("data-deletion-request", null), skill)
+        assertTrue(skill["skill_md"].str()!!.startsWith("---\nname: data-deletion-request\n"))
+        assertEquals(hub.rukooSkills.read("data-deletion-request", "SKILL.md"), run("read_skill", """{"name":"data-deletion-request","file":"./SKILL.md"}""").data())
+        assertEquals("There is no skill named \"nope\". Skills: data-deletion-request, unsubscribe-via-browser.", run("read_skill", """{"name":"nope"}""").error())
         assertEquals("Pass the name of the skill the file belongs to.", run("read_skill", """{"file":"SKILL.md"}""").error())
-        assertEquals(
-            "The skill data-deletion-request has no file references/a.md. Its files: SKILL.md.",
-            run("read_skill", """{"name":"data-deletion-request","file":"references\\a.md"}""").error(),
-        )
+        assertTrue(run("read_skill", """{"name":"data-deletion-request","file":"references\\a.md"}""").error()!!.startsWith("The skill data-deletion-request has no file references/a.md. Its files: SKILL.md"))
+        // The tool list and the instructions name the same skills.
+        val description = tools.listTools().first { it.jsonObject["name"].str() == "read_skill" }.jsonObject["description"].str()!!
+        assertEquals(RukooSkills.toolDescription(hub.skills()), description)
+        assertEquals(RukooSkills.instructions(hub.skills(), 1000), tools.skillInstructions(1000))
     }
 
     @Test
@@ -499,11 +546,13 @@ class McpToolsTest {
     }
 
     @Test
-    fun mailWorkGoesThroughTheHubsChain() {
+    fun aDeclinedCardIsOneNoteAndNothingRuns() {
         chat()
         run("mail_action", """{"conversation_id":"c_1","action":"archive","message_ids":["$contractA","$contractB"]}""").data()
-        runBlocking { hub.decide("c_1", hub.items("c_1").last().id, "approve") }
-        assertEquals(listOf("c_1" to "Archive 2 emails"), hub.settled)
+        runBlocking { hub.decide("c_1", hub.items("c_1").last().id, "decline") }
+        assertEquals(1, hub.notes.size)
+        assertTrue(hub.items("c_1").none { it is Item.Notice })
+        assertTrue(hub.ranAtOnce.isEmpty())
     }
 
     @Test
@@ -512,7 +561,8 @@ class McpToolsTest {
         val mailOnly = object : MailEngine by mail {
             override suspend fun unsubscribe(id: String): UnsubscribeResult = UnsubscribeResult.SendEmail("unsubscribe@vandebron.nl", "unsubscribe", "")
         }
-        val other = McpTools(ToolDeps(mailOnly, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope))
+        hubRuns(mailOnly)
+        val other = McpTools(ToolDeps(mailOnly, hub, screen, composer, { agentSettings }))
         runBlocking {
             other.callTool(clark, "mail_action", Json.parseToJsonElement("""{"conversation_id":"c_1","action":"unsubscribe","message_ids":["$contractA","$contractB"]}""").jsonObject, JsonObject(emptyMap()))
             hub.decide("c_1", hub.items("c_1").last().id, "approve")
@@ -521,19 +571,24 @@ class McpToolsTest {
         assertEquals(1, notice.mail!!.mailed)
         assertEquals(1, notice.mail!!.failed)
         assertTrue(notice.text, notice.text.startsWith("Opened an unsubscribe email to unsubscribe@vandebron.nl. Send it to finish. 1 failed: Rukoo's composer holds another email"))
-        assertEquals(listOf("unsubscribe@vandebron.nl"), composer.current()!!.to.map { it.address })
+        val opened = composer.current()!!
+        assertEquals(listOf("unsubscribe@vandebron.nl"), opened.to.map { it.address })
+        // Sent from the account the newsletter came to.
+        assertEquals("demo", opened.accountId)
+        assertEquals("demo@example.com", opened.from?.address)
     }
 
     @Test
     fun writeDraftGivesUpAfterTheDeadline() {
         chat()
+        // The engine's reply fields load the email.
         val slow = object : MailEngine by mail {
-            override suspend fun fullMessage(id: String): FullMessage {
+            override suspend fun replyFields(id: String, kind: ReplyKind): ComposerFields {
                 delay(5_000)
-                return mail.fullMessage(id)
+                return mail.replyFields(id, kind)
             }
         }
-        val other = McpTools(ToolDeps(slow, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope, draftWaitMs = 200))
+        val other = McpTools(ToolDeps(slow, hub, screen, composer, { agentSettings }, draftWaitMs = 200))
         val error = runBlocking {
             other.callTool(clark, "write_draft", Json.parseToJsonElement("""{"conversation_id":"c_1","body":"Hi"}""").jsonObject, JsonObject(emptyMap()))
         }.error()
@@ -546,7 +601,7 @@ class McpToolsTest {
                 return mail.summary(id)
             }
         }
-        val lookupTools = McpTools(ToolDeps(slowLookup, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope, draftWaitMs = 200))
+        val lookupTools = McpTools(ToolDeps(slowLookup, hub, screen, composer, { agentSettings }, draftWaitMs = 200))
         val late = runBlocking {
             lookupTools.callTool(clark, "write_draft", Json.parseToJsonElement("""{"message_id":"$call","body":"Hi"}""").jsonObject, JsonObject(emptyMap()))
         }.error()
@@ -561,7 +616,8 @@ class McpToolsTest {
         val mailOnly = object : MailEngine by mail {
             override suspend fun unsubscribe(id: String): UnsubscribeResult = UnsubscribeResult.SendEmail("unsubscribe@vandebron.nl", "unsubscribe", "")
         }
-        val other = McpTools(ToolDeps(mailOnly, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope))
+        hubRuns(mailOnly)
+        val other = McpTools(ToolDeps(mailOnly, hub, screen, composer, { agentSettings }))
         runBlocking {
             other.callTool(clark, "mail_action", Json.parseToJsonElement("""{"conversation_id":"c_1","action":"unsubscribe","message_ids":["$contractA"]}""").jsonObject, JsonObject(emptyMap()))
             hub.decide("c_1", hub.items("c_1").last().id, "approve")
@@ -581,9 +637,9 @@ class McpToolsTest {
         File(dir, "data.bin").writeBytes(byteArrayOf(1, 0, 2))
         File(dir, ".git").mkdirs()
         File(dir, ".git/config").writeText("secret")
-        hub.skillList = listOf(RukooSkill("my-skill", "Mine", "user", "ignored"))
-        val other = McpTools(ToolDeps(mail, hub, screen, composer, { agentSettings }, HubSkillSource(hub) { File(root, it.name) }, scope))
-        fun read(args: String) = runBlocking { other.callTool(clark, "read_skill", Json.parseToJsonElement(args).jsonObject, JsonObject(emptyMap())) }
+        // The user's skills folder, read by the hub's port of skills.js.
+        hub.rukooSkills = RukooSkills(null, FileSkillTree(root))
+        fun read(args: String) = runBlocking { tools.callTool(clark, "read_skill", Json.parseToJsonElement(args).jsonObject, JsonObject(emptyMap())) }
         val skill = read("""{"name":"my-skill"}""").data()
         assertEquals("---\nname: my-skill\ndescription: Mine\n---\nDo it.", skill["skill_md"].str())
         assertEquals("""[{"path":"references/forms.md","size":6,"text":"Form A"}]""", skill["files"].toString())

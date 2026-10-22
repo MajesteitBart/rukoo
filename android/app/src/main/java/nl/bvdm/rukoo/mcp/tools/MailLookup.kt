@@ -14,6 +14,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import nl.bvdm.rukoo.agents.AgentFolders
+import nl.bvdm.rukoo.agents.AmbiguousFolder
 import nl.bvdm.rukoo.agents.model.MessageRef
 import nl.bvdm.rukoo.core.Unsafe
 import nl.bvdm.rukoo.mail.MailEngine
@@ -40,9 +42,8 @@ class MailLookup(private val mail: MailEngine) {
 
     fun account(id: String?): Account? = id?.let { a -> accounts().firstOrNull { it.id == a } }
 
-    fun publicFolders(accountId: String): List<PublicFolder> = mail.folders.value[accountId].orEmpty()
-        .filter { it.role != FolderRole.FLAGGED && it.role != FolderRole.IMPORTANT }
-        .map { PublicFolder(it.path, it.name, agentRole(it.role)) }
+    fun publicFolders(accountId: String): List<PublicFolder> =
+        AgentFolders.visible(mail.folders.value[accountId].orEmpty()).map { PublicFolder(it.path, it.name, agentRole(it.role)) }
 
     /**
      * Turns what an agent passes as message_id into a current Rukoo id: a live id or a Message-ID header. The phone
@@ -84,23 +85,14 @@ class MailLookup(private val mail: MailEngine) {
      * The exact path wins. A name, or a path in another case, must belong to one folder only: "2026" can be both
      * Projects/2026 and Archive/2026, and then the call fails and asks for the path. Then the role words.
      */
-    fun resolveFolder(acc: Account, value: String?): String? {
-        val v = value.orEmpty().trim()
-        val lv = v.lowercase()
-        val folders = publicFolders(acc.id)
-        folders.firstOrNull { it.path == v }?.let { return it.path }
-        for (same in listOf<(PublicFolder) -> Boolean>({ it.path.lowercase() == lv }, { it.name.lowercase() == lv })) {
-            val hits = folders.filter(same)
-            if (hits.size > 1) {
-                throw ToolError(
-                    "More than one folder in ${acc.email} is called ${Unsafe.value(v)}: ${hits.joinToString(", ") { it.path }}. Pass the full path.",
-                    ambiguous = true,
-                )
-            }
-            if (hits.isNotEmpty()) return hits[0].path
-        }
-        val role = ROLE_WORDS[lv] ?: return null
-        return folders.firstOrNull { it.role == role }?.path
+    fun resolveFolder(acc: Account, value: String?): String? = try {
+        // The hub's rule, so a folder the tool accepts is the folder the hub's action moves to.
+        AgentFolders.resolve(mail.folders.value[acc.id].orEmpty(), value)
+    } catch (e: AmbiguousFolder) {
+        throw ToolError(
+            "More than one folder in ${acc.email} is called ${Unsafe.value(value.orEmpty().trim())}: ${e.paths.joinToString(", ")}. Pass the full path.",
+            ambiguous = true,
+        )
     }
 
     fun folderList(accounts: List<Account>): String =
@@ -237,15 +229,13 @@ class MailLookup(private val mail: MailEngine) {
     companion object {
         const val TEXT_MAX = 20000
 
-        private val ROLE_WORDS = mapOf(
-            "inbox" to "inbox", "sent" to "sent", "drafts" to "drafts", "draft" to "drafts", "archive" to "archive",
-            "trash" to "trash", "deleted" to "trash", "bin" to "trash", "junk" to "junk", "spam" to "junk",
-        )
-
         private val MESSAGE_ID_FORM = Regex("""^<[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+>$""")
         private val SUBJECT_PREFIX = Regex("^(?:re|fwd?|fw|antw|aw|doorst)(?:\\s*\\[\\d+\\])?\\s*:\\s*", RegexOption.IGNORE_CASE)
         private val ISO = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
         private val MARKS = Regex("[\\u0300-\\u036f]")
+
+        // Compiled once: threadOf runs it for every cached email.
+        private val SPACES = Regex("\\s+")
 
         /**
          * A Message-ID is a key agents pass on to link back to the email, so one in the usual <local@domain> form
@@ -258,7 +248,7 @@ class MailLookup(private val mail: MailEngine) {
         }
 
         /** Gmail's All Mail is `archive` to agents; only the cache keeps `all`. A user folder is null. */
-        fun agentRole(role: FolderRole): String? = if (role == FolderRole.ALL) "archive" else role.wire
+        fun agentRole(role: FolderRole): String? = AgentFolders.role(role)
 
         /** JS toISOString(): UTC with milliseconds, or null for no date. */
         fun iso(ms: Long): String? = if (ms == 0L) null else ISO.format(Instant.ofEpochMilli(ms))
@@ -274,7 +264,7 @@ class MailLookup(private val mail: MailEngine) {
                 if (next == s) break
                 s = next
             }
-            return s.lowercase().replace(Regex("\\s+"), " ")
+            return s.lowercase().replace(SPACES, " ")
         }
 
         fun threadIds(messageId: String?, inReplyTo: String?, references: List<String>): Set<String> =

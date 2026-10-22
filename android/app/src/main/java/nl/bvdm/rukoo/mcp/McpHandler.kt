@@ -2,6 +2,7 @@ package nl.bvdm.rukoo.mcp
 
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -11,7 +12,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.agents.ToolIdentity
-import nl.bvdm.rukoo.mcp.tools.SkillText
+import nl.bvdm.rukoo.agents.RukooSkills
 
 /** What the handler needs from the tools and the hub; [McpTools] is the real one. */
 interface McpBackend {
@@ -32,6 +33,9 @@ interface McpBackend {
 
     /** Seconds since the user last used Rukoo here (0 while it is on screen), or null. */
     fun idleSeconds(): Long?
+
+    /** Waits until the hub has loaded its chats; [identity] and [owns] go by them. */
+    suspend fun ready() {}
 }
 
 /**
@@ -49,7 +53,7 @@ class McpHandler(
     /** The fixed text plus the skills there are now. Skills that can't be read leave the fixed text. */
     fun instructions(): String {
         val extra = try {
-            backend.skillInstructions(SkillText.MCP_TEXT_MAX - INSTRUCTIONS.length - 2)
+            backend.skillInstructions(RukooSkills.MCP_TEXT_MAX - INSTRUCTIONS.length - 2)
         } catch (e: Exception) {
             log("mcp skills failed", e)
             ""
@@ -103,8 +107,12 @@ class McpHandler(
                 val args = params["arguments"] as? JsonObject ?: JsonObject(emptyMap())
                 val meta = params["_meta"] as? JsonObject ?: JsonObject(emptyMap())
                 val result = try {
-                    // Clients give up after 120 s; an answer before that beats a dropped connection.
-                    withTimeout(callTimeoutMs) { backend.callTool(backend.identity(caller, meta), name, args, meta) }
+                    // Clients give up after 120 s; an answer before that beats a dropped connection. Who calls depends on
+                    // the chats (a computer's chat names its agent), so the hub must have loaded them first.
+                    withTimeout(callTimeoutMs) {
+                        backend.ready()
+                        backend.callTool(backend.identity(caller, meta), name, args, meta)
+                    }
                 } catch (e: TimeoutCancellationException) {
                     errorResult("Rukoo could not run $name: it took longer than Rukoo allows.")
                 } catch (e: Exception) {
@@ -119,8 +127,10 @@ class McpHandler(
     }
 
     // desktop hub.hello (hub.js:1956-1971): device and version are informational; the bridge picks by owns and idle.
-    private fun hello(caller: McpCaller, params: JsonObject): JsonObject {
+    // Before the chats are loaded every chat would look foreign, and the bridge would send the call elsewhere.
+    private suspend fun hello(caller: McpCaller, params: JsonObject): JsonObject {
         val cid = (params["conversation_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+        if (cid.isNotEmpty()) withTimeoutOrNull(callTimeoutMs) { backend.ready() }
         val owns = cid.isNotEmpty() && runCatching {
             val identity = backend.identity(caller, JsonObject(mapOf(META_CONVERSATION to JsonPrimitive(cid))))
             backend.owns(identity, cid)

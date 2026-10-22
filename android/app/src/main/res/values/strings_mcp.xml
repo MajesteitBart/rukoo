@@ -22,13 +22,4 @@
     <!-- When an agent unsubscribes while Rukoo is in the background: tapping opens the sender's page. -->
     <string name="mcp_unsubscribe_title">Finish unsubscribing</string>
     <string name="mcp_unsubscribe_text">Tap to open the sender\'s unsubscribe page.</string>
-
-    <!-- The header above the quoted email in a reply an agent wrote, as desktop's composer.quote.* -->
-    <string name="mcp_quote_marker">-------- Original message --------</string>
-    <string name="mcp_quote_from">From: %1$s</string>
-    <string name="mcp_quote_date">Date: %1$s</string>
-    <string name="mcp_quote_to">To: %1$s</string>
-    <string name="mcp_quote_subject">Subject: %1$s</string>
-    <!-- java.time pattern for the date in that header. -->
-    <string name="mcp_quote_date_pattern">dd/MM/yyyy HH:mm</string>
 </resources>

@@ -36,7 +36,7 @@ import nl.bvdm.rukoo.desktop.ExportBundle
 import nl.bvdm.rukoo.desktop.HelloResponse
 import nl.bvdm.rukoo.desktop.HostAgentInfo
 import nl.bvdm.rukoo.desktop.HostTurnRequest
-import nl.bvdm.rukoo.mcp.McpStatus
+import nl.bvdm.rukoo.agents.McpGrant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -74,9 +74,18 @@ class ScriptedDesktop : DesktopLink {
 
     override suspend fun forget(pairingId: String) = Unit
 
-    override suspend fun models(pairingId: String, agent: String, refresh: Boolean) = models
+    /** The refresh flag of each models and skills call, in order. */
+    val listRefreshes = CopyOnWriteArrayList<Boolean>()
 
-    override suspend fun skills(pairingId: String, agent: String, refresh: Boolean) = skills
+    override suspend fun models(pairingId: String, agent: String, refresh: Boolean): ModelOptions {
+        listRefreshes.add(refresh)
+        return models
+    }
+
+    override suspend fun skills(pairingId: String, agent: String, refresh: Boolean): OwnSkills {
+        listRefreshes.add(refresh)
+        return skills
+    }
 
     private fun next(): Flow<HostLine> {
         val script: suspend kotlinx.coroutines.flow.FlowCollector<HostLine>.() -> Unit =
@@ -121,18 +130,24 @@ class ComputerAdapterTest {
     private var settings = AgentSettings(
         computers = listOf(PairedComputer(pairingId = "ph_k3j9x0m2qa", name = "desktop-zolder", address = "100.101.102.103", token = "t", mcpToken = "phone-mcp-token")),
     )
-    private var mcpStatus = McpStatus(running = true, address = "100.64.0.3", port = 47800)
     private val hello = HelloCache(desktop, scope, nl.bvdm.rukoo.core.Clock.System)
 
     private fun adapter(program: ComputerProgram = ComputerProgram.CLAUDE) =
-        ComputerAdapter("ph_k3j9x0m2qa", program, { settings }, desktop, { mcpStatus }, hello, scope, XmlTexts(), timing = ComputerAdapter.Timing(backoff = 10, reattachWindow = 2_000))
+        ComputerAdapter("ph_k3j9x0m2qa", program, { settings }, desktop, hello, scope, XmlTexts(), timing = ComputerAdapter.Timing(backoff = 10, reattachWindow = 2_000))
 
-    private fun turn(choose: suspend (nl.bvdm.rukoo.agents.model.ApprovalRequest) -> String = { "allow" }) = RecordingTurn(
+    // The hub's grant for this computer: the phone's endpoint and the token it made for it.
+    private val grant = McpGrant("http://100.64.0.3:47800/mcp", "phone-mcp-token")
+
+    private fun turn(
+        mcp: McpGrant = grant,
+        choose: suspend (nl.bvdm.rukoo.agents.model.ApprovalRequest) -> String = { "allow" },
+    ) = RecordingTurn(
         conversation = Conversation(id = "c_mgx1_abc123", agent = "computer:ph_k3j9x0m2qa:claude", title = "Invoice", provider = mapOf("sessionId" to "sess-1", "agent" to "ignored")),
         model = "opus",
         effort = "high",
         skills = listOf("pdf"),
         emails = listOf("acc:INBOX:7"),
+        mcp = mcp,
         choose = choose,
     )
 
@@ -186,14 +201,15 @@ class ComputerAdapterTest {
 
     @Test
     fun withoutThePhonesToolsTheTurnSaysSoAndSendsNoMcp() = runBlocking {
-        mcpStatus = McpStatus(error = "disabled")
         desktop.streams.add {
             emit(line("""{"seq":1,"type":"started","turnId":"t_1","conversationId":"c","agent":"claude"}"""))
             emit(line("""{"seq":2,"type":"done","status":"done"}"""))
         }
-        val turn = turn()
+        val turn = turn(mcp = McpGrant())
         adapter().runTurn(turn)
         assertNull(desktop.turns.single().mcp)
+        // A grant without a token would be refused whole by the computer: it goes as none too.
+        assertNull(adapter().request(turn(mcp = McpGrant("http://100.64.0.3:47800/mcp", "")), settings.computers.single()).mcp)
         assertEquals(
             AdapterEvent.Notice("Claude Code works without Rukoo's tools this turn: this phone isn't serving them right now.", Tone.INFO, "no-phone-tools"),
             turn.events.first(),
@@ -227,8 +243,27 @@ class ComputerAdapterTest {
         assertEquals(listOf("a_1", "a_2"), turn.expired.toList())
     }
 
+    // The computer cut a field and declined the card: the hub records it as for a local turn (the denied card and its
+    // notice), and nobody answers the computer.
     @Test
-    fun aCardTheComputerDeclinedBecomesANotice() = runBlocking {
+    fun aCardTheComputerDeclinedGoesToTheHubAsItsCard() = runBlocking {
+        val card = """{"title":"Claude wants to change files","fields":[{"key":"diff","label":"Changes","value":"ddd","truncated":812}],"choices":[{"id":"allow","label":"Allow","kind":"primary"},{"id":"deny","label":"Deny","kind":"danger"}]}"""
+        desktop.streams.add {
+            emit(line("""{"seq":1,"type":"started","turnId":"t_1","conversationId":"c","agent":"claude"}"""))
+            emit(line("""{"seq":2,"type":"approval","approvalId":"a_1","card":$card,"status":"denied","decision":"deny","declinedBy":"rukoo"}"""))
+            emit(line("""{"seq":3,"type":"done","status":"done"}"""))
+        }
+        val turn = turn(choose = { "deny" })
+        adapter().runTurn(turn)
+        val request = turn.approvals.single()
+        assertEquals("a_1", request.key)
+        assertEquals(812, request.fields.single().truncated)
+        assertTrue(turn.events.isEmpty())
+        assertTrue(desktop.answers.isEmpty())
+    }
+
+    @Test
+    fun aDeclinedCardWithoutACutFieldBecomesANotice() = runBlocking {
         desktop.streams.add {
             emit(line("""{"seq":1,"type":"started","turnId":"t_1","conversationId":"c","agent":"claude"}"""))
             emit(line("""{"seq":2,"type":"approval","approvalId":"a_1","card":{"title":"Claude wants to change files","choices":[{"id":"deny","label":"Deny","kind":"danger"}]},"status":"denied","decision":"deny","declinedBy":"rukoo"}"""))
@@ -435,5 +470,18 @@ class ComputerAdapterTest {
         }
         adapter(ComputerProgram.CODEX).forget("c_mgx1_abc123")
         assertEquals(listOf("codex" to "c_mgx1_abc123"), desktop.forgotten.toList())
+    }
+
+    // The hub's refresh reaches the computer, which then lists afresh instead of from its own cache.
+    @Test
+    fun aRefreshGoesOnToTheComputer() = runBlocking {
+        desktop.listRefreshes.clear()
+        adapter().models()
+        adapter().models(refresh = true)
+        adapter().skills(refresh = true)
+        assertEquals(listOf(false, true, true), desktop.listRefreshes.toList())
+        // A list the computer answers with an error keeps it, for the hub to read.
+        desktop.models = ModelOptions(agent = "codex", error = AgentErrorInfo("busy", "Codex is restarting"))
+        assertEquals("busy", adapter(ComputerProgram.CODEX).models().error?.code)
     }
 }

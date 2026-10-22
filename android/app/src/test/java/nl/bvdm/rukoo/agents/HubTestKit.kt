@@ -25,6 +25,8 @@ import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mail.model.FullMessage
 import nl.bvdm.rukoo.mail.model.MoveResult
+import nl.bvdm.rukoo.mail.model.UnsubscribeResult
+import nl.bvdm.rukoo.ui.ComposerController
 import nl.bvdm.rukoo.ui.ScreenState
 
 /** An agent that runs whatever the test scripts and records every turn it got. */
@@ -36,6 +38,9 @@ class ScriptedAdapter(override val id: String, var script: suspend (TurnHandle) 
     var skillList = emptyList<OwnSkill>()
     var modelCalls = 0
 
+    /** The refresh flag of every models() and skills() call, in order. */
+    val refreshes: MutableList<Boolean> = Collections.synchronizedList(mutableListOf())
+
     override suspend fun status(force: Boolean) = statusValue
 
     override suspend fun runTurn(turn: TurnHandle): TurnResult {
@@ -43,12 +48,16 @@ class ScriptedAdapter(override val id: String, var script: suspend (TurnHandle) 
         return script(turn)
     }
 
-    override suspend fun models(): ModelOptions {
+    override suspend fun models(refresh: Boolean): ModelOptions {
         modelCalls++
+        refreshes += refresh
         return modelList
     }
 
-    override suspend fun skills() = skillList
+    override suspend fun skills(refresh: Boolean): List<OwnSkill> {
+        refreshes += refresh
+        return skillList
+    }
 
     override suspend fun forget(conversationId: String) {
         forgotten += conversationId
@@ -89,12 +98,21 @@ class SlowMail(private val base: PreviewMailEngine) : MailEngine by base {
     var fullDelayMs = 0L
     var moveDelayMs = 0L
 
+    /** What unsubscribing answers instead of the demo's one-click. */
+    var unsubscribeAs: UnsubscribeResult? = null
+
+    /** How often an email was archived. */
+    var archives = 0
+
+    override suspend fun unsubscribe(id: String): UnsubscribeResult = unsubscribeAs ?: base.unsubscribe(id)
+
     override suspend fun fullMessage(id: String): FullMessage {
         if (fullDelayMs > 0) delay(fullDelayMs)
         return base.fullMessage(id)
     }
 
     override suspend fun archive(ids: List<String>): MoveResult {
+        archives += ids.size
         if (moveDelayMs > 0) delay(moveDelayMs)
         return base.archive(ids)
     }
@@ -109,12 +127,22 @@ class HubKit(
     val openclaw: ScriptedAdapter = ScriptedAdapter("openclaw"),
     settings: AgentSettings = AgentSettings(clark = ClarkSettings(name = "Clark", url = "http://clark", key = "k")),
     val zone: ZoneId = ZoneId.of("Europe/Amsterdam"),
+    /** Lists the debug fake agent, as debug builds do. */
+    private val includeFake: Boolean = false,
+    /** The phone's MCP URL while it serves Rukoo's tools. */
+    private val mcpUrl: () -> String? = { null },
 ) {
     val clock = Clock { BASE + test.testScheduler.currentTime }
     val engine = PreviewMailEngine(clock, null, zone)
     val mail = SlowMail(engine)
     val screen = ScreenState(clock)
     val alerts = RecordingAlerts()
+
+    /** The app's single composer, where an approved unsubscribe email opens. */
+    val composer = ComposerController()
+
+    /** Unsubscribe pages the hub opened. */
+    val pages: MutableList<String> = Collections.synchronizedList(mutableListOf())
     val settingsStore = AgentSettingsStore(File(dir, "agents.json"), PlainCipher).also { store ->
         if (settings != AgentSettings()) kotlinx.coroutines.runBlocking { store.update { settings } }
     }
@@ -134,7 +162,10 @@ class HubKit(
         dataDir = dir,
         rukooSkills = RukooSkills(FileSkillTree(Fixtures.bundledSkills), null),
         alerts = alerts,
+        mcpUrl = mcpUrl,
+        unsubscribe = ComposerUnsubscribeOpener(mail, composer, { pages += it; true }),
         clock = clock,
+        includeFake = includeFake,
         zone = { zone },
         dispatcher = dispatcher,
         io = dispatcher,

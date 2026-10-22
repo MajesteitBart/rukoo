@@ -396,6 +396,32 @@ class HermesAdapterTest {
         assertTrue("stop was sent", stopped.await(5, TimeUnit.SECONDS))
     }
 
+    // Stop while the run start is still out (a slow tailnet): Hermes takes the run, so the turn reached it and used up
+    // the email and notes. That must be known before the cancellation ends the turn, as desktop waits for the answer.
+    @Test
+    fun stopDuringTheRunStartStillCountsARunHermesTook() = runBlocking {
+        on("POST /api/sessions", json("""{"session":{"id":"s1"}}"""))
+        val posted = CountDownLatch(1)
+        val stopped = CountDownLatch(1)
+        on("POST /v1/runs", { _ ->
+            posted.countDown()
+            MockResponse().setResponseCode(202).setHeader("Content-Type", "application/json").setBody("""{"run_id":"r1","status":"queued"}""").setHeadersDelay(400, TimeUnit.MILLISECONDS)
+        })
+        on("POST /v1/runs/r1/stop", { _ -> stopped.countDown(); MockResponse().setBody("{}") })
+        val turn = RecordingTurn()
+        val job = async { adapter().runTurn(turn) }
+        eventually { posted.count == 0L }
+        job.cancel()
+        try {
+            job.await()
+            fail("the turn should be cancelled")
+        } catch (_: CancellationException) {
+        }
+        // Counted when the adapter's job ended, not later in the app scope.
+        assertTrue(turn.accepted >= 1)
+        assertTrue("stop was sent", stopped.await(5, TimeUnit.SECONDS))
+    }
+
     @Test
     fun aGoneStreamIsFollowedByPollingAndTheOutputIsShown() = runBlocking {
         standardRun()

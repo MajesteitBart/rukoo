@@ -31,11 +31,8 @@ import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.Tailnet
 import nl.bvdm.rukoo.mcp.tools.ChatFileReader
-import nl.bvdm.rukoo.mcp.tools.DraftTexts
-import nl.bvdm.rukoo.mcp.tools.HubSkillSource
 import nl.bvdm.rukoo.mcp.tools.McpTools
 import nl.bvdm.rukoo.mcp.tools.ToolDeps
-import nl.bvdm.rukoo.mcp.tools.UnsubscribeOpener
 import nl.bvdm.rukoo.ui.Notifications
 import nl.bvdm.rukoo.ui.ScreenState
 
@@ -100,7 +97,8 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
     override fun stop() {
         RukooMcpService.stop(context)
         runningPort = 0
-        _status.update { McpStatus(error = McpStatus.ERROR_DISABLED, agents = it.agents) }
+        // agents.json's collector doesn't run again for a stop, so the paired computers must survive it.
+        _status.update { it.disabled() }
     }
 
     /** Opens a new socket, for a new port or a new debug address. */
@@ -118,29 +116,34 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
         refused = true
     }
 
-    /** The server with the app's mail, hub, screen and composer behind it. */
-    internal fun runtime(port: Int): McpRuntime {
+    /**
+     * Rukoo's tools with the app's mail, hub, screen and composer behind them: the server's, and the debug fake agent's,
+     * which calls them in its turns. Made on first use, after the hub.
+     */
+    val tools: McpTools by lazy {
         val c = container
-        val tools = McpTools(
+        McpTools(
             ToolDeps(
                 mail = c.mail,
                 hub = c.agents,
                 screen = c.screen,
                 composer = c.composer,
                 agentSettings = { c.agentSettings.current() },
-                // The user's skills are folders in filesDir/skills (the hub reads the same); Rukoo's ship as SKILL.md.
-                skills = HubSkillSource(c.agents) { s -> if (s.source == "user") File(File(context.filesDir, "skills"), s.name) else null },
-                scope = c.appScope,
-                // The hub and the composer belong to the main thread, like desktop's single-threaded hub.
-                hubContext = Dispatchers.Main.immediate,
+                // Off the main thread: the hub is thread-safe and the engine has its own thread. Only the composer
+                // changes on the main thread, where the UI changes it.
+                workContext = Dispatchers.Default,
+                mainContext = Dispatchers.Main.immediate,
                 defaultAccountId = { c.settingsSnapshot.value.defaultAccountId },
                 chatFiles = ChatFileReader { _, f -> File(f.file).let { if (it.isAbsolute) it else File(context.filesDir, f.file) }.readBytes() },
-                opener = PageOpener(context, c.screen),
-                texts = ResourceDraftTexts(context),
                 zone = { ZoneId.systemDefault() },
                 clock = c.clock,
             ),
         )
+    }
+
+    /** The server with Rukoo's tools behind it. */
+    internal fun runtime(port: Int): McpRuntime {
+        val c = container
         return McpRuntime(
             port = port,
             policy = TailnetPolicy(debug = BuildConfig.DEBUG, advertised = { McpDebug.advertised(context) }),
@@ -231,22 +234,12 @@ object McpTexts {
     }
 }
 
-/** The quote header lines from the string resources, so a reply an agent wrote reads in the user's language. */
-class ResourceDraftTexts(private val context: Context) : DraftTexts {
-    override fun marker() = context.getString(R.string.mcp_quote_marker)
-    override fun from(sender: String) = context.getString(R.string.mcp_quote_from, sender)
-    override fun date(date: String) = context.getString(R.string.mcp_quote_date, date)
-    override fun to(recipients: String) = context.getString(R.string.mcp_quote_to, recipients)
-    override fun subject(subject: String) = context.getString(R.string.mcp_quote_subject, subject)
-    override fun datePattern(): String = context.getString(R.string.mcp_quote_date_pattern)
-}
-
 /**
- * Opens an unsubscribe page for mail_action. Android blocks activity starts from the background without an error,
- * so while Rukoo is not on screen the page waits in a notification the user taps.
+ * Opens an approved unsubscribe page. Android blocks activity starts from the background without an error, so while
+ * Rukoo is not on screen the page waits in a notification the user taps.
  */
-class PageOpener(private val context: Context, private val screen: ScreenState) : UnsubscribeOpener {
-    override fun openPage(url: String): Boolean {
+class PageOpener(private val context: Context, private val screen: ScreenState) {
+    fun open(url: String): Boolean {
         val uri = Uri.parse(url)
         if (uri.scheme?.lowercase() !in setOf("https", "http")) return false
         val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

@@ -16,11 +16,4 @@
 
     <string name="mcp_unsubscribe_title">Afmelden afronden</string>
     <string name="mcp_unsubscribe_text">Tik om de afmeldpagina van de afzender te openen.</string>
-
-    <string name="mcp_quote_marker">-------- Oorspronkelijk bericht --------</string>
-    <string name="mcp_quote_from">Van: %1$s</string>
-    <string name="mcp_quote_date">Datum: %1$s</string>
-    <string name="mcp_quote_to">Aan: %1$s</string>
-    <string name="mcp_quote_subject">Onderwerp: %1$s</string>
-    <string name="mcp_quote_date_pattern">dd-MM-yyyy HH:mm</string>
 </resources>

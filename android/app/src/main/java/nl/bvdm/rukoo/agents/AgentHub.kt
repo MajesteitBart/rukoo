@@ -144,8 +144,11 @@ interface AgentHub {
     /** Desktop resolveConversation (spec 2 §3.5): the chat a tool call belongs to, or null. */
     fun conversationForTool(identity: ToolIdentity, conversationIdArg: String?, meta: JsonObject? = null): Conversation?
 
-    /** Desktop ensureConversation: [resolved], else the agent's recent external chat, else a new external one (emits Reveal). */
-    fun ensureConversation(identity: ToolIdentity, resolved: Conversation?, openMessageId: String?): Conversation
+    /**
+     * Desktop ensureConversation: [resolved], else the agent's recent external chat, else a new external one (emits
+     * Reveal). Suspends while the stored chats load and while the open email is looked up; never blocks a thread.
+     */
+    suspend fun ensureConversation(identity: ToolIdentity, resolved: Conversation?, openMessageId: String?): Conversation
 
     /** Whether this Rukoo has [conversationId] for that agent (`rukoo/hello` owns). */
     fun owns(identity: ToolIdentity, conversationId: String): Boolean
@@ -166,6 +169,12 @@ interface AgentHub {
     fun addNote(conversationId: String, note: String)
 
     // Added by the hub track (all with defaults, so other implementations keep compiling).
+
+    /**
+     * Waits until the stored chats are loaded. Tool calls wait for it first: before that, a chat they name looks
+     * unknown, and a new external chat would be saved over the ones still loading.
+     */
+    suspend fun ready() {}
 
     /** Checks every agent's status again, in the background (the picker opened). */
     fun refreshAgents() {}
@@ -190,18 +199,13 @@ interface AgentHub {
     fun skillToolDescription(): String = RukooSkills.toolDescription(skills())
 
     /**
-     * mail_action without a card (autoMailActions): runs on the chat's mail chain and adds the result notice.
-     * Returns the outcome within [waitMs], or null when it still runs; its outcome then becomes a note for the
-     * agent's next message (tools.js mailAction()).
+     * mail_action without a card (autoMailActions): runs on the chat's mail chain, after its earlier mail work, and
+     * adds the result notice; the chat's next turn waits for it. Returns the outcome within [waitMs], or null when it
+     * still runs; its outcome then becomes a note for the agent's next message (tools.js mailAction()).
+     *
+     * A mail card ([requestApproval] with kind mail) needs nothing else: [decide] runs it on the same chain, as
+     * desktop's hub does. The hub is the only place mail actions run.
      */
     suspend fun runMailAction(conversationId: String, mail: MailApproval, title: String, waitMs: Long = 90_000): MailOutcome? =
         throw AgentException("unknown", "mail actions are not available")
-
-    /**
-     * Runs mail work for a chat (an approved or automatic mail_action, desktop settleMail): after the chat's earlier
-     * mail work, and the chat's next turn waits until it is done, so the agent hears the outcome first. Returns when
-     * [work] has run. The default only runs it; the real hub keeps the chain. [label] names the work in a note if
-     * the app quits before it is done.
-     */
-    suspend fun settleMail(conversationId: String, label: String, work: suspend () -> Unit) = work()
 }

@@ -23,7 +23,8 @@ data class TurnFile(
 /**
  * Where the agent reaches Rukoo's tools for this turn. Hermes and OpenClaw find the phone themselves
  * (the bridge, the OpenClaw MCP entry), so for them [url] is empty. A computer host gets the phone's
- * Tailscale endpoint and the token the phone issued for that computer.
+ * Tailscale endpoint and the token the phone issued for that computer. The hub fills both or neither, and
+ * adapters take it from here rather than working it out themselves.
  */
 data class McpGrant(val url: String = "", val token: String = "") {
     override fun toString() = "McpGrant(url=$url)"
@@ -102,10 +103,14 @@ interface AgentAdapter {
 
     suspend fun runTurn(turn: TurnHandle): TurnResult
 
-    suspend fun models(): ModelOptions
+    /**
+     * The agent's models. [refresh]: the user opened the menu and the hub's own copy is old, so an adapter that keeps
+     * a list elsewhere (a computer's cache) asks for a fresh one too.
+     */
+    suspend fun models(refresh: Boolean = false): ModelOptions
 
-    /** The agent's own skills for `$name`; empty when it has none. */
-    suspend fun skills(): List<OwnSkill> = emptyList()
+    /** The agent's own skills for `$name`; empty when it has none. [refresh] as for [models]. */
+    suspend fun skills(refresh: Boolean = false): List<OwnSkill> = emptyList()
 
     /** The chat is gone: drop any session state kept for it. */
     suspend fun forget(conversationId: String) {}

@@ -38,6 +38,7 @@ import nl.bvdm.rukoo.agents.model.MailApproval
 import nl.bvdm.rukoo.agents.model.MessageRef
 import nl.bvdm.rukoo.agents.model.ModelOption
 import nl.bvdm.rukoo.agents.model.ModelOptions
+import nl.bvdm.rukoo.agents.model.NoticeParams
 import nl.bvdm.rukoo.agents.model.Origin
 import nl.bvdm.rukoo.agents.model.OwnSkill
 import nl.bvdm.rukoo.agents.model.ThinkingStatus
@@ -1078,5 +1079,95 @@ class HubTest {
         assertEquals("clark", k.hub.create("nobody", null).agent)
         assertEquals(AgentErrorInfo("unknown", "x"), Hub.toError(AgentErrorInfo("x", "")))
         assertEquals(JsonPrimitive("rukoo"), k.hub.readSkill()["skills"].let { (it as kotlinx.serialization.json.JsonArray)[0] as kotlinx.serialization.json.JsonObject }["source"])
+    }
+
+    // ---------- seams with the adapters ----------
+
+    @Test
+    fun anAdaptersNoticeKeepsItsParams() = runTest {
+        val k = kit()
+        k.clark.script = { t ->
+            t.emit(AdapterEvent.Notice("Declined without asking: Run it.", Tone.INFO, "approval-too-long", NoticeParams("Run it")))
+            TurnResult.DONE
+        }
+        val c = k.chat()
+        k.hub.send(c.id, SendRequest("Go"))
+        advanceUntilIdle()
+        val notice = k.last<Item.Notice>(c.id)
+        assertEquals("approval-too-long", notice.code)
+        assertEquals("Run it", notice.params?.title)
+    }
+
+    // A computer answers its agent's failure inside the list (desktop's hub.models() over /phone/v1).
+    @Test
+    fun aModelListWithAnErrorKeepsTheChatsEffortAndIsAskedForAgain() = runTest {
+        val k = kit { clark.modelList = ModelOptions("clark", listOf(ModelOption("deep", efforts = listOf("high"))), efforts = listOf("high")) }
+        val c = k.chat()
+        k.hub.models("clark")
+        assertEquals("high", k.hub.setChoice(c.id, effort = Change("high")).effort)
+        advanceTimeBy(Hub.MODELS_TTL_MS + 1)
+        k.clark.modelList = ModelOptions("clark", error = AgentErrorInfo("busy", "Codex is restarting"))
+        val failed = k.hub.models("clark")
+        assertEquals("busy", failed.error?.code)
+        assertEquals("Codex is restarting", failed.error?.detail)
+        // Without a list to go by, the chat keeps its effort and its turns carry it.
+        assertEquals("high", k.hub.setChoice(c.id, model = Change(null)).effort)
+        k.hub.send(c.id, SendRequest("Go"))
+        advanceUntilIdle()
+        assertEquals("high", k.clark.turns.last().effort)
+        // A failed list is asked for again after 30 s, not 10 minutes.
+        val calls = k.clark.modelCalls
+        advanceTimeBy(Hub.MODELS_RETRY_MS + 1)
+        k.hub.models("clark")
+        assertEquals(calls + 1, k.clark.modelCalls)
+    }
+
+    @Test
+    fun aRefreshReachesTheAdapter() = runTest {
+        val k = kit()
+        k.hub.models("clark")
+        k.hub.ownSkills("clark")
+        advanceTimeBy(Hub.MODELS_RETRY_MS + 1)
+        k.hub.models("clark", refresh = true)
+        k.hub.ownSkills("clark", refresh = true)
+        assertEquals(listOf(false, false, true, true), k.clark.refreshes)
+    }
+
+    // The hub hands out the phone's MCP endpoint with the computer's token, or nothing: the computer refuses a grant
+    // without a token.
+    @Test
+    fun aComputerTurnGetsTheEndpointAndTokenTogetherOrNeither() = runTest {
+        val with = "ph_withtoken0"
+        val without = "ph_notoken000"
+        val k = HubKit(
+            this,
+            settings = AgentSettings(computers = listOf(PairedComputer(with, "a", "100.64.0.2", mcpToken = "tok"), PairedComputer(without, "b", "100.64.0.3"))),
+            mcpUrl = { "http://100.64.0.9:47801/mcp" },
+        )
+        val a = AgentIds.computer(with, ComputerProgram.CLAUDE)
+        val b = AgentIds.computer(without, ComputerProgram.CLAUDE)
+        k.adapters[a] = ScriptedAdapter(a)
+        k.adapters[b] = ScriptedAdapter(b)
+        runCurrent()
+        k.hub.ready()
+        k.hub.send(k.hub.create(a, null).id, SendRequest("Go"))
+        k.hub.send(k.hub.create(b, null).id, SendRequest("Go"))
+        advanceUntilIdle()
+        assertEquals(McpGrant("http://100.64.0.9:47801/mcp", "tok"), (k.adapters[a] as ScriptedAdapter).turns.last().mcp)
+        assertEquals(McpGrant(), (k.adapters[b] as ScriptedAdapter).turns.last().mcp)
+    }
+
+    // After boot the MCP socket can be up before conversations.json is read: a tool call then gets the agent's stored
+    // chat, not a new one saved over the rest.
+    @Test
+    fun aToolCallWaitsForTheStoredChats() = runTest {
+        val dir = java.nio.file.Files.createTempDirectory("rukoo-hub").toFile()
+        val stored = """{"version":1,"conversations":[{"id":"c_old","agent":"clark","title":"Clark","origin":"external","createdAt":${HubKit.BASE},"updatedAt":${HubKit.BASE},"items":[]}]}"""
+        File(dir, "conversations.json").writeText(stored)
+        val k = HubKit(this, dir = dir)
+        // Nothing has run yet: the load is still to come.
+        val c = k.hub.ensureConversation(ToolIdentity("clark"), null, null)
+        assertEquals("c_old", c.id)
+        assertEquals(1, k.hub.conversations.value.size)
     }
 }

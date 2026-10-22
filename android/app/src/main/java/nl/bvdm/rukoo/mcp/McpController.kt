@@ -35,6 +35,12 @@ data class McpStatus(
             else -> null
         }
 
+    /**
+     * Tools turned off: nothing listens. Who may connect stays, as only agents.json changes it and the service
+     * notification and Settings show it again when the tools come back on.
+     */
+    fun disabled(): McpStatus = copy(running = false, address = null, port = 0, error = ERROR_DISABLED, advertised = null, detail = null)
+
     companion object {
         const val ERROR_DISABLED = "disabled"
         const val ERROR_NO_TAILNET = "no-tailnet"

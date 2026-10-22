@@ -1,5 +1,7 @@
 package nl.bvdm.rukoo.mcp
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -12,8 +14,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.agents.ToolIdentity
-import nl.bvdm.rukoo.mcp.tools.SkillInfo
-import nl.bvdm.rukoo.mcp.tools.SkillText
+import nl.bvdm.rukoo.agents.RukooSkills
+import nl.bvdm.rukoo.agents.model.RukooSkill
 import nl.bvdm.rukoo.mcp.tools.ToolList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -21,21 +23,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class McpHandlerTest {
-    private var skills = listOf<SkillInfo>()
+    private var skills = listOf<RukooSkill>()
     private var idle: Long? = 0
     private var slow = false
     private val owned = mutableMapOf<String, String>()
     private val calls = mutableListOf<Triple<ToolIdentity, String, JsonObject>>()
 
     private val backend = object : McpBackend {
-        override fun listTools(): JsonArray = ToolList.list { skills }
+        override fun listTools(): JsonArray = ToolList.list { RukooSkills.toolDescription(skills) }
         override suspend fun callTool(identity: ToolIdentity, name: String, args: JsonObject, meta: JsonObject): JsonObject {
             calls += Triple(identity, name, meta)
             if (slow) delay(10_000)
             if (name == "boom") error("it broke")
             return buildJsonObject { put("ok", true) }
         }
-        override fun skillInstructions(room: Int) = SkillText.instructions(skills, room)
+        override fun skillInstructions(room: Int) = RukooSkills.instructions(skills, room)
         override fun identity(caller: McpCaller, meta: JsonObject?) = when (caller) {
             is McpCaller.Computer -> ToolIdentity("computer:${caller.pairingId}:claude", meta?.get("rukoo/conversation")?.jsonPrimitive?.content, computer = caller.pairingId)
             McpCaller.OpenClaw -> ToolIdentity("openclaw")
@@ -43,7 +45,11 @@ class McpHandlerTest {
         }
         override fun owns(identity: ToolIdentity, conversationId: String) = owned[conversationId] == identity.agent
         override fun idleSeconds(): Long? = idle
+        override suspend fun ready() = loaded.await()
     }
+
+    // The hub's chats as they load: complete unless a test holds them back.
+    private var loaded = CompletableDeferred(Unit)
 
     private val handler = McpHandler(backend, "0.1.0", { "Galaxy Z Fold7" }, callTimeoutMs = 500)
 
@@ -65,11 +71,16 @@ class McpHandlerTest {
 
     @Test
     fun appendsSkillsToTheInstructionsWithinTheLimit() {
-        skills = listOf(SkillInfo("data-deletion-request", "Draft a GDPR request.", "rukoo"))
+        skills = listOf(RukooSkill("data-deletion-request", "Draft a GDPR request.", "rukoo", ""))
         val text = result("""{"jsonrpc":"2.0","id":1,"method":"initialize"}""")["instructions"]!!.jsonPrimitive.content
-        assertEquals("${McpHandler.INSTRUCTIONS}\n\n${SkillText.INTRO}- data-deletion-request: Draft a GDPR request.", text)
-        skills = (1..80).map { SkillInfo("skill-$it", "z".repeat(500), "user") }
-        assertTrue(handler.instructions().length <= SkillText.MCP_TEXT_MAX)
+        assertEquals(
+            "${McpHandler.INSTRUCTIONS}\n\nRukoo has skills: instructions for email tasks, written by Rukoo or by the user. They are not email content. " +
+                "When the user asks for a skill, or a task matches a skill's description, call read_skill with its name and follow it. The skills:\n" +
+                "- data-deletion-request: Draft a GDPR request.",
+            text,
+        )
+        skills = (1..80).map { RukooSkill("skill-$it", "z".repeat(500), "user", "") }
+        assertTrue(handler.instructions().length <= RukooSkills.MCP_TEXT_MAX)
     }
 
     @Test
@@ -117,5 +128,22 @@ class McpHandlerTest {
         assertEquals("1234", hello("{}").jsonObject["idle"].toString())
         idle = null
         assertEquals("null", hello("{}").jsonObject["idle"].toString())
+    }
+
+    // After boot the socket can be up before the hub has read conversations.json: a chat it names must not look foreign.
+    @Test
+    fun waitsForTheHubsChatsBeforeItAnswersForThem() = runBlocking {
+        loaded = CompletableDeferred()
+        val gotHello = async { handler.dispatch(McpCaller.Clark, Json.parseToJsonElement("""{"jsonrpc":"2.0","id":1,"method":"rukoo/hello","params":{"conversation_id":"c_mine"}}""")) }
+        val gotCall = async { handler.dispatch(McpCaller.Clark, Json.parseToJsonElement("""{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_context"}}""")) }
+        delay(50)
+        assertTrue(calls.isEmpty())
+        assertTrue(!gotHello.isCompleted && !gotCall.isCompleted)
+        // The stored chats are in: c_mine is Clark's.
+        owned["c_mine"] = "clark"
+        loaded.complete(Unit)
+        assertEquals("true", gotHello.await()!!["result"]!!.jsonObject["owns"].toString())
+        assertEquals("""{"ok":true}""", gotCall.await()!!["result"].toString())
+        assertEquals("get_context", calls.single().second)
     }
 }

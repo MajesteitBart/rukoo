@@ -15,10 +15,10 @@ import nl.bvdm.rukoo.agents.model.AgentIds
  */
 class DefaultAdapterFactory(
     private val deps: AdapterDeps,
-    /** The hub, for the fake agent's tool calls (plans, sources, proposals) and agent names; null until it exists. */
+    /** The hub, for the fake agent's display name in its notices; null until it exists. */
     private val hub: () -> AgentHub? = { null },
-    /** Rukoo's tool handlers for the fake agent, once the MCP side offers them; else [HubFakeTools]. */
-    private val fakeTools: FakeTools? = null,
+    /** Rukoo's tools for the fake agent: the app passes the phone's MCP tool handler. */
+    private val fakeTools: FakeTools = FakeTools.None,
     /** Debug screenshots: every agent id answers with the fake agent, like desktop's SEM_AGENT_FAKE=1. */
     private val allFake: Boolean = false,
     private val debug: Boolean = BuildConfig.DEBUG,
@@ -43,14 +43,14 @@ class DefaultAdapterFactory(
     }
 
     private fun build(agentId: String, fake: Boolean): AgentAdapter? {
-        if (fake) return FakeAdapter(agentId, fakeTools ?: HubFakeTools(hub), hub, fakeScale)
+        if (fake) return FakeAdapter(agentId, fakeTools, hub, fakeScale)
         val settings = deps.settings
         return when (agentId) {
             AgentIds.CLARK -> HermesAdapter({ settings.current().clark }, deps.http, deps.scope, texts, deps.clock)
             AgentIds.OPENCLAW -> OpenClawAdapter({ settings.current().openclaw }, deps.http, deps.scope, texts, deps.clock)
             else -> {
                 val (pairingId, program) = AgentIds.parseComputer(agentId) ?: return null
-                ComputerAdapter(pairingId, program, { settings.current() }, deps.desktop, { deps.mcp.status.value }, hello, deps.scope, texts, deps.clock)
+                ComputerAdapter(pairingId, program, { settings.current() }, deps.desktop, hello, deps.scope, texts, deps.clock)
             }
         }
     }

@@ -30,7 +30,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -101,6 +103,9 @@ class HermesAdapter internal constructor(
         val statusTtl: Long = 30_000,
         // A stop for a run whose start answered late: the repeated start that names it.
         val quitAnswer: Long = 1_500,
+        // How long Stop waits for a run start already on its way, so the hub knows whether Hermes took the message.
+        // Well inside the 12 s the hub gives a stopped adapter.
+        val stopAnswer: Long = 8_000,
         // After a 500 on /v1/skills (stock Hermes answers every list with one), skills() doesn't ask again this long.
         val brokenSkills: Long = 10 * 60_000,
     )
@@ -190,9 +195,10 @@ class HermesAdapter internal constructor(
      * The model_routes aliases (GET /v1/models) and the models of each provider Hermes has credentials for
      * (GET /api/model/options), named provider::model. Either list can be missing; the menu has the other one.
      */
-    override suspend fun models(): ModelOptions = redacting { loadModels() }
+    // Hermes keeps no list of its own between calls, so a refresh asks the same as any call.
+    override suspend fun models(refresh: Boolean): ModelOptions = redacting { loadModels() }
 
-    override suspend fun skills(): List<OwnSkill> = redacting { loadSkills() }
+    override suspend fun skills(refresh: Boolean): List<OwnSkill> = redacting { loadSkills() }
 
     /** Errors whose text came from the server, without the key. */
     private suspend fun <T> redacting(block: suspend () -> T): T {
@@ -350,6 +356,10 @@ class HermesAdapter internal constructor(
             val res = try {
                 pending.await().getOrThrow()
             } catch (e: CancellationException) {
+                // Desktop waits for this answer before the hub decides whether the turn reached Hermes. A run Hermes took
+                // has used up the email and notes, so it must count as reached before the cancellation goes on.
+                val early = withContext(NonCancellable) { withTimeoutOrNull(timing.stopAnswer) { pending.await().getOrNull() } }
+                if (runIdOf(early) != null) runCatching { turn.accepted() }
                 scope.launch { stopSubmitted(turn, pending, body, key, server) }
                 throw e
             } catch (e: AgentException) {

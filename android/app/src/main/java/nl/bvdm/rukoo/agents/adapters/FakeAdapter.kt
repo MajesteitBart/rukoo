@@ -72,9 +72,9 @@ class FakeAdapter internal constructor(
 
     override suspend fun status(force: Boolean) = AgentStatus(AgentState.READY, "Fake agent")
 
-    override suspend fun models(): ModelOptions = (MODELS[flavor] ?: MODELS.getValue("claude")).copy(agent = id)
+    override suspend fun models(refresh: Boolean): ModelOptions = (MODELS[flavor] ?: MODELS.getValue("claude")).copy(agent = id)
 
-    override suspend fun skills(): List<OwnSkill> = SKILLS[flavor] ?: SKILLS.getValue("claude")
+    override suspend fun skills(refresh: Boolean): List<OwnSkill> = SKILLS[flavor] ?: SKILLS.getValue("claude")
 
     override suspend fun runTurn(turn: TurnHandle): TurnResult {
         synchronized(receivedTurns) {

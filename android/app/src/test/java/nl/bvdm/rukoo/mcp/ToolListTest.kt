@@ -8,8 +8,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import nl.bvdm.rukoo.mcp.tools.SkillInfo
-import nl.bvdm.rukoo.mcp.tools.SkillText
+import nl.bvdm.rukoo.agents.RukooSkills
+import nl.bvdm.rukoo.agents.model.RukooSkill
 import nl.bvdm.rukoo.mcp.tools.ToolList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -17,7 +17,8 @@ import org.junit.Test
 
 /**
  * Clark's bridge caches one tool list for every device it finds, so the phone's list must be the desktop's to the
- * byte, key order included. The fixture is desktop's `tools.list(null)`.
+ * byte, key order included. The fixture is desktop's `tools.list(null)`. How skill lists fit their room is
+ * RukooSkillsTest's, against desktop's skills.js.
  */
 class ToolListTest {
     private val json = Json { prettyPrint = false }
@@ -32,18 +33,18 @@ class ToolListTest {
         tools.map { t ->
             val o = t.jsonObject
             if (o["name"]!!.jsonPrimitive.content != "read_skill") o
-            else JsonObject(o.toMutableMap().apply { put("description", JsonPrimitive(SkillText.toolDescription(emptyList()))) })
+            else JsonObject(o.toMutableMap().apply { put("description", JsonPrimitive(RukooSkills.toolDescription(emptyList()))) })
         },
     )
 
     @Test
     fun isTheDesktopListByteForByte() {
-        assertEquals(encode(desktop()), encode(ToolList.list { emptyList() }))
+        assertEquals(encode(desktop()), encode(ToolList.list { RukooSkills.toolDescription(emptyList()) }))
     }
 
     @Test
     fun isTheDesktopListWithSkills() {
-        val withSkills = ToolList.list { listOf(SkillInfo("data-deletion-request", "Draft a GDPR request.", "rukoo")) }
+        val withSkills = ToolList.list { RukooSkills.toolDescription(listOf(RukooSkill("data-deletion-request", "Draft a GDPR request.", "rukoo", ""))) }
         assertEquals(encode(desktop()), encode(normalized(withSkills)))
         val description = withSkills.first { it.jsonObject["name"]!!.jsonPrimitive.content == "read_skill" }.jsonObject["description"]!!.jsonPrimitive.content
         assertTrue(description.endsWith(" Skills:\n- data-deletion-request: Draft a GDPR request."))
@@ -60,22 +61,5 @@ class ToolListTest {
         assertEquals("search_mail", ToolList.bareName("mcp_rukoo_search_mail"))
         assertEquals("search_mail", ToolList.bareName("rukoo.search_mail"))
         assertEquals("search_mail", ToolList.bareName("search_mail"))
-    }
-
-    // skills.js listLines: full descriptions when they fit, else all cut to the longest that fits, else "and n more".
-    @Test
-    fun fitsSkillListsIntoTheRoom() {
-        val two = listOf(SkillInfo("a", "short", "rukoo"), SkillInfo("b", "also short", "user"))
-        assertEquals("- a: short\n- b: also short", SkillText.listLines(two, 1000))
-        val long = (1..3).map { SkillInfo("s$it", "x".repeat(300), "rukoo") }
-        val cut = SkillText.listLines(long, 400)
-        assertTrue(cut.length <= 400)
-        assertTrue(cut.lines().all { it.endsWith("…") })
-        val many = (1..60).map { SkillInfo("skill-$it", "y".repeat(200), "rukoo") }
-        val listed = SkillText.listLines(many, 1290)
-        assertTrue(listed.length <= 1290)
-        assertTrue(listed.lines().last().matches(Regex("- and \\d+ more; read_skill without a name lists them all\\.")))
-        assertEquals("", SkillText.instructions(emptyList()))
-        assertTrue(SkillText.instructions(two).startsWith(SkillText.INTRO))
     }
 }

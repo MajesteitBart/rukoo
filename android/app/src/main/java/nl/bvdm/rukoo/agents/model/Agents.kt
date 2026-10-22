@@ -99,7 +99,11 @@ data class OwnSkill(val name: String, val description: String = "", val scope: S
 @Serializable
 data class OwnSkills(val agent: String, val skills: List<OwnSkill> = emptyList(), val error: AgentErrorInfo? = null)
 
-/** A Rukoo skill, offered as `/name` (skills.js): bundled (`rukoo`) or the user's own (`user`). */
+/**
+ * A Rukoo skill, offered as `/name` (skills.js): bundled (`rukoo`) or the user's own (`user`). [body] is SKILL.md
+ * after its frontmatter, the instructions a `/name` turn carries; read_skill gets the whole file from
+ * [nl.bvdm.rukoo.agents.AgentHub.readSkill].
+ */
 data class RukooSkill(val name: String, val description: String, val source: String, val body: String)
 
 /**

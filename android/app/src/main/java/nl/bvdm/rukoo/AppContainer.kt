@@ -1,7 +1,6 @@
 package nl.bvdm.rukoo
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -16,18 +15,18 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
 import nl.bvdm.rukoo.agents.AdapterDeps
 import nl.bvdm.rukoo.agents.AgentHub
 import nl.bvdm.rukoo.agents.AgentNotifier
 import nl.bvdm.rukoo.agents.AgentSettingsStore
 import nl.bvdm.rukoo.agents.AndroidHubStrings
+import nl.bvdm.rukoo.agents.ComposerUnsubscribeOpener
 import nl.bvdm.rukoo.agents.Hub
 import nl.bvdm.rukoo.agents.RukooSkills
 import nl.bvdm.rukoo.agents.adapters.DefaultAdapterFactory
+import nl.bvdm.rukoo.agents.adapters.FakeTools
 import nl.bvdm.rukoo.agents.preview.PreviewAgentHub
-import nl.bvdm.rukoo.mail.model.Address
-import nl.bvdm.rukoo.mail.model.UnsubscribeResult
-import nl.bvdm.rukoo.ui.ComposerState
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretBox
 import nl.bvdm.rukoo.desktop.DesktopDevice
@@ -37,6 +36,7 @@ import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mcp.AndroidMcpController
 import nl.bvdm.rukoo.mcp.McpController
+import nl.bvdm.rukoo.mcp.PageOpener
 import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.Locales
 import nl.bvdm.rukoo.settings.SettingsStore
@@ -115,25 +115,21 @@ class AppContainer(context: Context) : AppServices {
                 mail = mail,
                 screen = screen,
                 settings = agentSettings,
-                factory = DefaultAdapterFactory(AdapterDeps(appContext, agentSettings, desktop, mcp, http, clock, appContext.filesDir, appScope)),
+                factory = DefaultAdapterFactory(
+                    AdapterDeps(appContext, agentSettings, desktop, http, clock, appContext.filesDir, appScope),
+                    // Both are read during turns, after the hub exists.
+                    hub = { hub },
+                    // The debug fake agent runs the same tools as a real one, through the phone's MCP tool handler.
+                    fakeTools = FakeTools { identity, name, args -> mcp.tools.callTool(identity, name, args, JsonObject(emptyMap())) },
+                ),
                 dataDir = appContext.filesDir,
                 rukooSkills = RukooSkills.forApp(appContext.assets, appContext.filesDir),
                 alerts = AgentNotifier(appContext, settingsSnapshot, screen) { hub.agentName(it) },
                 strings = AndroidHubStrings(appContext),
                 mcpUrl = { mcp.status.value.url },
-                // An approved unsubscribe that needs the user: the sender's page in the browser, or its email in the composer.
-                openUnsubscribe = { result ->
-                    when (result) {
-                        is UnsubscribeResult.OpenPage -> runCatching {
-                            appContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }.isSuccess
-                        is UnsubscribeResult.SendEmail -> {
-                            composer.open(ComposerState(to = listOf(Address("", result.to)), subject = result.subject, body = result.body))
-                            true
-                        }
-                        else -> false
-                    }
-                },
+                // An approved unsubscribe that needs the user: the sender's page in the browser (or a notification while
+                // Rukoo is in the background), or its email in the composer when nothing else is in it.
+                unsubscribe = ComposerUnsubscribeOpener(mail, composer, PageOpener(appContext, screen)::open, Dispatchers.Main.immediate),
                 clock = clock,
                 includeFake = BuildConfig.DEBUG,
             )
@@ -142,7 +138,7 @@ class AppContainer(context: Context) : AppServices {
     }
 
     // Made with the container, not lazily: it starts Rukoo's tools as soon as the app (or the boot receiver) runs.
-    override val mcp: McpController = AndroidMcpController(this)
+    override val mcp: AndroidMcpController = AndroidMcpController(this)
 
     override val desktop: DesktopLink by lazy { HttpDesktopLink(agentSettings, http, { DesktopDevice.info(appContext) }, clock) }
 

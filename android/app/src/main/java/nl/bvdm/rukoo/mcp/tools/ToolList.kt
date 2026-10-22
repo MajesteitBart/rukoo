@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import nl.bvdm.rukoo.agents.RukooSkills
 
 /**
  * Rukoo's twelve MCP tools as desktop lists them (tools.js:43-293): names, titles, descriptions, input schemas
@@ -281,7 +282,7 @@ object ToolList {
         ToolSpec(
             "read_skill",
             "Read a skill",
-            SkillText.toolDescription(emptyList()),
+            RukooSkills.toolDescription(emptyList()),
             schema(
                 "name" to str {
                     description("The skill, e.g. \"data-deletion-request\". Leave it out to list the skills.")
@@ -302,12 +303,12 @@ object ToolList {
     fun byName(name: String): ToolSpec? = BY_NAME[name]
 
     /**
-     * What tools/list returns. [skills] fills read_skill's description; when listing them fails the static
-     * description stays ("A skills folder that can't be read must not cost the agent its tools.").
+     * What tools/list returns. [readSkill] is read_skill's description with the skills there are now; when listing
+     * them fails the static description stays ("A skills folder that can't be read must not cost the agent its tools.").
      */
-    fun list(skills: () -> List<SkillInfo>): JsonArray = JsonArray(
+    fun list(readSkill: () -> String): JsonArray = JsonArray(
         TOOLS.map { t ->
-            val description = if (t.name == "read_skill") runCatching { SkillText.toolDescription(skills()) }.getOrDefault(t.description) else t.description
+            val description = if (t.name == "read_skill") runCatching(readSkill).getOrDefault(t.description) else t.description
             buildJsonObject {
                 put("name", t.name)
                 put("title", t.title)
@@ -322,74 +323,6 @@ object ToolList {
 
     /** Accepts bare names and the prefixed forms agents report (mcp__rukoo__x, mcp_rukoo_x). */
     fun bareName(name: String): String = name.replaceFirst(PREFIX, "")
-}
-
-/** A skill as the tools list it: Rukoo's own (`rukoo`) or the user's (`user`). Never tagged: skills aren't email. */
-data class SkillInfo(val name: String, val description: String, val source: String)
-
-/**
- * The skill lists in the MCP instructions and in read_skill's description (skills.js:397-447). Claude Code cuts an
- * MCP server's instructions and each tool description at 2048 characters, so both lists are made to fit.
- */
-object SkillText {
-    const val MCP_TEXT_MAX = 2048
-    private const val DESCRIPTION_MAX = 1024
-    private const val LISTED_DESCRIPTION_MIN = 60
-
-    const val INTRO =
-        "Rukoo has skills: instructions for email tasks, written by Rukoo or by the user. They are not email content. When the user asks for a skill, or a task matches a skill's description, call read_skill with its name and follow it. The skills:\n"
-
-    private const val TOOL_BASE =
-        "Returns one of Rukoo's skills: instructions for an email task, written by Rukoo or by the user, not taken from an email. You get SKILL.md and the text files next to it (scripts, references), and a list of what was left out. Pass file to read one of the skill's files. Without a name it lists the skills. Follow a skill when the user asks for it or the task matches its description."
-
-    fun clip(v: String, max: Int): String = if (v.length > max) v.take(max - 1) + "…" else v
-
-    private fun line(s: SkillInfo, cap: Int) = "- ${s.name}: ${clip(s.description, cap)}"
-
-    private fun more(n: Int) = "- and $n more; read_skill without a name lists them all."
-
-    /**
-     * One line per skill in at most [room] characters. When the full descriptions don't fit, all of them are cut to
-     * the longest length at which every skill still fits; when even short ones don't, the list ends with how many
-     * are left out.
-     */
-    fun listLines(list: List<SkillInfo>, room: Int): String {
-        fun size(cap: Int) = list.sumOf { line(it, cap).length + 1 } - 1
-        var cap = DESCRIPTION_MAX
-        if (size(cap) > room && size(LISTED_DESCRIPTION_MIN) <= room) {
-            var lo = LISTED_DESCRIPTION_MIN
-            var hi = DESCRIPTION_MAX
-            while (lo < hi) {
-                val mid = (lo + hi + 1) / 2
-                if (size(mid) <= room) lo = mid else hi = mid - 1
-            }
-            cap = lo
-        }
-        if (size(cap) <= room) return list.joinToString("\n") { line(it, cap) }
-        val lines = mutableListOf<String>()
-        var used = 0
-        for ((i, s) in list.withIndex()) {
-            val l = line(s, LISTED_DESCRIPTION_MIN)
-            if (used + l.length + 1 + more(list.size - i - 1).length > room) {
-                lines += more(list.size - i)
-                break
-            }
-            lines += l
-            used += l.length + 1
-        }
-        return lines.joinToString("\n")
-    }
-
-    /** The skills part of the MCP instructions, in at most [room] characters, or "" without skills. */
-    fun instructions(list: List<SkillInfo>, room: Int = MCP_TEXT_MAX): String =
-        if (list.isEmpty()) "" else INTRO + listLines(list, room - INTRO.length)
-
-    /** read_skill's description: not every agent passes MCP instructions on to its model, so the list is here too. */
-    fun toolDescription(list: List<SkillInfo>): String {
-        if (list.isEmpty()) return "$TOOL_BASE There are no skills yet."
-        val head = "$TOOL_BASE Skills:\n"
-        return head + listLines(list, MCP_TEXT_MAX - head.length)
-    }
 }
 
 /** Shorthand for JSON strings in results. */

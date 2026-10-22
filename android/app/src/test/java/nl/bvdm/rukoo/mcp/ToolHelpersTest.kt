@@ -69,9 +69,6 @@ class ToolHelpersTest {
         val people = DraftWriter.people(listOf(Json.parseToJsonElement("\"\\\"Last, First\\\" <lf@x.nl>, plain@x.nl\"")), "to")!!
         assertEquals(listOf("Last, First" to "lf@x.nl", "" to "plain@x.nl"), people.map { it.name to it.address })
         assertNull(DraftWriter.people(null, "to"))
-        assertEquals("Re: Hello", DraftWriter.prefixed("Hello", "Re"))
-        assertEquals("Antw: Hello", DraftWriter.prefixed("Antw: Hello", "Re"))
-        assertEquals("Fwd: Re: Hello", DraftWriter.prefixed("Re: Hello", "Fwd"))
         assertEquals("hello world", MailLookup.baseSubject("Re: Fwd [2]: AW:  Hello   World"))
         assertEquals("cafe", MailLookup.fold("Café"))
         assertEquals("2026-10-22T16:00:00.000Z", MailLookup.iso(java.time.Instant.parse("2026-10-22T16:00:00Z").toEpochMilli()))

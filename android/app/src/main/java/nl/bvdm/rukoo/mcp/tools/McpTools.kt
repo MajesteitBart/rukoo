@@ -7,7 +7,6 @@ import java.util.Collections
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -22,6 +21,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.agents.AgentHub
 import nl.bvdm.rukoo.agents.AgentSettings
+import nl.bvdm.rukoo.agents.SkillException
 import nl.bvdm.rukoo.agents.ToolIdentity
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.ApprovalChoice
@@ -56,25 +56,21 @@ fun interface ChatFileReader {
     fun read(conversation: Conversation, file: ChatFile): ByteArray
 }
 
-/** Opens a sender's unsubscribe page for mail_action; false when Android didn't let Rukoo show it. */
-fun interface UnsubscribeOpener {
-    fun openPage(url: String): Boolean
-}
-
-/** Everything the tools read and change. [hubContext] is where hub and composer calls run (the main thread in the app). */
+/**
+ * Everything the tools read and change. [workContext] is where tool calls run: off the main thread in the app, as
+ * the hub is thread-safe and the mail engine has its own thread. [mainContext] is where the composer changes, the
+ * thread the UI changes it on.
+ */
 class ToolDeps(
     val mail: MailEngine,
     val hub: AgentHub,
     val screen: ScreenState,
     val composer: ComposerController,
     val agentSettings: () -> AgentSettings,
-    val skills: SkillSource,
-    val scope: CoroutineScope,
-    val hubContext: CoroutineContext = EmptyCoroutineContext,
+    val workContext: CoroutineContext = EmptyCoroutineContext,
+    val mainContext: CoroutineContext = EmptyCoroutineContext,
     val defaultAccountId: () -> String? = { null },
     val chatFiles: ChatFileReader = ChatFileReader { _, f -> File(f.file).readBytes() },
-    val opener: UnsubscribeOpener = UnsubscribeOpener { false },
-    val texts: DraftTexts = DraftTexts.English,
     val zone: () -> ZoneId = { ZoneId.systemDefault() },
     val clock: Clock = Clock.System,
     /** How long mail_action waits for actions that run without asking: clients give up on a call after 120 s. */
@@ -109,9 +105,12 @@ class McpTools(private val d: ToolDeps) : McpBackend {
     private val drafts = DraftWriter(d, lookup)
     private val mailActions = MailActions(d, lookup)
 
-    override fun listTools(): JsonArray = ToolList.list { d.skills.list() }
+    // Skills come from the hub's port of skills.js, the same list the chat's `/` menu shows.
+    override fun listTools(): JsonArray = ToolList.list { d.hub.skillToolDescription() }
 
-    override fun skillInstructions(room: Int): String = SkillText.instructions(d.skills.list(), room)
+    override fun skillInstructions(room: Int): String = d.hub.skillInstructions(room)
+
+    override suspend fun ready() = d.hub.ready()
 
     override fun owns(identity: ToolIdentity, conversationId: String): Boolean = d.hub.owns(identity, conversationId)
 
@@ -134,7 +133,7 @@ class McpTools(private val d: ToolDeps) : McpBackend {
     }
 
     override suspend fun callTool(identity: ToolIdentity, name: String, args: JsonObject, meta: JsonObject): JsonObject =
-        withContext(d.hubContext) { call(identity, name, args, meta) }
+        withContext(d.workContext) { call(identity, name, args, meta) }
 
     private suspend fun call(identity: ToolIdentity, name: String, args: JsonObject, meta: JsonObject): JsonObject {
         // Turning an agent off also closes Rukoo to it. A tool error rather than a 401, so the agent keeps the
@@ -179,12 +178,6 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         "read_skill" -> ToolOut.Data(readSkill(args))
         else -> throw ToolError("Unknown tool \"$name\".")
     }
-
-    /**
-     * A mail approval card the hub kept from before the app restarted, answered now (desktop onMailDecision): the
-     * watcher that mail_action started is gone with the old process, so the hub hands the decision over here.
-     */
-    fun mailDecision(conversationId: String, item: Item.Approval, approved: Boolean) = mailActions.decided(conversationId, item, approved)
 
     private suspend fun ensureConversation(call: ToolCall): Conversation = ensureConversation(d, lookup, call)
 
@@ -573,12 +566,17 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         }
     }
 
-    // Skills come from Rukoo's skills and the user's, never from an email, so nothing here is tagged.
+    // Skills come from Rukoo's skills and the user's, never from an email, so nothing here is tagged. The hub reads
+    // them as desktop's skills.js does: SKILL.md whole, the files next to it, and what was left out.
     private fun readSkill(args: JsonObject): JsonObject {
         val name = args.str("name").orEmpty()
         val file = args.str("file").orEmpty()
         if (file.isNotEmpty() && name.isEmpty()) throw ToolError("Pass the name of the skill the file belongs to.")
-        return d.skills.read(name, file)
+        return try {
+            d.hub.readSkill(name.ifEmpty { null }, file.ifEmpty { null })
+        } catch (e: SkillException) {
+            throw ToolError(e.message.orEmpty())
+        }
     }
 
     companion object {
