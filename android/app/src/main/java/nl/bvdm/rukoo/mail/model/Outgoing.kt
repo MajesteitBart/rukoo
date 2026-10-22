@@ -47,4 +47,11 @@ data class OutgoingMessage(
     val replyKind: ReplyKind = ReplyKind.NEW,
     /** The Rukoo id of the message replied to or forwarded; it gets the \Answered flag after a reply. */
     val sourceMessageId: String? = null,
+    /**
+     * The quoted original as an HTML block (desktop's `data-rukoo-quote` header and blockquote, see
+     * mail.compose.Quote), appended after [text] when [html] is null. Empty for no quote.
+     */
+    val quote: String = "",
+    /** The Rukoo id of the stored draft this message replaces; it is deleted after sending or saving again. */
+    val draftId: String? = null,
 )
