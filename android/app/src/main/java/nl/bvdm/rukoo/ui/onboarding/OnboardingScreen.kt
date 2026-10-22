@@ -25,7 +25,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,19 +46,16 @@ import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.mail.model.MailProviders
 import nl.bvdm.rukoo.settings.Language
-import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.RkChipButton
 import nl.bvdm.rukoo.ui.components.RkIconButton
 import nl.bvdm.rukoo.ui.components.RkLinkButton
 import nl.bvdm.rukoo.ui.components.RkStatus
-import nl.bvdm.rukoo.ui.components.RkToastHost
 import nl.bvdm.rukoo.ui.components.SettingsCard
 import nl.bvdm.rukoo.ui.components.SettingsChevron
 import nl.bvdm.rukoo.ui.components.Spinner
 import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.components.settingsDividerInset
 import nl.bvdm.rukoo.ui.components.StatusPill
-import nl.bvdm.rukoo.ui.components.rememberRkToastState
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
@@ -103,7 +99,6 @@ private fun parent(step: String): String = when {
 fun OnboardingScreen(app: AppViewModel, modifier: Modifier = Modifier) {
     val model: SetupModel = viewModel { SetupModel(app.services) }
     var step by rememberSaveable { mutableStateOf(HOME) }
-    val toast = rememberRkToastState()
     val context = LocalContext.current
     DisposableEffect(Unit) {
         onDispose {
@@ -133,53 +128,50 @@ fun OnboardingScreen(app: AppViewModel, modifier: Modifier = Modifier) {
         step = parent(step)
     }
 
-    CompositionLocalProvider(LocalRkToast provides toast) {
-        BoxWithConstraints(modifier.fillMaxSize().background(Rk.colors.bg)) {
-            val height = maxHeight
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
-                Column(
-                    Modifier.widthIn(max = 480.dp).fillMaxWidth().heightIn(min = height).padding(horizontal = 24.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    TopRow(app, back = if (step == HOME) null else ({
-                        if (step == PAIR) model.resetPair()
-                        step = parent(step)
-                    }))
-                    Spacer(Modifier.height(24.dp))
-                    Brand()
-                    Spacer(Modifier.height(20.dp))
-                    Text(stepTitle(step), style = Rk.type.setupTitle, color = Rk.colors.text)
-                    Spacer(Modifier.height(20.dp))
-                    val motion = Rk.motion
-                    AnimatedContent(
-                        targetState = step,
-                        transitionSpec = { fadeIn(motion.tween(160)) togetherWith fadeOut(motion.tween(100)) },
-                        label = "setup step",
-                    ) { current ->
-                        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                            when {
-                                current == HOME -> Home(app, model, onPair = { step = PAIR }, onAdd = { step = ADD })
-                                current == PAIR -> PairComputerFlow(
-                                    model,
-                                    onDone = {
-                                        model.resetPair()
-                                        step = HOME
-                                    },
-                                    onAddAccount = {
-                                        model.resetPair()
-                                        step = ADD
-                                    },
-                                )
-                                current == ADD -> AddStep(model, onPick = { id -> step = if (id == "google") GOOGLE else IMAP + id })
-                                current == GOOGLE -> GoogleSetup(model, onPassword = { step = "${IMAP}google" }, onPair = { step = PAIR })
-                                current.startsWith(IMAP) -> ImapAccountForm(current.removePrefix(IMAP), model)
-                            }
+    BoxWithConstraints(modifier.fillMaxSize().background(Rk.colors.bg)) {
+        val height = maxHeight
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                Modifier.widthIn(max = 480.dp).fillMaxWidth().heightIn(min = height).padding(horizontal = 24.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.Center,
+            ) {
+                TopRow(app, back = if (step == HOME) null else ({
+                    if (step == PAIR) model.resetPair()
+                    step = parent(step)
+                }))
+                Spacer(Modifier.height(24.dp))
+                Brand()
+                Spacer(Modifier.height(20.dp))
+                Text(stepTitle(step), style = Rk.type.setupTitle, color = Rk.colors.text)
+                Spacer(Modifier.height(20.dp))
+                val motion = Rk.motion
+                AnimatedContent(
+                    targetState = step,
+                    transitionSpec = { fadeIn(motion.tween(160)) togetherWith fadeOut(motion.tween(100)) },
+                    label = "setup step",
+                ) { current ->
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        when {
+                            current == HOME -> Home(app, model, onPair = { step = PAIR }, onAdd = { step = ADD })
+                            current == PAIR -> PairComputerFlow(
+                                model,
+                                onDone = {
+                                    model.resetPair()
+                                    step = HOME
+                                },
+                                onAddAccount = {
+                                    model.resetPair()
+                                    step = ADD
+                                },
+                            )
+                            current == ADD -> AddStep(model, onPick = { id -> step = if (id == "google") GOOGLE else IMAP + id })
+                            current == GOOGLE -> GoogleSetup(model, onPassword = { step = "${IMAP}google" }, onPair = { step = PAIR })
+                            current.startsWith(IMAP) -> ImapAccountForm(current.removePrefix(IMAP), model)
                         }
                     }
-                    Spacer(Modifier.height(32.dp))
                 }
+                Spacer(Modifier.height(32.dp))
             }
-            RkToastHost(toast, Modifier.align(Alignment.BottomCenter))
         }
     }
 }

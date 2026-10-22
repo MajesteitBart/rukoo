@@ -49,7 +49,7 @@ class DebugMcpReceiver : BroadcastReceiver() {
                     }
                     next
                 }
-                (container.mcp as? AndroidMcpController)?.restart()
+                container.mcp.restart()
                 AppLog.i("Mcp", "debug settings applied")
             } finally {
                 pending.finish()

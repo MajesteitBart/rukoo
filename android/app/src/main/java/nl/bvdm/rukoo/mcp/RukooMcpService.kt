@@ -47,7 +47,7 @@ class RukooMcpService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private val controller: AndroidMcpController? get() = appContainer.mcp as? AndroidMcpController
+    private val controller: AndroidMcpController get() = appContainer.mcp
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val control = controller
@@ -133,7 +133,7 @@ class RukooMcpService : Service() {
         if (state == shown) return
         shown = state
         val manager = getSystemService(NotificationManager::class.java) ?: return
-        runCatching { manager.notify(Notifications.SERVICE_NOTIFICATION_ID, notification(controller?.status?.value ?: McpStatus())) }
+        runCatching { manager.notify(Notifications.SERVICE_NOTIFICATION_ID, notification(controller.status.value)) }
     }
 
     private fun notification(status: McpStatus): Notification {
@@ -152,7 +152,7 @@ class RukooMcpService : Service() {
     override fun onDestroy() {
         runtime?.stop()
         runtime = null
-        controller?.stopped()
+        controller.stopped()
         scope.cancel()
         super.onDestroy()
     }

@@ -1,21 +1,22 @@
 package nl.bvdm.rukoo.agents
 
 import android.content.Context
+import nl.bvdm.rukoo.MainActivity
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.TurnStatus
 
-/** Intent extras of the notifications that open a chat. MainActivity (track B) routes on them. */
+/** Intent extras of the notifications that open a chat; MainActivity defines and routes them. */
 object AgentIntents {
     /** The chat to open. */
-    const val EXTRA_CONVERSATION_ID = "nl.bvdm.rukoo.conversation"
+    const val EXTRA_CONVERSATION_ID = MainActivity.EXTRA_CONVERSATION_ID
 
     /** The Rukoo id of the chat's email, when it has one, so the reader can show it next to the chat. */
-    const val EXTRA_MESSAGE_ID = "nl.bvdm.rukoo.message"
+    const val EXTRA_MESSAGE_ID = MainActivity.EXTRA_MESSAGE_ID
 
     /** True on a "draft written" notification: open the composer with the agent's draft. */
-    const val EXTRA_OPEN_COMPOSER = "nl.bvdm.rukoo.composer"
+    const val EXTRA_OPEN_COMPOSER = MainActivity.EXTRA_SHOW_COMPOSER
 }
 
 /**

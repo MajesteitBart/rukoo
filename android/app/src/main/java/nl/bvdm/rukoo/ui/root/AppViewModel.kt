@@ -33,7 +33,6 @@ import kotlinx.serialization.builtins.serializer
 import nl.bvdm.rukoo.AppServices
 import nl.bvdm.rukoo.NotificationRoute
 import nl.bvdm.rukoo.R
-import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.core.RukooJson
 import nl.bvdm.rukoo.mail.MailException
 import nl.bvdm.rukoo.mail.compose.toOutgoing
@@ -45,6 +44,7 @@ import nl.bvdm.rukoo.mail.model.ReplyKind
 import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.mail.model.QuickFilter as ListFilter
 import nl.bvdm.rukoo.ui.ComposerState
+import nl.bvdm.rukoo.ui.agent.DraftCards
 import nl.bvdm.rukoo.ui.PendingRebind
 import nl.bvdm.rukoo.ui.MailtoFields
 import nl.bvdm.rukoo.ui.composer.ComposerFiles
@@ -314,7 +314,8 @@ class AppViewModel(
         _chatEmails.value = ids.distinct()
         val nav = _state.value
         set { it.clearChecked() }
-        openChat(if (nav.chatOpen) nav.chatConversationId else null, ids.first())
+        // A started chat takes the emails as attachments and stays about its own email; a new one is about the first.
+        if (nav.chatOpen && nav.chatConversationId != null) openChat(nav.chatConversationId) else openChat(null, ids.first())
     }
 
     /** The chat input took the emails [chatEmails] offered. */
@@ -773,23 +774,22 @@ class AppViewModel(
         val d = services.composer.current() ?: return
         val name = d.draftedBy ?: d.editedAgent ?: mailUi.strings.get(R.string.composer_agent_someone)
         viewModelScope.launch {
-            val s = mailUi.strings
-            val answer = mailUi.ask(
-                DialogRequest(
-                    s.get(R.string.composer_agent_undo_title, name),
-                    s.get(R.string.composer_agent_undo_help),
-                    s.get(R.string.composer_agent_undo),
-                    s.get(R.string.common_actions_cancel),
-                ),
-            )
-            if (answer.choice != DialogChoice.CONFIRM) return@launch
-            if (!services.composer.undoAgentDraft()) return@launch
-            val hub = services.agents
-            for (row in hub.conversations.value) {
-                val item = hub.get(row.id)?.items?.lastOrNull { it is Item.Draft && it.composerKey == d.id && !it.undone } ?: continue
-                runCatching { hub.patchDraft(row.id, item.id, undone = true) }
-                break
+            // As on desktop, only edits the user made after the agent wrote are worth a question.
+            if (d.editedAgent != null) {
+                val s = mailUi.strings
+                val answer = mailUi.ask(
+                    DialogRequest(
+                        s.get(R.string.composer_agent_undo_title, name),
+                        s.get(R.string.composer_agent_undo_help),
+                        s.get(R.string.composer_agent_undo),
+                        s.get(R.string.common_actions_cancel),
+                    ),
+                )
+                if (answer.choice != DialogChoice.CONFIRM) return@launch
             }
+            if (!services.composer.undoAgentDraft()) return@launch
+            // Every card of this composer that isn't undone yet, in any chat, whatever form its key has.
+            runCatching { DraftCards.markUndone(services.agents, d.id) }
         }
     }
 

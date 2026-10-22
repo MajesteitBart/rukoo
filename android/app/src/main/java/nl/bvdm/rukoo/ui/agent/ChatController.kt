@@ -278,7 +278,7 @@ class ChatController(
             if (app.services.composer.current()?.dirty == true) {
                 say(Txt.Res(R.string.agentui_panel_composer_busy))
             } else {
-                app.openComposer(Mailto.parse(url).toComposer())
+                app.newMessage(Mailto.parse(url))
             }
             return
         }
@@ -375,10 +375,9 @@ class ChatController(
         local.value = if (id != snapshot.agent) local.value.copy(agent = id, model = null, effort = null) else local.value.copy(agent = id)
         if (conversation == null || conversation.agent == id) return
         val email = conversation.message?.id
-        app.openChat(null, email)
-        // Without an email of its own, openChat falls back to the open email: leave that one out.
-        val shown = app.state.value.chatEmailId
-        local.value = local.value.copy(lookedUpFor = shown, detachedFor = if (email == null) shown else null)
+        // A chat without an email of its own starts the new one without an email too.
+        app.openChat(null, email, withoutEmail = email == null)
+        local.value = local.value.copy(lookedUpFor = app.state.value.chatEmailId, detachedFor = null)
     }
 
     /** The model or effort for this chat; a started chat uses it from its next turn. */

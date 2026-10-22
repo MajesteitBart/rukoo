@@ -251,7 +251,8 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
         val ref = loadRef(services.mail, openId, full = false) ?: return@LaunchedEffect
         val found = quietly { hub.findFor(ref) }
         local.value = local.value.copy(lookedUpFor = openId, detachedFor = null, model = null, effort = null)
-        app.openChat(found?.id, openId)
+        // Switches the chat beside the reader without pushing it or making it the pane touched last.
+        app.followEmail(found?.id, openId)
     }
 
     // From the window itself, as RukooRoot decides the layout: the view model hears about a fold a frame later.

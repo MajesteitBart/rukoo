@@ -145,6 +145,10 @@ class Hub(
     private val statuses = HashMap<String, AgentStatus>()
     private val statusRound = HashMap<String, Int>()
 
+    // Rows of chats that didn't change are reused: streaming publishes every 50 ms. Declared before init, whose
+    // background load publishes, so it is never read before it exists.
+    private val rowCache = HashMap<String, Pair<Conversation, ConversationRow>>()
+
     private val _store = MutableStateFlow<Map<String, Conversation>>(emptyMap())
     private val _rows = MutableStateFlow<List<ConversationRow>>(emptyList())
     private val _agents = MutableStateFlow(descriptors(settings.current()))
@@ -262,9 +266,6 @@ class Hub(
         }
         convs[c.id] = c.copy(items = items, updatedAt = clock.now())
     }
-
-    // Rows of chats that didn't change are reused: streaming publishes every 50 ms.
-    private val rowCache = HashMap<String, Pair<Conversation, ConversationRow>>()
 
     private fun publishLocked() {
         for (t in turns.values) materializeLocked(t)
