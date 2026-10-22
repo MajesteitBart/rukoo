@@ -49,7 +49,6 @@ import nl.bvdm.rukoo.core.Ids
 import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.core.SecretCipher
 import nl.bvdm.rukoo.mail.compose.ComposeBody
-import nl.bvdm.rukoo.mail.compose.ComposedBody
 import nl.bvdm.rukoo.mail.compose.ComposerFields
 import nl.bvdm.rukoo.mail.compose.QuoteLabels
 import nl.bvdm.rukoo.mail.compose.ReplyBuilder
@@ -62,7 +61,6 @@ import nl.bvdm.rukoo.mail.engine.MailSnapshot
 import nl.bvdm.rukoo.mail.engine.MailViews
 import nl.bvdm.rukoo.mail.engine.PendingPatch
 import nl.bvdm.rukoo.mail.google.GoogleAuth
-import nl.bvdm.rukoo.mail.google.GoogleSignIn
 import nl.bvdm.rukoo.mail.html.MailHtml
 import nl.bvdm.rukoo.mail.html.SignatureHtml
 import nl.bvdm.rukoo.mail.mime.ComposedMail
@@ -74,6 +72,7 @@ import nl.bvdm.rukoo.mail.mime.ParsedMail
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountPatch
 import nl.bvdm.rukoo.mail.model.AccountType
+import nl.bvdm.rukoo.mail.model.MailProviders
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.Alias
 import nl.bvdm.rukoo.mail.model.AttachmentContent
@@ -202,8 +201,6 @@ class RukooMailEngine(
 
     private val _events = MutableSharedFlow<MailEvent>(extraBufferCapacity = 64)
     override val events: SharedFlow<MailEvent> = _events
-
-    override val google: GoogleSignIn? get() = googleAuth
 
     // Engine-thread state, like the fields of desktop's Engine.
     private var secrets: Map<String, String> = emptyMap()
@@ -1069,8 +1066,7 @@ class RukooMailEngine(
     private suspend fun buildMail(acc: Account, message: OutgoingMessage, keepBcc: Boolean): ComposedMail {
         val identity = MailViews.identity(acc, message.from.address.trim().ifEmpty { null })
             ?: strings.fail(R.string.engine_errors_send_identity, message.from.address, code = "identity")
-        val body = message.html?.let { ComposedBody(it, message.text.ifEmpty { MailText.htmlToPlain(it) }) }
-            ?: ComposeBody.build(message.text, signatureFor(acc.id), message.quote)
+        val body = ComposeBody.build(message.text, if (message.signature) signatureFor(acc.id) else null, message.quote)
         val (html, inline) = ComposeBody.inlineDataImages(body.html)
         val files = message.attachments.map { a ->
             if (a.sourceMessageId != null && a.sourceIndex != null) {
@@ -1143,10 +1139,19 @@ class RukooMailEngine(
         try {
             val raw = withContext(Dispatchers.Default) { MimeComposer.compose(mail) }
             val uid = session(acc).append(drafts.path, raw, listOf("\\Seen", "\\Draft"))
-            message.draftId?.let { id -> runCatching { discardDraftNow(id) } }
             syncFolderInto(acc, drafts.path)
             persistCache(acc.id)
             val stored = uid ?: caches.value[acc.id]?.let { CacheOps.uidByMessageId(it, drafts.path, mail.messageId) }
+            if (stored != null) {
+                // Kept as the new copy's body, so reopening it or reading its attachments back needs no download.
+                caches.value[acc.id]?.boxes?.get(drafts.path)?.let { box ->
+                    withContext(Dispatchers.IO) {
+                        runCatching { bodyFile(acc.id, drafts.path, box.uidValidity, stored).apply { parentFile?.mkdirs() }.writeBytes(raw) }
+                    }
+                }
+                // The old copy goes only once the new one is found: a server that doesn't say where it put it keeps both.
+                message.draftId?.let { id -> runCatching { discardDraftNow(id) } }
+            }
             stored?.let { MessageIds.encode(acc.id, drafts.path, it) }
         } catch (e: CancellationException) {
             throw e
@@ -1182,7 +1187,7 @@ class RukooMailEngine(
                 strings.get(R.string.engine_composer_quote_to, "%1\$s"),
                 strings.get(R.string.engine_composer_quote_subject, "%1\$s"),
             )
-            ReplyBuilder.build(kind, m, acc, MailViews.identities(acc), signatureFor(acc.id), labels, zone(), locale())
+            ReplyBuilder.build(kind, m, acc, MailViews.identities(acc), labels, zone(), locale())
         }
     }
 
@@ -1237,7 +1242,7 @@ class RukooMailEngine(
         val email = input.email.trim()
         if (!emailRe.matches(email)) strings.fail(R.string.engine_errors_account_invalid_email, code = "email")
         if (input.password.isEmpty()) strings.fail(R.string.engine_errors_account_password, code = "password")
-        val (imapDefault, smtpDefault) = Providers.serverDefaults(input.provider, email)
+        val (imapDefault, smtpDefault) = MailProviders.serverDefaults(input.provider, email)
         val imap = (if (input.imap.host.isBlank()) imapDefault else input.imap).let { it.copy(host = it.host.trim(), user = it.user.trim().ifEmpty { email }) }
         val smtp = (if (input.smtp.host.isBlank()) smtpDefault else input.smtp).let { it.copy(host = it.host.trim(), user = it.user.trim().ifEmpty { email }) }
         val acc = Account(
@@ -1258,7 +1263,7 @@ class RukooMailEngine(
 
     override suspend fun addGoogleAccount(tokens: GoogleTokens): Account = change {
         val email = tokens.email.lowercase()
-        val (imap, smtp) = Providers.serverDefaults("google", email)
+        val (imap, smtp) = MailProviders.serverDefaults("google", email)
         val acc = Account(
             id = Ids.uuid(),
             type = AccountType.IMAP,
@@ -1277,7 +1282,26 @@ class RukooMailEngine(
         finishAdd(acc, tokens.refreshToken)
     }
 
-    override suspend fun reauthorizeGoogle(accountId: String, tokens: GoogleTokens): Account = change {
+    override suspend fun googleClient(): GoogleClient? = googleAuth?.client()
+
+    override suspend fun setGoogleClient(client: GoogleClient) {
+        val google = googleAuth ?: strings.fail(R.string.engine_errors_google_unavailable, code = MailEngine.UNSUPPORTED)
+        withContext(Dispatchers.IO) { google.setClient(client) }
+    }
+
+    /**
+     * The browser part runs in the caller's context, not on the engine's thread, which must not wait
+     * minutes for the user; only saving the account goes through it.
+     */
+    override suspend fun signInWithGoogle(openUrl: (String) -> Unit, reauthAccountId: String?): Account {
+        val google = googleAuth ?: strings.fail(R.string.engine_errors_google_unavailable, code = MailEngine.UNSUPPORTED)
+        val hint = reauthAccountId?.let { id -> on { account(id).email } }
+        val tokens = google.signIn(openUrl, hint)
+        return if (reauthAccountId != null) reauthorizeGoogle(reauthAccountId, tokens) else addGoogleAccount(tokens)
+    }
+
+    /** Signs a Google account in again with new [tokens]; the email must be the account's. */
+    private suspend fun reauthorizeGoogle(accountId: String, tokens: GoogleTokens): Account = change {
         val acc = account(accountId)
         if (!acc.email.equals(tokens.email, ignoreCase = true)) {
             strings.fail(R.string.engine_errors_google_wrong_account, tokens.email, acc.email, code = "wrong_account")
@@ -1324,7 +1348,7 @@ class RukooMailEngine(
             val secret = if (auth == AuthKind.OAUTH2) i.refreshToken else i.password
             if (!demo && (i.secretError != null || secret.isNullOrEmpty())) continue
             val id = i.id.takeIf { it.isNotBlank() && _accounts.value.none { a -> a.id == it } } ?: Ids.uuid()
-            val (imapDefault, smtpDefault) = Providers.serverDefaults(if (i.provider in Providers.ALL.map { it.id }) i.provider else "other", email)
+            val (imapDefault, smtpDefault) = MailProviders.serverDefaults(if (i.provider in MailProviders.all.map { it.id }) i.provider else "other", email)
             val acc = Account(
                 id = id,
                 type = if (demo) AccountType.DEMO else AccountType.IMAP,

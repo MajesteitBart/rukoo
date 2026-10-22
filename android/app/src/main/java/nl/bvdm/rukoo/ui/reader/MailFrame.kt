@@ -6,9 +6,10 @@ import org.jsoup.nodes.Element
 
 /**
  * The document the reader's WebView shows, ported from desktop's mailframe.js (frameDoc and clearCanvas).
- * The WebView runs without JavaScript, so what desktop does with script after the frame loads happens
- * here, on the parsed HTML: grey newsletter canvases become transparent and a light pass removes what a
- * script-free page could still act on (forms, frames, meta refreshes).
+ * It takes the engine's sanitized HTML (MailHtml.sanitize, with cid: images already inlined). The WebView
+ * runs without JavaScript, so what desktop does with script after the frame loads happens here, on the
+ * parsed HTML: grey newsletter canvases become transparent and a light pass removes what a script-free page
+ * could still act on (forms, frames, meta refreshes). Wide mail is fitted by the WebView's overview zoom.
  */
 object MailFrame {
     private data class Key(val html: String, val isHtml: Boolean, val light: Boolean, val darkEmails: Boolean)
@@ -149,7 +150,8 @@ $invertCss
             val color = backgroundOf(node) ?: continue
             if (!neutral(color)) continue
             val style = node.attr("style")
-            if (!style.contains("url(", ignoreCase = true)) node.attr("data-rukoo-canvas", "")
+            // A canvas with a real image stays under the rule that turns images back in dark mode.
+            if (!style.contains("url(", ignoreCase = true) && !node.hasAttr("background")) node.attr("data-rukoo-canvas", "")
             node.attr("style", (if (style.isBlank()) "" else style.trimEnd().trimEnd(';') + ";") + "background-color:transparent !important")
             node.removeAttr("bgcolor")
         }
@@ -172,15 +174,28 @@ $invertCss
         return style?.let(::parseColor) ?: el.attr("bgcolor").takeIf { it.isNotBlank() }?.let(::parseColor)
     }
 
-    private val HEX = Regex("#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\\b")
+    private val HEX = Regex("#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\\b")
     private val RGB = Regex("rgba?\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*(?:,\\s*([\\d.]+)\\s*)?\\)", RegexOption.IGNORE_CASE)
 
-    /** The first color in a CSS value: #rgb, #rrggbb, rgb()/rgba(), or white. Null when there is none. */
+    // The light neutral names newsletters use for a canvas; darker greys (gainsboro, lightgray) aren't one.
+    private val NAMED = mapOf(
+        "white" to intArrayOf(255, 255, 255, 255),
+        "whitesmoke" to intArrayOf(245, 245, 245, 255),
+        "snow" to intArrayOf(255, 250, 250, 255),
+        "ghostwhite" to intArrayOf(248, 248, 255, 255),
+    )
+    private val NAME = Regex("\\b(whitesmoke|ghostwhite|white|snow)\\b", RegexOption.IGNORE_CASE)
+
+    /**
+     * The first color in a CSS value (a shorthand like `#f2f2f2 url(x)` included): #rgb, #rgba, #rrggbb,
+     * #rrggbbaa, rgb()/rgba(), or a light neutral name. Null when there is none.
+     */
     internal fun parseColor(value: String): IntArray? {
         HEX.find(value)?.let { m ->
             val h = m.groupValues[1]
-            val full = if (h.length == 3) h.map { "$it$it" }.joinToString("") else h
-            return intArrayOf(full.substring(0, 2).toInt(16), full.substring(2, 4).toInt(16), full.substring(4, 6).toInt(16), 255)
+            val full = if (h.length <= 4) h.map { "$it$it" }.joinToString("") else h
+            val alpha = if (full.length == 8) full.substring(6, 8).toInt(16) else 255
+            return intArrayOf(full.substring(0, 2).toInt(16), full.substring(2, 4).toInt(16), full.substring(4, 6).toInt(16), alpha)
         }
         RGB.find(value)?.let { m ->
             // Mail is untrusted: a channel like 999999999999 is no colour, not a crash.
@@ -191,7 +206,7 @@ $invertCss
             val alpha = if (m.groupValues[4].isEmpty()) 255 else m.groupValues[4].toFloatOrNull()?.coerceIn(0f, 1f)?.let { (it * 255).toInt() } ?: return null
             return intArrayOf(r, g, b, alpha)
         }
-        if (Regex("\\bwhite\\b", RegexOption.IGNORE_CASE).containsMatchIn(value)) return intArrayOf(255, 255, 255, 255)
+        NAME.find(value)?.let { return NAMED[it.value.lowercase()] }
         return null
     }
 

@@ -72,4 +72,30 @@ object Mailto {
             body.replace(Regex("\r\n?"), "\n"),
         )
     }
+
+    /**
+     * Android's compose-email intent (ACTION_SENDTO to `mailto:`) may carry the fields as extras: EXTRA_EMAIL,
+     * EXTRA_CC and EXTRA_BCC join the link's recipients; EXTRA_SUBJECT and EXTRA_TEXT count when the link has
+     * no subject or body of its own, as in other mail apps.
+     */
+    fun withExtras(
+        fields: MailtoFields,
+        to: Array<String>? = null,
+        cc: Array<String>? = null,
+        bcc: Array<String>? = null,
+        subject: String? = null,
+        text: String? = null,
+    ): MailtoFields {
+        fun join(list: List<Address>, extra: Array<String>?): List<Address> {
+            val more = extra.orEmpty().flatMap { addresses(it) }
+            return (list + more).distinctBy { it.address.lowercase() }.take(MAX_RECIPIENTS)
+        }
+        return fields.copy(
+            to = join(fields.to, to),
+            cc = join(fields.cc, cc),
+            bcc = join(fields.bcc, bcc),
+            subject = fields.subject.ifEmpty { subject.orEmpty() },
+            body = fields.body.ifEmpty { text.orEmpty().replace(Regex("\r\n?"), "\n") },
+        )
+    }
 }

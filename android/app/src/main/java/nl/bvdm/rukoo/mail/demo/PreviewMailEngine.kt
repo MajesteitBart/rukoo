@@ -18,6 +18,8 @@ import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.MailException
+import nl.bvdm.rukoo.mail.compose.ComposeBody
+import nl.bvdm.rukoo.mail.mime.MailText
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountPatch
 import nl.bvdm.rukoo.mail.model.AccountType
@@ -45,6 +47,8 @@ import nl.bvdm.rukoo.mail.model.MessageSummary
 import nl.bvdm.rukoo.mail.model.MoveResult
 import nl.bvdm.rukoo.mail.model.Moved
 import nl.bvdm.rukoo.mail.model.OutgoingMessage
+import nl.bvdm.rukoo.mail.model.ReplyKind
+import nl.bvdm.rukoo.mail.model.Signature
 import nl.bvdm.rukoo.mail.model.SortOrder
 import nl.bvdm.rukoo.mail.model.SyncStatus
 import nl.bvdm.rukoo.mail.model.UndoResult
@@ -82,13 +86,15 @@ class PreviewMailEngine(
         createdAt = clock.now(),
     )
 
-    private val state = MutableStateFlow(
-        PreviewData.seed(clock.now(), zone).let { seeded ->
-            val boxes = PreviewData.FOLDERS.associate { (path, _) -> path to emptyList<Stored>() }.toMutableMap()
-            for (s in seeded) boxes[s.folder] = boxes.getValue(s.folder) + Stored(s, s.unread, s.starred)
-            State(boxes, nextUid = seeded.maxOf { it.uid } + 1)
-        },
-    )
+    private val seedZone = zone
+
+    private fun seeded(): State = PreviewData.seed(clock.now(), seedZone).let { seeded ->
+        val boxes = PreviewData.FOLDERS.associate { (path, _) -> path to emptyList<Stored>() }.toMutableMap()
+        for (s in seeded) boxes[s.folder] = boxes.getValue(s.folder) + Stored(s, s.unread, s.starred)
+        State(boxes, nextUid = seeded.maxOf { it.uid } + 1)
+    }
+
+    private val state = MutableStateFlow(seeded())
 
     // Old id → where it went and where it came from, for undo and findMoved.
     private data class MoveRecord(val newId: String, val fromFolder: String, val messageId: String)
@@ -275,6 +281,7 @@ class PreviewMailEngine(
         val text = s.text ?: s.html?.let { Jsoup.parse(it).wholeText().replace(Regex("\n{3,}"), "\n\n").trim() } ?: ""
         return FullMessage(
             summary = summaryOf(folder, m),
+            bcc = s.bcc,
             references = s.references,
             html = s.html ?: textToHtml(s.text ?: ""),
             isHtml = s.html != null,
@@ -419,17 +426,31 @@ class PreviewMailEngine(
         return path
     }
 
-    private fun append(folder: String, message: OutgoingMessage, unread: Boolean) {
+    // The same body the real engine sends: the text, the signature, the quote. Returns the new message's id.
+    private fun append(folder: String, message: OutgoingMessage, unread: Boolean): String {
+        // Forwarded and draft attachments are fetched from their source, as the real engine does: a source that is
+        // gone fails the same way.
+        for (a in message.attachments) if (a.sourceMessageId != null) require(a.sourceMessageId)
+        val body = ComposeBody.build(message.text, if (message.signature) signatureFor(message.accountId) else null, message.quote)
+        var uid = 0L
         mutate { s ->
+            uid = s.nextUid
             val seeded = PreviewData.Seeded(
                 uid = s.nextUid, folder = folder, from = message.from, to = message.to, cc = message.cc,
-                subject = message.subject, date = clock.now(), html = message.html, text = message.text,
+                subject = message.subject, date = clock.now(), html = body.html, text = body.text,
                 attachments = message.attachments.map { it.filename },
                 messageId = "<demo-${clock.now()}-${s.nextUid}@example.com>", unread = unread, starred = false,
                 inReplyTo = message.inReplyTo, references = message.references,
+                bcc = if (folder == "Drafts") message.bcc else emptyList(),
             )
             s.copy(boxes = s.boxes + (folder to (s.boxes[folder].orEmpty() + Stored(seeded, unread, false))), nextUid = s.nextUid + 1)
         }
+        return MessageIds.encode(account.id, folder, uid)
+    }
+
+    private fun drop(id: String) {
+        val key = MessageIds.decode(id) ?: return
+        mutate { s -> s.copy(boxes = s.boxes.mapValues { (folder, list) -> if (folder == key.folder) list.filterNot { it.seed.uid == key.uid } else list }) }
     }
 
     override suspend fun send(message: OutgoingMessage) {
@@ -440,7 +461,22 @@ class PreviewMailEngine(
             append("INBOX", message, unread = true)
             _events.tryEmit(MailEvent.NewMail(listMessages(MailView.AllInboxes).take(1)))
         }
-        message.sourceMessageId?.let { setFlags(listOf(it), answered = true) }
+        message.draftId?.let(::drop)
+        if (message.replyKind == ReplyKind.REPLY || message.replyKind == ReplyKind.REPLY_ALL) {
+            message.sourceMessageId?.let { setFlags(listOf(it), answered = true) }
+        }
+    }
+
+    // Stored first, then the old copy goes, as the real engine does: the new copy is made from the old one's attachments.
+    override suspend fun saveDraft(message: OutgoingMessage): String? {
+        val id = append("Drafts", message, unread = false)
+        message.draftId?.let(::drop)
+        return id
+    }
+
+    override suspend fun discardDraft(id: String) {
+        require(id)
+        drop(id)
     }
 
     override suspend fun unsubscribe(id: String): UnsubscribeResult =
@@ -449,6 +485,14 @@ class PreviewMailEngine(
     override fun archiveFolder(accountId: String): String? = "Archive"
 
     override fun identities(accountId: String): List<Identity> = listOf(Identity(account.email, account.name, primary = true))
+
+    override fun signatureFor(accountId: String): Signature? {
+        val acc = _accounts.value.firstOrNull { it.id == accountId } ?: return null
+        val text = acc.signature.orEmpty()
+        val html = acc.signatureHtml.orEmpty()
+        if (text.isBlank() && html.isBlank()) return null
+        return Signature(text, html.ifEmpty { MailText.esc(text).replace("\n", "<br>") })
+    }
 
     override suspend fun contacts(): List<Address> {
         val score = mutableMapOf<String, Pair<Address, Int>>()
@@ -470,7 +514,15 @@ class PreviewMailEngine(
 
     override suspend fun addGoogleAccount(tokens: GoogleTokens): Account = unavailable()
 
-    override suspend fun addDemoAccount(): Account = account
+    /** "Try the demo account" after it was removed: the demo mailbox comes back as it started. */
+    override suspend fun addDemoAccount(): Account {
+        _accounts.value.firstOrNull()?.let { return it }
+        moves.clear()
+        mutate { seeded() }
+        _accounts.value = listOf(account)
+        _sync.value = SyncStatus(lastSync = mapOf(account.id to clock.now()))
+        return account
+    }
 
     override suspend fun importAccounts(imported: List<ImportedAccount>, googleClient: GoogleClient?): List<Account> = unavailable()
 

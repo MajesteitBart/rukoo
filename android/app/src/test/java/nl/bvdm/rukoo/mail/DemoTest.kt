@@ -138,7 +138,7 @@ class DemoTest {
         val call = engine.listMessages(MailView(ViewKind.INBOX)).first { it.subject == "Call on Thursday" }
         val fields = engine.replyFields(call.id, ReplyKind.FORWARD)
         engine.send(
-            fields.toComposerState().copy(to = listOf(Address("", "demo@example.com")), body = "For myself").toOutgoing(Address("", "demo@example.com")),
+            fields.toComposerState().copy(to = listOf(Address("", "demo@example.com")), body = "For myself").toOutgoing(acc.id, Address("", "demo@example.com")),
         )
         engine.refresh(acc.id)
         val arrived = newMail.single()

@@ -107,6 +107,21 @@ class MailFrameTest {
         assertFalse(MailFrame.neutral(MailFrame.parseColor("rgba(242,242,242,0)")!!))
         assertFalse(MailFrame.neutral(MailFrame.parseColor("#e0f0ff")!!))
         assertTrue(MailFrame.neutral(MailFrame.parseColor("white")!!))
+        // From the engine's former reader document: more neutral names, alpha hex, and darker greys aren't a canvas.
+        assertTrue(MailFrame.neutral(MailFrame.parseColor("WhiteSmoke")!!))
+        assertTrue(MailFrame.neutral(MailFrame.parseColor("#f2f2f2ff")!!))
+        assertFalse(MailFrame.neutral(MailFrame.parseColor("#f2f2f200")!!))
+        assertEquals(listOf(255, 255, 255, 127), MailFrame.parseColor("rgba(255, 255, 255, .5)")!!.toList())
+        assertEquals(null, MailFrame.parseColor("gainsboro"))
+        assertEquals(null, MailFrame.parseColor("not a colour"))
+    }
+
+    @Test
+    fun aCanvasWithABackgroundImageStaysUnderTheImageRule() {
+        val doc = Jsoup.parse(MailFrame.document("<table width=\"100%\" bgcolor=\"#f2f2f2\" background=\"https://x/bg.png\"><tr><td>x</td></tr></table>", true, false, true))
+        val table = doc.selectFirst("table")!!
+        assertTrue(table.attr("style").contains("transparent !important"))
+        assertFalse(table.hasAttr("data-rukoo-canvas"))
     }
 
     @Test

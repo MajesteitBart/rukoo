@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
+import nl.bvdm.rukoo.ui.agent.AgentToasts
 import nl.bvdm.rukoo.ui.agent.ChatListSheet
 import nl.bvdm.rukoo.ui.agent.ChatPane
 import nl.bvdm.rukoo.ui.components.Hairline
@@ -139,7 +140,9 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
         }
     }
 
+    // One toast host for every screen, onboarding's hand-over to the inbox and the agents' in-app notices included.
     CompositionLocalProvider(LocalRkToast provides app.mailUi.toasts) {
+        AgentToasts(app)
         BoxWithConstraints(modifier.fillMaxSize()) {
             val twoPane = maxWidth >= TwoPaneMinWidth
             LaunchedEffect(twoPane) { app.onLayout(twoPane) }
@@ -260,8 +263,9 @@ private fun Context.layoutPrefs() = getSharedPreferences(PREFS, Context.MODE_PRI
 
 @Composable
 private fun TwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStateHolder, backProgress: Float) {
+    // The same saved state as in one pane, so Settings keeps its page and scroll across fold and unfold.
     nav.overlay?.let {
-        OverlayContent(app, it)
+        holder.SaveableStateProvider(Slot.OfOverlay(it).key()) { OverlayContent(app, it) }
         return
     }
     val context = LocalContext.current

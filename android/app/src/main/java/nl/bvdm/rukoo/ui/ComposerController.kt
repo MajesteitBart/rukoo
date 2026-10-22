@@ -24,8 +24,10 @@ import nl.bvdm.rukoo.mail.model.ReplyKind
 
 /**
  * The composer's content. [id] is the composer key a draft card refers to; it stays the same while
- * the composer is open. [body] is plain text without the quote; [quote] is the quoted original for
- * replies and forwards. [draftedBy] names the agent that wrote the current text, null when the user did.
+ * the composer is open. [body] is the plain text the user (or an agent) wrote, without the signature
+ * and without the quote: the engine adds the account's signature under it when the mail goes, unless
+ * [signatureExcluded]. [quote] is the quoted original of a reply or forward as desktop's HTML block
+ * (mail.compose.Quote). [draftedBy] names the agent that wrote the current text, null when the user did.
  */
 @Serializable
 data class ComposerState(
@@ -62,7 +64,23 @@ data class ComposerState(
      * part of the draft so it is saved with it; Send and Save turn it into recipients first.
      */
     val typed: Map<String, String> = emptyMap(),
+    /** The user took the signature off this message. */
+    val signatureExcluded: Boolean = false,
+    /**
+     * The Rukoo id of the draft in the account's Drafts folder that this composer edits (a draft reopened from
+     * the server, or saved there since). Sending deletes it; saving again replaces it.
+     */
+    val draftId: String? = null,
+    /** Attachments that still point at a stored copy a save replaced; settled before the next save or Send. */
+    val rebind: PendingRebind? = null,
 )
+
+/**
+ * A save replaced the stored draft [from] with [to], but the attachments that came from [from] couldn't be
+ * pointed at [to] yet. [saved] is the attachment list as it was saved: [to] lists them in that order.
+ */
+@Serializable
+data class PendingRebind(val from: String, val to: String, val saved: List<OutgoingAttachment>)
 
 /**
  * The single composer, shared by the UI and the agent tools (write_draft, get_draft): an open draft

@@ -10,5 +10,10 @@
             android:name=".mcp.DebugMcpReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+        <!-- Debug builds only: a background mail sync from adb, for new-mail notification tests (see DebugSyncReceiver). -->
+        <receiver
+            android:name=".mail.sync.DebugSyncReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>

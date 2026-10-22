@@ -11,6 +11,7 @@ import nl.bvdm.rukoo.mail.engine.CachedBox
 import nl.bvdm.rukoo.mail.engine.PendingPatch
 import nl.bvdm.rukoo.mail.model.CachedMessage
 import nl.bvdm.rukoo.mail.model.FolderRole
+import nl.bvdm.rukoo.mail.model.MailProviders
 import nl.bvdm.rukoo.mail.session.CopyUid
 import nl.bvdm.rukoo.mail.session.FolderRecord
 import nl.bvdm.rukoo.mail.session.FolderSync
@@ -94,18 +95,18 @@ class EngineLogicTest {
 
     @Test
     fun `provider presets follow the domain for Other`() {
-        val (imap, smtp) = Providers.serverDefaults("other", "me@hotmail.com")
+        val (imap, smtp) = MailProviders.serverDefaults("other", "me@hotmail.com")
         assertEquals("outlook.office365.com", imap.host)
         assertEquals(587, smtp.port)
         assertEquals(false, smtp.secure)
-        val (ownImap, ownSmtp) = Providers.serverDefaults("other", "me@bvdm.ai")
+        val (ownImap, ownSmtp) = MailProviders.serverDefaults("other", "me@bvdm.ai")
         assertEquals("imap.bvdm.ai", ownImap.host)
         assertEquals("smtp.bvdm.ai", ownSmtp.host)
         assertEquals(465, ownSmtp.port)
-        assertEquals("imap.bvdm.ai", Providers.serverDefaults("exchange", "me@bvdm.ai").first.host)
-        assertEquals(listOf("google", "yahoo", "outlook", "exchange", "office365", "other"), Providers.ALL.map { it.id })
-        assertTrue(Providers.byId("exchange").manual)
-        assertEquals("other", Providers.byId("nope").id)
+        assertEquals("imap.bvdm.ai", MailProviders.serverDefaults("exchange", "me@bvdm.ai").first.host)
+        assertEquals(listOf("google", "yahoo", "outlook", "exchange", "office365", "other"), MailProviders.all.map { it.id })
+        assertTrue(MailProviders.preset("exchange").manual)
+        assertEquals("other", MailProviders.preset("nope").id)
     }
 
     @Test

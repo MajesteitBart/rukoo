@@ -2,6 +2,8 @@ package nl.bvdm.rukoo.mail.compose
 
 import java.time.ZoneId
 import java.util.Locale
+import java.util.UUID
+import nl.bvdm.rukoo.core.Ids
 import nl.bvdm.rukoo.mail.mime.MailText
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.Address
@@ -10,13 +12,14 @@ import nl.bvdm.rukoo.mail.model.Identity
 import nl.bvdm.rukoo.mail.model.OutgoingAttachment
 import nl.bvdm.rukoo.mail.model.OutgoingMessage
 import nl.bvdm.rukoo.mail.model.ReplyKind
-import nl.bvdm.rukoo.mail.model.Signature
 import nl.bvdm.rukoo.ui.ComposerState
+import org.jsoup.Jsoup
 
 /**
- * What the composer starts with for a reply, forward or reopened draft. [body] is plain text (with
- * the signature at its end); [quote] is the HTML quote block, '' for none. Forwarded and draft
- * attachments point at their source message by index and are fetched when sending.
+ * What the composer starts with for a new message, reply, forward or reopened draft. [body] is plain
+ * text without the signature, which the engine adds when sending unless [signatureExcluded]; [quote] is
+ * the HTML quote block, '' for none. Forwarded and draft attachments point at their source message by
+ * index and are fetched when sending.
  */
 data class ComposerFields(
     val accountId: String,
@@ -35,8 +38,15 @@ data class ComposerFields(
     val attachments: List<OutgoingAttachment> = emptyList(),
     /** The stored draft these fields came from; sending or saving again replaces it. */
     val draftId: String? = null,
+    /** A reopened draft that was saved without a signature stays without one. */
+    val signatureExcluded: Boolean = false,
 ) {
+    /**
+     * The composer for these fields. A stored draft gets a composer key of its own, so opening the same
+     * draft again brings its composer to the front instead of a second copy.
+     */
     fun toComposerState(): ComposerState = ComposerState(
+        id = draftId?.let { UUID.nameUUIDFromBytes("draft|$it".toByteArray()).toString() } ?: Ids.uuid(),
         accountId = accountId,
         from = from,
         to = to,
@@ -50,13 +60,19 @@ data class ComposerFields(
         inReplyTo = inReplyTo,
         references = references,
         attachments = attachments,
+        signatureExcluded = signatureExcluded,
+        draftId = draftId,
     )
 }
 
-/** The message to send (or save) from the composer's state. A reopened draft is replaced by it. */
-fun ComposerState.toOutgoing(defaultFrom: Address): OutgoingMessage = OutgoingMessage(
-    accountId = accountId.orEmpty(),
-    from = from ?: defaultFrom,
+/**
+ * The message to send (or save) from the composer's state, from [accountId] (the composer's, or the
+ * default account when it has none) as [from] unless the composer picked one. A stored draft the composer
+ * edits ([ComposerState.draftId]) is replaced by it. A left-out quote or signature stays out.
+ */
+fun ComposerState.toOutgoing(accountId: String, from: Address): OutgoingMessage = OutgoingMessage(
+    accountId = accountId,
+    from = this.from ?: from,
     to = to,
     cc = cc,
     bcc = bcc,
@@ -67,8 +83,9 @@ fun ComposerState.toOutgoing(defaultFrom: Address): OutgoingMessage = OutgoingMe
     attachments = attachments,
     replyKind = replyKind,
     sourceMessageId = sourceMessageId,
-    quote = quote,
-    draftId = if (replyKind == ReplyKind.DRAFT) sourceMessageId else null,
+    quote = if (quoteExcluded) "" else quote,
+    signature = !signatureExcluded,
+    draftId = draftId,
 )
 
 /** Reply, reply-all, forward and reopen-draft, ported from desktop's composer (composer.js:18-237, spec 4 §3.6, §3.8). */
@@ -127,15 +144,14 @@ object ReplyBuilder {
     }
 
     /**
-     * The composer's fields for [kind] on [m]. [signature] is the account's signature (or null), added
-     * at the end of the body for replies and forwards like desktop; [labels] are the quote header's texts.
+     * The composer's fields for [kind] on [m]; [labels] are the quote header's texts. The body starts empty:
+     * the account's signature goes under it when the mail is sent (ComposeBody.build).
      */
     fun build(
         kind: ReplyKind,
         m: FullMessage,
         account: Account,
         identities: List<Identity>,
-        signature: Signature?,
         labels: QuoteLabels = QuoteLabels.ENGLISH,
         zone: ZoneId = ZoneId.systemDefault(),
         locale: Locale = Locale.getDefault(),
@@ -150,7 +166,6 @@ object ReplyBuilder {
                     to = to,
                     cc = cc,
                     subject = prefixed(m.subject, "Re"),
-                    body = ComposeBody.initialText(signature),
                     quote = Quote.of(m, labels, zone, locale),
                     replyKind = kind,
                     sourceMessageId = m.id,
@@ -162,7 +177,6 @@ object ReplyBuilder {
                 accountId = account.id,
                 from = addressOf(identities, replyFrom(account, identities, m) ?: fallback.address, fallback),
                 subject = prefixed(m.subject, "Fwd"),
-                body = ComposeBody.initialText(signature),
                 quote = Quote.of(m, labels, zone, locale),
                 replyKind = kind,
                 sourceMessageId = m.id,
@@ -174,21 +188,23 @@ object ReplyBuilder {
             ReplyKind.NEW -> ComposerFields(
                 accountId = account.id,
                 from = Address(fallback.name, fallback.address),
-                body = ComposeBody.initialText(signature),
                 replyKind = kind,
             )
         }
     }
 
     /**
-     * A stored draft opened again (composer.js modeState 'draft'): its recipients, subject and threading
-     * headers; the text without the quote, which comes back as the quote block; its attachments by index.
+     * A stored draft opened again (composer.js modeState 'draft'): its From when it is one of the account's
+     * addresses, recipients, subject and threading headers; the text without the quote, which comes back
+     * as the quote block, and without its signature block, which the account's signature replaces when it
+     * goes (a draft saved without one stays without); its attachments by index.
      */
     fun draft(m: FullMessage, account: Account, identities: List<Identity>): ComposerFields {
         val fallback = defaultIdentity(account, identities)
         val split = Quote.split(m.html)
         val quote = if (split.head != null && split.quoteHtml != null) Quote.block(split.head, split.quoteHtml) else ""
-        val text = if (m.isHtml) MailText.htmlToPlain(split.body) else m.text
+        val (body, signed) = if (m.isHtml) withoutSignature(split.body) else split.body to false
+        val text = if (m.isHtml) MailText.htmlToPlain(body) else m.text
         return ComposerFields(
             accountId = account.id,
             from = addressOf(identities, m.from.address, fallback),
@@ -206,6 +222,21 @@ object ReplyBuilder {
                 OutgoingAttachment(it.filename, it.contentType, path = "", size = it.size, sourceMessageId = m.id, sourceIndex = it.index)
             },
             draftId = m.id,
+            signatureExcluded = !signed,
         )
+    }
+
+    /**
+     * Takes desktop's `<div class="signature">` and the empty line before it out of a draft's body
+     * (composer.js:96-98 put them there). Returns the rest and whether there was one.
+     */
+    internal fun withoutSignature(bodyHtml: String): Pair<String, Boolean> {
+        val doc = Jsoup.parseBodyFragment(bodyHtml)
+        doc.outputSettings().prettyPrint(false)
+        val sig = doc.body().selectFirst("div.signature") ?: return bodyHtml to false
+        val spacer = sig.previousElementSibling()
+        if (spacer != null && spacer.normalName() == "div" && spacer.text().isBlank() && spacer.select("img").isEmpty()) spacer.remove()
+        sig.remove()
+        return doc.body().html() to true
     }
 }

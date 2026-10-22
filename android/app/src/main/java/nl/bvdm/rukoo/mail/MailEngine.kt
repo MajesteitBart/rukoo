@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import nl.bvdm.rukoo.mail.compose.ComposerFields
 import nl.bvdm.rukoo.mail.compose.ReplyBuilder
-import nl.bvdm.rukoo.mail.google.GoogleSignIn
 import nl.bvdm.rukoo.mail.model.MailPrefs
 import nl.bvdm.rukoo.mail.model.ReplyKind
 import nl.bvdm.rukoo.mail.model.Signature
@@ -160,17 +159,18 @@ interface MailEngine {
 
     /**
      * What the composer starts with to reply to, forward or reopen [id] ([kind] REPLY, REPLY_ALL,
-     * FORWARD or DRAFT): recipients, subject, the account's signature, the quote and threading headers.
+     * FORWARD or DRAFT): From, recipients, subject, the quote and threading headers, and a stored draft's
+     * text and attachments. The signature is not in the body: [send] adds [signatureFor] under the text.
      */
     suspend fun replyFields(id: String, kind: ReplyKind): ComposerFields {
         val m = fullMessage(id)
         val account = accounts.value.firstOrNull { it.id == m.accountId } ?: throw MailException("Account not found.")
-        return ReplyBuilder.build(kind, m, account, identities(account.id), signatureFor(account.id))
+        return ReplyBuilder.build(kind, m, account, identities(account.id))
     }
 
     /**
      * Stores [message] in the account's Drafts folder, replacing [OutgoingMessage.draftId]. Returns the
-     * new draft's id, or null when the server didn't report where it went.
+     * new draft's id, or null when the server didn't report where it went; the old copy then stays.
      */
     suspend fun saveDraft(message: OutgoingMessage): String? = null
 
@@ -180,14 +180,8 @@ interface MailEngine {
     /** Empties a folder: for good inside Trash, to Trash elsewhere. Returns how many messages it handled. */
     suspend fun emptyFolder(accountId: String, path: String): Int = 0
 
-    /** Google sign-in, for engines with real accounts. */
-    val google: GoogleSignIn? get() = null
-
-    /** Signs a Google account in again with new [tokens]; the email must be the account's. */
-    suspend fun reauthorizeGoogle(accountId: String, tokens: GoogleTokens): Account = throw MailException("Google sign-in is unavailable.")
-
-    // Google sign-in (spec 4 §4). The defaults stand in until the engine implements them; settings shows
-    // code `unsupported` as "not available in this version".
+    // Google sign-in (spec 4 §4). Engines without real accounts keep the defaults; settings shows code
+    // `unsupported` as "not available in this version".
 
     /** The Google OAuth client sign-in uses, or null until one is set (from the computer's export or a client file). */
     suspend fun googleClient(): GoogleClient? = null
@@ -197,9 +191,10 @@ interface MailEngine {
 
     /**
      * Signs in with Google (spec 4 §4.3 and §4.7: PKCE, a loopback redirect on 127.0.0.1) and adds the
-     * account, or renews the sign-in of [reauthAccountId]. [openUrl] opens Google's consent page in a Custom
-     * Tab; the call returns once the redirect arrived and the account is saved. Cancelling the caller
-     * cancels the sign-in.
+     * account, or renews the sign-in of [reauthAccountId] (Google must answer with that account's email).
+     * [openUrl] opens Google's consent page in a Custom Tab; the call returns once the redirect arrived and
+     * the account is saved. Cancelling the caller cancels the sign-in. Failures are [MailException]s with a
+     * text for the user; code `no_client` when no client is set, `cancelled`, `timeout`, `denied`.
      */
     suspend fun signInWithGoogle(openUrl: (String) -> Unit, reauthAccountId: String? = null): Account =
         throw MailException("Google sign-in is not available.", UNSUPPORTED)

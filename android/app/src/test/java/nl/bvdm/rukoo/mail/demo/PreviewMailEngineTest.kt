@@ -147,4 +147,19 @@ class PreviewMailEngineTest {
         assertEquals(3, counts.views[ViewKind.DRAFTS])
         assertNotNull(e.contacts().firstOrNull { it.address == "sanne@example.com" })
     }
+
+    @Test
+    fun tryingTheDemoAgainBringsItBackAsItStarted() = runTest {
+        val e = engine()
+        e.removeAccount("demo")
+        assertTrue(e.accounts.value.isEmpty())
+        assertTrue(e.listMessages(MailView.AllInboxes).isEmpty())
+        val back = e.addDemoAccount()
+        assertEquals("demo", back.id)
+        assertEquals(listOf("demo"), e.accounts.value.map { it.id })
+        assertEquals(16, e.listMessages(MailView.AllInboxes).size)
+        // Already there: the same account, nothing seeded twice.
+        e.addDemoAccount()
+        assertEquals(16, e.listMessages(MailView.AllInboxes).size)
+    }
 }

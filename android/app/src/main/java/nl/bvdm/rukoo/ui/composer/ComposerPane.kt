@@ -235,6 +235,15 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
 
         BodyField(d, bodyFocus, readOnly = locked) { text -> edit { it.copy(body = text) } }
 
+        // The account's signature, as it goes under the text; it follows the From's account.
+        val accounts by mail.accounts.collectAsStateWithLifecycle()
+        val signature = remember(d.accountId, accounts) { d.accountId?.let(mail::signatureFor) }
+        if (signature != null) {
+            SignatureBlock(signature.text, excluded = d.signatureExcluded, enabled = !locked) { excluded ->
+                composer.update { it.copy(signatureExcluded = excluded, dirty = true) }
+            }
+        }
+
         if (d.quote.isNotBlank()) Quote(d) { excluded -> if (!locked) composer.update { it.copy(quoteExcluded = excluded, dirty = true) } }
 
         if (d.attachments.isNotEmpty()) {
@@ -493,14 +502,46 @@ private fun BodyField(d: ComposerState, focus: FocusRequester, readOnly: Boolean
 }
 
 /**
+ * The signature under the text, as desktop puts it below an empty line (composer.js:96-98): in the body's
+ * type, dimmed, so it reads as part of the mail but not as text to edit. Remove takes it off this message;
+ * Add puts it back. A signature with only a logo shows its label.
+ */
+@Composable
+private fun SignatureBlock(text: String, excluded: Boolean, enabled: Boolean, onExclude: (Boolean) -> Unit) {
+    val c = Rk.colors
+    val label = stringResource(R.string.composer_signature_label)
+    if (excluded) {
+        RkLinkButton(stringResource(R.string.composer_signature_add), { onExclude(false) }, style = Rk.type.text12, color = c.text2, enabled = enabled, modifier = Modifier.padding(top = 8.dp))
+        return
+    }
+    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.Top) {
+        Text(
+            text.ifBlank { label },
+            style = Rk.type.emailBody,
+            color = c.text3,
+            modifier = Modifier.weight(1f).padding(top = 6.dp).semantics { contentDescription = "$label: ${text.ifBlank { label }}" },
+        )
+        RkIconButton(RukooIcons.Close, stringResource(R.string.composer_signature_remove), onClick = { onExclude(true) }, size = nl.bvdm.rukoo.ui.components.RkIconButtonSize.XS, enabled = enabled)
+    }
+}
+
+/**
  * The quoted original (styles.css:2961-3018): behind a "···" pill; opened, it sits by a 2dp rail with
  * "Previous message" and the Exclude or Include link. An excluded quote is struck through on the pill and
- * dimmed when open; it is left out when the mail goes.
+ * dimmed when open; it is left out when the mail goes. The quote is desktop's HTML block; the plain-text
+ * composer shows its header and text.
  */
 @Composable
 private fun Quote(d: ComposerState, onExclude: (Boolean) -> Unit) {
     val c = Rk.colors
     var open by rememberSaveable(d.id) { mutableStateOf(false) }
+    val shown by produceState<String?>(null, d.quote, open) {
+        if (!open) return@produceState
+        value = withContext(Dispatchers.Default) {
+            val (head, text) = nl.bvdm.rukoo.mail.compose.Quote.parts(d.quote)
+            listOf(head, text).filter { it.isNotBlank() }.joinToString("\n\n")
+        }
+    }
     Column(Modifier.padding(top = 12.dp)) {
         val pill = if (d.quoteExcluded) stringResource(R.string.composer_quote_excluded_pill) else "···"
         val pillLabel = stringResource(if (open) R.string.composer_quote_hide else R.string.composer_quote_show)
@@ -538,7 +579,7 @@ private fun Quote(d: ComposerState, onExclude: (Boolean) -> Unit) {
                 }
                 androidx.compose.foundation.text.selection.SelectionContainer {
                     Text(
-                        d.quote,
+                        shown.orEmpty(),
                         style = Rk.type.text13,
                         color = c.text2,
                         modifier = Modifier.padding(top = 4.dp).alpha(if (d.quoteExcluded) 0.4f else 1f),

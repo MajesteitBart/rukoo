@@ -28,7 +28,6 @@
     <string name="engine_errors_google_connection">Kan Google niet bereiken. Controleer je internetverbinding.</string>
     <string name="engine_errors_google_denied">Je hebt geen toegang gegeven.</string>
     <string name="engine_errors_google_expired">Je Google-toegang is verlopen of ingetrokken. Meld je opnieuw aan via Instellingen.</string>
-    <string name="engine_errors_google_invalid_client">Dit bestand bevat geen Google OAuth-client.</string>
     <string name="engine_errors_google_no_email">Google gaf geen e-mailadres terug.</string>
     <string name="engine_errors_google_no_refresh_token">Google gaf geen vernieuwingstoken terug. Probeer het opnieuw.</string>
     <string name="engine_errors_google_not_configured">Google-aanmelding is niet ingesteld op deze telefoon.</string>
@@ -76,11 +75,4 @@
     <string name="engine_google_page_close_tab">Je kunt dit tabblad sluiten.</string>
     <string name="engine_google_page_open">Rukoo Mail openen</string>
 
-    <string name="engine_setup_providers_google_note">Gebruik een app-wachtwoord van je Google-account (myaccount.google.com/apppasswords). IMAP moet aan staan in Gmail.</string>
-    <string name="engine_setup_providers_yahoo_note">Yahoo vereist een app-wachtwoord (Accountbeveiliging &gt; App-wachtwoord genereren).</string>
-    <string name="engine_setup_providers_outlook_note">Werkt alleen als je account IMAP met wachtwoord of app-wachtwoord toestaat.</string>
-    <string name="engine_setup_providers_exchange_note">Vul de IMAP- en SMTP-server van je Exchange-omgeving in.</string>
-    <string name="engine_setup_providers_office365_note">Je beheerder moet IMAP en SMTP AUTH voor je mailbox hebben ingeschakeld.</string>
-    <string name="engine_setup_providers_other_label">Overige</string>
-    <string name="engine_setup_providers_other_note">We vullen de servers in op basis van je domein. Pas ze aan als dat nodig is.</string>
 </resources>
