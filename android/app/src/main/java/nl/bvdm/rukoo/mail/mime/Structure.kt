@@ -21,13 +21,23 @@ data class PartNode(
 
 /** Desktop's structure rules for previews and the attachment icon (mailutil.js:58-99, spec 4 §2.7). */
 object Structure {
+    /**
+     * How many multipart levels are read, in the body ([MimeParser]) and in the server's structure. Real mail
+     * nests a handful; a crafted message nests thousands to exhaust the stack, so parts below this level are left out.
+     */
+    const val MAX_DEPTH = 100
+
     /** Single-part messages have no part number; IMAP addresses their body as part 1. */
     fun partKey(node: PartNode): String = node.part ?: "1"
 
+    /** Parents before children, in order; a loop rather than recursion, so no tree is too deep for it. */
     fun walk(node: PartNode?, visit: (PartNode) -> Unit) {
-        if (node == null) return
-        visit(node)
-        for (child in node.children) walk(child, visit)
+        val pending = ArrayDeque(listOfNotNull(node))
+        while (pending.isNotEmpty()) {
+            val next = pending.removeFirst()
+            visit(next)
+            for (child in next.children.asReversed()) pending.addFirst(child)
+        }
     }
 
     fun isAttachmentNode(node: PartNode): Boolean {

@@ -148,11 +148,13 @@ object MimeParser {
         runCatching { (part as? jakarta.mail.internet.MimeBodyPart)?.rawInputStream?.use { it.readBytes() } }.getOrNull() ?: ByteArray(0)
     }
 
-    private fun walk(part: Part, body: Body, inRelated: Boolean) {
+    private fun walk(part: Part, body: Body, inRelated: Boolean, depth: Int = 0) {
         val type = contentType(part)
         val base = type.baseType.lowercase()
         val disposition = disposition(part)
         if (base.startsWith("multipart/")) {
+            // Nesting past the limit is a crafted message, not mail: what is below it is left out.
+            if (depth >= Structure.MAX_DEPTH) return
             val multipart = runCatching { MimeMultipart(MimePartDataSource(part as MimePart)) }.getOrNull() ?: return
             val count = runCatching { multipart.count }.getOrDefault(0)
             val related = inRelated || base == "multipart/related"
@@ -160,13 +162,13 @@ object MimeParser {
                 // The alternatives come in rising preference: the last HTML and the last plain text win.
                 for (i in 0 until count) {
                     val child = Body()
-                    walk(multipart.getBodyPart(i), child, related)
+                    walk(multipart.getBodyPart(i), child, related, depth + 1)
                     child.html?.let { body.html = it }
                     child.text?.let { body.text = it }
                     for (a in child.attachments) body.attachments += a.reindexed(body.attachments.size)
                 }
             } else {
-                for (i in 0 until count) walk(multipart.getBodyPart(i), body, related)
+                for (i in 0 until count) walk(multipart.getBodyPart(i), body, related, depth + 1)
             }
             return
         }

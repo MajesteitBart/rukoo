@@ -528,13 +528,18 @@ class ImapSession(
             return out.toString()
         }
 
-        /** BODYSTRUCTURE as [PartNode]s with IMAP part numbers ("1", "1.2"); a single-part body has none. */
-        fun partNode(bs: BODYSTRUCTURE, part: String?): PartNode {
+        /**
+         * BODYSTRUCTURE as [PartNode]s with IMAP part numbers ("1", "1.2"); a single-part body has none. Below
+         * [Structure.MAX_DEPTH] multipart levels the parts are left out, as the parser leaves them out of the body.
+         */
+        fun partNode(bs: BODYSTRUCTURE, part: String?, depth: Int = 0): PartNode {
             if (bs.isMulti) {
                 return PartNode(
                     part = part,
                     type = "multipart/${bs.subtype.orEmpty().lowercase()}",
-                    children = bs.bodies.orEmpty().mapIndexed { i, child -> partNode(child, if (part == null) "${i + 1}" else "$part.${i + 1}") },
+                    children = if (depth >= Structure.MAX_DEPTH) emptyList() else bs.bodies.orEmpty().mapIndexed { i, child ->
+                        partNode(child, if (part == null) "${i + 1}" else "$part.${i + 1}", depth + 1)
+                    },
                 )
             }
             return PartNode(
