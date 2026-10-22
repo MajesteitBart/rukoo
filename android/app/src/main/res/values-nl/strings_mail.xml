@@ -1,3 +1,267 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Mail list, folders, search and filters -->
+    <string name="mailbox_empty_filter">Niets in dit filter</string>
+    <string name="mailbox_empty_folder">Geen e-mails</string>
+    <string name="mailbox_empty_search">Niets gevonden</string>
+    <string name="mailbox_empty_search_all">Probeer te zoeken in alle mappen.</string>
+    <string name="mailbox_empty_search_all_action">Zoeken in alle mappen</string>
+    <string name="mailbox_empty_search_other">Probeer een ander zoekwoord.</string>
+    <string name="mailbox_empty_show_all">Alles weergeven</string>
+    <string name="mailbox_empty_syncing">Bezig met synchroniseren...</string>
+    <string name="mailbox_filters_all">Alles</string>
+    <string name="mailbox_filters_attachments">Bijlagen</string>
+    <string name="mailbox_filters_label">Filter</string>
+    <string name="mailbox_filters_starred">Met ster</string>
+    <string name="mailbox_filters_unread">Ongelezen</string>
+    <string name="mailbox_folders_archive">Archief</string>
+    <string name="mailbox_folders_created">Map %1$s aangemaakt</string>
+    <string name="mailbox_folders_drafts">Concepten</string>
+    <string name="mailbox_folders_inbox">Postvak IN</string>
+    <string name="mailbox_folders_junk">Spam</string>
+    <string name="mailbox_folders_name">Naam van de map</string>
+    <string name="mailbox_folders_new">Nieuwe map</string>
+    <string name="mailbox_folders_sent">Verzonden</string>
+    <string name="mailbox_folders_starred">Sterren</string>
+    <string name="mailbox_folders_trash">Prullenbak</string>
+    <string name="mailbox_folders_vip">VIP\'s</string>
+    <string name="mailbox_folders_everything">Alle mappen</string>
+    <string name="mailbox_layout_folders">Mappen</string>
+    <string name="mailbox_list_sent_to">Aan: %1$s</string>
+    <string name="mailbox_list_unread_summary">%1$d ongelezen · %2$s</string>
+    <string name="mailbox_message_attachment">Bijlage</string>
+    <string name="mailbox_message_collapse">Inklappen</string>
+    <string name="mailbox_message_no_recipient">(Geen ontvanger)</string>
+    <string name="mailbox_message_no_subject">(geen onderwerp)</string>
+    <string name="mailbox_message_read">Gelezen</string>
+    <string name="mailbox_message_replied">Beantwoord</string>
+    <string name="mailbox_message_select">Selecteren</string>
+    <plurals name="mailbox_message_stack">
+        <item quantity="one">Nog %1$d e-mail van %2$s</item>
+        <item quantity="other">Nog %1$d e-mails van %2$s</item>
+    </plurals>
+    <string name="mailbox_message_unknown_sender">(Onbekende afzender)</string>
+    <string name="mailbox_message_vip">VIP</string>
+    <string name="mailbox_search_all_accounts">Alle accounts</string>
+    <string name="mailbox_search_all_folders">Alle mappen</string>
+    <string name="mailbox_search_folder_named">Deze map (%1$s)</string>
+    <string name="mailbox_search_label">Zoeken</string>
+    <string name="mailbox_search_placeholder">Zoeken in %1$s</string>
+    <string name="mailbox_search_results">Zoekresultaten</string>
+    <string name="mailbox_search_scope">Waar zoeken</string>
+    <plurals name="mailbox_search_summary">
+        <item quantity="one">%1$d voor \"%2$s\" in %3$s</item>
+        <item quantity="other">%1$d voor \"%2$s\" in %3$s</item>
+    </plurals>
+    <string name="mailbox_selection_clear">Selectie opheffen</string>
+    <string name="mailbox_selection_count">%1$d geselecteerd</string>
+    <string name="mailbox_selection_none">Niets selecteren</string>
+    <string name="mailbox_selection_all">Alles selecteren</string>
+    <plurals name="mailbox_selection_summary">
+        <item quantity="one">%1$d e-mail geselecteerd</item>
+        <item quantity="other">%1$d e-mails geselecteerd</item>
+    </plurals>
+    <string name="mailbox_sidebar_unread_count">%1$d ongelezen</string>
+    <plurals name="mailbox_sidebar_account_count">
+        <item quantity="one">%1$d account</item>
+        <item quantity="other">%1$d accounts</item>
+    </plurals>
+    <plurals name="mailbox_sidebar_draft_count">
+        <item quantity="one">%1$d concept</item>
+        <item quantity="other">%1$d concepten</item>
+    </plurals>
+    <string name="mailbox_sort_menu">Sorteren op...</string>
+    <string name="mailbox_sort_newest">Datum (nieuwste eerst)</string>
+    <string name="mailbox_sort_oldest">Datum (oudste eerst)</string>
+    <string name="mailbox_sort_sender">Afzender</string>
+    <string name="mailbox_sort_title">Sorteren op</string>
+    <string name="mailbox_sort_unread">Ongelezen eerst</string>
+    <string name="mailbox_sync_date">Bijgewerkt op %1$s</string>
+    <string name="mailbox_sync_done">Gesynchroniseerd</string>
+    <string name="mailbox_sync_failed">Synchronisatie mislukt</string>
+    <string name="mailbox_sync_just_now">Zojuist bijgewerkt</string>
+    <plurals name="mailbox_sync_minutes_ago">
+        <item quantity="one">%1$d min geleden bijgewerkt</item>
+        <item quantity="other">%1$d min geleden bijgewerkt</item>
+    </plurals>
+    <string name="mailbox_sync_never">Nog niet gesynchroniseerd</string>
+    <string name="mailbox_sync_syncing">Synchroniseren...</string>
+    <string name="mailbox_sync_time">Bijgewerkt om %1$s</string>
+
+    <!-- Mail actions and undo toasts -->
+    <string name="errors_undo_expired">Dit kan niet meer ongedaan worden gemaakt.</string>
+    <string name="mailbox_actions_add_star">Ster toevoegen</string>
+    <string name="mailbox_actions_already_read">Alles is al gelezen</string>
+    <string name="mailbox_actions_compact">Compacte weergave</string>
+    <string name="mailbox_actions_marked_unread">Gemarkeerd als ongelezen</string>
+    <string name="mailbox_actions_move_menu">Verplaatsen...</string>
+    <string name="mailbox_actions_read">Markeren als gelezen</string>
+    <string name="mailbox_actions_read_all">Alles als gelezen markeren</string>
+    <plurals name="mailbox_actions_read_count">
+        <item quantity="one">%1$d e-mail als gelezen gemarkeerd</item>
+        <item quantity="other">%1$d e-mails als gelezen gemarkeerd</item>
+    </plurals>
+    <string name="mailbox_actions_star">Ster</string>
+    <string name="mailbox_actions_sync">Synchroniseren</string>
+    <string name="mailbox_actions_unread">Markeren als ongelezen</string>
+    <string name="mailbox_actions_unstar">Ster verwijderen</string>
+    <plurals name="mailbox_delete_count_action">
+        <item quantity="one">%1$d e-mail verwijderen</item>
+        <item quantity="other">%1$d e-mails verwijderen</item>
+    </plurals>
+    <plurals name="mailbox_delete_deleted_count">
+        <item quantity="one">%1$d e-mail verwijderd</item>
+        <item quantity="other">%1$d e-mails verwijderd</item>
+    </plurals>
+    <string name="mailbox_delete_deleted_one">Verwijderd</string>
+    <plurals name="mailbox_delete_moved_count">
+        <item quantity="one">%1$d e-mail verplaatst naar Prullenbak</item>
+        <item quantity="other">%1$d e-mails verplaatst naar Prullenbak</item>
+    </plurals>
+    <string name="mailbox_delete_moved_one">Verplaatst naar Prullenbak</string>
+    <string name="mailbox_delete_no_trash">Dit account heeft geen Prullenbak. De e-mail wordt definitief van de server verwijderd.</string>
+    <plurals name="mailbox_delete_no_trash_count">
+        <item quantity="one">Dit account heeft geen Prullenbak. %1$d e-mail wordt definitief van de server verwijderd.</item>
+        <item quantity="other">Dit account heeft geen Prullenbak. %1$d e-mails worden definitief van de server verwijderd.</item>
+    </plurals>
+    <string name="mailbox_delete_one">Deze e-mail wordt definitief verwijderd.</string>
+    <plurals name="mailbox_delete_permanent_count">
+        <item quantity="one">%1$d e-mail wordt definitief verwijderd.</item>
+        <item quantity="other">%1$d e-mails worden definitief verwijderd.</item>
+    </plurals>
+    <string name="mailbox_delete_title">Definitief verwijderen?</string>
+    <string name="mailbox_move_already_there">Die e-mails staan daar al</string>
+    <plurals name="mailbox_move_count">
+        <item quantity="one">%1$d e-mail verplaatst naar %2$s</item>
+        <item quantity="other">%1$d e-mails verplaatst naar %2$s</item>
+    </plurals>
+    <plurals name="mailbox_move_count_title">
+        <item quantity="one">%1$d e-mail verplaatsen naar</item>
+        <item quantity="other">%1$d e-mails verplaatsen naar</item>
+    </plurals>
+    <string name="mailbox_move_no_archive">Er is geen archiefmap</string>
+    <string name="mailbox_move_one">Verplaatst naar %1$s</string>
+    <string name="mailbox_move_title">Verplaatsen naar</string>
+    <string name="mailbox_undo_restored">Teruggezet</string>
+    <plurals name="mailbox_undo_restored_count">
+        <item quantity="one">%1$d e-mail teruggezet</item>
+        <item quantity="other">%1$d e-mails teruggezet</item>
+    </plurals>
+    <string name="errors_unsubscribe_missing">Deze e-mail heeft geen afmeldlink.</string>
+
+    <!-- Reader -->
+    <string name="reader_actions_edit">Bewerken</string>
+    <string name="reader_actions_label">Acties</string>
+    <string name="reader_actions_more">Meer acties</string>
+    <string name="reader_address_copied">Gekopieerd</string>
+    <string name="reader_address_copy">E-mailadres kopiëren</string>
+    <plurals name="reader_attachments_count">
+        <item quantity="one">%1$d bijlage</item>
+        <item quantity="other">%1$d bijlagen</item>
+    </plurals>
+    <string name="reader_attachments_open">Openen: %1$s</string>
+    <string name="reader_attachments_share">%1$s delen</string>
+    <string name="reader_attachments_no_app">Geen app op deze telefoon opent dit bestand. Deel het in plaats daarvan.</string>
+    <string name="reader_attachments_risky">Rukoo opent dit soort bestanden niet vanuit een e-mail. Deel het om het te bewaren.</string>
+    <string name="reader_content_label">Inhoud van e-mail</string>
+    <string name="reader_details_hide">Alle gegevens verbergen</string>
+    <string name="reader_details_show">Alle gegevens tonen</string>
+    <string name="reader_empty_title">Geen e-mail geselecteerd</string>
+    <string name="reader_headers_bcc">Bcc</string>
+    <string name="reader_headers_cc">Cc</string>
+    <string name="reader_headers_date">Datum</string>
+    <string name="reader_headers_from">Van</string>
+    <string name="reader_headers_reply_to">Antwoord aan</string>
+    <string name="reader_headers_subject">Onderwerp</string>
+    <string name="reader_headers_to">Aan</string>
+    <string name="reader_navigation_back">Terug naar de lijst</string>
+    <string name="reader_navigation_next">Volgende e-mail</string>
+    <string name="reader_navigation_previous">Vorige e-mail</string>
+    <string name="reader_recipients_me">mij</string>
+    <plurals name="reader_recipients_others">
+        <item quantity="one">" en %1$d ander"</item>
+        <item quantity="other">" en %1$d anderen"</item>
+    </plurals>
+    <string name="reader_recipients_summary">aan %1$s</string>
+    <string name="reader_recipients_unknown">aan onbekende ontvangers</string>
+    <string name="reader_unsubscribe_action">Uitschrijven</string>
+    <string name="reader_unsubscribe_done">Uitgeschreven bij %1$s</string>
+    <string name="reader_unsubscribe_link_help">Rukoo Mail meldt je af via de afmeldlink van de afzender.</string>
+    <string name="reader_unsubscribe_mail_help">Rukoo Mail maakt een afmeldmail voor je klaar.</string>
+    <string name="reader_unsubscribe_opened">De afmeldpagina is geopend in je browser</string>
+    <string name="reader_unsubscribe_subject">Afmelden</string>
+    <string name="reader_unsubscribe_title">Uitschrijven bij %1$s?</string>
+    <string name="reader_unsubscribe_tooltip">Afmelden voor deze e-mails</string>
+    <string name="reader_unsubscribe_unknown_sender">deze afzender</string>
+    <string name="reader_source_show">Origineel weergeven</string>
+
+    <!-- Composer -->
+    <string name="composer_actions_add_bcc">Bcc toevoegen</string>
+    <string name="composer_actions_add_cc">Cc toevoegen</string>
+    <string name="composer_actions_discard">Concept verwijderen</string>
+    <string name="composer_actions_edit_draft">Concept bewerken</string>
+    <string name="composer_actions_save_draft">Opslaan in Concepten</string>
+    <string name="composer_actions_send">Verzenden</string>
+    <string name="composer_agent_drafted">Opgesteld door %1$s</string>
+    <string name="composer_agent_drafted_edited">Opgesteld door %1$s · bewerkt</string>
+    <string name="composer_agent_someone">een agent</string>
+    <string name="composer_agent_undo">Ongedaan maken</string>
+    <string name="composer_agent_undo_help">Je eigen wijzigingen sinds dat moment verdwijnen ook.</string>
+    <string name="composer_agent_undo_title">Concept van %1$s ongedaan maken?</string>
+    <string name="composer_attachments_pick">Bestanden bijvoegen</string>
+    <string name="composer_attachments_remove">%1$s weghalen</string>
+    <string name="composer_attachments_failed">Rukoo kon %1$s niet toevoegen.</string>
+    <string name="composer_body_label">Berichttekst</string>
+    <string name="composer_body_placeholder">Schrijf je bericht</string>
+    <string name="composer_close_discard">Niet opslaan</string>
+    <string name="composer_close_help">Bewaar dit bericht in Concepten om later verder te schrijven.</string>
+    <string name="composer_close_title">Concept opslaan?</string>
+    <string name="composer_discard_saved_help">Dit concept wordt ook uit Concepten verwijderd.</string>
+    <string name="composer_discard_title">Concept verwijderen?</string>
+    <string name="composer_discard_unsaved_help">Wat je hebt geschreven gaat verloren.</string>
+    <string name="composer_errors_autosave">Automatisch opslaan mislukt</string>
+    <string name="composer_errors_save_local">Rukoo kon het concept niet op deze telefoon bewaren.</string>
+    <string name="composer_errors_delete_local">Rukoo kon het concept niet van deze telefoon verwijderen.</string>
+    <string name="composer_errors_no_account">Voeg in Rukoo Mail eerst een e-mailaccount toe voordat je een e-mail schrijft.</string>
+    <string name="composer_errors_no_recipients">Voeg minstens één ontvanger toe</string>
+    <string name="composer_errors_send">Verzenden mislukt</string>
+    <string name="composer_errors_send_reason">Verzenden mislukt: %1$s</string>
+    <string name="composer_quote_date">Datum: %1$s</string>
+    <string name="composer_quote_exclude">Niet meesturen</string>
+    <string name="composer_quote_excluded_pill">··· niet meegestuurd</string>
+    <string name="composer_quote_from">Van: %1$s</string>
+    <string name="composer_quote_hide">Vorige berichten verbergen</string>
+    <string name="composer_quote_include">Toch meesturen</string>
+    <string name="composer_quote_marker">-------- Oorspronkelijk bericht --------</string>
+    <string name="composer_quote_show">Vorige berichten tonen</string>
+    <string name="composer_quote_subject">Onderwerp: %1$s</string>
+    <string name="composer_quote_title">Vorig bericht</string>
+    <string name="composer_quote_to">Aan: %1$s</string>
+    <string name="composer_recipient_remove">%1$s verwijderen</string>
+    <string name="composer_send_no_subject_help">Wil je deze e-mail zonder onderwerp verzenden?</string>
+    <string name="composer_send_no_subject_title">Geen onderwerp</string>
+    <string name="composer_status_deleted">Concept verwijderd</string>
+    <string name="composer_status_kept">Concept bewaard in Concepten</string>
+    <string name="composer_status_saved">Concept opgeslagen</string>
+    <string name="composer_status_saved_at">Opgeslagen om %1$s</string>
+    <string name="composer_status_saved_closed">Concept opgeslagen in Concepten</string>
+    <string name="composer_status_saved_to_drafts">Opgeslagen in Concepten</string>
+    <string name="composer_status_sending">Verzenden...</string>
+    <string name="composer_status_sent">E-mail verzonden</string>
+    <string name="composer_status_sent_draft_kept">De e-mail is verzonden, maar het concept kon niet van deze telefoon worden verwijderd. Je kunt het verwijderen in Concepten.</string>
+    <string name="composer_titles_draft">Concept</string>
+    <string name="composer_titles_forward">Doorsturen</string>
+    <string name="composer_titles_new">Nieuw bericht</string>
+    <string name="composer_titles_reply">Beantwoorden</string>
+    <string name="composer_titles_reply_all">Allen beantwoorden</string>
+
+    <!-- The agent's way in from the mail screens -->
+    <string name="mail_agent_entry">Chatten met een agent</string>
+    <string name="mail_agent_history">Recente chats</string>
+    <string name="mail_agent_history_news">Recente chats, %1$d nieuw</string>
+    <string name="mail_agent_add_to_chat">Toevoegen aan chat</string>
+    <string name="mail_agent_chat_about">Chat met %1$s over deze e-mail</string>
+    <string name="mail_drafts_local">Op deze telefoon</string>
+    <string name="mail_drawer_settings">Instellingen</string>
+    <string name="mail_drawer_accounts">Accounts</string>
 </resources>

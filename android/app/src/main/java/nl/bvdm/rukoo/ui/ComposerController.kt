@@ -51,6 +51,17 @@ data class ComposerState(
      * together with [draftedBy] when the user edits, so a background chat never overwrites the user's words.
      */
     val draftedIn: String? = null,
+    /** The user left the quoted original out ("Exclude from message"). */
+    val quoteExcluded: Boolean = false,
+    /** The agent whose draft the user has since changed: the "Drafted by {name} · edited" mark. [draftedBy] is then null. */
+    val editedAgent: String? = null,
+    /** When it was last kept as a draft on this phone (the Drafts list's date); 0 while it never was. */
+    val savedAt: Long = 0,
+    /**
+     * Recipient text typed in "to", "cc" or "bcc" that isn't a recipient yet (no comma or Enter so far). It is
+     * part of the draft so it is saved with it; Send and Save turn it into recipients first.
+     */
+    val typed: Map<String, String> = emptyMap(),
 )
 
 /**
@@ -66,6 +77,15 @@ class ComposerController(
     private val _state = MutableStateFlow(file?.let { restore(it) })
     val state: StateFlow<ComposerState?> = _state.asStateFlow()
 
+    private val _savedAt = MutableStateFlow<Long?>(null)
+
+    /** When the open draft was last written to this phone's storage; null until then and after closing. */
+    val savedAt: StateFlow<Long?> = _savedAt.asStateFlow()
+
+    // What the composer held right before an agent's draft replaced it, for "Drafted by … · Undo". Keyed by
+    // the agent draft's composer id, so an Undo never restores over a different draft.
+    private var beforeAgent: Pair<String, ComposerState?>? = null
+
     init {
         if (file != null && scope != null) {
             scope.launch {
@@ -78,6 +98,7 @@ class ComposerController(
                         withContext(io) {
                             if (draft == null) file.delete() else JsonFiles.write(file, ComposerState.serializer(), draft)
                         }
+                        _savedAt.value = if (draft == null) null else System.currentTimeMillis()
                     } catch (e: IOException) {
                         // A full disk must not take the app down; the draft stays in memory.
                         AppLog.w(TAG, "could not save the open draft", e)
@@ -96,14 +117,48 @@ class ComposerController(
 
     /** Opens [draft], replacing what was open. Returns the composer key. */
     fun open(draft: ComposerState = ComposerState()): String {
+        val before = _state.value
+        remember(before, draft)
         _state.value = draft
         return draft.id
     }
 
     /** Changes the open draft; does nothing while the composer is closed. */
-    fun update(transform: (ComposerState) -> ComposerState) = _state.update { it?.let(transform) }
+    fun update(transform: (ComposerState) -> ComposerState) {
+        var before: ComposerState? = null
+        var after: ComposerState? = null
+        _state.update { current ->
+            before = current
+            current?.let(transform).also { after = it }
+        }
+        after?.let { remember(before, it) }
+    }
+
+    // An agent's text arriving keeps what the composer held before it. When the agent rewrites its own
+    // draft, the first snapshot stays: Undo goes back to before the agent, not to its earlier version.
+    private fun remember(before: ComposerState?, after: ComposerState) {
+        if (after.draftedBy == null) return
+        val agentsOwn = before != null && before.id == after.id && before.draftedBy != null
+        if (agentsOwn && (beforeAgent?.first == after.id || before!!.body == after.body)) return
+        beforeAgent = after.id to before
+    }
+
+    /**
+     * Takes the agent's draft out again (the composer's Undo): back to what the composer held before it, or,
+     * when the agent opened the composer, to the same fields without the agent's text. Returns false when
+     * there is no agent draft to undo.
+     */
+    fun undoAgentDraft(): Boolean {
+        val current = _state.value ?: return false
+        if (current.draftedBy == null && current.editedAgent == null) return false
+        val previous = beforeAgent?.takeIf { it.first == current.id }?.second
+        beforeAgent = null
+        _state.value = previous ?: current.copy(body = "", draftedBy = null, editedAgent = null, dirty = true)
+        return true
+    }
 
     fun close() {
+        beforeAgent = null
         _state.value = null
     }
 

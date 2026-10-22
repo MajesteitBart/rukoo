@@ -2,6 +2,7 @@ package nl.bvdm.rukoo.ui.root
 
 import kotlinx.serialization.Serializable
 import nl.bvdm.rukoo.mail.model.MailView
+import nl.bvdm.rukoo.mail.model.QuickFilter as ListFilter
 
 /** The panes the layouts arrange (spec 6 §5.2-5.3). */
 @Serializable
@@ -38,8 +39,22 @@ data class NavState(
     val overlay: Overlay? = null,
     val drawerOpen: Boolean = false,
     val chatListOpen: Boolean = false,
+    /** The list's quick filter (All, Unread, Starred, Attachments). */
+    val filter: ListFilter = ListFilter.ALL,
+    /** The search field is open in the list's top bar. */
+    val searching: Boolean = false,
+    val query: String = "",
+    /** Search every folder of every account (the engine's "everything" view), or only the current view. */
+    val searchAll: Boolean = true,
+    /** Checked rows: selection mode while not empty. */
+    val checked: List<String> = emptyList(),
+    /** Stacks the user opened, by their key (day label and sender). */
+    val openStacks: List<String> = emptyList(),
 ) {
     val top: Pane get() = stack.last()
+
+    /** The query the list runs: empty unless the search field is open. */
+    val activeQuery: String get() = if (searching) query.trim() else ""
 
     /** The pane pair on a wide window (spec 6 §5.3). */
     fun twoPanes(): PaneLayout = when {
@@ -53,8 +68,44 @@ data class NavState(
 
     private fun drop(pane: Pane): NavState = copy(stack = stack.filterNot { it == pane && it != Pane.LIST }.ifEmpty { listOf(Pane.LIST) })
 
-    /** A view or folder from the drawer. One pane goes to the list; a chat or composer stays open for two panes. */
-    fun selectView(next: MailView): NavState = copy(view = next, drawerOpen = false, lastInteracted = Pane.LIST).push(Pane.LIST)
+    /**
+     * A view or folder from the drawer. One pane goes to the list; a chat or composer stays open for two
+     * panes. Like desktop's changeView, the filter, search and checks start over, and the open email closes
+     * (it would look like it belongs to the new folder) unless the chat beside it is about it.
+     */
+    fun selectView(next: MailView): NavState {
+        val keep = chatOpen && chatEmailId != null && chatEmailId == openMessageId
+        return copy(
+            view = next,
+            drawerOpen = false,
+            lastInteracted = Pane.LIST,
+            filter = ListFilter.ALL,
+            searching = false,
+            query = "",
+            checked = emptyList(),
+            openMessageId = if (keep) openMessageId else null,
+            chatLeft = if (keep) chatLeft else Pane.LIST,
+        ).push(Pane.LIST)
+    }
+
+    fun setFilter(next: ListFilter): NavState = copy(filter = next, lastInteracted = Pane.LIST)
+
+    fun openSearch(): NavState = copy(searching = true, lastInteracted = Pane.LIST).push(Pane.LIST)
+
+    fun setQuery(text: String): NavState = copy(query = text)
+
+    fun setSearchAll(all: Boolean): NavState = copy(searchAll = all)
+
+    fun closeSearch(): NavState = copy(searching = false, query = "", checked = emptyList())
+
+    /** Long-press or a tap in selection mode: checks or unchecks one row. */
+    fun toggleChecked(id: String): NavState = copy(checked = if (id in checked) checked - id else checked + id, lastInteracted = Pane.LIST)
+
+    fun setChecked(ids: List<String>): NavState = copy(checked = ids.distinct())
+
+    fun clearChecked(): NavState = if (checked.isEmpty()) this else copy(checked = emptyList())
+
+    fun toggleStack(key: String): NavState = copy(openStacks = if (key in openStacks) openStacks - key else openStacks + key)
 
     fun openMessage(id: String): NavState =
         copy(openMessageId = id, chatLeft = Pane.READER, lastInteracted = Pane.READER, chatListOpen = false).push(Pane.READER)
@@ -110,13 +161,17 @@ data class NavState(
         if (chatListOpen) return copy(chatListOpen = false)
         if (drawerOpen) return copy(drawerOpen = false)
         if (overlay != null) return closeOverlay()
+        // Selection mode and the search field belong to the list: they close before the list goes anywhere.
+        val listShown = twoPane || top == Pane.LIST
+        if (listShown && checked.isNotEmpty()) return clearChecked()
         if (twoPane) {
             if (chatOpen) return closeChat()
             if (composerOpen) return composerClosed()
+            if (searching) return closeSearch()
             return null
         }
         return when (top) {
-            Pane.LIST -> null
+            Pane.LIST -> if (searching) closeSearch() else null
             Pane.READER -> copy(lastInteracted = Pane.LIST).drop(Pane.READER)
             Pane.CHAT -> closeChat()
             Pane.COMPOSER -> composerClosed()

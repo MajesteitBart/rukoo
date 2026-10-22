@@ -42,6 +42,7 @@ import nl.bvdm.rukoo.settings.Locales
 import nl.bvdm.rukoo.settings.SettingsStore
 import nl.bvdm.rukoo.ui.ComposerController
 import nl.bvdm.rukoo.ui.ScreenState
+import nl.bvdm.rukoo.ui.composer.DraftStore
 import okhttp3.OkHttpClient
 
 /** What the UI reaches through AppViewModel. AppContainer implements it; tests pass fakes. */
@@ -55,6 +56,9 @@ interface AppServices {
     val agentSettings: AgentSettingsStore
     val desktop: DesktopLink
     val mcp: McpController
+
+    /** Drafts kept on this phone ("Save draft"); fakes get a shared in-memory store. */
+    val drafts: DraftStore get() = DraftStore.InMemory
 }
 
 /**
@@ -89,6 +93,8 @@ class AppContainer(context: Context) : AppServices {
     override val screen = ScreenState(clock)
 
     override val composer = ComposerController(File(appContext.filesDir, ComposerController.FILE_NAME), appScope)
+
+    override val drafts = DraftStore(File(appContext.filesDir, DraftStore.FILE_NAME))
 
     // The preview engine and hub stand in until the real ones land (tracks A and C swap them in here).
     override val mail: MailEngine by lazy {
