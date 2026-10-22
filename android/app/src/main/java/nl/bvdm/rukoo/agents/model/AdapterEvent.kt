@@ -89,10 +89,13 @@ sealed class AdapterEvent {
     @SerialName("error")
     data class Error(val code: String = ErrorCodes.UNKNOWN, val detail: String = "") : AdapterEvent()
 
-    /** A one-line notice, e.g. code `new-session` when the agent started over. */
+    /**
+     * A one-line notice, e.g. code `new-session` when the agent started over. [params] carries what the UI needs to
+     * word it by code (`approval-too-long` has the card's title), like the notice item's own params.
+     */
     @Serializable
     @SerialName("notice")
-    data class Notice(val text: String, val tone: Tone = Tone.INFO, val code: String? = null) : AdapterEvent()
+    data class Notice(val text: String, val tone: Tone = Tone.INFO, val code: String? = null, val params: NoticeParams? = null) : AdapterEvent()
 
     /** Token counts; the hub ignores them. */
     @Serializable
