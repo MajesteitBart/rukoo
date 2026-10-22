@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -82,6 +83,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
+import java.io.File
 import java.text.NumberFormat
 import kotlin.math.max
 import kotlinx.coroutines.delay
@@ -92,6 +94,7 @@ import nl.bvdm.rukoo.agents.model.ChoiceKind
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.OwnSkill
 import nl.bvdm.rukoo.agents.model.PlanTask
+import nl.bvdm.rukoo.agents.model.ShownFile
 import nl.bvdm.rukoo.agents.model.SourceRef
 import nl.bvdm.rukoo.agents.model.TaskStatus
 import nl.bvdm.rukoo.agents.model.ThinkingStatus
@@ -168,7 +171,17 @@ internal fun rememberNow(running: Boolean, everyMs: Long): Long {
  * input. An approval or decline taken in the chat is a centred system line instead.
  */
 @Composable
-fun UserMessage(item: Item.User, skills: List<OwnSkill>, animate: Boolean, modifier: Modifier = Modifier) {
+fun UserMessage(
+    item: Item.User,
+    skills: List<OwnSkill>,
+    animate: Boolean,
+    modifier: Modifier = Modifier,
+    /** The chat's copy of a sent file, for an image's thumbnail. */
+    sentFile: (ShownFile) -> File? = { null },
+    /** A tap on a file chip: the file opens in another app. */
+    onOpenFile: ((ShownFile) -> Unit)? = null,
+    conversationId: String = "",
+) {
     val c = Rk.colors
     if (item.action == "approved" || item.action == "declined") {
         DecisionLine(item, animate, modifier)
@@ -185,6 +198,17 @@ fun UserMessage(item: Item.User, skills: List<OwnSkill>, animate: Boolean, modif
             @OptIn(ExperimentalLayoutApi::class)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val noSubject = stringResource(R.string.agentui_no_subject)
+                // The files first, then the emails, as on desktop (panel.js renderItem).
+                files.forEach { f ->
+                    key(f.id) {
+                        FileChip(
+                            f.name, f.size, f.kind, "c:$conversationId/${f.id}",
+                            load = { sentFile(f) },
+                            onClick = onOpenFile?.let { open -> { open(f) } },
+                            animateEntry = false,
+                        )
+                    }
+                }
                 emails.forEach { m ->
                     EntityChip(
                         m.subject.ifBlank { noSubject },
@@ -192,9 +216,6 @@ fun UserMessage(item: Item.User, skills: List<OwnSkill>, animate: Boolean, modif
                         leading = { SourceBadge("", email = true, emailIcon = PanelIcons.Mail, size = 16.dp) },
                         animateEntry = false,
                     )
-                }
-                files.forEach { f ->
-                    EntityChip(f.name, leading = { RkIcon(PanelIcons.File, null, size = 14.dp, tint = c.ink3) }, animateEntry = false)
                 }
             }
         }

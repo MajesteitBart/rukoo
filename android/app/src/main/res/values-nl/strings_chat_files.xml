@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="agentui_files_attach">Toevoegen aan je bericht</string>
+    <string name="agentui_files_pick_files">Bestanden</string>
+    <string name="agentui_files_pick_files_hint">Elk bestand tot 10 MB</string>
+    <string name="agentui_files_pick_photos">Foto\'s</string>
+    <string name="agentui_files_pick_photos_hint">Uit je galerij</string>
+
+    <string name="agentui_files_adding">%1$s wordt toegevoegd</string>
+    <string name="agentui_files_blocked">%1$s is een programma of script. Rukoo geeft die niet aan agents.</string>
+    <string name="agentui_files_too_big">%1$s is groter dan 10 MB en kan niet naar de agent.</string>
+    <string name="agentui_files_full">%1$s past er niet meer bij: Rukoo houdt al zoveel bestanden klaar voor niet-verstuurde berichten als het bewaart. Verstuur of verwijder er eerst een paar.</string>
+    <string name="agentui_files_unreadable">%1$s kon niet worden gelezen.</string>
+    <string name="agentui_files_too_many">Een bericht neemt maximaal %1$d bestanden mee.</string>
+    <plurals name="agentui_files_gone">
+        <item quantity="one">%1$d bestand dat je toevoegde stond niet meer klaar, dus je bericht is niet verstuurd. Voeg het opnieuw toe; de andere bijlagen staan er nog.</item>
+        <item quantity="other">%1$d bestanden die je toevoegde stonden niet meer klaar, dus je bericht is niet verstuurd. Voeg ze opnieuw toe; de andere bijlagen staan er nog.</item>
+    </plurals>
+    <string name="agentui_panel_wait_files">Wacht tot de bestanden zijn toegevoegd en verstuur dan.</string>
+
+    <string name="agentui_files_open">%1$s openen</string>
+    <string name="agentui_files_open_gone">Rukoo heeft dit bestand niet meer.</string>
+</resources>

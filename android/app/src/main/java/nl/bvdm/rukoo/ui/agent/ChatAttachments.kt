@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import nl.bvdm.rukoo.agents.AgentException
+import nl.bvdm.rukoo.agents.StageResult
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.MessageRef
 import nl.bvdm.rukoo.core.RukooJson
@@ -13,6 +14,13 @@ import nl.bvdm.rukoo.mail.model.Address
 /** An email "Add to chat" put on the message being written (panel.js `P.attach.emails`): it goes along with the next send. */
 @Serializable
 data class PendingEmail(val id: String, val messageId: String? = null, val subject: String = "", val from: Address? = null)
+
+/** A file staged for the message being written (panel.js `P.attach.files`): the hub keeps its copy under [id]. */
+@Serializable
+data class PendingFile(val id: String, val name: String, val size: Long = 0, val kind: String = "file")
+
+/** A picked file still being copied in (panel.js `P.adding`): a pending chip, and nothing is sent meanwhile. */
+data class AddingFile(val name: String, val size: Long?)
 
 /** What adding emails did: the list after, how many were new, how many the chat or the message had already, and whether some didn't fit. */
 data class AddedEmails(val emails: List<PendingEmail>, val added: Int, val had: Int, val full: Boolean)
@@ -63,17 +71,54 @@ object ChatAttachments {
         return AddedEmails(out, added, had, full)
     }
 
-    /** The ids of the hub's `email-missing` refusal (a JSON array in its detail), or null for any other failure. */
-    fun missing(e: Throwable): Set<String>? {
+    /**
+     * The ids of the hub's `email-missing` or `file-missing` refusal ([code]; a JSON array in its detail), or null
+     * for any other failure.
+     */
+    fun missing(e: Throwable, code: String = "email-missing"): Set<String>? {
         val ex = e as? AgentException ?: return null
-        if (ex.code != "email-missing") return null
+        if (ex.code != code) return null
         val ids = runCatching { RukooJson.parseToJsonElement(ex.detail) as? JsonArray }.getOrNull() ?: return emptySet()
         return ids.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toSet()
     }
 
     /** A message that didn't go: its emails come back first, before any the user added meanwhile, without the [gone] ones. */
-    fun restore(sent: List<PendingEmail>, now: List<PendingEmail>, gone: Set<String>): List<PendingEmail> {
-        val back = sent.filter { it.id !in gone }
-        return back + now.filter { n -> back.none { it.id == n.id } }
+    fun restore(sent: List<PendingEmail>, now: List<PendingEmail>, gone: Set<String>): List<PendingEmail> =
+        restoreBy(sent, now, gone) { it.id }
+
+    /** The same for its files: the hub kept them staged, except the [gone] ones it no longer has. */
+    fun restoreFiles(sent: List<PendingFile>, now: List<PendingFile>, gone: Set<String>): List<PendingFile> =
+        restoreBy(sent, now, gone) { it.id }
+
+    private fun <T> restoreBy(sent: List<T>, now: List<T>, gone: Set<String>, id: (T) -> String): List<T> {
+        val back = sent.filter { id(it) !in gone }
+        return back + now.filter { n -> back.none { id(it) == id(n) } }
+    }
+
+    /**
+     * What staging did, for the input (panel.js takeFiles): the files that wait for the message, up to [max] in all;
+     * the refused ones, each with why; whether some didn't fit ('too-many', or past [max]); and the staged files past
+     * [max], which the hub lets go of.
+     */
+    data class Taken(val files: List<PendingFile>, val refused: List<StageResult>, val full: Boolean, val dropped: List<String>)
+
+    fun take(current: List<PendingFile>, results: List<StageResult>, max: Int): Taken {
+        val files = current.toMutableList()
+        val refused = mutableListOf<StageResult>()
+        val dropped = mutableListOf<String>()
+        var full = false
+        for (r in results) {
+            val f = r.file
+            when {
+                r.error == "too-many" -> full = true
+                r.error != null || f == null -> refused += r
+                files.size >= max -> {
+                    full = true
+                    dropped += f.id
+                }
+                else -> files += PendingFile(f.id, f.name, f.size, f.kind)
+            }
+        }
+        return Taken(files, refused, full, dropped)
     }
 }

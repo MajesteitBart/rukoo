@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files attached to an agent chat message (ui/agent). Names follow strings_agent_ui.xml: the desktop catalog keys
+     (src/i18n/en.js, agent.files.* and agent.panel.*) with "agent." replaced by "agentui_". Keys marked "phone
+     wording" have no desktop entry. -->
+<resources>
+    <!-- phone wording: the + before the agent picker, and the title of the sheet it opens -->
+    <string name="agentui_files_attach">Add to your message</string>
+    <!-- phone wording: the sheet's rows -->
+    <string name="agentui_files_pick_files">Files</string>
+    <string name="agentui_files_pick_files_hint">Any file up to 10 MB</string>
+    <string name="agentui_files_pick_photos">Photos</string>
+    <string name="agentui_files_pick_photos_hint">From your gallery</string>
+
+    <!-- What assistive tech hears for a chip whose file is still being copied in. %1$s: the file name. -->
+    <string name="agentui_files_adding">Adding %1$s</string>
+    <!-- Why a file did not go along. %1$s: the file name. -->
+    <string name="agentui_files_blocked">%1$s is a program or script. Rukoo doesn\'t hand those to agents.</string>
+    <string name="agentui_files_too_big">%1$s is larger than 10 MB, so it can\'t go to the agent.</string>
+    <string name="agentui_files_full">%1$s didn\'t fit: Rukoo already holds as many files as it keeps for unsent messages. Send or remove some first.</string>
+    <string name="agentui_files_unreadable">%1$s could not be read.</string>
+    <string name="agentui_files_too_many">A message takes up to %1$d files.</string>
+    <plurals name="agentui_files_gone">
+        <item quantity="one">%1$d file you attached was no longer ready to send, so your message was not sent. Attach it again; the other attachments are still there.</item>
+        <item quantity="other">%1$d files you attached were no longer ready to send, so your message was not sent. Attach them again; the other attachments are still there.</item>
+    </plurals>
+    <!-- Why Send waits: a picked file is still being copied in. -->
+    <string name="agentui_panel_wait_files">Wait until the files are added, then send.</string>
+
+    <!-- phone wording: a file chip on a sent message opens the file in another app. %1$s: the file name. -->
+    <string name="agentui_files_open">Open %1$s</string>
+    <string name="agentui_files_open_gone">Rukoo no longer has this file.</string>
+</resources>

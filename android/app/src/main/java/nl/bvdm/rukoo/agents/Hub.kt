@@ -50,6 +50,7 @@ import nl.bvdm.rukoo.agents.model.ApprovalRequest
 import nl.bvdm.rukoo.agents.model.ApprovalStatus
 import nl.bvdm.rukoo.agents.model.AssistantStatus
 import nl.bvdm.rukoo.agents.model.AttachedEmail
+import nl.bvdm.rukoo.agents.model.ChatFile
 import nl.bvdm.rukoo.agents.model.ComputerProgram
 import nl.bvdm.rukoo.agents.model.ContinuedRef
 import nl.bvdm.rukoo.agents.model.Conversation
@@ -122,6 +123,9 @@ class Hub(
     private val file = File(dataDir, ConversationStore.FILE_NAME)
     private val mailActions = MailActions(mail, unsubscribe)
 
+    // Files the user attaches to messages: staged until sent, then in a folder per chat (chatfiles.js).
+    private val files = ChatFiles(File(dataDir, CHAT_FILES_DIR), clock)
+
     private val lock = Any()
     private var depth = 0
     private var dirty = false
@@ -172,7 +176,11 @@ class Hub(
         val model: String?,
         val effort: String?,
         val emails: List<AttachedEmail>,
+        /** The files the user attached to this message, in the chat's folder. */
+        val files: List<ChatFile> = emptyList(),
     ) {
+        /** [files] as the turn carries them, with the start of their text (ChatFiles.forTurn). */
+        var attached: List<AttachedFile> = emptyList()
         val items = HashSet<String>()
         val tools = HashMap<String, String>()
         var assistantId: String? = null
@@ -394,6 +402,15 @@ class Hub(
             }
             dirty = true
         }
+        // The files of chats that are gone. Not while a store Rukoo couldn't read in full is kept aside: its chats
+        // may come back, and their files with them.
+        val whole = !keepFile && (text == null || (!decoded.unreadable && !decoded.partial))
+        try {
+            if (whole) files.prune(decoded.conversations.map { it.id })
+            files.trim()
+        } catch (e: Exception) {
+            AppLog.w(TAG, "cleaning up chat files failed", e)
+        }
     }
 
     // Whether the file is safe aside. If not, nothing is saved this run, so the original stays as it is.
@@ -551,6 +568,14 @@ class Hub(
         mailChains.remove(c.id)
         if (watching == c.id) watching = null
         dirty = true
+        // The chat's files go with it. A file still being read for its last turn makes that read fail, which is fine.
+        scope.launch(io) {
+            try {
+                files.remove(c.id)
+            } catch (e: Exception) {
+                AppLog.w(TAG, "removing a chat's files failed", e)
+            }
+        }
         // The adapter drops what it keeps for the chat (a computer forgets its session).
         scope.launch(dispatcher) {
             try {
@@ -1089,14 +1114,27 @@ class Hub(
             display = "/${s.name}"
         }
         val body = text.take(MAX_MESSAGE)
+        // Checked before anything changes, so a refusal leaves the chat and the user's attachments as they were.
+        val fileIds = request.files
+        if (fileIds.size > ChatFiles.MAX_FILES) throw AgentException(ErrorCodes.INVALID, "at most ${ChatFiles.MAX_FILES} files per message")
+        val staged = withContext(io) { files.pending(fileIds) }
+            // Named as JSON, so the UI drops exactly those chips and keeps the rest.
+            ?: throw AgentException("file-missing", JsonArray(withContext(io) { files.missing(fileIds) }.map { JsonPrimitive(it) }).toString())
         val mails = attachEmails(c0, request.emails)
-        if (body.isBlank() && mails.isEmpty()) throw AgentException(ErrorCodes.INVALID, "empty message")
-        return locked { startTurnLocked(conversationId, body, action, display, mails) }
+        if (body.isBlank() && staged.isEmpty() && mails.isEmpty()) throw AgentException(ErrorCodes.INVALID, "empty message")
+        return locked { startTurnLocked(conversationId, body, action, display, mails, staged) }
     }
 
     // The part of send() that needs nothing loaded: checks, the user item, and the turn. An approved proposal's
     // follow-up starts here directly, as desktop's does, so two approvals can't race to the same idle chat.
-    private fun startTurnLocked(cid: String, body: String, action: String?, display: String?, mails: List<AttachedEmail>): SendResult {
+    private fun startTurnLocked(
+        cid: String,
+        body: String,
+        action: String?,
+        display: String?,
+        mails: List<AttachedEmail>,
+        staged: List<ChatFiles.Staged> = emptyList(),
+    ): SendResult {
         val c = mustGetLocked(cid)
         if (turns.containsKey(c.id)) throw AgentException(ErrorCodes.BUSY, "a turn is running")
         if (!agentEnabled(c.agent)) throw AgentException(ErrorCodes.DISABLED, "${c.agent} is turned off")
@@ -1106,12 +1144,23 @@ class Hub(
         val shown = display?.take(MAX_MESSAGE) ?: body
         // display can be an approved proposal's title: the agent gets its tags, the user's line shows the text.
         val line = if (display != null) Unsafe.untag(shown) else shown
+        // Into the chat's folder, all or nothing: when that fails the files stay staged and nothing else changed.
+        val kept = if (staged.isNotEmpty()) files.keep(c.id, staged) else emptyList()
+        if (kept.isNotEmpty()) editLocked(c.id, touch = false) { it.copy(files = it.files + kept) }
+        // A chat is named after its first message, or after what it brought when it has no text.
         if (c.title.isEmpty()) {
-            val named = if (line.isNotBlank()) line else mails.joinToString(", ") { it.subject }
+            val named = if (line.isNotBlank()) line else (kept.map { it.name } + mails.map { it.subject }).joinToString(", ")
             editLocked(c.id, touch = false) { it.copy(title = jsOneLine(named).take(80)) }
         }
-        val user = addItemLocked(c.id, Item.User(Ids.itemId(), clock.now(), line, action, emails = mails.takeIf { it.isNotEmpty() }))
-        val turn = Turn(Ids.turnId(), c.id, user.id, c.model, turnEffort(c), mails)
+        val user = addItemLocked(
+            c.id,
+            Item.User(
+                Ids.itemId(), clock.now(), line, action,
+                files = kept.map(ChatFiles::shown).takeIf { it.isNotEmpty() },
+                emails = mails.takeIf { it.isNotEmpty() },
+            ),
+        )
+        val turn = Turn(Ids.turnId(), c.id, user.id, c.model, turnEffort(c), mails, kept)
         // Kept from the start, so a stop before the turn gets going still keeps the approval.
         if (action == "approved") turn.approvalDisplay = shown.ifEmpty { body }
         turns[c.id] = turn
@@ -1176,6 +1225,11 @@ class Hub(
                 if (stoppedEarly(turn)) return
             }
             turn.newer = newer
+            // The attached files from the chat's folder, with the start of their text.
+            if (turn.files.isNotEmpty()) {
+                turn.attached = withContext(io) { files.forTurn(cid, turn.files) }
+                if (stoppedEarly(turn)) return
+            }
             val named = mentionedSkills(agent, text, action)
             if (stoppedEarly(turn)) return
             val open = if (firstTurn) null else openLine(cid, newer)
@@ -1188,11 +1242,14 @@ class Hub(
                 turn.notes = notes
                 val input = TurnContext.turnText(
                     conversationId = c.id, chatEmail = c.message, text = text, firstTurn = firstTurn, notes = notes, message = message,
-                    openMessage = open, newer = newer, earlier = if (recap) earlierLocked(c, turn) else null, emails = turn.emails,
-                    now = clock.now(), zone = zone(),
+                    openMessage = open, newer = newer, earlier = if (recap) earlierLocked(c, turn) else null, files = turn.attached,
+                    emails = turn.emails, now = clock.now(), zone = zone(),
                 )
                 val handle = Handle(
-                    turn, c, input, text, action, named, firstTurn, turn.model, turn.effort, turn.emails.map { it.id }, grantFor(c),
+                    turn, c, input, text, action, named, firstTurn, turn.model, turn.effort,
+                    // What the user attached. Adapters that take images send each inline one along as an image.
+                    turn.attached.filter { !it.missing }.map { it.turnFile() },
+                    turn.emails.map { it.id }, grantFor(c),
                     ready = firstTurn || recap,
                 )
                 turn.adapterStarted = true
@@ -1386,7 +1443,8 @@ class Hub(
             val c = convs[turn.cid] ?: return@locked handle.input
             handle.input = TurnContext.turnText(
                 conversationId = c.id, chatEmail = c.message, text = handle.text, firstTurn = true, notes = turn.notes, message = message,
-                openMessage = open, newer = newer, earlier = earlierLocked(c, turn), emails = turn.emails, now = clock.now(), zone = zone(),
+                openMessage = open, newer = newer, earlier = earlierLocked(c, turn), files = turn.attached, emails = turn.emails,
+                now = clock.now(), zone = zone(),
             )
             handle.input
         }
@@ -1403,6 +1461,7 @@ class Hub(
         override val firstTurn: Boolean,
         override val model: String?,
         override val effort: String?,
+        override val files: List<TurnFile>,
         override val emails: List<String>,
         override val mcp: McpGrant,
         val ready: Boolean,
@@ -1413,7 +1472,6 @@ class Hub(
         override var input: String = input
 
         override val instructions: String = TurnContext.instructions()
-        override val files: List<TurnFile> = emptyList()
 
         override fun emit(event: AdapterEvent) = onAdapterEvent(turn, event)
 
@@ -1657,14 +1715,16 @@ class Hub(
     }
 
     // A turn that never reached the agent uses up nothing: the notes it took go back, an approved follow-up's
-    // approval is kept, and the next message says what the user attached. Once per turn.
+    // approval is kept, and the chat keeps the files; the next message says what the user attached and how to read
+    // it. Once per turn.
     private fun giveBackLocked(cid: String, turn: Turn) {
         if (turn.givenBack) return
         turn.givenBack = true
         if (turn.notes.isNotEmpty()) editLocked(cid) { it.copy(notes = turn.notes + it.notes) }
         turn.approvalDisplay?.let { keepApprovalLocked(cid, it) }
-        if (turn.emails.isNotEmpty()) {
-            val names = turn.emails.map { "the email ${Unsafe.inline(it.subject, "email subject", 100)} (id ${it.id})" }
+        if (turn.files.isNotEmpty() || turn.emails.isNotEmpty()) {
+            val names = turn.files.map { "${Unsafe.inline(it.name, "file name", 100)} (file_id ${it.id})" } +
+                turn.emails.map { "the email ${Unsafe.inline(it.subject, "email subject", 100)} (id ${it.id})" }
             addNoteLocked(cid, "The user attached ${names.joinToString(", ")} to a message that did not reach you. read_chat_file and read_message return them.")
         }
     }
@@ -2035,6 +2095,21 @@ class Hub(
         }
     }
 
+    // ---------- attached files (UI) ----------
+
+    override suspend fun stageFiles(sources: List<FileSource>, room: Int): List<StageResult> = withContext(io) { files.stageAll(sources, room) }
+
+    override suspend fun unstageFile(id: String) {
+        withContext(io) { files.unstage(id) }
+    }
+
+    override suspend fun stagedFile(id: String): File? = withContext(io) { files.stagedData(id) }
+
+    override fun chatFile(conversationId: String, fileId: String): File? = locked {
+        val f = convs[conversationId]?.files?.firstOrNull { it.id == fileId } ?: return@locked null
+        files.path(conversationId, f)
+    }
+
     // ---------- rows ----------
 
     // When the chat's last message came: what the user wrote, what the agent said, an approval card.
@@ -2063,6 +2138,9 @@ class Hub(
 
     companion object {
         private const val TAG = "Hub"
+
+        /** Where the attached files live in the app's storage: staged/ while they wait, chats/<chat>/ once sent. */
+        const val CHAT_FILES_DIR = "chat-files"
         const val MAX_CONVERSATIONS = 150
         const val MAX_EXTERNAL = 20
         const val EXTERNAL_REUSE_MS = 4 * 60 * 60 * 1000L

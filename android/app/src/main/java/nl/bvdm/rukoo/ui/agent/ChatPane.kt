@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
@@ -195,8 +196,10 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
     val toast = LocalRkToast.current
     val context = LocalContext.current
     val uri = LocalUriHandler.current
+    // Files on their way in belong to the activity, so a copy under way when this pane goes still reaches the input.
+    val staging: ChatStaging = viewModel { ChatStaging(hub = { app.services.agents }) }
     val controller = remember(app) {
-        ChatController(app, scope, toast, { context.resources }, local, input) { url -> runCatching { uri.openUri(url) } }
+        ChatController(app, scope, toast, { context.resources }, local, input, ChatFileAccess { context }, staging) { url -> runCatching { uri.openUri(url) } }
     }
     controller.snapshot = ChatSnapshot(
         conversation = conversation,
@@ -230,6 +233,14 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
         if (conversationId != null && ids.firstOrNull() == app.state.value.openMessageId) local.value = local.value.copy(keepFor = ids.first())
         controller.addEmails(ids)
     }
+    // Picked files the hub has copied in (or refused) join the message being written, also ones picked before this pane
+    // came back on screen.
+    val staged by staging.results.collectAsStateWithLifecycle()
+    LaunchedEffect(staged) {
+        if (staged.isNotEmpty()) controller.takeFiles(staging.take())
+    }
+    val adding by staging.adding.collectAsStateWithLifecycle()
+    val picking by staging.picking.collectAsStateWithLifecycle()
     // An added email the chat on screen has itself (its own, or one it continued from) goes with it already.
     LaunchedEffect(conversation?.id, conversation?.continued?.size, emailId, email?.id) {
         controller.dropEmailsInChat()
@@ -311,6 +322,17 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
             controller.detached() && email != null -> ContextChip.Add
             else -> email?.let { ContextChip.Email(it, removable = true) }
         }
+        // The attach sheet offers the email the user left out of a new chat, or the open one when the chat doesn't
+        // have it and the message hasn't got it yet ("Add to chat" from the input).
+        val openRef by produceState<MessageRef?>(null, openId) { value = openId?.let { loadRef(services.mail, it, full = false) } }
+        val emailOffer = when {
+            contextChip is ContextChip.Add && email != null -> EmailOffer(email!!, putBack = true)
+            else -> openRef?.takeIf { ref ->
+                val asPending = PendingEmail(ref.id, ref.messageId)
+                !ChatAttachments.inChat(asPending, conversation, emailId, email, controller.detached()) &&
+                    local.value.emails.none { ChatAttachments.same(it, ref.id, ref.messageId) }
+            }?.let { EmailOffer(it, putBack = false) }
+        }
         // A chat continued from a newer email in its thread shows that email next to its own while it is open.
         val newer = conversation?.let { conv ->
             val open = openId ?: return@let null
@@ -327,6 +349,10 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
                 context = contextChip,
                 newer = newer,
                 emails = local.value.emails,
+                files = local.value.files,
+                adding = adding,
+                holding = adding.isNotEmpty() || picking > 0 || staged.isNotEmpty(),
+                emailOffer = emailOffer,
                 running = conversation?.status == ConversationStatus.RUNNING,
                 blockedNote = AgentText.setup(agentState, agentName),
                 models = modelList,
@@ -519,7 +545,14 @@ private fun TranscriptRowView(
             val item = row.item
             val animate = item.at >= openedAt
             when (item) {
-                is Item.User -> UserMessage(item, if (item.action == "skill") emptyList() else skills, animate)
+                is Item.User -> UserMessage(
+                    item,
+                    if (item.action == "skill") emptyList() else skills,
+                    animate,
+                    sentFile = { f -> controller.sentFile(conversation.id, f.id) },
+                    onOpenFile = { f -> controller.openFile(conversation.id, f) },
+                    conversationId = conversation.id,
+                )
                 is Item.Assistant -> AssistantMessage(item, controller::openLink)
                 is Item.Thinking -> ThinkingBlock(item)
                 is Item.Approval -> ApprovalCard(

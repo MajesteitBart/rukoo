@@ -5,9 +5,12 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import nl.bvdm.rukoo.agents.AgentException
+import nl.bvdm.rukoo.agents.FileSource
 import nl.bvdm.rukoo.agents.HubEvent
 import nl.bvdm.rukoo.agents.HubKit
 import nl.bvdm.rukoo.agents.SendRequest
+import nl.bvdm.rukoo.agents.StageResult
+import nl.bvdm.rukoo.agents.StagedFile
 import nl.bvdm.rukoo.agents.model.ContinuedRef
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.DraftMode
@@ -222,6 +225,41 @@ class ChatSeamsTest {
         runCurrent()
         val user = k.hub.get(chat.id)!!.items.filterIsInstance<Item.User>().last()
         assertEquals(listOf(other), user.emails.orEmpty().map { it.id })
+    }
+
+    // ---------- attached files ----------
+
+    @Test
+    fun theRealHubNamesTheFileThatIsGoneAndTheChipsComeBackWithoutIt() = runTest {
+        val k = kit()
+        val chat = k.hub.create("clark", MessageRef(sanne))
+        val kept = k.hub.stageFiles(listOf(FileSource("a.txt", 1) { "a".byteInputStream() }), 10).single().file!!
+        try {
+            k.hub.send(chat.id, SendRequest(text = "Read", files = listOf(kept.id, "s_gone")))
+            fail("expected file-missing")
+        } catch (e: AgentException) {
+            assertEquals(setOf("s_gone"), ChatAttachments.missing(e, "file-missing"))
+            assertNull(ChatAttachments.missing(e))
+        }
+        val sent = listOf(PendingFile(kept.id, "a.txt", 1, "text"), PendingFile("s_gone", "b.txt"))
+        assertEquals(listOf(kept.id, "s_later"), ChatAttachments.restoreFiles(sent, listOf(PendingFile("s_later", "c.txt")), setOf("s_gone")).map { it.id })
+    }
+
+    @Test
+    fun stagedFilesTakeTheirPlaceUpToTenAndRefusalsSayWhy() {
+        val current = List(8) { PendingFile("s_$it", "f$it.txt") }
+        val staged = { id: String -> StageResult("$id.txt", StagedFile(id, "$id.txt", 3, "text/plain", "text")) }
+        val taken = ChatAttachments.take(
+            current,
+            listOf(staged("s_a"), StageResult("x.exe", error = "blocked"), staged("s_b"), staged("s_c"), StageResult("d.txt", error = "too-many")),
+            max = 10,
+        )
+        assertEquals(current.map { it.id } + listOf("s_a", "s_b"), taken.files.map { it.id })
+        assertEquals(listOf("x.exe"), taken.refused.map { it.name })
+        // Past ten the hub lets go of the copy, and the user hears the cap once.
+        assertEquals(listOf("s_c"), taken.dropped)
+        assertTrue(taken.full)
+        assertFalse(ChatAttachments.take(emptyList(), listOf(staged("s_a")), max = 10).full)
     }
 
     // ---------- the approval toast ----------

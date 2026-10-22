@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Files Rukoo shares with other apps through the FileProvider: opened attachments (cache) and attachments
-     kept with chats and drafts (files). Nothing else in the app's storage is reachable. -->
+<!-- Files Rukoo shares with other apps through the FileProvider: opened attachments (cache), attachments kept with
+     drafts (files), and files sent in an agent chat, opened from the chat (files/chat-files/chats). Nothing else in
+     the app's storage is reachable: not the files waiting to be sent, nor the rest of the app's data. -->
 <paths>
     <cache-path name="cache_attachments" path="attachments/" />
     <files-path name="files_attachments" path="attachments/" />
+    <files-path name="chat_files" path="chat-files/chats/" />
 </paths>

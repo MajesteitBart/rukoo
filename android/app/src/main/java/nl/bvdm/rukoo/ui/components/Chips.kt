@@ -38,7 +38,7 @@ import nl.bvdm.rukoo.ui.theme.panel
  * a field pill with a hairline. [sub] follows in `ink3` (the sender after a subject). [leading] replaces the
  * monogram (a mail badge, a file-type badge). With [onRemove] it ends in a 20dp x named [removeLabel]. A
  * [pending] chip (a file still on its way) shimmers its name and has no x. [animateEntry] pops it in once;
- * turn it off for chips in a lazy list that come back into view.
+ * turn it off for chips in a lazy list that come back into view. [onClickLabel] says what a tap does.
  */
 @Composable
 fun EntityChip(
@@ -50,6 +50,7 @@ fun EntityChip(
     agent: Boolean = false,
     leading: (@Composable () -> Unit)? = null,
     onClick: (() -> Unit)? = null,
+    onClickLabel: String? = null,
     onRemove: (() -> Unit)? = null,
     removeLabel: String? = null,
     pending: Boolean = false,
@@ -63,7 +64,7 @@ fun EntityChip(
         .heightIn(min = 28.dp)
         .background(c.field, shape)
         .border(1.dp, c.line, shape)
-    if (onClick != null) m = m.pressScale(source, 0.97f).rkClickable(shape, interactionSource = source, onClick = onClick)
+    if (onClick != null) m = m.pressScale(source, 0.97f).rkClickable(shape, onClickLabel = onClickLabel, interactionSource = source, onClick = onClick)
     Row(
         m.padding(start = 4.dp, end = if (onRemove != null && !pending) 3.dp else 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),

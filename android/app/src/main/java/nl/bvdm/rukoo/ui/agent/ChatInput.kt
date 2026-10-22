@@ -3,6 +3,9 @@
 package nl.bvdm.rukoo.ui.agent
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -24,6 +27,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
@@ -34,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -66,6 +71,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.agents.ChatFiles
 import nl.bvdm.rukoo.agents.model.AgentDescriptor
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.AgentState
@@ -116,6 +122,13 @@ sealed interface ContextChip {
 @Immutable
 data class NewerChip(val ref: MessageRef, val pending: Boolean)
 
+/**
+ * The email the attach sheet offers: the open one the user left out of a new chat ([putBack]), or the open one when
+ * the chat doesn't have it, which then goes with the message as "Add to chat" adds it.
+ */
+@Immutable
+data class EmailOffer(val ref: MessageRef, val putBack: Boolean)
+
 /** Everything the input shows, built by the pane. */
 @Immutable
 data class InputModel(
@@ -128,6 +141,13 @@ data class InputModel(
     val newer: NewerChip?,
     /** Emails added with "Add to chat" that go with the next message. */
     val emails: List<PendingEmail> = emptyList(),
+    /** Files picked for the next message, and the ones still being copied in. */
+    val files: List<PendingFile> = emptyList(),
+    val adding: List<AddingFile> = emptyList(),
+    /** A file is on its way: Send waits. */
+    val holding: Boolean = false,
+    /** The email the attach sheet offers, if any. */
+    val emailOffer: EmailOffer? = null,
     val running: Boolean,
     /** Why the agent can't take a message, or null. */
     val blockedNote: Txt?,
@@ -174,13 +194,20 @@ private class SkillStyling(private val skills: List<OwnSkill>, private val style
 }
 
 /**
- * The chat input (bui.js `chatComposer`): the email chip, a growing text field, `/` commands and `$` skills in a
- * menu above it, and a bottom row with the agent, model and effort pickers and Send (Stop while a turn runs).
- * Enter on a hardware keyboard sends; Shift+Enter starts a new line.
+ * The chat input (bui.js `chatComposer`): the email chip and what the user attached, a growing text field, `/`
+ * commands and `$` skills in a menu above it, and a bottom row with +, the agent, model and effort pickers and Send
+ * (Stop while a turn runs). Enter on a hardware keyboard sends; Shift+Enter starts a new line.
  */
 @Composable
 fun ChatInput(controller: ChatController, model: InputModel, actions: InputActions, placeholder: String, modifier: Modifier = Modifier) {
     val c = Rk.colors
+    // Registered here, not in the sheet: the sheet is gone by the time the picker answers.
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { controller.addPicked(it) }
+    val pickPhotos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(ChatFiles.MAX_FILES)) { controller.addPicked(it) }
+    val attach = AttachActions(
+        files = { pickFiles.launch(arrayOf("*/*")) },
+        photos = { pickPhotos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+    )
     val value = controller.input.value
     var focused by remember { mutableStateOf(false) }
     var dismissed by remember { mutableStateOf(false) }
@@ -259,7 +286,7 @@ fun ChatInput(controller: ChatController, model: InputModel, actions: InputActio
                     },
                 )
             }
-            BottomRow(controller, model, actions, blocked, value.text.isNotBlank() || model.emails.isNotEmpty())
+            BottomRow(controller, model, actions, attach, blocked, value.text.isNotBlank() || model.emails.isNotEmpty() || model.files.isNotEmpty())
         }
     }
 }
@@ -268,7 +295,7 @@ fun ChatInput(controller: ChatController, model: InputModel, actions: InputActio
 @Composable
 private fun ContextChips(controller: ChatController, model: InputModel) {
     val context = model.context
-    if (context == null && model.newer == null && model.emails.isEmpty()) return
+    if (context == null && model.newer == null && model.emails.isEmpty() && model.files.isEmpty() && model.adding.isEmpty()) return
     val noSubject = stringResource(R.string.agentui_no_subject)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         when (context) {
@@ -286,6 +313,14 @@ private fun ContextChips(controller: ChatController, model: InputModel) {
             }
             null -> Unit
         }
+        // The files first, then the ones on their way, then the emails, as on desktop.
+        // Keyed by file, so a removed chip's state (its thumbnail) never moves on to the next one.
+        model.files.forEach { f ->
+            key(f.id) {
+                FileChip(f.name, f.size, f.kind, "s:${f.id}", load = { controller.stagedFile(f.id) }, onRemove = { controller.removeFile(f.id) })
+            }
+        }
+        model.adding.forEach { PendingFileChip(it) }
         // A mail badge rather than the sender's monogram, so an added email reads as an attachment next to the chat's own.
         model.emails.forEach { m ->
             val subject = m.subject.ifBlank { noSubject }
@@ -338,19 +373,84 @@ private fun BlockedNote(model: InputModel, onSetUp: () -> Unit) {
  * effort name go (agent.css); the row itself is about 30dp narrower than the panel.
  */
 @Composable
-private fun BottomRow(controller: ChatController, model: InputModel, actions: InputActions, blocked: Boolean, hasText: Boolean) {
+private fun BottomRow(controller: ChatController, model: InputModel, actions: InputActions, attach: AttachActions, blocked: Boolean, hasText: Boolean) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val narrow = maxWidth < 300.dp
         val agentMax = maxWidth * 0.7f
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (!blocked) AttachButton(controller, model, attach)
                 AgentPicker(controller, model, Modifier.widthIn(max = agentMax), narrow)
                 if (!blocked) {
                     ModelPicker(controller, model, actions, Modifier.weight(1f, fill = false), narrow)
                     EffortPicker(controller, model, narrow)
                 }
             }
-            SendButton(controller, model.running, enabled = !blocked && hasText)
+            SendButton(controller, model.running, enabled = !blocked && hasText && !model.holding)
+        }
+    }
+}
+
+/** What the attach sheet's rows open: the system file picker and the photo picker. */
+class AttachActions(val files: () -> Unit, val photos: () -> Unit)
+
+/**
+ * The + at the start of the bottom row, where the thumb reaches it on the cover screen. Desktop has a paperclip for
+ * files (bui.js `bui-pb__attach`): quiet, round, `ink2` here as there is no hover. On the phone it opens a sheet with
+ * everything that can go along with the message: files, photos, and the open email when the chat doesn't have it.
+ */
+@Composable
+private fun AttachButton(controller: ChatController, model: InputModel, attach: AttachActions) {
+    val c = Rk.colors
+    var open by remember { mutableStateOf(false) }
+    val label = stringResource(R.string.agentui_files_attach)
+    val source = remember { MutableInteractionSource() }
+    Box(Modifier.minimumInteractiveComponentSize(), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .pressScale(source, 0.94f)
+                .size(32.dp)
+                .rkClickable(CircleShape, interactionSource = source) { open = true }
+                .semantics { contentDescription = label },
+            contentAlignment = Alignment.Center,
+        ) {
+            RkIcon(PanelIcons.named("plus", 2.2f), null, size = 17.dp, tint = c.ink2)
+        }
+    }
+    if (open) {
+        RkBottomSheet(onDismissRequest = { open = false }, title = label) {
+            val sheet = this
+            SheetRow(
+                stringResource(R.string.agentui_files_pick_files),
+                onClick = {
+                    sheet.dismiss()
+                    attach.files()
+                },
+                icon = PanelIcons.File,
+                hint = stringResource(R.string.agentui_files_pick_files_hint),
+            )
+            SheetRow(
+                stringResource(R.string.agentui_files_pick_photos),
+                onClick = {
+                    sheet.dismiss()
+                    attach.photos()
+                },
+                icon = PanelIcons.Image,
+                hint = stringResource(R.string.agentui_files_pick_photos_hint),
+            )
+            val offer = model.emailOffer
+            if (offer != null) {
+                SheetDivider()
+                SheetRow(
+                    stringResource(R.string.agentui_panel_add_context),
+                    onClick = {
+                        sheet.dismiss()
+                        if (offer.putBack) controller.attach() else controller.addEmails(listOf(offer.ref.id))
+                    },
+                    icon = PanelIcons.Mail,
+                    hint = offer.ref.subject.ifBlank { stringResource(R.string.agentui_no_subject) },
+                )
+            }
         }
     }
 }

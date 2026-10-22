@@ -7,7 +7,7 @@ The app's code is in [`android/`](../android). It is a native Kotlin and Jetpack
 ## What it does
 
 - Mail accounts on the phone: Gmail with Google sign-in, other providers with an app password or password, and the demo account. Inbox, folders, unified views, search, swipe and selection actions with Undo, a reader for HTML mail, a composer for replies, forwards and new mail, drafts saved to the account's Drafts folder, and new-mail notifications.
-- The agent chat next to the email, with every desktop quick action, `/` skills, `$` agent skills, model and effort menus, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
+- The agent chat next to the email, with every desktop quick action, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
 - Rukoo's twelve MCP tools served by the phone, so an agent can read the phone's mail, write into its composer and ask for approval on its screen.
 - Pairing with Rukoo on your computer, which brings over your accounts and agent settings once and lets the phone use the computer's Claude Code and Codex.
 - English and Dutch, light and dark.
@@ -38,6 +38,14 @@ Settings > Agents has a card per agent with its status and a "Test connection" b
 
 For Claude Code and Codex, the computer must be on, with Rukoo open (the tray is enough), Tailscale on, and "Let my phone use this computer" on. Their own permission requests ("Claude Code wants to read a file") show as approval cards on the phone. Phone chats always run with "Ask before actions" on the computer. [Rukoo on your phone](agents.md#rukoo-on-your-phone) describes the computer's side.
 
+## Attach files to a chat
+
+The + at the start of the chat input opens a sheet with three choices: Files (the system file picker, any type), Photos (Android's photo picker), and "Add this email" when the email on screen isn't in the chat yet. Rukoo copies a picked file into its own storage right away, so the chat doesn't depend on the other app's permission lasting. Each file shows as a chip above the input, an image with a small picture of itself, and its × takes it off before you send.
+
+Your next message takes the files along, also a quick action or a skill, and a message can be files alone. It takes up to 10 files of up to 10 MB each. Programs, scripts and installers, such as `.exe`, `.js` or `.apk`, stay out. The files show on your message in the chat; tap one to open it in another app. The chat keeps them until you delete it.
+
+Agents get the files as on the desktop. The message lists each file with its `file_id` and its name inside `<unsafe_content>`, with the start of a text file's text, and `read_chat_file` returns the whole file. Clark and OpenClaw read the files from the phone through Rukoo's tools. Claude Code and Codex on your computer get images along with the message; other files they read with `read_chat_file`, which the computer passes on to the phone. The phone has no PDF reader, so a PDF reaches the agent as a file without its text.
+
 ## Let agents use Rukoo on this phone
 
 Settings > Phone tools turns the phone's MCP server on. The phone then listens on its Tailscale address, port 47800, and Android shows a silent notification while it runs. Who can connect follows your settings: Clark while its API key is set, OpenClaw while "Let OpenClaw use Rukoo on this phone" is on, and each paired computer with a token of its own. The tools are the desktop's, with the same names and inputs, so Clark's bridge keeps one tool list for every device.
@@ -62,6 +70,7 @@ Mail syncs when the app opens, every few minutes while it is open (Settings > Ac
 - Passwords, refresh tokens, the Hermes key, the OpenClaw token and the computer pairing tokens are encrypted with a key in the Android Keystore. App backups are off.
 - The computer accepts phone requests only on its Tailscale address and only while its Phone switch is on. Pairing codes work once, for five minutes, and burn after five wrong tries. A paired phone can only point the computer's tool calls back at its own address.
 - Email reaches agents inside `<unsafe_content>`, as on desktop. The reader runs without JavaScript and without file access.
+- Files you attach to a chat stay in the app's private storage. Their names and text reach agents inside `<unsafe_content>`, like email. Another app gets a file only when you tap it in the chat, and then only that file, read-only.
 - There is no tool that sends mail. Sending is always your tap. Deleting and unsubscribing always ask.
 
 ## Limits
@@ -69,8 +78,8 @@ Mail syncs when the app opens, every few minutes while it is open (Settings > Ac
 - No calendar on the phone yet.
 - The composer writes plain text. Replies keep the original as an HTML quote, and the account's signature, plain or HTML, is added when the mail goes out.
 - No push (IMAP IDLE): the background sync runs every 15 minutes.
-- Files can't be attached to an agent chat yet; emails can ("Add to chat").
-- The phone has no PDF reader, so `read_attachment` gives agents a PDF as a file without its text. Clark can read it on its own machine.
+- The phone has no PDF reader, so `read_attachment` and `read_chat_file` give agents a PDF as a file without its text. Clark can read it on its own machine.
+- Photos keep the format the camera saved them in. A HEIC photo goes to the agent as a file, not as an image.
 - OpenClaw's Rukoo tools point at one device at a time.
 
 ## Build and develop

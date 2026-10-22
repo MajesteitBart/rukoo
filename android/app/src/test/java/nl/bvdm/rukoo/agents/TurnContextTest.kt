@@ -31,6 +31,8 @@ class TurnContextTest {
     fun turnTextMatchesDesktop() {
         val cases = fixtures["turnText"]!!.jsonArray
         assertTrue(cases.size >= 10)
+        // The attached files' lines are among the cases: one file, several, an image alone, a file and an email.
+        assertTrue(cases.count { (it.jsonObject["files"] as? JsonArray)?.isNotEmpty() == true } >= 4)
         for (raw in cases) {
             val c = raw.jsonObject
             val conversation = c["conversation"]!!.jsonObject
@@ -49,6 +51,8 @@ class TurnContextTest {
             }.orEmpty()
             val open = (c["openMessage"] as? JsonObject)?.let { OpenEmail(Fixtures.str(it["id"])!!, Fixtures.str(it["subject"]).orEmpty()) }
             val emails = (c["emails"] as? JsonArray)?.map { RukooJson.decodeFromJsonElement(AttachedEmail.serializer(), it) }.orEmpty()
+            // Files as desktop's chatfiles.forTurn hands them to turnText.
+            val files = (c["files"] as? JsonArray)?.map { RukooJson.decodeFromJsonElement(AttachedFile.serializer(), it) }.orEmpty()
             val actual = TurnContext.turnText(
                 conversationId = Fixtures.str(conversation["id"])!!,
                 chatEmail = (conversation["message"] as? JsonObject)?.let { RukooJson.decodeFromJsonElement(MessageRef.serializer(), it) },
@@ -59,6 +63,7 @@ class TurnContextTest {
                 openMessage = open,
                 newer = newer,
                 earlier = items(c["earlier"]),
+                files = files,
                 emails = emails,
                 now = c["now"]!!.jsonPrimitive.long,
                 zone = zone,

@@ -14,7 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
-import java.io.File
+import java.io.IOException
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +28,7 @@ import nl.bvdm.rukoo.AppContainer
 import nl.bvdm.rukoo.BuildConfig
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.AgentSettings
+import nl.bvdm.rukoo.agents.ChatFiles
 import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.Tailnet
 import nl.bvdm.rukoo.mcp.tools.ChatFileReader
@@ -134,7 +135,11 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
                 workContext = Dispatchers.Default,
                 mainContext = Dispatchers.Main.immediate,
                 defaultAccountId = { c.settingsSnapshot.value.defaultAccountId },
-                chatFiles = ChatFileReader { _, f -> File(f.file).let { if (it.isAbsolute) it else File(context.filesDir, f.file) }.readBytes() },
+                // From the chat's own folder, by the file's own name only (ChatFiles.path), and never more than Rukoo keeps.
+                chatFiles = ChatFileReader { conversation, f ->
+                    val file = c.agents.chatFile(conversation.id, f.id) ?: throw IOException("no such file")
+                    ChatFiles.readCapped(file, ChatFiles.FILE_MAX)
+                },
                 zone = { ZoneId.systemDefault() },
                 clock = c.clock,
             ),

@@ -1,5 +1,6 @@
 package nl.bvdm.rukoo.agents
 
+import java.io.File
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
@@ -27,13 +28,15 @@ import nl.bvdm.rukoo.core.Change
 
 /**
  * A message from the user (desktop send(), spec 1 §2.1). [display] replaces [text] on screen (a quick
- * action's label); [skill] starts a Rukoo skill by name; [emails] are Rukoo ids of attached emails.
+ * action's label); [skill] starts a Rukoo skill by name; [files] are tokens of staged files
+ * ([AgentHub.stageFiles]); [emails] are Rukoo ids of attached emails. A message with files or emails needs no text.
  */
 data class SendRequest(
     val text: String = "",
     val action: String? = null,
     val display: String? = null,
     val skill: String? = null,
+    val files: List<String> = emptyList(),
     val emails: List<String> = emptyList(),
 )
 
@@ -208,4 +211,22 @@ interface AgentHub {
      */
     suspend fun runMailAction(conversationId: String, mail: MailApproval, title: String, waitMs: Long = 90_000): MailOutcome? =
         throw AgentException("unknown", "mail actions are not available")
+
+    // Files the user attaches to a message (desktop chatfiles.js through the hub).
+
+    /**
+     * Copies the files the user picked into the app's storage for the message being written, in the order picked, at
+     * most [room] of them (desktop stagePaths). Each result has the staged file's token, or why it was refused.
+     */
+    suspend fun stageFiles(sources: List<FileSource>, room: Int): List<StageResult> =
+        sources.map { StageResult(ChatFiles.cleanName(it.name), error = "unreadable") }
+
+    /** The user removed a file from the message being written. */
+    suspend fun unstageFile(id: String) {}
+
+    /** The copy of a staged file while it waits, for a thumbnail; null once it is sent, removed or expired. */
+    suspend fun stagedFile(id: String): File? = null
+
+    /** Where the app keeps a file sent in [conversationId], to open it; null when the chat has no such file. */
+    fun chatFile(conversationId: String, fileId: String): File? = null
 }

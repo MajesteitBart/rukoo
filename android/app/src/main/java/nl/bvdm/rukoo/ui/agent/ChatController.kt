@@ -1,18 +1,24 @@
 package nl.bvdm.rukoo.ui.agent
 
 import android.content.res.Resources
+import android.net.Uri
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.agents.AgentException
+import nl.bvdm.rukoo.agents.ChatFiles
 import nl.bvdm.rukoo.agents.Hub
 import nl.bvdm.rukoo.agents.SendRequest
+import nl.bvdm.rukoo.agents.StageResult
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.ConversationStatus
 import nl.bvdm.rukoo.agents.model.ErrorCodes
@@ -21,6 +27,7 @@ import nl.bvdm.rukoo.agents.model.MessageRef
 import nl.bvdm.rukoo.agents.model.ModelOptions
 import nl.bvdm.rukoo.agents.model.QuickAction
 import nl.bvdm.rukoo.agents.model.RelatedChat
+import nl.bvdm.rukoo.agents.model.ShownFile
 import nl.bvdm.rukoo.agents.model.SourceRef
 import nl.bvdm.rukoo.core.Change
 import nl.bvdm.rukoo.mail.MailEngine
@@ -29,6 +36,7 @@ import nl.bvdm.rukoo.ui.Mailto
 import nl.bvdm.rukoo.ui.components.RkToastState
 import nl.bvdm.rukoo.ui.mail.DialogChoice
 import nl.bvdm.rukoo.ui.mail.DialogRequest
+import nl.bvdm.rukoo.ui.reader.Attachments
 import nl.bvdm.rukoo.ui.root.AppViewModel
 
 /**
@@ -49,6 +57,8 @@ data class ChatLocal(
     val lookedUpFor: String? = null,
     /** Emails added with "Add to chat" for the next message. Like the text in the input, they stay when another chat opens. */
     val emails: List<PendingEmail> = emptyList(),
+    /** Files picked for the next message; the hub keeps their copies until it is sent. They stay like the emails. */
+    val files: List<PendingFile> = emptyList(),
 )
 
 /** The latest of what the pane shows, handed to [ChatController] on every composition. */
@@ -76,6 +86,9 @@ class ChatController(
     private val resources: () -> Resources,
     val local: MutableState<ChatLocal>,
     val input: MutableState<TextFieldValue>,
+    private val fileAccess: ChatFileAccess,
+    /** Files on their way in; it outlives this pane. */
+    private val staging: ChatStaging,
     private val openExternal: (String) -> Unit,
 ) {
     private val hub get() = app.services.agents
@@ -84,6 +97,12 @@ class ChatController(
     /** Called after a message went out, so the transcript follows it to the bottom. */
     var onSent: () -> Unit = {}
     private var sending = false
+
+    /**
+     * While a file is still on its way nothing is sent or started: the message would go without it, or it would land
+     * on the next one (panel.js holding()). Send is off, and quick actions and skills say why.
+     */
+    fun holding(): Boolean = staging.holding()
 
     private fun say(text: Txt) = toast.showToast(text.resolve(resources()))
 
@@ -113,10 +132,16 @@ class ChatController(
 
     // ---------- sending ----------
 
-    /** Enter or Send. A message that is just one of the offered commands runs it; added emails alone are a message too. false: nothing went out. */
+    /** Whether the message being written has files or emails attached. */
+    fun hasAttachments(): Boolean = local.value.emails.isNotEmpty() || local.value.files.isNotEmpty()
+
+    /**
+     * Enter or Send. A message that is just one of the offered commands runs it; attached files or emails alone are a
+     * message too. false: nothing went out, also while a file is still on its way.
+     */
     fun submit(): Boolean {
         val text = input.value.text.trim()
-        if ((text.isEmpty() && local.value.emails.isEmpty()) || snapshot.blocked) return false
+        if ((text.isEmpty() && !hasAttachments()) || snapshot.blocked || holding()) return false
         ChatInputLogic.wholeCommand(text, commands())?.let { command ->
             if (!runCommand(command)) return false
             clearInput()
@@ -128,11 +153,21 @@ class ChatController(
         return true
     }
 
-    fun runCommand(command: SlashCommand): Boolean =
-        command.action?.let { runAction(it) } ?: send(SendRequest(skill = command.name), restore = null)
+    fun runCommand(command: SlashCommand): Boolean {
+        if (waitForFiles()) return false
+        return command.action?.let { runAction(it) } ?: send(SendRequest(skill = command.name), restore = null)
+    }
+
+    // A quick action or skill picked while a file is on its way doesn't start; the user hears why.
+    private fun waitForFiles(): Boolean {
+        if (!holding()) return false
+        say(Txt.Res(R.string.agentui_panel_wait_files))
+        return true
+    }
 
     /** A quick action or shortcut: its English prompt goes to the agent, its label shows in the chat. */
     fun runAction(action: QuickAction): Boolean {
+        if (waitForFiles()) return false
         val needsEmail = action.needsEmail && !(action.custom && action.always)
         if (needsEmail && contextEmail() == null) {
             say(Txt.Res(R.string.agentui_panel_needs_email))
@@ -142,32 +177,106 @@ class ChatController(
         return send(SendRequest(text = action.prompt, action = action.action, display = label), restore = null)
     }
 
-    // The added emails go along with whatever is sent; taken here, before anything waits, so they are the ones on screen.
+    // The attached files and emails go along with whatever is sent; taken here, before anything waits, so they are the
+    // ones on screen.
     private fun send(request: SendRequest, restore: String?): Boolean {
-        if (sending || snapshot.blocked) return false
+        if (sending || snapshot.blocked || holding()) return false
         sending = true
-        val attached = local.value.emails
-        if (attached.isNotEmpty()) local.value = local.value.copy(emails = emptyList())
+        val emails = local.value.emails
+        val files = local.value.files
+        if (emails.isNotEmpty() || files.isNotEmpty()) local.value = local.value.copy(emails = emptyList(), files = emptyList())
         scope.launch {
             try {
                 val conversation = ensureConversation()
-                hub.send(conversation.id, request.copy(emails = attached.map { it.id }))
+                hub.send(conversation.id, request.copy(files = files.map { it.id }, emails = emails.map { it.id }))
                 onSent()
             } catch (e: CancellationException) {
-                local.value = local.value.copy(emails = ChatAttachments.restore(attached, local.value.emails, emptySet()))
+                local.value = local.value.copy(
+                    emails = ChatAttachments.restore(emails, local.value.emails, emptySet()),
+                    files = ChatAttachments.restoreFiles(files, local.value.files, emptySet()),
+                )
                 throw e
             } catch (e: Exception) {
-                // Not sent: the emails come back, without any the hub says are gone; so does the text, unless the
-                // user typed something new meanwhile.
-                val gone = ChatAttachments.missing(e)
-                local.value = local.value.copy(emails = ChatAttachments.restore(attached, local.value.emails, gone.orEmpty()))
+                // Not sent: the chips come back, before anything attached meanwhile and without any the hub says are
+                // gone; so does the text, unless the user typed something new meanwhile.
+                val goneFiles = ChatAttachments.missing(e, "file-missing")
+                val goneEmails = ChatAttachments.missing(e)
+                local.value = local.value.copy(
+                    emails = ChatAttachments.restore(emails, local.value.emails, goneEmails.orEmpty()),
+                    files = ChatAttachments.restoreFiles(files, local.value.files, goneFiles.orEmpty()),
+                )
                 if (restore != null && input.value.text.isEmpty()) input.value = TextFieldValue(restore, TextRange(restore.length))
-                if (gone != null) toast.showToast(Txt.Res(R.string.agentui_files_email_gone).resolve(resources()), durationMs = 6000L) else sayError(e)
+                when {
+                    goneFiles != null -> toast.showToast(Txt.Plural(R.plurals.agentui_files_gone, goneFiles.size, listOf(goneFiles.size)).resolve(resources()), durationMs = 6000L)
+                    goneEmails != null -> toast.showToast(Txt.Res(R.string.agentui_files_email_gone).resolve(resources()), durationMs = 6000L)
+                    else -> sayError(e)
+                }
             } finally {
                 sending = false
             }
         }
         return true
+    }
+
+    // ---------- attached files ----------
+
+    /**
+     * Files from the file picker or the photo picker (panel.js pickFiles and addFiles). Each shows at once as a pending
+     * chip while the hub copies it in, which it does right away: a picker's grant on a file can end. No more than the
+     * message still takes are read; past that the user hears the cap. [takeFiles] gets what came of them.
+     */
+    fun addPicked(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        staging.stage(ChatFiles.MAX_FILES - local.value.files.size) { fileAccess.sources(uris) }
+    }
+
+    /**
+     * What the hub staged or refused (panel.js takeFiles): the files join the message, and short notices, one line
+     * each, say what could not go along.
+     */
+    fun takeFiles(results: List<StageResult>) {
+        if (results.isEmpty()) return
+        val taken = ChatAttachments.take(local.value.files, results, ChatFiles.MAX_FILES)
+        local.value = local.value.copy(files = taken.files)
+        for (id in taken.dropped) app.viewModelScope.launch { hub.unstageFile(id) }
+        val r = resources()
+        val notes = taken.refused.map { refusal(it).resolve(r) }.toMutableList()
+        if (taken.full) notes += Txt.Res(R.string.agentui_files_too_many, listOf(ChatFiles.MAX_FILES)).resolve(r)
+        if (notes.isNotEmpty()) toast.showToast(notes.joinToString(" "), durationMs = 6000L)
+    }
+
+    private fun refusal(r: StageResult): Txt = Txt.Res(
+        when (r.error) {
+            "blocked" -> R.string.agentui_files_blocked
+            "too-big" -> R.string.agentui_files_too_big
+            "full" -> R.string.agentui_files_full
+            else -> R.string.agentui_files_unreadable
+        },
+        listOf(r.name),
+    )
+
+    fun removeFile(id: String) {
+        local.value = local.value.copy(files = local.value.files.filter { it.id != id })
+        // In the view model's scope: the chip is gone even when the pane leaves the screen right after.
+        app.viewModelScope.launch { hub.unstageFile(id) }
+    }
+
+    /** The copy of a staged file, for its chip's thumbnail. */
+    suspend fun stagedFile(id: String): File? = hub.stagedFile(id)
+
+    /** The copy of a file sent in this chat, for its chip's thumbnail. */
+    fun sentFile(conversationId: String, fileId: String): File? = hub.chatFile(conversationId, fileId)
+
+    /** A file chip on a sent message: the file opens in the app the user picks, from the chat's own copy. */
+    fun openFile(conversationId: String, file: ShownFile) {
+        scope.launch {
+            val path = hub.chatFile(conversationId, file.id)?.takeIf { withContext(Dispatchers.IO) { it.isFile } }
+            if (path == null) {
+                say(Txt.Res(R.string.agentui_files_open_gone))
+                return@launch
+            }
+            if (!fileAccess.open(path, file.name, Attachments.viewType(file.name, file.type))) say(Txt.Res(R.string.reader_attachments_no_app))
+        }
     }
 
     /**
