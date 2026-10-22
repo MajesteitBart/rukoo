@@ -119,6 +119,32 @@ class HttpDesktopLinkTest {
         assertNull(c.exportUntil)
     }
 
+    // The address that just worked is kept, except that a name gives way to the computer's Tailscale IP.
+    @Test
+    fun pairingKeepsATypedIpAddressWhateverTheComputerReports() = runBlocking {
+        server.enqueue(json(200, pairAnswer(address = "100.71.32.55", port = 47800)))
+        val c = link.pair("127.0.0.1:${server.port}", "K7QM-2XPA")
+        assertEquals("127.0.0.1", c.address)
+        assertEquals(server.port, c.port)
+    }
+
+    @Test
+    fun pairingByNameStoresTheComputersTailscaleIp() = runBlocking {
+        server.enqueue(json(200, pairAnswer(address = "100.71.32.55", port = 47800)))
+        val c = link.pair("localhost:${server.port}", "K7QM-2XPA")
+        assertEquals("100.71.32.55", c.address)
+        assertEquals(47800, c.port)
+    }
+
+    @Test
+    fun pairingByNameKeepsTheNameWhenTheComputerReportsAnAddressOutsideTheTailnet() = runBlocking {
+        // A relay or NAT: the computer sees its own side of it, which the phone can't reach.
+        server.enqueue(json(200, pairAnswer(address = "127.0.0.2", port = 47900)))
+        val c = link.pair("localhost:${server.port}", "K7QM-2XPA")
+        assertEquals("localhost", c.address)
+        assertEquals(server.port, c.port)
+    }
+
     @Test
     fun pairingTheSameComputerAgainReplacesTheOldPairing() = runBlocking {
         val first = paired()

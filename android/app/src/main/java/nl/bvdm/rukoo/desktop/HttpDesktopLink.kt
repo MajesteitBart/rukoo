@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.desktop
 
 import java.io.IOException
+import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +25,7 @@ import nl.bvdm.rukoo.agents.model.OwnSkills
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.Ids
 import nl.bvdm.rukoo.core.RukooJson
+import nl.bvdm.rukoo.core.Tailnet
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -73,13 +75,16 @@ class HttpDesktopLink(
         }
         val reported = answer.desktop
         val now = clock.now()
+        // An IP address the user typed just worked, so it stays. A name (MagicDNS) is swapped for the Tailscale IP
+        // the computer reports, which keeps working when the phone's MagicDNS doesn't. Anything else the computer
+        // reports (its side of a relay, a LAN address) may not be reachable from the phone, so the typed one stays.
+        val reportedIp = reported.address.trim().takeIf { isIpLiteral(it) && isTailscaleIp(it) }
+        val useReported = !isIpLiteral(target.host) && reportedIp != null
         val computer = PairedComputer(
             pairingId = answer.pairingId,
             name = reported.name.trim().ifBlank { target.host }.take(80),
-            // The computer reports the address the phone reached it on: its Tailscale IP, which keeps working
-            // when the phone's MagicDNS doesn't.
-            address = reported.address.trim().takeIf(::isIpLiteral) ?: target.host,
-            port = reported.port.takeIf { it in 1..65535 } ?: target.port,
+            address = if (useReported) reportedIp!! else target.host,
+            port = if (useReported) reported.port.takeIf { it in 1..65535 } ?: target.port else target.port,
             token = answer.token,
             mcpToken = Ids.token(),
             exportUntil = answer.exportUntil,
@@ -336,6 +341,10 @@ class HttpDesktopLink(
         internal fun isIpLiteral(s: String): Boolean =
             IPV4.matchEntire(s)?.groupValues?.drop(1)?.all { (it.toIntOrNull() ?: 256) <= 255 } == true ||
                 (':' in s && s.all { it.isLetterOrDigit() || it == ':' || it == '.' })
+
+        /** An IP literal in Tailscale's ranges. Only literals get here, so parsing it never looks anything up. */
+        internal fun isTailscaleIp(s: String): Boolean =
+            runCatching { Tailnet.isTailscaleAddress(InetAddress.getByName(s)) }.getOrDefault(false)
 
         /** The route's `{error, detail}` as an exception; `not found` (with a space) means phones aren't let in there. */
         internal fun errorOf(response: Response): DesktopException {
