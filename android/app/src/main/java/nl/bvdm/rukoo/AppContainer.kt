@@ -34,8 +34,8 @@ import nl.bvdm.rukoo.desktop.DesktopLink
 import nl.bvdm.rukoo.desktop.StubDesktopLink
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
+import nl.bvdm.rukoo.mcp.AndroidMcpController
 import nl.bvdm.rukoo.mcp.McpController
-import nl.bvdm.rukoo.mcp.StubMcpController
 import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.Locales
 import nl.bvdm.rukoo.settings.SettingsStore
@@ -134,7 +134,8 @@ class AppContainer(context: Context) : AppServices {
         }
     }
 
-    override val mcp: McpController by lazy { StubMcpController() }
+    // Made with the container, not lazily: it starts Rukoo's tools as soon as the app (or the boot receiver) runs.
+    override val mcp: McpController = AndroidMcpController(this)
 
     override val desktop: DesktopLink by lazy { StubDesktopLink(agentSettings) }
 

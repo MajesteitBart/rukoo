@@ -196,4 +196,12 @@ interface AgentHub {
      */
     suspend fun runMailAction(conversationId: String, mail: MailApproval, title: String, waitMs: Long = 90_000): MailOutcome? =
         throw AgentException("unknown", "mail actions are not available")
+
+    /**
+     * Runs mail work for a chat (an approved or automatic mail_action, desktop settleMail): after the chat's earlier
+     * mail work, and the chat's next turn waits until it is done, so the agent hears the outcome first. Returns when
+     * [work] has run. The default only runs it; the real hub keeps the chain. [label] names the work in a note if
+     * the app quits before it is done.
+     */
+    suspend fun settleMail(conversationId: String, label: String, work: suspend () -> Unit) = work()
 }

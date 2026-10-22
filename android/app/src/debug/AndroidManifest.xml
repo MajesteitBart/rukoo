@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+            Debug builds only: phone tools set up from adb for emulator tests (see DebugMcpReceiver). DUMP is held by
+            adb's shell and not grantable to apps, so another app on the device cannot plant a key or a token here.
+        -->
+        <receiver
+            android:name=".mcp.DebugMcpReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+    </application>
+</manifest>
