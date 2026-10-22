@@ -334,19 +334,21 @@ class ChatController(
                 )
                 if (answer.choice != DialogChoice.CONFIRM) return@launch
                 // The composer can change while the question is open (sent, closed, written again).
-                if (composer.current()?.id != open.id || !composer.undoAgentDraft()) {
+                val since = if (composer.current()?.id == open.id) composer.undoAgentDraftSince() else null
+                if (since == null) {
                     say(Txt.Res(R.string.agentui_draft_gone))
                     return@launch
                 }
-                attempt { DraftCards.markUndone(hub, open.id) }
+                attempt { DraftCards.markUndone(hub, open.id, since) }
             }
             return
         }
-        if (!composer.undoAgentDraft()) {
+        val since = composer.undoAgentDraftSince()
+        if (since == null) {
             say(Txt.Res(R.string.agentui_draft_gone))
             return
         }
-        scope.launch { attempt { DraftCards.markUndone(hub, open.id) } }
+        scope.launch { attempt { DraftCards.markUndone(hub, open.id, since) } }
     }
 
     // ---------- the chat itself ----------

@@ -787,9 +787,9 @@ class AppViewModel(
                 )
                 if (answer.choice != DialogChoice.CONFIRM) return@launch
             }
-            if (!services.composer.undoAgentDraft()) return@launch
-            // Every card of this composer that isn't undone yet, in any chat, whatever form its key has.
-            runCatching { DraftCards.markUndone(services.agents, d.id) }
+            val since = services.composer.undoAgentDraftSince() ?: return@launch
+            // The cards of the writes this Undo took back, in any chat, whatever form their key has.
+            runCatching { DraftCards.markUndone(services.agents, d.id, since) }
         }
     }
 

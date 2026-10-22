@@ -92,7 +92,7 @@ class AppContainer(context: Context) : AppServices {
 
     override val screen = ScreenState(clock)
 
-    override val composer = ComposerController(File(appContext.filesDir, ComposerController.FILE_NAME), appScope)
+    override val composer = ComposerController(File(appContext.filesDir, ComposerController.FILE_NAME), appScope, clock = clock)
 
     override val drafts = DraftStore(File(appContext.filesDir, DraftStore.FILE_NAME))
 

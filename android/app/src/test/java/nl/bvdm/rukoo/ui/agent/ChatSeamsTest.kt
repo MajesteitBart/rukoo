@@ -102,6 +102,31 @@ class ChatSeamsTest {
         assertEquals("", after.body)
     }
 
+    // Review finding: the agent writes A, the user edits it, the agent writes B. Undo brings back A with the user's
+    // edits, so only B's card is undone; A's card still describes text that is in the composer.
+    @Test
+    fun anEditBetweenTwoWritesLeavesTheFirstCardStanding() = runTest {
+        val k = kit()
+        val composer = ComposerController(clock = k.clock)
+        val chat = k.hub.create("clark", MessageRef(sanne))
+        val id = composer.open(ComposerState(subject = "Re: Offerte", body = "Agent A", draftedBy = "Clark", draftedIn = chat.id, dirty = true))
+        val first = k.hub.addItem(chat.id, Item.Draft("", 0, DraftMode.REPLY, composerKey = id)) as Item.Draft
+        testScheduler.advanceTimeBy(5_000)
+        composer.update { it.copy(body = "Agent A, and mine", dirty = true, draftedBy = null, editedAgent = "Clark") }
+        testScheduler.advanceTimeBy(5_000)
+        composer.update { it.copy(body = "Agent B", draftedBy = "Clark", draftedIn = chat.id, editedAgent = null) }
+        val second = k.hub.addItem(chat.id, Item.Draft("", 0, DraftMode.REPLY, composerKey = id)) as Item.Draft
+        runCurrent()
+
+        val since = composer.undoAgentDraftSince()!!
+        assertEquals("Agent A, and mine", composer.current()!!.body)
+        DraftCards.markUndone(k.hub, id, since)
+        runCurrent()
+        val drafts = k.hub.get(chat.id)!!.items.filterIsInstance<Item.Draft>().associateBy { it.id }
+        assertFalse(drafts.getValue(first.id).undone)
+        assertTrue(drafts.getValue(second.id).undone)
+    }
+
     @Test
     fun anUndoThatBringsBackAnotherComposerStillMarksTheAgentsCards() = runTest {
         val k = kit()

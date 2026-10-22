@@ -26,14 +26,17 @@ object DraftCards {
     }
 
     /**
-     * After an Undo in [composerId]: its cards that aren't undone yet say so, in every chat. The composer goes back
-     * to before the agent's first write since the user's own text, which takes back each of those writes.
+     * After an Undo in [composerId]: its cards written at or after [since] that aren't undone yet say so, in every
+     * chat. The composer goes back to before the agent's first write since the user's own text, so those are the
+     * writes it took back; an earlier write the user then edited stays (ComposerController.undoAgentDraftSince).
      */
-    suspend fun markUndone(hub: AgentHub, composerId: String) {
+    suspend fun markUndone(hub: AgentHub, composerId: String, since: Long = 0L) {
         for (row in hub.conversations.value) {
             val conversation = hub.get(row.id) ?: continue
             for (item in conversation.items) {
-                if (item is Item.Draft && !item.undone && composerOf(item.composerKey) == composerId) hub.patchDraft(conversation.id, item.id, undone = true)
+                if (item is Item.Draft && !item.undone && item.at >= since && composerOf(item.composerKey) == composerId) {
+                    hub.patchDraft(conversation.id, item.id, undone = true)
+                }
             }
         }
     }

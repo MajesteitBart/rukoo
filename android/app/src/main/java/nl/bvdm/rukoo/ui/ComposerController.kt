@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.nullable
 import nl.bvdm.rukoo.core.AppLog
+import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.Ids
 import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.mail.model.Address
@@ -91,6 +92,8 @@ class ComposerController(
     private val file: File? = null,
     scope: CoroutineScope? = null,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** The hub's clock: [undoAgentDraftSince] compares its snapshot time with the draft cards' times. */
+    private val clock: Clock = Clock.System,
 ) {
     private val _state = MutableStateFlow(file?.let { restore(it) })
     val state: StateFlow<ComposerState?> = _state.asStateFlow()
@@ -103,6 +106,10 @@ class ComposerController(
     // What the composer held right before an agent's draft replaced it, for "Drafted by … · Undo". Keyed by
     // the agent draft's composer id, so an Undo never restores over a different draft.
     private var beforeAgent: Pair<String, ComposerState?>? = null
+
+    // When that snapshot was taken. The agent's writes since then are the ones an Undo takes back; an earlier write
+    // the user then edited stays part of what Undo restores (desktop resets its covered writes after user edits).
+    private var beforeAgentAt = 0L
 
     init {
         if (file != null && scope != null) {
@@ -159,6 +166,7 @@ class ComposerController(
         val agentsOwn = before != null && before.id == after.id && before.draftedBy != null
         if (agentsOwn && (beforeAgent?.first == after.id || before!!.body == after.body)) return
         beforeAgent = after.id to before
+        beforeAgentAt = clock.now()
     }
 
     /**
@@ -166,13 +174,21 @@ class ComposerController(
      * when the agent opened the composer, to the same fields without the agent's text. Returns false when
      * there is no agent draft to undo.
      */
-    fun undoAgentDraft(): Boolean {
-        val current = _state.value ?: return false
-        if (current.draftedBy == null && current.editedAgent == null) return false
-        val previous = beforeAgent?.takeIf { it.first == current.id }?.second
+    fun undoAgentDraft(): Boolean = undoAgentDraftSince() != null
+
+    /**
+     * [undoAgentDraft], returning when the writes it took back started: the draft cards written at or after that
+     * time are the undone ones. 0 when there was no snapshot (a draft restored after a restart): every write then.
+     * Null when there was nothing to undo.
+     */
+    fun undoAgentDraftSince(): Long? {
+        val current = _state.value ?: return null
+        if (current.draftedBy == null && current.editedAgent == null) return null
+        val snapshot = beforeAgent?.takeIf { it.first == current.id }
+        val since = if (snapshot != null) beforeAgentAt else 0L
         beforeAgent = null
-        _state.value = previous ?: current.copy(body = "", draftedBy = null, editedAgent = null, dirty = true)
-        return true
+        _state.value = snapshot?.second ?: current.copy(body = "", draftedBy = null, editedAgent = null, dirty = true)
+        return since
     }
 
     fun close() {
