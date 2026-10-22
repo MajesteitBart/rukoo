@@ -139,7 +139,8 @@ class McpHandler(
     companion object {
         val PROTOCOLS = listOf("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
         const val FALLBACK_PROTOCOL = "2025-06-18"
-        private const val CALL_TIMEOUT_MS = 118_000L
+        // Under the bridge's 115 s and the computer host's wait, so the agent gets an answer rather than a dropped call.
+        private const val CALL_TIMEOUT_MS = 110_000L
 
         /** The conversation a paired computer names for a forwarded call (spec 3 §7.9). */
         const val META_CONVERSATION = "rukoo/conversation"

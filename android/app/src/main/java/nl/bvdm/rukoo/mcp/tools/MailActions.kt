@@ -3,6 +3,7 @@ package nl.bvdm.rukoo.mcp.tools
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -125,7 +126,7 @@ internal class MailActions(private val d: ToolDeps, private val lookup: MailLook
         val outcome = CompletableDeferred<Result<MailOutcome>>()
         val lock = Any()
         var late = false
-        settle(cid) {
+        settle(cid, title) {
             val r = try {
                 Result.success(execute(cid, spec, senders))
             } catch (e: CancellationException) {
@@ -207,7 +208,7 @@ internal class MailActions(private val d: ToolDeps, private val lookup: MailLook
 
     // Mail titles and results hold sender names and subjects, which come from the email: tagged as unsafe content.
     private fun decide(cid: String, title: String, spec: MailApproval, approved: Boolean) {
-        settle(cid) {
+        settle(cid, title) {
             if (!approved) {
                 d.hub.addNote(cid, "The user declined: ${Unsafe.inline(title, "mail action")}.")
                 return@settle
@@ -217,17 +218,23 @@ internal class MailActions(private val d: ToolDeps, private val lookup: MailLook
         }
     }
 
-    /** Runs [work] after the chat's earlier mail work; a failure shows as a notice in the chat. */
-    private fun settle(cid: String, work: suspend () -> Unit) {
+    /**
+     * Runs [work] after the chat's earlier mail work, through the hub so its next turn waits for it; a failure shows
+     * as a notice in the chat. Started undispatched, so the hub has it queued before this returns.
+     */
+    private fun settle(cid: String, label: String, work: suspend () -> Unit) {
         val chain = chains.getOrPut(cid) { Mutex() }
-        d.scope.launch(d.hubContext) {
-            chain.withLock {
-                try {
-                    work()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    runCatching { d.hub.addItem(cid, Item.Notice("", 0, e.message ?: "Something went wrong.", tone = Tone.ERROR, code = "unknown")) }
+        d.scope.launch(d.hubContext, start = CoroutineStart.UNDISPATCHED) {
+            d.hub.settleMail(cid, label) {
+                // The hub's chain orders the work; this lock keeps the order with a hub that only runs it.
+                chain.withLock {
+                    try {
+                        work()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        runCatching { d.hub.addItem(cid, Item.Notice("", 0, e.message ?: "Something went wrong.", tone = Tone.ERROR, code = "unknown")) }
+                    }
                 }
             }
         }
@@ -367,14 +374,14 @@ internal class MailActions(private val d: ToolDeps, private val lookup: MailLook
         return MailOutcome(done, failed, undo, text)
     }
 
-    // The phone has one composer: the unsubscribe email takes it unless the user is writing there.
+    // The phone has one composer: the unsubscribe email only takes it when nothing is in it, so it never replaces
+    // the user's words, an agent's draft, or the unsubscribe email before it in the same batch.
     private fun openUnsubscribeEmail(accountId: String, r: UnsubscribeResult.SendEmail): String {
         val to = DraftWriter.people(listOf(JsonPrimitive(r.to)), "to")?.firstOrNull()?.address
             ?: throw Fail("This sender only takes unsubscribe requests by email.")
         val open = d.composer.current()
-        if (open != null && open.draftedBy == null && (open.dirty || open.body.isNotBlank())) {
-            throw Fail("The user is writing another email in Rukoo's composer, so the unsubscribe email was not opened.")
-        }
+        val empty = open == null || (open.draftedBy == null && !open.dirty && open.body.isBlank() && open.to.isEmpty() && open.subject.isBlank())
+        if (!empty) throw Fail("Rukoo's composer holds another email, so the unsubscribe email was not opened. Ask the user to send or close it first.")
         val identity = d.mail.identities(accountId).let { ids -> ids.firstOrNull { it.primary } ?: ids.firstOrNull() }
         d.composer.open(
             ComposerState(

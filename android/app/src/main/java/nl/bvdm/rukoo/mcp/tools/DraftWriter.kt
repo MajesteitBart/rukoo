@@ -4,6 +4,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -108,12 +110,17 @@ internal class DraftWriter(private val d: ToolDeps, private val lookup: MailLook
         // The phone's composer is plain text: the body as the user will see it.
         val bodyText = (if (format == "text") body else PlainText.fromHtml(html).replace(Regex("\\n{3,}"), "\n\n")).trim()
         val target = if (finalMode == "new") null else messageId
+        // Desktop gives the composer 20 seconds; loading the email can wait for the server, so the same limit holds
+        // here, and nothing is written into the composer after it.
         val source = target?.let { id ->
-            try {
-                d.mail.fullMessage(id)
+            val loaded = try {
+                withTimeoutOrNull(d.draftWaitMs) { d.mail.fullMessage(id) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 throw ToolError("Rukoo could not update the composer: ${e.message ?: e.javaClass.simpleName}")
             }
+            loaded ?: throw ToolError("Rukoo did not respond in time, so the draft could not be shown. Check with get_draft before trying again.")
         }
         val agentName = d.hub.agentName(call.agent)
         val shown = try {

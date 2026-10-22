@@ -1,11 +1,13 @@
 package nl.bvdm.rukoo.mcp
 
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -32,10 +34,12 @@ import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
 import nl.bvdm.rukoo.mail.model.Address
+import nl.bvdm.rukoo.mail.model.FullMessage
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageIds
 import nl.bvdm.rukoo.mail.model.MessageSummary
 import nl.bvdm.rukoo.mail.model.ReplyKind
+import nl.bvdm.rukoo.mail.model.UnsubscribeResult
 import nl.bvdm.rukoo.mcp.tools.HubSkillSource
 import nl.bvdm.rukoo.mcp.tools.McpTools
 import nl.bvdm.rukoo.mcp.tools.ToolDeps
@@ -492,6 +496,78 @@ class McpToolsTest {
         val c = hub.get(r["conversation_id"].str()!!)!!
         assertEquals(Origin.EXTERNAL, c.origin)
         assertEquals(call, c.message?.id)
+    }
+
+    @Test
+    fun mailWorkGoesThroughTheHubsChain() {
+        chat()
+        run("mail_action", """{"conversation_id":"c_1","action":"archive","message_ids":["$contractA","$contractB"]}""").data()
+        runBlocking { hub.decide("c_1", hub.items("c_1").last().id, "approve") }
+        assertEquals(listOf("c_1" to "Archive 2 emails"), hub.settled)
+    }
+
+    @Test
+    fun unsubscribeEmailsNeverReplaceEachOther() {
+        chat()
+        val mailOnly = object : MailEngine by mail {
+            override suspend fun unsubscribe(id: String): UnsubscribeResult = UnsubscribeResult.SendEmail("unsubscribe@vandebron.nl", "unsubscribe", "")
+        }
+        val other = McpTools(ToolDeps(mailOnly, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope))
+        runBlocking {
+            other.callTool(clark, "mail_action", Json.parseToJsonElement("""{"conversation_id":"c_1","action":"unsubscribe","message_ids":["$contractA","$contractB"]}""").jsonObject, JsonObject(emptyMap()))
+            hub.decide("c_1", hub.items("c_1").last().id, "approve")
+        }
+        val notice = hub.items("c_1").last() as Item.Notice
+        assertEquals(1, notice.mail!!.mailed)
+        assertEquals(1, notice.mail!!.failed)
+        assertTrue(notice.text, notice.text.startsWith("Opened an unsubscribe email to unsubscribe@vandebron.nl. Send it to finish. 1 failed: Rukoo's composer holds another email"))
+        assertEquals(listOf("unsubscribe@vandebron.nl"), composer.current()!!.to.map { it.address })
+    }
+
+    @Test
+    fun writeDraftGivesUpAfterTheDeadline() {
+        chat()
+        val slow = object : MailEngine by mail {
+            override suspend fun fullMessage(id: String): FullMessage {
+                delay(5_000)
+                return mail.fullMessage(id)
+            }
+        }
+        val other = McpTools(ToolDeps(slow, hub, screen, composer, { agentSettings }, HubSkillSource(hub), scope, draftWaitMs = 200))
+        val error = runBlocking {
+            other.callTool(clark, "write_draft", Json.parseToJsonElement("""{"conversation_id":"c_1","body":"Hi"}""").jsonObject, JsonObject(emptyMap()))
+        }.error()
+        assertEquals("Rukoo did not respond in time, so the draft could not be shown. Check with get_draft before trying again.", error)
+        assertNull(composer.current())
+    }
+
+    @Test
+    fun readsTheFilesOfASkillFolder() {
+        val root = tmp.newFolder("skills")
+        val dir = File(root, "my-skill").apply { mkdirs() }
+        File(dir, "SKILL.md").writeText("---\nname: my-skill\ndescription: Mine\n---\r\nDo it.")
+        File(dir, "references").mkdirs()
+        File(dir, "references/forms.md").writeText("Form A")
+        File(dir, "big.md").writeText("b".repeat(40 * 1024))
+        File(dir, "data.bin").writeBytes(byteArrayOf(1, 0, 2))
+        File(dir, ".git").mkdirs()
+        File(dir, ".git/config").writeText("secret")
+        hub.skillList = listOf(RukooSkill("my-skill", "Mine", "user", "ignored"))
+        val other = McpTools(ToolDeps(mail, hub, screen, composer, { agentSettings }, HubSkillSource(hub) { File(root, it.name) }, scope))
+        fun read(args: String) = runBlocking { other.callTool(clark, "read_skill", Json.parseToJsonElement(args).jsonObject, JsonObject(emptyMap())) }
+        val skill = read("""{"name":"my-skill"}""").data()
+        assertEquals("---\nname: my-skill\ndescription: Mine\n---\nDo it.", skill["skill_md"].str())
+        assertEquals("""[{"path":"references/forms.md","size":6,"text":"Form A"}]""", skill["files"].toString())
+        assertEquals(
+            """[{"path":"big.md","size":40960,"reason":"too large to include; ask for it with file"},{"path":"data.bin","size":3,"reason":"not text"}]""",
+            skill["left_out"].toString(),
+        )
+        assertEquals(40960, read("""{"name":"my-skill","file":"big.md"}""").data()["text"].str()!!.length)
+        assertEquals("data.bin in the skill my-skill is not text.", read("""{"name":"my-skill","file":"data.bin"}""").error())
+        assertEquals(
+            "The skill my-skill has no file .git/config. Its files: SKILL.md, big.md, data.bin, references/forms.md.",
+            read("""{"name":"my-skill","file":".git/config"}""").error(),
+        )
     }
 
     @Test

@@ -52,10 +52,16 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
     @Volatile private var refused = false
     @Volatile private var runningPort = 0
 
+    // "Let agents use Rukoo on this phone" as stored; false until the settings have loaded.
+    @Volatile private var toolsOn = false
+
     init {
         val scope = container.appScope
         scope.launch {
-            container.settingsSnapshot.map { it.mcpEnabled to it.mcpPort }.distinctUntilChanged().collect { (on, port) ->
+            // The stored settings, not the snapshot: its first value is the default (tools off) until DataStore has
+            // loaded, and stopping on it would kill a service Android just restarted in a fresh process.
+            container.settings.flow.map { it.mcpEnabled to it.mcpPort }.distinctUntilChanged().collect { (on, port) ->
+                toolsOn = on
                 when {
                     !on -> stop()
                     // A new port needs a new socket.
@@ -76,9 +82,15 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
         }
     }
 
-    fun wanted(): Boolean = container.settingsSnapshot.value.mcpEnabled
+    fun wanted(): Boolean = toolsOn
 
     fun port(): Int = container.settingsSnapshot.value.mcpPort
+
+    /** The stored settings, for the service in a process that may have just started: on, and on which port. */
+    internal suspend fun stored(): Pair<Boolean, Int> = container.settings.current().let {
+        toolsOn = it.mcpEnabled
+        it.mcpEnabled to it.mcpPort
+    }
 
     override fun start() {
         if (!wanted()) return
@@ -116,7 +128,8 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
                 screen = c.screen,
                 composer = c.composer,
                 agentSettings = { c.agentSettings.current() },
-                skills = HubSkillSource(c.agents),
+                // The user's skills are folders in filesDir/skills (the hub reads the same); Rukoo's ship as SKILL.md.
+                skills = HubSkillSource(c.agents) { s -> if (s.source == "user") File(File(context.filesDir, "skills"), s.name) else null },
                 scope = c.appScope,
                 // The hub and the composer belong to the main thread, like desktop's single-threaded hub.
                 hubContext = Dispatchers.Main.immediate,

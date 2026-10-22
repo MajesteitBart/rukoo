@@ -144,6 +144,13 @@ class FakeHub(private val now: () -> Long = { 1_000_000L }) : AgentHub {
         notes += conversationId to note
     }
 
+    val settled = mutableListOf<Pair<String, String>>()
+
+    override suspend fun settleMail(conversationId: String, label: String, work: suspend () -> Unit) {
+        settled += conversationId to label
+        work()
+    }
+
     init {
         (conversations as MutableStateFlow).value = emptyList()
     }

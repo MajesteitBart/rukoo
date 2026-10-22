@@ -79,6 +79,8 @@ class ToolDeps(
     val clock: Clock = Clock.System,
     /** How long mail_action waits for actions that run without asking: clients give up on a call after 120 s. */
     val mailWaitMs: Long = 90_000,
+    /** How long write_draft waits for the email it answers, as desktop gives its composer (20 s). */
+    val draftWaitMs: Long = 20_000,
 )
 
 /** One tool call: who, the CLI's `_meta`, and the chat it belongs to (set once a tool makes one). */

@@ -62,7 +62,7 @@ class RukooMcpService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (control == null || !control.wanted()) {
+        if (control == null) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -80,8 +80,23 @@ class RukooMcpService : Service() {
     }
 
     private suspend fun startServer(control: AndroidMcpController) {
-        val port = control.port()
-        val candidate = control.runtime(port)
+        // From disk: after a reboot or when Android restarts the service, the in-memory settings may not be loaded yet.
+        val (on, port) = control.stored()
+        if (!on) {
+            stopSelf()
+            return
+        }
+        val candidate = try {
+            control.runtime(port)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The mail engine or hub failed to start; an uncaught exception here would take the app down.
+            AppLog.e(TAG, "could not set up Rukoo's tools", e)
+            control.failed(McpStatus.ERROR_FAILED, port, e.javaClass.simpleName)
+            stopSelf()
+            return
+        }
         try {
             withContext(Dispatchers.IO) { candidate.start() }
         } catch (e: CancellationException) {
