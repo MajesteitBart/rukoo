@@ -170,7 +170,7 @@ interface MailEngine {
 
     /**
      * Stores [message] in the account's Drafts folder, replacing [OutgoingMessage.draftId]. Returns the
-     * new draft's id, or null when the server didn't report where it went.
+     * new draft's id, or null when the server didn't report where it went; the old copy then stays.
      */
     suspend fun saveDraft(message: OutgoingMessage): String? = null
 

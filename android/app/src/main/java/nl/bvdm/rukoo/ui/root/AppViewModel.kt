@@ -392,13 +392,20 @@ class AppViewModel(
         val from = d.from ?: accountId?.let(::defaultFrom)
         if (stored != null && accountId != null && from != null) {
             try {
+                // Null: the server didn't say where the new copy went, and the engine kept the old one.
                 val newId = services.mail.saveDraft(d.toOutgoing(accountId, from))
                 val rebound = rebound(d, stored, newId)
-                fun ComposerState.moved() = copy(draftId = newId, attachments = attachments.map { a -> rebound[a] ?: a })
+                fun ComposerState.moved() = copy(draftId = newId ?: stored, attachments = attachments.map { a -> rebound.orEmpty()[a] ?: a })
                 services.composer.update { if (it.id == d.id) it.moved() else it }
-                storedDraftReplaced(stored, newId)
+                if (newId != null) storedDraftReplaced(stored, newId)
                 // A copy kept on this phone before is out of date now.
                 if (services.drafts.contains(d.id)) services.drafts.remove(d.id)
+                if (rebound == null) {
+                    // Saved, but its attachments couldn't be found on the new copy: the composer stays open rather
+                    // than closing as if the next save or Send would work; Drafts has the whole draft.
+                    mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_draft_attachments))
+                    return null
+                }
                 return d.moved()
             } catch (e: Exception) {
                 mailUi.toasts.showError(mailUi.strings.get(R.string.composer_errors_save_server, e.message ?: e.javaClass.simpleName))
@@ -414,12 +421,13 @@ class AppViewModel(
     /**
      * The attachments of [d] that came from the stored draft [oldId], pointed at the copy [newId] that replaced
      * it (desktop's remapAttachments): the old copy is deleted, so a second save or Send would find nothing there.
-     * The new copy lists the composer's attachments in the order they were saved.
+     * The new copy lists the composer's attachments in the order they were saved; the engine keeps its body, so
+     * reading it back needs no download. Null when they couldn't be found on it.
      */
-    private suspend fun rebound(d: ComposerState, oldId: String, newId: String?): Map<OutgoingAttachment, OutgoingAttachment> {
+    private suspend fun rebound(d: ComposerState, oldId: String, newId: String?): Map<OutgoingAttachment, OutgoingAttachment>? {
         if (newId == null || d.attachments.none { it.sourceMessageId == oldId }) return emptyMap()
-        val saved = runCatching { services.mail.fullMessage(newId).attachments }.getOrNull() ?: return emptyMap()
-        if (saved.size < d.attachments.size) return emptyMap()
+        val saved = runCatching { services.mail.fullMessage(newId).attachments }.getOrNull() ?: return null
+        if (saved.size < d.attachments.size) return null
         return d.attachments.withIndex()
             .filter { (_, a) -> a.sourceMessageId == oldId }
             .associate { (i, a) -> a to a.copy(sourceMessageId = newId, sourceIndex = saved[i].index) }
@@ -508,10 +516,11 @@ class AppViewModel(
      * is shown under the text and goes along when it is sent.
      */
     fun newMessage(fields: MailtoFields? = null) {
-        // A mailto: link can start the app before the accounts are read; it waits for them rather than getting lost.
+        // A mailto: link can start the app before the accounts are read; it waits for them, however long that
+        // takes, rather than getting lost.
         if (!services.mail.loaded.value) {
             viewModelScope.launch {
-                withTimeoutOrNull(LOAD_WAIT_MS) { services.mail.loaded.first { it } }
+                services.mail.loaded.first { it }
                 newMessageNow(fields)
             }
             return

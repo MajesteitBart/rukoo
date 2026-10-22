@@ -1139,10 +1139,19 @@ class RukooMailEngine(
         try {
             val raw = withContext(Dispatchers.Default) { MimeComposer.compose(mail) }
             val uid = session(acc).append(drafts.path, raw, listOf("\\Seen", "\\Draft"))
-            message.draftId?.let { id -> runCatching { discardDraftNow(id) } }
             syncFolderInto(acc, drafts.path)
             persistCache(acc.id)
             val stored = uid ?: caches.value[acc.id]?.let { CacheOps.uidByMessageId(it, drafts.path, mail.messageId) }
+            if (stored != null) {
+                // Kept as the new copy's body, so reopening it or reading its attachments back needs no download.
+                caches.value[acc.id]?.boxes?.get(drafts.path)?.let { box ->
+                    withContext(Dispatchers.IO) {
+                        runCatching { bodyFile(acc.id, drafts.path, box.uidValidity, stored).apply { parentFile?.mkdirs() }.writeBytes(raw) }
+                    }
+                }
+                // The old copy goes only once the new one is found: a server that doesn't say where it put it keeps both.
+                message.draftId?.let { id -> runCatching { discardDraftNow(id) } }
+            }
             stored?.let { MessageIds.encode(acc.id, drafts.path, it) }
         } catch (e: CancellationException) {
             throw e

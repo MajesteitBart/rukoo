@@ -223,6 +223,7 @@
     <string name="composer_errors_save_local">Rukoo kon het concept niet op deze telefoon bewaren.</string>
     <string name="composer_errors_delete_local">Rukoo kon het concept niet van deze telefoon verwijderen.</string>
     <string name="composer_errors_save_server">Rukoo kon het concept niet in Concepten bewaren (%1$s), dus het staat nu op deze telefoon.</string>
+    <string name="composer_errors_draft_attachments">Het concept staat in Concepten, maar Rukoo kon de bijlagen niet teruglezen. Open het vanuit Concepten om verder te gaan.</string>
     <string name="composer_signature_label">Handtekening</string>
     <string name="composer_signature_remove">Handtekening weghalen</string>
     <string name="composer_signature_add">Handtekening toevoegen</string>

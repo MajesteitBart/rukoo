@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -23,6 +24,7 @@ import nl.bvdm.rukoo.agents.AgentIntents
 import nl.bvdm.rukoo.agents.AgentSettingsStore
 import nl.bvdm.rukoo.core.Change
 import nl.bvdm.rukoo.mail.MailEngine
+import nl.bvdm.rukoo.mail.MailException
 import nl.bvdm.rukoo.mail.compose.toOutgoing
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountPatch
@@ -469,6 +471,29 @@ class AppViewModelTest {
     }
 
     @Test
+    fun attachmentsThatCantBeFoundOnTheNewCopyKeepTheComposerOpen() = runTest(main) {
+        val preview = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
+        var newCopy: String? = null
+        val mail = object : MailEngine by preview {
+            override suspend fun saveDraft(message: OutgoingMessage): String? = preview.saveDraft(message).also { newCopy = it }
+
+            override suspend fun fullMessage(id: String) = if (id == newCopy) throw MailException("offline") else preview.fullMessage(id)
+        }
+        val (s, vm) = setup(preview = preview, mail = mail)
+        val sanne = s.mail.listMessages(MailView.AllInboxes).first { it.subject == "Call on Thursday" }
+        val forward = s.mail.replyFields(sanne.id, ReplyKind.FORWARD).toComposerState().copy(to = listOf(Address("", "joris@example.com")))
+        val stored = s.mail.saveDraft(forward.toOutgoing("demo", Address("Demo User", "demo@example.com")))!!
+        vm.editDraft(stored)
+        s.composer.update { it.copy(body = "FYI", dirty = true) }
+        vm.saveDraft()
+        // Saved, but not closed as if all was well, and nothing kept on this phone with references to a deleted copy.
+        assertNotNull(s.composer.current())
+        assertEquals(newCopy, s.composer.current()!!.draftId)
+        assertEquals("${R.string.composer_errors_draft_attachments}", vm.mailUi.toasts.current!!.message)
+        assertTrue(s.drafts.drafts.value.isEmpty())
+    }
+
+    @Test
     fun aMailtoBeforeTheAccountsAreReadWaitsForThem() = runTest(main) {
         val preview = PreviewMailEngine(zone = ZoneId.of("Europe/Amsterdam"))
         val loaded = MutableStateFlow(false)
@@ -479,6 +504,9 @@ class AppViewModelTest {
         }
         val (s, vm) = setup(preview = preview, mail = mail)
         vm.newMessage(Mailto.parse("mailto:help@x.com?subject=Bug"))
+        assertNull(s.composer.current())
+        // However long the accounts take, the request waits.
+        advanceTimeBy(60_000)
         assertNull(s.composer.current())
         accounts.value = preview.accounts.value
         loaded.value = true

@@ -371,6 +371,17 @@ class EngineTest {
     }
 
     @Test
+    fun `a draft just saved reads back without a download`() = runBlocking {
+        val server = server()
+        val engine = engine(server)
+        val acc = added(engine)
+        val stored = engine.saveDraft(OutgoingMessage(acc.id, Address("", "me@example.com"), to = listOf(Address("", "x@example.com")), subject = "Plan", text = "Draft"))!!
+        // The composer reads the new copy's attachments back right after saving; that must not need the network.
+        server.failNext = "fetchSource" to java.io.IOException("offline")
+        assertEquals("Draft", engine.fullMessage(stored).text)
+    }
+
+    @Test
     fun `sending an edited desktop draft removes it from Drafts`() = runBlocking {
         val server = server()
         val engine = engine(server)

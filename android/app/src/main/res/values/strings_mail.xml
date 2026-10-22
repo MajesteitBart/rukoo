@@ -236,6 +236,8 @@
     <string name="composer_errors_delete_local">Rukoo couldn\'t delete the draft from this phone.</string>
     <!-- phone: a draft reopened from the server's Drafts folder couldn't be saved back there; %1$s is the server's error -->
     <string name="composer_errors_save_server">Rukoo couldn\'t save the draft in Drafts (%1$s), so it\'s kept on this phone.</string>
+    <!-- phone: the draft went back to Drafts, but its attachments couldn't be found on the new copy -->
+    <string name="composer_errors_draft_attachments">The draft is saved in Drafts, but Rukoo couldn\'t read its attachments back. Open it from Drafts to go on.</string>
     <!-- phone: the signature sits under the plain-text editor, apart from the text an agent may replace -->
     <string name="composer_signature_label">Signature</string>
     <string name="composer_signature_remove">Remove signature</string>
