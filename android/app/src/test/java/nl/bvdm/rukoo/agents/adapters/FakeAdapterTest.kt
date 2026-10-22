@@ -47,9 +47,10 @@ class FakeAdapterTest {
         override fun agentName(agent: String) = if (agent == AgentIds.FAKE) "Test agent" else preview.agentName(agent)
     }
     private val composer = ComposerController()
+    private val screen = ScreenState(Clock.System)
 
     // The phone's real tools, as the app hands them to the fake agent.
-    private val tools = McpTools(ToolDeps(PreviewMailEngine(Clock.System), hub, ScreenState(Clock.System), composer, { AgentSettings() }))
+    private val tools = McpTools(ToolDeps(PreviewMailEngine(Clock.System), hub, screen, composer, { AgentSettings() }))
     private val fakeTools = FakeTools { identity, name, args -> tools.callTool(identity, name, args, JsonObject(emptyMap())) }
 
     private fun fake(id: String = AgentIds.FAKE) = FakeAdapter(id, fakeTools, { hub }, scale = 0.01)
@@ -152,6 +153,15 @@ class FakeAdapterTest {
         assertEquals(c.id, open.draftedIn)
         assertEquals(open.id, draft.composerKey)
         assertTrue(open.body.startsWith("Hi Sanne,"))
+    }
+
+    // With the chat's email open, get_context sends it as open_message and chat_message as null.
+    @Test
+    fun theReplyGreetsTheSenderOfTheOpenEmail() = runBlocking {
+        val c = chat()
+        screen.update { it.copy(openMessageId = c.message!!.id) }
+        fake().runTurn(RecordingTurn(conversation = c, action = "reply"))
+        assertTrue(composer.current()!!.body, composer.current()!!.body.startsWith("Hi Sanne,"))
     }
 
     @Test

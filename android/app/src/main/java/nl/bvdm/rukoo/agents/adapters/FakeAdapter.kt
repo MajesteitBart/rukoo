@@ -134,7 +134,8 @@ class FakeAdapter internal constructor(
             return (res["structuredContent"] as? JsonObject ?: JsonObject(emptyMap())) to null
         }
 
-        fun email(ctx: JsonObject): JsonObject? = (ctx["chat_message"] ?: ctx["open_message"]) as? JsonObject
+        // get_context sends chat_message as null when the chat's email is the one open (fake.js: `chat_message || open_message`).
+        fun email(ctx: JsonObject): JsonObject? = ctx["chat_message"] as? JsonObject ?: ctx["open_message"] as? JsonObject
 
         /** Names and subjects in tool results are tagged as email; like a real agent, the fake reads through the tags. */
         fun firstName(m: JsonObject?): String {
