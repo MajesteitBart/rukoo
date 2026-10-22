@@ -2,6 +2,9 @@ package nl.bvdm.rukoo.ui.composer
 
 import java.io.File
 import java.nio.file.Files
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runTest
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.AttachmentInfo
 import nl.bvdm.rukoo.mail.model.FolderRole
@@ -17,6 +20,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ComposerLogicTest {
     private val me = Identity("demo@example.com", "Demo User", primary = true)
     private val alias = Identity("hello@example.com", "Demo", primary = false)
@@ -121,6 +125,10 @@ class ComposerLogicTest {
     fun recipientsFromTyping() {
         assertEquals(listOf(Address("Last, First", "a@b.nl"), Address("", "c@d.nl")), Recipients.parse("\"Last, First\" <a@b.nl>; c@d.nl"))
         assertEquals(listOf(Address("", "a@b.nl")) to "jo", Recipients.split("a@b.nl, jo"))
+        // A comma inside a quoted name or angle brackets doesn't end the recipient.
+        assertEquals(emptyList<Address>() to "\"Last, First\" <a@b.nl>", Recipients.split("\"Last, First\" <a@b.nl>"))
+        assertEquals(listOf(Address("Last, First", "a@b.nl")) to "", Recipients.split("\"Last, First\" <a@b.nl>,"))
+        assertEquals(emptyList<Address>() to "Odd <a,b@c.nl>", Recipients.split("Odd <a,b@c.nl>"))
         assertEquals(listOf(Address("", "a@b.nl")) to "", Recipients.split("a@b.nl "))
         assertEquals(emptyList<Address>() to "Sanne ", Recipients.split("Sanne "))
         assertTrue(Recipients.isValid("sanne@studio.nl"))
@@ -164,24 +172,36 @@ class ComposerLogicTest {
     }
 
     @Test
-    fun draftsKeepTheNewestOnTopAndSurviveARestart() {
+    fun draftsKeepTheNewestOnTopAndSurviveARestart() = runTest {
         val dir = Files.createTempDirectory("drafts").toFile()
         val file = File(dir, DraftStore.FILE_NAME)
         var clock = 1000L
-        val store = DraftStore(null, now = { clock })
-        store.save(ComposerState(id = "a", subject = "A", dirty = true))
+        val io = StandardTestDispatcher(testScheduler)
+        val store = DraftStore(file, io, now = { clock })
+        assertTrue(store.save(ComposerState(id = "a", subject = "A", dirty = true)))
         clock = 2000L
-        store.save(ComposerState(id = "b", subject = "B"))
-        store.save(ComposerState(id = "a", subject = "A2"))
+        assertTrue(store.save(ComposerState(id = "b", subject = "B")))
+        assertTrue(store.save(ComposerState(id = "a", subject = "A2")))
         assertEquals(listOf("a", "b"), store.drafts.value.map { it.id })
         assertEquals("A2", store.get("a")!!.subject)
         assertFalse(store.get("a")!!.dirty)
         assertEquals(2000L, store.get("a")!!.savedAt)
-        store.remove("a")
+        assertTrue(store.remove("a"))
         assertEquals(listOf("b"), store.drafts.value.map { it.id })
-        // Written and read back through JsonFiles.
-        nl.bvdm.rukoo.core.JsonFiles.write(file, kotlinx.serialization.builtins.ListSerializer(ComposerState.serializer()), store.drafts.value)
+        // On disk once save returned: a new store (the next process) reads it back.
         assertEquals(listOf("b"), DraftStore(file).drafts.value.map { it.id })
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun aDraftThatCantBeWrittenIsNotReportedKept() = runTest {
+        // A directory where the file should be: the write fails.
+        val dir = Files.createTempDirectory("drafts").toFile()
+        val blocked = File(dir, DraftStore.FILE_NAME).apply { mkdirs() }
+        File(blocked, "x").writeText("keeps the directory non-empty")
+        val store = DraftStore(blocked, StandardTestDispatcher(testScheduler))
+        assertFalse(store.save(ComposerState(id = "a", body = "words")))
+        assertTrue(store.drafts.value.isEmpty())
         dir.deleteRecursively()
     }
 }

@@ -195,8 +195,9 @@ private fun Reader(app: AppViewModel, id: String) {
                     RkIconButton(RukooIcons.Trash, stringResource(R.string.common_actions_delete), onClick = { ui.delete(listOf(m)) })
                     RkIconButton(RukooIcons.Move, stringResource(R.string.common_actions_move), onClick = { ui.pickFolder(listOf(m)) })
                     RkIconButton(RukooIcons.MarkUnread, stringResource(R.string.mailbox_actions_unread), onClick = {
-                        ui.setUnread(listOf(m), true, announce = true)
-                        if (!app.twoPane) app.back() else app.messageGone(id)
+                        ui.setUnread(listOf(m), true)
+                        // One pane goes back to the list; beside the list the email stays open, as on desktop.
+                        if (!app.twoPane) app.back()
                     })
                 }
                 RkIconButton(RukooIcons.More, stringResource(R.string.reader_actions_more), onClick = { more = true })

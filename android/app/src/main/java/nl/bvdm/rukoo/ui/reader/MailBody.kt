@@ -59,7 +59,9 @@ fun MailBody(
     val doc by produceState(MailFrame.cached(html, isHtml, light, darkEmails), html, isHtml, light, darkEmails) {
         // On a theme change the state still holds the old document: always resolve the current one.
         value = MailFrame.cached(html, isHtml, light, darkEmails)
-            ?: withContext(Dispatchers.Default) { MailFrame.documentCached(html, isHtml, light, darkEmails) }
+            ?: withContext(Dispatchers.Default) {
+                runCatching { MailFrame.documentCached(html, isHtml, light, darkEmails) }.getOrElse { MailFrame.unprocessed(html, light) }
+            }
     }
     val fontScale = LocalDensity.current.fontScale
     val current = doc

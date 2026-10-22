@@ -11,6 +11,7 @@ import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.ui.MailtoFields
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -131,13 +132,33 @@ class MailUiTest {
     }
 
     @Test
-    fun markAllReadCounts() = runTest(UnconfinedTestDispatcher()) {
+    fun markAllReadCountsAndUndoMarksThoseUnreadAgain() = runTest(UnconfinedTestDispatcher()) {
         val (engine, ui, _) = setup(backgroundScope)
-        val unread = engine.listMessages(MailView.AllInboxes).count { it.unread }
+        val unread = engine.listMessages(MailView.AllInboxes).filter { it.unread }.map { it.id }
         ui.markAllRead(MailView.AllInboxes)
-        assertEquals("${R.plurals.mailbox_actions_read_count}|$unread", ui.toasts.current!!.message)
+        assertEquals("${R.plurals.mailbox_actions_read_count}|${unread.size}", ui.toasts.current!!.message)
+        ui.toasts.current!!.onAction!!.invoke()
+        assertEquals(unread, engine.listMessages(MailView.AllInboxes).filter { it.unread }.map { it.id })
+        ui.markAllRead(MailView.AllInboxes)
         ui.markAllRead(MailView.AllInboxes)
         assertEquals("${R.string.mailbox_actions_already_read}", ui.toasts.current!!.message)
+    }
+
+    @Test
+    fun aReadChangeCanBeUndone() = runTest(UnconfinedTestDispatcher()) {
+        val (engine, ui, _) = setup(backgroundScope)
+        val list = engine.listMessages(MailView.AllInboxes)
+        val read = list.first { !it.unread }
+        val unread = list.first { it.unread }
+        // Only the ones that change count, and only they go back.
+        ui.setUnread(listOf(read, unread), true)
+        assertEquals("${R.string.mailbox_actions_marked_unread}", ui.toasts.current!!.message)
+        assertTrue(engine.summary(read.id)!!.unread)
+        ui.toasts.current!!.onAction!!.invoke()
+        assertFalse(engine.summary(read.id)!!.unread)
+        assertTrue(engine.summary(unread.id)!!.unread)
+        ui.setUnread(listOf(unread), false)
+        assertEquals("${R.plurals.mailbox_actions_read_count}|1", ui.toasts.current!!.message)
     }
 
     @Test

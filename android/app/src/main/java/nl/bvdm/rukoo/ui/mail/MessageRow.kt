@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -122,11 +123,13 @@ fun MessageRow(
     val swipe = (actions.toggleRead != null || actions.delete != null) && !look.selecting
     val shape = RoundedCornerShape(8.dp)
 
-    // A row that slid out but stayed (the delete was cancelled or failed) comes back.
-    LaunchedEffect(m.id, dx != 0f) {
-        if (dx != 0f) {
-            delay(2500)
+    // A row that flew out but is still here (the delete asked first and was cancelled, or failed) comes back.
+    var flown by remember(m.id) { mutableStateOf(false) }
+    LaunchedEffect(m.id, flown) {
+        if (flown) {
+            delay(1500)
             animate(dx, 0f, animationSpec = SwipeSpec) { v, _ -> dx = v }
+            flown = false
         }
     }
 
@@ -169,6 +172,7 @@ fun MessageRow(
                                             animate(dx, -width * 1.1f, animationSpec = SwipeSpec) { v, _ -> dx = v }
                                             delay(160)
                                             actions.delete?.invoke()
+                                            flown = true
                                         }
                                         else -> animate(dx, 0f, animationSpec = SwipeSpec) { v, _ -> dx = v }
                                     }

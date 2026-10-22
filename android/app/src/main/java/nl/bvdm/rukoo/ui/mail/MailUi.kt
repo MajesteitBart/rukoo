@@ -141,14 +141,32 @@ class MailUi(
 
     private fun folderOf(accountId: String, path: String): Folder? = mail.folders.value[accountId]?.firstOrNull { it.path == path }
 
-    fun setUnread(list: List<MessageSummary>, unread: Boolean, announce: Boolean = false) {
-        if (list.isEmpty()) return
+    /**
+     * Read or unread, with an Undo that puts back the flags of the emails that changed. Desktop has no toast
+     * here; the phone's swipe makes the change easy to do by accident, so it gets one.
+     */
+    fun setUnread(list: List<MessageSummary>, unread: Boolean) {
+        val changed = list.filter { it.unread != unread }.map { it.id }.distinct()
+        if (changed.isEmpty()) return
         scope.launch {
             try {
-                mail.setFlags(list.map { it.id }, unread = unread)
-                if (announce && unread) toasts.showToast(strings.get(R.string.mailbox_actions_marked_unread))
+                mail.setFlags(changed, unread = unread)
+                offerFlagUndo(changed, unread)
             } catch (e: Exception) {
                 error(e)
+            }
+        }
+    }
+
+    private fun offerFlagUndo(ids: List<String>, unread: Boolean) {
+        val message = if (unread) strings.get(R.string.mailbox_actions_marked_unread) else strings.plural(R.plurals.mailbox_actions_read_count, ids.size, ids.size)
+        toasts.showToast(message, strings.get(R.string.common_actions_undo)) {
+            scope.launch {
+                try {
+                    mail.setFlags(ids, unread = !unread)
+                } catch (e: Exception) {
+                    error(e)
+                }
             }
         }
     }
@@ -167,8 +185,11 @@ class MailUi(
     fun markAllRead(view: MailView) {
         scope.launch {
             try {
+                // Which ones were unread, so Undo can mark exactly those again.
+                val before = mail.listMessages(view).filter { it.unread }.map { it.id }
                 val n = mail.markAllRead(view)
-                toasts.showToast(if (n > 0) strings.plural(R.plurals.mailbox_actions_read_count, n, n) else strings.get(R.string.mailbox_actions_already_read))
+                if (n > 0 && before.isNotEmpty()) offerFlagUndo(before, unread = false)
+                else toasts.showToast(strings.get(R.string.mailbox_actions_already_read))
             } catch (e: Exception) {
                 error(e)
             }

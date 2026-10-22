@@ -83,7 +83,7 @@ class AppContainer(context: Context) : AppServices {
 
     override val composer = ComposerController(File(appContext.filesDir, ComposerController.FILE_NAME), appScope)
 
-    override val drafts = DraftStore(File(appContext.filesDir, DraftStore.FILE_NAME), appScope)
+    override val drafts = DraftStore(File(appContext.filesDir, DraftStore.FILE_NAME))
 
     // The preview engine and hub stand in until the real ones land (tracks A and C swap them in here).
     override val mail: MailEngine by lazy {

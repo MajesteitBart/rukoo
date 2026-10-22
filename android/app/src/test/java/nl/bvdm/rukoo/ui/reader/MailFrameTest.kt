@@ -84,6 +84,15 @@ class MailFrameTest {
     }
 
     @Test
+    fun aMalformedColourIsNoColourAndNoCrash() {
+        assertEquals(null, MailFrame.parseColor("rgb(999999999999999999999,242,242)"))
+        assertEquals(null, MailFrame.parseColor("rgb(300,242,242)"))
+        assertEquals(null, MailFrame.parseColor("rgba(242,242,242,1.2.3)"))
+        val doc = MailFrame.document("<div style=\"background:rgb(999999999999999999999,242,242)\">x</div>", true, false, true)
+        assertTrue(doc.contains(">x</div>"))
+    }
+
+    @Test
     fun colors() {
         assertTrue(MailFrame.neutral(MailFrame.parseColor("#fff")!!))
         assertTrue(MailFrame.neutral(MailFrame.parseColor("rgb(242, 242, 242)")!!))

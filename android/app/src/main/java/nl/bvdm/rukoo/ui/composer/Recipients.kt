@@ -27,10 +27,26 @@ object Recipients {
      * Space finishes a part too once it is a whole address, the way a phone keyboard ends a word.
      */
     fun split(text: String): Pair<List<Address>, String> {
-        val cut = text.indexOfLast { it == ',' || it == ';' || it == '\n' }
+        val cut = lastSeparator(text)
         if (cut >= 0) return parse(text.substring(0, cut)) to text.substring(cut + 1).trimStart()
         if (text.endsWith(' ') && !text.contains('"') && !text.contains('<') && isValid(text.trim())) return parse(text) to ""
         return emptyList<Address>() to text
+    }
+
+    // The last comma, semicolon or line break outside quotes and angle brackets: `"Last, First" <a@b.c>` is one recipient.
+    private fun lastSeparator(text: String): Int {
+        var quoted = false
+        var angled = false
+        var last = -1
+        text.forEachIndexed { i, ch ->
+            when {
+                ch == '"' && !angled -> quoted = !quoted
+                ch == '<' && !quoted -> angled = true
+                ch == '>' && !quoted -> angled = false
+                (ch == ',' || ch == ';' || ch == '\n') && !quoted && !angled -> last = i
+            }
+        }
+        return last
     }
 
     /** Adds [more] to [list], leaving out addresses that are there already. */

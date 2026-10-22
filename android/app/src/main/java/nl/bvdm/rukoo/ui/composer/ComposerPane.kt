@@ -152,21 +152,21 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
         focusNext = bccFocus
     }
     var focused by rememberSaveable(d.id) { mutableStateOf(false) }
-    val failedAttach = stringResource(R.string.composer_attachments_failed, "%s")
+    // While Send runs the composer is read-only, as desktop makes it inert: what goes out is what is on screen.
+    val locked = app.sending
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        scope.launch {
-            for (uri in uris) {
-                val added = withContext(Dispatchers.IO) { runCatching { copyIn(context, uri, d.id) }.getOrNull() }
-                if (added == null) app.mailUi.toasts.showError(failedAttach.replace("%s", uri.lastPathSegment ?: ""))
-                else edit { it.copy(attachments = it.attachments + added) }
-            }
-        }
+        // Copied in the view model's scope, so folding while a large file comes in doesn't lose it.
+        if (uris.isNotEmpty()) app.attachFiles(context.applicationContext, uris, d.id)
+    }
+    // Text typed in a recipient field that isn't a chip yet lives in the view model: Send takes it along.
+    fun pending(field: String) = app.pendingRecipients[AppViewModel.pendingKey(d.id, field)].orEmpty()
+    fun setPending(field: String, text: String) {
+        app.pendingRecipients[AppViewModel.pendingKey(d.id, field)] = text
     }
 
     // Top bar: Close and the title (spec 6 §4.7, "On a phone").
     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        RkIconButton(RukooIcons.Close, stringResource(R.string.common_actions_close), onClick = app::closeComposer)
+        RkIconButton(RukooIcons.Close, stringResource(R.string.common_actions_close), onClick = app::closeComposer, enabled = !locked)
         Text(
             stringResource(
                 when (d.replyKind) {
@@ -199,36 +199,49 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
     Hairline()
 
     Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        FromField(app, d)
+        FromField(app, d, enabled = !locked)
         RecipientField(
             label = stringResource(R.string.reader_headers_to),
             list = d.to,
             onChange = { list -> edit { it.copy(to = list) } },
             contacts = contacts,
+            text = pending("to"),
+            onText = { setPending("to", it) },
+            enabled = !locked,
             focusRequester = toFocus,
             trailing = {
-                if (!showCc) RkLinkButton(stringResource(R.string.reader_headers_cc), askCc, style = Rk.type.text12_5, color = c.text2)
-                if (!showBcc) RkLinkButton(stringResource(R.string.reader_headers_bcc), askBcc, style = Rk.type.text12_5, color = c.text2)
+                if (!showCc) RkLinkButton(stringResource(R.string.reader_headers_cc), askCc, style = Rk.type.text12_5, color = c.text2, enabled = !locked)
+                if (!showBcc) RkLinkButton(stringResource(R.string.reader_headers_bcc), askBcc, style = Rk.type.text12_5, color = c.text2, enabled = !locked)
             },
         )
-        if (showCc) RecipientField(stringResource(R.string.reader_headers_cc), d.cc, { list -> edit { it.copy(cc = list) } }, contacts, ccFocus)
-        if (showBcc) RecipientField(stringResource(R.string.reader_headers_bcc), d.bcc, { list -> edit { it.copy(bcc = list) } }, contacts, bccFocus)
-        SubjectField(d.subject) { text -> edit { it.copy(subject = text) } }
+        if (showCc) {
+            RecipientField(
+                stringResource(R.string.reader_headers_cc), d.cc, { list -> edit { it.copy(cc = list) } }, contacts,
+                text = pending("cc"), onText = { setPending("cc", it) }, enabled = !locked, focusRequester = ccFocus,
+            )
+        }
+        if (showBcc) {
+            RecipientField(
+                stringResource(R.string.reader_headers_bcc), d.bcc, { list -> edit { it.copy(bcc = list) } }, contacts,
+                text = pending("bcc"), onText = { setPending("bcc", it) }, enabled = !locked, focusRequester = bccFocus,
+            )
+        }
+        SubjectField(d.subject, readOnly = locked) { text -> edit { it.copy(subject = text) } }
 
-        BodyField(d, bodyFocus) { text -> edit { it.copy(body = text) } }
+        BodyField(d, bodyFocus, readOnly = locked) { text -> edit { it.copy(body = text) } }
 
-        if (d.quote.isNotBlank()) Quote(d) { excluded -> composer.update { it.copy(quoteExcluded = excluded, dirty = true) } }
+        if (d.quote.isNotBlank()) Quote(d) { excluded -> if (!locked) composer.update { it.copy(quoteExcluded = excluded, dirty = true) } }
 
         if (d.attachments.isNotEmpty()) {
             FlowRow(Modifier.padding(top = 12.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (a in d.attachments) AttachmentChip(a) { edit { it.copy(attachments = it.attachments - a) } }
+                for (a in d.attachments) AttachmentChip(a, removable = !locked) { edit { it.copy(attachments = it.attachments - a) } }
             }
         }
         Spacer(Modifier.heightIn(min = 24.dp))
     }
 
     Hairline()
-    BottomBar(app, d, onAttach = { picker.launch(arrayOf("*/*")) }, onShowCc = askCc, onShowBcc = askBcc)
+    BottomBar(app, d, locked, onAttach = { picker.launch(arrayOf("*/*")) }, onShowCc = askCc, onShowBcc = askBcc)
 
     // Replies start in the text, a new message or a forward at To; only the first time this draft opens.
     LaunchedEffect(d.id) {
@@ -242,7 +255,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.Composer(app: AppView
 
 /** From: the identity it sends as; with more than one, a tap picks another (composer.js:258-277). */
 @Composable
-private fun FromField(app: AppViewModel, d: ComposerState) {
+private fun FromField(app: AppViewModel, d: ComposerState, enabled: Boolean) {
     val c = Rk.colors
     val mail = app.services.mail
     val accounts by mail.accounts.collectAsStateWithLifecycle()
@@ -254,7 +267,7 @@ private fun FromField(app: AppViewModel, d: ComposerState) {
             Modifier
                 .weight(1f)
                 .heightIn(min = 40.dp)
-                .rkClickable(Rk.shapes.chip, enabled = identities.size > 1) { picking = true },
+                .rkClickable(Rk.shapes.chip, enabled = enabled && identities.size > 1) { picking = true },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(from?.display().orEmpty(), style = Rk.type.text13_5, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
@@ -306,17 +319,19 @@ private fun RecipientField(
     list: List<Address>,
     onChange: (List<Address>) -> Unit,
     contacts: List<Address>,
+    text: String,
+    onText: (String) -> Unit,
+    enabled: Boolean = true,
     focusRequester: FocusRequester? = null,
     trailing: @Composable () -> Unit = {},
 ) {
     val c = Rk.colors
-    var text by rememberSaveable(label) { mutableStateOf("") }
     var hasFocus by remember { mutableStateOf(false) }
     val suggestions = remember(text, contacts, list) { Recipients.suggest(contacts, text, list) }
     fun commit() {
         val more = Recipients.parse(text)
         if (more.isNotEmpty()) onChange(Recipients.merge(list, more))
-        text = ""
+        onText("")
     }
     val focus = focusRequester ?: remember { FocusRequester() }
     Column {
@@ -329,14 +344,15 @@ private fun RecipientField(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 itemVerticalAlignment = Alignment.CenterVertically,
             ) {
-                for (a in list) RecipientChip(a) { onChange(list - a) }
+                for (a in list) RecipientChip(a, removable = enabled) { onChange(list - a) }
                 BasicTextField(
                     value = text,
                     onValueChange = { value ->
                         val (done, rest) = Recipients.split(value)
                         if (done.isNotEmpty()) onChange(Recipients.merge(list, done))
-                        text = rest
+                        onText(rest)
                     },
+                    enabled = enabled,
                     singleLine = true,
                     textStyle = Rk.type.text13_5.copy(color = c.text),
                     cursorBrush = SolidColor(c.accent),
@@ -373,7 +389,7 @@ private fun RecipientField(
                             .heightIn(min = 44.dp)
                             .rkClickable(Rk.shapes.chip) {
                                 onChange(Recipients.merge(list, listOf(s)))
-                                text = ""
+                                onText("")
                             }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                     ) {
@@ -389,7 +405,7 @@ private fun RecipientField(
 
 /** A recipient chip (styles.css:2850-2891): `chip` fill, the name, an x; an invalid address gets a red ring. */
 @Composable
-private fun RecipientChip(a: Address, onRemove: () -> Unit) {
+private fun RecipientChip(a: Address, removable: Boolean, onRemove: () -> Unit) {
     val c = Rk.colors
     val shape = RoundedCornerShape(14.dp)
     val valid = Recipients.isValid(a.address)
@@ -398,21 +414,23 @@ private fun RecipientChip(a: Address, onRemove: () -> Unit) {
             .heightIn(min = 28.dp)
             .background(c.chip, shape)
             .then(if (valid) Modifier else Modifier.border(1.5.dp, c.danger, shape))
-            .padding(start = 10.dp, end = 3.dp),
+            .padding(start = 10.dp, end = if (removable) 3.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(ListModel.person(a), style = Rk.type.text12_5, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp))
-        val remove = stringResource(R.string.composer_recipient_remove, a.address)
-        Box(
-            Modifier.size(22.dp).rkClickable(CircleShape, onClick = onRemove).semantics { contentDescription = remove },
-            contentAlignment = Alignment.Center,
-        ) { RkIcon(RukooIcons.named("close", 2.2f), null, size = 11.dp, tint = c.text3) }
+        if (removable) {
+            val remove = stringResource(R.string.composer_recipient_remove, a.address)
+            Box(
+                Modifier.size(22.dp).rkClickable(CircleShape, onClick = onRemove).semantics { contentDescription = remove },
+                contentAlignment = Alignment.Center,
+            ) { RkIcon(RukooIcons.named("close", 2.2f), null, size = 11.dp, tint = c.text3) }
+        }
     }
 }
 
 @Composable
-private fun SubjectField(subject: String, onChange: (String) -> Unit) {
+private fun SubjectField(subject: String, readOnly: Boolean, onChange: (String) -> Unit) {
     val c = Rk.colors
     var text by remember { mutableStateOf(subject) }
     // An agent's write lands in the controller; the field follows it.
@@ -424,6 +442,7 @@ private fun SubjectField(subject: String, onChange: (String) -> Unit) {
                 text = it
                 onChange(it)
             },
+            readOnly = readOnly,
             singleLine = true,
             textStyle = Rk.type.text13_5.copy(color = c.text),
             cursorBrush = SolidColor(c.accent),
@@ -435,7 +454,7 @@ private fun SubjectField(subject: String, onChange: (String) -> Unit) {
 
 /** The editor: 14.5 at line height 1.6, "Write your message" until there is text. */
 @Composable
-private fun BodyField(d: ComposerState, focus: FocusRequester, onChange: (String) -> Unit) {
+private fun BodyField(d: ComposerState, focus: FocusRequester, readOnly: Boolean, onChange: (String) -> Unit) {
     val c = Rk.colors
     var value by remember { mutableStateOf(TextFieldValue(d.body, TextRange(0))) }
     LaunchedEffect(d.body) { if (d.body != value.text) value = TextFieldValue(d.body, TextRange(d.body.length)) }
@@ -449,6 +468,7 @@ private fun BodyField(d: ComposerState, focus: FocusRequester, onChange: (String
                 value = it
                 if (changed) onChange(it.text)
             },
+            readOnly = readOnly,
             textStyle = Rk.type.emailBody.copy(color = c.text),
             cursorBrush = SolidColor(c.accent),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
@@ -517,7 +537,7 @@ private fun Quote(d: ComposerState, onExclude: (Boolean) -> Unit) {
 
 /** An attachment chip (styles.css:3019-3072): clip icon, name, size and a remove button. */
 @Composable
-private fun AttachmentChip(a: OutgoingAttachment, onRemove: () -> Unit) {
+private fun AttachmentChip(a: OutgoingAttachment, removable: Boolean, onRemove: () -> Unit) {
     val c = Rk.colors
     val shape = Rk.shapes.control
     val locale = LocalConfiguration.current.locales[0]
@@ -534,7 +554,7 @@ private fun AttachmentChip(a: OutgoingAttachment, onRemove: () -> Unit) {
         RkIcon(RukooIcons.Clip, null, size = 14.dp, tint = c.text3)
         Text(a.filename, style = Rk.type.text12_5, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
         if (a.size > 0) Text(MailDates.fileSize(a.size, locale), style = Rk.type.text11_5.tabular, color = c.text3, maxLines = 1)
-        RkIconButton(RukooIcons.Close, stringResource(R.string.composer_attachments_remove, a.filename), onClick = onRemove, size = nl.bvdm.rukoo.ui.components.RkIconButtonSize.XS)
+        RkIconButton(RukooIcons.Close, stringResource(R.string.composer_attachments_remove, a.filename), onClick = onRemove, size = nl.bvdm.rukoo.ui.components.RkIconButtonSize.XS, enabled = removable)
     }
 }
 
@@ -543,16 +563,16 @@ private fun AttachmentChip(a: OutgoingAttachment, onRemove: () -> Unit) {
  * Undo and the save state, then Send. Under 440dp the mark keeps only its sparkle and Undo.
  */
 @Composable
-private fun BottomBar(app: AppViewModel, d: ComposerState, onAttach: () -> Unit, onShowCc: () -> Unit, onShowBcc: () -> Unit) {
+private fun BottomBar(app: AppViewModel, d: ComposerState, locked: Boolean, onAttach: () -> Unit, onShowCc: () -> Unit, onShowBcc: () -> Unit) {
     val c = Rk.colors
     var menu by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val narrow = maxWidth < 440.dp
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 6.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            RkIconButton(RukooIcons.Clip, stringResource(R.string.composer_attachments_pick), onClick = onAttach)
-            RkIconButton(RukooIcons.Trash, stringResource(R.string.composer_actions_discard), onClick = app::discardDraft)
+            RkIconButton(RukooIcons.Clip, stringResource(R.string.composer_attachments_pick), onClick = onAttach, enabled = !locked)
+            RkIconButton(RukooIcons.Trash, stringResource(R.string.composer_actions_discard), onClick = app::discardDraft, enabled = !locked)
             Box {
-                RkIconButton(RukooIcons.More, stringResource(R.string.common_actions_more_options), onClick = { menu = true })
+                RkIconButton(RukooIcons.More, stringResource(R.string.common_actions_more_options), onClick = { menu = true }, enabled = !locked)
                 RkDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     RkMenuItem(stringResource(R.string.composer_actions_save_draft), icon = RukooIcons.Drafts, onClick = {
                         menu = false
@@ -599,23 +619,4 @@ private fun BottomBar(app: AppViewModel, d: ComposerState, onAttach: () -> Unit,
             )
         }
     }
-}
-
-/** Copies a picked file into the app's storage, where Send (and the FileProvider) can read it. */
-private fun copyIn(context: Context, uri: Uri, composerId: String): OutgoingAttachment? {
-    val resolver = context.contentResolver
-    var name = "file"
-    var size = 0L
-    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) {
-            cursor.getString(0)?.let { name = it }
-            if (!cursor.isNull(1)) size = cursor.getLong(1)
-        }
-    }
-    // A name from another app is a file name here, never a path.
-    val safe = name.replace(Regex("[\\\\/:*?\"<>|\\p{Cc}]"), "_").trim().ifEmpty { "file" }.take(150)
-    val dir = File(context.filesDir, "attachments/compose/$composerId/${Ids.rand(8)}").apply { mkdirs() }
-    val file = File(dir, safe)
-    resolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } } ?: return null
-    return OutgoingAttachment(safe, resolver.getType(uri) ?: "application/octet-stream", file.absolutePath, if (size > 0) size else file.length())
 }

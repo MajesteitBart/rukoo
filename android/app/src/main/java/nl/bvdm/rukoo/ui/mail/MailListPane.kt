@@ -31,6 +31,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -126,8 +127,22 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
     val checked = nav.checked.toSet()
     val selecting = checked.isNotEmpty()
 
+    // One scroll position per list: leaving a folder keeps its place for when it comes back.
     val listKey = "${listView.kind}|${listView.accountId}|${listView.folder}|$searching"
-    val listState = rememberSaveable(listKey, saver = LazyListState.Saver) { LazyListState() }
+    val listState = rememberSaveable(listKey, saver = LazyListState.Saver) {
+        app.listPosition(listKey)?.let { (index, offset) -> LazyListState(index, offset) } ?: LazyListState()
+    }
+    DisposableEffect(listKey, listState) {
+        onDispose { app.keepListPosition(listKey, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) }
+    }
+    // Checked emails that left the list (marked read under Unread, moved elsewhere) leave the selection too,
+    // so the bar's count and its actions always match what is on screen.
+    LaunchedEffect(messages, loaded != null, nav.checked) {
+        if (loaded == null || nav.checked.isEmpty()) return@LaunchedEffect
+        val here = messages.mapTo(HashSet()) { it.id }
+        val keep = nav.checked.filter { it in here }
+        if (keep.size != nav.checked.size) app.setChecked(keep)
+    }
 
     Box(modifier.background(c.panel)) {
         Column(Modifier.fillMaxSize()) {

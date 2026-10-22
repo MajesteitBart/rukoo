@@ -65,11 +65,23 @@ blockquote{border-left:3px solid rgba(128,128,128,.45);margin:0 0 0 2px;padding-
 $invertCss
 </style></head><body><div data-rukoo-mail>$html</div></body></html>"""
         val parsed = Jsoup.parse(doc)
-        val wrapper = parsed.selectFirst("[data-rukoo-mail]")!!
+        val wrapper = parsed.selectFirst("[data-rukoo-mail]") ?: parsed.body()
         liftBody(parsed.body(), wrapper)
         defuse(parsed)
-        if (isHtml) clearCanvas(wrapper)
+        // Clearing the canvas is cosmetic; mail it can't make sense of keeps its own colours.
+        if (isHtml) runCatching { clearCanvas(wrapper) }
         return parsed.outerHtml()
+    }
+
+    /**
+     * The frame without any parsing, for mail [document] fails on. The WebView still runs it without
+     * JavaScript, file or content access, and links still leave through the reader's link handler.
+     */
+    fun unprocessed(html: String, light: Boolean): String {
+        val textColor = if (light) "#15171c" else "#e6e8ee"
+        return "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">" +
+            "<style>html,body{background:transparent}body{margin:0;padding:0 2px 8px;color:$textColor;" +
+            "font:14.5px/1.6 system-ui,sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}</style></head><body>$html</body></html>"
     }
 
     /**
@@ -158,8 +170,13 @@ $invertCss
             return intArrayOf(full.substring(0, 2).toInt(16), full.substring(2, 4).toInt(16), full.substring(4, 6).toInt(16), 255)
         }
         RGB.find(value)?.let { m ->
-            val alpha = m.groupValues[4].toFloatOrNull()?.let { (it * 255).toInt() } ?: 255
-            return intArrayOf(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toInt(), alpha)
+            // Mail is untrusted: a channel like 999999999999 is no colour, not a crash.
+            fun channel(s: String) = s.toIntOrNull()?.takeIf { it in 0..255 }
+            val r = channel(m.groupValues[1]) ?: return null
+            val g = channel(m.groupValues[2]) ?: return null
+            val b = channel(m.groupValues[3]) ?: return null
+            val alpha = if (m.groupValues[4].isEmpty()) 255 else m.groupValues[4].toFloatOrNull()?.coerceIn(0f, 1f)?.let { (it * 255).toInt() } ?: return null
+            return intArrayOf(r, g, b, alpha)
         }
         if (Regex("\\bwhite\\b", RegexOption.IGNORE_CASE).containsMatchIn(value)) return intArrayOf(255, 255, 255, 255)
         return null
