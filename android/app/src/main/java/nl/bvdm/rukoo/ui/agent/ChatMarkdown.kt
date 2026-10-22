@@ -91,6 +91,41 @@ private fun Node.children(): List<Node> = generateSequence(firstChild) { it.next
 
 private const val CARET = "caret"
 
+// Agent text can quote an email, and a prompt-injected answer can nest quotes, lists or emphasis thousands deep. The
+// renderer recurses per level, so past these budgets the rest of a node is shown as its plain text instead.
+internal const val MAX_BLOCK_NESTING = 12
+internal const val MAX_INLINE_NESTING = 32
+
+/** The text of [node] and everything in it, collected without recursion. */
+internal fun flatText(node: Node): String {
+    val out = StringBuilder()
+    // A null entry stands for a line break after a block.
+    val stack = ArrayDeque<Node?>()
+    stack.addLast(node)
+    while (stack.isNotEmpty()) {
+        when (val n = stack.removeLast()) {
+            null -> out.append('\n')
+            is MdText -> out.append(n.literal)
+            is Code -> out.append(n.literal)
+            is FencedCodeBlock -> out.append(n.literal)
+            is IndentedCodeBlock -> out.append(n.literal)
+            is HtmlInline -> out.append(n.literal)
+            is HtmlBlock -> out.append(n.literal)
+            is SoftLineBreak, is HardLineBreak -> out.append('\n')
+            else -> {
+                // Children go on the stack last first, so they come off in document order.
+                if (n is Paragraph || n is Heading) stack.addLast(null)
+                var child = n.lastChild
+                while (child != null) {
+                    stack.addLast(child)
+                    child = child.previous
+                }
+            }
+        }
+    }
+    return out.toString().trimEnd()
+}
+
 /** How markdown text looks in the chat: the body style and color, and where links go. */
 @Immutable
 private class MdStyle(val text: TextStyle, val color: Color, val colors: RukooColors, val onLink: (String) -> Unit)
@@ -114,19 +149,23 @@ fun AgentMarkdown(
     val blocks = document.children()
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (blocks.isEmpty() && caret) InlineBlock(AnnotatedString(""), md, caret = true)
-        blocks.forEachIndexed { i, node -> Block(node, md, caret && i == blocks.lastIndex, depth = 0) }
+        blocks.forEachIndexed { i, node -> Block(node, md, caret && i == blocks.lastIndex, depth = 0, nesting = 0) }
     }
 }
 
 @Composable
-private fun Block(node: Node, md: MdStyle, caret: Boolean, depth: Int) {
+private fun Block(node: Node, md: MdStyle, caret: Boolean, depth: Int, nesting: Int) {
     val c = md.colors
+    if (nesting >= MAX_BLOCK_NESTING) {
+        InlineBlock(AnnotatedString(flatText(node)), md, caret)
+        return
+    }
     when (node) {
         is Paragraph -> InlineBlock(inline(node, md), md, caret)
         // Desktop shows headings as bold lines, not as large titles: a chat answer stays a chat answer.
         is Heading -> InlineBlock(inline(node, md), md, caret, md.text.copy(fontWeight = RukooWeights.Semibold))
-        is BulletList -> ListBlock(node, ordered = false, start = 1, md, caret, depth)
-        is OrderedList -> ListBlock(node, ordered = true, start = node.markerStartNumber ?: 1, md, caret, depth)
+        is BulletList -> ListBlock(node, ordered = false, start = 1, md, caret, depth, nesting + 1)
+        is OrderedList -> ListBlock(node, ordered = true, start = node.markerStartNumber ?: 1, md, caret, depth, nesting + 1)
         is FencedCodeBlock -> CodeBlock(node.literal.trimEnd('\n'), md, caret)
         is IndentedCodeBlock -> CodeBlock(node.literal.trimEnd('\n'), md, caret)
         is BlockQuote -> Row(Modifier.height(IntrinsicSize.Min)) {
@@ -134,7 +173,7 @@ private fun Block(node: Node, md: MdStyle, caret: Boolean, depth: Int) {
             val inner = node.children()
             val quoted = MdStyle(md.text, c.ink2, c, md.onLink)
             Column(Modifier.padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                inner.forEachIndexed { i, child -> Block(child, quoted, caret && i == inner.lastIndex, depth) }
+                inner.forEachIndexed { i, child -> Block(child, quoted, caret && i == inner.lastIndex, depth, nesting + 1) }
             }
         }
         is ThematicBreak -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(c.line))
@@ -142,7 +181,7 @@ private fun Block(node: Node, md: MdStyle, caret: Boolean, depth: Int) {
         is HtmlBlock -> InlineBlock(AnnotatedString(node.literal.trimEnd()), md, caret)
         else -> {
             val inner = node.children()
-            inner.forEachIndexed { i, child -> Block(child, md, caret && i == inner.lastIndex, depth) }
+            inner.forEachIndexed { i, child -> Block(child, md, caret && i == inner.lastIndex, depth, nesting + 1) }
         }
     }
 }
@@ -169,7 +208,7 @@ private fun InlineBlock(text: AnnotatedString, md: MdStyle, caret: Boolean, styl
 }
 
 @Composable
-private fun ListBlock(node: Node, ordered: Boolean, start: Int, md: MdStyle, caret: Boolean, depth: Int) {
+private fun ListBlock(node: Node, ordered: Boolean, start: Int, md: MdStyle, caret: Boolean, depth: Int, nesting: Int) {
     val items = node.children().filterIsInstance<ListItem>()
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         items.forEachIndexed { index, item ->
@@ -183,7 +222,7 @@ private fun ListBlock(node: Node, ordered: Boolean, start: Int, md: MdStyle, car
                 val inner = item.children()
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     inner.forEachIndexed { i, child ->
-                        Block(child, md, caret && index == items.lastIndex && i == inner.lastIndex, depth + 1)
+                        Block(child, md, caret && index == items.lastIndex && i == inner.lastIndex, depth + 1, nesting)
                     }
                 }
             }
@@ -209,12 +248,12 @@ private fun CodeBlock(code: String, md: MdStyle, caret: Boolean) {
     }
 }
 
-private fun inline(node: Node, md: MdStyle): AnnotatedString = buildAnnotatedString { appendChildren(node, md) }
+private fun inline(node: Node, md: MdStyle): AnnotatedString = buildAnnotatedString { appendChildren(node, md, 0) }
 
-private fun AnnotatedString.Builder.appendChildren(parent: Node, md: MdStyle) {
+private fun AnnotatedString.Builder.appendChildren(parent: Node, md: MdStyle, level: Int) {
     var child = parent.firstChild
     while (child != null) {
-        appendInline(child, md)
+        appendInline(child, md, level + 1)
         child = child.next
     }
 }
@@ -228,21 +267,25 @@ private fun AnnotatedString.Builder.appendLink(url: String, md: MdStyle, body: A
     withLink(LinkAnnotation.Url(url, styles) { md.onLink(url) }) { body() }
 }
 
-private fun AnnotatedString.Builder.appendInline(node: Node, md: MdStyle) {
+private fun AnnotatedString.Builder.appendInline(node: Node, md: MdStyle, level: Int) {
+    if (level >= MAX_INLINE_NESTING) {
+        append(flatText(node))
+        return
+    }
     when (node) {
         is MdText -> append(node.literal)
-        is Emphasis -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { appendChildren(node, md) }
-        is StrongEmphasis -> withStyle(SpanStyle(fontWeight = RukooWeights.Semibold)) { appendChildren(node, md) }
-        is Strikethrough -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { appendChildren(node, md) }
+        is Emphasis -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { appendChildren(node, md, level) }
+        is StrongEmphasis -> withStyle(SpanStyle(fontWeight = RukooWeights.Semibold)) { appendChildren(node, md, level) }
+        is Strikethrough -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { appendChildren(node, md, level) }
         is Code -> withStyle(SpanStyle(fontFamily = RukooMono, fontSize = 0.88.em, background = md.colors.raised)) { append(node.literal) }
-        is Link -> appendLink(node.destination, md) { if (node.firstChild != null) appendChildren(node, md) else append(node.destination) }
+        is Link -> appendLink(node.destination, md) { if (node.firstChild != null) appendChildren(node, md, level) else append(node.destination) }
         // Rukoo never loads images from agent text: the alt text stands in, as a link when it is a safe one.
-        is Image -> appendLink(node.destination, md) { if (node.firstChild != null) appendChildren(node, md) else append(node.destination) }
+        is Image -> appendLink(node.destination, md) { if (node.firstChild != null) appendChildren(node, md, level) else append(node.destination) }
         // Desktop keeps a single line break as a line break: agents write lists of lines that way.
         is SoftLineBreak -> append("\n")
         is HardLineBreak -> append("\n")
         is HtmlInline -> append(node.literal)
-        else -> appendChildren(node, md)
+        else -> appendChildren(node, md, level)
     }
 }
 
