@@ -1,7 +1,7 @@
 package nl.bvdm.rukoo.mcp.tools
 
 import java.io.File
-import java.time.LocalDate
+import java.time.Instant
 import java.time.ZoneId
 import java.util.Collections
 import kotlin.coroutines.CoroutineContext
@@ -193,7 +193,8 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         val bound = if (boundId != null && boundId != openId) lookup.loadMessage(boundId) else null
         val focus = bound ?: open
         val composer = d.composer.current()?.let(drafts::view)
-        val today = LocalDate.now(d.zone())
+        // By the injected clock, as every other time here, so a pinned clock gives a pinned date.
+        val today = Instant.ofEpochMilli(d.clock.now()).atZone(d.zone()).toLocalDate()
         return buildJsonObject {
             put("conversation_id", c?.id)
             put("agent", agentWire(call.agent))
