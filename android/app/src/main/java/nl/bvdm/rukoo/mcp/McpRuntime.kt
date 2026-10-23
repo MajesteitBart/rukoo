@@ -52,10 +52,11 @@ class McpRuntime(
     version: String,
     deviceName: () -> String,
     log: (String, Throwable?) -> Unit = { _, _ -> },
+    onCaller: (McpCaller) -> Unit = {},
 ) {
     val auth = McpAuth(secrets)
     val handler = McpHandler(tools, version, deviceName, log)
-    val server = McpHttpServer(port, policy, auth, handler, log)
+    val server = McpHttpServer(port, policy, auth, handler, log, onCaller = onCaller)
 
     /** Throws an IOException when the port is taken. */
     fun start() = server.start()

@@ -55,6 +55,8 @@ class McpHttpServer(
     private val handler: McpHandler,
     private val log: (String, Throwable?) -> Unit = { _, _ -> },
     private val requestTimeoutMs: Int = REQUEST_TIMEOUT_MS,
+    /** Each request that got in, by who sent it, before it is answered. */
+    private val onCaller: (McpCaller) -> Unit = {},
 ) {
     private val slots = Semaphore(MAX_CONNECTIONS)
     private val workers: ExecutorService = Executors.newCachedThreadPool { r -> Thread(r, "rukoo-mcp").apply { isDaemon = true } }
@@ -178,6 +180,7 @@ class McpHttpServer(
             write(output, json(400, McpHandler.rpcError(null, -32600, "Batch requests are not supported")), isHead)
             return !req.close
         }
+        runCatching { onCaller(caller!!) }.onFailure { log("mcp caller hook failed", it) }
         val response = try {
             val out = runBlocking { handler.dispatch(caller!!, msg) }
             if (out == null) json(202, null) else json(200, out)

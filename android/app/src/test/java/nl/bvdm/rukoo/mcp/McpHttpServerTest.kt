@@ -26,6 +26,7 @@ class McpHttpServerTest {
     private var secrets = AuthSecrets(toolsOn = true, clarkKey = key)
     private var accepts = true
     private var listFails = false
+    private val callers = java.util.concurrent.CopyOnWriteArrayList<McpCaller>()
     private lateinit var server: McpHttpServer
     private val port get() = server.localPort
 
@@ -46,7 +47,7 @@ class McpHttpServerTest {
 
     @Before
     fun start() {
-        server = McpHttpServer(0, policy, McpAuth { secrets }, McpHandler(backend, "1.2.3", { "test-phone" }), requestTimeoutMs = 5_000)
+        server = McpHttpServer(0, policy, McpAuth { secrets }, McpHandler(backend, "1.2.3", { "test-phone" }), requestTimeoutMs = 5_000, onCaller = { callers += it })
         server.start()
     }
 
@@ -258,5 +259,15 @@ class McpHttpServerTest {
         val r = request(body = "{\"jsonrpc\":\"2.0\",\"id\":\"x\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_context\"}}")
         assertEquals(200, r.status)
         assertEquals("clark", r.json["result"]!!.jsonObject["agent"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun tellsWhoGotIn() {
+        // The bridge's probe and a wrong token got nowhere; only a request that got in counts.
+        request(headers = mapOf("X-Rukoo-Challenge" to "c1Ue5Xq0bWm2yNnR8PaVtG3o_kLs7d9Z"))
+        request(headers = mapOf("Authorization" to "Bearer wrong"))
+        assertEquals(emptyList<McpCaller>(), callers.toList())
+        request()
+        assertEquals(listOf<McpCaller>(McpCaller.Clark), callers.toList())
     }
 }

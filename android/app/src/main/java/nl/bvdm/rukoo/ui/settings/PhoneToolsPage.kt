@@ -49,6 +49,7 @@ import nl.bvdm.rukoo.ui.components.SettingsCard
 import nl.bvdm.rukoo.ui.components.SettingsRow
 import nl.bvdm.rukoo.ui.components.SettingsSwitchRow
 import nl.bvdm.rukoo.ui.components.StatusDot
+import nl.bvdm.rukoo.ui.mail.rememberMailDates
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 
@@ -138,10 +139,23 @@ fun PhoneToolsPage(app: AppViewModel) {
             // The server lets Clark in with its key alone (McpSetup.secrets), as desktop's hasKey: the bridge on
             // Clark's machine finds the phone itself, so its URL here isn't needed.
             val clarkOn = clark.key.isNotBlank()
+            // Whether the bridge got here yet tells an outdated bridge (which never looks for a phone) from a
+            // working one, so the setup note stays until it has.
+            val seen = status.clarkSeen?.takeIf { settings.mcpEnabled && clarkOn }
+            val dates = rememberMailDates()
+            val description = when {
+                !clarkOn -> stringResource(R.string.settings_phone_tools_clark_off, clarkName)
+                seen != null -> stringResource(
+                    R.string.settings_phone_tools_clark_seen,
+                    if (dates.sameDay(seen, System.currentTimeMillis())) dates.time(seen) else "${dates.numericDate(seen)} ${dates.time(seen)}",
+                )
+                !settings.mcpEnabled -> hermesNote.ifBlank { stringResource(R.string.settings_phone_tools_clark_help, clarkName) }
+                else -> stringResource(R.string.settings_phone_tools_clark_not_seen) + " " + hermesNote.ifBlank { stringResource(R.string.settings_phone_tools_clark_help, clarkName) }
+            }
             SettingsRow(
                 title = stringResource(R.string.settings_phone_tools_clark, clarkName),
-                description = if (clarkOn) hermesNote.ifBlank { stringResource(R.string.settings_phone_tools_clark_help, clarkName) } else stringResource(R.string.settings_phone_tools_clark_off, clarkName),
-                leading = { StatusDot(if (settings.mcpEnabled && clarkOn) DotTone.READY else DotTone.MUTED, size = 8.dp) },
+                description = description,
+                leading = { StatusDot(if (seen != null) DotTone.READY else DotTone.MUTED, size = 8.dp) },
             )
             for (c in agentSettings.computers) {
                 SettingsRow(

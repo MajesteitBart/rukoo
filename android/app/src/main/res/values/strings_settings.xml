@@ -234,6 +234,8 @@
     <string name="settings_phone_tools_clark">%1$s, through Rukoo\'s bridge</string>
     <string name="settings_phone_tools_clark_help">The bridge on %1$s\'s machine finds this phone by itself and sends it the calls about chats on this phone.</string>
     <string name="settings_phone_tools_clark_off">Set up %1$s under Agents first.</string>
+    <string name="settings_phone_tools_clark_seen">Its bridge last reached this phone at %1$s.</string>
+    <string name="settings_phone_tools_clark_not_seen">Its bridge hasn\'t reached this phone yet.</string>
     <string name="settings_phone_tools_computer">Claude Code and Codex on %1$s</string>
     <string name="settings_phone_tools_computer_help">While a chat from this phone runs there, its tools work on this phone\'s mail.</string>
     <string name="settings_phone_tools_computer_off">Without phone tools they chat without Rukoo\'s tools.</string>

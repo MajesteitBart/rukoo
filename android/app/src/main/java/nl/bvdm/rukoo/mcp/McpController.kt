@@ -25,6 +25,11 @@ data class McpStatus(
     val computers: List<String> = emptyList(),
     /** The detail of a `failed` error, for logs and the settings screen; never contains a secret. */
     val detail: String? = null,
+    /**
+     * When Clark's bridge last got in with its key, null while it hasn't since the app started. A bridge from
+     * before bridge-4 never looks for a phone, so Settings can tell that apart from one that does.
+     */
+    val clarkSeen: Long? = null,
 ) {
     /** The endpoint agents use, e.g. `http://100.64.0.3:47800/mcp`; the computer host sends it as `mcp.url`. */
     val url: String?

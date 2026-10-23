@@ -79,6 +79,7 @@ A new API server key locks out Rukoo and the bridge alike until both have it. En
 | What the agent says or the log shows | What to do |
 |---|---|
 | "Rukoo Mail isn't open on any of the user's devices" | Open Rukoo. Check that the device is on the tailnet and shows up in the "Checked" list, and that "Let Clark use Rukoo" is on. A device that isn't listed is offline in Tailscale, tagged, shared from another tailnet, or not Windows, Linux, macOS or Android: add it with `RUKOO_URL`. On a phone, also check that Rukoo's tools are turned on in its settings. |
+| "Rukoo Mail isn't open on any of the user's devices", from a chat on a phone, with only computers under "Checked" | The bridge is older than `bridge-4` and doesn't look for phones; Rukoo's Settings > Phone tools on the phone says the bridge hasn't reached it. Copy `rukoo_bridge.py` to the Hermes machine again, then send `/reload-mcp` to Clark or run `hermes gateway restart`; Hermes keeps running the old bridge until then. |
 | "Rukoo Mail is open on ..., but doesn't have your current API server key" | Enter the API server key from `~/.hermes/.env` in Rukoo under Settings > Agents on that device. |
 | "Rukoo Mail is open on ..., but that version is too old for this bridge" | That device runs a Rukoo from before this bridge, which can't prove it has the key. Install the latest Rukoo there. |
 | "Rukoo Mail on ... refused the key" | The key changed in Rukoo while the bridge was using it. Same fix as above. |

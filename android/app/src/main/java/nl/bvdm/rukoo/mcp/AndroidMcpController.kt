@@ -157,7 +157,14 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
             version = BuildConfig.VERSION_NAME,
             deviceName = ::deviceName,
             log = { what, e -> AppLog.w(TAG, what, e) },
+            onCaller = { if (it == McpCaller.Clark) clarkReached() },
         )
+    }
+
+    // A turn makes many calls; the time only needs to move every few seconds.
+    private fun clarkReached() {
+        val now = container.clock.now()
+        _status.update { s -> if (s.clarkSeen != null && now - s.clarkSeen < 5_000) s else s.copy(clarkSeen = now) }
     }
 
     internal fun listening(port: Int) {

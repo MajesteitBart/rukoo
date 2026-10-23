@@ -220,6 +220,8 @@
     <string name="settings_phone_tools_clark">%1$s, via de bridge van Rukoo</string>
     <string name="settings_phone_tools_clark_help">De bridge op de machine van %1$s vindt deze telefoon zelf en stuurt hem de aanroepen over chats op deze telefoon.</string>
     <string name="settings_phone_tools_clark_off">Stel eerst %1$s in onder Agents.</string>
+    <string name="settings_phone_tools_clark_seen">De bridge bereikte deze telefoon het laatst om %1$s.</string>
+    <string name="settings_phone_tools_clark_not_seen">De bridge heeft deze telefoon nog niet bereikt.</string>
     <string name="settings_phone_tools_computer">Claude Code en Codex op %1$s</string>
     <string name="settings_phone_tools_computer_help">Terwijl daar een chat van deze telefoon loopt, werken de tools op de mail van deze telefoon.</string>
     <string name="settings_phone_tools_computer_off">Zonder telefoontools chatten ze zonder de tools van Rukoo.</string>
