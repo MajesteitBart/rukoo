@@ -17,9 +17,9 @@ Translation labels have descriptive keys and screen context in the [English sour
 | Windows 10 and 11, x64 | Supported | Installer and portable `.exe` |
 | Linux, x64 | Supported | `.deb` for Ubuntu and Debian, AppImage for other distributions. See [Linux](#linux). |
 | macOS 13 or newer, Apple Silicon and Intel | Experimental | DMG and ZIP, notarized only when the release notes say so. See [macOS](#macos-experimental). |
-| Android 12 or newer, built for the Galaxy Z Fold7 | Experimental | APK, built from `android/`. See [Rukoo for Android](docs/android.md). |
+| Android 12 or newer, built for the Galaxy Z Fold7 | Experimental | APK in releases from v1.5.0, or built from `android/`. See [Rukoo for Android](docs/android.md). |
 
-Releases up to v1.2.0 contain only Windows packages; later releases add Linux and macOS packages. You can also [run Rukoo from source](#run-it) on all three.
+Releases up to v1.2.0 contain only Windows packages; later releases add Linux and macOS packages, and from v1.5.0 the Android APK. You can also [run Rukoo from source](#run-it) on all three.
 
 **Testing on a Mac?** macOS support passes the automated tests on Apple Silicon and Intel, but few people have used it on a real Mac yet. Please share what works and what doesn't in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74).
 
@@ -204,7 +204,7 @@ For headless Electron tests, provide an X display and a window manager so minimi
 
 ## Releases
 
-Download available Windows, macOS and Linux packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt`. Windows and Linux builds are unsigned. Mac builds are experimental, and they are ad-hoc signed unless the release notes explicitly confirm Developer ID signing and notarization.
+Download available Windows, macOS, Linux and Android packages from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases). Each release includes `SHA256SUMS.txt` for the desktop packages; the notes give the APK's checksum. Windows and Linux builds are unsigned. Mac builds are experimental, and they are ad-hoc signed unless the release notes explicitly confirm Developer ID signing and notarization.
 
 Versions follow [Semantic Versioning](https://semver.org): a patch release fixes things, a minor release adds features, and a major release breaks compatibility of behavior, integrations or stored data. Previews use `-alpha.N`, `-beta.N` or `-rc.N` and publish as prereleases. A release is worth making when a new download gives users something: a feature, a visible fix, a security fix or a dependency change that affects the app. Documentation, tests and tooling wait for the next one.
 
@@ -213,8 +213,9 @@ Releases are started manually after a version tag exists. Pushing a branch or ta
 1. Run `npm version <version> --no-git-tag-version`, commit the package and lockfile changes, and merge the reviewed PR into `main`. Before merging, run `npm test`, `npm run test:e2e` and `npm run dist`, and start the built app with a demo profile.
 2. Write the release as a draft on GitHub. Title it `v<version> - Added …` when it adds features, or `v<version> - Fixed …` when it only fixes things, for example `v1.1.0 - Added CalDAV calendars and Microsoft sign-in`. The notes tell users what changed, with known limitations and migration steps. `gh release create v1.1.0 --draft --title "…" --notes-file notes.md` writes the draft without creating the tag.
 3. On the tested `main` commit, create and push an annotated tag, for example `git tag -a v1.1.0 -m "Rukoo Mail 1.1.0"` followed by `git push origin v1.1.0`.
-4. Open **Actions → Release desktop packages → Run workflow**, select `main`, and enter `v1.1.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.1.0`.
-5. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds Windows, macOS and Linux packages and verifies their checksums. It then uploads all eight packages to the draft and publishes it.
+4. Build the Android APK from the tag: in `android/`, run `./gradlew assembleRelease` with `signing.properties` in place, and upload `app/build/outputs/apk/release/app-release.apk` to the draft as `Rukoo-Android-<versionName>.apk`, for example with `gh release upload v1.1.0 Rukoo-Android-0.1.0.apk`. Add its SHA-256 to the notes. The workflow doesn't build the APK because the signing key stays with the maintainer, and Android only installs an update signed with the same key. When `android/` changed since the last release, raise `versionCode` and `versionName` in `android/app/build.gradle.kts` first.
+5. Open **Actions → Release desktop packages → Run workflow**, select `main`, and enter `v1.1.0`. Alternatively, run `gh workflow run release.yml --ref main -f tag=v1.1.0`.
+6. The workflow checks that the tag matches the package and lockfile, runs unit and Electron tests, builds Windows, macOS and Linux packages and verifies their checksums. It then uploads all eight packages to the draft and publishes it.
 
 Tags such as `v1.1.0-rc.1` publish as prereleases without becoming the latest stable release. A stable release for an older version line does become the latest, so clear that on GitHub afterwards. The workflow stops when the tag has no draft, when the draft's title doesn't start with the tag, or when the release is already published. Never move or reuse a published tag; ship a new version for corrections. If publication fails, fix the cause and choose **Re-run failed jobs**: the build is kept, and the upload replaces files from the earlier attempt. Release publication uses GitHub Actions' built-in token and needs no personal token or extra secrets.
 
