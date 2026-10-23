@@ -231,8 +231,6 @@ private fun Reader(app: AppViewModel, id: String) {
     }
 
     if (more && m != null) {
-        val prev = app.neighbour(id, -1)
-        val next = app.neighbour(id, 1)
         RkBottomSheet(onDismissRequest = { more = false }) {
             if (!draft) {
                 SheetRow(
@@ -247,15 +245,19 @@ private fun Reader(app: AppViewModel, id: String) {
                     dismiss()
                     app.addToChat(listOf(id))
                 })
+            } else {
+                // A draft has no bottom bar, so its Previous and Next stay here.
+                val prev = app.neighbour(id, -1)
+                val next = app.neighbour(id, 1)
+                SheetRow(stringResource(R.string.reader_navigation_previous), icon = RukooIcons.Up, enabled = prev != null, onClick = {
+                    dismiss()
+                    prev?.let(app::openMessage)
+                })
+                SheetRow(stringResource(R.string.reader_navigation_next), icon = RukooIcons.Down, enabled = next != null, onClick = {
+                    dismiss()
+                    next?.let(app::openMessage)
+                })
             }
-            SheetRow(stringResource(R.string.reader_navigation_previous), icon = RukooIcons.Up, enabled = prev != null, onClick = {
-                dismiss()
-                prev?.let(app::openMessage)
-            })
-            SheetRow(stringResource(R.string.reader_navigation_next), icon = RukooIcons.Down, enabled = next != null, onClick = {
-                dismiss()
-                next?.let(app::openMessage)
-            })
             SheetRow(stringResource(R.string.reader_source_show), icon = RukooIcons.Code, onClick = {
                 dismiss()
                 source = true
@@ -457,13 +459,28 @@ private fun BottomBar(app: AppViewModel, m: MessageSummary) {
         Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 6.dp, end = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RkToolbarButton(stringResource(R.string.composer_titles_reply), RukooIcons.Reply, onClick = {
-            app.interacted(Pane.READER)
-            app.reply(m.id, ReplyKind.REPLY)
-        })
-        RkIconButton(RukooIcons.ReplyAll, stringResource(R.string.composer_titles_reply_all), onClick = { app.reply(m.id, ReplyKind.REPLY_ALL) })
-        RkIconButton(RukooIcons.Forward, stringResource(R.string.composer_titles_forward), onClick = { app.reply(m.id, ReplyKind.FORWARD) })
-        Spacer(Modifier.weight(1f))
+        // Measured after the rest of the bar, so on a narrow screen or in a longer language Reply gives up its
+        // label before the agent's name gives up room.
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            RkToolbarButton(
+                stringResource(R.string.composer_titles_reply),
+                RukooIcons.Reply,
+                onClick = {
+                    app.interacted(Pane.READER)
+                    app.reply(m.id, ReplyKind.REPLY)
+                },
+                modifier = Modifier.weight(1f, fill = false),
+                collapsible = true,
+            )
+            RkIconButton(RukooIcons.ReplyAll, stringResource(R.string.composer_titles_reply_all), onClick = { app.reply(m.id, ReplyKind.REPLY_ALL) })
+            RkIconButton(RukooIcons.Forward, stringResource(R.string.composer_titles_forward), onClick = { app.reply(m.id, ReplyKind.FORWARD) })
+        }
+        // Previous and Next in the corner the thumb reaches, the way the list runs: up is the newer email.
+        val prev = app.neighbour(m.id, -1)
+        val next = app.neighbour(m.id, 1)
+        RkIconButton(RukooIcons.Up, stringResource(R.string.reader_navigation_previous), enabled = prev != null, onClick = { prev?.let(app::openMessage) })
+        RkIconButton(RukooIcons.Down, stringResource(R.string.reader_navigation_next), enabled = next != null, onClick = { next?.let(app::openMessage) })
+        Spacer(Modifier.width(8.dp))
         Box {
             RkPillButton(
                 name,

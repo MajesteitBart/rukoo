@@ -92,8 +92,8 @@ class AppViewModel(
         private set
 
     // The rows the list shows, in order, as the list last reported them: Previous and Next walk them, and a
-    // moved message hands the reader to the next one.
-    private var shownIds: List<String> = emptyList()
+    // moved message hands the reader to the next one. Observable, so the reader's buttons follow new mail.
+    private var shownIds: List<String> by mutableStateOf(emptyList())
 
     private val _chatEmails = MutableStateFlow<List<String>>(emptyList())
 

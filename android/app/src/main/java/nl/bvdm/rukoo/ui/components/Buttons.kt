@@ -28,6 +28,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -125,7 +127,8 @@ fun RkButton(
 /**
  * A toolbar button with a label (`.tbtn`), such as Reply in the reader's bottom bar: no fill, weight 500,
  * the icon in `text2`. [primary] fills it (Edit on a draft); [danger] colors it red. With [showLabel] off the
- * label becomes the content description, as on narrow desktop windows.
+ * label becomes the content description, as on narrow desktop windows. A [collapsible] label shows while the
+ * button gets room for all of it and leaves when it doesn't, rather than ending in "…".
  */
 @Composable
 fun RkToolbarButton(
@@ -136,6 +139,7 @@ fun RkToolbarButton(
     primary: Boolean = false,
     danger: Boolean = false,
     showLabel: Boolean = true,
+    collapsible: Boolean = false,
     enabled: Boolean = true,
 ) {
     val c = Rk.colors
@@ -146,7 +150,7 @@ fun RkToolbarButton(
     }
     val iconTint = if (primary || danger) fill.content else c.text2
     ButtonFrame(
-        modifier = if (showLabel) modifier else modifier.semantics { contentDescription = label },
+        modifier = if (showLabel && !collapsible) modifier else modifier.semantics { contentDescription = label },
         shape = Rk.shapes.control,
         fill = fill,
         enabled = enabled,
@@ -154,11 +158,29 @@ fun RkToolbarButton(
         pressScale = 1f,
         height = 36.dp,
         padding = PaddingValues(horizontal = if (showLabel) 10.dp else 8.dp),
-        gap = 6.dp,
+        gap = if (collapsible) 0.dp else 6.dp,
         onClick = onClick,
     ) {
         if (icon != null) RkIcon(icon, null, size = 18.dp, tint = iconTint)
-        if (showLabel) Text(label, style = Rk.type.text13.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        when {
+            !showLabel -> Unit
+            collapsible -> CollapsingLabel(label, Rk.type.text13.medium)
+            else -> Text(label, style = Rk.type.text13.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/**
+ * A toolbar label that is placed only when it gets its whole width, with its own gap after the icon. The
+ * button carries the label as its content description, so a screen reader says it either way.
+ */
+@Composable
+private fun CollapsingLabel(text: String, style: TextStyle) {
+    Layout(content = { Text(text, Modifier.padding(start = 6.dp).clearAndSetSemantics {}, style = style, maxLines = 1) }) { measurables, constraints ->
+        val label = measurables.single()
+        if (label.maxIntrinsicWidth(constraints.maxHeight) > constraints.maxWidth) return@Layout layout(0, 0) {}
+        val placeable = label.measure(constraints.copy(minWidth = 0))
+        layout(placeable.width, placeable.height) { placeable.place(0, 0) }
     }
 }
 
