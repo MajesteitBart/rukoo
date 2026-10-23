@@ -140,6 +140,71 @@ How it works and what it can't do:
 - Any device in your tailnet that can reach this computer can try the Tailscale address, as for Hermes; only the token gets in. Use Tailscale's access controls to narrow which devices can reach it.
 - How OpenClaw's MCP client handles Rukoo being closed (it then can't reach the tools) depends on OpenClaw; restarting the gateway or `openclaw mcp doctor rukoo --probe` connects again.
 
+## Rukoo on your phone
+
+Rukoo for Android does mail on the phone and talks to Hermes and OpenClaw itself; [android.md](android.md) describes the app. Claude Code and Codex only run on a computer, so the phone asks Rukoo on your computer to run those chats. That computer needs Rukoo open (the tray is enough), Tailscale, and the phone paired.
+
+### Pairing
+
+1. In Settings → Agents → Phone, choose "Pair a phone", then "Pair and send my accounts and agent settings" or "Pair only". Pairing turns on "Let my phone use this computer", which makes Rukoo listen on this computer's Tailscale address. It is the same listener and port (47800) that Clark's bridge uses. Windows asks once whether Rukoo may accept connections; allow it for private networks.
+2. Rukoo shows this computer's address, such as `http://100.64.0.5:47800`, and a code such as `K7QM-2XPA`. Enter both in Rukoo on the phone. The code works once, for five minutes. Case and the dash don't matter, and O counts as 0, I and L as 1. After five wrong tries the code stops working and you start again.
+3. The dialog closes when the phone has paired. The phone then shows up in the list, with when it last reached this computer. Click it for "Send accounts and settings again" or "Remove this phone".
+
+### What the export sends
+
+With "Pair and send my accounts and agent settings", the phone can fetch the following once, in the ten minutes after pairing:
+
+- Every account with its server settings, signature and aliases, and its password or Google refresh token in plain text. When this computer can't decrypt an account's secret (it was saved under another Windows user), the account goes without it and the phone asks you for it.
+- The Google OAuth client from `google-oauth.json`, so the phone can refresh Google sign-ins.
+- Mail settings: the default account, language, theme, general signature, VIPs, spam addresses, sync interval, hidden views, dark emails, swipe actions, notifications, sort order and density.
+- Agent settings: the default agent, the shortcuts, whether mail actions need approval, Hermes' name, address, API key and model, OpenClaw's address, token, agent and model, the model and access of Claude Code and Codex, and Rukoo's MCP port.
+
+Program paths, Claude Code's config folder and the Tailscale switches describe this computer, so they stay here. After one successful fetch the window closes. "Send accounts and settings again" opens it for another ten minutes, for example after you reinstalled the app on the phone. When the phone has fetched them, Rukoo says "Sent your accounts and settings to …". The export travels over Tailscale, which encrypts it; the phone stores the secrets encrypted with a key from the Android Keystore. With "Pair only", nothing leaves this computer and you set up the phone's accounts there.
+
+### Claude Code and Codex from the phone
+
+The phone keeps the chat, its email and its transcript. For each message it sends this computer the text it built, with the email inside `<unsafe_content>` as for any agent, plus the chat's Claude Code session or Codex thread, the model and effort, and images you attached. Rukoo here starts Claude Code or Codex the way it does for its own chats, with your own settings, MCP servers and skills, in Rukoo's agent workspace. The answer streams back to the phone: text, thinking, tool rows and approval requests. These chats don't appear in this computer's chat panel.
+
+- **Approvals.** A turn from the phone always asks before commands and file changes, whatever Access says in this computer's Claude Code or Codex card: Claude Code runs with `--permission-mode default`, Codex in its read-only sandbox with on-request approvals. The cards show up on the phone, and your answer there goes back to the agent here.
+- **Rukoo's tools.** Claude Code and Codex call this Rukoo's MCP server on `127.0.0.1`, as always. Rukoo sends each call from a phone's chat on to Rukoo on the phone, at the phone's Tailscale address, with a token the phone handed out for this computer. `get_context`, `write_draft`, `mail_action` and the rest then act on the phone's mail and screen. The tool list and Rukoo's instructions come from this computer. The phone has to send its tools' address with each turn, and Rukoo only accepts the address the turn came from, so a phone can't point the tool calls at another device in the tailnet.
+- **Model and skills.** The phone's model menu and `$` list what Claude Code and Codex have on this computer.
+- **A dropped connection.** When the phone loses the stream, the turn keeps running for 30 seconds so the phone can reconnect and continue where it stopped. After that the turn stops. Quitting Rukoo here stops phone turns too.
+- **A lost session.** When Claude Code or Codex starts a new session, Rukoo asks the phone for the email and a recap of the chat, as described under [Chats after a restart](#chats-after-a-restart).
+- **Files.** Images you attach on the phone go along as images. Other files stay on the phone; the agent reads them through `read_chat_file`.
+
+Deleting a chat on the phone closes its Claude Code process here.
+
+### Security
+
+- The phone's routes exist only on the Tailscale listener, only while "Let my phone use this computer" is on, and only for connections from a Tailscale address. Anything else gets the same 404 as an unknown address. Turning the switch off stops running phone turns and the code on screen.
+- At pairing the phone gets a random 256-bit token. Rukoo keeps only its SHA-256 hash in `data/agents.json`, which also works on Linux without a keyring. The token opens the phone's routes, not Rukoo's MCP server.
+- Pairing allows five tries a minute from one address and ten a minute in total. Twenty wrong tokens within a minute lock that address out for five minutes. Each phone gets 60 requests a minute besides its streams, four turns at once and one turn per chat. A turn counts from the moment its upload starts, and all phones together get eight.
+- A phone can only continue the Claude Code sessions and Codex threads this computer started for that phone's own chats. Rukoo keeps that list in `data/phone-sessions.json`, so it survives a restart; deleting the chat on the phone or removing the phone clears its entries. Any other session or thread the phone names is dropped, and the turn starts a new one, as for a lost session.
+- A paired phone can run Claude Code and Codex on this computer, with your sign-ins and files. That is why its turns always ask before they act. Tailscale's access controls can narrow which devices reach this computer's port 47800.
+- If you lose the phone, remove it in Settings → Agents → Phone: its token stops working at once. Accounts and keys it already fetched stay on the phone, so change those passwords, remove Rukoo's access in your Google account, and give Hermes and OpenClaw new keys. The phone can also unpair itself.
+
+### The protocol
+
+Everything is under `/phone/v1` on the Tailscale listener, JSON unless noted, with `Authorization: Bearer <token>` except for pairing. Errors are `{"error": "<code>", "detail": "<text>"}`. A body over a request's limit gets `413 too-large`: 16 KB for most requests, 1 MB for a start-over, 52 MB for a turn with images, and none for a GET.
+
+| Request | What it does |
+|---|---|
+| `POST /pair` `{code, device: {name, platform, model, appVersion}}` | Pairs: `{pairingId, token, desktop: {name, version, platform, address, port}, exportUntil}`. `401 wrong-code`, `410 expired` (also used up or burned), `422 invalid`, `429 rate-limited`, `409 full` at 20 phones |
+| `GET /hello` | This computer's name and version, the export window, and Claude Code's and Codex's status, model and access |
+| `GET /export` | The export above, once; `403 export-closed` outside the window |
+| `GET /agents/{claude,codex}/{models,skills}` | The model and skill lists, as the chat panel gets them; `?refresh=1` loads them again |
+| `POST /turns` | Runs a turn and streams NDJSON (below); `409 busy` while the chat has a turn, `422 invalid` for a bad request, `429 rate-limited` while four turns of this phone, or eight of all phones, run or upload |
+| `GET /turns/:turnId/events?after=<seq>` | Reconnects to a running turn, or one that ended less than two minutes ago |
+| `POST /turns/:turnId/approvals/:approvalId` `{choice}` | Answers an approval card |
+| `POST /turns/:turnId/stop` | Stops the turn; the stream carries the outcome |
+| `POST /turns/:turnId/start-over/:requestId` `{input}` | The first-turn text for a new session |
+| `POST /conversations/forget` `{agent, conversationId}` | The phone deleted a chat |
+| `DELETE /pairing` | The phone unpairs itself |
+
+A turn's stream has one JSON object per line, each with a rising `seq`: `started`, the adapter events the chat panel gets (`text`, `commentary`, `thinking`, `thinking-done`, `tool-start`, `tool-end`, `error`, `notice`, `usage`), and `provider` (the session or thread to send next time), `accepted`, `approval`, `approval-decided`, `approval-expired`, `start-over`, and finally `done` with `status` `done`, `stopped` or `error`. A `{"type":"ping"}` without `seq` comes every 15 seconds. A reconnect that missed events dropped from a full buffer starts with `{"type":"gap"}`.
+
+Tool calls reach the phone as a JSON-RPC `tools/call` with `_meta` `rukoo/conversation` (the phone's chat id), `rukoo/agent` and `rukoo/host`. This computer waits up to 115 seconds for the answer, so it arrives before Claude Code or Codex give up on the call.
+
 ## Model and effort
 
 Under the chat input, next to the agent, two menus set the model and the effort for the chat on screen. Effort is how much the model thinks before it answers. Each chat keeps its own choice, also after a restart, and switching chats shows that chat's choice. A new chat starts on Default: the model in Settings → Agents, or the agent's own model when that field is empty, and the agent's own effort. Chats from before this feature follow the default too. A change applies from the next message; an answer that is still running keeps what it started with.
@@ -253,7 +318,7 @@ There are three kinds:
 
 - **Proposals.** When an agent calls `propose_action`, Rukoo shows a card and the agent stops. If you approve, Rukoo sends the agent a new message saying so, and the agent carries it out. If you decline, the agent hears it next time you write.
 - **Mail actions.** Rukoo runs these itself after you approve, and you can undo a move from the notice that follows. In Settings → Agents you can let agents archive, move and mark mail without asking. Deleting and unsubscribing always ask.
-- **The agent's own permissions.** Claude Code and Codex ask before running commands or changing files when their access is set to "Ask before actions", the default. Their questions show up as cards in the chat. With "Full access" they don't ask. Hermes follows its own approval settings, and so does OpenClaw, whose approvals Rukoo doesn't see.
+- **The agent's own permissions.** Claude Code and Codex ask before running commands or changing files when their access is set to "Ask before actions", the default. Their questions show up as cards in the chat. With "Full access" they don't ask. Chats from [Rukoo on your phone](#rukoo-on-your-phone) always ask, and their cards show on the phone. Hermes follows its own approval settings, and so does OpenClaw, whose approvals Rukoo doesn't see.
 
 ## Safety
 
@@ -263,7 +328,7 @@ There are three kinds:
 - Agent-written drafts are sanitized before they reach the composer. Links stay; images, form controls, styles and scripts go.
 - Local agents get a token per chat or per process. Hermes signs in with a token made from its API server key, so every device with that key accepts it. Rukoo accepts that token only on the Tailscale address, and the local tokens only on `127.0.0.1`. A new API key replaces it. Before the bridge sends the token to a device, Rukoo there has to prove it has the same key.
 - OpenClaw's MCP client signs in with a token made from the gateway token: one for a gateway on this computer, accepted only on `127.0.0.1`, and one for a gateway on another computer, accepted only on the Tailscale address while you allow it in the OpenClaw card. A new gateway token replaces both. Unlike Clark's bridge, OpenClaw gets no proof step: the bridge searches the tailnet for Rukoo and must not hand its token to whatever answers, while OpenClaw gets the one address you copied, which Tailscale ties to this device.
-- The Tailscale listener runs only while "Let Clark use Rukoo" or "Let OpenClaw use Rukoo from another computer" is on, and only on this computer's Tailscale address. Each toggle lets in its own agent only: with just the OpenClaw toggle on, Clark's token gets nowhere, and the other way round.
+- The Tailscale listener runs only while "Let Clark use Rukoo", "Let OpenClaw use Rukoo from another computer" or "Let my phone use this computer" is on, and only on this computer's Tailscale address. Each toggle lets in its own agent or phone only: with just the OpenClaw toggle on, Clark's token gets nowhere, and the other way round. A paired phone's token works only for the phone's own routes, never for Rukoo's tools.
 - The Hermes API key and the OpenClaw gateway token are encrypted in `data/agents.json` inside your Rukoo profile, using Windows DPAPI, the Linux desktop keyring, or macOS Keychain. Linux requires an available GNOME Secret Service or KWallet keyring to save credentials. Chats are in `conversations.json` in the same folder. They hold what you and the agent wrote, not the emails Rukoo sent along. Files you attached are in `agent-workspace/files`, next to the data folder.
 
 ## Limits

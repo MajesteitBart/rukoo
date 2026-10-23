@@ -1,0 +1,335 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dutch for the agent chat; the desktop catalog is src/i18n/nl.js. See values/strings_agent_ui.xml. -->
+<resources>
+    <string name="agentui_panel_label">Chat met agent</string>
+    <string name="agentui_panel_entry">Chatten met een agent</string>
+    <string name="agentui_panel_new_chat">Nieuwe chat</string>
+    <string name="agentui_panel_close">Chat sluiten</string>
+    <string name="agentui_panel_history">Recente chats</string>
+    <string name="agentui_panel_history_news">Recente chats, %1$d nieuw</string>
+    <string name="agentui_panel_jump">Naar het nieuwste bericht</string>
+    <string name="agentui_panel_transcript">Gesprek</string>
+    <string name="agentui_panel_show_list">Lijst met e-mails tonen</string>
+    <string name="agentui_panel_loading">Chat openen…</string>
+    <string name="agentui_panel_on_computer">op %1$s</string>
+    <string name="agentui_panel_placeholder">Vraag %1$s iets...</string>
+    <string name="agentui_panel_placeholder_email">Vraag %1$s iets over deze e-mail...</string>
+    <string name="agentui_panel_send">Versturen</string>
+    <string name="agentui_panel_stop">Stoppen</string>
+    <string name="agentui_panel_pick_agent">Agent kiezen</string>
+    <string name="agentui_panel_remove_context">Deze e-mail weglaten</string>
+    <string name="agentui_panel_add_context">Deze e-mail toevoegen</string>
+    <string name="agentui_panel_newer_message">Nieuwer bericht</string>
+    <string name="agentui_panel_newer_pending">Je ging vanaf dit nieuwere bericht verder met deze chat. Het gaat met je volgende bericht mee naar %1$s.</string>
+    <string name="agentui_panel_newer_sent">Je ging vanaf dit nieuwere bericht verder met deze chat. %1$s heeft het.</string>
+    <string name="agentui_panel_no_matches">Geen passende opdrachten</string>
+    <string name="agentui_panel_no_skills">Geen skills gevonden</string>
+    <string name="agentui_panel_skills_loading">Skills laden…</string>
+    <string name="agentui_panel_skills_of">Skills van %1$s</string>
+    <string name="agentui_panel_skills_failed">De skills van %1$s zijn niet geladen</string>
+    <string name="agentui_panel_skill_chip">Skill %1$s</string>
+    <string name="agentui_panel_skill_missing">Rukoo kan de skill /%1$s niet meer vinden.</string>
+    <string name="agentui_panel_needs_email">Open eerst een e-mail.</string>
+    <string name="agentui_panel_edit_shortcuts">Snelkoppelingen bewerken</string>
+    <string name="agentui_panel_continue_chat">Ga verder met de chat over het eerdere bericht</string>
+    <string name="agentui_panel_source_gone">Die e-mail staat niet meer in Rukoo. Misschien is hij verwijderd, of verplaatst naar een map die Rukoo niet heeft gedownload.</string>
+    <string name="agentui_panel_needs_you">Een agent wacht op je akkoord</string>
+    <string name="agentui_panel_show">Tonen</string>
+    <string name="agentui_panel_draft_blocked">%1$s heeft een concept voor je. Maak eerst de e-mail af die je nu schrijft, of sluit hem.</string>
+    <string name="agentui_panel_composer_busy">Maak eerst de e-mail af die je nu schrijft, of sluit hem.</string>
+    <string name="agentui_panel_chat_working">Bezig…</string>
+    <string name="agentui_panel_chat_ready">Antwoord klaar</string>
+    <string name="agentui_panel_chat_failed">Gestopt met een fout</string>
+    <string name="agentui_panel_no_history">Nog geen chats</string>
+    <string name="agentui_panel_set_up">%1$s instellen</string>
+    <string name="agentui_no_subject">(geen onderwerp)</string>
+
+    <string name="agentui_status_starting">Starten...</string>
+    <string name="agentui_status_ready">Beschikbaar</string>
+    <string name="agentui_status_offline">Niet bereikbaar</string>
+    <string name="agentui_status_unconfigured">Niet ingesteld</string>
+    <string name="agentui_status_disabled">Uitgeschakeld</string>
+    <string name="agentui_status_missing">Niet geïnstalleerd</string>
+    <string name="agentui_status_unauthorized">Sleutel geweigerd</string>
+    <string name="agentui_status_unknown">Status onbekend</string>
+    <string name="agentui_status_unavailable">Agents zijn niet beschikbaar</string>
+    <string name="agentui_setup_unconfigured">%1$s is nog niet ingesteld.</string>
+    <string name="agentui_setup_disabled">%1$s staat uit.</string>
+    <string name="agentui_setup_missing">%1$s is niet geïnstalleerd op die computer.</string>
+    <string name="agentui_setup_unauthorized">%1$s accepteert de sleutel of het token niet.</string>
+
+    <string name="agentui_empty_title">Wat moet %1$s met deze e-mail?</string>
+    <string name="agentui_empty_title_no_email">Vraag %1$s iets over je mail</string>
+    <string name="agentui_empty_body">Zoekt dingen op en schrijft het concept. Verzenden doe je zelf.</string>
+    <string name="agentui_empty_body_left_out">Voeg de e-mail toe om ermee aan de slag te gaan, of begin met wat er vandaag ligt.</string>
+    <string name="agentui_empty_body_no_email">Open een e-mail om ermee aan de slag te gaan, of begin met wat er vandaag ligt.</string>
+    <string name="agentui_empty_setup_title">Stel %1$s in om te beginnen</string>
+    <string name="agentui_empty_setup_body">Rukoo heeft een paar gegevens nodig om %1$s te bereiken.</string>
+
+    <string name="agentui_model_button">Model: %1$s</string>
+    <string name="agentui_model_default">Standaard</string>
+    <string name="agentui_model_default_button">Standaardmodel</string>
+    <string name="agentui_model_failed">Kon de modellen niet laden</string>
+    <string name="agentui_model_loading">Modellen laden...</string>
+    <string name="agentui_model_routes">Modelroutes</string>
+    <string name="agentui_model_title">Model</string>
+    <string name="agentui_effort_button">Denkniveau: %1$s</string>
+    <string name="agentui_effort_default">Standaard</string>
+    <string name="agentui_effort_title">Denkniveau</string>
+    <string name="agentui_effort_minimal">Minimaal</string>
+    <string name="agentui_effort_low">Laag</string>
+    <string name="agentui_effort_medium">Gemiddeld</string>
+    <string name="agentui_effort_high">Hoog</string>
+    <string name="agentui_effort_xhigh">Extra hoog</string>
+    <string name="agentui_effort_max">Maximaal</string>
+    <string name="agentui_effort_ultra">Ultra</string>
+
+
+    <string name="agentui_items_approved">Goedgekeurd</string>
+    <string name="agentui_items_denied">Afgewezen</string>
+    <string name="agentui_items_expired">Verlopen</string>
+    <string name="agentui_items_email_source">E-mail</string>
+    <string name="agentui_items_plan">Plan</string>
+    <string name="agentui_items_sources">Bronnen</string>
+    <string name="agentui_items_thinking">Denkt na</string>
+    <string name="agentui_items_thought_for">%1$d s nagedacht</string>
+    <string name="agentui_items_waiting">Wacht op jou</string>
+    <string name="agentui_items_working">%1$s is ermee bezig...</string>
+    <string name="agentui_items_you_approved">Goedgekeurd</string>
+    <string name="agentui_items_you_declined">Afgewezen</string>
+
+    <string name="agentui_draft_reply">Antwoord geschreven</string>
+    <string name="agentui_draft_reply_all">Antwoord aan iedereen geschreven</string>
+    <string name="agentui_draft_forward">Doorstuurbericht geschreven</string>
+    <string name="agentui_draft_new">Nieuwe e-mail geschreven</string>
+    <string name="agentui_draft_show">Tonen</string>
+    <string name="agentui_draft_undone">Ongedaan gemaakt</string>
+    <string name="agentui_draft_cannot_undo">Dit concept kun je niet meer ongedaan maken</string>
+    <string name="agentui_draft_gone">Dat concept is niet meer geopend.</string>
+
+    <string name="agentui_errors_busy">%1$s is nog bezig met het vorige bericht.</string>
+    <string name="agentui_errors_disabled">%1$s staat uit in de instellingen.</string>
+    <string name="agentui_errors_not_configured">%1$s is nog niet ingesteld.</string>
+    <string name="agentui_errors_not_installed">%1$s is niet geïnstalleerd op die computer.</string>
+    <string name="agentui_errors_offline">%1$s is niet bereikbaar.</string>
+    <string name="agentui_errors_protocol">%1$s stuurde iets wat Rukoo niet begreep.</string>
+    <string name="agentui_errors_rate_limited">%1$s krijgt te veel verzoeken. Probeer het zo opnieuw.</string>
+    <string name="agentui_errors_spawn_failed">%1$s startte niet.</string>
+    <string name="agentui_errors_stopped">Gestopt.</string>
+    <string name="agentui_errors_timeout">%1$s deed er te lang over.</string>
+    <string name="agentui_errors_unauthorized">%1$s accepteert de sleutel of het token niet.</string>
+    <string name="agentui_errors_unknown">Er ging iets mis.</string>
+    <string name="agentui_errors_window">Het venster van Rukoo is gesloten op die computer.</string>
+
+    <string name="agentui_notices_approval_too_long">Afgewezen zonder te vragen: %1$s. Een deel is te lang om hier te tonen, dus je kon het niet controleren.</string>
+    <string name="agentui_notices_kept_approval">Nog niet gedaan: %1$s. %2$s hoort met je volgende bericht dat je akkoord gaf.</string>
+    <string name="agentui_notices_new_session">%1$s is een nieuwe sessie begonnen</string>
+    <string name="agentui_notices_new_thread">%1$s is een nieuwe thread begonnen</string>
+    <string name="agentui_notices_no_phone_tools">%1$s werkt deze beurt zonder de tools van Rukoo: deze telefoon biedt ze nu niet aan.</string>
+    <string name="agentui_notices_start_over_missed">De nieuwe sessie kreeg de e-mail niet opnieuw.</string>
+
+    <plurals name="agentui_mail_archive">
+        <item quantity="one">%1$d e-mail gearchiveerd</item>
+        <item quantity="other">%1$d e-mails gearchiveerd</item>
+    </plurals>
+    <plurals name="agentui_mail_mark_read">
+        <item quantity="one">%1$d e-mail als gelezen gemarkeerd</item>
+        <item quantity="other">%1$d e-mails als gelezen gemarkeerd</item>
+    </plurals>
+    <plurals name="agentui_mail_mark_unread">
+        <item quantity="one">%1$d e-mail als ongelezen gemarkeerd</item>
+        <item quantity="other">%1$d e-mails als ongelezen gemarkeerd</item>
+    </plurals>
+    <plurals name="agentui_mail_move">
+        <item quantity="one">%1$d e-mail verplaatst naar %2$s</item>
+        <item quantity="other">%1$d e-mails verplaatst naar %2$s</item>
+    </plurals>
+    <plurals name="agentui_mail_star">
+        <item quantity="one">Ster gegeven aan %1$d e-mail</item>
+        <item quantity="other">Ster gegeven aan %1$d e-mails</item>
+    </plurals>
+    <plurals name="agentui_mail_trash">
+        <item quantity="one">%1$d e-mail naar de prullenbak verplaatst</item>
+        <item quantity="other">%1$d e-mails naar de prullenbak verplaatst</item>
+    </plurals>
+    <plurals name="agentui_mail_undo">
+        <item quantity="one">%1$d e-mail teruggezet</item>
+        <item quantity="other">%1$d e-mails teruggezet</item>
+    </plurals>
+    <plurals name="agentui_mail_unstar">
+        <item quantity="one">Ster weggehaald bij %1$d e-mail</item>
+        <item quantity="other">Ster weggehaald bij %1$d e-mails</item>
+    </plurals>
+    <string name="agentui_mail_unsubscribe_email_many">%1$d uitschrijfmails geopend. Verstuur ze om je af te melden.</string>
+    <string name="agentui_mail_unsubscribe_email_one">Uitschrijfmail aan %1$s geopend. Verstuur hem om je af te melden.</string>
+    <string name="agentui_mail_unsubscribe_page_many">%1$d uitschrijfpagina\'s geopend in je browser. Rond het daar af; Rukoo Mail kan niet zien of het gelukt is.</string>
+    <string name="agentui_mail_unsubscribe_page_one">Uitschrijfpagina van %1$s geopend in je browser. Rond het daar af; Rukoo Mail kan niet zien of het gelukt is.</string>
+
+    <string name="agentui_mail_unsubscribed_one">Uitgeschreven bij %1$s</string>
+    <plurals name="agentui_mail_unsubscribed_senders">
+        <item quantity="one">Uitgeschreven bij %1$d afzender</item>
+        <item quantity="other">Uitgeschreven bij %1$d afzenders</item>
+    </plurals>
+
+    <plurals name="agentui_mail_title_archive">
+        <item quantity="one">%1$d e-mail archiveren</item>
+        <item quantity="other">%1$d e-mails archiveren</item>
+    </plurals>
+    <plurals name="agentui_mail_title_trash">
+        <item quantity="one">%1$d e-mail verwijderen</item>
+        <item quantity="other">%1$d e-mails verwijderen</item>
+    </plurals>
+    <plurals name="agentui_mail_title_move">
+        <item quantity="one">%1$d e-mail naar %2$s verplaatsen</item>
+        <item quantity="other">%1$d e-mails naar %2$s verplaatsen</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_read">
+        <item quantity="one">%1$d e-mail als gelezen markeren</item>
+        <item quantity="other">%1$d e-mails als gelezen markeren</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_unread">
+        <item quantity="one">%1$d e-mail als ongelezen markeren</item>
+        <item quantity="other">%1$d e-mails als ongelezen markeren</item>
+    </plurals>
+    <plurals name="agentui_mail_title_star">
+        <item quantity="one">Ster geven aan %1$d e-mail</item>
+        <item quantity="other">Ster geven aan %1$d e-mails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_unstar">
+        <item quantity="one">Ster weghalen bij %1$d e-mail</item>
+        <item quantity="other">Ster weghalen bij %1$d e-mails</item>
+    </plurals>
+    <string name="agentui_mail_title_unsubscribe_one">Uitschrijven bij %1$s</string>
+    <plurals name="agentui_mail_title_unsubscribe_senders">
+        <item quantity="one">Uitschrijven bij %1$d afzender</item>
+        <item quantity="other">Uitschrijven bij %1$d afzenders</item>
+    </plurals>
+    <plurals name="agentui_mail_more">
+        <item quantity="one">en nog %1$d</item>
+        <item quantity="other">en nog %1$d</item>
+    </plurals>
+    <string name="agentui_mail_verb_archive">Archiveren</string>
+    <string name="agentui_mail_verb_trash">Verwijderen</string>
+    <string name="agentui_mail_verb_move">Verplaatsen</string>
+    <string name="agentui_mail_verb_mark_read">Als gelezen markeren</string>
+    <string name="agentui_mail_verb_mark_unread">Als ongelezen markeren</string>
+    <string name="agentui_mail_verb_star">Ster geven</string>
+    <string name="agentui_mail_verb_unstar">Ster weghalen</string>
+    <string name="agentui_mail_verb_unsubscribe">Uitschrijven</string>
+
+    <string name="agentui_files_too_many_emails">Een bericht neemt maximaal %1$d e-mails mee.</string>
+    <string name="agentui_files_email_gone">Een e-mail die je toevoegde is er niet meer. Je bericht is niet verstuurd; de andere bijlagen staan er nog.</string>
+    <plurals name="agentui_panel_in_chat_already">
+        <item quantity="one">Die e-mail zit al in de chat.</item>
+        <item quantity="other">Die e-mails zitten al in de chat.</item>
+    </plurals>
+    <string name="agentui_panel_remove_attachment">%1$s weghalen</string>
+
+    <string name="agentui_plan_proposed">Voorgesteld</string>
+    <string name="agentui_plan_todo">Te doen</string>
+    <string name="agentui_plan_running">Bezig</string>
+    <string name="agentui_plan_done">Klaar</string>
+    <string name="agentui_plan_failed">Mislukt</string>
+    <string name="agentui_plan_skipped">Overgeslagen</string>
+
+    <string name="agentui_approval_command">%1$s wil een opdracht uitvoeren</string>
+    <string name="agentui_approval_read_file">%1$s wil een bestand lezen</string>
+    <string name="agentui_approval_change_files">%1$s wil bestanden wijzigen</string>
+    <string name="agentui_approval_web">%1$s wil een webpagina openen</string>
+    <string name="agentui_approval_permissions">%1$s wil meer rechten</string>
+    <string name="agentui_approval_tool">%1$s wil %2$s gebruiken</string>
+    <string name="agentui_approval_show_all">Alles tonen</string>
+    <string name="agentui_approval_show_less">Minder tonen</string>
+    <plurals name="agentui_approval_truncated">
+        <item quantity="one">Nog %1$s teken niet getoond</item>
+        <item quantity="other">Nog %1$s tekens niet getoond</item>
+    </plurals>
+    <string name="agentui_approval_field_after">Nieuwe tekst</string>
+    <string name="agentui_approval_field_before">Oude tekst</string>
+    <string name="agentui_approval_field_command">Opdracht</string>
+    <string name="agentui_approval_field_content">Inhoud</string>
+    <string name="agentui_approval_field_diff">Wijzigingen</string>
+    <string name="agentui_approval_field_file">Bestand</string>
+    <string name="agentui_approval_field_folder">Map</string>
+    <string name="agentui_approval_field_path">Pad</string>
+    <string name="agentui_approval_field_pattern">Patroon</string>
+    <string name="agentui_approval_field_query">Zoekopdracht</string>
+    <string name="agentui_approval_field_reason">Reden</string>
+    <string name="agentui_approval_field_url">Webadres</string>
+    <string name="agentui_choices_accept">Toestaan</string>
+    <string name="agentui_choices_accept_for_session">Toestaan voor deze chat</string>
+    <string name="agentui_choices_allow">Toestaan</string>
+    <string name="agentui_choices_always">Altijd toestaan</string>
+    <string name="agentui_choices_approve">Goedkeuren</string>
+    <string name="agentui_choices_cancel">Annuleren</string>
+    <string name="agentui_choices_decline">Afwijzen</string>
+    <string name="agentui_choices_deny">Weigeren</string>
+    <string name="agentui_choices_once">Eén keer toestaan</string>
+    <string name="agentui_choices_session">Toestaan voor dit antwoord</string>
+
+    <string name="agentui_tools_generic_browser">Gebruikte de browser</string>
+    <string name="agentui_tools_generic_change_files">Wijzigde bestanden</string>
+    <string name="agentui_tools_generic_code">Voerde code uit</string>
+    <string name="agentui_tools_generic_command">Voerde een opdracht uit</string>
+    <string name="agentui_tools_generic_find_files">Doorzocht bestanden</string>
+    <string name="agentui_tools_generic_image">Maakte een afbeelding</string>
+    <string name="agentui_tools_generic_lookup_tools">Zocht zijn tools op</string>
+    <string name="agentui_tools_generic_memory">Keek in zijn geheugen</string>
+    <string name="agentui_tools_generic_past_chats">Zocht in eerdere gesprekken</string>
+    <string name="agentui_tools_generic_read_file">Las een bestand</string>
+    <string name="agentui_tools_generic_schedule">Plande een taak in</string>
+    <string name="agentui_tools_generic_send_message">Stuurde een bericht</string>
+    <string name="agentui_tools_generic_skill">Las een skill</string>
+    <string name="agentui_tools_generic_subagent">Zette een subagent in</string>
+    <string name="agentui_tools_generic_todo">Werkte zijn takenlijst bij</string>
+    <string name="agentui_tools_generic_vision">Bekeek een afbeelding</string>
+    <string name="agentui_tools_generic_web_page">Opende een webpagina</string>
+    <string name="agentui_tools_generic_web_search">Zocht op internet</string>
+    <string name="agentui_tools_running_generic_browser">Gebruikt de browser...</string>
+    <string name="agentui_tools_running_generic_change_files">Wijzigt bestanden...</string>
+    <string name="agentui_tools_running_generic_code">Voert code uit...</string>
+    <string name="agentui_tools_running_generic_command">Voert een opdracht uit...</string>
+    <string name="agentui_tools_running_generic_find_files">Doorzoekt bestanden...</string>
+    <string name="agentui_tools_running_generic_image">Maakt een afbeelding...</string>
+    <string name="agentui_tools_running_generic_lookup_tools">Zoekt zijn tools op...</string>
+    <string name="agentui_tools_running_generic_memory">Kijkt in zijn geheugen...</string>
+    <string name="agentui_tools_running_generic_past_chats">Zoekt in eerdere gesprekken...</string>
+    <string name="agentui_tools_running_generic_read_file">Leest een bestand...</string>
+    <string name="agentui_tools_running_generic_schedule">Plant een taak in...</string>
+    <string name="agentui_tools_running_generic_send_message">Stuurt een bericht...</string>
+    <string name="agentui_tools_running_generic_skill">Leest een skill...</string>
+    <string name="agentui_tools_running_generic_subagent">Zet een subagent in...</string>
+    <string name="agentui_tools_running_generic_todo">Werkt zijn takenlijst bij...</string>
+    <string name="agentui_tools_running_generic_vision">Bekijkt een afbeelding...</string>
+    <string name="agentui_tools_running_generic_web_page">Opent een webpagina...</string>
+    <string name="agentui_tools_running_generic_web_search">Zoekt op internet...</string>
+    <string name="agentui_tools_get_context">Keek mee op je scherm</string>
+    <string name="agentui_tools_get_draft">Bekeek het concept</string>
+    <string name="agentui_tools_mail_action">Stelde een mailactie voor</string>
+    <string name="agentui_tools_propose_action">Vroeg om akkoord</string>
+    <string name="agentui_tools_read_attachment">Las een bijlage</string>
+    <string name="agentui_tools_read_chat_file">Las een bijgevoegd bestand</string>
+    <string name="agentui_tools_read_message">Las een e-mail</string>
+    <string name="agentui_tools_read_skill">Las een skill</string>
+    <string name="agentui_tools_search_mail">Zocht in je mail</string>
+    <string name="agentui_tools_show_plan">Maakte een plan</string>
+    <string name="agentui_tools_show_sources">Verzamelde bronnen</string>
+    <string name="agentui_tools_write_draft">Schreef het concept</string>
+    <string name="agentui_tools_unknown">Gebruikte een tool</string>
+    <string name="agentui_tools_running_get_context">Kijkt mee op je scherm...</string>
+    <string name="agentui_tools_running_get_draft">Bekijkt het concept...</string>
+    <string name="agentui_tools_running_mail_action">Stelt een mailactie voor...</string>
+    <string name="agentui_tools_running_propose_action">Vraagt om akkoord...</string>
+    <string name="agentui_tools_running_read_attachment">Leest een bijlage...</string>
+    <string name="agentui_tools_running_read_chat_file">Leest een bijgevoegd bestand...</string>
+    <string name="agentui_tools_running_read_message">Leest een e-mail...</string>
+    <string name="agentui_tools_running_read_skill">Leest een skill...</string>
+    <string name="agentui_tools_running_search_mail">Zoekt in je mail...</string>
+    <string name="agentui_tools_running_show_plan">Maakt een plan...</string>
+    <string name="agentui_tools_running_show_sources">Verzamelt bronnen...</string>
+    <string name="agentui_tools_running_write_draft">Schrijft het concept...</string>
+    <string name="agentui_tools_running_unknown">Gebruikt een tool...</string>
+
+    <string name="agentui_a11y_expanded">Uitgeklapt</string>
+    <string name="agentui_a11y_collapsed">Ingeklapt</string>
+</resources>

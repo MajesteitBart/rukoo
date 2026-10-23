@@ -202,9 +202,16 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   document.getElementById('overlays').appendChild(page);
   const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : start === 'shortcuts' ? ['main', 'agents', 'shortcuts'] : ['main', start];
   let params = id ? { id } : {};
+  // While the pairing code shows: what the dialog does with the phone events from main (paired, expired, burned).
+  let pairWatch = null;
 
   // Live status (sync times, errors) matters on the overview pages; forms must not be reset under the user.
   const unsubscribe = window.mail.on(({ type, payload }) => {
+    // A phone paired, fetched the export, was removed, or was seen: the dialog and the Phone group follow.
+    if (type === 'agent' && payload && payload.kind === 'phone') {
+      if (pairWatch) pairWatch(payload);
+      if (stack[stack.length - 1] === 'agents' && agentState) refreshPhone();
+    }
     const view = stack[stack.length - 1];
     if (type === 'updated' && (view === 'main' || view === 'account')) setTimeout(render, 80);
     // Agent status changes only touch the status lines, never the fields you are typing in.
@@ -414,7 +421,130 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (openclaw) openclaw.innerHTML = openclawRemoteDesc();
     const copy = page.querySelector('[data-a="agent-copy-openclaw"] .desc');
     if (copy) copy.textContent = openclawCopyDesc();
+    const phone = page.querySelector('[data-phone-address]');
+    if (phone) phone.innerHTML = phoneDesc();
   };
+
+  // The Phone group. On: the address a phone pairs with (the Tailscale listener's real port), with main's note.
+  const phoneDesc = () => {
+    const { mcp = {}, phone = {} } = agentState.config;
+    if (!phone.enabled) return esc(t('settings.phone.hostHelp'));
+    const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}`) : esc(t('settings.agents.noAddress'));
+    return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
+  };
+  const phoneSeen = (p) =>
+    [p.lastSeenAt ? t('settings.phone.lastSeen', { date: numericDate(p.lastSeenAt), time: hhmm(p.lastSeenAt) }) : t('settings.phone.neverSeen'), p.exportOpen ? t('settings.phone.exportPending') : '']
+      .filter(Boolean)
+      .join(' · ');
+  const phoneRows = () => {
+    const phone = agentState.config.phone || { enabled: false, pairings: [] };
+    return `${row({ title: esc(t('settings.phone.host')), desc: `<span data-phone-address>${phoneDesc()}</span>`, action: 'agent-phone', toggle: Boolean(phone.enabled) })}
+      ${(phone.pairings || [])
+        .map((p) => row({ title: esc(p.name), desc: esc(phoneSeen(p)), action: `agent-phone-manage:${esc(p.id)}`, lead: `<span class="phone-ic">${icons.phone}</span>`, cls: 'indent' }))
+        .join('')}
+      ${row({ title: esc(t('settings.phone.pair')), desc: esc(t('settings.phone.pairHelp')), action: 'agent-phone-pair', lead: `<span class="add-ic">${icons.plus}</span>`, cls: 'indent' })}`;
+  };
+  async function refreshPhone() {
+    try {
+      agentState.config = await api('agentConfig');
+    } catch (_) {
+      return;
+    }
+    const card = page.querySelector('[data-phone-card]');
+    if (card) card.innerHTML = phoneRows();
+    showAddresses();
+  }
+
+  // The code, this computer's address and the time left. Resolves {name} once the phone paired, null otherwise.
+  function pairDialog(shown) {
+    let timer = null;
+    return dialog({
+      title: t('settings.phone.pairTitle'),
+      buttons: [{ get label() { return t('common.actions.cancel'); }, value: null }],
+      render(body, done) {
+        body.innerHTML = `<p>${esc(t('settings.phone.pairSteps'))}</p>
+          <dl class="phone-pair">
+            <dt>${esc(t('settings.phone.address'))}</dt><dd class="phone-pair-address">${esc(shown.url)}</dd>
+            <dt>${esc(t('settings.phone.code'))}</dt><dd class="phone-pair-code" data-phone-code>${esc(shown.code)}</dd>
+          </dl>
+          <p class="phone-pair-time" data-phone-time aria-live="polite"></p>
+          ${shown.allowExport ? `<p class="phone-pair-note">${esc(t('settings.phone.pairExportNote'))}</p>` : ''}`;
+        const time = body.querySelector('[data-phone-time]');
+        // The code no longer works: say why, and Cancel becomes Close.
+        const end = (text) => {
+          clearInterval(timer);
+          body.querySelector('[data-phone-code]').classList.add('gone');
+          time.textContent = text;
+          time.classList.add('ended');
+          const button = body.parentElement.querySelector('.buttons button');
+          if (button) button.textContent = t('common.actions.close');
+        };
+        const tick = () => {
+          const left = shown.expiresAt - Date.now();
+          if (left <= 0) return end(t('settings.phone.pairExpired'));
+          time.textContent = t('settings.phone.pairExpires', { count: Math.ceil(left / 60000) });
+        };
+        timer = setInterval(tick, 1000);
+        tick();
+        pairWatch = (p) => {
+          if (p.event === 'paired') done({ name: (p.pairing && p.pairing.name) || '' });
+          else if (p.event === 'burned') end(t('settings.phone.pairBurned'));
+          else if (p.event === 'expired') end(t('settings.phone.pairExpired'));
+        };
+      }
+    }).finally(() => {
+      clearInterval(timer);
+      pairWatch = null;
+    });
+  }
+
+  async function pairPhone() {
+    const choice = await choiceDialog(t('settings.phone.pair'), [
+      { value: 'export', label: t('settings.phone.pairWithExport'), hint: t('settings.phone.pairWithExportHint') },
+      { value: 'only', label: t('settings.phone.pairOnly'), hint: t('settings.phone.pairOnlyHint') }
+    ], null, { stacked: true });
+    if (!choice) return;
+    let shown;
+    try {
+      shown = await api('agentPhonePair', { allowExport: choice === 'export' });
+    } catch (err) {
+      await refreshPhone();
+      return toast(err.message === 'not-configured' ? t('settings.phone.noListener') : err.message, 6000);
+    }
+    // Pairing turns the switch on.
+    await refreshPhone();
+    const paired = await pairDialog(shown);
+    if (paired) toast(t('settings.phone.paired', { name: paired.name }), 4000);
+    else api('agentPhonePairCancel').catch(() => {});
+    refreshPhone();
+  }
+
+  async function managePhone(id) {
+    const p = ((agentState.config.phone && agentState.config.phone.pairings) || []).find((x) => x.id === id);
+    if (!p) return;
+    const choice = await choiceDialog(p.name, [
+      { value: 'export', label: t('settings.phone.exportAgain'), hint: t('settings.phone.pairWithExportHint') },
+      { value: 'remove', label: t('settings.phone.remove') }
+    ], null, { stacked: true });
+    if (choice === 'export') {
+      try {
+        await api('agentPhoneAllowExport', id);
+        toast(t('settings.phone.exportOpen'), 5000);
+      } catch (err) {
+        toast(err.message, 5000);
+      }
+      return refreshPhone();
+    }
+    if (choice !== 'remove') return;
+    if (!(await confirmDialog(t('settings.phone.remove'), t('settings.phone.removeConfirm', { name: p.name }), t('settings.phone.removeOk'), true))) return;
+    try {
+      await api('agentPhoneUnpair', id);
+      toast(t('settings.phone.removed', { name: p.name }), 4000);
+    } catch (err) {
+      toast(err.message, 5000);
+    }
+    return refreshPhone();
+  }
 
   function agentsHtml() {
     const c = agentState.config;
@@ -475,7 +605,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         </div>
         ${row({ title: t('settings.agents.openclawRemote'), desc: `<span data-openclaw-address>${openclawRemoteDesc()}</span>`, action: 'agent-openclaw-remote', toggle: Boolean(c.openclaw.remote) })}
         ${row({ title: t('settings.agents.copyOpenClaw'), desc: esc(openclawCopyDesc()), action: 'agent-copy-openclaw' })}
-      </div>`;
+      </div>
+      <div class="settings-group-title">${esc(t('settings.phone.title'))}</div>
+      <div class="card agent-card" data-phone-card>${phoneRows()}</div>`;
   }
 
   // ----- shortcuts -----
@@ -627,6 +759,16 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           showAddresses();
         }
         return;
+      case 'agent-phone':
+        if (await updateAgents({ phone: { enabled: !(c.phone && c.phone.enabled) } })) {
+          flip(b, Boolean(agentState.config.phone.enabled));
+          showAddresses();
+        }
+        return;
+      case 'agent-phone-pair':
+        return pairPhone();
+      case 'agent-phone-manage':
+        return managePhone(id);
       case 'agent-openclaw-remote':
         if (await updateAgents({ openclaw: { remote: !c.openclaw.remote } })) {
           flip(b, Boolean(agentState.config.openclaw.remote));

@@ -1674,7 +1674,7 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   assert.deepEqual([...new Set(outdated.seen)], [null], 'no token for an outdated Rukoo either');
 });
 
-test('hermes bridge: finds online Windows, Linux and Mac devices but skips tagged and shared devices', (t) => {
+test('hermes bridge: finds online Windows, Linux, Mac and Android devices but skips tagged and shared devices', (t) => {
   const python = findPython();
   if (!python) return t.skip('no Python 3.8+ on PATH');
   const { spawnSync } = require('child_process');
@@ -1687,6 +1687,10 @@ test('hermes bridge: finds online Windows, Linux and Mac devices but skips tagge
       c: peer('MacBook', 'macOS', ['fd7a:115c:a1e0::2', '100.64.0.9']),
       d: peer('linux-desktop', 'linux', ['100.64.0.5']),
       e: peer('phone', 'android', ['100.64.0.6']),
+      // Android reports localhost as its host name; the user knows the phone by its MagicDNS name.
+      k: peer('localhost', 'android', ['100.64.0.14', 'fd7a:115c:a1e0::4'], { DNSName: 'galaxy-z-fold7.tail1234.ts.net.' }),
+      l: peer('localhost', 'android', ['100.64.0.15'], { Online: false, DNSName: 'old-phone.tail1234.ts.net.' }),
+      m: peer('ipad', 'iOS', ['100.64.0.16']),
       f: peer('funnel-ingress-node', '', ['fd7a:115c:a1e0::3'], { Tags: ['tag:ingress'] }),
       g: peer('build-box', 'windows', ['100.64.0.10'], { Tags: ['tag:server'] }),
       h: peer('friends-pc', 'windows', ['100.64.0.11'], { ShareeNode: true }),
@@ -1694,7 +1698,10 @@ test('hermes bridge: finds online Windows, Linux and Mac devices but skips tagge
       j: peer('linux-offline', 'linux', ['100.64.0.13'], { Online: false })
     }
   };
-  const code = 'import json, sys; sys.path.insert(0, sys.argv[1]); import rukoo_bridge as b; print(json.dumps(b.tailnet_devices(json.load(sys.stdin))))';
+  // The devices, then for each how long a probe waits: phones longer, since they can be on mobile data.
+  const code =
+    'import json, sys; sys.path.insert(0, sys.argv[1]); import rukoo_bridge as b; d = b.tailnet_devices(json.load(sys.stdin)); ' +
+    'print(json.dumps([d, [b.wait(u, b.PROBE_TIMEOUT_SECONDS) for _, u in d], b.wait("http://100.64.0.99:1/mcp", b.HELLO_TIMEOUT_SECONDS)]))';
   const r = spawnSync(python, ['-c', code, path.join(__dirname, '..', 'integrations', 'hermes')], {
     input: JSON.stringify(status),
     encoding: 'utf8',
@@ -1702,12 +1709,17 @@ test('hermes bridge: finds online Windows, Linux and Mac devices but skips tagge
     windowsHide: true
   });
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(JSON.parse(r.stdout), [
+  const [devices, waits, other] = JSON.parse(r.stdout);
+  assert.deepEqual(devices, [
     ['this-pc', 'http://100.64.0.2:47801/mcp'],
     ['laptop', 'http://100.64.0.3:47801/mcp'],
     ['MacBook', 'http://100.64.0.9:47801/mcp'],
-    ['linux-desktop', 'http://100.64.0.5:47801/mcp']
+    ['linux-desktop', 'http://100.64.0.5:47801/mcp'],
+    ['phone', 'http://100.64.0.6:47801/mcp'],
+    ['galaxy-z-fold7', 'http://100.64.0.14:47801/mcp']
   ]);
+  assert.deepEqual(waits, [4, 4, 4, 4, 8, 8]);
+  assert.equal(other, 4, 'a device that is not a phone waits as before');
 });
 
 test('hermes: Stop during the session lookup submits no run', async () => {

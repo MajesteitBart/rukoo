@@ -1,0 +1,26 @@
+[
+ {
+  "key": "test-hermes-api-key-0123456789",
+  "url": "http://100.122.202.50:47800/mcp",
+  "endpoint": "100.122.202.50:47800",
+  "challenge": "c1Ue5Xq0bWm2yNnR8PaVtG3o_kLs7d9Z",
+  "token": "R4edZI5Lqi-A-kQErB3QdVn7C_HXQXYk-rxvDOADR2s",
+  "proof": "nPPM3qTq3iTfKUI3qx3afw89FtSfKW0Ue1oZOqAOYxY"
+ },
+ {
+  "key": "another key with spaces & symbols!",
+  "url": "http://127.0.0.1:47801/mcp",
+  "endpoint": "127.0.0.1:47801",
+  "challenge": "x",
+  "token": "qq-FcG9_RM8BHrFxafLwBr5z0kv9ceR9prtYf1Zazm0",
+  "proof": "jfopwrSPMJwxKnd91UlYTffo2tM0na_dD6UyfRFSy50"
+ },
+ {
+  "key": "k",
+  "url": "http://100.64.0.1:80/mcp",
+  "endpoint": "100.64.0.1:80",
+  "challenge": "abc",
+  "token": "xCzjrQgSZWTYgBB7_od6kzPBTO6E9_30pXqOPjZARWc",
+  "proof": "NSQ8Ebmftk1xfs9Bf3xCRYk9TF7MKtKihjDspl0WCbc"
+ }
+]

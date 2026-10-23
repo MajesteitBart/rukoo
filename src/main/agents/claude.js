@@ -161,9 +161,15 @@ class ClaudeAdapter {
     return promise;
   }
 
-  // The settings with the chat's own model and effort; without them the chat follows the settings.
+  // The settings with the chat's own model and effort; without them the chat follows the settings. A turn can ask for
+  // approvals when Settings would not (turn.access 'ask', a phone's turn), never the other way round.
   withChoice(s, turn) {
-    return { ...s, model: String((turn && turn.model) || '').trim() || s.model, effort: EFFORTS.includes(turn && turn.effort) ? turn.effort : '' };
+    return {
+      ...s,
+      model: String((turn && turn.model) || '').trim() || s.model,
+      effort: EFFORTS.includes(turn && turn.effort) ? turn.effort : '',
+      access: turn && turn.access === 'ask' ? 'ask' : s.access
+    };
   }
 
   // For the model and effort menus.

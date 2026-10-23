@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The window before Compose draws, in light mode (values-night has the dark one). Compose's RukooTheme
+     takes over the colors and the system bar icons once it runs, following the app's theme setting. -->
+<resources>
+    <style name="Theme.Rukoo" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/rukoo_bg_light</item>
+        <item name="android:colorBackground">@color/rukoo_bg_light</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowSplashScreenBackground">@color/rukoo_bg_light</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/rukoo_launcher_background</item>
+    </style>
+</resources>

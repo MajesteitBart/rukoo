@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="mcp_notification_title">Agents kunnen Rukoo op deze telefoon gebruiken</string>
+    <string name="mcp_notification_listening">Op %1$s voor %2$s</string>
+    <string name="mcp_notification_no_agents">Op %1$s. Er is nog geen agent ingesteld die verbinding mag maken.</string>
+    <string name="mcp_notification_no_tailnet">Wacht op Tailscale. Zet het aan zodat agents deze telefoon kunnen bereiken.</string>
+    <string name="mcp_agents_computer">Claude Code en Codex op %1$s</string>
+
+    <string name="mcp_status_disabled">Uit</string>
+    <string name="mcp_status_no_tailnet">Tailscale staat uit</string>
+    <string name="mcp_status_port_in_use">Poort %1$d is in gebruik</string>
+    <string name="mcp_status_failed">Rukoo kon zijn tools niet starten</string>
+
+    <string name="mcp_hermes_note">De Rukoo-bridge van %1$s vindt deze telefoon zelf zodra de bridge bijgewerkt is. Zet tot die tijd RUKOO_URL=%2$s onder mcp_servers.rukoo.env in ~/.hermes/config.yaml.</string>
+    <string name="mcp_hermes_note_no_address">De Rukoo-bridge van %1$s vindt deze telefoon zelf zodra de bridge bijgewerkt is en Tailscale hier draait.</string>
+
+    <string name="mcp_unsubscribe_title">Afmelden afronden</string>
+    <string name="mcp_unsubscribe_text">Tik om de afmeldpagina van de afzender te openen.</string>
+</resources>

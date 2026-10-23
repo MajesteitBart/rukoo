@@ -2293,6 +2293,20 @@ body:has(.page) .titlebar-actions {
   font-size: 12px;
   color: var(--text-3);
 }
+/* Labels that are sentences: the hint goes under the label, and the radio stays with the first line. */
+.choices.stacked .radio-row {
+  align-items: flex-start;
+  padding: 8px;
+}
+.choices.stacked .radio {
+  margin-top: 1px;
+}
+.choices.stacked .rt {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
 .radio {
   width: 18px;
   height: 18px;
@@ -3581,6 +3595,71 @@ body.compose-window {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* ---------- settings: phone ---------- */
+
+/* A paired phone's row leads with a phone, in the column the add row's plus uses. */
+.row .phone-ic {
+  color: var(--text-2);
+  width: 30px;
+  display: grid;
+  place-items: center;
+}
+.row .phone-ic svg {
+  width: 20px;
+  height: 20px;
+}
+/* The pairing dialog: this computer's address and the code, as label and value rows on a field-colored panel. */
+.phone-pair {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px 16px;
+  margin: 14px 0 12px;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.phone-pair dt {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.phone-pair dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.phone-pair-address {
+  font-size: 12.5px;
+}
+.phone-pair-code {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+.phone-pair-code.gone {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+.dialog p.phone-pair-time {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.dialog p.phone-pair-time.ended {
+  color: var(--danger);
+}
+.dialog p.phone-pair-note {
+  margin: 8px 0 0;
+  font-size: 12px;
 }
 
 /* ---------- settings: shortcuts ---------- */

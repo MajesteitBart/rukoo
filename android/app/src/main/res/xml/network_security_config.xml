@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hermes, OpenClaw and Rukoo on the computer usually sit behind Tailscale. WireGuard already
+     encrypts tailnet traffic, so plain http:// to a 100.x address or MagicDNS name is allowed.
+     Settings warns when an http:// address points outside the tailnet. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,366 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The agent chat (ui/agent). Names are the desktop catalog keys (src/i18n/en.js) with "agent." replaced by
+     "agentui_" and dots and hyphens as underscores, so they can't collide with the agent core's strings. Keys
+     marked "phone wording" have no desktop entry, or replace one that talks about "this computer". -->
+<resources>
+    <!-- Panel -->
+    <string name="agentui_panel_label">Agent chat</string>
+    <string name="agentui_panel_entry">Chat with an agent</string>
+    <string name="agentui_panel_new_chat">New chat</string>
+    <string name="agentui_panel_close">Close chat</string>
+    <string name="agentui_panel_history">Recent chats</string>
+    <string name="agentui_panel_history_news">Recent chats, %1$d new</string>
+    <string name="agentui_panel_jump">Go to the latest message</string>
+    <string name="agentui_panel_transcript">Conversation</string>
+    <!-- phone wording: two panes with the chat open, brings the list back next to it -->
+    <string name="agentui_panel_show_list">Show the email list</string>
+    <!-- phone wording: a chat that takes a moment to load -->
+    <string name="agentui_panel_loading">Opening the chat…</string>
+    <!-- phone wording: where Claude Code or Codex runs, after the product name in the agent picker -->
+    <string name="agentui_panel_on_computer">on %1$s</string>
+    <string name="agentui_panel_placeholder">Ask %1$s...</string>
+    <string name="agentui_panel_placeholder_email">Ask %1$s about this email...</string>
+    <string name="agentui_panel_send">Send</string>
+    <string name="agentui_panel_stop">Stop</string>
+    <string name="agentui_panel_pick_agent">Choose agent</string>
+    <string name="agentui_panel_remove_context">Leave this email out</string>
+    <string name="agentui_panel_add_context">Add this email</string>
+    <string name="agentui_panel_newer_message">Newer message</string>
+    <string name="agentui_panel_newer_pending">You continued this chat from this newer message. It goes to %1$s with your next message.</string>
+    <string name="agentui_panel_newer_sent">You continued this chat from this newer message. %1$s has it.</string>
+    <string name="agentui_panel_no_matches">No matching commands</string>
+    <string name="agentui_panel_no_skills">No skills found</string>
+    <string name="agentui_panel_skills_loading">Loading skills…</string>
+    <string name="agentui_panel_skills_of">%1$s\'s skills</string>
+    <string name="agentui_panel_skills_failed">Couldn\'t load %1$s\'s skills</string>
+    <string name="agentui_panel_skill_chip">Skill %1$s</string>
+    <string name="agentui_panel_skill_missing">Rukoo can\'t find the skill /%1$s anymore.</string>
+    <string name="agentui_panel_needs_email">Open an email first.</string>
+    <string name="agentui_panel_edit_shortcuts">Edit shortcuts</string>
+    <string name="agentui_panel_continue_chat">Continue the chat about the earlier message</string>
+    <string name="agentui_panel_source_gone">That email is no longer in Rukoo. It may have been deleted, or moved to a folder Rukoo has not downloaded.</string>
+    <string name="agentui_panel_needs_you">An agent is waiting for your approval</string>
+    <string name="agentui_panel_show">Show</string>
+    <string name="agentui_panel_draft_blocked">%1$s has a draft for you. Finish or close the email you\'re writing first.</string>
+    <!-- phone wording: a mailto link in the chat while the user is writing an email -->
+    <string name="agentui_panel_composer_busy">Finish or close the email you\'re writing first.</string>
+    <string name="agentui_panel_chat_working">Working…</string>
+    <string name="agentui_panel_chat_ready">Reply ready</string>
+    <string name="agentui_panel_chat_failed">Stopped with an error</string>
+    <string name="agentui_panel_no_history">No chats yet</string>
+    <string name="agentui_panel_set_up">Set up %1$s</string>
+    <!-- mailbox.message.noSubject -->
+    <string name="agentui_no_subject">(no subject)</string>
+
+    <!-- Agent status -->
+    <string name="agentui_status_starting">Starting...</string>
+    <string name="agentui_status_ready">Ready</string>
+    <string name="agentui_status_offline">Can\'t be reached</string>
+    <string name="agentui_status_unconfigured">Not set up</string>
+    <string name="agentui_status_disabled">Turned off</string>
+    <string name="agentui_status_missing">Not installed</string>
+    <string name="agentui_status_unauthorized">Key not accepted</string>
+    <string name="agentui_status_unknown">Status unknown</string>
+    <string name="agentui_status_unavailable">Agents aren\'t available</string>
+    <string name="agentui_setup_unconfigured">%1$s isn\'t set up yet.</string>
+    <string name="agentui_setup_disabled">%1$s is turned off.</string>
+    <!-- phone wording: Claude Code or Codex is missing on the paired computer -->
+    <string name="agentui_setup_missing">%1$s isn\'t installed on that computer.</string>
+    <!-- phone wording: Clark's key, OpenClaw's token or a computer's pairing -->
+    <string name="agentui_setup_unauthorized">%1$s didn\'t accept the key or token.</string>
+
+    <!-- Empty chat -->
+    <string name="agentui_empty_title">What should %1$s do with this email?</string>
+    <string name="agentui_empty_title_no_email">Ask %1$s about your mail</string>
+    <string name="agentui_empty_body">Looks things up and writes the draft. Sending stays with you.</string>
+    <string name="agentui_empty_body_left_out">Add the email to work on it, or start with what needs you today.</string>
+    <string name="agentui_empty_body_no_email">Open an email to work on it, or start with what needs you today.</string>
+    <string name="agentui_empty_setup_title">Set up %1$s to start</string>
+    <string name="agentui_empty_setup_body">Rukoo needs a few details before it can reach %1$s.</string>
+
+    <!-- Model and effort -->
+    <string name="agentui_model_button">Model: %1$s</string>
+    <string name="agentui_model_default">Default</string>
+    <string name="agentui_model_default_button">Default model</string>
+    <string name="agentui_model_failed">Could not load the models</string>
+    <string name="agentui_model_loading">Loading models...</string>
+    <string name="agentui_model_routes">Model routes</string>
+    <string name="agentui_model_title">Model</string>
+    <string name="agentui_effort_button">Effort: %1$s</string>
+    <string name="agentui_effort_default">Default</string>
+    <string name="agentui_effort_title">Effort</string>
+    <string name="agentui_effort_minimal">Minimal</string>
+    <string name="agentui_effort_low">Low</string>
+    <string name="agentui_effort_medium">Medium</string>
+    <string name="agentui_effort_high">High</string>
+    <string name="agentui_effort_xhigh">Extra high</string>
+    <string name="agentui_effort_max">Max</string>
+    <string name="agentui_effort_ultra">Ultra</string>
+
+
+    <!-- Transcript items -->
+    <string name="agentui_items_approved">Approved</string>
+    <string name="agentui_items_denied">Declined</string>
+    <string name="agentui_items_expired">Expired</string>
+    <string name="agentui_items_email_source">Email</string>
+    <string name="agentui_items_plan">Plan</string>
+    <string name="agentui_items_sources">Sources</string>
+    <string name="agentui_items_thinking">Thinking</string>
+    <string name="agentui_items_thought_for">Thought for %1$ds</string>
+    <string name="agentui_items_waiting">Waiting for you</string>
+    <string name="agentui_items_working">%1$s is working on it...</string>
+    <string name="agentui_items_you_approved">You approved</string>
+    <string name="agentui_items_you_declined">You declined</string>
+
+    <!-- Draft cards -->
+    <string name="agentui_draft_reply">Wrote a reply</string>
+    <string name="agentui_draft_reply_all">Wrote a reply to all</string>
+    <string name="agentui_draft_forward">Wrote a forward</string>
+    <string name="agentui_draft_new">Wrote a new email</string>
+    <string name="agentui_draft_show">Show</string>
+    <string name="agentui_draft_undone">Undone</string>
+    <string name="agentui_draft_cannot_undo">Can\'t undo this draft anymore</string>
+    <string name="agentui_draft_gone">That draft is no longer open.</string>
+
+    <!-- Errors -->
+    <string name="agentui_errors_busy">%1$s is still working on the last message.</string>
+    <string name="agentui_errors_disabled">%1$s is turned off in Settings.</string>
+    <string name="agentui_errors_not_configured">%1$s isn\'t set up yet.</string>
+    <!-- phone wording: the program is missing on the paired computer -->
+    <string name="agentui_errors_not_installed">%1$s isn\'t installed on that computer.</string>
+    <string name="agentui_errors_offline">Can\'t reach %1$s.</string>
+    <string name="agentui_errors_protocol">%1$s sent something Rukoo didn\'t understand.</string>
+    <string name="agentui_errors_rate_limited">%1$s is getting too many requests. Try again in a moment.</string>
+    <string name="agentui_errors_spawn_failed">%1$s didn\'t start.</string>
+    <string name="agentui_errors_stopped">Stopped.</string>
+    <string name="agentui_errors_timeout">%1$s took too long to answer.</string>
+    <string name="agentui_errors_unauthorized">%1$s didn\'t accept the key or token.</string>
+    <string name="agentui_errors_unknown">Something went wrong.</string>
+    <!-- phone wording: desktop Rukoo's window is closed on the computer that runs the turn -->
+    <string name="agentui_errors_window">Rukoo\'s window is closed on that computer.</string>
+
+    <!-- Notices -->
+    <string name="agentui_notices_approval_too_long">Declined without asking: %1$s. Part of it is too long to show here, so you could not check it.</string>
+    <string name="agentui_notices_kept_approval">Not done yet: %1$s. %2$s hears about your approval with your next message.</string>
+    <string name="agentui_notices_new_session">%1$s started a new session</string>
+    <string name="agentui_notices_new_thread">%1$s started a new thread</string>
+    <!-- A computer turn without this phone's tools; %1$s is the program (Claude Code, Codex). -->
+    <string name="agentui_notices_no_phone_tools">%1$s works without Rukoo\'s tools this turn: this phone isn\'t serving them right now.</string>
+    <!-- The computer started a new session and the phone's first message with the email didn't reach it in time. -->
+    <string name="agentui_notices_start_over_missed">The new session didn\'t get the email again.</string>
+
+    <!-- Mail results -->
+    <plurals name="agentui_mail_archive">
+        <item quantity="one">Archived %1$d email</item>
+        <item quantity="other">Archived %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_mark_read">
+        <item quantity="one">Marked %1$d email as read</item>
+        <item quantity="other">Marked %1$d emails as read</item>
+    </plurals>
+    <plurals name="agentui_mail_mark_unread">
+        <item quantity="one">Marked %1$d email as unread</item>
+        <item quantity="other">Marked %1$d emails as unread</item>
+    </plurals>
+    <plurals name="agentui_mail_move">
+        <item quantity="one">Moved %1$d email to %2$s</item>
+        <item quantity="other">Moved %1$d emails to %2$s</item>
+    </plurals>
+    <plurals name="agentui_mail_star">
+        <item quantity="one">Starred %1$d email</item>
+        <item quantity="other">Starred %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_trash">
+        <item quantity="one">Moved %1$d email to Trash</item>
+        <item quantity="other">Moved %1$d emails to Trash</item>
+    </plurals>
+    <plurals name="agentui_mail_undo">
+        <item quantity="one">Put %1$d email back</item>
+        <item quantity="other">Put %1$d emails back</item>
+    </plurals>
+    <plurals name="agentui_mail_unstar">
+        <item quantity="one">Removed the star from %1$d email</item>
+        <item quantity="other">Removed the star from %1$d emails</item>
+    </plurals>
+    <string name="agentui_mail_unsubscribe_email_many">Opened %1$d unsubscribe emails. Send them to finish.</string>
+    <string name="agentui_mail_unsubscribe_email_one">Opened an unsubscribe email to %1$s. Send it to finish.</string>
+    <string name="agentui_mail_unsubscribe_page_many">Opened %1$d unsubscribe pages in your browser. Finish there; Rukoo Mail can\'t tell whether they worked.</string>
+    <string name="agentui_mail_unsubscribe_page_one">Opened the unsubscribe page for %1$s in your browser. Finish there; Rukoo Mail can\'t tell whether it worked.</string>
+
+    <!-- One-click unsubscribe results (the hub writes these in English). -->
+    <string name="agentui_mail_unsubscribed_one">Unsubscribed from %1$s</string>
+    <plurals name="agentui_mail_unsubscribed_senders">
+        <item quantity="one">Unsubscribed from %1$d sender</item>
+        <item quantity="other">Unsubscribed from %1$d senders</item>
+    </plurals>
+
+    <!-- Mail approval cards: the title (tools.js mailTitle) and the button (tools.js VERBS). -->
+    <plurals name="agentui_mail_title_archive">
+        <item quantity="one">Archive %1$d email</item>
+        <item quantity="other">Archive %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_trash">
+        <item quantity="one">Delete %1$d email</item>
+        <item quantity="other">Delete %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_move">
+        <item quantity="one">Move %1$d email to %2$s</item>
+        <item quantity="other">Move %1$d emails to %2$s</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_read">
+        <item quantity="one">Mark %1$d email as read</item>
+        <item quantity="other">Mark %1$d emails as read</item>
+    </plurals>
+    <plurals name="agentui_mail_title_mark_unread">
+        <item quantity="one">Mark %1$d email as unread</item>
+        <item quantity="other">Mark %1$d emails as unread</item>
+    </plurals>
+    <plurals name="agentui_mail_title_star">
+        <item quantity="one">Star %1$d email</item>
+        <item quantity="other">Star %1$d emails</item>
+    </plurals>
+    <plurals name="agentui_mail_title_unstar">
+        <item quantity="one">Unstar %1$d email</item>
+        <item quantity="other">Unstar %1$d emails</item>
+    </plurals>
+    <string name="agentui_mail_title_unsubscribe_one">Unsubscribe from %1$s</string>
+    <plurals name="agentui_mail_title_unsubscribe_senders">
+        <item quantity="one">Unsubscribe from %1$d sender</item>
+        <item quantity="other">Unsubscribe from %1$d senders</item>
+    </plurals>
+    <!-- The last row of a card that lists more than six emails. -->
+    <plurals name="agentui_mail_more">
+        <item quantity="one">and %1$d more</item>
+        <item quantity="other">and %1$d more</item>
+    </plurals>
+    <string name="agentui_mail_verb_archive">Archive</string>
+    <string name="agentui_mail_verb_trash">Delete</string>
+    <string name="agentui_mail_verb_move">Move</string>
+    <string name="agentui_mail_verb_mark_read">Mark as read</string>
+    <string name="agentui_mail_verb_mark_unread">Mark as unread</string>
+    <string name="agentui_mail_verb_star">Star</string>
+    <string name="agentui_mail_verb_unstar">Unstar</string>
+    <string name="agentui_mail_verb_unsubscribe">Unsubscribe</string>
+
+    <!-- Emails added to the message with "Add to chat" (agent.files.*, agent.panel.inChatAlready). -->
+    <string name="agentui_files_too_many_emails">A message takes up to %1$d emails.</string>
+    <string name="agentui_files_email_gone">An email you added is no longer here. Your message was not sent; the other attachments are still there.</string>
+    <plurals name="agentui_panel_in_chat_already">
+        <item quantity="one">That email is in the chat already.</item>
+        <item quantity="other">Those emails are in the chat already.</item>
+    </plurals>
+    <!-- The x on an added email; %1$s is its subject. -->
+    <string name="agentui_panel_remove_attachment">Remove %1$s</string>
+
+    <!-- Plan -->
+    <string name="agentui_plan_proposed">Proposed</string>
+    <string name="agentui_plan_todo">To do</string>
+    <string name="agentui_plan_running">In progress</string>
+    <string name="agentui_plan_done">Done</string>
+    <string name="agentui_plan_failed">Failed</string>
+    <string name="agentui_plan_skipped">Skipped</string>
+
+    <!-- Approvals -->
+    <string name="agentui_approval_command">%1$s wants to run a command</string>
+    <string name="agentui_approval_read_file">%1$s wants to read a file</string>
+    <string name="agentui_approval_change_files">%1$s wants to change files</string>
+    <string name="agentui_approval_web">%1$s wants to open a web page</string>
+    <string name="agentui_approval_permissions">%1$s wants more permissions</string>
+    <string name="agentui_approval_tool">%1$s wants to use %2$s</string>
+    <string name="agentui_approval_show_all">Show all</string>
+    <string name="agentui_approval_show_less">Show less</string>
+    <plurals name="agentui_approval_truncated">
+        <item quantity="one">%1$s more character not shown</item>
+        <item quantity="other">%1$s more characters not shown</item>
+    </plurals>
+    <string name="agentui_approval_field_after">New text</string>
+    <string name="agentui_approval_field_before">Old text</string>
+    <string name="agentui_approval_field_command">Command</string>
+    <string name="agentui_approval_field_content">Content</string>
+    <string name="agentui_approval_field_diff">Changes</string>
+    <string name="agentui_approval_field_file">File</string>
+    <string name="agentui_approval_field_folder">Folder</string>
+    <string name="agentui_approval_field_path">Path</string>
+    <string name="agentui_approval_field_pattern">Pattern</string>
+    <string name="agentui_approval_field_query">Search</string>
+    <string name="agentui_approval_field_reason">Reason</string>
+    <string name="agentui_approval_field_url">Web address</string>
+    <string name="agentui_choices_accept">Allow</string>
+    <string name="agentui_choices_accept_for_session">Allow for this chat</string>
+    <string name="agentui_choices_allow">Allow</string>
+    <string name="agentui_choices_always">Always allow</string>
+    <string name="agentui_choices_approve">Approve</string>
+    <string name="agentui_choices_cancel">Cancel</string>
+    <string name="agentui_choices_decline">Decline</string>
+    <string name="agentui_choices_deny">Deny</string>
+    <string name="agentui_choices_once">Allow once</string>
+    <string name="agentui_choices_session">Allow for this turn</string>
+
+    <!-- Tool rows: what a tool did, and what it is doing while it runs -->
+    <string name="agentui_tools_generic_browser">Used the browser</string>
+    <string name="agentui_tools_generic_change_files">Changed files</string>
+    <string name="agentui_tools_generic_code">Ran code</string>
+    <string name="agentui_tools_generic_command">Ran a command</string>
+    <string name="agentui_tools_generic_find_files">Looked through files</string>
+    <string name="agentui_tools_generic_image">Made an image</string>
+    <string name="agentui_tools_generic_lookup_tools">Looked up its tools</string>
+    <string name="agentui_tools_generic_memory">Checked its memory</string>
+    <string name="agentui_tools_generic_past_chats">Searched past chats</string>
+    <string name="agentui_tools_generic_read_file">Read a file</string>
+    <string name="agentui_tools_generic_schedule">Scheduled a job</string>
+    <string name="agentui_tools_generic_send_message">Sent a message</string>
+    <string name="agentui_tools_generic_skill">Read a skill</string>
+    <string name="agentui_tools_generic_subagent">Ran a subagent</string>
+    <string name="agentui_tools_generic_todo">Updated its to-do list</string>
+    <string name="agentui_tools_generic_vision">Looked at an image</string>
+    <string name="agentui_tools_generic_web_page">Opened a web page</string>
+    <string name="agentui_tools_generic_web_search">Searched the web</string>
+    <string name="agentui_tools_running_generic_browser">Using the browser...</string>
+    <string name="agentui_tools_running_generic_change_files">Changing files...</string>
+    <string name="agentui_tools_running_generic_code">Running code...</string>
+    <string name="agentui_tools_running_generic_command">Running a command...</string>
+    <string name="agentui_tools_running_generic_find_files">Looking through files...</string>
+    <string name="agentui_tools_running_generic_image">Making an image...</string>
+    <string name="agentui_tools_running_generic_lookup_tools">Looking up its tools...</string>
+    <string name="agentui_tools_running_generic_memory">Checking its memory...</string>
+    <string name="agentui_tools_running_generic_past_chats">Searching past chats...</string>
+    <string name="agentui_tools_running_generic_read_file">Reading a file...</string>
+    <string name="agentui_tools_running_generic_schedule">Scheduling a job...</string>
+    <string name="agentui_tools_running_generic_send_message">Sending a message...</string>
+    <string name="agentui_tools_running_generic_skill">Reading a skill...</string>
+    <string name="agentui_tools_running_generic_subagent">Running a subagent...</string>
+    <string name="agentui_tools_running_generic_todo">Updating its to-do list...</string>
+    <string name="agentui_tools_running_generic_vision">Looking at an image...</string>
+    <string name="agentui_tools_running_generic_web_page">Opening a web page...</string>
+    <string name="agentui_tools_running_generic_web_search">Searching the web...</string>
+    <string name="agentui_tools_get_context">Looked at your screen</string>
+    <string name="agentui_tools_get_draft">Checked the draft</string>
+    <string name="agentui_tools_mail_action">Proposed a mail action</string>
+    <string name="agentui_tools_propose_action">Asked for approval</string>
+    <string name="agentui_tools_read_attachment">Read an attachment</string>
+    <string name="agentui_tools_read_chat_file">Read an attached file</string>
+    <string name="agentui_tools_read_message">Read an email</string>
+    <string name="agentui_tools_read_skill">Read a skill</string>
+    <string name="agentui_tools_search_mail">Searched your mail</string>
+    <string name="agentui_tools_show_plan">Made a plan</string>
+    <string name="agentui_tools_show_sources">Gathered sources</string>
+    <string name="agentui_tools_write_draft">Wrote the draft</string>
+    <string name="agentui_tools_unknown">Used a tool</string>
+    <string name="agentui_tools_running_get_context">Looking at your screen...</string>
+    <string name="agentui_tools_running_get_draft">Checking the draft...</string>
+    <string name="agentui_tools_running_mail_action">Proposing a mail action...</string>
+    <string name="agentui_tools_running_propose_action">Asking for approval...</string>
+    <string name="agentui_tools_running_read_attachment">Reading an attachment...</string>
+    <string name="agentui_tools_running_read_chat_file">Reading an attached file...</string>
+    <string name="agentui_tools_running_read_message">Reading an email...</string>
+    <string name="agentui_tools_running_read_skill">Reading a skill...</string>
+    <string name="agentui_tools_running_search_mail">Searching your mail...</string>
+    <string name="agentui_tools_running_show_plan">Making a plan...</string>
+    <string name="agentui_tools_running_show_sources">Gathering sources...</string>
+    <string name="agentui_tools_running_write_draft">Writing the draft...</string>
+    <string name="agentui_tools_running_unknown">Using a tool...</string>
+
+    <!-- phone wording: what TalkBack says about a row that opens and closes -->
+    <string name="agentui_a11y_expanded">Expanded</string>
+    <string name="agentui_a11y_collapsed">Collapsed</string>
+</resources>

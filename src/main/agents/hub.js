@@ -14,6 +14,7 @@ const skills = require('./skills');
 const ownskills = require('./ownskills');
 const { ChatFiles, shown: shownFile, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
 const { PdfReader } = require('../pdfread');
+const { PhoneHost } = require('./phonehost');
 
 const MAX_CONVERSATIONS = 150;
 // Conversations an agent opened from outside the panel (Clark on WhatsApp) have their own, smaller cap.
@@ -183,6 +184,8 @@ class AgentHub extends EventEmitter {
     this.remoteTimer = null;
     this.remoteStarting = false;
     this.remoteQueue = Promise.resolve();
+    // Lets a paired phone run Claude Code and Codex turns here (phonehost.js); made in start(), after the config.
+    this.phoneHost = null;
     this.started = false;
     this.disposed = false;
   }
@@ -195,6 +198,7 @@ class AgentHub extends EventEmitter {
     if (this.started) return;
     this.started = true;
     this.cfg.load();
+    this.phoneHost = new PhoneHost(this, this.deps.phone);
     this.load();
     this.refreshRemoteHash();
     this.sweepTemp();
@@ -319,12 +323,14 @@ class AgentHub extends EventEmitter {
     return run;
   }
 
-  // Whether the Tailscale listener should be open: for Clark's bridge ("Let Clark use Rukoo"), or for an OpenClaw
-  // gateway on another computer ("Let OpenClaw use Rukoo from another computer", while OpenClaw is on). Each is an
-  // explicit opt-in, because the listener offers the mailbox to the tailnet.
+  // Whether the Tailscale listener should be open: for Clark's bridge ("Let Clark use Rukoo"), for an OpenClaw
+  // gateway on another computer ("Let OpenClaw use Rukoo from another computer", while OpenClaw is on), or for a
+  // paired phone ("Let my phone use this computer"). Each is an explicit opt-in, because the listener offers the
+  // mailbox to the tailnet. The phone's switch opens only the /phone/ routes: /mcp still takes Clark's and
+  // OpenClaw's tokens only while their own switches are on (identify()).
   wantsRemote() {
-    const { mcp, openclaw } = this.cfg.data;
-    return Boolean(mcp.remote || (openclaw.remote && openclaw.enabled !== false));
+    const { mcp, openclaw, phone } = this.cfg.data;
+    return Boolean(mcp.remote || (openclaw.remote && openclaw.enabled !== false) || (phone && phone.enabled));
   }
 
   // The Tailscale listener, only when the user turned it on and this machine has an address.
@@ -370,6 +376,8 @@ class AgentHub extends EventEmitter {
     // PDF reads still running end now, so no reader process outlives Rukoo; their turns stop below.
     this.pdf.dispose();
     this.files.dispose();
+    // Phone turns end with done/stopped on their streams, before the adapters below close their processes.
+    if (this.phoneHost) this.phoneHost.dispose();
     for (const turn of [...this.turns.values()]) {
       // runTurn() would give these back only after the flush below, so a turn the agent does not have yet gives
       // them back now.
@@ -1688,30 +1696,10 @@ class AgentHub extends EventEmitter {
 
   requestApproval(cid, { title, detail = '', fields = [], choices = [], source = 'rukoo', kind = 'runtime', key = null, mail = null, tool = null } = {}) {
     const c = this.mustGet(cid);
-    const cleanChoices = (Array.isArray(choices) ? choices : [])
-      .filter((ch) => isObj(ch) && ch.id)
-      .slice(0, 6)
-      .map((ch) => ({ id: clip(ch.id, 60), label: clip(ch.label || ch.id, 60), kind: ['primary', 'danger', 'default'].includes(ch.kind) ? ch.kind : 'default' }));
-    const cleanTool = approvalTool(tool);
-    const shownChoices = cleanChoices.length
-      ? cleanChoices
-      : [
-          { id: 'allow', label: 'Allow', kind: 'primary' },
-          { id: 'deny', label: 'Deny', kind: 'danger' }
-        ];
-    const shownFields = foldFields((Array.isArray(fields) ? fields : []).filter(isObj)).map(approvalField);
-    // Allow passes on the whole input, so a card that cannot show all of it is declined without asking.
-    // The adapter gets its own deny choice: cancel would end a Codex turn and leave Hermes unanswered.
-    const refusal = shownFields.some((f) => f.truncated)
-      ? shownChoices.find((ch) => ch.id !== 'cancel' && DENY_IDS.has(ch.id)) || shownChoices.find((ch) => ch.kind === 'danger') || { id: 'cancel' }
-      : null;
+    const { card, refusal } = approvalCard({ title, detail, fields, choices, tool });
     const item = this.addItem(c, {
       type: 'approval',
-      title: clip(title || 'Approval needed', 200),
-      detail: clip(detail, 2000),
-      fields: shownFields,
-      ...(cleanTool ? { tool: cleanTool } : {}),
-      choices: shownChoices,
+      ...card,
       status: refusal ? 'denied' : 'pending',
       decision: refusal ? refusal.id : null,
       // Rukoo's decision, not the user's; a recap of the chat says so (context.recap).
@@ -1747,6 +1735,8 @@ class AgentHub extends EventEmitter {
 
   // itemOrKey: the approval item id, or the key the adapter passed with the request (e.g. a request id).
   expireApproval(cid, itemOrKey) {
+    // A phone's chat: the card is on the phone.
+    if (this.phoneHost && this.phoneHost.expireApproval(cid, itemOrKey)) return true;
     const c = this.conversations.get(cid);
     for (const [itemId, w] of this.approvals) {
       if (w.cid !== cid || (itemId !== itemOrKey && (w.key === null || w.key !== String(itemOrKey)))) continue;
@@ -1971,6 +1961,8 @@ class AgentHub extends EventEmitter {
   }
 
   mapThread(threadId, cid) {
+    // A phone's chat is not one of the hub's: the phone host keeps its threads.
+    if (this.phoneHost && this.phoneHost.owns(cid)) return this.phoneHost.mapThread(threadId, cid);
     if (threadId && this.conversations.has(cid)) this.threads.set(String(threadId), cid);
   }
 
@@ -2047,7 +2039,11 @@ class AgentHub extends EventEmitter {
     return this.skills.list().map(({ name, description, source }) => ({ name, description, source }));
   }
 
+  // A call from Claude Code or Codex in a chat a phone runs here goes to that phone's own Rukoo, so the tools act on
+  // the phone's mail and screen (phonehost.js route()).
   callTool(identity, name, args, meta) {
+    const route = this.phoneHost && this.phoneHost.route(identity, args, meta);
+    if (route) return this.phoneHost.forward(route, identity, name, args, meta);
     return tools.callTool(this, identity, name, args, meta);
   }
 
@@ -2093,15 +2089,19 @@ class AgentHub extends EventEmitter {
         view[id].detectedExe = '';
       }
     }
+    view.phone.pairingActive = Boolean(this.phoneHost && this.phoneHost.pairCode());
     return view;
   }
 
   async updateConfig(patch) {
     const before = JSON.stringify(this.cfg.data.mcp);
     const wanted = this.wantsRemote();
+    const phoneWas = this.cfg.data.phone.enabled;
     this.cfg.update(patch);
     // Allowing a remote OpenClaw gateway, or no longer, gives or takes its remote token.
     this.refreshRemoteHash();
+    // The phone may no longer use this computer: its turns stop now and a code shown for pairing stops working.
+    if (phoneWas && !this.cfg.data.phone.enabled && this.phoneHost) this.phoneHost.stopAll();
     // Shortcuts change nothing about the agents themselves: the panel only needs to draw them again.
     if (isObj(patch) && Object.keys(patch).every((k) => k === 'shortcuts')) {
       this.emitEvent({ kind: 'agents', status: this.statuses });
@@ -2137,6 +2137,38 @@ class AgentHub extends EventEmitter {
     // Empty while the user doesn't allow a remote gateway (config.openclawToken).
     const openclawRemote = this.cfg.openclawToken(true);
     this.openclawRemoteHash = openclawRemote ? sha256(openclawRemote) : null;
+  }
+
+  // ---------- phone (renderer API, see phonehost.js) ----------
+
+  // Shows a code to pair a phone. Turns "Let my phone use this computer" on first, which opens the Tailscale listener.
+  // allowExport: the phone may fetch the accounts and agent settings once, in the next 10 minutes.
+  async phonePairStart({ allowExport = false } = {}) {
+    if (!this.cfg.data.phone.enabled) await this.updateConfig({ phone: { enabled: true } });
+    const port = this.mcp ? this.mcp.ports().remote : null;
+    const address = this.cfg.address();
+    if (!port || !address) throw new AgentError('not-configured', 'Rukoo is not listening on a Tailscale address');
+    return this.phoneHost.startPairing({ allowExport: allowExport === true, address, port });
+  }
+
+  phonePairCancel() {
+    this.phoneHost.cancelPairing();
+    return true;
+  }
+
+  phoneUnpair(id) {
+    if (!this.phoneHost.unpair(id, 'desktop')) throw new AgentError('invalid', 'unknown phone');
+    return this.config();
+  }
+
+  phoneAllowExport(id) {
+    if (!this.phoneHost.allowExport(id)) throw new AgentError('invalid', 'unknown phone');
+    return this.config();
+  }
+
+  // The /phone/ routes on the Tailscale listener (mcp.js).
+  phoneRequest(entry, req, res, pathname) {
+    return this.phoneHost.handle(entry, req, res, pathname);
   }
 
   copyHermesSetup() {
@@ -2303,6 +2335,37 @@ function approvalTool(tool) {
   return out;
 }
 
+// What an approval card shows, cleaned: at most 6 choices (Allow and Deny when the adapter gave none), the fields
+// folded to 12, each whole up to FIELD_MAX. refusal is the choice to answer with at once when a field had to be cut,
+// or null. The phone host (phonehost.js) builds its cards with this too, so the phone shows what a desktop would.
+function approvalCard({ title, detail = '', fields = [], choices = [], tool = null } = {}) {
+  const cleanChoices = (Array.isArray(choices) ? choices : [])
+    .filter((ch) => isObj(ch) && ch.id)
+    .slice(0, 6)
+    .map((ch) => ({ id: clip(ch.id, 60), label: clip(ch.label || ch.id, 60), kind: ['primary', 'danger', 'default'].includes(ch.kind) ? ch.kind : 'default' }));
+  const cleanTool = approvalTool(tool);
+  const shownChoices = cleanChoices.length
+    ? cleanChoices
+    : [
+        { id: 'allow', label: 'Allow', kind: 'primary' },
+        { id: 'deny', label: 'Deny', kind: 'danger' }
+      ];
+  const shownFields = foldFields((Array.isArray(fields) ? fields : []).filter(isObj)).map(approvalField);
+  // Allow passes on the whole input, so a card that cannot show all of it is declined without asking.
+  // The adapter gets its own deny choice: cancel would end a Codex turn and leave Hermes unanswered.
+  const refusal = shownFields.some((f) => f.truncated)
+    ? shownChoices.find((ch) => ch.id !== 'cancel' && DENY_IDS.has(ch.id)) || shownChoices.find((ch) => ch.kind === 'danger') || { id: 'cancel' }
+    : null;
+  const card = {
+    title: clip(title || 'Approval needed', 200),
+    detail: clip(detail, 2000),
+    fields: shownFields,
+    ...(cleanTool ? { tool: cleanTool } : {}),
+    choices: shownChoices
+  };
+  return { card, refusal };
+}
+
 const RUKOO_LABELS = {
   get_context: 'Read the email',
   read_message: 'Read the email',
@@ -2342,4 +2405,4 @@ function toolLabel(name) {
   return n;
 }
 
-module.exports = { AgentHub, toolLabel, ERROR_TEXT, MAX_ITEMS, MAX_CONVERSATIONS, MAX_TEXT };
+module.exports = { AgentHub, toolLabel, approvalCard, toError, cleanModel, ERROR_TEXT, MAX_ITEMS, MAX_CONVERSATIONS, MAX_TEXT };

@@ -1,0 +1,605 @@
+{
+ "tools": [
+  {
+   "name": "get_context",
+   "title": "See what the user sees in Rukoo",
+   "description": "Returns what is on the user's screen in Rukoo: the open email with its full text, the email this chat is about, related mail in the same thread, checked emails, the reply draft in the composer, the user's accounts and folders, and today's date. Call this first.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "search_mail",
+   "title": "Search mail",
+   "description": "Searches the user's mail in every account and folder Rukoo has synced (inbox, sent, archive, drafts, trash and opened folders). All words in query must match the subject, preview, sender or recipients. Newest first. Use read_message for the full text.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "Words that must all appear, e.g. \"proposal thursday\".",
+      "maxLength": 500
+     },
+     "from": {
+      "type": "string",
+      "description": "Part of the sender name or address.",
+      "maxLength": 320
+     },
+     "account": {
+      "type": "string",
+      "description": "Account id or email address, from get_context. Default: all accounts.",
+      "maxLength": 320
+     },
+     "folder": {
+      "type": "string",
+      "description": "Folder path or name, or a role: inbox, sent, drafts, archive, trash, junk.",
+      "maxLength": 500
+     },
+     "unread": {
+      "type": "boolean",
+      "description": "Only unread (true) or only read (false) mail."
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50,
+      "description": "Maximum results (default 15)."
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "read_message",
+   "title": "Read an email",
+   "description": "Returns one email: headers (including the Message-ID header to link back to it from other systems, and the List-Unsubscribe links), plain text body and the attachment list. Does not mark it as read.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "message_id": {
+      "type": "string",
+      "description": "Rukoo message id: the \"id\" field from get_context or search_mail (not the Message-ID header)."
+     },
+     "max_chars": {
+      "type": "integer",
+      "minimum": 200,
+      "maximum": 200000,
+      "description": "Maximum body characters (default 20000)."
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "message_id"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "read_attachment",
+   "title": "Read an attachment",
+   "description": "Returns an attachment of an email by its index from read_message. Text files come back as text, images as images, a PDF as the text Rukoo could extract (note says when that is not all of it) with the file as a resource, other files (Office) as a resource; local agents also get local_path to open the file themselves. Up to 10 MB.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "message_id": {
+      "type": "string",
+      "description": "Rukoo message id: the \"id\" field from get_context or search_mail (not the Message-ID header)."
+     },
+     "index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The attachment index from read_message."
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "message_id",
+     "index"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "read_chat_file",
+   "title": "Read a file the user attached",
+   "description": "Returns a file the user attached to a message in this chat, by the file_id the message gives. Text files come back as text, images as images, a PDF as the text Rukoo could extract (note says when that is not all of it) with the file as a resource, other files as a resource; local agents also get local_path to open the file themselves. Without file_id it lists the chat's files.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "The file_id from the message, e.g. \"f_1a2b3c4d5e\".",
+      "maxLength": 100
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "write_draft",
+   "title": "Write the reply draft",
+   "description": "Puts a draft in Rukoo's composer, replacing the body the user sees. It never sends: the user reviews and sends. Mode defaults to a reply to the email of this chat. Write only the body; Rukoo keeps the quoted email and adds the signature. Recipients and subject are optional for replies.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "message_id": {
+      "type": "string",
+      "description": "Rukoo message id: the \"id\" field from get_context or search_mail (not the Message-ID header)."
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "reply",
+       "reply_all",
+       "forward",
+       "new"
+      ]
+     },
+     "to": {
+      "type": "array",
+      "items": {
+       "anyOf": [
+        {
+         "type": "string",
+         "description": "An address, or \"Name <address>\"."
+        },
+        {
+         "type": "object",
+         "properties": {
+          "name": {
+           "type": "string"
+          },
+          "address": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "address"
+         ]
+        }
+       ]
+      },
+      "maxItems": 50
+     },
+     "cc": {
+      "type": "array",
+      "items": {
+       "anyOf": [
+        {
+         "type": "string",
+         "description": "An address, or \"Name <address>\"."
+        },
+        {
+         "type": "object",
+         "properties": {
+          "name": {
+           "type": "string"
+          },
+          "address": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "address"
+         ]
+        }
+       ]
+      },
+      "maxItems": 50
+     },
+     "bcc": {
+      "type": "array",
+      "items": {
+       "anyOf": [
+        {
+         "type": "string",
+         "description": "An address, or \"Name <address>\"."
+        },
+        {
+         "type": "object",
+         "properties": {
+          "name": {
+           "type": "string"
+          },
+          "address": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "address"
+         ]
+        }
+       ]
+      },
+      "maxItems": 50
+     },
+     "subject": {
+      "type": "string",
+      "maxLength": 1000
+     },
+     "body": {
+      "type": "string",
+      "description": "The draft body.",
+      "maxLength": 100000
+     },
+     "format": {
+      "type": "string",
+      "enum": [
+       "markdown",
+       "text",
+       "html"
+      ],
+      "description": "Default markdown."
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "body"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "get_draft",
+   "title": "Check the draft",
+   "description": "Returns the draft that is open in Rukoo's composer now, including the user's own edits, or {open:false}.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "show_plan",
+   "title": "Show a plan",
+   "description": "Shows or updates a task list in Rukoo's chat panel. Call it again with the same plan_id (or the same task ids) to update statuses and add links as you work. Statuses: proposed, todo, running, done, failed, skipped.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "plan_id": {
+      "type": "string",
+      "maxLength": 100
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 200
+     },
+     "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "maxLength": 100
+        },
+        "title": {
+         "type": "string",
+         "maxLength": 300
+        },
+        "detail": {
+         "type": "string",
+         "maxLength": 1000
+        },
+        "system": {
+         "type": "string",
+         "description": "Where it happens, e.g. Todoist, Linear, CRM.",
+         "maxLength": 60
+        },
+        "status": {
+         "type": "string",
+         "enum": [
+          "proposed",
+          "todo",
+          "running",
+          "done",
+          "failed",
+          "skipped"
+         ]
+        },
+        "url": {
+         "type": "string",
+         "maxLength": 2000
+        },
+        "owner": {
+         "type": "string",
+         "maxLength": 100
+        },
+        "due": {
+         "type": "string",
+         "maxLength": 60
+        }
+       },
+       "description": "New tasks need a title; updates only need the id and the fields that change."
+      }
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "tasks"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "show_sources",
+   "title": "Show sources",
+   "description": "Shows the sources you used as cards in Rukoo's chat panel: emails (pass message_id so the user can open them), notes, records or web pages (url).",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string",
+      "maxLength": 200
+     },
+     "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+       "type": "object",
+       "properties": {
+        "title": {
+         "type": "string",
+         "maxLength": 300
+        },
+        "source": {
+         "type": "string",
+         "description": "Origin, e.g. Email, Obsidian, CRM, Web.",
+         "maxLength": 60
+        },
+        "snippet": {
+         "type": "string",
+         "maxLength": 600
+        },
+        "url": {
+         "type": "string",
+         "maxLength": 2000
+        },
+        "message_id": {
+         "type": "string",
+         "description": "Rukoo message id: the \"id\" field from get_context or search_mail (not the Message-ID header)."
+        }
+       },
+       "required": [
+        "title"
+       ]
+      }
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "sources"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "propose_action",
+   "title": "Ask the user for approval",
+   "description": "Shows an approval card in Rukoo for something you want to do elsewhere (send a message, create a task, update a record). Returns at once; stop and wait. When the user approves you get a new message saying so, then do it. If they decline you will be told.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string",
+      "description": "What you will do, e.g. \"Add 2 tasks to Todoist\".",
+      "maxLength": 120
+     },
+     "detail": {
+      "type": "string",
+      "description": "The exact content, e.g. the message text.",
+      "maxLength": 2000
+     },
+     "fields": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+       "type": "object",
+       "properties": {
+        "label": {
+         "type": "string",
+         "maxLength": 60
+        },
+        "value": {
+         "type": "string",
+         "maxLength": 500
+        }
+       },
+       "required": [
+        "label",
+        "value"
+       ]
+      }
+     },
+     "confirm_label": {
+      "type": "string",
+      "description": "Approve button text, e.g. \"Send\".",
+      "maxLength": 30
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "title"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "mail_action",
+   "title": "Archive, move, flag or unsubscribe",
+   "description": "Asks Rukoo to archive, delete (move to trash), move, mark, star or unsubscribe from emails. Rukoo asks the user first unless they turned that off; you get status waiting_for_user or the result. Works for every account type. Use the ids from search_mail or get_context.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "archive",
+       "trash",
+       "move",
+       "mark_read",
+       "mark_unread",
+       "star",
+       "unstar",
+       "unsubscribe"
+      ]
+     },
+     "message_ids": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "description": "Rukoo message id: the \"id\" field from get_context or search_mail (not the Message-ID header)."
+      },
+      "minItems": 1,
+      "maxItems": 50
+     },
+     "folder": {
+      "type": "string",
+      "description": "Destination folder for move (path or name).",
+      "maxLength": 500
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "action",
+     "message_ids"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "read_skill",
+   "title": "Read a skill",
+   "description": "Returns one of Rukoo's skills: instructions for an email task, written by Rukoo or by the user, not taken from an email. You get SKILL.md and the text files next to it (scripts, references), and a list of what was left out. Pass file to read one of the skill's files. Without a name it lists the skills. Follow a skill when the user asks for it or the task matches its description. There are no skills yet.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "The skill, e.g. \"data-deletion-request\". Leave it out to list the skills.",
+      "maxLength": 64
+     },
+     "file": {
+      "type": "string",
+      "description": "One file of the skill by its path, as read_skill lists it, e.g. \"references/forms.md\".",
+      "maxLength": 500
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+   }
+  }
+ ]
+}

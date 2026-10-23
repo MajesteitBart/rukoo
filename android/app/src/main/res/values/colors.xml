@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Colors the window needs before Compose draws: the canvas behind everything (`bg` in RukooColors) for
+     the window background and splash screen, and the launcher tile. Everything else lives in RukooColors. -->
+<resources>
+    <color name="rukoo_bg_light">#FFF3F4F6</color>
+    <color name="rukoo_bg_dark">#FF141519</color>
+    <!-- `panel` in light mode. A dark tile vanished into dark app drawers; white reads on both. -->
+    <color name="rukoo_launcher_background">#FFFFFFFF</color>
+</resources>

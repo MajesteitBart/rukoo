@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The mail interface: list, folders, reader, composer and search (track B). Names are the desktop catalog
+     keys with . and camelCase turned into _ (spec 6 §6.2-6.5); keys marked "phone" have no desktop twin. -->
+<resources>
+    <!-- Mail list, folders, search and filters -->
+    <string name="mailbox_empty_filter">No emails match this filter</string>
+    <string name="mailbox_empty_folder">No emails</string>
+    <string name="mailbox_empty_search">No results</string>
+    <string name="mailbox_empty_search_all">Try searching all folders.</string>
+    <string name="mailbox_empty_search_all_action">Search all folders</string>
+    <string name="mailbox_empty_search_other">Try another search term.</string>
+    <string name="mailbox_empty_show_all">Show all</string>
+    <string name="mailbox_empty_syncing">Syncing...</string>
+    <string name="mailbox_filters_all">All</string>
+    <string name="mailbox_filters_attachments">Attachments</string>
+    <string name="mailbox_filters_label">Filter</string>
+    <string name="mailbox_filters_starred">Starred</string>
+    <string name="mailbox_filters_unread">Unread</string>
+    <string name="mailbox_folders_archive">Archive</string>
+    <string name="mailbox_folders_created">Folder %1$s created</string>
+    <string name="mailbox_folders_drafts">Drafts</string>
+    <string name="mailbox_folders_inbox">Inbox</string>
+    <string name="mailbox_folders_junk">Spam</string>
+    <string name="mailbox_folders_name">Folder name</string>
+    <string name="mailbox_folders_new">New folder</string>
+    <string name="mailbox_folders_sent">Sent</string>
+    <string name="mailbox_folders_starred">Starred</string>
+    <string name="mailbox_folders_trash">Trash</string>
+    <string name="mailbox_folders_vip">VIPs</string>
+    <!-- phone: the engine's "everything" view, the scope of a search in all folders -->
+    <string name="mailbox_folders_everything">All folders</string>
+    <string name="mailbox_layout_folders">Folders</string>
+    <string name="mailbox_list_sent_to">To: %1$s</string>
+    <string name="mailbox_list_unread_summary">%1$d unread · %2$s</string>
+    <string name="mailbox_message_attachment">Attachment</string>
+    <string name="mailbox_message_collapse">Collapse</string>
+    <string name="mailbox_message_no_recipient">(No recipient)</string>
+    <string name="mailbox_message_no_subject">(no subject)</string>
+    <string name="mailbox_message_read">Read</string>
+    <string name="mailbox_message_replied">Replied</string>
+    <string name="mailbox_message_select">Select</string>
+    <plurals name="mailbox_message_stack">
+        <item quantity="one">%1$d more email from %2$s</item>
+        <item quantity="other">%1$d more emails from %2$s</item>
+    </plurals>
+    <string name="mailbox_message_unknown_sender">(Unknown sender)</string>
+    <string name="mailbox_message_vip">VIP</string>
+    <string name="mailbox_search_all_accounts">All accounts</string>
+    <string name="mailbox_search_all_folders">All folders</string>
+    <string name="mailbox_search_folder_named">This folder (%1$s)</string>
+    <string name="mailbox_search_label">Search</string>
+    <string name="mailbox_search_placeholder">Search in %1$s</string>
+    <string name="mailbox_search_results">Search results</string>
+    <string name="mailbox_search_scope">Search scope</string>
+    <plurals name="mailbox_search_summary">
+        <item quantity="one">%1$d result for \"%2$s\" in %3$s</item>
+        <item quantity="other">%1$d results for \"%2$s\" in %3$s</item>
+    </plurals>
+    <string name="mailbox_selection_clear">Clear selection</string>
+    <string name="mailbox_selection_count">%1$d selected</string>
+    <string name="mailbox_selection_none">Deselect all</string>
+    <!-- phone: the selection bar's checkbox when not everything is selected -->
+    <string name="mailbox_selection_all">Select all</string>
+    <plurals name="mailbox_selection_summary">
+        <item quantity="one">%1$d email selected</item>
+        <item quantity="other">%1$d emails selected</item>
+    </plurals>
+    <string name="mailbox_sidebar_unread_count">%1$d unread</string>
+    <plurals name="mailbox_sidebar_account_count">
+        <item quantity="one">%1$d account</item>
+        <item quantity="other">%1$d accounts</item>
+    </plurals>
+    <plurals name="mailbox_sidebar_draft_count">
+        <item quantity="one">%1$d draft</item>
+        <item quantity="other">%1$d drafts</item>
+    </plurals>
+    <string name="mailbox_sort_menu">Sort by...</string>
+    <string name="mailbox_sort_newest">Date (newest first)</string>
+    <string name="mailbox_sort_oldest">Date (oldest first)</string>
+    <string name="mailbox_sort_sender">Sender</string>
+    <string name="mailbox_sort_title">Sort by</string>
+    <string name="mailbox_sort_unread">Unread first</string>
+    <string name="mailbox_sync_date">Updated on %1$s</string>
+    <string name="mailbox_sync_done">Synced</string>
+    <string name="mailbox_sync_failed">Sync failed</string>
+    <string name="mailbox_sync_just_now">Updated just now</string>
+    <plurals name="mailbox_sync_minutes_ago">
+        <item quantity="one">Updated %1$d minute ago</item>
+        <item quantity="other">Updated %1$d minutes ago</item>
+    </plurals>
+    <string name="mailbox_sync_never">Not synced yet</string>
+    <string name="mailbox_sync_syncing">Syncing...</string>
+    <string name="mailbox_sync_time">Updated at %1$s</string>
+
+    <!-- Mail actions and undo toasts -->
+    <string name="errors_undo_expired">This action can no longer be undone.</string>
+    <string name="mailbox_actions_add_star">Add star</string>
+    <string name="mailbox_actions_already_read">All emails are already read</string>
+    <string name="mailbox_actions_compact">Compact view</string>
+    <string name="mailbox_actions_marked_unread">Marked as unread</string>
+    <string name="mailbox_actions_move_menu">Move...</string>
+    <string name="mailbox_actions_read">Mark as read</string>
+    <string name="mailbox_actions_read_all">Mark all as read</string>
+    <plurals name="mailbox_actions_read_count">
+        <item quantity="one">Marked %1$d email as read</item>
+        <item quantity="other">Marked %1$d emails as read</item>
+    </plurals>
+    <string name="mailbox_actions_star">Star</string>
+    <string name="mailbox_actions_sync">Sync</string>
+    <string name="mailbox_actions_unread">Mark as unread</string>
+    <string name="mailbox_actions_unstar">Remove star</string>
+    <plurals name="mailbox_delete_count_action">
+        <item quantity="one">Delete %1$d email</item>
+        <item quantity="other">Delete %1$d emails</item>
+    </plurals>
+    <plurals name="mailbox_delete_deleted_count">
+        <item quantity="one">%1$d email deleted</item>
+        <item quantity="other">%1$d emails deleted</item>
+    </plurals>
+    <string name="mailbox_delete_deleted_one">Deleted</string>
+    <plurals name="mailbox_delete_moved_count">
+        <item quantity="one">%1$d email moved to Trash</item>
+        <item quantity="other">%1$d emails moved to Trash</item>
+    </plurals>
+    <string name="mailbox_delete_moved_one">Moved to Trash</string>
+    <string name="mailbox_delete_no_trash">This account has no Trash folder. The email will be permanently deleted from the server.</string>
+    <plurals name="mailbox_delete_no_trash_count">
+        <item quantity="one">This account has no Trash folder. %1$d email will be permanently deleted from the server.</item>
+        <item quantity="other">This account has no Trash folder. %1$d emails will be permanently deleted from the server.</item>
+    </plurals>
+    <string name="mailbox_delete_one">This email will be permanently deleted.</string>
+    <plurals name="mailbox_delete_permanent_count">
+        <item quantity="one">%1$d email will be permanently deleted.</item>
+        <item quantity="other">%1$d emails will be permanently deleted.</item>
+    </plurals>
+    <string name="mailbox_delete_title">Permanently delete?</string>
+    <string name="mailbox_move_already_there">These emails are already there</string>
+    <plurals name="mailbox_move_count">
+        <item quantity="one">%1$d email moved to %2$s</item>
+        <item quantity="other">%1$d emails moved to %2$s</item>
+    </plurals>
+    <plurals name="mailbox_move_count_title">
+        <item quantity="one">Move %1$d email to</item>
+        <item quantity="other">Move %1$d emails to</item>
+    </plurals>
+    <string name="mailbox_move_no_archive">No archive folder is available</string>
+    <string name="mailbox_move_one">Moved to %1$s</string>
+    <string name="mailbox_move_title">Move to</string>
+    <string name="mailbox_undo_restored">Restored</string>
+    <plurals name="mailbox_undo_restored_count">
+        <item quantity="one">%1$d email restored</item>
+        <item quantity="other">%1$d emails restored</item>
+    </plurals>
+    <string name="errors_unsubscribe_missing">This email has no unsubscribe link.</string>
+
+    <!-- Reader -->
+    <string name="reader_actions_edit">Edit</string>
+    <string name="reader_actions_label">Actions</string>
+    <string name="reader_actions_more">More actions</string>
+    <string name="reader_address_copied">Copied</string>
+    <string name="reader_address_copy">Copy email address</string>
+    <plurals name="reader_attachments_count">
+        <item quantity="one">%1$d attachment</item>
+        <item quantity="other">%1$d attachments</item>
+    </plurals>
+    <string name="reader_attachments_open">Open: %1$s</string>
+    <!-- phone: attachments go to other apps through the share sheet -->
+    <string name="reader_attachments_share">Share %1$s</string>
+    <!-- phone -->
+    <string name="reader_attachments_no_app">No app on this phone opens this file. Share it instead.</string>
+    <!-- phone: desktop's RISKY rule, which offers Save instead of Open -->
+    <string name="reader_attachments_risky">Rukoo doesn\'t open this kind of file from an email. Share it to keep it.</string>
+    <string name="reader_content_label">Email content</string>
+    <string name="reader_details_hide">Hide all details</string>
+    <string name="reader_details_show">Show all details</string>
+    <string name="reader_empty_title">No email selected</string>
+    <string name="reader_headers_bcc">Bcc</string>
+    <string name="reader_headers_cc">Cc</string>
+    <string name="reader_headers_date">Date</string>
+    <string name="reader_headers_from">From</string>
+    <string name="reader_headers_reply_to">Reply to</string>
+    <string name="reader_headers_subject">Subject</string>
+    <string name="reader_headers_to">To</string>
+    <string name="reader_navigation_back">Back to message list</string>
+    <!-- phone: desktop's labels name the arrow keys -->
+    <string name="reader_navigation_next">Next email</string>
+    <string name="reader_navigation_previous">Previous email</string>
+    <string name="reader_recipients_me">me</string>
+    <plurals name="reader_recipients_others">
+        <item quantity="one">" and %1$d other"</item>
+        <item quantity="other">" and %1$d others"</item>
+    </plurals>
+    <string name="reader_recipients_summary">to %1$s</string>
+    <string name="reader_recipients_unknown">to unknown recipients</string>
+    <string name="reader_unsubscribe_action">Unsubscribe</string>
+    <string name="reader_unsubscribe_done">Unsubscribed from %1$s</string>
+    <string name="reader_unsubscribe_link_help">Rukoo Mail will use the sender\'s unsubscribe link.</string>
+    <string name="reader_unsubscribe_mail_help">Rukoo Mail will prepare an unsubscribe email for you.</string>
+    <string name="reader_unsubscribe_opened">The unsubscribe page has opened in your browser</string>
+    <string name="reader_unsubscribe_subject">Unsubscribe</string>
+    <string name="reader_unsubscribe_title">Unsubscribe from %1$s?</string>
+    <string name="reader_unsubscribe_tooltip">Unsubscribe from these emails</string>
+    <string name="reader_unsubscribe_unknown_sender">this sender</string>
+    <!-- phone: the message's raw headers, instead of desktop's Export as .eml -->
+    <string name="reader_source_show">Show original</string>
+
+    <!-- Composer -->
+    <string name="composer_actions_add_bcc">Add Bcc</string>
+    <string name="composer_actions_add_cc">Add Cc</string>
+    <string name="composer_actions_discard">Delete draft</string>
+    <string name="composer_actions_edit_draft">Edit draft</string>
+    <string name="composer_actions_save_draft">Save to Drafts</string>
+    <string name="composer_actions_send">Send</string>
+    <string name="composer_agent_drafted">Drafted by %1$s</string>
+    <string name="composer_agent_drafted_edited">Drafted by %1$s · edited</string>
+    <string name="composer_agent_someone">an agent</string>
+    <string name="composer_agent_undo">Undo</string>
+    <string name="composer_agent_undo_help">Your own changes since then are undone too.</string>
+    <string name="composer_agent_undo_title">Undo %1$s\'s draft?</string>
+    <string name="composer_attachments_pick">Attach files</string>
+    <!-- phone -->
+    <string name="composer_attachments_remove">Remove %1$s</string>
+    <!-- phone -->
+    <string name="composer_attachments_failed">Rukoo couldn\'t add %1$s.</string>
+    <string name="composer_body_label">Message body</string>
+    <string name="composer_body_placeholder">Write your message</string>
+    <string name="composer_close_discard">Don\'t save</string>
+    <string name="composer_close_help">Save this message to Drafts to continue writing later.</string>
+    <string name="composer_close_title">Save draft?</string>
+    <string name="composer_discard_saved_help">This draft will also be removed from Drafts.</string>
+    <string name="composer_discard_title">Delete draft?</string>
+    <string name="composer_discard_unsaved_help">What you have written will be lost.</string>
+    <string name="composer_errors_autosave">Autosave failed</string>
+    <!-- phone: drafts.json couldn't be written; the composer stays open -->
+    <string name="composer_errors_save_local">Rukoo couldn\'t keep the draft on this phone.</string>
+    <string name="composer_errors_delete_local">Rukoo couldn\'t delete the draft from this phone.</string>
+    <!-- phone: a draft reopened from the server's Drafts folder couldn't be saved back there; %1$s is the server's error -->
+    <string name="composer_errors_save_server">Rukoo couldn\'t save the draft in Drafts (%1$s), so it\'s kept on this phone.</string>
+    <!-- phone: the draft went back to Drafts, but its attachments couldn't be found on the new copy -->
+    <string name="composer_errors_draft_attachments">The draft is saved in Drafts, but Rukoo couldn\'t read its attachments back. Open it from Drafts to go on.</string>
+    <!-- phone: the signature sits under the plain-text editor, apart from the text an agent may replace -->
+    <string name="composer_signature_label">Signature</string>
+    <string name="composer_signature_remove">Remove signature</string>
+    <string name="composer_signature_add">Add signature</string>
+    <string name="composer_errors_no_account">Add an email account in Rukoo Mail before you write an email.</string>
+    <string name="composer_errors_no_recipients">Add at least one recipient</string>
+    <string name="composer_errors_send">Sending failed</string>
+    <!-- phone: the engine's reason after desktop's "Sending failed" -->
+    <string name="composer_errors_send_reason">Sending failed: %1$s</string>
+    <string name="composer_quote_exclude">Exclude from message</string>
+    <string name="composer_quote_excluded_pill">··· excluded</string>
+    <string name="composer_quote_hide">Hide previous messages</string>
+    <string name="composer_quote_include">Include in message</string>
+    <string name="composer_quote_show">Show previous messages</string>
+    <string name="composer_quote_title">Previous message</string>
+    <!-- phone -->
+    <string name="composer_recipient_remove">Remove %1$s</string>
+    <string name="composer_send_no_subject_help">Send this email without a subject?</string>
+    <string name="composer_send_no_subject_title">No subject</string>
+    <string name="composer_status_deleted">Draft deleted</string>
+    <string name="composer_status_kept">Draft kept in Drafts</string>
+    <string name="composer_status_saved">Draft saved</string>
+    <string name="composer_status_saved_at">Saved at %1$s</string>
+    <string name="composer_status_saved_closed">Draft saved to Drafts</string>
+    <string name="composer_status_saved_to_drafts">Saved to Drafts</string>
+    <string name="composer_status_sending">Sending...</string>
+    <string name="composer_status_sent">Email sent</string>
+    <string name="composer_status_sent_draft_kept">The email was sent, but its draft couldn\'t be removed from this phone. You can delete it in Drafts.</string>
+    <string name="composer_titles_draft">Draft</string>
+    <string name="composer_titles_forward">Forward</string>
+    <string name="composer_titles_new">New message</string>
+    <string name="composer_titles_reply">Reply</string>
+    <string name="composer_titles_reply_all">Reply all</string>
+
+    <!-- The agent's way in from the mail screens (desktop agent.panel.*, without the keyboard shortcut) -->
+    <string name="mail_agent_history">Recent chats</string>
+    <string name="mail_agent_add_to_chat">Add to chat</string>
+    <!-- phone: the reader's agent pill -->
+    <string name="mail_agent_chat_about">Chat with %1$s about this email</string>
+    <!-- phone: drafts kept on the phone, above the account's own drafts -->
+    <string name="mail_drafts_local">On this phone</string>
+    <string name="mail_drawer_settings">Settings</string>
+    <string name="mail_drawer_accounts">Accounts</string>
+</resources>

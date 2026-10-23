@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The silent notification of the service that serves Rukoo's tools to agents over Tailscale. -->
+    <string name="mcp_notification_title">Agents can use Rukoo on this phone</string>
+    <!-- %1$s is the address agents connect to (100.64.0.3:47800), %2$s the agents that may, joined with commas. -->
+    <string name="mcp_notification_listening">On %1$s for %2$s</string>
+    <string name="mcp_notification_no_agents">On %1$s. No agent is set up to connect yet.</string>
+    <string name="mcp_notification_no_tailnet">Waiting for Tailscale. Turn it on so agents can reach this phone.</string>
+    <!-- A paired computer in the list of agents that may connect; %1$s is the computer's name. -->
+    <string name="mcp_agents_computer">Claude Code and Codex on %1$s</string>
+
+    <!-- Status of phone tools, shown in Settings. -->
+    <string name="mcp_status_disabled">Off</string>
+    <string name="mcp_status_no_tailnet">Tailscale is off</string>
+    <string name="mcp_status_port_in_use">Port %1$d is in use</string>
+    <string name="mcp_status_failed">Rukoo could not start its tools</string>
+
+    <!-- Settings, under Clark: %1$s is the agent's name, %2$s this phone's MCP address. -->
+    <string name="mcp_hermes_note">%1$s\'s Rukoo bridge finds this phone by itself once the bridge is up to date. Until then, add RUKOO_URL=%2$s under mcp_servers.rukoo.env in ~/.hermes/config.yaml.</string>
+    <string name="mcp_hermes_note_no_address">%1$s\'s Rukoo bridge finds this phone by itself once the bridge is up to date and Tailscale runs here.</string>
+
+    <!-- When an agent unsubscribes while Rukoo is in the background: tapping opens the sender's page. -->
+    <string name="mcp_unsubscribe_title">Finish unsubscribing</string>
+    <string name="mcp_unsubscribe_text">Tap to open the sender\'s unsubscribe page.</string>
+</resources>

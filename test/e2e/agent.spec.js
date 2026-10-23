@@ -1380,6 +1380,101 @@ test('a reopened reply-all draft with only a new To still drops the old Cc', asy
   await expect(win.locator('.composer [data-rfield="cc"] .recipient')).toHaveCount(0);
 });
 
+// The phone's side of pairing and the export (agents/phonehost.js), over HTTP like Rukoo on a phone.
+function phoneCall(url, { method = 'GET', token, body } = {}) {
+  const http = require('http');
+  return new Promise((resolve, reject) => {
+    const data = body === undefined ? null : JSON.stringify(body);
+    const req = http.request(url, { method, agent: false, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: res.statusCode, json: text ? JSON.parse(text) : null });
+      });
+    });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+// The Tailscale listener goes on 127.0.0.2, so nothing listens on a real tailnet, and the test counts the requests
+// it makes as coming from the tailnet.
+test('phone: Settings pairs a phone with the code it shows, lists it, sends the accounts again and removes it', async () => {
+  await app.evaluate(async () => {
+    const hub = global.__semAgents;
+    await hub.updateConfig({ mcp: { remoteHost: '127.0.0.2' } });
+    hub.phoneHost.isPeer = () => true;
+  });
+  await win.click('[data-action="settings"]');
+  await win.locator('.page.settings .row', { hasText: 'Claude Code, Codex and OpenClaw' }).click();
+  const toggle = win.locator('.page.settings [data-a="agent-phone"]');
+  await expect(toggle).toContainText('Let my phone use this computer');
+  await expect(toggle).toContainText('Your phone runs Claude Code and Codex chats here over Tailscale.');
+  await expect(toggle.locator('.switch')).not.toHaveClass(/\bon\b/);
+
+  // Cancel: the code stops working.
+  const pairRow = win.locator('.page.settings [data-a="agent-phone-pair"]');
+  await pairRow.click();
+  await win.locator('.radio-row', { hasText: 'Pair only' }).click();
+  const dialog = win.locator('.dialog', { hasText: 'Pair a phone' });
+  await expect(dialog.locator('.phone-pair-code')).toHaveText(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
+  await expect(dialog).toContainText('The code works for 5 more minutes.');
+  await expect(dialog).not.toContainText('fetch your accounts');
+  // Pairing turned the switch on, which shows where Rukoo listens.
+  await expect(toggle.locator('.switch')).toHaveClass(/\bon\b/);
+  const address = await dialog.locator('.phone-pair-address').textContent();
+  expect(address).toMatch(/^http:\/\/127\.0\.0\.2:\d+$/);
+  await expect(toggle).toContainText(address);
+  const cancelled = await dialog.locator('.phone-pair-code').textContent();
+  await dialog.locator('.buttons button', { hasText: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  const device = { name: 'Galaxy Z Fold7', platform: 'android', model: 'SM-F966B', appVersion: '0.1.0' };
+  expect((await phoneCall(`${address}/phone/v1/pair`, { method: 'POST', body: { code: cancelled, device } })).status).toBe(410);
+
+  // Pair and send: the dialog closes when the phone pairs, and the phone is listed.
+  await pairRow.click();
+  await win.locator('.radio-row', { hasText: 'Pair and send my accounts and agent settings' }).click();
+  await expect(dialog).toContainText('Your phone can then fetch your accounts and agent settings once, in the next 10 minutes.');
+  const code = await dialog.locator('.phone-pair-code').textContent();
+  const paired = await phoneCall(`${address}/phone/v1/pair`, { method: 'POST', body: { code: code.toLowerCase(), device } });
+  expect(paired.status).toBe(200);
+  await expect(dialog).toHaveCount(0);
+  await expect(win.locator('#toast')).toContainText('Paired with Galaxy Z Fold7');
+  const phoneRow = win.locator('.page.settings [data-a^="agent-phone-manage:"]');
+  await expect(phoneRow).toContainText('Galaxy Z Fold7');
+  await expect(phoneRow).toContainText('Can fetch your accounts and settings now');
+
+  // The phone fetches them once: the window says so, and the row no longer offers them.
+  const exported = await phoneCall(`${address}/phone/v1/export`, { token: paired.json.token });
+  expect(exported.status).toBe(200);
+  expect(exported.json.accounts.map((a) => a.type)).toEqual(['demo']);
+  await expect(win.locator('#toast')).toContainText('Sent your accounts and settings to Galaxy Z Fold7');
+  await expect(phoneRow).toContainText('Last seen');
+  await expect(phoneRow).not.toContainText('Can fetch');
+  expect((await phoneCall(`${address}/phone/v1/export`, { token: paired.json.token })).status).toBe(403);
+
+  await phoneRow.click();
+  await win.locator('.radio-row', { hasText: 'Send accounts and settings again' }).click();
+  await expect(win.locator('#toast')).toContainText('Your phone can fetch them in the next 10 minutes');
+  await expect(phoneRow).toContainText('Can fetch your accounts and settings now');
+
+  await phoneRow.click();
+  await win.locator('.radio-row', { hasText: 'Remove this phone' }).click();
+  const confirm = win.locator('.dialog', { hasText: 'Galaxy Z Fold7 can no longer use this computer.' });
+  await confirm.locator('.buttons button', { hasText: 'Remove' }).click();
+  await expect(win.locator('#toast')).toContainText('Removed Galaxy Z Fold7');
+  await expect(phoneRow).toHaveCount(0);
+  expect((await phoneCall(`${address}/phone/v1/hello`, { token: paired.json.token })).status).toBe(401);
+
+  // Off: the switch closes the listener again, since nothing else wants it.
+  await toggle.click();
+  await expect(toggle.locator('.switch')).not.toHaveClass(/\bon\b/);
+  await expect(toggle).toContainText('Your phone runs Claude Code and Codex chats here over Tailscale.');
+  expect(await app.evaluate(() => global.__semAgents.mcp.ports().remote)).toBe(null);
+});
+
 test('Settings opens at once while agent status is slow, and fills it in when it comes', async () => {
   // A Hermes server that does not answer: status takes seconds.
   await app.evaluate(() => {

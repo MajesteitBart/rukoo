@@ -182,8 +182,14 @@ class CodexAdapter {
 
   // The settings with the chat's own model and effort; without them the chat follows the settings. The hub only
   // passes an effort that model/list says the model supports.
+  // A turn can ask for approvals when Settings would not (turn.access 'ask', a phone's turn), never the other way round.
   withChoice(s, turn) {
-    return { ...s, model: String((turn && turn.model) || '').trim() || s.model, effort: String((turn && turn.effort) || '').trim() };
+    return {
+      ...s,
+      model: String((turn && turn.model) || '').trim() || s.model,
+      effort: String((turn && turn.effort) || '').trim(),
+      access: turn && turn.access === 'ask' ? 'ask' : s.access
+    };
   }
 
   // The models app-server offers (model/list), each with the efforts it supports. The list needs a running

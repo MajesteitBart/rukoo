@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Texts the mail engine produces (track A): errors, notifications, the reply quote and the Google sign-in page.
+     Keys follow the desktop catalog (src/i18n/en.js) with an engine_ prefix. -->
+<resources>
+    <string name="engine_errors_account_duplicate">This account has already been added.</string>
+    <string name="engine_errors_account_identity">This address does not belong to this account.</string>
+    <string name="engine_errors_account_invalid_email">Enter a valid email address.</string>
+    <string name="engine_errors_account_missing">Account not found.</string>
+    <string name="engine_errors_account_password">Enter your password.</string>
+    <string name="engine_errors_attachment_missing">Attachment not found.</string>
+
+    <string name="engine_errors_connection_auth">Sign-in failed. Check your email address and password or app password.</string>
+    <string name="engine_errors_connection_certificate">The server certificate is not trusted.</string>
+    <string name="engine_errors_connection_closed">The connection to the mail server was closed. Try again.</string>
+    <string name="engine_errors_connection_too_deep">The server sent a message nested too deeply to read. Rukoo skipped this sync; the message can be deleted in another app.</string>
+    <string name="engine_errors_message_too_deep">This email is built in a way Rukoo can’t read. You can open it in another app.</string>
+    <string name="engine_errors_connection_host">Server not found. Check the server name.</string>
+    <string name="engine_errors_connection_refused">Connection refused. Check the server and port.</string>
+    <string name="engine_errors_connection_timeout">The connection to the server timed out.</string>
+
+    <string name="engine_errors_folder_duplicate">A folder with that name already exists.</string>
+    <string name="engine_errors_folder_invalid_name" formatted="false">A folder name cannot contain / \\ % or *.</string>
+    <string name="engine_errors_folder_name_required">Enter a folder name.</string>
+    <string name="engine_errors_folder_no_archive">This account has no archive folder.</string>
+    <string name="engine_errors_folder_no_drafts">This account has no Drafts folder.</string>
+    <string name="engine_errors_folder_rebuilt">The folder was rebuilt on the server.</string>
+    <string name="engine_errors_folder_missing">The folder %1$s does not exist.</string>
+
+    <string name="engine_errors_google_aliases">Gmail did not return aliases (%1$s).</string>
+    <string name="engine_errors_google_aliases_auth">Only available for accounts using Google sign-in.</string>
+    <string name="engine_errors_google_cancelled">Sign-in cancelled.</string>
+    <string name="engine_errors_google_connection">Cannot reach Google. Check your internet connection.</string>
+    <string name="engine_errors_google_denied">You did not grant access.</string>
+    <string name="engine_errors_google_expired">Your Google access has expired or been revoked. Sign in again through Settings.</string>
+    <string name="engine_errors_google_no_email">Google did not return an email address.</string>
+    <string name="engine_errors_google_no_refresh_token">Google did not return a refresh token. Try again.</string>
+    <string name="engine_errors_google_not_configured">Google sign-in is not set up on this phone.</string>
+    <string name="engine_errors_google_request">Google rejected the request (%1$s).</string>
+    <string name="engine_errors_google_scope">Allow Rukoo Mail to access Gmail (select all permissions) and try again.</string>
+    <string name="engine_errors_google_timeout">Sign-in took too long. Try again.</string>
+    <string name="engine_errors_google_unavailable">Google sign-in is unavailable.</string>
+    <string name="engine_errors_google_unreachable">Cannot reach Gmail.</string>
+    <string name="engine_errors_google_wrong_account">You signed in as %1$s, but this account is %2$s.</string>
+
+    <string name="engine_errors_message_missing">Message not found.</string>
+    <string name="engine_errors_message_server_missing">Message not found on the server.</string>
+    <string name="engine_errors_network_private_host">%1$s is not a public address</string>
+    <string name="engine_errors_send_identity">You cannot send as %1$s from this account.</string>
+    <string name="engine_errors_send_no_recipients">Add at least one recipient.</string>
+    <string name="engine_common_errors_invalid_email_value">Invalid email address: %1$s</string>
+    <string name="engine_errors_undo_expired">This action can no longer be undone.</string>
+    <string name="engine_errors_undo_rebuilt">This action can no longer be undone: the folder was rebuilt on the server.</string>
+    <string name="engine_errors_unsubscribe_missing">This email has no unsubscribe link.</string>
+    <string name="engine_errors_storage">The mail data on this phone could not be read. Restart Rukoo Mail to try again.</string>
+    <string name="engine_settings_signature_too_large">This signature is too large. Use smaller images, or images from the web.</string>
+
+    <string name="engine_setup_demo_name">Demo User</string>
+    <string name="engine_attachments_default_numbered">attachment-%1$d</string>
+    <string name="engine_reader_unsubscribe_subject">Unsubscribe</string>
+
+    <!-- New-mail notifications. -->
+    <plurals name="engine_notifications_new_count">
+        <item quantity="one">%1$d new email</item>
+        <item quantity="other">%1$d new emails</item>
+    </plurals>
+    <string name="engine_notifications_unknown_sender">(Unknown sender)</string>
+    <string name="engine_notifications_no_subject">(no subject)</string>
+
+    <!-- The header above a quoted message in replies and forwards. -->
+    <string name="engine_composer_quote_marker">-------- Original message --------</string>
+    <string name="engine_composer_quote_from">From: %1$s</string>
+    <string name="engine_composer_quote_date">Date: %1$s</string>
+    <string name="engine_composer_quote_to">To: %1$s</string>
+    <string name="engine_composer_quote_subject">Subject: %1$s</string>
+
+    <!-- The page the browser shows after Google sign-in, before it goes back to the app. -->
+    <string name="engine_google_page_success">You are signed in</string>
+    <string name="engine_google_page_return">You can close this tab and return to Rukoo Mail.</string>
+    <string name="engine_google_page_failed">Sign-in failed</string>
+    <string name="engine_google_page_invalid_request">Invalid request. Start sign-in again from Rukoo Mail.</string>
+    <string name="engine_google_page_cancelled">Sign-in cancelled</string>
+    <string name="engine_google_page_close_tab">You can close this tab.</string>
+    <string name="engine_google_page_open">Open Rukoo Mail</string>
+
+</resources>

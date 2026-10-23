@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="engine_errors_account_duplicate">Dit account is al toegevoegd.</string>
+    <string name="engine_errors_account_identity">Dit adres hoort niet bij dit account.</string>
+    <string name="engine_errors_account_invalid_email">Voer een geldig e-mailadres in.</string>
+    <string name="engine_errors_account_missing">Account niet gevonden.</string>
+    <string name="engine_errors_account_password">Voer je wachtwoord in.</string>
+    <string name="engine_errors_attachment_missing">Bijlage niet gevonden.</string>
+
+    <string name="engine_errors_connection_auth">Aanmelden mislukt. Controleer je e-mailadres en (app-)wachtwoord.</string>
+    <string name="engine_errors_connection_certificate">Het certificaat van de server is niet vertrouwd.</string>
+    <string name="engine_errors_connection_closed">De verbinding met de mailserver is gesloten. Probeer het opnieuw.</string>
+    <string name="engine_errors_connection_too_deep">De server stuurde een bericht dat te diep genest is om te lezen. Rukoo heeft deze synchronisatie overgeslagen; verwijder het bericht in een andere app.</string>
+    <string name="engine_errors_message_too_deep">Deze e-mail is zo opgebouwd dat Rukoo hem niet kan lezen. Open hem in een andere app.</string>
+    <string name="engine_errors_connection_host">Server niet gevonden. Controleer de servernaam.</string>
+    <string name="engine_errors_connection_refused">Verbinding geweigerd. Controleer de server en poort.</string>
+    <string name="engine_errors_connection_timeout">Er is een time-out opgetreden bij het verbinden met de server.</string>
+
+    <string name="engine_errors_folder_duplicate">Er is al een map met die naam.</string>
+    <string name="engine_errors_folder_invalid_name" formatted="false">Een mapnaam mag geen / \\ % of * bevatten.</string>
+    <string name="engine_errors_folder_name_required">Geef de map een naam.</string>
+    <string name="engine_errors_folder_no_archive">Dit account heeft geen archiefmap.</string>
+    <string name="engine_errors_folder_no_drafts">Deze account heeft geen map Concepten.</string>
+    <string name="engine_errors_folder_rebuilt">De map is op de server opnieuw opgebouwd.</string>
+    <string name="engine_errors_folder_missing">Map %1$s bestaat niet.</string>
+
+    <string name="engine_errors_google_aliases">Gmail gaf de aliassen niet terug (%1$s).</string>
+    <string name="engine_errors_google_aliases_auth">Alleen beschikbaar voor accounts met Google-aanmelding.</string>
+    <string name="engine_errors_google_cancelled">Aanmelden geannuleerd.</string>
+    <string name="engine_errors_google_connection">Kan Google niet bereiken. Controleer je internetverbinding.</string>
+    <string name="engine_errors_google_denied">Je hebt geen toegang gegeven.</string>
+    <string name="engine_errors_google_expired">Je Google-toegang is verlopen of ingetrokken. Meld je opnieuw aan via Instellingen.</string>
+    <string name="engine_errors_google_no_email">Google gaf geen e-mailadres terug.</string>
+    <string name="engine_errors_google_no_refresh_token">Google gaf geen vernieuwingstoken terug. Probeer het opnieuw.</string>
+    <string name="engine_errors_google_not_configured">Google-aanmelding is niet ingesteld op deze telefoon.</string>
+    <string name="engine_errors_google_request">Google weigerde de aanvraag (%1$s).</string>
+    <string name="engine_errors_google_scope">Geef Rukoo Mail toegang tot Gmail (vink alle machtigingen aan) en probeer het opnieuw.</string>
+    <string name="engine_errors_google_timeout">Aanmelden duurde te lang. Probeer het opnieuw.</string>
+    <string name="engine_errors_google_unavailable">Google-aanmelding is niet beschikbaar.</string>
+    <string name="engine_errors_google_unreachable">Kan Gmail niet bereiken.</string>
+    <string name="engine_errors_google_wrong_account">Je hebt je aangemeld als %1$s, maar dit account is %2$s.</string>
+
+    <string name="engine_errors_message_missing">Bericht niet gevonden.</string>
+    <string name="engine_errors_message_server_missing">Bericht niet gevonden op de server.</string>
+    <string name="engine_errors_network_private_host">%1$s is geen openbaar adres</string>
+    <string name="engine_errors_send_identity">Je kunt niet verzenden als %1$s vanaf dit account.</string>
+    <string name="engine_errors_send_no_recipients">Voeg minstens één ontvanger toe.</string>
+    <string name="engine_common_errors_invalid_email_value">Ongeldig e-mailadres: %1$s</string>
+    <string name="engine_errors_undo_expired">Dit kan niet meer ongedaan worden gemaakt.</string>
+    <string name="engine_errors_undo_rebuilt">Dit kan niet meer ongedaan worden gemaakt: de map is op de server opnieuw opgebouwd.</string>
+    <string name="engine_errors_unsubscribe_missing">Deze e-mail heeft geen afmeldlink.</string>
+    <string name="engine_errors_storage">De e-mailgegevens op deze telefoon konden niet worden gelezen. Start Rukoo Mail opnieuw om het nog eens te proberen.</string>
+    <string name="engine_settings_signature_too_large">Deze handtekening is te groot. Gebruik kleinere afbeeldingen, of afbeeldingen van internet.</string>
+
+    <string name="engine_setup_demo_name">Demo Gebruiker</string>
+    <string name="engine_attachments_default_numbered">bijlage-%1$d</string>
+    <string name="engine_reader_unsubscribe_subject">Afmelden</string>
+
+    <plurals name="engine_notifications_new_count">
+        <item quantity="one">%1$d nieuwe e-mail</item>
+        <item quantity="other">%1$d nieuwe e-mails</item>
+    </plurals>
+    <string name="engine_notifications_unknown_sender">(Onbekende afzender)</string>
+    <string name="engine_notifications_no_subject">(geen onderwerp)</string>
+
+    <string name="engine_composer_quote_marker">-------- Oorspronkelijk bericht --------</string>
+    <string name="engine_composer_quote_from">Van: %1$s</string>
+    <string name="engine_composer_quote_date">Datum: %1$s</string>
+    <string name="engine_composer_quote_to">Aan: %1$s</string>
+    <string name="engine_composer_quote_subject">Onderwerp: %1$s</string>
+
+    <string name="engine_google_page_success">Je bent aangemeld</string>
+    <string name="engine_google_page_return">Je kunt dit tabblad sluiten en teruggaan naar Rukoo Mail.</string>
+    <string name="engine_google_page_failed">Aanmelden mislukt</string>
+    <string name="engine_google_page_invalid_request">Ongeldige aanvraag. Start het aanmelden opnieuw vanuit Rukoo Mail.</string>
+    <string name="engine_google_page_cancelled">Aanmelden geannuleerd</string>
+    <string name="engine_google_page_close_tab">Je kunt dit tabblad sluiten.</string>
+    <string name="engine_google_page_open">Rukoo Mail openen</string>
+
+</resources>

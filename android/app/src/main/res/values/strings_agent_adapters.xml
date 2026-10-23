@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the agent connections (agents/adapters) say themselves: status details, error details and notices.
+     English from desktop's hermes.js, openclaw.js, http.js and phonehost.js, so the phone reads like the computer. -->
+<resources>
+    <!-- Shared -->
+    <string name="adapters_turned_off">%1$s is turned off</string>
+    <string name="adapters_url_invalid">The server URL is not valid</string>
+    <string name="adapters_url_scheme">The server URL must start with http:// or https://</string>
+    <!-- %1$s is a host (100.91.52.84:8642), %2$d seconds -->
+    <string name="adapters_no_answer">No answer from %1$s within %2$d s</string>
+    <!-- %1$s is the agent's name -->
+    <string name="adapters_new_session">%1$s started a new session</string>
+    <!-- %1$s is the approval card's title -->
+    <string name="adapters_approval_too_long">Declined without asking: %1$s. Part of it is too long to show here, so you could not check it.</string>
+
+    <!-- Hermes (Clark) -->
+    <string name="adapters_hermes_no_url">No server URL</string>
+    <string name="adapters_hermes_no_key">No API key</string>
+    <string name="adapters_health_http">Health check answered HTTP %1$d</string>
+    <string name="adapters_hermes_key_refused">The server refused the API key</string>
+    <string name="adapters_capabilities_http">Capabilities answered HTTP %1$d</string>
+    <string name="adapters_hermes_no_runs">This Hermes version has no Runs API</string>
+    <string name="adapters_hermes_no_run_id">The server did not return a run id</string>
+    <string name="adapters_hermes_no_session">Could not create a Hermes session</string>
+    <string name="adapters_hermes_lost_stopped">Lost the connection to %1$s during the turn; Rukoo stopped the run</string>
+    <string name="adapters_hermes_lost_stopping">Lost the connection to %1$s during the turn; Rukoo keeps asking it to stop the run</string>
+    <string name="adapters_hermes_run_failed">The run failed</string>
+    <string name="adapters_hermes_reported_error">Hermes reported an error</string>
+    <string name="adapters_hermes_answer_lost">Your answer did not reach Hermes, so Rukoo is asking it to stop the run.</string>
+
+    <!-- OpenClaw -->
+    <string name="adapters_openclaw_no_url">No gateway URL</string>
+    <string name="adapters_openclaw_no_token">No gateway token</string>
+    <string name="adapters_openclaw_token_refused">The gateway refused the token</string>
+    <string name="adapters_openclaw_endpoint_off">The gateway has no Chat Completions endpoint. Turn on gateway.http.endpoints.chatCompletions.enabled in the OpenClaw config</string>
+    <string name="adapters_openclaw_not_gateway">The server at this address is not an OpenClaw gateway</string>
+    <!-- %1$s is an OpenClaw agent id -->
+    <string name="adapters_openclaw_no_agent">The gateway has no agent \"%1$s\"</string>
+    <string name="adapters_openclaw_ready">OpenClaw gateway, agent %1$s</string>
+    <string name="adapters_openclaw_archived">OpenClaw archived this chat’s session</string>
+    <string name="adapters_openclaw_restore">Restore the session in OpenClaw’s Control UI, or start a new chat.</string>
+    <string name="adapters_openclaw_reported_error">OpenClaw reported an error</string>
+    <plurals name="adapters_openclaw_silent">
+        <item quantity="one">OpenClaw sent nothing for %d minute; Rukoo closed the connection, which stops the run</item>
+        <item quantity="other">OpenClaw sent nothing for %d minutes; Rukoo closed the connection, which stops the run</item>
+    </plurals>
+    <string name="adapters_openclaw_closed">The connection to OpenClaw closed before the answer was complete</string>
+    <!-- %1$s is the network error -->
+    <string name="adapters_openclaw_broke_off">The connection to OpenClaw broke off: %1$s</string>
+
+    <!-- Claude Code and Codex on a paired computer. %1$s is the computer's name unless noted. -->
+    <string name="adapters_computer_unpaired">This computer is no longer paired</string>
+    <string name="adapters_computer_unreachable">Rukoo isn\'t reachable on %1$s. Check that it\'s open and that Tailscale is on.</string>
+    <string name="adapters_computer_unauthorized">%1$s no longer knows this phone. Pair it again.</string>
+    <!-- %1$s is Claude Code or Codex, %2$s the computer's name -->
+    <string name="adapters_computer_no_program">%2$s does not offer %1$s</string>
+    <string name="adapters_computer_off_there">Turned off on %1$s</string>
+    <string name="adapters_computer_lost">Lost the connection to %1$s during the turn</string>
+    <string name="adapters_computer_answer_lost">Your answer did not reach %1$s, so Rukoo is asking it to stop the turn.</string>
+    <!-- %1$s is Claude Code or Codex -->
+    <string name="adapters_computer_no_tools">%1$s works without Rukoo\'s tools this turn: this phone isn\'t serving them right now.</string>
+</resources>

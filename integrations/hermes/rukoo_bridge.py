@@ -8,10 +8,10 @@ it answers the handshake itself, serves the tool list from a cache while Rukoo i
 unreachable Rukoo into a tool error the agent can pass on. The cache also keeps Rukoo's instructions,
 which list the user's skills, for the next handshake.
 
-It finds Rukoo by itself. It asks Tailscale which of the user's Windows, Linux and Mac devices are online and
-tries Rukoo's port on each. A device has to prove that it has the same key before the bridge sends its
-token. A call about a chat goes to the device that has the chat; anything else goes to the device the
-user touched last.
+It finds Rukoo by itself. It asks Tailscale which of the user's Windows, Linux and Mac computers and Android
+phones are online and tries Rukoo's port on each. A device has to prove that it has the same key before the
+bridge sends its token. A call about a chat goes to the device that has the chat; anything else goes to the
+device the user touched last.
 
 Environment (set under mcp_servers.rukoo.env in ~/.hermes/config.yaml; Rukoo's Settings > Agents >
 "Copy Hermes setup" has the block):
@@ -65,8 +65,12 @@ URLS = [url for url in re.split(r"[\s,]+", os.environ.get("RUKOO_URL", "")) if u
 DISCOVER = os.environ.get("RUKOO_DISCOVER", "1").strip().lower() not in ("0", "false", "no", "off")
 TAILSCALE = os.environ.get("RUKOO_TAILSCALE") or shutil.which("tailscale") or "/usr/bin/tailscale"
 CACHE = Path(os.environ.get("RUKOO_CACHE") or Path(__file__).with_name("rukoo_tools.json"))
-# Desktop operating systems; tagged servers and shared devices are filtered separately.
-DEVICE_OS = {"windows", "macOS", "linux"}
+# Where Rukoo runs: desktop operating systems, and Android for Rukoo on a phone. Tagged servers and shared devices
+# are filtered separately.
+DEVICE_OS = {"windows", "macOS", "linux", "android"}
+PHONE_OS = {"android"}
+# Addresses of the phones found in the tailnet, which get the longer waits below.
+PHONES = set()
 
 # Tool calls can wait on the desktop (writing a draft waits for the composer). The time it takes to find the
 # device counts toward CALL_TIMEOUT_SECONDS.
@@ -78,6 +82,9 @@ LIST_TIMEOUT_SECONDS = 8
 # A Windows PC without Rukoo usually drops the connection without a word, so this is how long a search takes.
 PROBE_TIMEOUT_SECONDS = 4
 HELLO_TIMEOUT_SECONDS = 4
+# A phone on mobile data can reach the tailnet through a relay, and its first answer takes longer. Only phones wait
+# this long, so a computer without Rukoo still costs a search 4 seconds.
+PHONE_TIMEOUT_SECONDS = 8
 # With Rukoo found, the bridge still looks again now and then, in the background, for Rukoo on other devices.
 SEARCH_AGAIN_SECONDS = 60
 # Straight to Rukoo: a proxy from the environment would get the token and can't reach 100.x anyway.
@@ -189,6 +196,11 @@ def numeric(url):
     return urllib.parse.urlunsplit(parts._replace(netloc=f"{ip}:{parts.port or 80}"))
 
 
+def wait(url, seconds):
+    """How long to wait for the device at url: seconds, or longer for a phone."""
+    return max(seconds, PHONE_TIMEOUT_SECONDS) if url in PHONES else seconds
+
+
 def prove(url):
     """Asks whatever listens at url to prove it is Rukoo with the same key, without sending the token.
     Returns "ok", "other-key" for a Rukoo with another key or none, "old" for a Rukoo too old to answer
@@ -201,7 +213,7 @@ def prove(url):
         method="POST",
     )
     try:
-        with OPENER.open(request, timeout=PROBE_TIMEOUT_SECONDS) as response:
+        with OPENER.open(request, timeout=wait(url, PROBE_TIMEOUT_SECONDS)) as response:
             proof = response.headers.get("X-Rukoo-Proof")
             body = b""
     except urllib.error.HTTPError as exc:
@@ -220,16 +232,30 @@ def prove(url):
     return "ok" if same else "other-key"
 
 
+def device_name(peer, ip):
+    """The name the user knows a device by. Tailscale's HostName, unless that says nothing (an Android phone
+    reports "localhost"); then the first part of its MagicDNS name, as the Tailscale app shows it."""
+    host = (peer.get("HostName") or "").strip()
+    dns = (peer.get("DNSName") or "").split(".")[0]
+    if dns and (not host or host.lower() == "localhost"):
+        return dns
+    return host or dns or ip
+
+
 def tailnet_devices(status):
-    """(name, url) for each online desktop device in `tailscale status --json`, this one included when
-    Hermes runs on the same computer as Rukoo. Tagged devices are servers, and shared ones belong to someone else."""
+    """(name, url) for each online computer or phone in `tailscale status --json`, this one included when
+    Hermes runs on the same computer as Rukoo. Tagged devices are servers, and shared ones belong to someone else.
+    Phones are also remembered in PHONES."""
     devices = []
     for peer in [status.get("Self") or {}, *(status.get("Peer") or {}).values()]:
         if not peer.get("Online") or peer.get("Tags") or peer.get("ShareeNode") or peer.get("OS") not in DEVICE_OS:
             continue
         ip = next((a for a in peer.get("TailscaleIPs") or [] if "." in a), None)
         if ip:
-            devices.append((peer.get("HostName") or ip, f"http://{ip}:{PORT}/mcp"))
+            url = f"http://{ip}:{PORT}/mcp"
+            if peer.get("OS") in PHONE_OS:
+                PHONES.add(url)
+            devices.append((device_name(peer, ip), url))
     return devices
 
 
@@ -289,7 +315,7 @@ class Devices:
         """What Rukoo at url says about itself, or None when it doesn't answer."""
         params = {"conversation_id": conversation_id} if conversation_id else {}
         try:
-            reply = post(url, {"jsonrpc": "2.0", "id": "hello", "method": "rukoo/hello", "params": params}, HELLO_TIMEOUT_SECONDS)
+            reply = post(url, {"jsonrpc": "2.0", "id": "hello", "method": "rukoo/hello", "params": params}, wait(url, HELLO_TIMEOUT_SECONDS))
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 self.forget(url)  # the key changed on that device
@@ -402,7 +428,7 @@ def fetch_instructions(url):
         "jsonrpc": "2.0",
         "id": "instructions",
         "method": "initialize",
-        "params": {"protocolVersion": PROTOCOL_VERSIONS[0], "capabilities": {}, "clientInfo": {"name": "rukoo-bridge", "version": "3"}},
+        "params": {"protocolVersion": PROTOCOL_VERSIONS[0], "capabilities": {}, "clientInfo": {"name": "rukoo-bridge", "version": "4"}},
     }
     try:
         reply = post(url, hello, LIST_TIMEOUT_SECONDS)
@@ -465,7 +491,7 @@ def handle(message):
         return result(msg_id, {
             "protocolVersion": requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "rukoo", "title": "Rukoo Mail", "version": "bridge-3"},
+            "serverInfo": {"name": "rukoo", "title": "Rukoo Mail", "version": "bridge-4"},
             # The handshake never waits for Rukoo: the instructions are the ones from the last tool list.
             "instructions": load_cache()[1] or INSTRUCTIONS,
         })

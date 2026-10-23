@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Formatting in the composer: the format row, the text selection menu and the link dialog. Names follow the
+     desktop catalog keys (composer.format.*, composer.link.*); keys marked "phone" have no desktop twin. -->
+<resources>
+    <string name="composer_format_label">Formatting</string>
+    <string name="composer_format_bold">Bold</string>
+    <string name="composer_format_italic">Italic</string>
+    <string name="composer_format_underline">Underline</string>
+    <!-- phone -->
+    <string name="composer_format_strikethrough">Strikethrough</string>
+    <!-- phone -->
+    <string name="composer_format_heading">Heading</string>
+    <string name="composer_format_bullets">Bulleted list</string>
+    <string name="composer_format_numbered">Numbered list</string>
+    <string name="composer_format_link">Link</string>
+    <string name="composer_format_clear">Clear formatting</string>
+
+    <!-- The letters in the text selection menu, styled as the formatting they apply; icons, not words. phone -->
+    <string name="composer_format_bold_glyph" translatable="false">B</string>
+    <string name="composer_format_italic_glyph" translatable="false">I</string>
+    <string name="composer_format_underline_glyph" translatable="false">U</string>
+
+    <string name="composer_link_title">Insert link</string>
+    <!-- phone: the dialog for a link the cursor is in -->
+    <string name="composer_link_edit_title">Edit link</string>
+    <string name="composer_link_address">Address</string>
+    <!-- phone: the words that show for a new link; empty uses the address -->
+    <string name="composer_link_text">Text</string>
+    <!-- phone -->
+    <string name="composer_link_text_hint">Optional</string>
+    <string name="composer_link_insert">Insert</string>
+    <!-- phone -->
+    <string name="composer_link_remove">Remove link</string>
+    <!-- phone -->
+    <string name="composer_link_invalid">Enter a web address or an email address.</string>
+</resources>
