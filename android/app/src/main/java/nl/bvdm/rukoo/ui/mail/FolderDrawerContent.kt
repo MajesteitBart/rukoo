@@ -1,5 +1,6 @@
 package nl.bvdm.rukoo.ui.mail
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,13 +16,17 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailCounts
@@ -60,16 +66,64 @@ import nl.bvdm.rukoo.ui.theme.weight
 /**
  * The folder drawer, the desktop sidebar on a phone (spec 6 §4.3 and §5.2): the account switch, the
  * unified views with their counts, each account's own folders with a color dot, the sync status and
- * Settings. Views keep the account scope the switch chose.
+ * Settings. Views keep the account scope the switch chose. Two panes show it as a drawer; one pane as
+ * [FolderSheet].
  */
 @Composable
 fun FolderDrawerContent(app: AppViewModel, modifier: Modifier = Modifier) {
+    Column(modifier.background(Rk.colors.bg).windowInsetsPadding(WindowInsets.systemBars)) {
+        Folders(app, Modifier.weight(1f).verticalScroll(rememberScrollState()), pick = app::selectView)
+        Hairline()
+        Footer(app)
+    }
+}
+
+/**
+ * The folders on one pane. On a tall cover screen the drawer's first rows sit in the corner the thumb
+ * reaches last, so they come up from the bottom instead: the sheet opens halfway, with the account switch
+ * and the unified views in its first rows, and a drag up shows the rest. A pick slides the sheet away
+ * before the list changes.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FolderSheet(app: AppViewModel, onDismiss: () -> Unit) {
+    val c = Rk.colors
+    val sheetState = rememberModalBottomSheetState()
+    val scope = rememberCoroutineScope()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        shape = Rk.shapes.sheet,
+        containerColor = c.bg,
+        contentColor = c.text,
+        tonalElevation = 0.dp,
+        scrimColor = c.scrim,
+        dragHandle = {
+            Box(Modifier.padding(top = 8.dp, bottom = 2.dp).size(36.dp, 4.dp).background(c.borderStrong, Rk.shapes.pill))
+        },
+    ) {
+        // Back closes it from either height; the sheet's own back would first drop a dragged-up sheet to half.
+        BackHandler { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } }
+        Column(Modifier.fillMaxWidth()) {
+            Folders(
+                app,
+                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                pick = { view -> scope.launch { sheetState.hide() }.invokeOnCompletion { app.selectView(view) } },
+            )
+            Hairline()
+            Footer(app)
+        }
+    }
+}
+
+/** The account switch, the unified views and each account's folders; [pick] shows a view. */
+@Composable
+private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> Unit) {
     val c = Rk.colors
     val mail = app.services.mail
     val nav by app.state.collectAsStateWithLifecycle()
     val accounts by mail.accounts.collectAsStateWithLifecycle()
     val folders by mail.folders.collectAsStateWithLifecycle()
-    val sync by mail.sync.collectAsStateWithLifecycle()
     val localDrafts by app.services.drafts.drafts.collectAsStateWithLifecycle()
     val scope = nav.view.accountId?.takeIf { id -> accounts.any { it.id == id } }
     val countsFlow = remember(scope) { runCatching { mail.counts(scope) }.getOrElse { flowOf(MailCounts()) } }
@@ -77,86 +131,82 @@ fun FolderDrawerContent(app: AppViewModel, modifier: Modifier = Modifier) {
     val scoped = if (scope == null) accounts else accounts.filter { it.id == scope }
     var switching by remember { mutableStateOf(false) }
 
-    Column(modifier.background(c.bg).windowInsetsPadding(WindowInsets.systemBars)) {
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 10.dp)) {
-            // The account switch (styles.css:655-694).
-            val account = scope?.let { id -> accounts.firstOrNull { it.id == id } } ?: accounts.singleOrNull()
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 52.dp)
-                    .rkClickable(Rk.shapes.card, enabled = accounts.size > 1) { switching = true }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AccountAvatar(account?.name?.ifBlank { account.email } ?: "∗", account?.let { AccountColors.parse(it.color) })
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        account?.name?.ifBlank { account.email } ?: stringResource(R.string.mailbox_search_all_accounts),
-                        style = Rk.type.text13.semibold,
-                        color = c.text,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        account?.email ?: pluralStringResource(R.plurals.mailbox_sidebar_account_count, accounts.size, accounts.size),
-                        style = Rk.type.text11_5,
-                        color = c.text3,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (accounts.size > 1) RkIcon(RukooIcons.ChevronUpDown, null, size = 16.dp, tint = c.text3)
-            }
-            Spacer(Modifier.size(8.dp))
-
-            val hasArchive = scoped.any { mail.archiveFolder(it.id) != null }
-            val hasJunk = scoped.any { a -> folders[a.id].orEmpty().any { it.role == FolderRole.JUNK } }
-            val localCount = localDrafts.count { scope == null || it.accountId == scope }
-            for (kind in VIEWS) {
-                if (kind == ViewKind.ARCHIVE && !hasArchive) continue
-                if (kind == ViewKind.JUNK && !hasJunk) continue
-                val view = MailView(kind, scope)
-                val n = (counts.views[kind] ?: 0) + if (kind == ViewKind.DRAFTS) localCount else 0
-                NavItem(
-                    label = viewTitle(view, folders),
-                    icon = viewIcon(kind),
-                    selected = nav.view == view,
-                    count = n.takeIf { it > 0 && kind in COUNTED },
-                    strong = kind == ViewKind.INBOX,
-                    onClick = { app.selectView(view) },
+    Column(modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
+        // The account switch (styles.css:655-694).
+        val account = scope?.let { id -> accounts.firstOrNull { it.id == id } } ?: accounts.singleOrNull()
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .rkClickable(Rk.shapes.card, enabled = accounts.size > 1) { switching = true }
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AccountAvatar(account?.name?.ifBlank { account.email } ?: "∗", account?.let { AccountColors.parse(it.color) })
+            Column(Modifier.weight(1f)) {
+                Text(
+                    account?.name?.ifBlank { account.email } ?: stringResource(R.string.mailbox_search_all_accounts),
+                    style = Rk.type.text13.semibold,
+                    color = c.text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    account?.email ?: pluralStringResource(R.plurals.mailbox_sidebar_account_count, accounts.size, accounts.size),
+                    style = Rk.type.text11_5,
+                    color = c.text3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (accounts.size > 1) RkIcon(RukooIcons.ChevronUpDown, null, size = 16.dp, tint = c.text3)
+        }
+        Spacer(Modifier.size(8.dp))
 
-            for (a in scoped) {
-                val own = folders[a.id].orEmpty().filter { it.role == FolderRole.NONE }.sortedBy { it.name.lowercase() }
-                Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 0.dp, top = 14.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (scoped.size > 1) a.email else stringResource(R.string.mailbox_layout_folders),
-                        style = Rk.type.text11_5.semibold,
-                        color = c.text3,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    // Desktop reveals the + on hover; touch shows it always (spec 6 §5.7).
-                    RkIconButton(RukooIcons.Plus, stringResource(R.string.mailbox_folders_new), onClick = { app.mailUi.newFolder(a.id) }, size = nl.bvdm.rukoo.ui.components.RkIconButtonSize.SMALL)
-                }
-                for (f in own) {
-                    val view = MailView.folder(a.id, f.path)
-                    NavItem(
-                        label = f.name,
-                        dot = f.name,
-                        selected = nav.view == view,
-                        count = f.unread.takeIf { it > 0 },
-                        onClick = { app.selectView(view) },
-                    )
-                }
+        val hasArchive = scoped.any { mail.archiveFolder(it.id) != null }
+        val hasJunk = scoped.any { a -> folders[a.id].orEmpty().any { it.role == FolderRole.JUNK } }
+        val localCount = localDrafts.count { scope == null || it.accountId == scope }
+        for (kind in VIEWS) {
+            if (kind == ViewKind.ARCHIVE && !hasArchive) continue
+            if (kind == ViewKind.JUNK && !hasJunk) continue
+            val view = MailView(kind, scope)
+            val n = (counts.views[kind] ?: 0) + if (kind == ViewKind.DRAFTS) localCount else 0
+            NavItem(
+                label = viewTitle(view, folders),
+                icon = viewIcon(kind),
+                selected = nav.view == view,
+                count = n.takeIf { it > 0 && kind in COUNTED },
+                strong = kind == ViewKind.INBOX,
+                onClick = { pick(view) },
+            )
+        }
+
+        for (a in scoped) {
+            val own = folders[a.id].orEmpty().filter { it.role == FolderRole.NONE }.sortedBy { it.name.lowercase() }
+            Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 0.dp, top = 14.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (scoped.size > 1) a.email else stringResource(R.string.mailbox_layout_folders),
+                    style = Rk.type.text11_5.semibold,
+                    color = c.text3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                // Desktop reveals the + on hover; touch shows it always (spec 6 §5.7).
+                RkIconButton(RukooIcons.Plus, stringResource(R.string.mailbox_folders_new), onClick = { app.mailUi.newFolder(a.id) }, size = nl.bvdm.rukoo.ui.components.RkIconButtonSize.SMALL)
+            }
+            for (f in own) {
+                val view = MailView.folder(a.id, f.path)
+                NavItem(
+                    label = f.name,
+                    dot = f.name,
+                    selected = nav.view == view,
+                    count = f.unread.takeIf { it > 0 },
+                    onClick = { pick(view) },
+                )
             }
         }
-        Hairline()
-        Footer(app, sync, scoped.map { it.id })
     }
 
     if (switching) {
@@ -232,8 +282,12 @@ private fun NavItem(
 
 /** Sync status and Settings (styles.css:803-857): a dot (ok, busy pulsing, failed) and when mail last came in. */
 @Composable
-private fun Footer(app: AppViewModel, sync: SyncStatus, accountIds: List<String>) {
+private fun Footer(app: AppViewModel) {
     val c = Rk.colors
+    val nav by app.state.collectAsStateWithLifecycle()
+    val accounts by app.services.mail.accounts.collectAsStateWithLifecycle()
+    val sync: SyncStatus by app.services.mail.sync.collectAsStateWithLifecycle()
+    val accountIds = nav.view.accountId?.takeIf { id -> accounts.any { it.id == id } }?.let(::listOf) ?: accounts.map { it.id }
     val dates = rememberMailDates()
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {

@@ -46,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -71,6 +72,7 @@ import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.RkToastHost
 import nl.bvdm.rukoo.ui.composer.ComposerPane
 import nl.bvdm.rukoo.ui.mail.FolderDrawerContent
+import nl.bvdm.rukoo.ui.mail.FolderSheet
 import nl.bvdm.rukoo.ui.mail.MailDialog
 import nl.bvdm.rukoo.ui.mail.MailListPane
 import nl.bvdm.rukoo.ui.mail.MoveSheet
@@ -147,14 +149,19 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
             val twoPane = maxWidth >= TwoPaneMinWidth
             LaunchedEffect(twoPane) { app.onLayout(twoPane) }
 
-            val drawerState = rememberDrawerState(if (nav.drawerOpen) DrawerValue.Open else DrawerValue.Closed)
-            LaunchedEffect(nav.drawerOpen) {
-                if (nav.drawerOpen && !drawerState.isOpen) drawerState.open()
-                if (!nav.drawerOpen && !drawerState.isClosed) drawerState.close()
+            // The folders are a drawer beside two panes and a sheet from the bottom on one (FolderSheet), so
+            // folding with them open shows the other one.
+            val drawerOpen = nav.drawerOpen && twoPane
+            val drawerState = rememberDrawerState(if (drawerOpen) DrawerValue.Open else DrawerValue.Closed)
+            LaunchedEffect(drawerOpen) {
+                if (drawerOpen && !drawerState.isOpen) drawerState.open()
+                if (!drawerOpen && !drawerState.isClosed) drawerState.close()
             }
-            // A swipe or a tap outside closes the drawer without going through the view model.
+            // A swipe or a tap outside closes the drawer without going through the view model. Folding closes
+            // it too, but then the sheet takes over and the folders stay open.
+            val drawerShown by rememberUpdatedState(twoPane)
             LaunchedEffect(drawerState) {
-                snapshotFlow { drawerState.currentValue }.collect { if (it == DrawerValue.Closed) app.closeDrawer() }
+                snapshotFlow { drawerState.currentValue }.collect { if (it == DrawerValue.Closed && drawerShown) app.closeDrawer() }
             }
 
             // No accounts yet: first run.
@@ -216,6 +223,7 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
                 }
             }
 
+            if (nav.drawerOpen && !twoPane && !setup) FolderSheet(app, onDismiss = app::closeDrawer)
             if (nav.chatListOpen) ChatListSheet(app, onDismiss = app::closeChatList)
             MoveSheet(app.mailUi)
             app.mailUi.dialog?.let { MailDialog(it) }

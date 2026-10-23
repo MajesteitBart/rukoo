@@ -56,7 +56,8 @@ Samsung phones stop apps in the background to save battery, and then agents can'
 
 ## On the Galaxy Fold
 
-- Cover screen: the list, the email, the chat and the composer each fill the screen. The chat is a full-screen page with the email as a chip above the input.
+- Cover screen: the list, the email, the chat and the composer each fill the screen. The chat is a full-screen page with the email as a chip above the input. The folders open from the button in the list's bottom-left corner, across from New message, as a sheet that comes up halfway with the accounts and the inbox views first; drag it up for the rest.
+- Inner screen: the same button opens the folders as a drawer from the left.
 - Inner screen: the list next to the email. With the chat open, the email moves left and the chat sits to its right, so you watch an agent write into the composer. Two columns start at 600dp wide, which covers the inner screen in both orientations; a phone in split screen gets them too when it is wide enough.
 - Folding and unfolding keeps the open email, chat and draft. The pane you touched last is the one you see after folding.
 

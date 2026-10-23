@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -222,6 +223,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
             }
         }
         if (!selecting && !nav.searching) {
+            FoldersButton(onClick = app::openDrawer, modifier = Modifier.align(Alignment.BottomStart).padding(16.dp))
             NewMessageButton(
                 expanded = !listState.lastScrolledForward || !listState.canScrollBackward,
                 onClick = { app.newMessage() },
@@ -345,7 +347,8 @@ private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSumm
         titleStyle = Rk.type.pageTitle,
         height = 64.dp,
         hairline = false,
-        navigation = { RkIconButton(RukooIcons.Menu, stringResource(R.string.mailbox_layout_folders), onClick = app::openDrawer) },
+        // The folders open from FoldersButton at the bottom, where the thumb is, rather than from a menu
+        // button in the top corner.
         actions = {
             RkIconButton(RukooIcons.Search, stringResource(R.string.mailbox_search_label), onClick = app::openSearch)
             // The chat UI's entry: a chat about the selected email, with the news dot; the news itself is in the
@@ -546,6 +549,25 @@ private fun EmptyList(
  * "New message", styled like desktop's compose button (styles.css:696-709): a raised card with the compose
  * icon in `accent` and the label at 600. It folds to the icon while the list scrolls down.
  */
+/** The folders, in the bottom corner across from New message, in the same raised style. */
+@Composable
+private fun FoldersButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = Rk.colors
+    val shape = Rk.shapes.panel
+    val source = remember { MutableInteractionSource() }
+    Box(
+        modifier
+            .pressScale(source, 0.96f)
+            .rkShadow(Rk.elevation.raised, shape)
+            .background(c.raised, shape)
+            .rkClickable(shape, interactionSource = source, onClick = onClick)
+            .size(48.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        RkIcon(RukooIcons.Menu, stringResource(R.string.mailbox_layout_folders), size = 20.dp, tint = c.text2)
+    }
+}
+
 @Composable
 private fun NewMessageButton(expanded: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Rk.colors
