@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_agents_shortcuts">Snelkoppelingen</string>
+    <string name="settings_agents_shortcuts_help">Wat een nieuwe chat aanbiedt, bij elke agent</string>
+    <string name="settings_shortcuts_help">Een nieuwe chat toont deze snelkoppelingen onder de kaart van de agent, bij elke agent. Elke snelkoppeling is ook een /-opdracht in het invoerveld van de chat. Zet je een snelkoppeling uit, dan verdwijnt ze uit nieuwe chats, maar haar opdracht blijft werken.</string>
+    <string name="settings_shortcuts_add">Snelkoppeling toevoegen</string>
+    <string name="settings_shortcuts_added">%1$s toegevoegd</string>
+    <string name="settings_shortcuts_reset">Snelkoppelingen van Rukoo terugzetten</string>
+    <string name="settings_shortcuts_reset_help">Verwijdert je eigen snelkoppelingen en je wijzigingen aan die van Rukoo</string>
+    <string name="settings_shortcuts_reset_title">Snelkoppelingen van Rukoo terugzetten?</string>
+    <string name="settings_shortcuts_reset_confirm">Je eigen snelkoppelingen verdwijnen, en die van Rukoo krijgen hun eigen namen, instructies en volgorde terug.</string>
+    <string name="settings_shortcuts_reset_ok">Terugzetten</string>
+    <string name="settings_shortcuts_reset_done">De snelkoppelingen van Rukoo zijn terug</string>
+    <string name="settings_shortcuts_move_up">%1$s omhoog</string>
+    <string name="settings_shortcuts_move_down">%1$s omlaag</string>
+    <string name="settings_shortcuts_show">%1$s tonen in nieuwe chats</string>
+    <string name="settings_shortcuts_when_email">Bij een geopende e-mail</string>
+    <string name="settings_shortcuts_when_no_email">Zonder geopende e-mail</string>
+    <string name="settings_shortcuts_when_newsletter">Bij een geopende nieuwsbrief</string>
+    <string name="settings_shortcuts_when_always">Altijd</string>
+    <string name="settings_shortcuts_edited">Aangepast</string>
+    <string name="settings_shortcuts_edit_title">Snelkoppeling bewerken</string>
+    <string name="settings_shortcuts_new_title">Nieuwe snelkoppeling</string>
+    <string name="settings_shortcuts_label">Naam</string>
+    <string name="settings_shortcuts_command">Opdracht</string>
+    <string name="settings_shortcuts_command_placeholder">opvolgen</string>
+    <string name="settings_shortcuts_command_help">Kleine letters, cijfers en streepjes. Typ het na een / in het invoerveld van de chat.</string>
+    <string name="settings_shortcuts_command_fixed">Snelkoppelingen van Rukoo houden hun opdracht.</string>
+    <string name="settings_shortcuts_when">Tonen</string>
+    <string name="settings_shortcuts_when_email_option">Als er een e-mail open is</string>
+    <string name="settings_shortcuts_when_always_option">Altijd, ook zonder e-mail</string>
+    <string name="settings_shortcuts_icon">Pictogram</string>
+    <string name="settings_shortcuts_prompt">Instructies voor de agent</string>
+    <string name="settings_shortcuts_prompt_help">De agent krijgt dit als je de snelkoppeling kiest, met de geopende e-mail als die er is.</string>
+    <string name="settings_shortcuts_prompt_help_builtin">De agent krijgt dit als je de snelkoppeling kiest. Rukoo schrijft zijn eigen instructies in het Engels, voor het model.</string>
+    <string name="settings_shortcuts_restore">Standaard terugzetten</string>
+    <string name="settings_shortcuts_need_label">Geef de snelkoppeling een naam.</string>
+    <string name="settings_shortcuts_need_prompt">Schrijf wat de agent moet doen.</string>
+    <string name="settings_shortcuts_bad_command">Gebruik kleine letters, cijfers en enkele streepjes, tot 40.</string>
+    <string name="settings_shortcuts_taken_command">/%1$s is al een opdracht.</string>
+    <string name="settings_shortcuts_too_many">Rukoo bewaart tot %1$d snelkoppelingen.</string>
+</resources>

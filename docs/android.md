@@ -7,7 +7,7 @@ The app's code is in [`android/`](../android). It is a native Kotlin and Jetpack
 ## What it does
 
 - Mail accounts on the phone: Gmail with Google sign-in, other providers with an app password or password, and the demo account. Inbox, folders, unified views, search, swipe and selection actions with Undo, a reader for HTML mail, a composer with formatting for replies, forwards and new mail, drafts saved to the account's Drafts folder, and new-mail notifications.
-- The agent chat next to the email, with every desktop quick action, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
+- The agent chat next to the email, with every desktop quick action and your own shortcuts, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
 - Rukoo's twelve MCP tools served by the phone, so an agent can read the phone's mail, write into its composer and ask for approval on its screen.
 - Pairing with Rukoo on your computer, which brings over your accounts and agent settings once and lets the phone use the computer's Claude Code and Codex.
 - English and Dutch, light and dark.
@@ -45,6 +45,12 @@ The + at the start of the chat input opens a sheet with three choices: Files (th
 Your next message takes the files along, also a quick action or a skill, and a message can be files alone. It takes up to 10 files of up to 10 MB each. Programs, scripts and installers, such as `.exe`, `.js` or `.apk`, stay out. The files show on your message in the chat; tap one to open it in another app. The chat keeps them until you delete it.
 
 Agents get the files as on the desktop. The message lists each file with its `file_id` and its name inside `<unsafe_content>`, with the start of a text file's text, and `read_chat_file` returns the whole file. Clark and OpenClaw read the files from the phone through Rukoo's tools. Claude Code and Codex on your computer get images along with the message; other files they read with `read_chat_file`, which the computer passes on to the phone. The phone has no PDF reader, so a PDF reaches the agent as a file without its text.
+
+## Shortcuts
+
+Settings > Agents > Shortcuts, or the round button after the shortcuts in a new chat, works as on desktop (see [What you can ask](agents.md#what-you-can-ask)). The arrows move a shortcut up or down, and the switch takes it out of new chats while its `/` command keeps working. Tap one of Rukoo's to rename it or rewrite its instructions; "Restore default" undoes that. "Add a shortcut" makes your own, with a name, a command, an icon, the instructions, and whether it shows only with an open email or always.
+
+The phone keeps its own list. An import from your computer replaces it with the computer's, when you changed the list there.
 
 ## Let agents use Rukoo on this phone
 

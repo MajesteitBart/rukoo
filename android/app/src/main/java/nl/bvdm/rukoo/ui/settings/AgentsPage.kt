@@ -39,6 +39,7 @@ import nl.bvdm.rukoo.ui.components.RkButtonKind
 import nl.bvdm.rukoo.ui.components.RkTextField
 import nl.bvdm.rukoo.ui.components.SectionTitle
 import nl.bvdm.rukoo.ui.components.SettingsCard
+import nl.bvdm.rukoo.ui.components.SettingsChevron
 import nl.bvdm.rukoo.ui.components.SettingsRow
 import nl.bvdm.rukoo.ui.components.SettingsSwitchRow
 import nl.bvdm.rukoo.ui.components.SheetDivider
@@ -73,6 +74,12 @@ fun AgentsPage(app: AppViewModel, model: SetupModel, nav: SettingsNav) {
                 title = stringResource(R.string.settings_agents_default),
                 value = default?.let { agentLabel(it, computers) } ?: stringResource(R.string.settings_agents_default_none),
                 onClick = { defaultSheet = true },
+            )
+            SettingsRow(
+                title = stringResource(R.string.settings_agents_shortcuts),
+                description = stringResource(R.string.settings_agents_shortcuts_help),
+                trailing = { SettingsChevron() },
+                onClick = { nav.push(SettingsRoutes.SHORTCUTS) },
             )
             SettingsSwitchRow(
                 title = stringResource(R.string.settings_agents_auto_mail),

@@ -795,6 +795,17 @@ class AppViewModel(
 
     fun openSettings() = set { it.openOverlay(Overlay.SETTINGS) }
 
+    // The pages Settings opens on next, bottom first; taken once by the screen.
+    private var settingsStart: List<String>? = null
+
+    /** Opens Settings on [pages], the last one showing and Back walking down them. */
+    fun openSettings(pages: List<String>) {
+        settingsStart = pages
+        openSettings()
+    }
+
+    fun takeSettingsStart(): List<String>? = settingsStart.also { settingsStart = null }
+
     fun openOnboarding() = set { it.openOverlay(Overlay.ONBOARDING) }
 
     fun closeOverlay() = set { it.closeOverlay() }
