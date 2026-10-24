@@ -7,7 +7,7 @@ The app's code is in [`android/`](../android). It is a native Kotlin and Jetpack
 ## What it does
 
 - Mail accounts on the phone: Gmail with Google sign-in, other providers with an app password or password, and the demo account. Inbox, folders, unified views, search, swipe and selection actions with Undo, a reader for HTML mail, a composer with formatting for replies, forwards and new mail, drafts saved to the account's Drafts folder, and new-mail notifications.
-- The agent chat next to the email, with every desktop quick action, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
+- The agent chat next to the email, with every desktop quick action and your own shortcuts, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
 - Rukoo's twelve MCP tools served by the phone, so an agent can read the phone's mail, write into its composer and ask for approval on its screen.
 - Pairing with Rukoo on your computer, which brings over your accounts and agent settings once and lets the phone use the computer's Claude Code and Codex.
 - English and Dutch, light and dark.
@@ -46,6 +46,12 @@ Your next message takes the files along, also a quick action or a skill, and a m
 
 Agents get the files as on the desktop. The message lists each file with its `file_id` and its name inside `<unsafe_content>`, with the start of a text file's text, and `read_chat_file` returns the whole file. Clark and OpenClaw read the files from the phone through Rukoo's tools. Claude Code and Codex on your computer get images along with the message; other files they read with `read_chat_file`, which the computer passes on to the phone. The phone has no PDF reader, so a PDF reaches the agent as a file without its text.
 
+## Shortcuts
+
+Settings > Agents > Shortcuts, or the round button after the shortcuts in a new chat, works as on desktop (see [What you can ask](agents.md#what-you-can-ask)). The arrows move a shortcut up or down, and the switch takes it out of new chats while its `/` command keeps working. Tap one of Rukoo's to rename it or rewrite its instructions; "Restore default" undoes that. "Add a shortcut" makes your own, with a name, a command, an icon, the instructions, and whether it shows only with an open email or always.
+
+The phone keeps its own list. An import from your computer replaces it with the computer's, when you changed the list there.
+
 ## Let agents use Rukoo on this phone
 
 Settings > Phone tools turns the phone's MCP server on. The phone then listens on its Tailscale address, port 47800, and Android shows a silent notification while it runs. Who can connect follows your settings: Clark while its API key is set, OpenClaw while "Let OpenClaw use Rukoo on this phone" is on, and each paired computer with a token of its own. The tools are the desktop's, with the same names and inputs, so Clark's bridge keeps one tool list for every device.
@@ -58,6 +64,7 @@ Samsung phones stop apps in the background to save battery, and then agents can'
 
 - Cover screen: the list, the email, the chat and the composer each fill the screen. The chat is a full-screen page with the email as a chip above the input. The folders open from the button in the list's bottom-left corner, across from New message, as a sheet that comes up halfway with the accounts and the inbox views first; drag it up for the rest.
 - Inner screen: the same button opens the folders as a drawer from the left.
+- In an email, Previous and Next sit in the bottom bar's right corner, next to the agent button. When the bar is short of room (the cover screen in Dutch, a large font), Reply shows only its icon.
 - Inner screen: the list next to the email. With the chat open, the email moves left and the chat sits to its right, so you watch an agent write into the composer. Two columns start at 600dp wide, which covers the inner screen in both orientations; a phone in split screen gets them too when it is wide enough.
 - Folding and unfolding keeps the open email, chat and draft. The pane you touched last is the one you see after folding.
 

@@ -112,10 +112,12 @@ object QuickActions {
     }
 
     /** The shortcuts in the user's order. One of Rukoo's the list doesn't have goes after the one before it in Rukoo's order. */
-    fun list(stored: JsonElement?): List<QuickAction> {
+    fun list(stored: JsonElement?): List<QuickAction> = build(entries(stored).orEmpty())
+
+    private fun build(entries: List<Entry>): List<QuickAction> {
         val out = mutableListOf<QuickAction>()
         val seen = HashSet<String>()
-        for (e in entries(stored).orEmpty()) {
+        for (e in entries) {
             if (e.key in seen) continue
             val base = builtIn(e.key)
             if (base == null && !(e.custom && e.label.isNotEmpty() && e.prompt.isNotEmpty())) continue
@@ -130,6 +132,88 @@ object QuickActions {
             seen += a.key
         }
         return out
+    }
+
+    // ---------- editing, for Settings > Agents > Shortcuts (settings.js shortcutAction) ----------
+
+    /**
+     * What to store for [list]: null when it is Rukoo's own, as they come (actions.js storedShortcuts). A list
+     * that can't be kept in [MAX] entries comes out longer, and is not to be saved (see [fits]).
+     */
+    fun store(list: List<QuickAction>): JsonArray? {
+        val entries = list.map { a ->
+            if (a.custom) {
+                Entry(a.key, custom = true, hidden = a.hidden, label = a.label.orEmpty(), prompt = a.prompt, icon = a.icon, always = a.always)
+            } else {
+                Entry(a.key, hidden = a.hidden, label = a.label.orEmpty(), prompt = if (a.prompt == builtIn(a.key)?.prompt) "" else a.prompt)
+            }
+        }
+        val plain = entries.size == QuickAction.BUILT_IN.size && entries.zip(QuickAction.BUILT_IN).all { (e, b) -> e == Entry(b.key) }
+        return if (plain) null else stored(compact(entries))
+    }
+
+    /** True when [stored] is a list [entries] reads back rather than dropping for Rukoo's own. */
+    fun fits(stored: JsonArray?): Boolean = stored == null || stored.size <= MAX
+
+    /**
+     * [entries] within [MAX] where that keeps the same shortcuts: an unchanged one of Rukoo's can go when [list]
+     * puts it back in the same place. A list from the computer with 40 of the user's own and none of Rukoo's
+     * then still fits after an edit here, where all 48 would no longer read back.
+     */
+    private fun compact(entries: List<Entry>): List<Entry> {
+        var out = entries
+        for (e in entries) {
+            if (out.size <= MAX) break
+            if (e.custom || e != Entry(e.key)) continue
+            val fewer = out - e
+            if (build(fewer) == build(out)) out = fewer
+        }
+        return out
+    }
+
+    /** One of Rukoo's with the user's own name or instructions. */
+    fun edited(a: QuickAction): Boolean = !a.custom && (a.label != null || a.prompt != builtIn(a.key)?.prompt)
+
+    /** [list] with [key] moved [by] places, -1 up and 1 down; as it was at either end. */
+    fun move(list: List<QuickAction>, key: String, by: Int): List<QuickAction> {
+        val i = list.indexOfFirst { it.key == key }
+        val j = i + by
+        if (i < 0 || j !in list.indices) return list
+        return list.toMutableList().also { java.util.Collections.swap(it, i, j) }
+    }
+
+    /** [list] with [key] replaced by what [change] makes of it. */
+    fun change(list: List<QuickAction>, key: String, change: (QuickAction) -> QuickAction): List<QuickAction> =
+        list.map { if (it.key == key) change(it) else it }
+
+    /**
+     * One of Rukoo's with the user's [label] and [prompt]. A label equal to Rukoo's own [defaultLabel] (in the
+     * interface language) and a prompt equal to Rukoo's are no change, as settings.js keeps them.
+     */
+    fun rewrite(a: QuickAction, label: String, prompt: String, defaultLabel: String?): QuickAction =
+        a.copy(label = label.takeIf { it != defaultLabel }, prompt = prompt)
+
+    /** One of Rukoo's back to its own name and instructions ("Restore default"). */
+    fun restore(a: QuickAction): QuickAction = builtIn(a.key)?.let { a.copy(label = null, prompt = it.prompt) } ?: a
+
+    /** The user's own shortcut, as [make] builds one from a stored entry. */
+    fun custom(key: String, label: String, prompt: String, icon: String, always: Boolean, hidden: Boolean = false): QuickAction =
+        make(Entry(key, custom = true, hidden = hidden, label = label, prompt = prompt, icon = icon.takeIf { it in ICONS } ?: "sparkle", always = always), null)
+
+    /** Why a typed command can't be used. */
+    enum class CommandProblem { BAD, TAKEN }
+
+    /** The command [raw] names ("/Follow-up" is `follow-up`). */
+    fun commandOf(raw: String): String = raw.trim().removePrefix("/").lowercase()
+
+    /**
+     * What is wrong with [key] as the command of the user's shortcut [editing] (null for a new one): the
+     * pattern, Rukoo's message actions and commands, and the other shortcuts in [list].
+     */
+    fun commandProblem(key: String, list: List<QuickAction>, editing: String?): CommandProblem? = when {
+        !KEY.matches(key) || key.length > KEY_MAX -> CommandProblem.BAD
+        key in RESERVED || builtIn(key) != null || list.any { it.key == key && it.key != editing } -> CommandProblem.TAKEN
+        else -> null
     }
 
     /** The chips in an empty chat: the shortcuts for the email (or for no email) the user didn't hide. */

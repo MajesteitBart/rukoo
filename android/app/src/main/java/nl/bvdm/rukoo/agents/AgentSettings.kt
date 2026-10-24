@@ -10,6 +10,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import nl.bvdm.rukoo.agents.model.QuickAction
 import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.core.SecretCipher
 
@@ -119,6 +120,20 @@ class AgentSettingsStore(private val file: File, private val cipher: SecretCiphe
         }
         _settings.value = next
         next
+    }
+
+    /**
+     * Saves [change] made to the shortcuts as they are stored now, so quick changes build on each other instead
+     * of on what a page showed. False, with nothing saved, when the result is more than Rukoo keeps.
+     */
+    suspend fun changeShortcuts(change: (List<QuickAction>) -> List<QuickAction>): Boolean {
+        var fits = true
+        update { current ->
+            val next = QuickActions.store(change(QuickActions.list(current.shortcuts)))
+            fits = QuickActions.fits(next)
+            if (fits) current.copy(shortcuts = next) else current
+        }
+        return fits
     }
 
     companion object {

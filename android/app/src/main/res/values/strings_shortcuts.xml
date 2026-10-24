@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings > Agents > Shortcuts (ui/settings/ShortcutsPage.kt). Names are the desktop catalog keys (src/i18n/en.js,
+     settings.agents.shortcuts* and settings.shortcuts.*) with dots and camel case as underscores. -->
+<resources>
+    <string name="settings_agents_shortcuts">Shortcuts</string>
+    <string name="settings_agents_shortcuts_help">What a new chat offers, with every agent</string>
+    <string name="settings_shortcuts_help">A new chat shows these shortcuts under the agent\'s card, with every agent. Each one is a / command in the chat input too. A shortcut you turn off leaves new chats, but its command keeps working.</string>
+    <string name="settings_shortcuts_add">Add a shortcut</string>
+    <string name="settings_shortcuts_added">Added %1$s</string>
+    <string name="settings_shortcuts_reset">Restore Rukoo\'s shortcuts</string>
+    <string name="settings_shortcuts_reset_help">Removes your own shortcuts and your changes to Rukoo\'s</string>
+    <string name="settings_shortcuts_reset_title">Restore Rukoo\'s shortcuts?</string>
+    <string name="settings_shortcuts_reset_confirm">Your own shortcuts go, and Rukoo\'s get their own names, instructions and order back.</string>
+    <string name="settings_shortcuts_reset_ok">Restore</string>
+    <string name="settings_shortcuts_reset_done">Rukoo\'s shortcuts are back</string>
+    <string name="settings_shortcuts_move_up">Move %1$s up</string>
+    <string name="settings_shortcuts_move_down">Move %1$s down</string>
+    <string name="settings_shortcuts_show">Show %1$s in new chats</string>
+    <string name="settings_shortcuts_when_email">With an open email</string>
+    <string name="settings_shortcuts_when_no_email">Without an open email</string>
+    <string name="settings_shortcuts_when_newsletter">With a newsletter open</string>
+    <string name="settings_shortcuts_when_always">Always</string>
+    <string name="settings_shortcuts_edited">Edited</string>
+    <string name="settings_shortcuts_edit_title">Edit shortcut</string>
+    <string name="settings_shortcuts_new_title">New shortcut</string>
+    <string name="settings_shortcuts_label">Name</string>
+    <string name="settings_shortcuts_command">Command</string>
+    <string name="settings_shortcuts_command_placeholder">follow-up</string>
+    <string name="settings_shortcuts_command_help">Lowercase letters, digits and hyphens. Type it after a / in the chat input.</string>
+    <string name="settings_shortcuts_command_fixed">Rukoo\'s shortcuts keep their command.</string>
+    <string name="settings_shortcuts_when">Show it</string>
+    <string name="settings_shortcuts_when_email_option">When an email is open</string>
+    <string name="settings_shortcuts_when_always_option">Always, also without an email</string>
+    <string name="settings_shortcuts_icon">Icon</string>
+    <string name="settings_shortcuts_prompt">Instructions for the agent</string>
+    <string name="settings_shortcuts_prompt_help">The agent gets this when you pick the shortcut, with the open email if there is one.</string>
+    <string name="settings_shortcuts_prompt_help_builtin">The agent gets this when you pick the shortcut. Rukoo writes its own instructions in English, for the model.</string>
+    <string name="settings_shortcuts_restore">Restore default</string>
+    <string name="settings_shortcuts_need_label">Give the shortcut a name.</string>
+    <string name="settings_shortcuts_need_prompt">Write what the agent should do.</string>
+    <string name="settings_shortcuts_bad_command">Use lowercase letters, digits and single hyphens, up to 40.</string>
+    <string name="settings_shortcuts_taken_command">/%1$s is already a command.</string>
+    <string name="settings_shortcuts_too_many">Rukoo keeps up to %1$d shortcuts.</string>
+</resources>
