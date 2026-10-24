@@ -256,4 +256,8 @@ The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.em
 
 The renderer runs sandboxed with context isolation. It can only call the methods in the IPC table in `main.js`.
 
-The interface font is [Inter](https://rsms.me/inter/) by Rasmus Andersson, under the SIL Open Font License (`src/renderer/assets/fonts/Inter-LICENSE.txt`).
+## License
+
+Rukoo is released under the [MIT License](LICENSE).
+
+Some parts come from other projects and keep their own licenses. The chat panel's components are ported from [Beautiful UI](https://beautifului.dev) by Shane Levine, under the MIT License; the notice is at the top of `bui.js` and `agent.css`. The interface font is [Inter](https://rsms.me/inter/) by Rasmus Andersson, under the SIL Open Font License (`src/renderer/assets/fonts/Inter-LICENSE.txt`).
