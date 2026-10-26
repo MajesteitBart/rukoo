@@ -1092,6 +1092,7 @@ app.whenReady().then(() => {
     secrets,
     defaultServer: process.env.RUKOO_ACCOUNT_SERVER || PACKAGE_RUKOO.accountServer || ''
   }).init();
+  if (process.env.SEM_HIDDEN) global.__semAccount = account;
   account.on('status', (status) => broadcast('account', status));
   account.sync().catch(() => {});
   // ---- agents ----
