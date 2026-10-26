@@ -164,6 +164,102 @@ test('the newest change wins, a deletion travels, and the first classification s
   assert.equal(laptop.status().pending, 0);
 });
 
+// A device whose clock the test sets, so concurrent changes can be ordered on purpose.
+function clocked(t, srv, name, clock) {
+  const acc = new AccountService({ dataDir: tmpDir(t), secrets, defaultServer: srv.url, deviceName: name, platform: 'linux', now: () => clock.t }).init();
+  t.after(() => acc.close());
+  return acc;
+}
+
+test('a first write that loses a race still brings the winner down', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'race@example.com', password: PASSWORD });
+  const laptop = device(t, srv, 'laptop');
+  await laptop.signIn({ email: 'race@example.com', password: PASSWORD });
+  await desk.sync();
+  await laptop.sync();
+
+  // Both have pulled; the desk's classification reaches the server first.
+  const key = 'race@example.com\n<m@x>';
+  desk.put('classification', key, { category: 'money' }, { ifAbsent: true });
+  laptop.put('classification', key, { category: 'updates' }, { ifAbsent: true });
+  await laptop.pull();
+  await desk.sync();
+  await laptop.push();
+  await laptop.sync();
+  assert.deepEqual(laptop.get('classification', key), { category: 'money' });
+  await desk.sync();
+  assert.deepEqual(desk.get('classification', key), { category: 'money' });
+});
+
+test('the later change wins whichever reaches the server last', async (t) => {
+  const srv = await server(t);
+  const clock = { t: 1000 };
+  const desk = clocked(t, srv, 'desk', clock);
+  await desk.signUp({ email: 'lww@example.com', password: PASSWORD });
+  const laptop = clocked(t, srv, 'laptop', clock);
+  await laptop.signIn({ email: 'lww@example.com', password: PASSWORD });
+
+  // Both pull, the laptop changes the rule at 2000 and the desk at 3000, and the older change arrives last.
+  await desk.pull();
+  await laptop.pull();
+  clock.t = 2000;
+  laptop.put('sender', 'x@example.com', { category: 'updates' });
+  clock.t = 3000;
+  desk.put('sender', 'x@example.com', { category: 'needs-you' });
+  await desk.push();
+  await laptop.push();
+  await desk.sync();
+  await laptop.sync();
+  assert.deepEqual(desk.get('sender', 'x@example.com'), { category: 'needs-you' });
+  assert.deepEqual(laptop.get('sender', 'x@example.com'), { category: 'needs-you' });
+
+  // A deletion at 4000 against a change at 5000 that arrives first: the change wins on both.
+  await desk.pull();
+  await laptop.pull();
+  clock.t = 4000;
+  desk.remove('sender', 'x@example.com');
+  clock.t = 5000;
+  laptop.put('sender', 'x@example.com', { category: 'money' });
+  await laptop.push();
+  await desk.push();
+  await laptop.sync();
+  await desk.sync();
+  assert.deepEqual(laptop.get('sender', 'x@example.com'), { category: 'money' });
+  assert.deepEqual(desk.get('sender', 'x@example.com'), { category: 'money' });
+
+  // And a later deletion wins over an earlier change.
+  clock.t = 6000;
+  laptop.put('sender', 'x@example.com', { category: 'updates' });
+  clock.t = 7000;
+  desk.remove('sender', 'x@example.com');
+  await desk.push();
+  await laptop.push();
+  await desk.sync();
+  await laptop.sync();
+  assert.equal(desk.get('sender', 'x@example.com'), undefined);
+  assert.equal(laptop.get('sender', 'x@example.com'), undefined);
+});
+
+test('a deletion made while signed out goes up at the next sign-in', async (t) => {
+  const srv = await server(t);
+  const dir = tmpDir(t);
+  const desk = device(t, srv, 'desk', dir);
+  await desk.signUp({ email: 'gone@example.com', password: PASSWORD });
+  desk.put('category', 'promotions', { name: 'Promotions' });
+  await desk.sync();
+  await desk.signOut();
+  desk.remove('category', 'promotions');
+  await desk.signIn({ email: 'gone@example.com', password: PASSWORD });
+  await desk.sync();
+  assert.equal(desk.get('category', 'promotions'), undefined);
+  const laptop = device(t, srv, 'laptop');
+  await laptop.signIn({ email: 'gone@example.com', password: PASSWORD });
+  await laptop.sync();
+  assert.equal(laptop.get('category', 'promotions'), undefined);
+});
+
 test('signing in with a wrong password fails without signing in', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);

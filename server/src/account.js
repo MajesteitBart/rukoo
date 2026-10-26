@@ -56,7 +56,8 @@ const SCHEMA = `
     id INTEGER PRIMARY KEY CHECK (id = 1),
     seq INTEGER NOT NULL,
     records INTEGER NOT NULL,
-    bytes INTEGER NOT NULL
+    bytes INTEGER NOT NULL,
+    tombstones INTEGER NOT NULL DEFAULT 0
   );
 `;
 
@@ -116,7 +117,7 @@ export class Account extends DurableObject {
         blob(recoveryVerifier),
         blob(input.recoveryWrappedKey)
       );
-      this.sql.exec('INSERT INTO meta (id, seq, records, bytes) VALUES (1, 0, 0, 0)');
+      this.sql.exec('INSERT INTO meta (id, seq, records, bytes, tombstones) VALUES (1, 0, 0, 0, 0)');
       sessionId = this.#addSession(tokenHash, input.device, now);
     });
     this.exists = true;
@@ -274,10 +275,11 @@ export class Account extends DurableObject {
   }
 
   // Writes a push in one transaction. A delete keeps the row with its data cleared and a new seq, so devices that
-  // pull later learn of it. The counters change in the same transaction, which keeps them exact without counting.
+  // pull later learn of it. Deleting what is already deleted, or was never stored, changes nothing and leaves no row.
+  // The counters change in the same transaction, which keeps them exact without counting.
   #store(items, limits, now) {
     const start = this.#meta();
-    let { seq, records, bytes } = start;
+    let { seq, records, bytes, tombstones } = start;
     const results = [];
     for (const item of items) {
       const old = this.sql
@@ -287,15 +289,23 @@ export class Account extends DurableObject {
         results.push({ id: item.id, seq: old.seq, stored: false });
         continue;
       }
+      if (!item.data && !old?.live) {
+        results.push({ id: item.id, seq: old ? old.seq : seq, stored: true });
+        continue;
+      }
       seq += 1;
       if (old?.live) {
         records -= 1;
         bytes -= old.size;
+      } else if (old) {
+        tombstones -= 1;
       }
       const size = item.data ? item.data.byteLength : 0;
       if (item.data) {
         records += 1;
         bytes += size;
+      } else {
+        tombstones += 1;
       }
       this.sql.exec(
         `INSERT INTO records (id, seq, data, size, updatedAt) VALUES (?, ?, ?, ?, ?)
@@ -309,11 +319,23 @@ export class Account extends DurableObject {
       results.push({ id: item.id, seq, stored: true });
     }
     // Only a push that adds to an account over its limit is refused. One that was already over, for example after
-    // the operator lowered a limit, can still delete and shrink records.
-    if ((records > limits.records && records > start.records) || (bytes > limits.bytes && bytes > start.bytes)) {
+    // the operator lowered a limit, can still delete and shrink records. Tombstones have a limit of their own, as many
+    // as records: they take little room, but without a limit an account could grow them forever.
+    const grows = (now, before, limit) => now > limit && now > before;
+    if (
+      grows(records, start.records, limits.records) ||
+      grows(bytes, start.bytes, limits.bytes) ||
+      grows(tombstones, start.tombstones, limits.records)
+    ) {
       throw new QuotaExceeded();
     }
-    this.sql.exec('UPDATE meta SET seq = ?, records = ?, bytes = ? WHERE id = 1', seq, records, bytes);
+    this.sql.exec(
+      'UPDATE meta SET seq = ?, records = ?, bytes = ?, tombstones = ? WHERE id = 1',
+      seq,
+      records,
+      bytes,
+      tombstones
+    );
     return { results, seq };
   }
 
@@ -392,7 +414,7 @@ export class Account extends DurableObject {
   }
 
   #meta() {
-    return this.sql.exec('SELECT seq, records, bytes FROM meta WHERE id = 1').one();
+    return this.sql.exec('SELECT seq, records, bytes, tombstones FROM meta WHERE id = 1').one();
   }
 
   // What GET /v1/account returns, which sign-up, sign-in and recovery return too.

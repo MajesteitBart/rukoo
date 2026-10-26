@@ -164,6 +164,28 @@ describe('tombstones', () => {
   });
 });
 
+describe('deleting nothing', () => {
+  it('stores no row and takes no seq for an id that was never stored or is already deleted', async () => {
+    const person = await signup();
+    const [a] = many(1);
+    await push(person.token, [a]);
+    await push(person.token, [{ id: a.id, data: null }]);
+    const unknown = recordId();
+    const res = await push(person.token, [
+      { id: unknown, data: null },
+      { id: a.id, data: null }
+    ]);
+    expect(res.body).toEqual({
+      results: [
+        { id: unknown, seq: 2, stored: true },
+        { id: a.id, seq: 2, stored: true }
+      ],
+      seq: 2
+    });
+    expect((await pull(person.token)).body.records).toEqual([{ id: a.id, seq: 2, data: null }]);
+  });
+});
+
 describe('limits', () => {
   it('refuses a push that would go over the record quota, storing none of it', async () => {
     const person = await signup();
@@ -202,6 +224,24 @@ describe('limits', () => {
     expect((await push(person.token, [{ id: ids[0], data: null }], vars)).status).toBe(200);
     expect((await push(person.token, [{ id: ids[1], data: sealed(29) }], vars)).status).toBe(200);
     expect((await push(person.token, many(1), vars)).status).toBe(413);
+  });
+
+  it('limits tombstones to as many as records', async () => {
+    const person = await signup();
+    const vars = { MAX_RECORDS: 3 };
+    const records = many(3);
+    await push(person.token, records, vars);
+    // Three deletes make three tombstones: at the limit, still fine.
+    expect((await push(person.token, records.map((r) => ({ id: r.id, data: null })), vars)).status).toBe(200);
+    // A fourth record and its delete would make a fourth tombstone.
+    const [extra] = many(1);
+    expect((await push(person.token, [extra], vars)).status).toBe(200);
+    const res = await push(person.token, [{ id: extra.id, data: null }], vars);
+    expect(res.status).toBe(413);
+    expect(res.body.error).toBe('quota');
+    // Bringing a deleted record back frees its tombstone.
+    expect((await push(person.token, [{ id: records[0].id, data: sealed() }], vars)).status).toBe(200);
+    expect((await push(person.token, [{ id: extra.id, data: null }], vars)).status).toBe(200);
   });
 
   it('takes records up to 16 KiB and refuses bigger ones', async () => {
@@ -293,19 +333,23 @@ describe('counters', () => {
       { id: recordId(), data: null },
       { id: records[3].id, data: sealed(), ifAbsent: true }
     ]);
-    const { counted, meta } = await runInDurableObject(await accountStub(person.email), (instance, state) => ({
+    const { counted, meta, tombstones } = await runInDurableObject(await accountStub(person.email), (instance, state) => ({
       counted: state.storage.sql
         .exec(
           'SELECT COUNT(*) AS records, COALESCE(SUM(LENGTH(data)), 0) AS bytes, MAX(seq) AS seq FROM records WHERE data IS NOT NULL'
         )
         .one(),
-      meta: state.storage.sql.exec('SELECT seq, records, bytes FROM meta').one()
+      meta: state.storage.sql.exec('SELECT seq, records, bytes, tombstones FROM meta').one(),
+      tombstones: state.storage.sql.exec('SELECT COUNT(*) AS n FROM records WHERE data IS NULL').one().n
     }));
     expect(meta.records).toBe(counted.records);
     expect(meta.bytes).toBe(counted.bytes);
     expect(meta.records).toBe(9);
     expect(meta.bytes).toBe(64 * 7 + 200 + 31);
-    expect(meta.seq).toBe(15);
+    // The delete of an id that was never stored took no seq.
+    expect(meta.seq).toBe(14);
+    expect(meta.tombstones).toBe(1);
+    expect(tombstones).toBe(1);
     expect(await usage(person)).toEqual({ records: 9, bytes: 64 * 7 + 200 + 31 });
   });
 });

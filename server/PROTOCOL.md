@@ -52,12 +52,16 @@ Everything the account syncs is a record: a value in a collection under a key.
 { "c": "category", "k": "needs-you", "v": { "name": "Needs you" }, "t": 1793000000000 }
 ```
 
-- `c` is the collection, `k` the record's key in it, `v` any JSON value and `t` when the device changed it.
+- `c` is the collection, `k` the record's key in it, `v` any JSON value and `t` when the device changed it. A deleted record has `v` null and `d` true.
 - The record's id is `base64url(HMAC-SHA256(indexKey, c + "\n" + k))`, 43 characters. The server can match a record to its id, but not learn the collection or the key.
 - The record's `data` is `seal(recordKey, JSON of the record, "rukoo/v1/record:" + id)`. Binding the id into the tag stops the server from swapping the contents of two records.
-- A deleted record is a tombstone: the id with `data` null.
+- A device deletes a record by writing it again with `d` true, sealed like any other. The deletion then carries its time and settles against changes on other devices like any write. The server also knows deletion without contents (`data` null, a tombstone); a device that receives one drops the record unless it has its own change waiting to go up.
 
 A device that opens a record checks that its `c` and `k` give the id it arrived under, and drops it otherwise.
+
+### When two devices change the same record
+
+The server keeps whatever reaches it last, so devices settle the order themselves. A device that receives a record it has a newer version of keeps its own and sends it again. Newer means a later `t`; on equal `t`, the larger JSON text of `[d ? 1 : 0, v]`, so every device picks the same one. Records written with `ifAbsent` (a first write) are the exception: the server keeps the first one it got, and a device takes that one whatever the times say.
 
 ### Collections
 
@@ -183,7 +187,7 @@ Records changed after `since`, oldest first, at most `limit` (default and maximu
 
 At most 500 records per request (`413 too_large` above that), each `data` at most 16 KiB once decoded. `data` null deletes the record. With `ifAbsent` the record is stored only when the server has no live record under that id. A push is stored whole or not at all.
 
-Every stored write gets the next `seq`, also a delete. Deleted records stay as tombstones so devices that pull later learn of the delete; they don't count toward the account's limits. A push that would take the account past `limits.records` or `limits.bytes` gets `413 quota`, unless it makes an account that is already over its limit smaller.
+Every stored write gets the next `seq`, also a delete. A tombstone stays so devices that pull later learn of the delete. Deleting what is already deleted, or was never stored, changes nothing: the result says `stored` true with the current `seq`, and no row is made. A push that would take the account past `limits.records` live records, `limits.bytes`, or `limits.records` tombstones gets `413 quota`, unless it makes an account that is already over a limit smaller.
 
 → `{ "results": [{ "id": "…", "seq": 41, "stored": true }], "seq": 41 }`. A record that wasn't stored comes back with the `seq` of the one the server kept; the device fetches that one on its next pull.
 

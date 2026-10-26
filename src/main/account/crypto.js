@@ -125,9 +125,10 @@ const recordKeys = (dataKey) => ({ recordKey: hkdf(dataKey, 'rukoo/v1/records'),
 const recordId = (indexKey, c, k) => b64u(crypto.createHmac('sha256', indexKey).update(`${c}\n${k}`, 'utf8').digest());
 const recordAad = (id) => `rukoo/v1/record:${id}`;
 
-function sealRecord(keys, { c, k, v, t }, nonce) {
+function sealRecord(keys, { c, k, v, t, d }, nonce) {
   const id = recordId(keys.indexKey, c, k);
-  const data = seal(keys.recordKey, Buffer.from(JSON.stringify({ c, k, v, t }), 'utf8'), recordAad(id), nonce);
+  const record = d ? { c, k, v: null, t, d: true } : { c, k, v, t };
+  const data = seal(keys.recordKey, Buffer.from(JSON.stringify(record), 'utf8'), recordAad(id), nonce);
   return { id, data: b64u(data) };
 }
 
@@ -137,7 +138,9 @@ function openRecord(keys, id, data) {
     const rec = JSON.parse(open(keys.recordKey, unb64u(data), recordAad(id)).toString('utf8'));
     if (!rec || typeof rec.c !== 'string' || typeof rec.k !== 'string') return null;
     if (recordId(keys.indexKey, rec.c, rec.k) !== id) return null;
-    return { c: rec.c, k: rec.k, v: rec.v === undefined ? null : rec.v, t: Number(rec.t) || 0 };
+    const out = { c: rec.c, k: rec.k, v: rec.v === undefined ? null : rec.v, t: Number(rec.t) || 0 };
+    if (rec.d === true) out.d = true;
+    return out;
   } catch (_) {
     return null;
   }

@@ -24,6 +24,12 @@ const PULL_LIMIT = 1000;
 const PUSH_BATCH = 500;
 // Collections whose records are decided once, by the first device to write one (server/PROTOCOL.md, Collections).
 const FIRST_WRITE_WINS = new Set(['classification']);
+// Which of two versions of a record wins: the later change, and on a tie the larger value, so every device picks the
+// same one whatever order they arrive in.
+const gone = (x) => (x.d || x.deleted ? 1 : 0);
+const newer = (a, b) => a.t > b.t || (a.t === b.t && JSON.stringify([gone(a), a.v]) > JSON.stringify([gone(b), b.v]));
+// Rounds of pull and push in one sync, enough for a refused first write or a newer value that has to go up again.
+const SYNC_ROUNDS = 3;
 const ERRORS = new Set([
   'invalid', 'unauthorized', 'locked', 'rate_limited', 'exists', 'signups_closed', 'invite_required', 'quota', 'too_large',
   'not_configured', 'network', 'server', 'invalid_email', 'weak_password', 'recovery_key', 'weak_kdf', 'no_server', 'protocol',
@@ -382,7 +388,7 @@ class AccountService extends EventEmitter {
     for (const e of this.entries.values()) {
       delete e.seq;
       e.dirty = true;
-      if (FIRST_WRITE_WINS.has(e.c)) e.ifAbsent = true;
+      if (FIRST_WRITE_WINS.has(e.c)) e.ifAbsent = e.first = true;
     }
     this.open({ token, dataKey });
     this.saveState();
@@ -401,7 +407,6 @@ class AccountService extends EventEmitter {
       delete e.seq;
       delete e.dirty;
       delete e.ifAbsent;
-      if (e.deleted) this.entries.delete(key);
     }
     const { server, info, error } = this.state;
     this.state = { server, info, error };
@@ -422,24 +427,26 @@ class AccountService extends EventEmitter {
     return out;
   }
 
-  // Returns false when ifAbsent and the record already exists.
+  // Returns false when ifAbsent and the record already exists. An ifAbsent record is a first write: when another
+  // device's first write reaches the server before it, that one stays, whatever the times say.
   put(c, k, v, { ifAbsent = false } = {}) {
     const key = entryKey(c, k);
     const was = this.entries.get(key);
     if (ifAbsent && was && !was.deleted) return false;
     const e = { c, k, v, t: Math.max(this.now(), was ? was.t + 1 : 0), dirty: true };
-    if (ifAbsent) e.ifAbsent = true;
+    if (ifAbsent) e.ifAbsent = e.first = true;
     this.track(key, e);
     this.changedRecords([c]);
     return true;
   }
 
+  // A deletion is kept, and goes up, as a record of its own (d: true) with its time, so it settles against a change
+  // on another device like any other write, also when it was made while signed out.
   remove(c, k) {
     const key = entryKey(c, k);
     const was = this.entries.get(key);
     if (!was || was.deleted) return false;
-    if (!this.signedIn) this.entries.delete(key);
-    else this.track(key, { c, k, v: null, t: Math.max(this.now(), was.t + 1), deleted: true, dirty: true });
+    this.track(key, { c, k, v: null, t: Math.max(this.now(), was.t + 1), deleted: true, dirty: true });
     this.changedRecords([c]);
     return true;
   }
@@ -479,8 +486,11 @@ class AccountService extends EventEmitter {
     this.syncing = (async () => {
       this.changedStatus();
       try {
-        await this.pull();
-        if (await this.push()) await this.pull();
+        for (let round = 0; round < SYNC_ROUNDS; round++) {
+          await this.pull();
+          const refused = await this.push();
+          if (!refused && ![...this.entries.values()].some((e) => e.dirty)) break;
+        }
         this.state.lastSync = this.now();
         this.state.error = null;
       } catch (err) {
@@ -518,8 +528,9 @@ class AccountService extends EventEmitter {
   applyRemote({ id, seq, data }) {
     const key = this.ids.get(id);
     const local = key ? this.entries.get(key) : null;
+    // A tombstone the server keeps for data null. Rukoo deletes with d: true instead, but takes these too.
     if (data === null || data === undefined) {
-      if (!local || (local.dirty && !local.deleted)) return null;
+      if (!local || local.dirty) return null;
       this.entries.delete(key);
       this.ids.delete(id);
       return local.c;
@@ -528,13 +539,17 @@ class AccountService extends EventEmitter {
     if (!rec) return null;
     const k = entryKey(rec.c, rec.k);
     const mine = this.entries.get(k);
-    // A newer change here waits to go up; the server keeps the first classification whatever this device says.
-    if (mine && mine.dirty && !mine.ifAbsent && mine.t > rec.t) {
-      mine.seq = Number(seq);
+    if (mine && !mine.dirty && mine.seq === Number(seq)) return null;
+    // Two devices that changed a record at about the same time may reach the server in either order. The later
+    // change wins on every device: one that is newer here goes up again, also after it was sent once. A first write
+    // (a classification) is the exception: the server keeps whichever came first.
+    if (mine && !mine.first && newer(mine, rec)) {
+      mine.dirty = true;
       return null;
     }
-    if (mine && !mine.dirty && mine.seq === Number(seq)) return null;
-    this.entries.set(k, { c: rec.c, k: rec.k, v: rec.v, t: rec.t, id, seq: Number(seq) });
+    const e = { c: rec.c, k: rec.k, v: rec.v, t: rec.t, id, seq: Number(seq) };
+    if (rec.d) e.deleted = true;
+    this.entries.set(k, e);
     this.ids.set(id, k);
     return rec.c;
   }
@@ -547,7 +562,7 @@ class AccountService extends EventEmitter {
       const batch = [...this.entries.values()].filter((e) => e.dirty).slice(0, PUSH_BATCH);
       if (!batch.length) return refused;
       const records = batch.map((e) => {
-        const out = e.deleted ? { id: e.id, data: null } : keys.sealRecord(this.session.keys, e);
+        const out = keys.sealRecord(this.session.keys, e.deleted ? { ...e, v: null, d: true } : e);
         if (e.ifAbsent && !e.deleted) out.ifAbsent = true;
         return out;
       });
@@ -559,12 +574,14 @@ class AccountService extends EventEmitter {
         if (!r || this.entries.get(entryKey(e.c, e.k)) !== e) continue;
         delete e.dirty;
         delete e.ifAbsent;
-        e.seq = Number(r.seq);
-        if (!r.stored) refused = true;
-        if (e.deleted) {
-          this.entries.delete(entryKey(e.c, e.k));
-          this.ids.delete(e.id);
+        if (r.stored) {
+          e.seq = Number(r.seq);
+          continue;
         }
+        // Another device's first write came first. The next pull must bring it, even when it is older than the cursor.
+        refused = true;
+        delete e.seq;
+        this.state.cursor = Math.min(Number(this.state.cursor) || 0, Number(r.seq) - 1);
       }
       this.saveEntries();
     }
