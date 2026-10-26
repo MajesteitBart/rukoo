@@ -2423,6 +2423,28 @@ body:has(.page) .titlebar-actions {
 .settings-group-title:empty {
   padding-top: 8px;
 }
+/* Settings > Rukoo account: a paragraph between the cards, and the recovery key shown once. */
+.settings-text {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 16px 4px 2px;
+  text-wrap: pretty;
+  user-select: text;
+}
+.recovery-key {
+  margin: 14px 0 12px;
+  padding: 14px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
 .card {
   background: var(--panel);
   border: 1px solid var(--border);

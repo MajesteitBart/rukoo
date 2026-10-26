@@ -35,6 +35,8 @@ const { windowChrome, MailtoQueue, MacMailClient, macMenu } = require('./desktop
 // ---- agents ----
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
+const { AccountService } = require('./account');
+const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
 
@@ -83,6 +85,7 @@ let logos = null;
 let engine = null;
 let calendars = null;
 let google = null;
+let account = null;
 let syncTimer = null;
 let newSinceFocus = 0;
 let tray = null;
@@ -365,6 +368,7 @@ function endSession() {
   clearInterval(syncTimer);
   engine.flush();
   if (calendars) calendars.flush();
+  if (account) account.close();
   destroyTray();
   // ---- agents ----
   // dispose() saves the chats before its first await; see will-quit.
@@ -490,6 +494,8 @@ async function printHtml(html) {
 
 // The calendar view's arguments. The calendar store checks the fields of an event again.
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+// Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
+const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 function calendarRange(range) {
   const { start, end } = plainObject(range);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 400 * 86400000) throw new Error('invalid');
@@ -760,7 +766,40 @@ const api = {
     engine.emit('updated');
     return true;
   },
-  appInfo: () => ({ version: app.getVersion(), dataDir: app.getPath('userData') })
+  appInfo: () => ({ version: app.getVersion(), dataDir: app.getPath('userData') }),
+  // The Rukoo account (account/index.js). Passwords stay in main: only their keys leave, and only to the server.
+  accountStatus: () => account.status(),
+  accountServerInfo: () => account.serverInfo(),
+  accountSetServer: (url) => account.setServer(accountText(url, 2000)),
+  accountSignUp: (input) => {
+    const i = plainObject(input);
+    return account.signUp({ email: accountText(i.email, 320), password: accountText(i.password, 1000), invite: accountText(i.invite, 200) });
+  },
+  accountSignIn: (input) => {
+    const i = plainObject(input);
+    return account.signIn({ email: accountText(i.email, 320), password: accountText(i.password, 1000) });
+  },
+  accountRecover: (input) => {
+    const i = plainObject(input);
+    return account.recover({ email: accountText(i.email, 320), recoveryKey: accountText(i.recoveryKey, 200), password: accountText(i.password, 1000) });
+  },
+  accountSignOut: () => account.signOut(),
+  accountDetails: () => account.details(),
+  accountRemoveDevice: (id) => account.removeDevice(accountText(id, 200)),
+  accountChangePassword: (current, next) => account.changePassword(accountText(current, 1000), accountText(next, 1000)),
+  accountNewRecoveryKey: (password) => account.newRecoveryKey(accountText(password, 1000)),
+  accountDelete: (password) => account.deleteAccount(accountText(password, 1000)),
+  accountSync: () => account.sync(),
+  accountExport: async () => {
+    const res = await dialog.showSaveDialog(win, {
+      title: t('settings.rukoo.export'),
+      defaultPath: path.join(app.getPath('documents'), 'rukoo-account.json'),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (res.canceled || !res.filePath) return false;
+    fs.writeFileSync(res.filePath, JSON.stringify(account.exportData(), null, 2));
+    return res.filePath;
+  }
 };
 
 // ---- agents ----
@@ -1046,6 +1085,15 @@ app.whenReady().then(() => {
   calendars = new Calendars({ engine });
   if (process.env.SEM_HIDDEN) global.__semCalendars = calendars;
   calendars.on('updated', () => send('calendar'));
+  // A fork points the app at its own account server with package.json's rukoo.accountServer; tests and development
+  // use RUKOO_ACCOUNT_SERVER.
+  account = new AccountService({
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    secrets,
+    defaultServer: process.env.RUKOO_ACCOUNT_SERVER || PACKAGE_RUKOO.accountServer || ''
+  }).init();
+  account.on('status', (status) => broadcast('account', status));
+  account.sync().catch(() => {});
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({
@@ -1100,6 +1148,7 @@ app.on('before-quit', () => {
   clearInterval(syncTimer);
   if (engine) engine.flush();
   if (calendars) calendars.flush();
+  if (account) account.close();
 });
 
 // Every window has closed, so the quit goes through.

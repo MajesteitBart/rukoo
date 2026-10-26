@@ -15,6 +15,7 @@ import {
 } from './agent/actions.js';
 import { signatureHtml, accountSignatureHtml, usesGeneralSignature } from './composer.js';
 import { editSignature, signaturePreview } from './signature.js';
+import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
 
 const THEMES = [
   { value: 'system', get label() { return t('settings.theme.system'); } },
@@ -221,6 +222,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     }
     // Zoom keys and the wheel work with Settings open; only the zoom row changes.
     if (type === 'zoom') showZoom(payload);
+    if (type === 'account') account.onStatus(payload);
   });
 
   const close = () => {
@@ -256,6 +258,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       ${desc ? `<div class="desc">${desc}</div>` : ''}${value ? `<div class="value">${value}</div>` : ''}${preview || ''}</div>
       ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
     </button>`;
+
+  // The Rukoo account's pages (rukoo-account.js).
+  const account = accountPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
 
   // A signature row: the signature as it will be sent, or None.
   const signatureRow = (html, action) =>
@@ -870,6 +875,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       agentState = await loadAgents();
       if (stack[stack.length - 1] !== view) return;
     }
+    if (view === 'main' || ACCOUNT_VIEWS.includes(view)) {
+      await account.prepare(view);
+      if (stack[stack.length - 1] !== view) return;
+    }
 
     if (view === 'main') {
       const accounts = state.accounts
@@ -916,6 +925,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
+        <div class="settings-group-title" data-i18n="settings.groups.sync">${esc(t('settings.groups.sync'))}</div>
+        <div class="card">${account.rowHtml()}</div>
         <div class="settings-group-title" data-i18n="settings.groups.agents">${esc(t('settings.groups.agents'))}</div>
         <div class="card">${row({
           title: agentState ? t('settings.agents.rowTitle', { name: esc(agentName(agentState.config, 'clark')) }) : t('settings.agents.title'),
@@ -1026,17 +1037,21 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       body = agentState ? shortcutsHtml() : `<p class="empty">${esc(t('settings.agents.unavailable'))}</p>`;
     }
 
+    if (ACCOUNT_VIEWS.includes(view)) ({ title, body } = account.view(view));
+
     page.innerHTML = `
       <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
     if (view === 'agents' && agentState) AGENT_IDS.forEach((id) => showAgentStatus(id));
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
     if (view === 'main') showMailto();
+    if (view === 'main' || ACCOUNT_VIEWS.includes(view)) account.fill(view);
   }
 
   page.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
+    if (String(form.dataset.form || '').startsWith('rukoo')) return account.submit(form);
     const f = new FormData(form);
     const err = form.querySelector('[data-error]');
     const btn = form.querySelector('button[type=submit]');
@@ -1075,6 +1090,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       ctx.refresh();
     };
     if (a === 'back') return back();
+    if (a.startsWith('rukoo') && (await account.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'mailto-use') {

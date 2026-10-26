@@ -182,6 +182,12 @@ class AccountService extends EventEmitter {
     if (this.signedIn) throw fail('signed_in');
     if (!validEmail(email)) throw fail('invalid_email');
     if (typeof password !== 'string' || [...password].length < MIN_PASSWORD) throw fail('weak_password');
+    this.checkStorage();
+  }
+
+  // The session has to be stored safely (secrets.js); without a keyring, stop before the server makes an account.
+  checkStorage() {
+    this.secrets.encrypt('rukoo');
   }
 
   async signUp({ email, password, invite }) {
@@ -232,6 +238,7 @@ class AccountService extends EventEmitter {
     if (this.signedIn) throw fail('signed_in');
     if (!validEmail(address)) throw fail('invalid_email');
     if (typeof password !== 'string' || !password) throw fail('unauthorized');
+    this.checkStorage();
     await this.serverInfo();
     const { authKey, wrapKey } = await this.authFor(address, password);
     const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() });
