@@ -121,7 +121,11 @@ Who runs this server and where it keeps data. No session needed. The app shows t
 
 ### `POST /v1/login`
 
-`{ "email", "authKey", "device" }` → `{ "token", "wrappedKey", "account" }`. Ten failed attempts on one account within 15 minutes lock it for 15 minutes (`429 locked`).
+`{ "email", "authKey", "device" }` → `{ "token", "wrappedKey", "account" }`.
+
+Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login` and `recover/*` (`429 rate_limited`).
+
+An account keeps at most 100 sessions; a new one past that ends the session seen longest ago.
 
 ### `POST /v1/logout`
 
@@ -163,7 +167,7 @@ For a forgotten password. `start` takes `{ "email", "recoveryAuth" }` and return
 
 ### `GET /v1/records?since=<seq>&limit=<n>`
 
-Records changed after `since`, oldest first, at most `limit` (default and maximum 1000).
+Records changed after `since`, oldest first, at most `limit` (default and maximum 1000; a larger `limit` counts as 1000). A page also ends early once it holds about 4 MiB, with `more` true.
 
 ```json
 { "records": [{ "id": "…", "seq": 12, "data": "…" }], "seq": 40, "more": true }
@@ -177,7 +181,9 @@ Records changed after `since`, oldest first, at most `limit` (default and maximu
 { "records": [{ "id": "…", "data": "…", "ifAbsent": true }] }
 ```
 
-At most 500 records per request, each `data` at most 16 KiB once decoded. `data` null deletes the record. With `ifAbsent` the record is stored only when the server has no live record under that id.
+At most 500 records per request (`413 too_large` above that), each `data` at most 16 KiB once decoded. `data` null deletes the record. With `ifAbsent` the record is stored only when the server has no live record under that id. A push is stored whole or not at all.
+
+Every stored write gets the next `seq`, also a delete. Deleted records stay as tombstones so devices that pull later learn of the delete; they don't count toward the account's limits. A push that would take the account past `limits.records` or `limits.bytes` gets `413 quota`, unless it makes an account that is already over its limit smaller.
 
 → `{ "results": [{ "id": "…", "seq": 41, "stored": true }], "seq": 41 }`. A record that wasn't stored comes back with the `seq` of the one the server kept; the device fetches that one on its next pull.
 

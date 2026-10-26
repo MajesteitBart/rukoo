@@ -120,16 +120,17 @@ test('a wrong password and a wrong recovery key are refused, and too many lock t
   await desk.signUp({ email: address, password: PASSWORD, invite: INVITE });
   const other = device(t, 'other');
   await assert.rejects(other.recover({ email: address, recoveryKey: k.formatRecoveryKey(crypto.randomBytes(20)), password: 'a different password' }), { code: 'unauthorized' });
-  let locked = false;
-  for (let i = 0; i < 12 && !locked; i++) {
+  // The account locks after ten failures; the server's limit per address (30 a minute) may stop the guessing first.
+  let stopped = false;
+  for (let i = 0; i < 12 && !stopped; i++) {
     try {
       await other.signIn({ email: address, password: `wrong password ${i}` });
     } catch (err) {
-      if (err.code === 'locked') locked = true;
+      if (err.code === 'locked' || err.code === 'rate_limited') stopped = true;
       else assert.equal(err.code, 'unauthorized');
     }
   }
-  assert.ok(locked, 'the account locks after repeated failures');
+  assert.ok(stopped, 'repeated failures are stopped');
   // The lock may still refuse this; a throwaway server doesn't mind the leftover account.
   await desk.deleteAccount(PASSWORD).catch(() => {});
 });
