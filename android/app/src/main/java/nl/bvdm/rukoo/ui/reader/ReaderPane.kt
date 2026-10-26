@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -231,8 +232,6 @@ private fun Reader(app: AppViewModel, id: String) {
     }
 
     if (more && m != null) {
-        val prev = app.neighbour(id, -1)
-        val next = app.neighbour(id, 1)
         RkBottomSheet(onDismissRequest = { more = false }) {
             if (!draft) {
                 SheetRow(
@@ -247,15 +246,19 @@ private fun Reader(app: AppViewModel, id: String) {
                     dismiss()
                     app.addToChat(listOf(id))
                 })
+            } else {
+                // A draft has no bottom bar, so its Previous and Next stay here.
+                val prev = app.neighbour(id, -1)
+                val next = app.neighbour(id, 1)
+                SheetRow(stringResource(R.string.reader_navigation_previous), icon = RukooIcons.Up, enabled = prev != null, onClick = {
+                    dismiss()
+                    prev?.let(app::openMessage)
+                })
+                SheetRow(stringResource(R.string.reader_navigation_next), icon = RukooIcons.Down, enabled = next != null, onClick = {
+                    dismiss()
+                    next?.let(app::openMessage)
+                })
             }
-            SheetRow(stringResource(R.string.reader_navigation_previous), icon = RukooIcons.Up, enabled = prev != null, onClick = {
-                dismiss()
-                prev?.let(app::openMessage)
-            })
-            SheetRow(stringResource(R.string.reader_navigation_next), icon = RukooIcons.Down, enabled = next != null, onClick = {
-                dismiss()
-                next?.let(app::openMessage)
-            })
             SheetRow(stringResource(R.string.reader_source_show), icon = RukooIcons.Code, onClick = {
                 dismiss()
                 source = true
@@ -453,29 +456,52 @@ private fun BottomBar(app: AppViewModel, m: MessageSummary) {
         row.unread != Unread.NONE -> NewsTone.UNREAD
         else -> null
     }
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 6.dp, end = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RkToolbarButton(stringResource(R.string.composer_titles_reply), RukooIcons.Reply, onClick = {
-            app.interacted(Pane.READER)
-            app.reply(m.id, ReplyKind.REPLY)
-        })
-        RkIconButton(RukooIcons.ReplyAll, stringResource(R.string.composer_titles_reply_all), onClick = { app.reply(m.id, ReplyKind.REPLY_ALL) })
-        RkIconButton(RukooIcons.Forward, stringResource(R.string.composer_titles_forward), onClick = { app.reply(m.id, ReplyKind.FORWARD) })
-        Spacer(Modifier.weight(1f))
-        Box {
-            RkPillButton(
-                name,
-                onClick = { app.openChat(existing?.id, m.id) },
-                kind = RkPillKind.SECONDARY,
-                icon = RukooIcons.Sparkle,
-                modifier = Modifier.widthIn(max = 180.dp).semantics { contentDescription = chatAbout },
-            )
-            if (news != null) NewsDot(news, ring = c.panel, modifier = Modifier.align(Alignment.TopEnd).offset(x = (-6).dp, y = 6.dp))
+    // The agent button gets at most what is left once the five buttons have their 48dp, so a long agent name or
+    // a large font shortens the name instead of taking Reply's icon.
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val pillMax = (maxWidth - BottomBarReserved).coerceIn(56.dp, 180.dp)
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 6.dp, end = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Measured after the rest of the bar, so on a narrow screen or in a longer language Reply gives up its
+            // label before the agent's name gives up room.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                RkToolbarButton(
+                    stringResource(R.string.composer_titles_reply),
+                    RukooIcons.Reply,
+                    onClick = {
+                        app.interacted(Pane.READER)
+                        app.reply(m.id, ReplyKind.REPLY)
+                    },
+                    modifier = Modifier.weight(1f, fill = false),
+                    collapsible = true,
+                )
+                RkIconButton(RukooIcons.ReplyAll, stringResource(R.string.composer_titles_reply_all), onClick = { app.reply(m.id, ReplyKind.REPLY_ALL) })
+                RkIconButton(RukooIcons.Forward, stringResource(R.string.composer_titles_forward), onClick = { app.reply(m.id, ReplyKind.FORWARD) })
+            }
+            // Previous and Next in the corner the thumb reaches, the way the list runs: up is the newer email.
+            val prev = app.neighbour(m.id, -1)
+            val next = app.neighbour(m.id, 1)
+            RkIconButton(RukooIcons.Up, stringResource(R.string.reader_navigation_previous), enabled = prev != null, onClick = { prev?.let(app::openMessage) })
+            RkIconButton(RukooIcons.Down, stringResource(R.string.reader_navigation_next), enabled = next != null, onClick = { next?.let(app::openMessage) })
+            Spacer(Modifier.width(8.dp))
+            Box {
+                RkPillButton(
+                    name,
+                    onClick = { app.openChat(existing?.id, m.id) },
+                    kind = RkPillKind.SECONDARY,
+                    icon = RukooIcons.Sparkle,
+                    modifier = Modifier.widthIn(max = pillMax).semantics { contentDescription = chatAbout },
+                )
+                if (news != null) NewsDot(news, ring = c.panel, modifier = Modifier.align(Alignment.TopEnd).offset(x = (-6).dp, y = 6.dp))
+            }
         }
     }
 }
+
+/** The bottom bar's room that isn't the agent button's: its padding, five 48dp buttons and the gap before the button. */
+private val BottomBarReserved = 6.dp + 10.dp + 48.dp * 5 + 8.dp
 
 /** The message's own headers, for checking where it came from (instead of desktop's Export as .eml). */
 @Composable

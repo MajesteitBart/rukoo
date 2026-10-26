@@ -91,6 +91,7 @@ import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.root.Pane
 import nl.bvdm.rukoo.ui.root.TwoPaneMinWidth
+import nl.bvdm.rukoo.ui.settings.SettingsRoutes
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.lineHeight
 import nl.bvdm.rukoo.ui.theme.medium
@@ -310,7 +311,7 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
                     leftOut = controller.detached() && email != null,
                     related = related,
                     relatedName = related?.let { nameOf(it.agent) },
-                    onEditShortcuts = app::openSettings,
+                    onEditShortcuts = { app.openSettings(listOf(SettingsRoutes.AGENTS, SettingsRoutes.SHORTCUTS)) },
                 )
                 else -> key(conversation.id) {
                     Transcript(conversation, controller, nameOf, composer, skillList?.skills.orEmpty(), follow)

@@ -21,6 +21,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
@@ -68,6 +69,10 @@ object SettingsRoutes {
     const val IMAP = "imap:"
     const val PAIR = "pair"
     const val IMPORT = "import"
+    const val SHORTCUTS = "shortcuts"
+
+    /** One shortcut by its command; the bare prefix is a new one. */
+    const val SHORTCUT = "shortcut:"
 
     val sections = listOf(ACCOUNTS, AGENTS, PHONE, NOTIFICATIONS, APPEARANCE, LANGUAGE, ABOUT)
 }
@@ -82,6 +87,8 @@ class SettingsNav(val push: (String) -> Unit, val pop: () -> Unit, val reset: (S
 @Composable
 fun SettingsScreen(app: AppViewModel, modifier: Modifier = Modifier) {
     val model: SetupModel = viewModel { SetupModel(app.services) }
+    // Opened on a page (the chat's Edit shortcuts): that page, with the way back to its section.
+    remember { app.takeSettingsStart()?.let(model::setSettingsStack) }
     val stack by model.settingsStack.collectAsStateWithLifecycle()
     // Each page keeps its fields when the layout moves it between the one- and two-pane branches.
     val pages = rememberSaveableStateHolder()
@@ -170,6 +177,8 @@ private fun PageContent(app: AppViewModel, model: SetupModel, nav: SettingsNav, 
     when {
         page == SettingsRoutes.ACCOUNTS -> AccountsPage(app, model, nav)
         page == SettingsRoutes.AGENTS -> AgentsPage(app, model, nav)
+        page == SettingsRoutes.SHORTCUTS -> ShortcutsPage(app, nav)
+        page.startsWith(SettingsRoutes.SHORTCUT) -> ShortcutPage(app, model, nav, page.removePrefix(SettingsRoutes.SHORTCUT))
         page == SettingsRoutes.PHONE -> PhoneToolsPage(app)
         page == SettingsRoutes.NOTIFICATIONS -> NotificationsPage(app)
         page == SettingsRoutes.APPEARANCE -> AppearancePage(app)
@@ -222,6 +231,9 @@ fun pairOrImport(app: AppViewModel, model: SetupModel, nav: SettingsNav) {
 private fun routeTitle(route: String): String = when {
     route == SettingsRoutes.ACCOUNTS -> stringResource(R.string.settings_groups_accounts)
     route == SettingsRoutes.AGENTS -> stringResource(R.string.settings_agents_title)
+    route == SettingsRoutes.SHORTCUTS -> stringResource(R.string.settings_agents_shortcuts)
+    route == SettingsRoutes.SHORTCUT -> stringResource(R.string.settings_shortcuts_new_title)
+    route.startsWith(SettingsRoutes.SHORTCUT) -> stringResource(R.string.settings_shortcuts_edit_title)
     route == SettingsRoutes.PHONE -> stringResource(R.string.settings_phone_tools_title)
     route == SettingsRoutes.NOTIFICATIONS -> stringResource(R.string.settings_general_notifications)
     route == SettingsRoutes.APPEARANCE -> stringResource(R.string.settings_appearance_title)
