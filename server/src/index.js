@@ -10,6 +10,7 @@ import { hmac, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
 import { page } from './page.js';
+import { privacy, privacyLanguage } from './privacy.js';
 
 export { Account } from './account.js';
 
@@ -39,8 +40,12 @@ async function handle(request, env) {
   const { pathname: path } = url;
   const method = request.method;
 
-  if (path === '/' && (method === 'GET' || method === 'HEAD')) return html(page(config(env)), method);
-  if (path === '/v1/info' && method === 'GET') return json(200, info(env));
+  const reading = method === 'GET' || method === 'HEAD';
+  if (path === '/' && reading) return html(page(config(env, url)), method);
+  if (path === '/privacy' && reading) {
+    return html(privacy(config(env, url), privacyLanguage(url, request.headers.get('accept-language'))), method);
+  }
+  if (path === '/v1/info' && method === 'GET') return json(200, info(env, url));
   if (path !== '/v1' && !path.startsWith('/v1/')) throw notFound();
 
   const problem = configProblem(env);
@@ -305,21 +310,22 @@ function text(value) {
   return s || null;
 }
 
-function config(env) {
+// Without a PRIVACY_URL of its own, the server points to the statement it serves itself (privacy.js).
+function config(env, url) {
   return {
     operator: {
       name: text(env.OPERATOR_NAME),
       url: text(env.OPERATOR_URL),
       contact: text(env.OPERATOR_CONTACT),
-      privacy: text(env.PRIVACY_URL)
+      privacy: text(env.PRIVACY_URL) || `${url.origin}/privacy`
     },
     jurisdiction: jurisdiction(env),
     signups: signups(env)
   };
 }
 
-function info(env) {
-  const { operator, jurisdiction: where, signups: mode } = config(env);
+function info(env, url) {
+  const { operator, jurisdiction: where, signups: mode } = config(env, url);
   return {
     protocol: 1,
     version: pkg.version,

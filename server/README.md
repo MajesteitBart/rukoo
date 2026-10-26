@@ -69,7 +69,7 @@ The `vars` block holds the server's settings:
 | `OPERATOR_NAME` | Your name or your organization's. The app shows it before sign-up. |
 | `OPERATOR_URL` | Your website. |
 | `OPERATOR_CONTACT` | An email address or web page where people can reach you. |
-| `PRIVACY_URL` | Your privacy statement. |
+| `PRIVACY_URL` | Your own privacy statement. Leave it empty to use the one the server shows at `/privacy` (step 8). |
 | `JURISDICTION` | See step 3. |
 | `SIGNUPS` | `"open"` lets anyone make an account. `"invite"` needs a code from `INVITE_CODES` (step 7). `"closed"` takes no new accounts. Existing accounts keep working in every mode. |
 | `MAX_RECORDS` | The most records one account may keep. |
@@ -125,6 +125,8 @@ For example `family-2026,team-lisbon`. Any code in the list works, as often as i
 
 Open the server's address in a browser. You should see a short page that says who runs the server and what it can see. `https://<your address>/v1/info` shows the same settings as JSON.
 
+`https://<your address>/privacy` is a privacy statement in English and Dutch (`?lang=nl`), filled in from your `vars`: who runs the server, what it keeps and why, Cloudflare's part, how long data stays and people's rights. You're responsible for what it says. Read it before people sign up, and change `src/privacy.js`, or set `PRIVACY_URL` to a statement of your own, where it doesn't match how you run the server.
+
 ### 9. Add your own domain (optional)
 
 Your domain has to be on Cloudflare. Add a route to `wrangler.jsonc`:
@@ -139,7 +141,13 @@ Once people use your domain, you can turn off the `workers.dev` address by addin
 
 ### 10. Point Rukoo at your server
 
-This is a setting in the app. In Rukoo, open Settings → Account → Server and enter your server's address, such as `https://accounts.example.org`. The app shows who runs the server before anyone signs up.
+This is a setting in the app. In Rukoo, open Settings → Rukoo account, choose the server row and enter your server's address, such as `https://accounts.example.org`. The app shows who runs the server before anyone signs up.
+
+To make your server the default in your own build of Rukoo, set `rukoo.accountServer` in the repository's `package.json`.
+
+## The server Rukoo uses
+
+The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo-account.bvdm.ai`, run by Rukoo's maintainer. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
 
 ## What lands in Cloudflare's logs
 

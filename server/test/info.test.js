@@ -38,13 +38,54 @@ describe('GET /', () => {
     expect(res.text).not.toContain('<script>');
     expect(res.text).toContain('&lt;script&gt;');
     expect(res.text).not.toContain('javascript:');
-    expect(res.text).not.toContain('Privacy statement');
+    // Without a PRIVACY_URL the page links the statement the server serves itself.
+    expect(res.text).toContain('<a href="https://accounts.example/privacy">Privacy statement</a>');
   });
 
   it('works without operator settings and without a pepper', async () => {
     const res = await call('GET', '/', { vars: { PEPPER: undefined } });
     expect(res.status).toBe(200);
     expect(res.text).toContain("hasn't filled in their name");
+  });
+});
+
+describe('GET /privacy', () => {
+  it('names the operator, the data, Cloudflare and where accounts are kept', async () => {
+    const res = await call('GET', '/privacy', { vars: { ...OPERATOR, PRIVACY_URL: '', JURISDICTION: 'eu' } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+    expect(res.text).toContain('<html lang="en">');
+    expect(res.text).toContain('<a href="https://sync.example">Example Sync</a> runs this server');
+    expect(res.text).toContain('mailto:help@sync.example');
+    expect(res.text).toContain('Accounts are stored and handled in the European Union.');
+    expect(res.text).toContain('Cloudflare, Inc. in the United States');
+    expect(res.text).toContain('article 6(1)(b) GDPR');
+    expect(res.text).not.toMatch(/<script|<link|<img|src=/i);
+  });
+
+  it('speaks Dutch when the browser or the address asks for it', async () => {
+    const browser = await call('GET', '/privacy', { headers: { 'accept-language': 'nl-NL,nl;q=0.9,en;q=0.8' } });
+    expect(browser.text).toContain('<html lang="nl">');
+    expect(browser.text).toContain('Privacyverklaring voor Rukoo-accounts');
+    const asked = await call('GET', '/privacy?lang=nl', { headers: { 'accept-language': 'en' } });
+    expect(asked.text).toContain('<html lang="nl">');
+    const english = await call('GET', '/privacy?lang=en', { headers: { 'accept-language': 'nl' } });
+    expect(english.text).toContain('<html lang="en">');
+    const other = await call('GET', '/privacy', { headers: { 'accept-language': 'de-DE,fr' } });
+    expect(other.text).toContain('<html lang="en">');
+  });
+
+  it('escapes the operator settings', async () => {
+    const res = await call('GET', '/privacy', { vars: { OPERATOR_NAME: '<b>x</b>', OPERATOR_URL: 'javascript:alert(1)', OPERATOR_CONTACT: '"><i>' } });
+    expect(res.text).not.toContain('<b>x</b>');
+    expect(res.text).not.toContain('javascript:');
+    expect(res.text).not.toContain('"><i>');
+  });
+
+  it('works without operator settings and without a pepper', async () => {
+    const res = await call('GET', '/privacy', { vars: { PEPPER: undefined } });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Whoever runs this server hasn’t filled in their name.');
   });
 });
 
@@ -69,7 +110,7 @@ describe('GET /v1/info', () => {
 
   it('reports empty settings as null and follows the variables', async () => {
     const res = await call('GET', '/v1/info', { vars: { SIGNUPS: 'open', MAX_RECORDS: '10', MAX_BYTES: 2048 } });
-    expect(res.body.operator).toEqual({ name: null, url: null, contact: null, privacy: null });
+    expect(res.body.operator).toEqual({ name: null, url: null, contact: null, privacy: 'https://accounts.example/privacy' });
     expect(res.body.hosting.jurisdiction).toBe(null);
     expect(res.body.signups).toBe('open');
     expect(res.body.limits).toEqual({ records: 10, bytes: 2048, recordBytes: 16384, batch: 500 });

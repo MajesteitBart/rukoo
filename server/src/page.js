@@ -9,7 +9,7 @@ const PLACES = {
   fedramp: 'in FedRAMP-Moderate data centers in the United States'
 };
 
-function escape(text) {
+export function escape(text) {
   return String(text).replace(
     /[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
@@ -17,7 +17,7 @@ function escape(text) {
 }
 
 // Only web addresses become links; the values come from the operator's settings, but a javascript: link is never right.
-function link(url, label) {
+export function link(url, label) {
   return /^https?:\/\//i.test(url || '') ? `<a href="${escape(url)}">${escape(label)}</a>` : escape(label);
 }
 

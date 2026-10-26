@@ -39,5 +39,30 @@
   "observability": {
     "enabled": true,
     "logs": { "invocation_logs": false }
+  },
+
+  // The server Rukoo itself uses, run by its maintainer: npm run deploy -- --env bvdm. A fork deploys the settings
+  // above with its own vars instead. Bindings and vars don't carry over into an environment, so they're repeated.
+  "env": {
+    "bvdm": {
+      "name": "rukoo-account",
+      "routes": [{ "pattern": "rukoo-account.bvdm.ai", "custom_domain": true }],
+      "durable_objects": {
+        "bindings": [{ "name": "ACCOUNTS", "class_name": "Account" }]
+      },
+      "vars": {
+        "OPERATOR_NAME": "Bart van der Meeren",
+        "OPERATOR_URL": "https://bvdm.ai",
+        "OPERATOR_CONTACT": "https://bvdm.ai/nl/contact",
+        "PRIVACY_URL": "",
+        "JURISDICTION": "eu",
+        "SIGNUPS": "open",
+        "MAX_RECORDS": 250000,
+        "MAX_BYTES": 104857600
+      },
+      "ratelimits": [
+        { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }
+      ]
+    }
   }
 }

@@ -52,6 +52,10 @@ Cloudflare is a company in the United States. The server in this repository keep
 
 **Sign out** stops this computer from syncing. It keeps its own copy, so your categories keep working. Signing in again brings it back in step.
 
+## The server Rukoo uses
+
+Rukoo uses `https://rukoo-account.bvdm.ai` unless you choose another server. Bart van der Meeren, Rukoo's maintainer, runs it on Cloudflare with the data kept in the EU. Anyone can make an account there. Its privacy statement is at [rukoo-account.bvdm.ai/privacy](https://rukoo-account.bvdm.ai/privacy).
+
 ## Running your own server
 
 The server is in [`server/`](../server). [Its README](../server/README.md) explains how to deploy it to your own Cloudflare account.
