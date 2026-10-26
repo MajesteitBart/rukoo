@@ -1,0 +1,7 @@
+# Secrets for `npm run dev`. Copy this file to .dev.vars and fill it in; .dev.vars is never committed.
+# Make a pepper with: openssl rand -base64 32
+PEPPER=
+# Comma-separated invite codes; any of them works when SIGNUPS is "invite".
+INVITE_CODES=
+# The local runtime can't place objects in a jurisdiction, so leave this empty for local development.
+JURISDICTION=
