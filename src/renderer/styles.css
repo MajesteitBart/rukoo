@@ -2443,7 +2443,7 @@ body:has(.page) .titlebar-actions {
   letter-spacing: 0.04em;
   text-align: center;
   user-select: all;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 .card {
   background: var(--panel);

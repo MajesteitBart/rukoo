@@ -31,6 +31,7 @@ const staticRow = (title, desc = '') => `
 function showRecoveryKey(key) {
   return dialog({
     title: t('settings.rukoo.keyTitle'),
+    wide: true,
     buttons: [{ get label() { return t('settings.rukoo.keySaved'); }, value: true }],
     render(body) {
       body.innerHTML = `<p>${esc(t('settings.rukoo.keyHelp'))}</p>
@@ -179,7 +180,7 @@ export function accountPages({ row, go, back, rerender, current, promptDialog })
     let desc = '';
     if (server && infoFailed && !info) desc = esc(t('settings.rukoo.serverUnreachable'));
     else if (server && info) desc = esc(`${t('settings.rukoo.serverRunBy', { operator: (info.operator && info.operator.name) || hostOf(server) })} · ${whereText(info)}`);
-    return row({ title: esc(t('settings.rukoo.server')), value: esc(server ? hostOf(server) : t('settings.rukoo.serverNone')), desc, action: 'rukoo-server' });
+    return row({ title: esc(server ? hostOf(server) : t('settings.rukoo.serverNone')), desc, action: 'rukoo-server' });
   };
 
   // The row on the Settings overview.
