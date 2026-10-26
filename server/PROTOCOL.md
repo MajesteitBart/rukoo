@@ -27,7 +27,7 @@ All key derivation happens on the device.
 | `recoveryAuth` | `HKDF(recoveryKey, "rukoo/v1/recovery-auth")` |
 | `recoveryWrap` | `HKDF(recoveryKey, "rukoo/v1/recovery-wrap")` |
 
-`HKDF(ikm, info)` is HKDF-SHA256 (RFC 5869) with an empty salt and 32 bytes of output.
+`HKDF(ikm, info)` is HKDF-SHA256 (RFC 5869) with an empty salt, which gives the same keys as a salt of 32 zero bytes, and 32 bytes of output. `info` is the label's UTF-8 bytes.
 
 The `kdf` parameters are `{ "alg": "argon2id", "m": 65536, "t": 3, "p": 1 }` for new accounts: 64 MiB of memory (`m` in KiB), 3 passes, 1 lane. A device refuses parameters weaker than `m` 19456 or `t` 2 when signing in, so a server can't talk it into a cheaper hash of the password.
 
@@ -77,8 +77,8 @@ The server speaks JSON over HTTPS. Requests that need a session send `Authorizat
 | Status | `error` |
 |---|---|
 | 400 | `invalid` (the request's shape or values are wrong) |
-| 401 | `unauthorized` (no session, an ended session, or a wrong password or recovery key) |
-| 403 | `signups_closed`, `invite_required` |
+| 401 | `unauthorized` (no session or an ended session; on `login` and `recover/*`, a wrong password or recovery key) |
+| 403 | `signups_closed`, `invite_required`, `wrong_password` (a signed-in request whose `authKey` doesn't match) |
 | 404 | `not_found` |
 | 409 | `exists` (sign-up for an address that has an account) |
 | 413 | `too_large`, `quota` |
@@ -143,6 +143,9 @@ Ends this session. → `204`.
 Signs that device out. → `204`.
 
 ### `POST /v1/password`
+
+This call, `POST /v1/recovery` and `DELETE /v1/account` check the password again with `authKey`. A wrong one gives `403 wrong_password`, never 401, so the device can tell a typo from a session that ended. These attempts count toward the same lock as sign-ins.
+
 
 `{ "authKey", "kdf", "salt", "newAuthKey", "wrappedKey" }`, where `authKey` proves the current password and `wrappedKey` is the data key wrapped with the new one. Signs out every other device. → `204`.
 
