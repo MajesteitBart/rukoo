@@ -2557,6 +2557,9 @@ body:has(.page) .titlebar-actions {
   text-wrap: pretty;
   user-select: text;
 }
+.settings-group-title + .settings-text {
+  padding-top: 0;
+}
 .recovery-key {
   margin: 14px 0 12px;
   padding: 14px 12px;
