@@ -13,7 +13,7 @@ const executablePath = process.env.SEM_MAC_PACKAGED ? path.join(root, 'dist', pr
 
 test.beforeEach(async () => {
   profile = tempDir('rukoo-mac-');
-  const env = { ...process.env, SEM_DATA_DIR: profile, SEM_AGENT_FAKE: '1' };
+  const env = { ...process.env, SEM_DATA_DIR: profile, SEM_AGENT_FAKE: '1', SEM_WHATS_NEW: '0' };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.SEM_HIDDEN;
   app = await electron.launch({ executablePath, args: executablePath ? [] : ['.'], cwd: root, env });
@@ -153,7 +153,7 @@ for (const answer of ["Don't save", 'Save']) {
     await closed;
     app = null;
     if (answer === 'Save') {
-      const env = { ...process.env, SEM_DATA_DIR: profile, SEM_AGENT_FAKE: '1' };
+      const env = { ...process.env, SEM_DATA_DIR: profile, SEM_AGENT_FAKE: '1', SEM_WHATS_NEW: '0' };
       delete env.ELECTRON_RUN_AS_NODE;
       delete env.SEM_HIDDEN;
       app = await electron.launch({ executablePath, args: executablePath ? [] : ['.'], cwd: root, env });

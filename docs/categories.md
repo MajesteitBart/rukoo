@@ -1,8 +1,8 @@
 # Inbox categories
 
-Inbox categories split the inbox into tabs, like Gmail does, for every kind of account: Gmail, Outlook, any IMAP server and the demo account. Rukoo doesn't label, flag or move anything on the mail server, so other mail apps see your inbox as before. The categories, the category each email got and your corrections live in Rukoo's own data, and with a [Rukoo account](account.md) every device shows the same.
+Inbox categories split the inbox, like Gmail's tabs, for every kind of account: Gmail, Outlook, any IMAP server and the demo account. Rukoo doesn't label, flag or move anything on the mail server, so other mail apps see your inbox as before. The categories, the category each email got and your corrections live in Rukoo's own data, and with a [Rukoo account](account.md) every device shows the same.
 
-Turn them on in Settings → General → Inbox categories.
+They show under Inbox in the sidebar, on the phone in the folder drawer; Inbox itself still shows all of it. The first start of Rukoo 2.0 offers to set them up step by step (Settings → About → What's new opens that again), or turn them on in Settings → General → Inbox categories.
 
 ## The categories
 
@@ -18,7 +18,7 @@ Rukoo starts with five:
 
 Change their names, descriptions and colors, move them up and down, delete them, or add your own, up to twelve. The description says what belongs in a category; Jev reads it to decide (see below). Rukoo's own five follow the app's language until you change their text.
 
-Each email goes to one category. When several fit, the one higher in the list wins. The **All** tab shows the whole inbox, and **When Rukoo isn't sure** picks the category for mail Rukoo can't place.
+Each email goes to one category. When several fit, the one higher in the list wins. **Inbox** shows the whole inbox, and **When Rukoo isn't sure** picks the category for mail Rukoo can't place.
 
 ## Moving mail
 
@@ -44,6 +44,12 @@ Jev, a decision model by [TypeSafe](https://docs.typesafe.ai), can sort the mail
 With Jev on, that computer sends each new inbox email's sender, subject and first 1,000 characters, a few header facts (mailing list, sent in bulk or automatically, Gmail's tab) and your category names and descriptions to TypeSafe, Inc. in the United States. TypeSafe's own terms apply to what it keeps. Nothing else leaves the computer, and mail the rules are sure about, such as a `noreply@` alert, doesn't go to Jev. Rukoo asks for one category per email, with `jev-1.13.0`, and takes Jev's answer when its confidence is at least 0.5; otherwise the email goes to the category for when Rukoo isn't sure.
 
 When TypeSafe refuses the key, Rukoo stops using Jev until you enter another one. When TypeSafe is busy or out of reach, Rukoo tries again after a few minutes. Meanwhile the rules give every email a category.
+
+### Seeing what Jev does
+
+While Jev works through the inbox, a line above the sync status in the sidebar says so and counts along, such as "Jev is sorting 12/48"; emails move to their categories as Jev answers. After a sort you asked for (turning categories on, a new key, Sort the inbox again) it says how many emails were sorted for a few seconds. When TypeSafe is busy or out of reach it says until when Jev waits, and when TypeSafe refused the key it says that until you enter another one. A quick sort of new mail shows nothing.
+
+Click the line for the details: how far the sort is, with an estimate of the time left, why Jev waits and how many emails wait for it, and Jev's last decisions, each with the category it went to and how sure Jev was. Click a decision to open that email in its category. After the "What's new" guide sets up Jev, these details open by themselves. On the phone the line is in the folder drawer, and a tap opens the details as a sheet.
 
 ## Limits
 

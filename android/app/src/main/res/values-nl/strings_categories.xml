@@ -76,4 +76,41 @@
     <string name="settings_categories_sender_remove_help">Nieuwe mail van deze afzender wordt weer gesorteerd zoals andere mail.</string>
     <string name="settings_categories_sync">Je categorieën, de categorie van elke e-mail en je correcties staan in je Rukoo-account, dus je andere apparaten tonen hetzelfde.</string>
     <string name="settings_categories_sync_local">Dit blijft op deze telefoon. Log in bij een Rukoo-account om dezelfde categorieën op je andere apparaten te zien.</string>
+    <!-- Wat het sorteren doet: de regel in de lade en het blad erachter -->
+    <string name="categories_activity_sorting">Inbox sorteren</string>
+    <string name="categories_activity_sorting_jev">Jev sorteert</string>
+    <plurals name="categories_activity_sorted">
+        <item quantity="one">%1$d e-mail gesorteerd</item>
+        <item quantity="other">%1$d e-mails gesorteerd</item>
+    </plurals>
+    <string name="categories_activity_nothing">Niets nieuws om te sorteren</string>
+    <string name="categories_activity_waiting_until">Jev wacht tot %1$s</string>
+    <string name="categories_activity_waiting_title">Jev wacht</string>
+    <string name="categories_activity_key_refused">Jev kan je sleutel niet gebruiken</string>
+    <string name="categories_activity_show">Wat Jev doet</string>
+    <string name="categories_activity_title_jev">Jev sorteert je inbox</string>
+    <string name="categories_activity_title_sorting">Je inbox wordt gesorteerd</string>
+    <string name="categories_activity_title_done">Je inbox is gesorteerd</string>
+    <string name="categories_activity_progress">%1$d van %2$d gesorteerd</string>
+    <string name="categories_activity_less_than_minute">nog minder dan een minuut</string>
+    <plurals name="categories_activity_minutes_left">
+        <item quantity="one">nog ongeveer %1$d minuut</item>
+        <item quantity="other">nog ongeveer %1$d minuten</item>
+    </plurals>
+    <string name="categories_activity_busy">TypeSafe heeft het druk.</string>
+    <string name="categories_activity_network">Rukoo kan TypeSafe niet bereiken.</string>
+    <string name="categories_activity_retry_at">Rukoo probeert het om %1$s opnieuw.</string>
+    <string name="categories_activity_key_text">TypeSafe accepteerde je API-sleutel niet. Controleer hem in Instellingen of zet Jev uit.</string>
+    <plurals name="categories_activity_waiting_count">
+        <item quantity="one">%1$d e-mail wacht op Jev.</item>
+        <item quantity="other">%1$d e-mails wachten op Jev.</item>
+    </plurals>
+    <string name="categories_activity_new_mail_jev">Jev sorteert nieuwe e-mail zodra die binnenkomt.</string>
+    <string name="categories_activity_new_mail">Rukoo sorteert nieuwe e-mail zodra die binnenkomt.</string>
+    <string name="categories_activity_recent">Net gesorteerd</string>
+    <string name="categories_activity_sure">%1$d%% zeker</string>
+    <string name="categories_activity_unsure">twijfel over %1$s (%2$d%%)</string>
+    <string name="categories_activity_meanwhile">E-mails waar Jev nog niet aan toe is, blijven voorlopig waar ze staan.</string>
+    <string name="categories_activity_settings">Instellingen</string>
+    <string name="categories_activity_check_key">Sleutel controleren</string>
 </resources>

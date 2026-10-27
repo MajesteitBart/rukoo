@@ -329,6 +329,71 @@ test('Jev sorts the uncertain mail, and an unsure answer goes to the unsure cate
   assert.equal(get(3).source, 'rules');
 });
 
+test("the window can follow Jev's progress and its last decisions", async (t) => {
+  const answers = [];
+  const fake = {
+    MODEL: 'jev-test',
+    classify: (key, m) =>
+      new Promise((resolve) => answers.push(() => resolve(m.subject === 'Sale' ? { category: 'promotions', confidence: 0.3, model: 'jev-test' } : { category: 'money', confidence: 0.9, model: 'jev-test' })))
+  };
+  const msgs = inbox();
+  msgs[1].from = { name: 'Shop', address: 'hello@shop.example' };
+  const { cats } = setup(t, msgs, { jevImpl: fake });
+  const seen = [];
+  cats.on('progress', (a) => seen.push(a));
+  cats.setEnabled(true);
+  cats.local.jev = { on: true, key: cats.secrets.encrypt('K') };
+  const sorting = cats.sort({ user: true });
+  await new Promise((r) => setImmediate(r));
+  // The rules placed the login alert straight away; two wait for Jev.
+  let a = cats.activity();
+  assert.deepEqual((({ running, user, total, done, asked, answered, jev }) => ({ running, user, total, done, asked, answered, jev }))(a), { running: true, user: true, total: 3, done: 1, asked: 2, answered: 0, jev: true });
+  assert.equal(seen.at(-1).running, true, 'the start is told straight away');
+  answers.shift()();
+  await new Promise((r) => setTimeout(r, 200));
+  a = cats.activity();
+  assert.equal(a.done, 2);
+  assert.equal(seen.at(-1).done, 2, 'each answer is told, a few at a time');
+  assert.deepEqual((({ subject, from, category, sure }) => ({ subject, from, category, sure }))(a.recent[0]), { subject: 'Can you sign this?', from: 'Sanne de Vries', category: 'money', sure: true });
+  answers.shift()();
+  assert.equal(await sorting, 3);
+  a = cats.activity();
+  assert.deepEqual((({ running, done, sorted, waiting }) => ({ running, done, sorted, waiting }))(a), { running: false, done: 3, sorted: 3, waiting: 0 });
+  assert.ok(a.finishedAt >= a.startedAt);
+  assert.deepEqual((({ subject, category, chose, sure }) => ({ subject, category, chose, sure }))(a.recent[0]), { subject: 'Sale', category: 'to-read', chose: 'promotions', sure: false }, 'an unsure answer shows where it went');
+  assert.equal(seen.at(-1).running, false);
+
+  // A sort nobody asked for with nothing to do leaves the last one's progress alone.
+  await cats.sort();
+  assert.equal(cats.activity().finishedAt, a.finishedAt);
+
+  // Sorted again, an email shows once, with its newest decision.
+  cats.jev = { MODEL: 'jev-test', classify: async () => ({ category: 'updates', confidence: 0.8, model: 'jev-test' }) };
+  await cats.sortAgain();
+  assert.deepEqual(cats.activity().recent.map((r) => [r.subject, r.category]).sort(), [['Can you sign this?', 'updates'], ['Sale', 'updates']]);
+});
+
+test('mail waiting for Jev is counted, with why and until when', async (t) => {
+  const fake = { MODEL: 'jev-test', classify: async () => Promise.reject(Object.assign(new Error('busy'), { code: 'busy' })) };
+  const { cats } = setup(t, inbox(), { jevImpl: fake });
+  cats.setEnabled(true);
+  cats.setJev({ key: 'K', on: true });
+  await cats.sort();
+  let a = cats.activity();
+  assert.equal(a.error, 'busy');
+  assert.ok(a.retryAt > Date.now());
+  assert.equal(a.waiting, 1, 'the email the rules are unsure about waits');
+  // While TypeSafe is busy, nothing is asked and the count stays.
+  await cats.sort();
+  a = cats.activity();
+  assert.equal(a.waiting, 1);
+  assert.equal(a.running, false);
+  // Jev off: nothing waits for it any more.
+  cats.setJev({ on: false });
+  a = cats.activity();
+  assert.deepEqual([a.jev, a.error, a.retryAt, a.waiting], [false, null, 0, 0]);
+});
+
 test('a refused Jev key stops Jev until a new key, and busy waits, with the uncertain mail kept for Jev', async (t) => {
   let fail = 'key';
   let calls = 0;

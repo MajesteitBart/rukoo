@@ -58,6 +58,7 @@ import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MessageSummary
+import nl.bvdm.rukoo.settings.SwipeAction
 import nl.bvdm.rukoo.ui.ComposerState
 import nl.bvdm.rukoo.ui.components.Avatar
 import nl.bvdm.rukoo.ui.components.AvatarSize
@@ -87,12 +88,18 @@ data class RowLook(
     val folderLabel: String? = null,
 )
 
-/** What a row can do. */
+/** What a swipe does: its [action] (for the color and label behind the row) and the work itself. */
+class RowSwipe(val action: SwipeAction, val run: () -> Unit) {
+    /** Archive and delete take the email out of the list, so the row flies out; the others spring back. */
+    val flies: Boolean get() = action == SwipeAction.ARCHIVE || action == SwipeAction.DELETE
+}
+
+/** What a row can do. A swipe right runs [right], a swipe left [left] (Settings > Swipe actions). */
 class RowActions(
     val open: () -> Unit,
     val toggleChecked: () -> Unit,
-    val toggleRead: (() -> Unit)?,
-    val delete: (() -> Unit)?,
+    val right: RowSwipe?,
+    val left: RowSwipe?,
     val toggleStack: (() -> Unit)? = null,
 )
 
@@ -102,7 +109,7 @@ private val SwipeTrigger = 110.dp
 /**
  * A message row (app.js itemHtml; spec 6 §4.2.4 and §5.2): avatar, unread dot in its own gutter, sender and
  * time, subject with pills and the star, a preview line. Rows are inset 6dp with 8dp corners, so the open
- * row is a grey block. A swipe right toggles read, left deletes; long press or the avatar checks the row.
+ * row is a grey block. A swipe runs the action chosen for its direction; long press or the avatar checks the row.
  */
 @Composable
 fun MessageRow(
@@ -120,7 +127,7 @@ fun MessageRow(
     val trigger = with(density) { SwipeTrigger.toPx() }
     var dx by remember(m.id) { mutableFloatStateOf(0f) }
     val scope = rememberCoroutineScope()
-    val swipe = (actions.toggleRead != null || actions.delete != null) && !look.selecting
+    val swipe = (actions.right != null || actions.left != null) && !look.selecting
     val shape = RoundedCornerShape(8.dp)
 
     // A row that flew out but is still here (the delete asked first and was cancelled, or failed) comes back.
@@ -137,7 +144,8 @@ fun MessageRow(
         val width = with(density) { maxWidth.toPx() }
         Column {
             Box(Modifier.fillMaxWidth().clip(shape)) {
-                if (dx != 0f) SwipeBackground(right = dx > 0, unread = m.unread, alpha = min(1f, abs(dx) / trigger), modifier = Modifier.matchParentSize())
+                val shown = if (dx > 0) actions.right else if (dx < 0) actions.left else null
+                if (shown != null) SwipeBackground(right = dx > 0, action = shown.action, m = m, alpha = min(1f, abs(dx) / trigger), modifier = Modifier.matchParentSize())
                 val fill = when {
                     look.checked -> c.accentSoft
                     look.open -> c.sel
@@ -156,25 +164,30 @@ fun MessageRow(
                                 val next = dx + delta
                                 // Only the directions that do something move the row.
                                 dx = when {
-                                    next > 0 && actions.toggleRead == null -> 0f
-                                    next < 0 && actions.delete == null -> 0f
+                                    next > 0 && actions.right == null -> 0f
+                                    next < 0 && actions.left == null -> 0f
                                     else -> next
                                 }
                             },
                             onDragStopped = {
                                 scope.launch {
+                                    val done = when {
+                                        dx >= trigger -> actions.right
+                                        dx <= -trigger -> actions.left
+                                        else -> null
+                                    }
                                     when {
-                                        dx >= trigger -> {
-                                            actions.toggleRead?.invoke()
-                                            animate(dx, 0f, animationSpec = SwipeSpec) { v, _ -> dx = v }
-                                        }
-                                        dx <= -trigger -> {
-                                            animate(dx, -width * 1.1f, animationSpec = SwipeSpec) { v, _ -> dx = v }
+                                        done == null -> animate(dx, 0f, animationSpec = SwipeSpec) { v, _ -> dx = v }
+                                        done.flies -> {
+                                            animate(dx, (if (dx > 0) 1 else -1) * width * 1.1f, animationSpec = SwipeSpec) { v, _ -> dx = v }
                                             delay(160)
-                                            actions.delete?.invoke()
+                                            done.run()
                                             flown = true
                                         }
-                                        else -> animate(dx, 0f, animationSpec = SwipeSpec) { v, _ -> dx = v }
+                                        else -> {
+                                            done.run()
+                                            animate(dx, 0f, animationSpec = SwipeSpec) { v, _ -> dx = v }
+                                        }
                                     }
                                 }
                             },
@@ -380,20 +393,28 @@ private fun PaperEdge() {
 
 /** Behind a swiped row: blue "Read"/"Unread" to the right, red "Clear" to the left, fading in over 110dp. */
 @Composable
-private fun SwipeBackground(right: Boolean, unread: Boolean, alpha: Float, modifier: Modifier) {
+private fun SwipeBackground(right: Boolean, action: SwipeAction, m: MessageSummary, alpha: Float, modifier: Modifier) {
     val c = Rk.colors
+    val (color, icon, label) = when (action) {
+        SwipeAction.READ -> Triple(c.swipeRead, if (m.unread) RukooIcons.MailOpen else RukooIcons.MarkUnread, if (m.unread) R.string.mailbox_message_read else R.string.mailbox_filters_unread)
+        SwipeAction.ARCHIVE -> Triple(c.swipeArchive, RukooIcons.Archive, R.string.common_actions_archive)
+        SwipeAction.DELETE -> Triple(c.swipeDelete, RukooIcons.Trash, R.string.common_actions_delete)
+        SwipeAction.STAR -> Triple(c.swipeStar, if (m.starred) RukooIcons.StarFilled else RukooIcons.Star, if (m.starred) R.string.mailbox_actions_unstar else R.string.mailbox_actions_star)
+        SwipeAction.MOVE -> Triple(c.swipeMove, RukooIcons.Move, R.string.common_actions_move)
+        SwipeAction.CATEGORY, SwipeAction.NONE -> Triple(c.swipeCategory, RukooIcons.Inbox, R.string.mailbox_categories_move)
+    }
     Row(
-        modifier.alpha(alpha).background(if (right) c.swipeRead else c.swipeDelete).padding(horizontal = 22.dp),
+        modifier.alpha(alpha).background(color).padding(horizontal = 22.dp),
         horizontalArrangement = if (right) Arrangement.spacedBy(10.dp, Alignment.Start) else Arrangement.spacedBy(10.dp, Alignment.End),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val style = Rk.type.text13.semibold
         if (right) {
-            RkIcon(RukooIcons.MailOpen, null, size = 20.dp, tint = Color.White)
-            Text(stringResource(if (unread) R.string.mailbox_message_read else R.string.mailbox_filters_unread), style = style, color = Color.White)
+            RkIcon(icon, null, size = 20.dp, tint = Color.White)
+            Text(stringResource(label), style = style, color = Color.White)
         } else {
-            Text(stringResource(R.string.common_actions_clear), style = style, color = Color.White)
-            RkIcon(RukooIcons.Trash, null, size = 20.dp, tint = Color.White)
+            Text(stringResource(label), style = style, color = Color.White)
+            RkIcon(icon, null, size = 20.dp, tint = Color.White)
         }
     }
 }

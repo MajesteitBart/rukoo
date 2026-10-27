@@ -1,4 +1,4 @@
-// Inbox categories: turned on in Settings, the tabs above the inbox, moving an email and its sender, and editing,
+// Inbox categories: turned on in Settings, the categories under Inbox in the sidebar, moving an email and its sender, and editing,
 // reordering and renaming categories. The real app with a throwaway profile, the demo account and no Rukoo account.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -30,7 +30,9 @@ test.afterEach(async () => {
 });
 
 const settings = () => win.locator('.page.settings');
-const tabs = () => win.locator('.category-tabs .ctab .name');
+// The categories under Inbox in the sidebar, and Inbox itself for all of it.
+const tabs = () => win.locator('.nav-item.nav-sub .label');
+const inboxRow = () => win.locator('.nav-item[data-view="inbox"]:not(.nav-sub)');
 
 async function turnOn() {
   await win.click('[data-action="settings"]');
@@ -45,28 +47,38 @@ async function closeSettings() {
   while (await settings().count()) await settings().locator('[data-a="back"]').click();
 }
 
-test('turning categories on gives the inbox tabs, and each tab shows its mail', async () => {
-  await expect(win.locator('.category-tabs')).toBeHidden();
+test('turning categories on puts them under Inbox, and each shows its mail', async () => {
+  await expect(win.locator('.nav-item.nav-sub')).toHaveCount(0);
   await turnOn();
   await expect(settings().locator('.settings-text').first()).toContainText('These stay on this computer');
   await closeSettings();
 
-  await expect(tabs()).toHaveText(['All', 'Needs you', 'To read', 'Money', 'Updates', 'Promotions']);
-  await win.locator('.ctab', { hasText: 'Promotions' }).click();
-  await expect(win.locator('.ctab.active')).toContainText('Promotions');
+  await expect(tabs()).toHaveText(['Needs you', 'To read', 'Money', 'Updates', 'Promotions']);
+  await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
+  await expect(win.locator('.nav-item.nav-sub.active')).toContainText('Promotions');
+  await expect(win.locator('.list-title h1')).toHaveText('Promotions');
   const promotions = win.locator('.list-scroll .item');
   await expect(promotions.filter({ hasText: 'ANWB Newsletter' })).toHaveCount(1);
   await expect(promotions.filter({ hasText: 'Forward Future' })).toHaveCount(1);
   await expect(promotions.filter({ hasText: 'Sanne de Vries' })).toHaveCount(0);
 
-  // A selection stays with its tab: switching tabs clears it, so no action reaches emails out of sight.
+  // A selection stays with its category: switching clears it, so no action reaches emails out of sight.
   await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
   await expect(win.locator('.list-tools.selecting')).toBeVisible();
-  await win.locator('.ctab', { hasText: 'To read' }).click();
+  await win.locator('.nav-item.nav-sub', { hasText: 'To read' }).click();
   await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
   await expect(win.locator('.list-scroll .empty')).toContainText('Nothing in To read');
-  await win.locator('.ctab', { hasText: 'All' }).click();
+  await inboxRow().click();
   await expect(win.locator('.list-scroll .item').filter({ hasText: 'Sanne de Vries' })).toHaveCount(1);
+
+  // A category picked during a search ends the search and shows that category's mail.
+  await win.fill('#search', 'contract');
+  await expect(win.locator('.list-scroll .item').filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);
+  await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
+  await expect(win.locator('#search')).toHaveValue('');
+  await expect(win.locator('.list-title h1')).toHaveText('Promotions');
+  await expect(win.locator('.list-scroll .item').filter({ hasText: 'ANWB Newsletter' })).toHaveCount(1);
+  await expect(win.locator('.list-scroll .item').filter({ hasText: 'Sanne de Vries' })).toHaveCount(0);
 
   // Nothing moved on the server: the demo inbox holds the same messages.
   const inbox = await win.evaluate(() => window.mail.call('list', { scope: 'all', view: 'inbox' }).then((l) => l.length));
@@ -76,7 +88,7 @@ test('turning categories on gives the inbox tabs, and each tab shows its mail', 
 test('an email moves to another category, and its sender follows on request', async () => {
   await turnOn();
   await closeSettings();
-  await win.locator('.ctab', { hasText: 'Promotions' }).click();
+  await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
   await win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' }).click({ button: 'right' });
   await win.locator('.menu button', { hasText: 'Move to category' }).click();
   await win.locator('.scrim .radio-row', { hasText: 'To read' }).click();
@@ -85,18 +97,18 @@ test('an email moves to another category, and its sender follows on request', as
   await win.locator('#toast button', { hasText: 'Also future mail' }).click();
   await expect(win.locator('#toast')).toContainText('Mail from ANWB Newsletter goes to To read from now on');
 
-  await win.locator('.ctab', { hasText: 'To read' }).click();
+  await win.locator('.nav-item.nav-sub', { hasText: 'To read' }).click();
   await expect(win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' })).toHaveCount(1);
 
   // Several selected and moved away: the selection doesn't keep them out of sight.
-  await win.locator('.ctab', { hasText: 'Promotions' }).click();
+  await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
   await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
   await win.locator('[data-bulk="more"]').click();
   await win.locator('.menu button', { hasText: 'Move to category' }).click();
   await win.locator('.scrim .radio-row', { hasText: 'Updates' }).click();
   await expect(win.locator('.list-scroll .item', { hasText: 'Forward Future' })).toHaveCount(0);
   await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
-  await win.locator('.ctab', { hasText: 'To read' }).click();
+  await win.locator('.nav-item.nav-sub', { hasText: 'To read' }).click();
 
   await win.click('[data-action="settings"]');
   await settings().locator('[data-a="categories"]').click();
@@ -110,7 +122,7 @@ test('an email moves to another category, and its sender follows on request', as
 test('moving a selection to another category clears it from the reader too', async () => {
   await turnOn();
   await closeSettings();
-  await win.locator('.ctab', { hasText: 'Promotions' }).click();
+  await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
   await win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' }).click({ modifiers: ['Control'] });
   await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
   await expect(win.locator('.reader .multi')).toBeVisible();
@@ -145,11 +157,11 @@ test('categories can be renamed, added, moved up and kept after a restart', asyn
   await win.locator('.scrim .radio-row', { hasText: 'Kids' }).click();
   await expect(settings().locator('[data-a="cat-unsure"] .value')).toHaveText('Kids');
   await closeSettings();
-  await expect(tabs()).toHaveText(['All', 'Needs you', 'To read', 'Finance', 'Promotions', 'Updates', 'Kids']);
+  await expect(tabs()).toHaveText(['Needs you', 'To read', 'Finance', 'Promotions', 'Updates', 'Kids']);
 
   await win.reload();
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
-  await expect(tabs()).toHaveText(['All', 'Needs you', 'To read', 'Finance', 'Promotions', 'Updates', 'Kids']);
+  await expect(tabs()).toHaveText(['Needs you', 'To read', 'Finance', 'Promotions', 'Updates', 'Kids']);
 });
 
 test('Jev needs a key and says what it shares', async () => {

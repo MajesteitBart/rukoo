@@ -35,6 +35,9 @@ import { fillFrame } from './mailframe.js';
 import { mountComposer } from './composer.js';
 import { openSettings, promptDialog } from './settings.js';
 import { openSetup } from './setup.js';
+import { openWhatsNew } from './whats-new.js';
+import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
+import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
 import * as calendar from './calendar.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
@@ -185,6 +188,9 @@ async function refreshOnce() {
   S.list = list;
   S.counts = counts;
   S.categories = categories;
+  setCategories(categories);
+  setKeymap(data.settings.keymap);
+  if (S.updates === undefined) S.updates = await api('updatesState').catch(() => null);
   const ids = new Set(list.map((m) => m.id));
   for (const id of S.checked) if (!ids.has(id)) S.checked.delete(id);
   const wasLight = isLight();
@@ -206,6 +212,13 @@ async function refreshOnce() {
   if (S.checked.size > 1) renderReader();
   else renderReaderNav();
   autoOpen();
+  // "What's new" opens once for everyone, on the first start of a version that has one.
+  if (!S.whatsNewAsked) {
+    S.whatsNewAsked = true;
+    api('whatsNewState')
+      .then((w) => w && w.show && showWhatsNew())
+      .catch(() => {});
+  }
   // Account names and colours show in the calendar too.
   if (calendarMode()) {
     if (calendar.isOpen()) calendar.reload();
@@ -269,6 +282,7 @@ function accountLabel(acc) {
 // Inbox categories show as tabs in the inbox, while categories are on and nothing is searched.
 const categoriesOn = () => Boolean(S.categories && S.categories.enabled && S.categories.categories.length) && S.view === 'inbox' && !S.query.trim();
 const categoryOf = (id) => (S.categories && S.categories.categories.find((c) => c.id === id)) || null;
+
 
 // The list in the category tab on screen.
 function categoryRows() {
@@ -352,7 +366,6 @@ function renderShell() {
         <section class="calendar" data-i18n-aria-label="calendar.title" aria-label="${esc(t('calendar.title'))}"></section>
         <section class="listpane" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}">
           <div class="list-head"></div>
-          <div class="category-tabs" role="tablist" hidden></div>
           <div class="list-tools"></div>
           <div class="list-scroll" tabindex="0" role="listbox" aria-multiselectable="true" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}"></div>
         </section>
@@ -654,9 +667,16 @@ function setMode(mode) {
   }
 }
 
+// A newer Rukoo on GitHub: a small button above the line over the sync status. It opens the release page.
+function updateButton() {
+  const u = S.updates && S.updates.available;
+  if (!u) return '';
+  return `<button class="update-btn" data-action="update" title="${esc(t('updates.button.title', { version: u.version }))}">${icons.download}<span>${esc(t('updates.button.label', { version: u.version }))}</span></button>`;
+}
+
 function sidebarFoot() {
   const status = syncStatus();
-  return `<div class="sidebar-foot">
+  return `${updateButton()}${sortStatusHtml()}<div class="sidebar-foot">
       <button class="sync-status ${status.cls}" data-action="sync" title="${esc(status.title)}"><span class="dot"></span><span class="t">${esc(status.text)}</span></button>
       <button class="icon-btn" data-action="settings" data-i18n-title="settings.title.short" title="${esc(t('settings.title.short'))}">${icons.settings}</button>
       <button class="icon-btn" data-action="collapse" title="${sidebarCollapsed() ? t('mailbox.sidebar.expand') : t('mailbox.sidebar.collapse')}">${icons.panelLeft}</button>
@@ -682,12 +702,22 @@ function renderSidebar() {
   };
 
   const views = VIEWS.filter((v) => !hidden.has(v.id) && (!v.role || roles.has(v.id)));
+  // Inbox categories sit under Inbox, each with its unread count while the inbox is open.
+  const subs = S.categories && S.categories.enabled ? S.categories.categories : [];
+  const subRows = () =>
+    subs
+      .map((c) => {
+        const on = S.view === 'inbox' && S.category === c.id;
+        const n = S.view === 'inbox' ? S.list.filter((m) => m.unread && m.category === c.id).length : 0;
+        return `<button class="nav-item nav-sub ${on ? 'active' : ''}" data-view="inbox" data-category="${esc(c.id)}" style="--cat:${esc(c.color)}" title="${esc(c.name)}"><span class="ic"><span class="cdot"></span></span><span class="label">${esc(c.name)}</span>${n ? `<span class="count">${n}</span>` : ''}</button>`;
+      })
+      .join('');
   const viewRows = views
     .map((v) => {
-      const active = S.view === v.id;
+      const active = S.view === v.id && !(v.id === 'inbox' && subs.length && S.category);
       return `<button class="nav-item ${active ? 'active' : ''}" data-view="${v.id}" ${v.drop ? `data-drop-role="${v.drop}"` : ''} title="${esc(v.label)}" ${
         active ? 'aria-current="page"' : ''
-      }><span class="ic">${icons[v.icon]}</span><span class="label">${esc(v.label)}</span>${countHtml(v, counts.views[v.id] || 0)}</button>`;
+      }><span class="ic">${icons[v.icon]}</span><span class="label">${esc(v.label)}</span>${countHtml(v, counts.views[v.id] || 0)}</button>${v.id === 'inbox' ? subRows() : ''}`;
     })
     .join('');
 
@@ -716,7 +746,7 @@ function renderSidebar() {
 
   el.innerHTML = `
     <button class="account-switch" data-action="accounts" aria-haspopup="menu" title="${esc(current ? current.email : t('mailbox.search.allAccounts'))}">${who}<span class="chev">${icons.chevronUpDown}</span></button>
-    <button class="btn compose-btn" data-action="compose" data-i18n-title="composer.titles.newShortcut" title="${esc(t('composer.titles.newShortcut'))}">${icons.compose}<span data-i18n="composer.titles.new">${esc(t('composer.titles.new'))}</span></button>
+    <button class="btn compose-btn" data-action="compose" title="${esc(tip(t('composer.titles.new'), 'compose'))}">${icons.compose}<span data-i18n="composer.titles.new">${esc(t('composer.titles.new'))}</span></button>
     <nav class="nav" data-i18n-aria-label="mailbox.layout.folders" aria-label="${esc(t('mailbox.layout.folders'))}">${viewRows}${folderRows}</nav>
     ${sidebarFoot()}`;
 }
@@ -778,8 +808,21 @@ function bindSidebar() {
         return renderSidebar();
       case 'new-folder':
         return newFolder();
+      case 'update':
+        return api('updatesOpen');
+      case 'sort-activity':
+        return toggleSortPanel(t);
     }
     if (t.dataset.view) {
+      // Inbox shows all of it; a category under it shows that category.
+      if (t.dataset.view === 'inbox') S.category = t.dataset.category || null;
+      // A search shows no categories, so a category picked during one ends the search (changeView) first.
+      if (t.dataset.category && S.view === 'inbox' && !S.query.trim()) {
+        clearChecks();
+        S.filter = 'all';
+        renderSidebar();
+        return renderList();
+      }
       S.view = t.dataset.view;
       S.folder = null;
       return changeView();
@@ -870,6 +913,12 @@ function listTitle() {
   const acc = account(S.scope);
   const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? S.list.filter((m) => m.unread).length : 0;
   const where = acc ? acc.email : t('mailbox.search.allAccounts');
+  // A category under Inbox: its name, with the inbox it belongs to.
+  const cat = categoriesOn() && categoryOf(S.category);
+  if (cat) {
+    const n = categoryRows().filter((m) => m.unread).length;
+    return { title: cat.name, sub: n ? t('mailbox.list.unreadSummary', { count: n, scope: viewLabel() }) : viewLabel() };
+  }
   // The inbox count in the sidebar adds the unread mail older than the messages the list holds; name it apart here,
   // where the list's own unread mail is counted.
   const older = S.view === 'inbox' ? S.counts?.olderUnread || 0 : 0;
@@ -888,7 +937,7 @@ function renderListHead() {
   const { title, sub, hint } = listTitle();
   head.innerHTML = `<div class="list-title"><h1>${esc(title)}</h1><div class="sub"${hint ? ` title="${esc(hint)}"` : ''}>${esc(sub)}</div></div>
     ${S.query.trim() ? `<button class="tbtn" data-action="search-clear" data-i18n-title="mailbox.search.clearShortcut" title="${esc(t('mailbox.search.clearShortcut'))}">${icons.close}<span data-i18n="common.actions.clear">${esc(t('common.actions.clear'))}</span></button>` : ''}
-    <button class="icon-btn" data-action="sync" data-i18n-title="mailbox.sync.shortcut" title="${esc(t('mailbox.sync.shortcut'))}">${icons.sync}</button>
+    <button class="icon-btn" data-action="sync" title="${esc(tip(t('mailbox.actions.sync'), 'sync'))}">${icons.sync}</button>
     <button class="icon-btn" data-action="list-more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>`;
 }
 
@@ -901,14 +950,14 @@ function renderListTools() {
     const anyUnread = list.some((m) => m.unread);
     const canArchive = list.some((m) => account(m.accountId)?.archive && m.role !== 'archive');
     tools.className = 'list-tools selecting';
-    tools.innerHTML = `<button class="check ${all ? 'on' : 'some'}" data-action="check-all" title="${all ? t('mailbox.selection.none') : t('mailbox.selection.allShortcut')}" role="checkbox" aria-checked="${all ? 'true' : 'mixed'}">${icons.check}</button>
+    tools.innerHTML = `<button class="check ${all ? 'on' : 'some'}" data-action="check-all" title="${all ? t('mailbox.selection.none') : tip(t('mailbox.selection.all'), 'selectAll')}" role="checkbox" aria-checked="${all ? 'true' : 'mixed'}">${icons.check}</button>
       <span class="sel-count">${esc(t('mailbox.selection.count', { count: n }))}</span>
       <span class="spacer"></span>
-      <button class="icon-btn" data-bulk="${anyUnread ? 'read' : 'unread'}" title="${anyUnread ? t('mailbox.actions.readShortcut') : t('mailbox.actions.unreadShortcut')}">${anyUnread ? icons.mailOpen : icons.markUnread}</button>
+      <button class="icon-btn" data-bulk="${anyUnread ? 'read' : 'unread'}" title="${esc(anyUnread ? tip(t('mailbox.actions.read'), readKey(true)) : tip(t('mailbox.actions.unread'), readKey(false)))}">${anyUnread ? icons.mailOpen : icons.markUnread}</button>
       <button class="icon-btn" data-bulk="star" data-i18n-title="mailbox.actions.star" title="${esc(t('mailbox.actions.star'))}">${icons.star}</button>
-      <button class="icon-btn" data-bulk="move" data-i18n-title="mailbox.actions.moveShortcut" title="${esc(t('mailbox.actions.moveShortcut'))}">${icons.move}</button>
-      ${canArchive ? `<button class="icon-btn" data-bulk="archive" data-i18n-title="common.actions.archive" title="${esc(t('common.actions.archive'))}">${icons.archive}</button>` : ''}
-      <button class="icon-btn" data-bulk="delete" data-i18n-title="mailbox.actions.deleteShortcut" title="${esc(t('mailbox.actions.deleteShortcut'))}">${icons.trash}</button>
+      <button class="icon-btn" data-bulk="move" title="${esc(tip(t('common.actions.move'), 'move'))}">${icons.move}</button>
+      ${canArchive ? `<button class="icon-btn" data-bulk="archive" title="${esc(tip(t('common.actions.archive'), 'archive'))}">${icons.archive}</button>` : ''}
+      <button class="icon-btn" data-bulk="delete" title="${esc(tip(t('common.actions.delete'), 'delete'))}">${icons.trash}</button>
       <button class="icon-btn" data-bulk="more" data-i18n-title="reader.actions.more" title="${esc(t('reader.actions.more'))}" aria-haspopup="menu">${icons.more}</button>
       <button class="icon-btn" data-bulk="clear" data-i18n-title="mailbox.selection.clearShortcut" title="${esc(t('mailbox.selection.clearShortcut'))}">${icons.close}</button>`;
     return;
@@ -927,26 +976,6 @@ function renderListTools() {
   }).join('')}</div>`;
 }
 
-// The category tabs above the inbox: All, then each category, each with its unread count.
-function renderCategoryTabs() {
-  const el = $('.category-tabs');
-  if (!categoriesOn()) {
-    el.hidden = true;
-    el.innerHTML = '';
-    return;
-  }
-  if (S.category && !categoryOf(S.category)) S.category = null;
-  const unread = (id) => S.list.filter((m) => m.unread && (id === null || m.category === id)).length;
-  const tab = (id, name, color) => {
-    const n = unread(id);
-    const on = S.category === id;
-    return `<button class="ctab ${on ? 'active' : ''}" role="tab" aria-selected="${on}" data-category="${id === null ? '' : esc(id)}"${color ? ` style="--cat:${esc(color)}"` : ''}>${color ? '<span class="dot" aria-hidden="true"></span>' : ''}<span class="name">${esc(name)}</span>${n ? `<span class="n" aria-label="${esc(t('mailbox.categories.unreadCount', { count: n }))}">${n}</span>` : ''}</button>`;
-  };
-  el.hidden = false;
-  el.setAttribute('aria-label', t('mailbox.categories.label'));
-  el.innerHTML = tab(null, t('mailbox.categories.all'), null) + S.categories.categories.map((c) => tab(c.id, c.name, c.color)).join('');
-}
-
 // Rows folding out of the list (see letGo). Each renders the list once it is gone.
 const leaving = new Set();
 const LEAVE_MS = 320;
@@ -961,7 +990,6 @@ function renderList() {
   if (leaving.size) return;
   renderShell();
   renderListHead();
-  renderCategoryTabs();
   // A selection only holds emails the tab shows; one moved to another category leaves it.
   let pruned = false;
   if (categoriesOn() && S.checked.size) {
@@ -1066,10 +1094,8 @@ function itemHtml(m, { multi, showFolder, stack, stacked }) {
     showFolder ? `<span class="pill">${esc(folderName(m))}</span>` : '',
     acc ? `<span class="pill acc" style="--acc:${esc(acc.color)}" title="${esc(acc.email)}">${esc(accountLabel(acc))}</span>` : ''
   ].join('');
-  const swipe = S.data.settings.swipeActions
-    ? `<div class="swipe-bg read">${icons.mailOpen}<span>${m.unread ? t('mailbox.message.read') : t('mailbox.filters.unread')}</span></div>
-       <div class="swipe-bg delete"><span data-i18n="common.actions.clear">${esc(t('common.actions.clear'))}</span>${icons.trash}</div>`
-    : '';
+  const swipe = swipeHtml(m);
+  const quickStar = (S.data.settings.quickActions || []).includes('star');
   const selected = S.selectedId === m.id;
   const checked = S.checked.has(m.id);
   const atCursor = (S.cursorId || S.selectedId) === m.id;
@@ -1090,12 +1116,12 @@ function itemHtml(m, { multi, showFolder, stack, stacked }) {
         <div class="line1">
           <span class="sender">${draft ? `<span class="draft-tag" data-i18n="composer.titles.draft">${esc(t('composer.titles.draft'))}</span>` : ''}${esc(senderLine(m))}</span>
           ${stackBtn}
-          <span class="meta">${m.answered ? `<span class="ic-ans" data-i18n-title="mailbox.message.replied" title="${esc(t('mailbox.message.replied'))}">${icons.reply}</span>` : ''}${m.hasAttachments ? `<span class="ic-att" data-i18n-title="mailbox.message.attachment" title="${esc(t('mailbox.message.attachment'))}">${icons.clip}</span>` : ''}<time>${listTime(m.date)}</time></span>
+          ${quickHtml(m)}<span class="meta">${m.answered ? `<span class="ic-ans" data-i18n-title="mailbox.message.replied" title="${esc(t('mailbox.message.replied'))}">${icons.reply}</span>` : ''}${m.hasAttachments ? `<span class="ic-att" data-i18n-title="mailbox.message.attachment" title="${esc(t('mailbox.message.attachment'))}">${icons.clip}</span>` : ''}<time>${listTime(m.date)}</time></span>
         </div>
         <div class="line2">
           <span class="subject">${esc(m.subject || t('mailbox.message.noSubject'))}</span><span class="sep"> - </span><span class="preview-inline">${esc(preview)}</span>
           <span class="flags">${pills}${
-            m.role === 'saved'
+            m.role === 'saved' || (quickStar && !m.starred)
               ? ''
               : `<button class="star-btn ${m.starred ? 'on' : ''}" data-star tabindex="-1" title="${m.starred ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar')}">${m.starred ? icons.starFilled : icons.star}</button>`
           }</span>
@@ -1254,17 +1280,6 @@ function clearChecks() {
 function bindList() {
   const pane = $('.listpane');
   const scroll = $('.list-scroll');
-  // A mouse wheel scrolls the category tabs sideways when they don't fit.
-  $('.category-tabs').addEventListener(
-    'wheel',
-    (e) => {
-      const el = e.currentTarget;
-      if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
-      el.scrollLeft += e.deltaY;
-      e.preventDefault();
-    },
-    { passive: false }
-  );
   pane.addEventListener('click', (e) => {
     const btn = e.target.closest('button');
     if (btn && btn.dataset.action) return listAction(btn.dataset.action, btn);
@@ -1272,11 +1287,10 @@ function bindList() {
       S.filter = btn.dataset.filter;
       return renderList();
     }
-    if (btn && btn.dataset.category !== undefined) {
-      // A selection doesn't carry over to another tab, where its emails aren't shown to act on.
-      clearChecks();
-      S.category = btn.dataset.category || null;
-      return renderList();
+    if (btn && btn.dataset.quick) {
+      const m = byId(btn.closest('.item-wrap')?.dataset.id);
+      if (m) rowAction(btn.dataset.quick, m);
+      return;
     }
     if (btn && btn.dataset.bulk) return bulkAction(btn.dataset.bulk, btn);
     if (btn && btn.dataset.stack) {
@@ -1361,7 +1375,7 @@ function listAction(action, btn) {
       const compact = S.data.settings.density === 'compact';
       return showMenu(btn, [
         { icon: 'mailOpen', get label() { return t('mailbox.actions.readAll'); }, action: markAllRead },
-        { icon: 'sync', get label() { return t('mailbox.actions.sync'); }, shortcut: 'F5', action: syncNow },
+        { icon: 'sync', get label() { return t('mailbox.actions.sync'); }, shortcut: keyLabel('sync'), action: syncNow },
         { separator: true },
         { get label() { return t('mailbox.actions.compact'); }, checked: compact, action: () => setDensity(compact ? 'standard' : 'compact') },
         { icon: 'chevronUpDown', get label() { return t('mailbox.sort.menu'); }, action: chooseSort },
@@ -1435,6 +1449,7 @@ const SWIPE_TRIGGER = 110;
 function bindSwipe(pane) {
   pane.addEventListener('pointerdown', (e) => {
     if (!S.data?.settings.swipeActions || e.pointerType === 'mouse' || e.button !== 0) return;
+    if (S.data.settings.swipeLeft === 'none' && S.data.settings.swipeRight === 'none') return;
     const item = e.target.closest('.item');
     if (!item || e.target.closest('button')) return;
     Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId });
@@ -1458,10 +1473,10 @@ function bindSwipe(pane) {
     st.el.style.transform = `translateX(${dx}px)`;
     const wrap = st.el.parentElement;
     const strength = Math.min(1, Math.abs(dx) / SWIPE_TRIGGER);
-    const read = wrap.querySelector('.swipe-bg.read');
-    const del = wrap.querySelector('.swipe-bg.delete');
-    if (read) read.style.opacity = dx > 0 ? strength : 0;
-    if (del) del.style.opacity = dx < 0 ? strength : 0;
+    const right = wrap.querySelector('.swipe-bg.right');
+    const left = wrap.querySelector('.swipe-bg.left');
+    if (right) right.style.opacity = dx > 0 ? strength : 0;
+    if (left) left.style.opacity = dx < 0 ? strength : 0;
   });
   const end = (e) => {
     const st = swipeState;
@@ -1477,13 +1492,16 @@ function bindSwipe(pane) {
     if (!moved) return flush();
     el.style.transition = 'transform 200ms cubic-bezier(0.2,0.8,0.2,1)';
     const m = byId(id);
-    if (dx <= -SWIPE_TRIGGER && m) {
-      el.style.transform = 'translateX(-110%)';
-      setTimeout(() => removeMessages([m]), 160);
+    // The action behind the row on the side it went to, if it went far enough (Settings > Swipe and quick actions).
+    const bg = m && Math.abs(dx) >= SWIPE_TRIGGER && el.parentElement.querySelector(`.swipe-bg.${dx > 0 ? 'right' : 'left'}`);
+    const action = bg && bg.dataset.swipe;
+    if (action === 'archive' || action === 'delete') {
+      el.style.transform = `translateX(${dx > 0 ? '' : '-'}110%)`;
+      setTimeout(() => rowAction(action, m), 160);
     } else {
       el.style.transform = '';
       el.parentElement.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
-      if (dx >= SWIPE_TRIGGER && m && m.role !== 'saved') setUnread([m], !m.unread);
+      if (action) rowAction(action, m);
     }
     flush();
     // Swallow the click that follows a drag.
@@ -1548,6 +1566,88 @@ async function setStarred(list, starred) {
   renderList();
   if (S.message && list.some((m) => m.id === S.message.id)) renderReader();
   for (const m of list) await api('setFlags', m.id, { starred }).catch((err) => toast(err.message));
+}
+
+// The shortcut that marks as read (or unread), or the scheme's toggle when it has one for both.
+function readKey(read) {
+  return keyLabel(read ? 'read' : 'unread') ? (read ? 'read' : 'unread') : 'toggleRead';
+}
+
+function canArchive(m) {
+  const acc = account(m.accountId);
+  return Boolean(acc && acc.archive && m.role !== 'archive' && m.role !== 'saved' && m.role !== 'drafts');
+}
+
+// ---------- row actions: swipes and the buttons on a row under the mouse (Settings > Swipe and quick actions) ----------
+
+const ROW_COLORS = { read: '#2f6fe0', archive: '#1f9d5c', delete: '#d9474b', star: '#d99a00', move: '#7a5af5', category: '#0e9aa7' };
+
+function rowActionAvailable(action, m) {
+  if (m.role === 'saved') return action === 'delete';
+  if (m.role === 'drafts') return action === 'delete' || action === 'star';
+  if (action === 'archive') return canArchive(m);
+  if (action === 'category') return Boolean(m.category) && categoriesOn();
+  return true;
+}
+
+// How an action shows on a row: icon, a short label for a swipe, and a label with its shortcut for a tooltip.
+function rowActionLook(action, m) {
+  switch (action) {
+    case 'read':
+      return { icon: m.unread ? icons.mailOpen : icons.markUnread, short: m.unread ? t('mailbox.message.read') : t('mailbox.filters.unread'), title: m.unread ? tip(t('mailbox.actions.read'), readKey(true)) : tip(t('mailbox.actions.unread'), readKey(false)) };
+    case 'archive':
+      return { icon: icons.archive, short: t('common.actions.archive'), title: tip(t('common.actions.archive'), 'archive') };
+    case 'delete':
+      return { icon: icons.trash, short: t('common.actions.delete'), title: tip(t('common.actions.delete'), 'delete') };
+    case 'star':
+      return { icon: m.starred ? icons.starFilled : icons.star, short: m.starred ? t('mailbox.actions.unstar') : t('mailbox.actions.star'), title: tip(m.starred ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), 'star') };
+    case 'move':
+      return { icon: icons.move, short: t('common.actions.move'), title: tip(t('common.actions.move'), 'move') };
+    case 'category':
+      return { icon: icons.tabs, short: t('mailbox.categories.move'), title: tip(t('mailbox.categories.move'), 'category') };
+  }
+  return null;
+}
+
+function rowAction(action, m) {
+  switch (action) {
+    case 'read':
+      return setUnread([m], !m.unread);
+    case 'archive':
+      return archiveMessages([m]);
+    case 'delete':
+      return removeMessages([m]);
+    case 'star':
+      return setStarred([m], !m.starred);
+    case 'move':
+      return moveWithPicker([m]);
+    case 'category':
+      return moveToCategory([m]);
+  }
+}
+
+// The buttons that cover the time on a row under the mouse.
+function quickHtml(m) {
+  const acts = (S.data.settings.quickActions || []).filter((a) => rowActionAvailable(a, m));
+  if (!acts.length) return '';
+  return `<span class="quick">${acts
+    .map((a) => {
+      const look = rowActionLook(a, m);
+      return `<button class="quick-btn ${a === 'star' && m.starred ? 'on' : ''}" data-quick="${a}" tabindex="-1" title="${esc(look.title)}" aria-label="${esc(look.title)}">${look.icon}</button>`;
+    })
+    .join('')}</span>`;
+}
+
+// The color and label behind a row while it is swiped, for each direction that does something.
+function swipeHtml(m) {
+  const s = S.data.settings;
+  if (!s.swipeActions) return '';
+  const side = (dir, action) => {
+    if (!action || action === 'none' || !rowActionAvailable(action, m)) return '';
+    const look = rowActionLook(action, m);
+    return `<div class="swipe-bg ${dir}" data-swipe="${action}" style="--sw:${ROW_COLORS[action]}">${look.icon}<span>${esc(look.short)}</span></div>`;
+  };
+  return side('right', s.swipeRight) + side('left', s.swipeLeft);
 }
 
 // Takes messages out of the list right away and opens the next one if the open message left.
@@ -1758,15 +1858,15 @@ function bulkMenu(list) {
   const anyUnread = list.some((m) => m.unread);
   const canArchive = list.some((m) => account(m.accountId)?.archive && m.role !== 'archive');
   return [
-    { icon: anyUnread ? 'mailOpen' : 'markUnread', label: anyUnread ? t('mailbox.actions.read') : t('mailbox.actions.unread'), shortcut: anyUnread ? 'Ctrl+Q' : 'Ctrl+U', action: () => setUnread(list, !anyUnread) },
-    { icon: 'star', label: list.every((m) => m.starred) ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), action: () => setStarred(list, !list.every((m) => m.starred)) },
+    { icon: anyUnread ? 'mailOpen' : 'markUnread', label: anyUnread ? t('mailbox.actions.read') : t('mailbox.actions.unread'), shortcut: keyLabel(readKey(anyUnread)), action: () => setUnread(list, !anyUnread) },
+    { icon: 'star', label: list.every((m) => m.starred) ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), shortcut: keyLabel('star'), action: () => setStarred(list, !list.every((m) => m.starred)) },
     addToChatItem(list),
     { separator: true },
-    { icon: 'move', get label() { return t('mailbox.actions.moveMenu'); }, shortcut: 'Ctrl+Shift+V', action: () => moveWithPicker(list) },
-    list.some((m) => m.category) ? { icon: 'inbox', get label() { return t('mailbox.categories.move'); }, action: () => moveToCategory(list) } : null,
-    canArchive ? { icon: 'archive', get label() { return t('common.actions.archive'); }, action: () => archiveMessages(list) } : null,
+    { icon: 'move', get label() { return t('mailbox.actions.moveMenu'); }, shortcut: keyLabel('move'), action: () => moveWithPicker(list) },
+    list.some((m) => m.category) ? { icon: 'tabs', get label() { return t('mailbox.categories.move'); }, shortcut: keyLabel('category'), action: () => moveToCategory(list) } : null,
+    canArchive ? { icon: 'archive', get label() { return t('common.actions.archive'); }, shortcut: keyLabel('archive'), action: () => archiveMessages(list) } : null,
     { separator: true },
-    { icon: 'trash', label: t('mailbox.delete.countAction', { count: list.length }), shortcut: 'Delete', action: () => removeMessages(list), danger: true }
+    { icon: 'trash', label: t('mailbox.delete.countAction', { count: list.length }), shortcut: keyLabel('delete'), action: () => removeMessages(list), danger: true }
   ];
 }
 
@@ -1777,16 +1877,16 @@ function messageMenu(m) {
   const canArchive = Boolean(acc && acc.archive && m.role !== 'archive' && !saved && !draft);
   return [
     draft ? { icon: 'edit', get label() { return t('composer.actions.editDraft'); }, shortcut: 'Enter', action: () => compose({ mode: 'draft', id: m.id }) } : null,
-    draft ? null : { icon: 'reply', get label() { return t('composer.titles.reply'); }, shortcut: 'Ctrl+R', action: () => compose({ mode: 'reply', id: m.id }) },
-    draft ? null : { icon: 'replyAll', get label() { return t('composer.titles.replyAll'); }, shortcut: 'Ctrl+Shift+R', action: () => compose({ mode: 'replyAll', id: m.id }) },
-    draft ? null : { icon: 'forward', get label() { return t('composer.titles.forward'); }, shortcut: 'Ctrl+F', action: () => compose({ mode: 'forward', id: m.id }) },
+    draft ? null : { icon: 'reply', get label() { return t('composer.titles.reply'); }, shortcut: keyLabel('reply'), action: () => compose({ mode: 'reply', id: m.id }) },
+    draft ? null : { icon: 'replyAll', get label() { return t('composer.titles.replyAll'); }, shortcut: keyLabel('replyAll'), action: () => compose({ mode: 'replyAll', id: m.id }) },
+    draft ? null : { icon: 'forward', get label() { return t('composer.titles.forward'); }, shortcut: keyLabel('forward'), action: () => compose({ mode: 'forward', id: m.id }) },
     addToChatItem([m]),
     { separator: true },
-    saved ? null : { icon: m.unread ? 'mailOpen' : 'markUnread', label: m.unread ? t('mailbox.actions.read') : t('mailbox.actions.unread'), shortcut: m.unread ? 'Ctrl+Q' : 'Ctrl+U', action: () => setUnread([m], !m.unread) },
-    saved ? null : { icon: 'star', label: m.starred ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), action: () => setStarred([m], !m.starred) },
-    saved ? null : { icon: 'move', get label() { return t('mailbox.actions.moveMenu'); }, shortcut: 'Ctrl+Shift+V', action: () => moveWithPicker([m]) },
-    m.category ? { icon: 'inbox', get label() { return t('mailbox.categories.move'); }, action: () => moveToCategory([m]) } : null,
-    canArchive ? { icon: 'archive', get label() { return t('common.actions.archive'); }, action: () => archiveMessages([m]) } : null,
+    saved ? null : { icon: m.unread ? 'mailOpen' : 'markUnread', label: m.unread ? t('mailbox.actions.read') : t('mailbox.actions.unread'), shortcut: keyLabel(readKey(m.unread)), action: () => setUnread([m], !m.unread) },
+    saved ? null : { icon: 'star', label: m.starred ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), shortcut: keyLabel('star'), action: () => setStarred([m], !m.starred) },
+    saved ? null : { icon: 'move', get label() { return t('mailbox.actions.moveMenu'); }, shortcut: keyLabel('move'), action: () => moveWithPicker([m]) },
+    m.category ? { icon: 'tabs', get label() { return t('mailbox.categories.move'); }, shortcut: keyLabel('category'), action: () => moveToCategory([m]) } : null,
+    canArchive ? { icon: 'archive', get label() { return t('common.actions.archive'); }, shortcut: keyLabel('archive'), action: () => archiveMessages([m]) } : null,
     { separator: true },
     {
       icon: 'vip',
@@ -1831,9 +1931,9 @@ function messageMenu(m) {
         if (p) toast(t('mailbox.export.done'));
       }
     },
-    { icon: 'print', get label() { return t('mailbox.actions.print'); }, shortcut: 'Ctrl+P', action: () => printMessage(m.id) },
+    { icon: 'print', get label() { return t('mailbox.actions.print'); }, shortcut: keyLabel('print'), action: () => printMessage(m.id) },
     { separator: true },
-    { icon: 'trash', get label() { return t('common.actions.delete'); }, shortcut: 'Delete', action: () => removeMessages([m]), danger: true }
+    { icon: 'trash', get label() { return t('common.actions.delete'); }, shortcut: keyLabel('delete'), action: () => removeMessages([m]), danger: true }
   ];
 }
 
@@ -2066,18 +2166,18 @@ function readerBar(m) {
   if (draft) {
     return `<div class="reader-bar" role="toolbar" data-i18n-aria-label="reader.actions.label" aria-label="${esc(t('reader.actions.label'))}">${back}
       <button class="tbtn primary" data-reader="edit" data-i18n-title="reader.actions.editDraftShortcut" title="${esc(t('reader.actions.editDraftShortcut'))}">${icons.edit}<span data-i18n="reader.actions.edit">${esc(t('reader.actions.edit'))}</span></button>
-      <button class="icon-btn" data-reader="delete" data-i18n-title="mailbox.actions.deleteShortcut" title="${esc(t('mailbox.actions.deleteShortcut'))}">${icons.trash}</button>
+      <button class="icon-btn" data-reader="delete" title="${esc(tip(t('common.actions.delete'), 'delete'))}">${icons.trash}</button>
       ${nav}</div>`;
   }
   return `<div class="reader-bar" role="toolbar" data-i18n-aria-label="reader.actions.label" aria-label="${esc(t('reader.actions.label'))}">${back}
-    <button class="tbtn" data-reader="reply" data-i18n-title="reader.actions.replyShortcut" title="${esc(t('reader.actions.replyShortcut'))}">${icons.reply}<span data-i18n="composer.titles.reply">${esc(t('composer.titles.reply'))}</span></button>
-    <button class="icon-btn" data-reader="replyAll" data-i18n-title="reader.actions.replyAllShortcut" title="${esc(t('reader.actions.replyAllShortcut'))}">${icons.replyAll}</button>
-    <button class="icon-btn" data-reader="forward" data-i18n-title="reader.actions.forwardShortcut" title="${esc(t('reader.actions.forwardShortcut'))}">${icons.forward}</button>
+    <button class="tbtn" data-reader="reply" title="${esc(tip(t('composer.titles.reply'), 'reply'))}">${icons.reply}<span data-i18n="composer.titles.reply">${esc(t('composer.titles.reply'))}</span></button>
+    <button class="icon-btn" data-reader="replyAll" title="${esc(tip(t('composer.titles.replyAll'), 'replyAll'))}">${icons.replyAll}</button>
+    <button class="icon-btn" data-reader="forward" title="${esc(tip(t('composer.titles.forward'), 'forward'))}">${icons.forward}</button>
     <span class="bar-sep"></span>
-    ${canArchive ? `<button class="icon-btn" data-reader="archive" data-i18n-title="common.actions.archive" title="${esc(t('common.actions.archive'))}">${icons.archive}</button>` : ''}
-    <button class="icon-btn" data-reader="delete" data-i18n-title="mailbox.actions.deleteShortcut" title="${esc(t('mailbox.actions.deleteShortcut'))}">${icons.trash}</button>
-    ${saved ? '' : `<button class="icon-btn" data-reader="move" data-i18n-title="mailbox.actions.moveShortcut" title="${esc(t('mailbox.actions.moveShortcut'))}">${icons.move}</button>`}
-    ${saved ? '' : `<button class="icon-btn" data-reader="unread" data-i18n-title="mailbox.actions.unreadShortcut" title="${esc(t('mailbox.actions.unreadShortcut'))}">${icons.markUnread}</button>`}
+    ${canArchive ? `<button class="icon-btn" data-reader="archive" title="${esc(tip(t('common.actions.archive'), 'archive'))}">${icons.archive}</button>` : ''}
+    <button class="icon-btn" data-reader="delete" title="${esc(tip(t('common.actions.delete'), 'delete'))}">${icons.trash}</button>
+    ${saved ? '' : `<button class="icon-btn" data-reader="move" title="${esc(tip(t('common.actions.move'), 'move'))}">${icons.move}</button>`}
+    ${saved ? '' : `<button class="icon-btn" data-reader="unread" title="${esc(tip(t('mailbox.actions.unread'), readKey(false)))}">${icons.markUnread}</button>`}
     <button class="icon-btn" data-reader="more" data-i18n-title="reader.actions.more" title="${esc(t('reader.actions.more'))}" aria-haspopup="menu">${icons.more}</button>
     ${nav}</div>`;
 }
@@ -2345,36 +2445,32 @@ document.addEventListener('keydown', (e) => {
     return setMode(e.key === '1' ? 'mail' : 'calendar');
   }
   if (calendarMode()) {
-    if (!e.target.closest?.('.agentpane, .bui-menu') && calendar.onKey(e)) e.preventDefault();
+    if (!e.target.closest?.('.agentpane, .bui-menu, .sort-panel') && calendar.onKey(e)) e.preventDefault();
     return;
   }
-  if (ctrl && key === 'n') {
-    e.preventDefault();
-    return compose({ mode: 'new' });
+  // The rest follows the chosen keyboard scheme (keymap.js). Writing, searching and syncing work while typing too,
+  // as long as their shortcut has a modifier; single keys never act in a text field.
+  const typing = editing(e);
+  let action = actionFor(e, { typing });
+  // Shift with a step key extends the selection.
+  if (!action && e.shiftKey) {
+    const plain = actionFor({ key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: false }, { typing });
+    if (plain === 'next' || plain === 'previous') action = plain;
   }
-  if ((ctrl && key === 'e') || (e.key === '/' && !editing(e))) {
+  if (action === 'compose' || action === 'search' || action === 'sync') {
     e.preventDefault();
-    return focusSearch();
-  }
-  if (e.key === 'F5') {
-    e.preventDefault();
-    return syncNow();
+    return action === 'compose' ? compose({ mode: 'new' }) : action === 'search' ? focusSearch() : syncNow();
   }
   // Keys in the chat panel stay there: Delete on one of its buttons must not delete the open email.
-  // Its menus (agent picker, history) live on the body, outside the panel.
-  if (e.target.closest?.('.agentpane, .bui-menu')) return;
-  if (editing(e)) return;
+  // Its menus (agent picker, history) live on the body, outside the panel. The same goes for the sorting panel.
+  if (e.target.closest?.('.agentpane, .bui-menu, .sort-panel')) return;
+  if (typing) return;
   if (ctrl && key === 'z' && !e.shiftKey) {
     if (runToastAction()) e.preventDefault();
     return;
   }
   const list = targets();
   const m = S.composer ? null : S.message;
-  if (ctrl && key === 'a') {
-    e.preventDefault();
-    S.checked = new Set(rows().map((x) => x.id));
-    return selectionChanged();
-  }
   if (e.key === 'Escape') {
     if (clearChecks()) return;
     if (S.composer) return S.composer.close();
@@ -2386,48 +2482,13 @@ document.addEventListener('keydown', (e) => {
     if (S.query) return clearSearch();
     return;
   }
-  if (ctrl && e.shiftKey && key === 'r' && m && m.role !== 'drafts') {
-    e.preventDefault();
-    return compose({ mode: 'replyAll', id: m.id });
-  }
-  if (ctrl && key === 'r' && m && m.role !== 'drafts') {
-    e.preventDefault();
-    return compose({ mode: 'reply', id: m.id });
-  }
-  if (ctrl && key === 'f' && m && m.role !== 'drafts') {
-    e.preventDefault();
-    return compose({ mode: 'forward', id: m.id });
-  }
-  if (ctrl && key === 'p' && m) {
-    e.preventDefault();
-    return printMessage(m.id);
-  }
-  if (ctrl && key === 'u' && list.length) {
-    e.preventDefault();
-    return setUnread(list, !(window.mail.platform === 'darwin' && e.metaKey && e.shiftKey));
-  }
-  if (ctrl && key === 'q' && window.mail.platform !== 'darwin' && list.length) {
-    e.preventDefault();
-    return setUnread(list, false);
-  }
-  if (ctrl && e.shiftKey && key === 'v' && list.length) {
-    e.preventDefault();
-    return moveWithPicker(list);
-  }
-  if (e.key === 'Delete' && list.length) {
-    e.preventDefault();
-    return removeMessages(list);
-  }
   if (e.key === 'Enter' && m && m.role === 'drafts' && !e.target.closest?.('button')) {
     e.preventDefault();
     return compose({ mode: 'draft', id: m.id });
   }
-  const nav = { ArrowDown: 1, ArrowUp: -1, j: 1, k: -1 };
-  if (nav[e.key] !== undefined && !e.target.closest?.('.reader-scroll, .divider')) {
+  if (action && shortcutAction(action, list, m, e) !== false) {
     e.preventDefault();
-    $('.list-scroll')?.classList.add('kbd');
-    if (document.activeElement === document.body) $('.list-scroll')?.focus();
-    return step(nav[e.key], e.shiftKey);
+    return;
   }
   if ((e.key === 'Home' || e.key === 'End') && e.target.closest?.('.list-scroll')) {
     e.preventDefault();
@@ -2436,6 +2497,53 @@ document.addEventListener('keydown', (e) => {
     if (target) openMessage(target.id);
   }
 });
+
+// What a shortcut does with the selected emails (list) or the open one (m); false when it doesn't apply here.
+function shortcutAction(action, list, m, e) {
+  const mail = m && m.role !== 'drafts';
+  switch (action) {
+    case 'reply':
+    case 'replyAll':
+    case 'forward':
+      return mail ? compose({ mode: action, id: m.id }) : false;
+    case 'print':
+      return m ? printMessage(m.id) : false;
+    case 'selectAll':
+      S.checked = new Set(rows().map((x) => x.id));
+      return selectionChanged();
+    case 'next':
+    case 'previous':
+      // Arrow keys in the open email scroll it.
+      if (e.target.closest?.('.reader-scroll, .divider')) return false;
+      $('.list-scroll')?.classList.add('kbd');
+      if (document.activeElement === document.body) $('.list-scroll')?.focus();
+      return step(action === 'next' ? 1 : -1, e.shiftKey);
+  }
+  if (!list.length) return false;
+  switch (action) {
+    case 'archive': {
+      const can = list.filter((x) => canArchive(x));
+      return can.length ? archiveMessages(can) : false;
+    }
+    case 'delete':
+      return removeMessages(list);
+    case 'read':
+      return setUnread(list, false);
+    case 'unread':
+      return setUnread(list, true);
+    case 'toggleRead':
+      return setUnread(list, !list.some((x) => x.unread));
+    case 'star':
+      return setStarred(list, !list.every((x) => x.starred));
+    case 'move':
+      return moveWithPicker(list);
+    case 'category': {
+      const sorted = list.filter((x) => x.category);
+      return sorted.length ? moveToCategory(sorted) : false;
+    }
+  }
+  return false;
+}
 
 // ---------- taskbar badge ----------
 
@@ -2464,7 +2572,14 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'calendar') calendar.reload();
   if (type === 'categories') {
     S.categories = payload;
+    setCategories(payload);
+    renderSidebar();
     renderList();
+  }
+  if (type === 'categories-progress') setActivity(payload);
+  if (type === 'updates') {
+    S.updates = payload;
+    renderSidebar();
   }
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
@@ -2520,6 +2635,33 @@ document.addEventListener(
   true
 );
 
+// "What's new": after "Sort my inbox" the inbox shows its categories, and with Jev on, what Jev is doing.
+function showWhatsNew() {
+  return openWhatsNew().then(async (done) => {
+    if (!done) return done;
+    await refresh();
+    if (S.categories && S.categories.enabled && S.categories.jev.on && !sortPanelOpen()) toggleSortPanel();
+    return done;
+  });
+}
+
+// An email from Jev's last decisions: the inbox, in the category it went to, with the email open.
+async function openSorted(id, category) {
+  const accountId = decodeURIComponent(String(id).split(':')[0]);
+  if (S.scope !== 'all' && S.scope !== accountId) S.scope = S.data.accounts.length > 1 ? 'all' : accountId;
+  if (calendarMode()) setMode('mail');
+  S.view = 'inbox';
+  S.folder = null;
+  S.category = S.categories && S.categories.categories.some((c) => c.id === category) ? category : null;
+  S.query = '';
+  S.filter = 'all';
+  S.checked.clear();
+  await refresh();
+  if (S.list.some((m) => m.id === id)) openMessage(id);
+}
+
+initSortActivity({ settings: () => openSettings(ctx, { view: 'categories' }), open: (id, category) => openSorted(id, category) });
+
 // Context shared with the settings and setup pages and the chat panel.
 export const ctx = {
   S,
@@ -2531,6 +2673,7 @@ export const ctx = {
   // An email in the list, or the open one; the chat panel adds dragged emails by id.
   messageById: (id) => byId(id),
   openSetup: (opts) => openSetup(ctx, opts),
+  openWhatsNew: () => showWhatsNew(),
   // view: open straight on one page, such as 'agents', or an account's 'server' page with { id }.
   openSettings: (view, opts = {}) => openSettings(ctx, { view, ...opts }),
   renderSidebar: () => renderSidebar(),
