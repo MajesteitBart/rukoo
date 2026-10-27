@@ -41,6 +41,7 @@ const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
 // ---- cal:A2 requires ----
+const { free: freeTime } = require('./calendar/free');
 // ---- /cal:A2 requires ----
 // ---- cal:A4 requires ----
 // ---- /cal:A4 requires ----
@@ -514,37 +515,18 @@ const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v 
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
 // ---- cal:A2 ipc helpers ----
-function calendarRange(range) {
-  const { start, end } = plainObject(range);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 400 * 86400000) throw new Error('invalid');
-  return { start, end };
-}
-function calendarInput(input) {
-  const i = plainObject(input);
-  const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
-  return {
-    accountId: text(i.accountId, 200),
-    calendarId: text(i.calendarId, 1000),
-    title: text(i.title, 1000),
-    location: text(i.location, 1000),
-    description: text(i.description, 20000),
-    allDay: i.allDay === true,
-    start: Number(i.start),
-    end: Number(i.end),
-    startDate: text(i.startDate, 10),
-    endDate: text(i.endDate, 10),
-    id: text(i.id, 1024)
-  };
-}
-function calendarEventId(id) {
-  if (typeof id !== 'string' || !id || id.length > 3000) throw new Error('invalid');
-  return id;
-}
-// The version of the event the user saw; Google's etags are short quoted strings.
-function calendarEtag(opts) {
-  const etag = plainObject(opts).etag;
-  return typeof etag === 'string' && etag && etag.length <= 200 ? etag : null;
-}
+// The calendar calls' arguments, checked in calendar/ipc.js (which has its own tests).
+const {
+  calendarRange,
+  calendarInput,
+  calendarScope,
+  calendarEtag,
+  calendarSeriesEtag,
+  calendarEventId,
+  calendarCalendarId,
+  calendarConflicts,
+  calendarFreeOpts
+} = require('./calendar/ipc');
 // ---- /cal:A2 ipc helpers ----
 
 // Every renderer call goes through this table; nothing else is reachable from the UI.
@@ -770,11 +752,33 @@ const api = {
   calendarView: (range) => calendars.view(calendarRange(range)),
   calendarSync: (accountId) => (accountId ? calendars.syncAccount(String(accountId)) : calendars.syncAll()).then(() => true),
   calendarEvent: (id) => calendars.event(calendarEventId(id)),
-  calendarCreate: (input) => calendars.create(calendarInput(input)),
-  calendarUpdate: (id, input, opts) => calendars.update(calendarEventId(id), calendarInput(input), { notify: plainObject(opts).notify === true, etag: calendarEtag(opts) }),
+  // A booking id or uid never comes from a window: only the booking service makes booking events.
+  calendarCreate: (input, opts) => calendars.create(calendarInput(input), { notify: plainObject(opts).notify === true }),
+  calendarUpdate: (id, input, opts) =>
+    calendars.update(calendarEventId(id), calendarInput(input), { notify: plainObject(opts).notify === true, etag: calendarEtag(opts), scope: calendarScope(opts), seriesEtag: calendarSeriesEtag(opts) }),
   calendarDelete: (id, opts) =>
-    calendars.remove(calendarEventId(id), { notify: plainObject(opts).notify === true, series: plainObject(opts).series === true, etag: calendarEtag(opts) }),
+    calendars.remove(calendarEventId(id), {
+      notify: plainObject(opts).notify === true,
+      series: plainObject(opts).series === true,
+      scope: plainObject(opts).scope === undefined ? undefined : calendarScope(opts),
+      etag: calendarEtag(opts),
+      seriesEtag: calendarSeriesEtag(opts)
+    }),
   calendarRespond: (id, response, opts) => calendars.respond(calendarEventId(id), String(response), { series: plainObject(opts).series === true }),
+  calendarSeries: (id) => calendars.series(calendarEventId(id)),
+  calendarMove: (id, calendarId, opts) => calendars.move(calendarEventId(id), calendarCalendarId(calendarId), { notify: plainObject(opts).notify === true }),
+  calendarSearch: (query) => calendars.search(typeof query === 'string' && query.length <= 200 ? query : ''),
+  calendarFree: (opts) => freeTime(calendars, engine.settings, booking ? booking.hours() : null, calendarFreeOpts(opts)),
+  // Settings pages and the booking setup may open before the calendar view ever did: accounts whose calendars were
+  // never read get them first, without the view's fetch.
+  calendarList: () => calendars.loadCalendars().then(() => calendars.list()),
+  calendarConflicts: (opts) => calendars.conflicts(calendarConflicts(opts)),
+  calendarSettings: (patch) => {
+    const settings = engine.calendarSettings(plainObject(patch));
+    // Colours and shown calendars are drawn by the calendar view.
+    calendars.emit('updated');
+    return settings;
+  },
   // ---- /cal:A2 ipc ----
   googleCancel: () => google.cancel(),
   fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),

@@ -54,6 +54,8 @@ const DEFAULT_SETTINGS = {
   // ---- cal:B3 settings ----
   // ---- /cal:B3 settings ----
   // ---- cal:A2 settings ----
+  // Calendar choices and defaults; see normalizeCalendar(). Changed only through calendarSettings().
+  calendar: calendarDefaults(),
   // ---- /cal:A2 settings ----
   senderLogos: true,
   // Percent, shared by the main window and the compose windows; see zoom.js.
@@ -72,12 +74,80 @@ function normalizeSettings(s) {
   s.minimizeToTray = s.minimizeToTray === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   // ---- cal:A2 normalize ----
+  s.calendar = normalizeCalendar(s.calendar);
   // ---- /cal:A2 normalize ----
   // ---- cal:B3 normalize ----
   // ---- /cal:B3 normalize ----
 }
 
 // ---- cal:A2 helpers ----
+// The calendar settings with nothing chosen yet. A new object each time: settings objects share it by reference.
+function calendarDefaults() {
+  return {
+    // Per calendar ("accountId\ncalendarId"): the eye toggle (missing: the provider's own "shown"), counted toward
+    // availability (missing: the account's primary and the user's own calendars) and a colour.
+    visible: {},
+    availability: {},
+    colors: {},
+    // null: the locale's first day; 0 Sunday, 1 Monday, 6 Saturday.
+    weekStart: null,
+    weekends: true,
+    workDays: [1, 2, 3, 4, 5],
+    workStart: '09:00',
+    workEnd: '17:00',
+    // Minutes.
+    duration: 60,
+    // Minutes before timed events whose reminders aren't known; null for none.
+    reminder: 10,
+    notify: true,
+    notifiedUpgrade: false
+  };
+}
+
+const CALENDAR_MAPS = ['visible', 'availability', 'colors'];
+const CALENDAR_KEYS = 500;
+const CALENDAR_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/;
+
+// What each per-calendar map may hold.
+const CALENDAR_VALUES = {
+  visible: (x) => typeof x === 'boolean',
+  availability: (x) => typeof x === 'boolean',
+  colors: (x) => typeof x === 'string' && /^#[0-9a-f]{6}$/i.test(x)
+};
+
+// A complete calendar settings object: what is missing or wrong gets its default, and the maps keep only valid
+// entries (booleans, '#rrggbb' colours), at most 500 each. fallback, a complete object itself, replaces the defaults:
+// a change keeps what the user had where it doesn't fit. Never changes its arguments.
+function normalizeCalendar(value, fallback = null) {
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = { ...calendarDefaults(), ...(fallback || {}) };
+  out.workDays = [...out.workDays];
+  const map = (m, ok) => {
+    const kept = {};
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return kept;
+    for (const [k, x] of Object.entries(m)) {
+      if (Object.keys(kept).length >= CALENDAR_KEYS) break;
+      if (k && k.length <= 2000 && ok(x)) kept[k] = x;
+    }
+    return kept;
+  };
+  for (const name of CALENDAR_MAPS) out[name] = map(v[name], CALENDAR_VALUES[name]);
+  if ([null, 0, 1, 6].includes(v.weekStart)) out.weekStart = v.weekStart;
+  if (typeof v.weekends === 'boolean') out.weekends = v.weekends;
+  if (Array.isArray(v.workDays) && v.workDays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) out.workDays = [...new Set(v.workDays)].sort((a, b) => a - b);
+  // Both ends together, so a pair that doesn't make a range falls back as a pair.
+  const workStart = CALENDAR_TIME.test(v.workStart) && v.workStart !== '24:00' ? v.workStart : out.workStart;
+  const workEnd = CALENDAR_TIME.test(v.workEnd) ? v.workEnd : out.workEnd;
+  if (workEnd > workStart) {
+    out.workStart = workStart;
+    out.workEnd = workEnd;
+  }
+  if (Number.isInteger(v.duration) && v.duration >= 15 && v.duration <= 480 && v.duration % 5 === 0) out.duration = v.duration;
+  if (v.reminder === null || (Number.isInteger(v.reminder) && v.reminder >= 0 && v.reminder <= 10080)) out.reminder = v.reminder;
+  if (typeof v.notify === 'boolean') out.notify = v.notify;
+  if (typeof v.notifiedUpgrade === 'boolean') out.notifiedUpgrade = v.notifiedUpgrade;
+  return out;
+}
 // ---- /cal:A2 helpers ----
 
 // A stored signature is cleaned again on loading, in case settings.json or accounts.json was edited by hand.
@@ -403,6 +473,8 @@ class Engine extends EventEmitter {
       // ---- cal:B3 account ----
       // ---- /cal:B3 account ----
       // ---- cal:A3 account ----
+      // Whether the calendar server sends invitations, as set in Server settings; null: as its DAV header says.
+      caldavInvites: acc.caldavInvites === 'provider' || acc.caldavInvites === 'none' ? acc.caldavInvites : null,
       // ---- /cal:A3 account ----
       auth: acc.auth || (acc.type === 'demo' ? 'none' : 'password'),
       identities: this.identities(acc),
@@ -586,6 +658,16 @@ class Engine extends EventEmitter {
       if (calendar && calendar.changed) this.emit('calendar-changed', acc);
     }
     // ---- cal:A3 update account ----
+    // Whether the calendar server sends invitations ('provider', 'none'; null: as its DAV header says). It decides
+    // whether guests can be added there, so the calendars are read again with it.
+    if (patch.caldavInvites !== undefined && acc.type === 'imap') {
+      const invites = patch.caldavInvites === 'provider' || patch.caldavInvites === 'none' ? patch.caldavInvites : null;
+      if ((acc.caldavInvites || null) !== invites) {
+        if (invites) acc.caldavInvites = invites;
+        else delete acc.caldavInvites;
+        if (acc.caldav) this.emit('calendar-changed', acc);
+      }
+    }
     // ---- /cal:A3 update account ----
     this.persistAccounts();
     this.emit('updated');
@@ -650,6 +732,11 @@ class Engine extends EventEmitter {
   // quiet: save without 'updated', for a change no list or count depends on (zoom), so the windows don't redraw.
   updateSettings(patch, { quiet = false } = {}) {
     // ---- cal:A2 update settings ----
+    // Calendar settings change only through calendarSettings(), which merges them per calendar.
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'calendar')) {
+      const { calendar, ...rest } = patch;
+      patch = rest;
+    }
     // ---- /cal:A2 update settings ----
     if (patch.signature !== undefined || patch.signatureHtml !== undefined) patch = { ...patch, ...signatureFields(patch) };
     this.settings = { ...this.settings, ...patch };
@@ -661,6 +748,33 @@ class Engine extends EventEmitter {
   }
 
   // ---- cal:A2 calendar settings ----
+  // A change to settings.calendar. visible, availability and colors merge per calendar, and a calendar set to null
+  // goes back to its default; other fields replace. What doesn't fit keeps the value the user had: a working day that
+  // would end before it starts keeps both ends, so a page that saves each field on its own doesn't lose the other.
+  // The result is normalized and saved, and 'calendar-settings' tells the calendar services before 'updated' tells the
+  // windows.
+  calendarSettings(patch) {
+    const p = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
+    const current = this.settings.calendar;
+    const next = { ...current };
+    for (const [key, value] of Object.entries(p)) {
+      if (CALENDAR_MAPS.includes(key)) {
+        const merged = { ...current[key] };
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          for (const [k, x] of Object.entries(value)) {
+            if (x === null) delete merged[k];
+            else if (CALENDAR_VALUES[key](x)) merged[k] = x;
+          }
+        }
+        next[key] = merged;
+      } else if (Object.prototype.hasOwnProperty.call(current, key)) next[key] = value;
+    }
+    this.settings = { ...this.settings, calendar: normalizeCalendar(next, current) };
+    this.persistSettings();
+    this.emit('calendar-settings', this.settings.calendar);
+    this.emit('updated');
+    return this.settings.calendar;
+  }
   // ---- /cal:A2 calendar settings ----
 
   // ---------- sync ----------

@@ -1107,7 +1107,7 @@
   },
   "calendar.views.label": {
     "message": "Calendar view",
-    "description": "Accessible name of the switch in the calendar toolbar that chooses between Day, Week and Upcoming. src/renderer/calendar.js (viewSwitch)"
+    "description": "Accessible name of the switch in the calendar toolbar that chooses between Day, Week, Month and Upcoming. src/renderer/calendar.js (viewSwitch)"
   },
   "calendar.views.day": {
     "message": "Day",
@@ -1410,6 +1410,222 @@
     "description": "Event dialog notice after Save failed because the event changed in Google Calendar (or another app) after the dialog opened. The fields now hold the latest version with the user's own changes on top. src/renderer/calendar.js (eventDialog)"
   },
   // ---- cal:B1 ----
+  "calendar.views.month": {
+    "message": "Month",
+    "description": "Calendar toolbar switch: a month at a time, as a grid of weeks. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.views.monthShortcut": {
+    "message": "Month (M)",
+    "description": "Tooltip of the Month segment, with its keyboard shortcut. src/renderer/calendar.js (viewSwitch)"
+  },
+  "calendar.nav.prev.month": {
+    "message": "Previous month (←)",
+    "description": "Tooltip of the calendar toolbar's back arrow in the month view, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.nav.next.month": {
+    "message": "Next month (→)",
+    "description": "Tooltip of the calendar toolbar's forward arrow in the month view, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.nav.panelShortcut": {
+    "message": "{title} (A)",
+    "description": "Tooltip of the calendar toolbar button that opens a side panel, with its keyboard shortcut; title is the panel's name, such as Availability. src/renderer/calendar.js (renderHead)"
+  },
+  "calendar.nav.notFound": {
+    "message": "This event is no longer in your calendar.",
+    "description": "Toast when a reminder, notification or search result points at an event that was deleted meanwhile. src/renderer/calendar.js (openEvent)"
+  },
+  "calendar.month.more": {
+    "message": { "one": "+{count} more", "other": "+{count} more" },
+    "description": "Month view: button at the bottom of a day that has more events than fit; count is how many are hidden. It opens that day. Keep it very short. src/renderer/calendar.js (monthWeekHtml)"
+  },
+  "calendar.month.moreLabel": {
+    "message": { "one": "{count} more event on {date}", "other": "{count} more events on {date}" },
+    "description": "Month view: accessible name of the +N more button; count is how many events are hidden, date the day, such as Tuesday 27 October. src/renderer/calendar.js (monthWeekHtml)"
+  },
+  "calendar.mini.prev": {
+    "message": "Previous month",
+    "description": "Tooltip of the back arrow of the small month calendar in the calendar sidebar and the Go to date dialog. src/renderer/calendar.js (miniHtml)"
+  },
+  "calendar.mini.next": {
+    "message": "Next month",
+    "description": "Tooltip of the forward arrow of the small month calendar in the calendar sidebar and the Go to date dialog. src/renderer/calendar.js (miniHtml)"
+  },
+  "calendar.goto.title": {
+    "message": "Go to date",
+    "description": "Title of the dialog that jumps the calendar to a chosen day; it opens with G or a click on the calendar's title. src/renderer/calendar.js (goToDate)"
+  },
+  "calendar.goto.shortcut": {
+    "message": "Go to date (G)",
+    "description": "Tooltip of the calendar's title in the toolbar, which opens the Go to date dialog, with its keyboard shortcut. src/renderer/calendar.js (headHtml)"
+  },
+  "calendar.goto.date": {
+    "message": "Date",
+    "description": "Label of the date field in the Go to date dialog. src/renderer/calendar.js (goToDate)"
+  },
+  "calendar.goto.show": {
+    "message": "Show",
+    "description": "Main button of the Go to date dialog: shows the chosen day in the calendar. src/renderer/calendar.js (goToDate)"
+  },
+  "calendar.goto.invalid": {
+    "message": "Enter a date.",
+    "description": "Error in the Go to date dialog when the date field is empty or incomplete. src/renderer/calendar.js (goToDate)"
+  },
+  "calendar.drag.moved": {
+    "message": "Event moved",
+    "description": "Toast after an event was dragged to another time or day; it offers Undo. src/renderer/calendar.js (saveChange)"
+  },
+  "calendar.drag.resized": {
+    "message": "End time changed",
+    "description": "Toast after an event's bottom edge was dragged to make it shorter or longer; it offers Undo. src/renderer/calendar.js (saveChange)"
+  },
+  "calendar.drag.undone": {
+    "message": "Change undone",
+    "description": "Toast after Undo put a dragged event back where it was. src/renderer/calendar.js (undoChange)"
+  },
+  "calendar.drag.seriesMove": {
+    "message": "Move a recurring event",
+    "description": "Title of the question which events of a series to move, after dragging one occurrence to another time. src/renderer/calendar.js (saveChange)"
+  },
+  "calendar.drag.seriesResize": {
+    "message": "Change the length of a recurring event",
+    "description": "Title of the question which events of a series to change, after dragging one occurrence's end. src/renderer/calendar.js (saveChange)"
+  },
+  "calendar.colors.heading": {
+    "message": "Color",
+    "description": "Calendar sidebar menu: accessible name of the row of color swatches for a calendar. src/renderer/calendar.js (calendarMenu)"
+  },
+  "calendar.colors.default": {
+    "message": "Default color",
+    "description": "Calendar sidebar menu: goes back to the calendar's own color (from Google or the server, else the account's) after one was picked. src/renderer/calendar.js (calendarMenu)"
+  },
+  "calendar.colors.red": {
+    "message": "Red",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.orange": {
+    "message": "Orange",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.yellow": {
+    "message": "Yellow",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.lime": {
+    "message": "Lime",
+    "description": "Name of a yellowish green color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.green": {
+    "message": "Green",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.turquoise": {
+    "message": "Turquoise",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.lightBlue": {
+    "message": "Light blue",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.blue": {
+    "message": "Blue",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.indigo": {
+    "message": "Indigo",
+    "description": "Name of a bluish purple color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.purple": {
+    "message": "Purple",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.pink": {
+    "message": "Pink",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.colors.grey": {
+    "message": "Gray",
+    "description": "Name of a color swatch in a calendar's sidebar menu, read out and shown as a tooltip. src/renderer/calendar.js (PALETTE)"
+  },
+  "calendar.sidebar.options": {
+    "message": "Options for {name}",
+    "description": "Tooltip and accessible name of the ⋯ button on a calendar in the calendar sidebar, which opens its color and availability menu; name is the calendar's name. src/renderer/calendar.js (sidebarHtml)"
+  },
+  "calendar.sidebar.availability": {
+    "message": "Counts toward availability",
+    "description": "Calendar sidebar menu: check item that decides whether this calendar's busy times count when Rukoo works out when you are free (availability panel, booking page). Hiding a calendar doesn't change it. src/renderer/calendar.js (calendarMenu)"
+  },
+  "calendar.sidebar.availabilityShared": {
+    "message": "Not your own calendar: when it's busy, you count as busy too.",
+    "description": "Calendar sidebar menu: second line under 'Counts toward availability' for a calendar shared by someone else or subscribed to. It says what turning it on does: that calendar's busy times then make you unavailable on the availability panel and the booking page. src/renderer/calendar.js (calendarMenu)"
+  },
+  "calendar.search.open": {
+    "message": "Search events (/)",
+    "description": "Tooltip of the search button in the calendar toolbar, with its keyboard shortcut. src/renderer/calendar.js (render)"
+  },
+  "calendar.search.placeholder": {
+    "message": "Search events",
+    "description": "Placeholder and accessible name of the search field in the calendar toolbar. src/renderer/calendar.js (searchFieldHtml)"
+  },
+  "calendar.search.close": {
+    "message": "Close search (Esc)",
+    "description": "Tooltip of the button that closes the calendar search and shows the calendar again, with its keyboard shortcut. src/renderer/calendar.js (searchFieldHtml)"
+  },
+  "calendar.search.hint": {
+    "message": "Search titles, places, descriptions and guests.",
+    "description": "Calendar search, before anything is typed: what the search looks through. src/renderer/calendar.js (searchHtml)"
+  },
+  "calendar.search.searching": {
+    "message": "Searching…",
+    "description": "Calendar search while the first results are on their way. src/renderer/calendar.js (searchHtml)"
+  },
+  "calendar.search.results": {
+    "message": { "one": "{count} event found", "other": "{count} events found" },
+    "description": "Calendar search: line above the results; count is the number of events. src/renderer/calendar.js (searchHtml)"
+  },
+  "calendar.search.empty": {
+    "message": "No events match “{query}”",
+    "description": "Calendar search when nothing matches; query is what the user typed. src/renderer/calendar.js (searchHtml)"
+  },
+  "calendar.search.failed": {
+    "message": "Couldn't search {email}.",
+    "description": "Calendar search: one account's calendar couldn't be searched, so its events are missing; email is the account's address. src/renderer/calendar.js (searchHtml)"
+  },
+  "calendar.notices.remindersTitle": {
+    "message": "Event reminders",
+    "description": "Title of the one-time notice above the calendar after the update that added desktop reminders. src/renderer/calendar.js (upgradeNotice)"
+  },
+  "calendar.notices.remindersNew": {
+    "message": "Rukoo now reminds you of events. Change this in Settings → Calendar.",
+    "description": "Text of the one-time notice above the calendar after the update that added desktop reminders. src/renderer/calendar.js (upgradeNotice)"
+  },
+  "calendar.notices.openSettings": {
+    "message": "Open settings",
+    "description": "Button in the reminders notice above the calendar that opens Settings → Calendar. src/renderer/calendar.js (upgradeNotice)"
+  },
+  "calendar.notices.dismiss": {
+    "message": "Got it",
+    "description": "Button in the reminders notice above the calendar that hides it for good. src/renderer/calendar.js (upgradeNotice)"
+  },
+  "calendar.requests.label": {
+    "message": "Request",
+    "description": "Small label on a dashed block in the calendar for a booking request that waits for the user to accept or decline it. Keep it short. src/renderer/calendar.js (requestHtml, monthChipHtml, requestRowHtml)"
+  },
+  "calendar.requests.aria": {
+    "message": "Booking request, {when}",
+    "description": "Accessible name of a booking request in the calendar when the guest's name isn't known; when is its day and time. src/renderer/calendar.js (requestLabel)"
+  },
+  "calendar.requests.ariaNamed": {
+    "message": "Booking request from {name}, {when}",
+    "description": "Accessible name of a booking request in the calendar; name is the guest's name, when its day and time. src/renderer/calendar.js (requestLabel)"
+  },
+  "calendar.requests.booked": {
+    "message": "Booked through your booking page",
+    "description": "Tooltip of the small icon on an event that someone booked through the user's booking page; also read out with the event. src/renderer/calendar.js (bookingMark, ariaLabel)"
+  },
+  "calendar.mode.calendarRequests": {
+    "message": { "one": "Calendar, {count} booking request", "other": "Calendar, {count} booking requests" },
+    "description": "Accessible name of the Calendar segment in the sidebar switch while booking requests wait for an answer; count is how many. src/renderer/app.js (renderModeSwitch)"
+  },
   // ---- /cal:B1 ----
   // ---- cal:B2 ----
   // ---- /cal:B2 ----
@@ -1922,6 +2138,62 @@
     "description": "Calendar error when the request to Google fails or times out. src/main/calendar/google.js"
   },
   // ---- cal:A2 ----
+  "errors.calendar.invalidRule": {
+    "message": "Rukoo can't save this repeat rule.",
+    "description": "Calendar error when an event's repeat rule isn't one Rukoo writes: an unknown part, COUNT together with UNTIL, or BYSETPOS without days. src/main/calendar/index.js (clean)"
+  },
+  "errors.calendar.invalidZone": {
+    "message": "Rukoo doesn't know that time zone.",
+    "description": "Calendar error when an event or a free time request names a time zone that isn't a known IANA zone. src/main/calendar/index.js"
+  },
+  "errors.calendar.invalidGuests": {
+    "message": "One of the guests doesn't have a valid email address.",
+    "description": "Calendar error when a guest added to, removed from or marked optional on an event has no valid address, or the list is too long. src/main/calendar/index.js (clean)"
+  },
+  "errors.calendar.invalidReminders": {
+    "message": "Rukoo can't save these reminders. An event takes up to 5, each between its start and 4 weeks before it.",
+    "description": "Calendar error when an event's reminders are more than 5, too early, or set after the start of a timed event or on the day of a Google all-day event. src/main/calendar/index.js, google.js"
+  },
+  "errors.calendar.invalidQuery": {
+    "message": "Type something to search for, up to 200 characters.",
+    "description": "Calendar search error when the search text is empty or longer than 200 characters. src/main/calendar/index.js (search)"
+  },
+  "errors.calendar.seriesDayChange": {
+    "message": "This series repeats on several days, so it can't move to another day as a whole. Change its repeat days instead.",
+    "description": "Calendar error when the user moves all events of a series that repeats on several weekdays to another day. src/main/calendar/google.js (moveRule)"
+  },
+  "errors.calendar.guestListPartial": {
+    "message": "The calendar didn't give Rukoo the full guest list, so the guests can't be changed here.",
+    "description": "Calendar error when Google leaves guests out of an event even when asked for all of them, so editing the list would drop them. src/main/calendar/google.js, index.js"
+  },
+  "errors.calendar.notOrganizer": {
+    "message": "Only the organizer can make this change.",
+    "description": "Calendar error when someone who isn't the organizer changes the guests, or changes or deletes this and following events of a series. src/main/calendar/index.js"
+  },
+  "errors.calendar.cannotMove": {
+    "message": "This event can't move to another calendar. Only your own ordinary events can.",
+    "description": "Calendar error when the user moves an event to another calendar that they don't organize, or that Google made itself (a birthday, a flight from Gmail). src/main/calendar/index.js (move)"
+  },
+  "errors.calendar.noMeet": {
+    "message": "This calendar can't add Google Meet.",
+    "description": "Calendar error when Google Meet is asked for on a calendar whose account doesn't allow it, or that isn't a Google calendar. src/main/calendar/index.js"
+  },
+  "errors.calendar.ruleKept": {
+    "message": "A new repeat rule applies to this and following events, or to all events, not to one.",
+    "description": "Calendar error when the user changes the repeat rule but chose to change only this occurrence of a series. src/main/calendar/index.js"
+  },
+  "errors.calendar.noGuests": {
+    "message": "This calendar doesn't send invitations, so its events can't have guests.",
+    "description": "Calendar error when guests are added to an event on a calendar that sends no invitations (the demo account, or a CalDAV server that doesn't schedule). src/main/calendar/index.js"
+  },
+  "errors.calendar.splitFailed": {
+    "message": "Rukoo couldn't change this and the following events, so it left the series as it was. Try again.",
+    "description": "Calendar error when splitting a series failed halfway and Rukoo deleted the new part again, so the series is unchanged. src/main/calendar/google.js (split)"
+  },
+  "errors.calendar.invalidFree": {
+    "message": "Rukoo looks for free time of 5 minutes to 8 hours, over at most 31 days.",
+    "description": "Free time error when the availability panel, the composer or an agent asks for a length or a period outside those limits. src/main/calendar/free.js"
+  },
   // ---- /cal:A2 ----
   "errors.caldav.signIn": {
     "message": "The calendar server turned down the username or password. Check them in Server settings.",
@@ -1972,6 +2244,34 @@
     "description": "Calendar error when a request to the old CalDAV server was still running after the user entered another server in Server settings; Rukoo doesn't send the new password to the old server. src/main/calendar/index.js (provider)"
   },
   // ---- cal:A3 ----
+  "settings.server.invites": {
+    "message": "Invitations to guests",
+    "description": "Server settings form: label of the select, under the CalDAV address field, that says whether the calendar server emails invitations to the guests the user adds. Shown once a calendar server is set. src/renderer/settings.js (render)"
+  },
+  "settings.server.invitesAuto": {
+    "message": "Automatic",
+    "description": "Server settings form, invitations select: option that leaves it to what the calendar server says in its DAV header, before Rukoo has read the server's calendars. src/renderer/settings.js (render)"
+  },
+  "settings.server.invitesAutoProvider": {
+    "message": "Automatic: the server sends them",
+    "description": "Server settings form, invitations select: the automatic option once Rukoo knows the calendar server says it emails invitations itself. src/renderer/settings.js (render)"
+  },
+  "settings.server.invitesAutoNone": {
+    "message": "Automatic: the server doesn't send them",
+    "description": "Server settings form, invitations select: the automatic option once Rukoo knows the calendar server says it doesn't email invitations. src/renderer/settings.js (render)"
+  },
+  "settings.server.invitesProvider": {
+    "message": "The server sends them",
+    "description": "Server settings form, invitations select: option for a calendar server that emails invitations although it doesn't say so; guests can then be added. src/renderer/settings.js (render)"
+  },
+  "settings.server.invitesNone": {
+    "message": "The server doesn't send them",
+    "description": "Server settings form, invitations select: option for a calendar server that says it emails invitations but doesn't; events with guests then stay read-only. src/renderer/settings.js (render)"
+  },
+  "settings.server.invitesHelp": {
+    "message": "You can only add guests when your calendar server emails their invitations. Servers say whether they do; choose here if yours gets it wrong.",
+    "description": "Server settings form: help text under the invitations select. src/renderer/settings.js (render)"
+  },
   // ---- /cal:A3 ----
   "errors.google.aliases": {
     "message": "Gmail did not return aliases ({status}).",

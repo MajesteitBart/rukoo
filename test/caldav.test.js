@@ -71,8 +71,9 @@ async function withServer(options, fn) {
   }
 }
 
-function provider(server, { password = 'secret' } = {}) {
-  return new CalDavCalendar({ url: `${server.url}/`, credentials: () => ({ user: ME, password }), addresses: () => [ME] });
+// New events are written in Amsterdam's zone, whatever the PC's is. invites: as set in Server settings.
+function provider(server, { password = 'secret', invites = () => null, timeZone = () => 'Europe/Amsterdam' } = {}) {
+  return new CalDavCalendar({ url: `${server.url}/`, credentials: () => ({ user: ME, password }), addresses: () => [ME], invites, timeZone });
 }
 
 const WEEK = { start: Date.UTC(2026, 2, 23), end: Date.UTC(2026, 3, 1) };
@@ -323,7 +324,9 @@ test('a new event is written once: a Save tried again after a lost answer gives 
     const first = server.requests.find((r) => r.method === 'PUT');
     assert.equal(first.ifNoneMatch, '*');
     assert.match(first.body, /UID:a1b2c3d4e5f6g7h8i9j0k1l2m3/);
-    assert.match(first.body, /DTSTART:20260325T073000Z/);
+    // In the zone new events are written in, with its definition.
+    assert.match(first.body, /DTSTART;TZID=Europe\/Amsterdam:20260325T083000/);
+    assert.match(first.body, /BEGIN:VTIMEZONE\r\nTZID:Europe\/Amsterdam\r\n/);
     assert.match(first.body, /DESCRIPTION:Bring the card/);
 
     const again = await p.create(home, { ...input, title: 'Dentist, 2nd floor' });
@@ -742,5 +745,568 @@ test('a calendar server entered while adding an account is checked after the mai
     const view = calendars.view(WEEK);
     assert.deepEqual(view.accounts.map((a) => [a.email, a.kind, a.state, a.calendars.map((c) => c.name).join(',')]), [[ME, 'caldav', 'ready', 'Home,Shared with me']]);
     assert.deepEqual(view.events.map((e) => e.title).sort(), ['Stand-up', 'Stand-up, later']);
+  });
+});
+
+// ---------- calendars, guests, reminders and series Rukoo writes ----------
+
+const AMS = 'Europe/Amsterdam';
+const unfold = (text) => String(text).replace(/\r\n[ \t]/g, '');
+const stored = (server, name) => unfold(server.object(name).data);
+const iso = (ms) => new Date(ms).toISOString();
+const base = (e, changes = {}) => ({ title: e.title, location: e.location, description: e.description, allDay: e.allDay, start: e.start, end: e.end, startDate: e.startDate || undefined, endDate: e.endDate || undefined, ...changes });
+
+test('calendars carry their colour, time zone, whether they are the user’s own and who sends invitations', async () => {
+  await withServer({ more: { team: { name: 'Team', comps: ['VEVENT'], write: true, sharedBy: 'boss' } } }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const by = Object.fromEntries((await p.calendars()).map((c) => [c.name, c]));
+    assert.deepEqual([by.Home.color, by.Home.timeZone, by.Home.owned], ['#2952a3', AMS, true]);
+    // Apple's colours carry an alpha; a read-only calendar and one someone else shares aren't the user's own.
+    assert.deepEqual([by['Shared with me'].color, by['Shared with me'].owned], ['#e6c800', false]);
+    assert.deepEqual([by.Team.writable, by.Team.owned, by.Team.color], [true, false, null]);
+    for (const c of Object.values(by)) assert.deepEqual([c.scheduling, c.invites, c.conference, c.defaultReminders], [false, 'none', false, []]);
+  });
+  // The DAV header says whether the server sends invitations; the setting in Server settings goes first.
+  await withServer({ scheduling: true }, async (server) => {
+    for (const [chosen, invites] of [[null, 'provider'], ['none', 'none'], ['provider', 'provider']]) {
+      const p = provider(server, { invites: () => chosen });
+      p.home = server.home;
+      const [home] = await p.calendars();
+      assert.deepEqual([home.scheduling, home.invites], [true, invites], String(chosen));
+    }
+  });
+  await withServer({}, async (server) => {
+    const p = provider(server, { invites: () => 'provider' });
+    p.home = server.home;
+    const [home] = await p.calendars();
+    assert.deepEqual([home.scheduling, home.invites], [false, 'provider']);
+  });
+});
+
+test('a new timed event is written in its zone with the zone’s definition, with its reminders, show as, visibility and booking', async () => {
+  await withServer({}, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    const input = {
+      title: 'Intro call',
+      location: '',
+      description: '',
+      allDay: false,
+      start: Date.UTC(2026, 9, 27, 17),
+      end: Date.UTC(2026, 9, 27, 18),
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 10 }, { method: 'popup', minutes: 1440 }] },
+      busy: false,
+      visibility: 'private'
+    };
+    const options = { bookingId: 'Rf63vMqqWdS0MICDAHKmrw', uid: 'Rf63vMqqWdS0MICDAHKmrw@meet.example' };
+    const made = await p.create(home, input, options);
+    const [name] = server.names();
+    const data = stored(server, name);
+    assert.match(data, /DTSTART;TZID=Europe\/Amsterdam:20261027T180000\r\n/);
+    assert.match(data, /DTEND;TZID=Europe\/Amsterdam:20261027T190000\r\n/);
+    // The definition comes before the event and starts before its times.
+    assert.ok(data.indexOf('BEGIN:VTIMEZONE') < data.indexOf('BEGIN:VEVENT'));
+    const onset = /BEGIN:STANDARD\r\nTZOFFSETFROM:\+0200\r\nTZOFFSETTO:\+0100\r\nDTSTART:(\d{8})/.exec(data);
+    assert.ok(onset && onset[1] <= '20261027', data);
+    assert.match(data, /UID:Rf63vMqqWdS0MICDAHKmrw@meet\.example\r\n/);
+    assert.match(data, /X-RUKOO-BOOKING:Rf63vMqqWdS0MICDAHKmrw\r\n/);
+    assert.match(data, /TRANSP:TRANSPARENT\r\n/);
+    assert.match(data, /CLASS:PRIVATE\r\n/);
+    assert.match(data, /TRIGGER:-PT10M\r\n/);
+    assert.match(data, /TRIGGER:-P1D\r\n/);
+    assert.deepEqual(
+      { start: made.start, end: made.end, timeZone: made.timeZone, busy: made.busy, visibility: made.visibility, bookingId: made.bookingId, uid: made.uid, originalStart: made.originalStart, recurring: made.recurring, canInvite: made.canInvite, canMove: made.canMove },
+      { start: input.start, end: input.end, timeZone: AMS, busy: false, visibility: 'private', bookingId: options.bookingId, uid: options.uid, originalStart: null, recurring: false, canInvite: false, canMove: true }
+    );
+    assert.deepEqual(made.reminders, { useDefault: false, overrides: [{ method: 'popup', minutes: 10 }, { method: 'popup', minutes: 1440 }] });
+
+    // The booking made again, as after a lost answer: the same object, with the latest fields.
+    const again = await p.create(home, { ...input, title: 'Intro call (moved)' }, options);
+    assert.equal(again.eventId, made.eventId);
+    assert.deepEqual(server.names(), [name]);
+    assert.equal(again.title, 'Intro call (moved)');
+
+    // An all-day event doesn't block the day; "on the day at 09:00" is a trigger after its start.
+    const day = await p.create(home, { title: 'Holiday', location: '', description: '', allDay: true, startDate: '2026-11-02', endDate: '2026-11-03', start: 0, end: 1, reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: -540 }, { method: 'popup', minutes: 900 }] } });
+    const dayData = stored(server, server.names().find((n) => n !== name));
+    assert.match(dayData, /TRANSP:TRANSPARENT/);
+    assert.match(dayData, /TRIGGER:PT9H\r\n/);
+    assert.match(dayData, /TRIGGER:-PT15H\r\n/);
+    assert.doesNotMatch(dayData, /VTIMEZONE/);
+    assert.equal(day.busy, false);
+    assert.deepEqual(day.reminders.overrides, [{ method: 'popup', minutes: -540 }, { method: 'popup', minutes: 900 }]);
+
+    // No reminders at all is said so, rather than left unknown; an email alarm isn't Rukoo's to change.
+    server.put(name, server.object(name).data.replace('END:VEVENT', 'BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-PT2H\r\nSUMMARY:Soon\r\nDESCRIPTION:Soon\r\nATTENDEE:mailto:me@example.com\r\nEND:VALARM\r\nEND:VEVENT'));
+    const withEmail = await p.get(home, made.eventId);
+    assert.deepEqual(withEmail.reminders.overrides, [{ method: 'popup', minutes: 10 }, { method: 'email', minutes: 120 }, { method: 'popup', minutes: 1440 }]);
+    const none = await p.update(home, withEmail, base(withEmail, { reminders: { useDefault: false, overrides: [] } }), { etag: withEmail.etag });
+    assert.deepEqual(none.reminders, { useDefault: false, overrides: [{ method: 'email', minutes: 120 }] });
+    const cleared = await p.update(home, none, base(none, { reminders: { useDefault: false, overrides: [] } }), { etag: none.etag });
+    assert.match(stored(server, name), /ACTION:EMAIL/);
+    server.put(name, server.object(name).data.replace(/BEGIN:VALARM\r\nACTION:EMAIL[\s\S]*?END:VALARM\r\n/, ''));
+    const bare = await p.get(home, made.eventId);
+    const nothing = await p.update(home, bare, base(bare, { reminders: { useDefault: false, overrides: [] } }), { etag: bare.etag });
+    assert.match(stored(server, name), /ACTION:NONE\r\nTRIGGER;VALUE=DATE-TIME:19760401T005545Z/);
+    assert.deepEqual(nothing.reminders, { useDefault: false, overrides: [] });
+    assert.ok(cleared);
+  });
+});
+
+test('SEQUENCE rises only for changes that matter to guests: times, rule, place and status', async () => {
+  await withServer({}, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    let e = await p.create(home, { title: 'Lunch', location: 'Canteen', description: '', allDay: false, start: Date.UTC(2026, 2, 24, 11), end: Date.UTC(2026, 2, 24, 12) });
+    const [name] = server.names();
+    const sequence = () => Number(/SEQUENCE:(\d+)/.exec(server.object(name).data)[1]);
+    assert.equal(sequence(), 0);
+    e = await p.update(home, e, base(e, { title: 'Lunch with Sanne', description: 'Bring the plans' }), { etag: e.etag });
+    assert.equal(sequence(), 0);
+    e = await p.update(home, e, base(e, { visibility: 'private', busy: false }), { etag: e.etag });
+    assert.equal(sequence(), 0);
+    e = await p.update(home, e, base(e, { location: 'Café de Jaren' }), { etag: e.etag });
+    assert.equal(sequence(), 1);
+    e = await p.update(home, e, base(e, { start: e.start + 1800000, end: e.end + 1800000 }), { etag: e.etag });
+    assert.equal(sequence(), 2);
+  });
+});
+
+test('where the server sends invitations, guests change in place: answers and rooms stay, the organizer comes and goes with them', async () => {
+  const meeting = ics(
+    vevent(
+      'UID:meeting',
+      'DTSTART:20260325T130000Z',
+      'DTEND:20260325T140000Z',
+      'SUMMARY:Planning',
+      'SEQUENCE:2',
+      `ORGANIZER;CN=Me:mailto:${ME}`,
+      `ATTENDEE;CN=Me;PARTSTAT=ACCEPTED:mailto:${ME}`,
+      'ATTENDEE;CN=Joris Bakker;PARTSTAT=ACCEPTED:mailto:joris@example.com',
+      'ATTENDEE;CN=Sanne de Vries;PARTSTAT=TENTATIVE;X-NOTE=kept:mailto:sanne@example.com',
+      'ATTENDEE;CUTYPE=ROOM;CN=Room 4.12;PARTSTAT=ACCEPTED:mailto:room@example.com'
+    )
+  );
+  await withServer({ scheduling: true, objects: { 'home/meeting.ics': meeting } }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    let [e] = await p.events(home, WEEK.start, WEEK.end);
+    assert.deepEqual([e.canEdit, e.canInvite, e.canMove], [true, 'edit', true]);
+    e = await p.update(home, e, base(e, { guests: { add: [{ address: 'Pieter@Example.com', name: 'Pieter Jansen', optional: true }], remove: ['joris@example.com', 'room@example.com'], optional: { 'sanne@example.com': true } } }), { etag: e.etag });
+    const data = stored(server, 'home/meeting.ics');
+    assert.doesNotMatch(data, /joris@example\.com/);
+    // The room stays booked, and Sanne keeps her answer and everything else on her line.
+    assert.match(data, /ATTENDEE;CUTYPE=ROOM;CN=Room 4\.12;PARTSTAT=ACCEPTED:mailto:room@example\.com/);
+    assert.match(data, /ATTENDEE;CN=Sanne de Vries;PARTSTAT=TENTATIVE;X-NOTE=kept;ROLE=OPT-PARTICIPANT:mailto:sanne@example\.com/);
+    assert.match(data, /ATTENDEE;CN=Pieter Jansen;CUTYPE=INDIVIDUAL;ROLE=OPT-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:pieter@example\.com/);
+    // A changed guest list goes out without counting as a new version of the meeting.
+    assert.match(data, /SEQUENCE:2/);
+    assert.deepEqual(server.sent, [{ method: 'REQUEST', to: 'pieter@example.com', uid: 'meeting' }, { method: 'CANCEL', to: 'joris@example.com', uid: 'meeting' }]);
+    assert.deepEqual(e.attendees.map((a) => [a.address, a.response, a.optional]), [[ME, 'accepted', false], ['sanne@example.com', 'tentative', true], ['pieter@example.com', 'needsAction', true]]);
+
+    // A new time is: every guest hears of it.
+    server.sent.length = 0;
+    e = await p.update(home, e, base(e, { start: e.start + 3600000, end: e.end + 3600000 }), { etag: e.etag });
+    assert.match(stored(server, 'home/meeting.ics'), /SEQUENCE:3/);
+    assert.deepEqual(server.sent.map((s) => [s.method, s.to, s.update]).sort(), [['REQUEST', 'pieter@example.com', true], ['REQUEST', 'room@example.com', true], ['REQUEST', 'sanne@example.com', true]]);
+  });
+
+  // A meeting of someone else's can't get guests from the user.
+  await withServer({ scheduling: true, objects: { 'home/review.ics': INVITE } }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    const [invite] = await p.events(home, WEEK.start, WEEK.end);
+    assert.deepEqual([invite.canEdit, invite.canInvite, invite.canRespond], [false, false, true]);
+    await assert.rejects(p.update(home, invite, base(invite, { guests: { add: [{ address: 'pieter@example.com' }] } }), { etag: invite.etag }), { code: 'refused' });
+  });
+});
+
+test('the first guest makes the user the organizer, and the last one leaving makes it the user’s own event again', async () => {
+  await withServer({ scheduling: true }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    let e = await p.create(home, { title: 'Coffee', location: '', description: '', allDay: false, start: Date.UTC(2026, 2, 26, 9), end: Date.UTC(2026, 2, 26, 9, 30), guests: { add: [{ address: 'sanne@example.com', name: 'Sanne de Vries' }] } });
+    const [name] = server.names();
+    let data = stored(server, name);
+    assert.match(data, new RegExp(`ORGANIZER:mailto:${ME}`));
+    assert.match(data, new RegExp(`ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=CHAIR;PARTSTAT=ACCEPTED:mailto:${ME}`));
+    assert.deepEqual(server.sent.map((s) => [s.method, s.to]), [['REQUEST', 'sanne@example.com']]);
+    assert.deepEqual([e.organizer.self, e.canEdit, e.canInvite], [true, true, 'edit']);
+    e = await p.update(home, e, base(e, { guests: { remove: ['sanne@example.com'] } }), { etag: e.etag });
+    data = stored(server, name);
+    assert.doesNotMatch(data, /ORGANIZER|ATTENDEE/);
+    assert.deepEqual(server.sent.map((s) => [s.method, s.to]), [['REQUEST', 'sanne@example.com'], ['CANCEL', 'sanne@example.com']]);
+    assert.deepEqual([e.organizer, e.attendees], [null, []]);
+  });
+});
+
+test('without a server that sends invitations a meeting with guests stays read-only, unless Server settings say it does', async () => {
+  const own = ics(vevent('UID:own', 'DTSTART:20260325T100000Z', 'DTEND:20260325T110000Z', 'SUMMARY:Review', `ORGANIZER:mailto:${ME}`, `ATTENDEE;PARTSTAT=ACCEPTED:mailto:${ME}`, 'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:joris@example.com'));
+  await withServer({ objects: { 'home/own.ics': own, 'home/review.ics': INVITE } }, async (server) => {
+    const plain = provider(server);
+    plain.home = server.home;
+    const [home] = await plain.calendars();
+    const events = await plain.events(home, WEEK.start, WEEK.end);
+    const mine = events.find((e) => e.title === 'Review');
+    assert.deepEqual([mine.canEdit, mine.canInvite, mine.canMove], [false, false, false]);
+    const told = provider(server, { invites: () => 'provider' });
+    told.home = server.home;
+    const [same] = await told.calendars();
+    const now = (await told.events(same, WEEK.start, WEEK.end)).find((e) => e.title === 'Review');
+    assert.deepEqual([now.canEdit, now.canInvite], [true, 'edit']);
+    // A calendar cached before Rukoo kept who sends invitations has only the server's own answer, a boolean.
+    for (const scheduling of [true, false]) {
+      const invite = (await plain.events({ id: home.id, writable: true, scheduling }, WEEK.start, WEEK.end)).find((e) => e.title === 'Design review');
+      assert.equal(invite.canRespond, scheduling);
+    }
+  });
+});
+
+test('a rule on a single event written in UTC makes a series on the clock of the zone, across the change to summer time', async () => {
+  const lunch = ics(vevent('UID:gym', 'DTSTART:20260323T170000Z', 'DTEND:20260323T180000Z', 'SUMMARY:Gym'));
+  await withServer({ objects: { 'home/gym.ics': lunch } }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    const [gym] = await p.events(home, WEEK.start, WEEK.end);
+    assert.equal(gym.recurring, false);
+    const first = await p.update(home, gym, base(gym, { recurrence: 'FREQ=WEEKLY;BYDAY=MO;COUNT=3' }), { etag: gym.etag });
+    const data = stored(server, 'home/gym.ics');
+    assert.match(data, /DTSTART;TZID=Europe\/Amsterdam:20260323T180000\r\n/);
+    assert.match(data, /RRULE:FREQ=WEEKLY;COUNT=3;BYDAY=MO\r\n/);
+    assert.match(data, /BEGIN:VTIMEZONE/);
+    assert.equal(first.eventId, `${gym.eventId}#20260323T170000Z`);
+    assert.deepEqual([first.recurring, first.seriesId, first.originalStart], [true, gym.eventId, gym.start]);
+    const all = await p.events(home, WEEK.start, WEEK.end + 14 * DAY);
+    // 18:00 in Amsterdam: 17:00 UTC in winter, 16:00 UTC in summer.
+    assert.deepEqual(all.map((e) => iso(e.start)), ['2026-03-23T17:00:00.000Z', '2026-03-30T16:00:00.000Z', '2026-04-06T16:00:00.000Z']);
+  });
+});
+
+test('a new series ends on the day the dialog says, whole, in its zone', async () => {
+  await withServer({}, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    const first = await p.create(home, { title: 'Yoga', location: '', description: '', allDay: false, start: Date.UTC(2026, 2, 24, 17), end: Date.UTC(2026, 2, 24, 18), recurrence: 'FREQ=WEEKLY;BYDAY=TU;UNTIL=20260414;WKST=MO' });
+    const [name] = server.names();
+    // The last day ends at midnight in Amsterdam, in summer time then.
+    assert.match(stored(server, name), /RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20260414T215959Z\r\n/);
+    assert.equal(first.eventId, `${server.calendarUrl('home')}${name.slice(5)}#20260324T170000Z`);
+    const all = await p.events(home, WEEK.start, WEEK.end + 30 * DAY);
+    assert.deepEqual(all.map((e) => iso(e.start)), ['2026-03-24T17:00:00.000Z', '2026-03-31T16:00:00.000Z', '2026-04-07T16:00:00.000Z', '2026-04-14T16:00:00.000Z']);
+    const info = await p.series(home, first);
+    assert.deepEqual({ rule: info.rule, timeZone: info.timeZone, start: info.start, etag: info.etag }, { rule: 'FREQ=WEEKLY;BYDAY=TU;UNTIL=20260414T215959Z', timeZone: AMS, start: first.start, etag: server.object(name).etag });
+  });
+});
+
+// A weekly team sync on Mondays at 09:00 in Amsterdam from 2 March, ten times: the one on 9 March and on 13 April
+// excluded, the one on 16 March moved to Tuesday and the one on 6 April moved to 11:00.
+const SYNC = ics(
+  vevent(
+    'UID:sync',
+    'DTSTART;TZID=Europe/Amsterdam:20260302T090000',
+    'DTEND;TZID=Europe/Amsterdam:20260302T100000',
+    'RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=10',
+    'EXDATE;TZID=Europe/Amsterdam:20260309T090000,20260413T090000',
+    'SUMMARY:Team sync',
+    'SEQUENCE:1'
+  ),
+  vevent('UID:sync', 'RECURRENCE-ID;TZID=Europe/Amsterdam:20260316T090000', 'DTSTART;TZID=Europe/Amsterdam:20260317T090000', 'DTEND;TZID=Europe/Amsterdam:20260317T100000', 'SUMMARY:Team sync (Tuesday)'),
+  vevent('UID:sync', 'RECURRENCE-ID;TZID=Europe/Amsterdam:20260406T090000', 'DTSTART;TZID=Europe/Amsterdam:20260406T110000', 'DTEND;TZID=Europe/Amsterdam:20260406T120000', 'SUMMARY:Team sync, late')
+);
+const SPRING = { start: Date.UTC(2026, 2, 1), end: Date.UTC(2026, 4, 10) };
+const sync = async (server, p = provider(server)) => {
+  p.home = server.home;
+  const [home] = await p.calendars();
+  const events = (await p.events(home, SPRING.start, SPRING.end)).sort((a, b) => a.start - b.start);
+  return { p, home, events, on: (day) => events.find((e) => iso(e.originalStart).startsWith(day)) };
+};
+const shown = (events) => events.sort((a, b) => a.start - b.start).map((e) => `${iso(e.start).slice(0, 16)} ${e.title}`);
+
+test('a change to every occurrence moves the series on its own clock, with the excluded and changed occurrences, and keeps what they changed', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const opened = on('2026-03-23');
+    assert.deepEqual([opened.originalStart, opened.recurring, opened.uid], [opened.start, true, 'sync']);
+    // To Tuesdays at 10:00, under a new name. The occurrence moved to 11:00 on its own stays there.
+    const next = await p.update(home, opened, base(opened, { title: 'Weekly sync', start: opened.start + DAY + 3600000, end: opened.end + DAY + 3600000 }), { etag: opened.etag, scope: 'all', seriesEtag: opened.etag });
+    const data = stored(server, 'home/sync.ics');
+    assert.match(data, /DTSTART;TZID=Europe\/Amsterdam:20260303T100000\r\n/);
+    assert.match(data, /RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=TU\r\n/);
+    assert.match(data, /EXDATE;TZID=Europe\/Amsterdam:20260310T100000,20260414T100000\r\n/);
+    assert.match(data, /RECURRENCE-ID;TZID=Europe\/Amsterdam:20260317T100000\r\n/);
+    const late = data.split('BEGIN:VEVENT').find((v) => v.includes('RECURRENCE-ID;TZID=Europe/Amsterdam:20260407T100000'));
+    assert.match(late, /DTSTART;TZID=Europe\/Amsterdam:20260406T110000/);
+    assert.equal(next.eventId, `${server.calendarUrl('home')}sync.ics#20260324T090000Z`);
+    const after = await p.events(home, SPRING.start, SPRING.end);
+    assert.deepEqual(shown(after), [
+      '2026-03-03T09:00 Weekly sync',
+      '2026-03-17T08:00 Team sync (Tuesday)',
+      '2026-03-24T09:00 Weekly sync',
+      '2026-03-31T08:00 Weekly sync',
+      '2026-04-06T09:00 Team sync, late',
+      '2026-04-21T08:00 Weekly sync',
+      '2026-04-28T08:00 Weekly sync',
+      '2026-05-05T08:00 Weekly sync'
+    ]);
+    // On a version of the series older than the server's, nothing changes.
+    await assert.rejects(p.update(home, opened, base(opened, { title: 'Again' }), { etag: opened.etag, scope: 'all', seriesEtag: opened.etag }), { code: 'changed' });
+  });
+
+  // A series on Mondays and Thursdays can't follow a move to another weekday; to another hour it can.
+  await withServer({ objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    const [monday] = (await p.events(home, WEEK.start, WEEK.end)).sort((a, b) => a.start - b.start);
+    await assert.rejects(p.update(home, monday, base(monday, { start: monday.start + DAY, end: monday.end + DAY }), { etag: monday.etag, scope: 'all' }), { code: 'refused' });
+    await p.update(home, monday, base(monday, { start: monday.start + 1800000, end: monday.end + 1800000 }), { etag: monday.etag, scope: 'all' });
+    const data = stored(server, 'home/standup.ics');
+    assert.match(data, /DTSTART;TZID=Europe\/Amsterdam:20260316T100000/);
+    assert.match(data, /RRULE:FREQ=WEEKLY;BYDAY=MO,TH\r\n/);
+    assert.match(data, /EXDATE;TZID=Europe\/Amsterdam:20260326T100000/);
+  });
+});
+
+test('a change to every occurrence from one moved on its own puts that one where it was dropped, and the rule matches the series’ start', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    // The one on 16 March, moved to Tuesday on its own, dragged on to Wednesday: the series moves a day, to Tuesdays.
+    const opened = on('2026-03-16');
+    assert.equal(opened.title, 'Team sync (Tuesday)');
+    const next = await p.update(home, opened, base(opened, { start: opened.start + DAY, end: opened.end + DAY }), { etag: opened.etag, scope: 'all', seriesEtag: opened.etag });
+    const data = stored(server, 'home/sync.ics');
+    assert.match(data, /DTSTART;TZID=Europe\/Amsterdam:20260303T090000\r\n/);
+    assert.match(data, /RRULE:FREQ=WEEKLY;COUNT=10;BYDAY=TU\r\n/);
+    assert.match(data, /EXDATE;TZID=Europe\/Amsterdam:20260310T090000,20260414T090000\r\n/);
+    const moved = data.split('BEGIN:VEVENT').find((v) => v.includes('RECURRENCE-ID;TZID=Europe/Amsterdam:20260317T090000'));
+    assert.match(moved, /DTSTART;TZID=Europe\/Amsterdam:20260318T090000/);
+    assert.deepEqual([next.eventId, next.start], [`${server.calendarUrl('home')}sync.ics#20260317T080000Z`, Date.UTC(2026, 2, 18, 8)]);
+    // The rule's ten without the two excluded, none twice: the Wednesday in place of the Tuesday it was made from.
+    assert.deepEqual(shown(await p.events(home, SPRING.start, SPRING.end)), [
+      '2026-03-03T08:00 Team sync',
+      '2026-03-18T08:00 Team sync (Tuesday)',
+      '2026-03-24T08:00 Team sync',
+      '2026-03-31T07:00 Team sync',
+      '2026-04-06T09:00 Team sync, late',
+      '2026-04-21T07:00 Team sync',
+      '2026-04-28T07:00 Team sync',
+      '2026-05-05T07:00 Team sync'
+    ]);
+  });
+});
+
+test('this and following: the series ends before the occurrence, and a new one takes over with what is left of it', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const opened = on('2026-03-23');
+    const made = await p.update(home, opened, base(opened, { start: opened.start + 3600000, end: opened.end + 3600000 }), { etag: opened.etag, scope: 'following', seriesEtag: opened.etag });
+    const name = server.names().find((n) => n !== 'home/sync.ics');
+    const [create, cut] = server.requests.filter((r) => r.method === 'PUT');
+    // The new series is written first, only as a new object; then the old one is cut, on the version the user saw.
+    assert.deepEqual([create.path.endsWith(name.slice(5)), create.ifNoneMatch, cut.path.endsWith('sync.ics'), cut.ifMatch], [true, '*', true, opened.etag]);
+    const old = stored(server, 'home/sync.ics');
+    assert.match(old, /RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20260323T075959Z\r\n/);
+    assert.match(old, /EXDATE;TZID=Europe\/Amsterdam:20260309T090000\r\n/);
+    assert.doesNotMatch(old, /20260406|20260413/);
+    assert.match(old, /SEQUENCE:2/);
+    const fresh = stored(server, name);
+    assert.match(fresh, /UID:sync-R20260323T080000Z\r\n/);
+    assert.match(fresh, /DTSTART;TZID=Europe\/Amsterdam:20260323T100000\r\n/);
+    // Ten minus the three before it, the excluded one counted too: the series still ends on 4 May.
+    assert.match(fresh, /RRULE:FREQ=WEEKLY;COUNT=7;BYDAY=MO\r\n/);
+    assert.match(fresh, /EXDATE;TZID=Europe\/Amsterdam:20260413T100000\r\n/);
+    assert.match(fresh, /RECURRENCE-ID;TZID=Europe\/Amsterdam:20260406T100000\r\n/);
+    assert.match(fresh, /SEQUENCE:0/);
+    assert.equal(made.eventId, `${server.calendarUrl('home')}${name.slice(5)}#20260323T090000Z`);
+    assert.equal(made.start, opened.start + 3600000);
+    const after = await p.events(home, SPRING.start, SPRING.end);
+    assert.deepEqual(shown(after), [
+      '2026-03-02T08:00 Team sync',
+      '2026-03-17T08:00 Team sync (Tuesday)',
+      '2026-03-23T09:00 Team sync',
+      '2026-03-30T08:00 Team sync',
+      '2026-04-06T09:00 Team sync, late',
+      '2026-04-20T08:00 Team sync',
+      '2026-04-27T08:00 Team sync',
+      '2026-05-04T08:00 Team sync'
+    ]);
+  });
+});
+
+test('this and following at the first occurrence is the whole series, and a failed cut takes the new series back', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const first = on('2026-03-02');
+    await p.update(home, first, base(first, { title: 'Sync' }), { etag: first.etag, scope: 'following' });
+    assert.deepEqual(server.names(), ['home/sync.ics']);
+    assert.match(stored(server, 'home/sync.ics'), /SUMMARY:Sync\r\n/);
+  });
+  for (const [status, code] of [[500, 'split_failed'], [412, 'changed']]) {
+    let refuse = false;
+    await withServer({ objects: { 'home/sync.ics': SYNC }, fail: ({ method, path }) => (refuse && method === 'PUT' && path.endsWith('/sync.ics') ? { status } : null) }, async (server) => {
+      const { p, home, on } = await sync(server);
+      const opened = on('2026-03-23');
+      refuse = true;
+      await assert.rejects(p.update(home, opened, base(opened, { title: 'Later sync' }), { etag: opened.etag, scope: 'following' }), { code });
+      assert.deepEqual(server.names(), ['home/sync.ics'], code);
+      assert.equal(server.object('home/sync.ics').data, SYNC);
+      assert.ok(server.requests.some((r) => r.method === 'DELETE' && !r.path.endsWith('/sync.ics')));
+    });
+  }
+});
+
+test('deleting this and following ends the series before the occurrence; from the first one it deletes the series', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const opened = on('2026-04-06');
+    const done = await p.remove(home, opened, { scope: 'following', etag: opened.etag, seriesEtag: opened.etag });
+    assert.equal(done.etag, server.object('home/sync.ics').etag);
+    const data = stored(server, 'home/sync.ics');
+    assert.match(data, /UNTIL=20260406T065959Z/);
+    assert.doesNotMatch(data, /20260406T110000|20260413/);
+    assert.deepEqual(shown(await p.events(home, SPRING.start, SPRING.end)), ['2026-03-02T08:00 Team sync', '2026-03-17T08:00 Team sync (Tuesday)', '2026-03-23T08:00 Team sync', '2026-03-30T07:00 Team sync']);
+    const first = (await p.events(home, SPRING.start, SPRING.end)).sort((x, y) => x.start - y.start).find((e) => e.title === 'Team sync');
+    await p.remove(home, first, { scope: 'following', etag: done.etag });
+    assert.deepEqual(server.names(), []);
+  });
+});
+
+test('a change to one occurrence, leaving one out and an answer give back the object’s new version, which every occurrence has (#53)', async () => {
+  const series = ics(vevent('UID:weekly', 'DTSTART:20260323T120000Z', 'DTEND:20260323T130000Z', 'RRULE:FREQ=WEEKLY;COUNT=4', 'SUMMARY:Weekly sync', 'ORGANIZER:mailto:joris@example.com', `ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:${ME}`));
+  await withServer({ scheduling: true, objects: { 'home/sync.ics': SYNC, 'home/weekly.ics': series } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const changed = await p.update(home, on('2026-03-23'), base(on('2026-03-23'), { title: 'Moved sync' }), { etag: on('2026-03-23').etag });
+    assert.equal(changed.etag, server.object('home/sync.ics').etag);
+    const out = await p.remove(home, on('2026-03-30'), { etag: changed.etag });
+    assert.equal(out.etag, server.object('home/sync.ics').etag);
+    const invite = (await p.events(home, SPRING.start, SPRING.end)).find((e) => e.title === 'Weekly sync');
+    const answered = await p.respond(home, invite, 'accepted');
+    assert.equal(answered.etag, server.object('home/weekly.ics').etag);
+    // The series' version is the object's.
+    assert.equal((await p.series(home, invite)).etag, answered.etag);
+  });
+});
+
+test('the series an occurrence belongs to: its rule, the other lines and the excluded dates', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const info = await p.series(home, on('2026-03-23'));
+    assert.deepEqual(info, {
+      rule: 'FREQ=WEEKLY;COUNT=10;BYDAY=MO',
+      rules: ['FREQ=WEEKLY;COUNT=10;BYDAY=MO'],
+      extra: ['EXDATE;TZID=Europe/Amsterdam:20260309T090000,20260413T090000'],
+      exdates: [Date.UTC(2026, 2, 9, 8), Date.UTC(2026, 3, 13, 7)],
+      start: Date.UTC(2026, 2, 2, 8),
+      end: Date.UTC(2026, 2, 2, 9),
+      allDay: false,
+      startDate: null,
+      endDate: null,
+      timeZone: AMS,
+      etag: server.object('home/sync.ics').etag
+    });
+  });
+});
+
+test('an event moves to another calendar with MOVE, whole series and all, only on the version the user saw', async () => {
+  const lunch = ics(vevent('UID:lunch', 'DTSTART:20260324T110000Z', 'DTEND:20260324T120000Z', 'SUMMARY:Lunch'));
+  const work = { work: { name: 'Work', comps: ['VEVENT'], write: true } };
+  await withServer({ more: work, objects: { 'home/lunch.ics': lunch, 'home/sync.ics': SYNC, 'work/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const to = (await p.calendars()).find((c) => c.name === 'Work');
+    const [single] = (await p.events(home, WEEK.start, WEEK.end)).filter((e) => e.title === 'Lunch');
+    const moved = await p.move(home, single, to, { notify: true });
+    const move = server.requests.find((r) => r.method === 'MOVE');
+    assert.deepEqual([move.path.endsWith('/home/lunch.ics'), move.destination, move.overwrite, move.ifMatch], [true, `${server.calendarUrl('work')}lunch.ics`, 'F', single.etag]);
+    assert.deepEqual([moved.calendarId, moved.eventId, moved.title], [to.id, `${server.calendarUrl('work')}lunch.ics`, 'Lunch']);
+    assert.ok(server.object('work/lunch.ics') && !server.object('home/lunch.ics'));
+    // Another object by that name in the other calendar stays as it is.
+    const opened = on('2026-03-23');
+    await assert.rejects(p.move(home, opened, to), { code: 'refused' });
+    assert.ok(server.object('home/sync.ics'));
+    // And a version that changed meanwhile isn't moved.
+    await assert.rejects(p.move(home, { ...opened, etag: '"older"' }, to), { code: 'changed' });
+  });
+  await withServer({ more: work, objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const to = (await p.calendars()).find((c) => c.name === 'Work');
+    const moved = await p.move(home, on('2026-03-23'), to);
+    assert.deepEqual([moved.calendarId, moved.eventId, moved.start], [to.id, `${server.calendarUrl('work')}sync.ics#20260323T080000Z`, on('2026-03-23').start]);
+    assert.deepEqual(server.names(), ['work/sync.ics']);
+  });
+});
+
+test('a server without MOVE gets a copy and a deletion, but a meeting with guests stays where it is', async () => {
+  const work = { work: { name: 'Work', comps: ['VEVENT'], write: true } };
+  const lunch = ics(vevent('UID:lunch', 'DTSTART:20260324T110000Z', 'DTEND:20260324T120000Z', 'SUMMARY:Lunch'));
+  await withServer({ move: false, scheduling: true, more: work, objects: { 'home/lunch.ics': lunch, 'home/review.ics': INVITE } }, async (server) => {
+    const p = provider(server);
+    p.home = server.home;
+    const [home] = await p.calendars();
+    const to = (await p.calendars()).find((c) => c.name === 'Work');
+    const events = await p.events(home, WEEK.start, WEEK.end);
+    const moved = await p.move(home, events.find((e) => e.title === 'Lunch'), to);
+    assert.equal(moved.calendarId, to.id);
+    assert.deepEqual(server.names().sort(), ['home/review.ics', 'work/lunch.ics']);
+    await assert.rejects(p.move(home, events.find((e) => e.title === 'Design review'), to), { code: 'refused' });
+    assert.ok(server.object('home/review.ics'));
+    assert.deepEqual(server.sent, []);
+  });
+});
+
+test('through the store, a change to one occurrence leaves the others on the series’ new version (#53)', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(SPRING);
+    await settle(calendars);
+    const events = calendars.view(SPRING).events.filter((e) => e.title === 'Team sync').sort((a, b) => a.start - b.start);
+    const [a, b] = events;
+    await calendars.update(a.id, base(a, { accountId: 'c1', calendarId: a.calendarId, title: 'First' }), { etag: a.etag });
+    const later = calendars.event(b.id);
+    assert.equal(later.etag, server.object('home/sync.ics').etag);
+    await calendars.update(b.id, base(later, { accountId: 'c1', calendarId: later.calendarId, title: 'Second' }), { etag: later.etag });
+    assert.match(stored(server, 'home/sync.ics'), /SUMMARY:First[\s\S]*SUMMARY:Second/);
+  });
+});
+
+test('Server settings can say whether the calendar server sends invitations, and the calendars are read again with it', async () => {
+  const own = ics(vevent('UID:own', 'DTSTART:20260325T100000Z', 'DTEND:20260325T110000Z', 'SUMMARY:Review', `ORGANIZER:mailto:${ME}`, `ATTENDEE;PARTSTAT=ACCEPTED:mailto:${ME}`, 'ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:joris@example.com'));
+  await withServer({ objects: { 'home/own.ics': own } }, async (server) => {
+    const { engine, calendars, dataDir } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    let changed = 0;
+    engine.on('calendar-changed', () => changed++);
+    const look = async () => {
+      calendars.view(WEEK);
+      await settle(calendars);
+      const view = calendars.view(WEEK);
+      return { calendar: view.accounts[0].calendars[0], review: view.events.find((e) => e.title === 'Review') };
+    };
+    let { calendar, review } = await look();
+    assert.deepEqual([calendar.invites, review.canEdit, review.canInvite], ['none', false, false]);
+    assert.equal(engine.publicAccount(engine.account('c1')).caldavInvites, null);
+
+    const saved = await engine.updateAccount('c1', { caldavInvites: 'provider' });
+    assert.equal(saved.caldavInvites, 'provider');
+    assert.equal(changed, 1);
+    ({ calendar, review } = await look());
+    assert.deepEqual([calendar.invites, review.canEdit, review.canInvite], ['provider', true, 'edit']);
+    // Kept with the account; the same choice again changes nothing.
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'accounts.json'), 'utf8'))[0].caldavInvites, 'provider');
+    await engine.updateAccount('c1', { caldavInvites: 'provider' });
+    assert.equal(changed, 1);
+
+    // Back to what the server says; anything else counts as that too.
+    await engine.updateAccount('c1', { caldavInvites: 'sometimes' });
+    assert.equal(engine.account('c1').caldavInvites, undefined);
+    assert.equal(changed, 2);
+    ({ calendar } = await look());
+    assert.equal(calendar.invites, 'none');
   });
 });

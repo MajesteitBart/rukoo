@@ -992,6 +992,34 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       if (!a) return back();
       title = t('settings.account.server');
       // ---- cal:A3 server ----
+      // Who emails the invitations when the user adds guests on this calendar server. Guests can only be added where
+      // the server does; servers say so in their DAV header, and some get it wrong. Shown once a server is set.
+      const invites = a.caldavInvites || '';
+      const invitesHtml =
+        a.auth !== 'oauth2' && a.caldav
+          ? `<label data-i18n="settings.server.invites">${esc(t('settings.server.invites'))}<select name="caldavInvites">${[
+              ['', 'settings.server.invitesAuto'],
+              ['provider', 'settings.server.invitesProvider'],
+              ['none', 'settings.server.invitesNone']
+            ]
+              .map(([value, key]) => `<option value="${value}" data-i18n="${key}"${value === invites ? ' selected' : ''}>${esc(t(key))}</option>`)
+              .join('')}</select>
+          <span class="field-help" data-i18n="settings.server.invitesHelp">${esc(t('settings.server.invitesHelp'))}</span></label>`
+          : '';
+      // What the server itself says, from the calendars Rukoo read last, goes with the first option.
+      if (invitesHtml && !invites) {
+        api('calendarList')
+          .then((list) => {
+            const acc = (list || []).find((x) => x.id === a.id);
+            const said = acc && acc.calendars.length ? acc.calendars[0].invites : null;
+            const option = page.querySelector('select[name="caldavInvites"] option[value=""]');
+            if (!option || !said) return;
+            const key = said === 'provider' ? 'settings.server.invitesAutoProvider' : 'settings.server.invitesAutoNone';
+            option.dataset.i18n = key;
+            option.textContent = t(key);
+          })
+          .catch(() => {});
+      }
       // ---- /cal:A3 server ----
       body = `<div class="card"><form class="form" data-form="server">
         <label data-i18n="setup.fields.username">${esc(t('setup.fields.username'))}<input type="text" name="user" value="${esc(a.imap.user || a.email)}"/></label>
@@ -1008,6 +1036,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
             : `<label data-i18n="settings.server.caldav">${esc(t('settings.server.caldav'))}<input type="text" name="caldavUrl" value="${esc(a.caldav ? a.caldav.url : '')}" spellcheck="false" data-i18n-placeholder="settings.server.caldavPlaceholder" placeholder="${esc(t('settings.server.caldavPlaceholder'))}"/>
           <span class="field-help" data-i18n="settings.server.caldavHelp">${esc(t('settings.server.caldavHelp'))}</span></label>`
         }
+        ${invitesHtml}
         <div class="error" data-error></div>
         <div><button class="btn" type="submit" data-i18n="common.actions.save">${esc(t('common.actions.save'))}</button></div>
       </form></div>`;
@@ -1111,6 +1140,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const patch = password || !acc || !same(imap, acc.imap) || !same(smtp, acc.smtp) ? { imap, smtp, password } : {};
       if (f.has('caldavUrl')) patch.caldav = { url: f.get('caldavUrl').trim() };
       // ---- cal:A3 submit ----
+      if (f.has('caldavInvites')) patch.caldavInvites = f.get('caldavInvites') || null;
       // ---- /cal:A3 submit ----
       await api('updateAccount', params.id, patch);
       toast(t('settings.server.saved'));
