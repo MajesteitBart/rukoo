@@ -2,6 +2,7 @@ package nl.bvdm.rukoo.account
 
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
@@ -39,9 +40,13 @@ class AccountError(val code: String, val status: Int = 0, message: String? = nul
     }
 }
 
-/** One call to an account server: the JSON it answered (null for an empty body), or an [AccountError]. */
+/**
+ * One call to an account server: the JSON it answered (null for an empty body), or an [AccountError]. Each byte of the
+ * answer's body is added to [meter], so a caller can bound a run of calls by what they downloaded rather than by the
+ * parts it reads.
+ */
 fun interface AccountHttp {
-    suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?): JsonElement?
+    suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?, meter: AtomicLong?): JsonElement?
 }
 
 /**
@@ -69,7 +74,10 @@ object AccountServers {
     }
 }
 
-/** The account server over OkHttp: 20 seconds per call, no redirects, at most 32 MiB of answer. */
+/**
+ * The account server over OkHttp: 20-second connect, read and write timeouts and a 40-second call timeout, no
+ * redirects, no compression, at most 32 MiB of response body. HTTP framing isn't counted or capped (see #123).
+ */
 class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
     private val client = base.newBuilder()
         .connectTimeout(TIMEOUT_S, TimeUnit.SECONDS)
@@ -82,15 +90,19 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
         .build()
 
     // The answer is read off the main thread: OkHttp hands over the headers, and the body still has to come.
-    override suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?): JsonElement? =
-        withContext(Dispatchers.IO) { send(server, method, path, body, token) }
+    override suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?, meter: AtomicLong?): JsonElement? =
+        withContext(Dispatchers.IO) { send(server, method, path, body, token, meter) }
 
-    private suspend fun send(server: String, method: String, path: String, body: JsonElement?, token: String?): JsonElement? {
+    private suspend fun send(server: String, method: String, path: String, body: JsonElement?, token: String?, meter: AtomicLong?): JsonElement? {
         val url = (server + path).toHttpUrlOrNull() ?: throw AccountError("no_server")
         // OkHttp wants a body on every POST; logout has nothing to say, so it sends an empty one.
         val payload = body?.let { RukooJson.encodeToString(JsonElement.serializer(), it).toRequestBody(JSON) }
             ?: if (method == "POST") ByteArray(0).toRequestBody(JSON) else null
         val request = Request.Builder().url(url).header("Accept", "application/json")
+            // Answers come as they were sent, so the meter counts the body that was downloaded. Without this header OkHttp
+            // asks for gzip and unpacks it first, and a few bytes of JSON can come with megabytes of padding in a gzip
+            // header.
+            .header("Accept-Encoding", "identity")
             .apply { if (token != null) header("Authorization", "Bearer $token") }
             .method(method, payload)
             .build()
@@ -100,12 +112,18 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
             throw AccountError("network", 0, e.message)
         }
         response.use { res ->
+            // An answer compressed anyway can't be read, so it isn't downloaded either.
+            val encodings = res.headers("Content-Encoding").flatMap { it.split(',') }.map { it.trim() }
+            if (encodings.any { it.isNotEmpty() && !it.equals("identity", ignoreCase = true) }) throw AccountError("server", res.code)
             val text = try {
                 val source = res.body?.source()
                 if (source == null) {
                     ""
                 } else {
                     source.request(MAX_BYTES + 1)
+                    // The body only: OkHttp doesn't report the bytes of HTTP framing around it, such as chunk extensions,
+                    // which desktop counts. Those are bounded by the call timeout, not by bytes.
+                    meter?.addAndGet(source.buffer.size)
                     if (source.buffer.size > MAX_BYTES) throw AccountError("too_large", res.code)
                     source.buffer.readUtf8()
                 }

@@ -5,6 +5,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -170,7 +171,8 @@ class AccountService(
 
     /**
      * [session]: the one a signed-in call is made for. Its answer may come after this phone signed out or into
-     * another account; a 401 then says nothing about the session there is now.
+     * another account; a 401 then says nothing about the session there is now. [meter]: what the answer's size is
+     * added to.
      */
     private suspend fun call(
         method: String,
@@ -179,10 +181,11 @@ class AccountService(
         auth: Boolean = false,
         server: String = this.server,
         session: Session? = synchronized(lock) { this.session },
+        meter: AtomicLong? = null,
     ): JsonElement? {
         if (server.isEmpty()) throw fail("no_server")
         try {
-            return http.request(server, method, route, body, if (auth) session?.token else null)
+            return http.request(server, method, route, body, if (auth) session?.token else null, meter)
         } catch (e: AccountError) {
             // The session ended elsewhere: this phone was removed or the password changed on another device.
             if (auth && e.status == 401) {
@@ -674,14 +677,15 @@ class AccountService(
         var restarted = false
         var more = true
         var pages = 0
-        var data = 0L
+        val meter = AtomicLong()
         while (more) {
             if (session == null || !synchronized(lock) { this.session === session }) return
-            // A server that keeps answering more can't keep the phone busy: what is left comes with the next sync.
-            if (pages >= PULL_PAGES || data >= PULL_DATA) return
+            // A server that keeps answering more can't keep the phone busy: what is left comes with the next sync. Every
+            // byte of an answer's body counts, so padding a page with fields Rukoo ignores doesn't get past the limit.
+            if (pages >= PULL_PAGES || meter.get() >= PULL_DATA) return
             pages++
             val since = synchronized(lock) { state.cursor }
-            val res = call("GET", "/v1/records?since=$since&limit=$PULL_LIMIT", auth = true, session = session) as? JsonObject
+            val res = call("GET", "/v1/records?since=$since&limit=$PULL_LIMIT", auth = true, session = session, meter = meter) as? JsonObject
             more = synchronized(lock) {
                 if (this.session !== session) return
                 val records = (res?.get("records") as? JsonArray).orEmpty()
@@ -695,21 +699,24 @@ class AccountService(
                     return@synchronized true
                 }
                 // A page comes after since, in order, and not past the server's newest change; anything else is refused
-                // whole, so a false sequence number can't move the cursor past records this phone hasn't seen.
+                // whole, so a false sequence number can't move the cursor past records this phone hasn't seen. So is a
+                // page with an id no device could have made, such as a long tombstone id padding the answer.
                 if (records.size > PULL_LIMIT) throw fail("server")
                 var last = since
                 for (r in records) {
-                    val seq = safeInteger((r as? JsonObject)?.get("seq"))
+                    val o = r as? JsonObject
+                    val seq = safeInteger(o?.get("seq"))
                     if (seq == null || seq <= last || (top != null && seq > top)) throw fail("server")
+                    val id = (o?.get("id") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    if (id == null || !RECORD_ID.matches(id)) throw fail("server")
                     last = seq
                 }
                 var cursor = state.cursor
                 for (r in records) {
                     val o = r as JsonObject
-                    val id = (o["id"] as? JsonPrimitive)?.content ?: continue
+                    val id = (o["id"] as JsonPrimitive).content
                     val seq = safeInteger(o["seq"]) ?: continue
                     val sealed = (o["data"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-                    data += sealed?.length ?: 0
                     applyRemote(session, id, seq, sealed)?.let { touched += it }
                     if (seq > cursor) cursor = seq
                 }
@@ -881,10 +888,14 @@ class AccountService(
         private const val PULL_LIMIT = 1000
         private const val PUSH_BATCH = 500
 
-        // The most one pull takes: an account's records and tombstones a page of 1000 at a time, or 256 MiB of sealed
-        // records (as base64url text), well over what an account may hold (server/PROTOCOL.md).
+        // When one pull stops asking for more: after 500 pages of 1000 records and tombstones, or once 256 MiB of answer
+        // bodies counted whole, with the fields Rukoo ignores, have come in. The meter is checked between pages, so the
+        // page that crosses it is the last. A full account is about 170 MiB of them (server/PROTOCOL.md).
         internal const val PULL_PAGES = 500
-        private const val PULL_DATA = 256L * 1024 * 1024
+        internal const val PULL_DATA = 256L * 1024 * 1024
+
+        // A record id is an HMAC-SHA256 in base64url (server/PROTOCOL.md, Records).
+        private val RECORD_ID = Regex("[A-Za-z0-9_-]{43}")
 
         // The most a record may take on the server, once sealed (server/PROTOCOL.md).
         private const val RECORD_BYTES = 16384

@@ -122,6 +122,29 @@ test('Jev gets one choice question with the categories as options', async () => 
   assert.equal(body.state.gmail_tab, 'updates');
 });
 
+test("Jev's model name is kept only when it looks like one, since every classification stores it", async () => {
+  const answering = (model) => (url, opts, cb) => {
+    const req = new EventEmitter();
+    req.write = () => {};
+    req.end = () => {
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      cb(res);
+      res.emit('data', Buffer.from(JSON.stringify({ ...(model === undefined ? {} : { model }), answers: { category: { choice: 'a', confidence: 0.9 } } })));
+      res.emit('end');
+    };
+    return req;
+  };
+  const model = async (m) => (await jev.classify('K', {}, [{ id: 'a', name: 'A' }], { request: answering(m) })).model;
+  assert.equal(await model('jev-1.14.0'), 'jev-1.14.0');
+  assert.equal(await model('jev-latest'), 'jev-latest');
+  assert.equal(await model('j'.repeat(40)), 'j'.repeat(40));
+  // Most of a megabyte, one character too long, other characters, empty, not a string, missing.
+  for (const odd of ['j'.repeat(900000), 'j'.repeat(41), 'Jev-1.13.0', 'jev 1.13', 'jev_1.13', 'jev/1.13', 'jev-1.13\n', '', 42, ['jev'], null, undefined]) {
+    assert.equal(await model(odd), jev.MODEL, `model ${JSON.stringify(odd)?.slice(0, 40)}`);
+  }
+});
+
 test('a Jev answer cut off halfway is a network error, not a wait forever', async (t) => {
   const http = require('http');
   const server = http.createServer((req, res) => {

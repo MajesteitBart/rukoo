@@ -30,30 +30,35 @@ function serverUrl(text) {
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
-function request(server, method, path, { body, token } = {}) {
+// meter: { bytes }, which each byte read for the answer is added to, so a caller can bound a run of requests by what
+// they downloaded rather than by the parts it reads.
+function request(server, method, path, { body, token, meter } = {}) {
   const url = new URL(server + path);
   const lib = url.protocol === 'https:' ? https : http;
   const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
-  const headers = { accept: 'application/json' };
+  // Answers come as they were sent, so the meter counts what was downloaded. Node never unpacks one; Android's OkHttp
+  // would, so both apps ask for none.
+  const headers = { accept: 'application/json', 'accept-encoding': 'identity' };
   if (payload) {
     headers['content-type'] = 'application/json';
     headers['content-length'] = payload.length;
   }
   if (token) headers.authorization = `Bearer ${token}`;
   return new Promise((resolve, reject) => {
+    let status = 0;
     // A connection of its own for each request. Kept-alive connections race with a server that closes them when idle:
     // a request sent on one just as the server lets go of it fails, and Argon2 between two requests takes about as
     // long as a server's idle timeout on a slow computer. A sync makes only a few requests.
     const req = lib.request(url, { method, headers, timeout: TIMEOUT, agent: false }, (res) => {
+      status = res.statusCode;
+      // An answer compressed anyway can't be read, so it isn't downloaded either.
+      const encodings = String(res.headers['content-encoding'] || '').split(',').map((e) => e.trim().toLowerCase());
+      if (encodings.some((e) => e && e !== 'identity')) {
+        req.destroy();
+        return reject(new AccountError('server', res.statusCode));
+      }
       const chunks = [];
-      let size = 0;
-      res.on('data', (chunk) => {
-        size += chunk.length;
-        if (size > MAX_BYTES) {
-          req.destroy();
-          reject(new AccountError('too_large', res.statusCode));
-        } else chunks.push(chunk);
-      });
+      res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8');
         let json = null;
@@ -67,6 +72,19 @@ function request(server, method, path, { body, token } = {}) {
       });
       res.on('error', (err) => reject(new AccountError('network', 0, err.message)));
     });
+    // The answer counts as it comes off the connection, which is this request's own, so its headers and chunk framing
+    // count too: Node hands over only the body, and a server can put 16 KiB of chunk extensions before each byte of it.
+    let size = 0;
+    req.on('socket', (socket) =>
+      socket.on('data', (data) => {
+        size += data.length;
+        if (meter) meter.bytes += data.length;
+        if (size > MAX_BYTES) {
+          req.destroy();
+          reject(new AccountError('too_large', status));
+        }
+      })
+    );
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', (err) => reject(new AccountError('network', 0, err.message)));
     if (payload) req.write(payload);

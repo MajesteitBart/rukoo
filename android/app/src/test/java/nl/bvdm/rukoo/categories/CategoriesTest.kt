@@ -82,7 +82,7 @@ class CategoriesTest {
     private fun setup(messages: List<MessageSummary>, jev: JevApi = NoJev, sent: List<MessageSummary> = emptyList(), saveAfterMs: Long = 1000): Setup {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         val dir = tmp.newFolder()
-        val account = AccountService(dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _ -> null }, scope, pushAfterMs = 60_000, saveAfterMs = saveAfterMs)
+        val account = AccountService(dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _, _ -> null }, scope, pushAfterMs = 60_000, saveAfterMs = saveAfterMs)
         val mail = FakeMail(messages, sent)
         // A long wait before sorting by itself, so each test sorts when it says so.
         val cats = Categories(account, mail, PlainSecrets, dir, jev, EnglishPresets, scope, sortAfterMs = 60_000)
@@ -575,7 +575,7 @@ class CategoriesTest {
         assertFalse(java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
         // Android stops the app now: a new account service reads what is on disk.
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
-        val account = AccountService(s.dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _ -> null }, scope, pushAfterMs = 60_000)
+        val account = AccountService(s.dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _, _ -> null }, scope, pushAfterMs = 60_000)
         closers += { account.close() }
         assertEquals("money", (account.get("classification", s.cats.key(s.acc, one)) as? JsonObject)?.get("category")?.jsonPrimitive?.content)
     }
@@ -710,7 +710,7 @@ class CategoriesTest {
     fun `new mail is sorted shortly after the mail changes`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         val dir = tmp.newFolder()
-        val account = AccountService(dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _ -> null }, scope)
+        val account = AccountService(dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _, _ -> null }, scope)
         val mail = FakeMail(inbox())
         val cats = Categories(account, mail, PlainSecrets, dir, NoJev, EnglishPresets, scope, sortAfterMs = 20)
         closers += { cats.close() }

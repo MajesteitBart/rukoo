@@ -122,6 +122,12 @@ class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi 
 
         /** The most of an answer that is read. */
         const val MAX_ANSWER = 1024L * 1024
+
+        /**
+         * What a model name the answer gives may look like. It is stored with every classification, so anything else,
+         * such as most of a megabyte from a compromised endpoint, is stored as [MODEL] instead.
+         */
+        private val MODEL_NAME = Regex("[a-z0-9.-]{1,40}")
         private val JSON = "application/json".toMediaType()
         private val MARKS = Regex("[\\u0300-\\u036f]")
         private val NOT_WORD = Regex("[^a-z0-9]+")
@@ -186,7 +192,7 @@ class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi 
             val choice = (answer?.get("choice") as? JsonPrimitive)?.content
             val chosen = names.entries.firstOrNull { it.value == choice } ?: throw JevError("answer")
             val confidence = (answer?.get("confidence") as? JsonPrimitive)?.doubleOrNull ?: 0.0
-            val model = (res["model"] as? JsonPrimitive)?.content ?: MODEL
+            val model = (res["model"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { MODEL_NAME.matches(it) } ?: MODEL
             return JevAnswer(chosen.key, confidence, model)
         }
     }
