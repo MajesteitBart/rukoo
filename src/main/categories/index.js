@@ -223,7 +223,8 @@ class Categories extends EventEmitter {
   // The category the rules give an email, among the ones that exist: { category, strength }.
   byRules(acc, m, ids, unsure) {
     const known = this.writtenTo().has(lower(m.from && m.from.address));
-    const { preset, strength } = presetFor(m, { own: this.own(acc), vip: this.engine.isVip(m.from), known });
+    const order = this.list().map((c) => c.id);
+    const { preset, strength } = presetFor(m, { own: this.own(acc), vip: this.engine.isVip(m.from), known }, order);
     return ids.has(preset) ? { category: preset, strength } : { category: unsure, strength: 'weak' };
   }
 
@@ -355,6 +356,9 @@ class Categories extends EventEmitter {
     const forJev = [];
     let sorted = 0;
     for (const item of this.unsorted({ again })) {
+      // Cached before Rukoo kept the mail-kind headers: the next sync brings them, and until then the rules would
+      // guess with less than they will have. The rules still show a category for it meanwhile.
+      if (!item.m.signals) continue;
       const rule = this.byRules(item.acc, item.m, ids, unsure);
       if (rule.strength === 'strong' || !wanted) {
         if (store(item.key, { category: rule.category, source: 'rules', at: Date.now() }) !== false) sorted++;

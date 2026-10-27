@@ -57,6 +57,28 @@ test('the rules place mail by what it says about itself', () => {
   assert.equal(pick(msg({ name: 'Vandebron', address: 'support@vandebron.nl' }), { known: true }).preset, 'needs-you');
 });
 
+test('when the rules find several categories, the one higher in the person\'s order wins', () => {
+  const m = { from: { name: 'Shop', address: 'hi@shop.example' }, to: [], subject: 'Your invoice', signals: { campaign: true } };
+  assert.equal(presetFor(m, {}).preset, 'money', 'Money is above Promotions by default');
+  assert.equal(presetFor(m, {}, ['promotions', 'money']).preset, 'promotions');
+  const alert = { from: { name: 'Bank', address: 'noreply@bank.example' }, to: [], subject: 'Payment received' };
+  assert.equal(presetFor(alert, {}).preset, 'money');
+  assert.equal(presetFor(alert, {}, ['needs-you', 'updates', 'money']).preset, 'updates');
+});
+
+test('mail cached before its headers were fetched waits to be sorted', async (t) => {
+  const msgs = inbox();
+  delete msgs[0].signals;
+  const { cats, acc, account } = setup(t, msgs);
+  cats.setEnabled(true);
+  await cats.sort();
+  assert.equal(account.get('classification', cats.key(acc, msgs[0])), undefined);
+  assert.equal(cats.of(acc, msgs[0]), 'needs-you', 'the rules show a category meanwhile');
+  msgs[0].signals = { campaign: true };
+  await cats.sort();
+  assert.equal(account.get('classification', cats.key(acc, msgs[0])).category, 'promotions');
+});
+
 test('a person is a name of two words that matches the address', () => {
   assert.equal(looksLikePerson({ name: 'Sanne de Vries', address: 'sanne.devries@x.example' }), true);
   assert.equal(looksLikePerson({ name: 'Joris Bakker', address: 'jbakker@x.example' }), true);
@@ -170,9 +192,9 @@ function setup(t, messages, { jevImpl, sent } = {}) {
 }
 
 const inbox = () => [
-  { uid: 1, messageId: '<1@x>', from: { name: 'Sanne de Vries', address: 'sanne@studio.example' }, to: [{ address: 'me@work.example' }], subject: 'Can you sign this?', date: 3 },
+  { uid: 1, messageId: '<1@x>', from: { name: 'Sanne de Vries', address: 'sanne@studio.example' }, to: [{ address: 'me@work.example' }], subject: 'Can you sign this?', date: 3, signals: {} },
   { uid: 2, messageId: '<2@x>', from: { name: 'Shop', address: 'news@shop.example' }, to: [{ address: 'me@work.example' }], subject: 'Sale', date: 2, signals: { list: true } },
-  { uid: 3, messageId: '<3@x>', from: { name: 'App', address: 'noreply@app.example' }, to: [{ address: 'me@work.example' }], subject: 'New login', date: 1 }
+  { uid: 3, messageId: '<3@x>', from: { name: 'App', address: 'noreply@app.example' }, to: [{ address: 'me@work.example' }], subject: 'New login', date: 1, signals: {} }
 ];
 
 test('categories start off, and turning them on brings the five in order', (t) => {
@@ -331,7 +353,7 @@ test('turning Jev off stops the emails still queued for it', async (t) => {
       return { category: list[0].id, confidence: 0.9, model: 'jev-test' };
     }
   };
-  const msgs = Array.from({ length: 8 }, (_, i) => ({ uid: 10 + i, messageId: `<q${i}@x>`, from: { name: 'Person Name', address: `person${i}@studio.example` }, to: [], cc: [{ address: 'me@work.example' }], subject: `Note ${i}`, date: i }));
+  const msgs = Array.from({ length: 8 }, (_, i) => ({ uid: 10 + i, messageId: `<q${i}@x>`, from: { name: 'Person Name', address: `person${i}@studio.example` }, to: [], cc: [{ address: 'me@work.example' }], subject: `Note ${i}`, date: i, signals: {} }));
   ({ cats } = setup(t, msgs, { jevImpl: fake }));
   cats.setEnabled(true);
   cats.setJev({ key: 'KEY', on: true });
@@ -437,7 +459,7 @@ test('sorting again while a sort runs follows it instead of getting lost', async
   await cats.sort();
   assert.equal(stored(3).source, 'rules');
   // A new email starts an ordinary sort with Jev; "Sort again" comes while it waits on Jev.
-  msgs.push({ uid: 7, messageId: '<7@x>', from: { name: 'Person Name', address: 'person@studio.example' }, to: [], cc: [{ address: 'me@work.example' }], subject: 'FYI', date: 7 });
+  msgs.push({ uid: 7, messageId: '<7@x>', from: { name: 'Person Name', address: 'person@studio.example' }, to: [], cc: [{ address: 'me@work.example' }], subject: 'FYI', date: 7, signals: {} });
   cats.setJev({ key: 'KEY', on: true });
   const running = cats.sort();
   await new Promise((r) => setImmediate(r));

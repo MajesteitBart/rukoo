@@ -38,28 +38,40 @@ function toMe(m, own) {
   return (m.to || []).some((a) => mine.includes(String(a.address || '').toLowerCase()));
 }
 
-// The preset a message fits, and how sure the rules are: 'strong' when the mail says so itself, 'weak' when it is a
-// guess Jev should make instead. own: the account's addresses; vip: whether the sender is a VIP; known: whether the
-// sender is someone the person has written to.
-function presetFor(m, { own = [], vip = false, known = false } = {}) {
+// Every preset a message fits, each with how sure the rules are: 'strong' when the mail says so itself, 'weak' when
+// it is a guess Jev should make instead. own: the account's addresses; vip: whether the sender is a VIP; known:
+// whether the sender is someone the person has written to. Never empty.
+function presetsFor(m, { own = [], vip = false, known = false } = {}) {
   const s = m.signals || {};
   const tab = m.gmailTab;
   const from = m.from || {};
   const local = localPart(from.address);
   const personal = (strength) => ({ preset: toMe(m, own) ? 'needs-you' : 'to-read', strength });
-  if (vip) return { preset: 'needs-you', strength: 'strong' };
-  if (s.campaign || tab === 'promotions' || MARKETING.test(local)) return { preset: 'promotions', strength: 'strong' };
-  if (MONEY.test(m.subject || '')) return { preset: 'money', strength: 'weak' };
-  if (isMachine(from) || s.auto) return { preset: 'updates', strength: 'strong' };
-  if (tab === 'social' || tab === 'updates' || tab === 'forums') return { preset: 'updates', strength: 'weak' };
+  const out = [];
+  if (vip) out.push({ preset: 'needs-you', strength: 'strong' });
+  if (s.campaign || tab === 'promotions' || MARKETING.test(local)) out.push({ preset: 'promotions', strength: 'strong' });
+  if (MONEY.test(m.subject || '')) out.push({ preset: 'money', strength: 'weak' });
+  if (isMachine(from) || s.auto) out.push({ preset: 'updates', strength: 'strong' });
+  else if (tab === 'social' || tab === 'updates' || tab === 'forums') out.push({ preset: 'updates', strength: 'weak' });
   // Mail with an unsubscribe link: a newsletter, unless it comes from someone you write to (a mailing list).
-  if (s.list) return known ? personal('weak') : { preset: 'promotions', strength: 'weak' };
-  if (s.bulk) return { preset: 'updates', strength: 'weak' };
+  if (s.list) out.push(known ? personal('weak') : { preset: 'promotions', strength: 'weak' });
+  else if (s.bulk) out.push({ preset: 'updates', strength: 'weak' });
+  if (out.length) return out;
   // A person: someone you write to, a colleague, or a name that matches the address.
   const colleague = own.some((a) => domainOf(a).toLowerCase() === domainOf(from.address).toLowerCase());
-  if (known || colleague || looksLikePerson(from) || !siteOf(from.address)) return personal('weak');
+  if (known || colleague || looksLikePerson(from) || !siteOf(from.address)) return [personal('weak')];
   // Anything else from a company's own domain is usually a message from its systems.
-  return { preset: 'updates', strength: 'weak' };
+  return [{ preset: 'updates', strength: 'weak' }];
 }
 
-module.exports = { PRESETS, PRESET_COLORS, presetFor, isMachine, looksLikePerson };
+// The preset that wins when a message fits several: the one highest in order, the person's own order of the
+// categories (Settings), so "the one higher in the list wins" holds for the rules too.
+function presetFor(m, opts = {}, order = PRESETS) {
+  const rank = (preset) => {
+    const i = order.indexOf(preset);
+    return i < 0 ? order.length + PRESETS.indexOf(preset) : i;
+  };
+  return presetsFor(m, opts).sort((a, b) => rank(a.preset) - rank(b.preset))[0];
+}
+
+module.exports = { PRESETS, PRESET_COLORS, presetFor, presetsFor, isMachine, looksLikePerson };
