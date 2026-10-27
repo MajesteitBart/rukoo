@@ -3442,6 +3442,9 @@ body.compose-window {
   z-index: 50;
 }
 
+/* ---------- cal:B3 composer ---------- */
+/* ---------- /cal:B3 composer ---------- */
+
 /* ---------- chat panel ---------- */
 
 /* Docked beside the workspace in wide windows, on the canvas like the folders, so the list and the email
@@ -4044,6 +4047,9 @@ body.compose-window {
   color: var(--text);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
+
+/* ---------- cal:B3 settings ---------- */
+/* ---------- /cal:B3 settings ---------- */
 
 /* ---------- calendar ---------- */
 
@@ -4873,6 +4879,15 @@ body.calendar-mode .titlebar-search {
     animation: none;
   }
 }
+
+/* ---------- cal:B1 ---------- */
+/* ---------- /cal:B1 ---------- */
+
+/* ---------- cal:B2 ---------- */
+/* ---------- /cal:B2 ---------- */
+
+/* ---------- cal:B3 ---------- */
+/* ---------- /cal:B3 ---------- */
 
 /* ---------- signature ---------- */
 

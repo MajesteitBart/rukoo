@@ -40,6 +40,10 @@ const { Categories } = require('./categories');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
+// ---- cal:A2 requires ----
+// ---- /cal:A2 requires ----
+// ---- cal:A4 requires ----
+// ---- /cal:A4 requires ----
 
 // Windows takes the taskbar icon and the handler for notification clicks from the Start menu shortcut with this ID,
 // and Electron writes such a shortcut the first time it shows a notification. A run from a checkout gets its own ID,
@@ -101,6 +105,11 @@ let hub = null;
 // Holds the agent events the chat panel must not miss until it listens; see agents/gate.js.
 let agentGate = null;
 // ---- /agents ----
+// ---- cal:A4 state ----
+// The booking service and the reminder runner. Null until cal:A4 construct makes them, so calendarFree can already ask.
+let booking = null;
+let reminders = null;
+// ---- /cal:A4 state ----
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -218,6 +227,9 @@ function notify(messages) {
     new Notification({ title: 'Rukoo Mail', body: t('native.notifications.newCount', { count: messages.length }) }).show();
   }
 }
+
+// ---- cal:A4 notifications ----
+// ---- /cal:A4 notifications ----
 
 function showWindow() {
   if (!win || win.isDestroyed()) {
@@ -372,6 +384,8 @@ function endSession() {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
+  // ---- cal:A4 session end ----
+  // ---- /cal:A4 session end ----
   destroyTray();
   // ---- agents ----
   // dispose() saves the chats before its first await; see will-quit.
@@ -499,6 +513,7 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// ---- cal:A2 ipc helpers ----
 function calendarRange(range) {
   const { start, end } = plainObject(range);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 400 * 86400000) throw new Error('invalid');
@@ -530,10 +545,13 @@ function calendarEtag(opts) {
   const etag = plainObject(opts).etag;
   return typeof etag === 'string' && etag && etag.length <= 200 ? etag : null;
 }
+// ---- /cal:A2 ipc helpers ----
 
 // Every renderer call goes through this table; nothing else is reachable from the UI.
 const api = {
+  // ---- cal:A4 state api ----
   state: () => engine.state(),
+  // ---- /cal:A4 state api ----
   list: (opts) => engine.listMessages(opts),
   counts: (scope) => engine.counts(scope),
   contacts: () => engine.contacts(),
@@ -748,6 +766,7 @@ const api = {
     calendars.reconnected(accountId);
     return acc;
   },
+  // ---- cal:A2 ipc ----
   calendarView: (range) => calendars.view(calendarRange(range)),
   calendarSync: (accountId) => (accountId ? calendars.syncAccount(String(accountId)) : calendars.syncAll()).then(() => true),
   calendarEvent: (id) => calendars.event(calendarEventId(id)),
@@ -756,6 +775,7 @@ const api = {
   calendarDelete: (id, opts) =>
     calendars.remove(calendarEventId(id), { notify: plainObject(opts).notify === true, series: plainObject(opts).series === true, etag: calendarEtag(opts) }),
   calendarRespond: (id, response, opts) => calendars.respond(calendarEventId(id), String(response), { series: plainObject(opts).series === true }),
+  // ---- /cal:A2 ipc ----
   googleCancel: () => google.cancel(),
   fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),
   googleImportClient: async () => {
@@ -813,6 +833,8 @@ const api = {
     return categories.setJev({ on: typeof i.on === 'boolean' ? i.on : undefined, key: i.key === null ? null : accountText(i.key, 500) || undefined });
   },
   categoriesSortAgain: () => categories.sortAgain(),
+  // ---- cal:A4 ipc ----
+  // ---- /cal:A4 ipc ----
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
       title: t('settings.rukoo.export'),
@@ -990,6 +1012,7 @@ const windowApi = {
   }
 };
 
+// ---- cal:A4 window codes ----
 // Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
 // setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
 // page. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
@@ -1002,6 +1025,7 @@ function windowError(err) {
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
 }
+// ---- /cal:A4 window codes ----
 
 ipcMain.handle('mail:call', async (event, method, args) => {
   const own = Object.prototype.hasOwnProperty;
@@ -1118,9 +1142,11 @@ app.whenReady().then(() => {
     else refreshTray();
   });
   engine.on('new-mail', notify);
+  // ---- cal:A2 construct ----
   calendars = new Calendars({ engine });
   if (process.env.SEM_HIDDEN) global.__semCalendars = calendars;
   calendars.on('updated', () => send('calendar'));
+  // ---- /cal:A2 construct ----
   // A fork points the app at its own account server with package.json's rukoo.accountServer; tests and development
   // use RUKOO_ACCOUNT_SERVER.
   account = new AccountService({
@@ -1134,6 +1160,8 @@ app.whenReady().then(() => {
   categories = new Categories({ engine, account, secrets, dataDir: path.join(app.getPath('userData'), 'data') }).init();
   if (process.env.SEM_HIDDEN) global.__semCategories = categories;
   categories.on('changed', () => broadcast('categories', categories.state()));
+  // ---- cal:A4 construct ----
+  // ---- /cal:A4 construct ----
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({
@@ -1141,6 +1169,8 @@ app.whenReady().then(() => {
     dataDir: path.join(app.getPath('userData'), 'data'),
     secrets,
     deps: {
+      // ---- cal:B4 deps ----
+      // ---- /cal:B4 deps ----
       unsubscribe: (id) => api.unsubscribe(id),
       // A mailto-only unsubscribe opens a filled-in compose window; the user sends it.
       openMailto: (url) => openUrl(url),
@@ -1190,6 +1220,8 @@ app.on('before-quit', () => {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
+  // ---- cal:A4 quit ----
+  // ---- /cal:A4 quit ----
 });
 
 // Every window has closed, so the quit goes through.

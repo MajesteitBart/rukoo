@@ -17,6 +17,8 @@ import { signatureHtml, accountSignatureHtml, usesGeneralSignature } from './com
 import { editSignature, signaturePreview } from './signature.js';
 import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
 import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
+// ---- cal:B3 imports ----
+// ---- /cal:B3 imports ----
 
 const THEMES = [
   { value: 'system', get label() { return t('settings.theme.system'); } },
@@ -225,6 +227,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (type === 'zoom') showZoom(payload);
     if (type === 'account') account.onStatus(payload);
     if (type === 'categories') categoriesPage.onState(payload);
+    // ---- cal:B3 events ----
+    // ---- /cal:B3 events ----
   });
 
   const close = () => {
@@ -268,6 +272,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   // Inbox categories (categories-settings.js); the account's privacy page says when Jev is on.
   const categoriesPage = categoryPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
   const account = accountPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog, jevOn: () => categoriesPage.jevOn() });
+  // ---- cal:B3 pages ----
+  // ---- /cal:B3 pages ----
 
   // A signature row: the signature as it will be sent, or None.
   const signatureRow = (html, action) =>
@@ -882,7 +888,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const [agents] = await Promise.all([
       view === 'main' || view === 'agents' || view === 'shortcuts' ? loadAgents() : agentState,
       view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
-      view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null
+      view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
+      // ---- cal:B3 prepare ----
+      // ---- /cal:B3 prepare ----
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -911,6 +919,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           </div>`;
         })
         .join('');
+      // ---- cal:B3 main rows ----
+      // ---- /cal:B3 main rows ----
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
@@ -958,6 +968,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const defaultRow = a.isDefault
         ? `<div class="row static" data-default-account><div class="text"><div class="title">${esc(t('settings.account.isDefault'))}</div><div class="desc">${esc(t('settings.account.makeDefaultHelp'))}</div></div></div>`
         : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' });
+      // ---- cal:B3 account rows ----
+      // ---- /cal:B3 account rows ----
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.account">${esc(t('settings.groups.account'))}</div>
         <div class="card">
@@ -979,6 +991,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const a = state.accounts.find((x) => x.id === params.id);
       if (!a) return back();
       title = t('settings.account.server');
+      // ---- cal:A3 server ----
+      // ---- /cal:A3 server ----
       body = `<div class="card"><form class="form" data-form="server">
         <label data-i18n="setup.fields.username">${esc(t('setup.fields.username'))}<input type="text" name="user" value="${esc(a.imap.user || a.email)}"/></label>
         ${a.auth === 'oauth2' ? '' : `<label data-i18n="setup.fields.password">${esc(t('setup.fields.password'))}<input type="password" name="password" data-i18n-placeholder="settings.server.passwordHint" placeholder="${esc(t('settings.server.passwordHint'))}"/></label>`}
@@ -1056,6 +1070,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
 
     if (ACCOUNT_VIEWS.includes(view)) ({ title, body } = account.view(view));
     if (CATEGORY_VIEWS.includes(view)) ({ title, body } = categoriesPage.view(view));
+    // ---- cal:B3 views ----
+    // ---- /cal:B3 views ----
 
     // A redraw, such as the one after each update from main, keeps the keyboard on the control with the same action.
     const focused = page.contains(document.activeElement) ? document.activeElement.dataset.a : null;
@@ -1067,12 +1083,16 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
     if (view === 'main') showMailto();
     if (view === 'main' || ACCOUNT_VIEWS.includes(view)) account.fill(view);
+    // ---- cal:B3 fill ----
+    // ---- /cal:B3 fill ----
   }
 
   page.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
     if (String(form.dataset.form || '').startsWith('rukoo')) return account.submit(form);
+    // ---- cal:B3 submit ----
+    // ---- /cal:B3 submit ----
     const f = new FormData(form);
     const err = form.querySelector('[data-error]');
     const btn = form.querySelector('button[type=submit]');
@@ -1090,6 +1110,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const same = (next, was) => Boolean(was) && next.host === was.host && next.port === Number(was.port) && next.secure === Boolean(was.secure) && next.user === (was.user || acc.email);
       const patch = password || !acc || !same(imap, acc.imap) || !same(smtp, acc.smtp) ? { imap, smtp, password } : {};
       if (f.has('caldavUrl')) patch.caldav = { url: f.get('caldavUrl').trim() };
+      // ---- cal:A3 submit ----
+      // ---- /cal:A3 submit ----
       await api('updateAccount', params.id, patch);
       toast(t('settings.server.saved'));
       back();
@@ -1113,6 +1135,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a === 'back') return back();
     if (a.startsWith('rukoo') && (await account.click(a))) return;
     if ((a === 'categories' || a.startsWith('cat-')) && (await categoriesPage.click(a))) return;
+    // ---- cal:B3 click ----
+    // ---- /cal:B3 click ----
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'mailto-use') {

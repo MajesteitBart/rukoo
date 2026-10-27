@@ -36,6 +36,8 @@ import { mountComposer } from './composer.js';
 import { openSettings, promptDialog } from './settings.js';
 import { openSetup } from './setup.js';
 import * as calendar from './calendar.js';
+// ---- cal:B3 imports ----
+// ---- /cal:B3 imports ----
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -626,6 +628,7 @@ function accountAvatar(acc) {
   return `<span class="avatar acc" style="--acc:${esc(acc.color || '#6f9cf2')}" aria-hidden="true">${esc((acc.name || acc.email).trim()[0] || '?').toUpperCase()}</span>`;
 }
 
+// ---- cal:B1 mode switch ----
 // Mail and Calendar at the top of the sidebar. The switch stays in place, so its thumb slides.
 function renderModeSwitch() {
   const box = $('.sidebar-mode');
@@ -638,6 +641,7 @@ function renderModeSwitch() {
   box.innerHTML = segmented({ name: 'mode', label: t('calendar.mode.label'), value: prefs.mode, options });
   box.querySelector('.segmented').dataset.language = S.data.settings.language;
 }
+// ---- /cal:B1 mode switch ----
 
 function setMode(mode) {
   if (mode === prefs.mode || !['mail', 'calendar'].includes(mode)) return;
@@ -2462,6 +2466,10 @@ function drawBadge(count) {
 window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
+  // ---- cal:B1 events ----
+  // ---- /cal:B1 events ----
+  // ---- cal:B3 events ----
+  // ---- /cal:B3 events ----
   if (type === 'categories') {
     S.categories = payload;
     renderList();
@@ -2547,4 +2555,6 @@ export const ctx = {
 };
 
 calendar.init(ctx);
+// ---- cal:B3 init ----
+// ---- /cal:B3 init ----
 refresh().catch((err) => toast(err.message, 6000));

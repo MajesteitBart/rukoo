@@ -268,6 +268,8 @@
   "agent.tools.running.generic.sendMessage": "Stuurt een bericht...",
   "agent.tools.running.generic.image": "Maakt een afbeelding...",
   "agent.tools.running.generic.vision": "Bekijkt een afbeelding...",
+  // ---- cal:B4 ----
+  // ---- /cal:B4 ----
   "calendar.title": "Agenda",
   "calendar.mode.label": "E-mail of agenda",
   "calendar.mode.mail": "E-mail",
@@ -357,6 +359,10 @@
   "calendar.dialog.noCalendar": "Kies een agenda.",
   "calendar.dialog.endBeforeStart": "De afspraak eindigt voordat hij begint.",
   "calendar.dialog.changedElsewhere": "Deze afspraak is elders gewijzigd terwijl je hem bewerkte. Het formulier toont nu de nieuwste versie met jouw wijzigingen; sla opnieuw op om ze te bewaren.",
+  // ---- cal:B1 ----
+  // ---- /cal:B1 ----
+  // ---- cal:B2 ----
+  // ---- /cal:B2 ----
   "common.actions.add": "Toevoegen",
   "common.actions.archive": "Archiveren",
   "common.actions.back": "Terug",
@@ -484,6 +490,8 @@
   "errors.calendar.signIn": "Google weigerde de aanmelding. Koppel de agenda opnieuw.",
   "errors.calendar.tooMany": "Deze agenda heeft in deze periode meer afspraken dan Rukoo kan ophalen.",
   "errors.calendar.unreachable": "Google Agenda is niet bereikbaar. Controleer je internetverbinding.",
+  // ---- cal:A2 ----
+  // ---- /cal:A2 ----
   "errors.caldav.signIn": "De agendaserver weigerde de gebruikersnaam of het wachtwoord. Controleer ze bij Serverinstellingen.",
   "errors.caldav.setupSignIn": "De agendaserver weigerde de gebruikersnaam of het wachtwoord. Controleer ze, of laat de agendaserver leeg om het account zonder agenda toe te voegen.",
   "errors.caldav.unreachable": "De agendaserver is niet bereikbaar. Controleer het adres en je internetverbinding.",
@@ -496,6 +504,8 @@
   "errors.caldav.invalidUrl": "Dat is geen webadres.",
   "errors.caldav.elsewhere": "De agendaserver stuurde Rukoo door naar {host}. Rukoo geeft je wachtwoord alleen aan de server die je hebt ingevuld; vul {host} in bij Serverinstellingen als je die vertrouwt.",
   "errors.caldav.reconfigured": "De agendaserver in Serverinstellingen is veranderd terwijl dit onderweg was. Probeer het opnieuw.",
+  // ---- cal:A3 ----
+  // ---- /cal:A3 ----
   "errors.google.aliases": "Gmail gaf de aliassen niet terug ({status}).",
   "errors.google.aliasesAuth": "Alleen beschikbaar voor accounts met Google-aanmelding.",
   "errors.google.cancelled": "Aanmelden geannuleerd.",
@@ -1023,6 +1033,8 @@
   "settings.signature.tooLarge": "Deze handtekening is te groot. Gebruik kleinere afbeeldingen, of afbeeldingen van internet.",
   "settings.signature.usesGeneral": "Gebruikt de algemene handtekening",
   "settings.signature.useGeneral": "Algemene gebruiken",
+  // ---- cal:B3 ----
+  // ---- /cal:B3 ----
   "settings.spam.add": "Spamadres toevoegen",
   "settings.spam.empty": "Geen spamadressen",
   "settings.sync.fifteenMinutes": "Elke 15 minuten",
@@ -1121,6 +1133,8 @@
   "account.errors.protocol": "Dit is geen Rukoo-accountserver, of hij heeft een nieuwere versie van Rukoo nodig.",
   "account.errors.signed_in": "Log eerst uit bij je Rukoo-account.",
   "account.errors.signed_out": "Je bent uitgelogd omdat je wachtwoord is gewijzigd of dit apparaat is verwijderd. Log opnieuw in.",
+  // ---- cal:A4 ----
+  // ---- /cal:A4 ----
   "settings.groups.sync": "Synchroniseren",
   "settings.rukoo.title": "Rukoo-account",
   "settings.rukoo.rowSignedOut": "Houd je categorieën gelijk op al je apparaten",

@@ -51,6 +51,10 @@ const DEFAULT_SETTINGS = {
   // The formatted signature, already cleaned; '' for a plain-text one. signature then holds its text, which is what
   // earlier versions show. See signature.js.
   signatureHtml: '',
+  // ---- cal:B3 settings ----
+  // ---- /cal:B3 settings ----
+  // ---- cal:A2 settings ----
+  // ---- /cal:A2 settings ----
   senderLogos: true,
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
@@ -67,7 +71,14 @@ function normalizeSettings(s) {
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
+  // ---- cal:A2 normalize ----
+  // ---- /cal:A2 normalize ----
+  // ---- cal:B3 normalize ----
+  // ---- /cal:B3 normalize ----
 }
+
+// ---- cal:A2 helpers ----
+// ---- /cal:A2 helpers ----
 
 // A stored signature is cleaned again on loading, in case settings.json or accounts.json was edited by hand.
 function reclean(html) {
@@ -389,6 +400,10 @@ class Engine extends EventEmitter {
       // null for both: the account uses the general signature.
       signature: acc.signature,
       signatureHtml: acc.signatureHtml || null,
+      // ---- cal:B3 account ----
+      // ---- /cal:B3 account ----
+      // ---- cal:A3 account ----
+      // ---- /cal:A3 account ----
       auth: acc.auth || (acc.type === 'demo' ? 'none' : 'password'),
       identities: this.identities(acc),
       defaultFrom: this.identity(acc).address,
@@ -522,6 +537,8 @@ class Engine extends EventEmitter {
       acc.signature = signature.signature;
       acc.signatureHtml = signature.signatureHtml || null;
     }
+    // ---- cal:B3 update account ----
+    // ---- /cal:B3 update account ----
     if (patch.color) acc.color = patch.color;
     if (patch.aliases) {
       // Validate the whole list before touching the account, so a typo cannot wipe existing aliases.
@@ -568,6 +585,8 @@ class Engine extends EventEmitter {
       }
       if (calendar && calendar.changed) this.emit('calendar-changed', acc);
     }
+    // ---- cal:A3 update account ----
+    // ---- /cal:A3 update account ----
     this.persistAccounts();
     this.emit('updated');
     return this.publicAccount(acc);
@@ -630,6 +649,8 @@ class Engine extends EventEmitter {
 
   // quiet: save without 'updated', for a change no list or count depends on (zoom), so the windows don't redraw.
   updateSettings(patch, { quiet = false } = {}) {
+    // ---- cal:A2 update settings ----
+    // ---- /cal:A2 update settings ----
     if (patch.signature !== undefined || patch.signatureHtml !== undefined) patch = { ...patch, ...signatureFields(patch) };
     this.settings = { ...this.settings, ...patch };
     normalizeSettings(this.settings);
@@ -638,6 +659,9 @@ class Engine extends EventEmitter {
     if (!quiet) this.emit('updated');
     return this.settings;
   }
+
+  // ---- cal:A2 calendar settings ----
+  // ---- /cal:A2 calendar settings ----
 
   // ---------- sync ----------
 

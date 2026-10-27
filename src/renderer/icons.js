@@ -88,7 +88,15 @@ export const icons = {
   video: p('<rect x="3" y="6.5" width="12.5" height="11" rx="2.5"/><path d="m15.5 10.5 5.5-3v9l-5.5-3"/>'),
   notes: p('<path d="M5 6.5h14M5 11h14M5 15.5h9"/>'),
   people: p('<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><path d="M15.5 5.6a3.3 3.3 0 0 1 0 5.8M17.5 14a6 6 0 0 1 3.5 5.5"/>'),
-  repeat: p('<path d="m17 3.5 3 3-3 3"/><path d="M4 11.5V10a3.5 3.5 0 0 1 3.5-3.5H20"/><path d="m7 20.5-3-3 3-3"/><path d="M20 12.5V14a3.5 3.5 0 0 1-3.5 3.5H4"/>')
+  repeat: p('<path d="m17 3.5 3 3-3 3"/><path d="M4 11.5V10a3.5 3.5 0 0 1 3.5-3.5H20"/><path d="m7 20.5-3-3 3-3"/><path d="M20 12.5V14a3.5 3.5 0 0 1-3.5 3.5H4"/>'),
+  // ---- cal:B1 icons ----
+  // ---- /cal:B1 icons ----
+  // ---- cal:B2 icons ----
+  // ---- /cal:B2 icons ----
+  // ---- cal:B3 icons ----
+  // ---- /cal:B3 icons ----
+  // ---- cal:B4 icons ----
+  // ---- /cal:B4 icons ----
 };
 
 // Provider tiles on the setup screen.

@@ -1051,6 +1051,8 @@
     "message": "Looking at an image...",
     "description": "Chat transcript tool chip while the agent's own tool runs: image analysis. Present tense; the done form is agent.tools.generic.vision."
   },
+  // ---- cal:B4 ----
+  // ---- /cal:B4 ----
   "calendar.title": {
     "message": "Calendar",
     "description": "Calendar view: accessible name of the section that replaces the message list and reader. src/renderer/app.js (renderShell)"
@@ -1407,6 +1409,10 @@
     "message": "This event was changed elsewhere while you edited it. The form now shows the latest version with your changes; save again to keep them.",
     "description": "Event dialog notice after Save failed because the event changed in Google Calendar (or another app) after the dialog opened. The fields now hold the latest version with the user's own changes on top. src/renderer/calendar.js (eventDialog)"
   },
+  // ---- cal:B1 ----
+  // ---- /cal:B1 ----
+  // ---- cal:B2 ----
+  // ---- /cal:B2 ----
   "common.actions.add": {
     "message": "Add",
     "description": "common > actions. src/renderer/app.js (messageMenu); src/renderer/settings.js (render)"
@@ -1915,6 +1921,8 @@
     "message": "Can't reach Google Calendar. Check your internet connection.",
     "description": "Calendar error when the request to Google fails or times out. src/main/calendar/google.js"
   },
+  // ---- cal:A2 ----
+  // ---- /cal:A2 ----
   "errors.caldav.signIn": {
     "message": "The calendar server turned down the username or password. Check them in Server settings.",
     "description": "Calendar error when the CalDAV server answers 401 to the account's username and password. Shown in the calendar notice and under the Server settings form. src/main/calendar/caldav.js"
@@ -1963,6 +1971,8 @@
     "message": "The calendar server in Server settings changed while this was on its way. Try again.",
     "description": "Calendar error when a request to the old CalDAV server was still running after the user entered another server in Server settings; Rukoo doesn't send the new password to the old server. src/main/calendar/index.js (provider)"
   },
+  // ---- cal:A3 ----
+  // ---- /cal:A3 ----
   "errors.google.aliases": {
     "message": "Gmail did not return aliases ({status}).",
     "description": "errors > google. src/main/engine.js"
@@ -3873,6 +3883,8 @@
     "message": "Use general signature",
     "description": "settings > signature. src/renderer/settings.js (openSettings)"
   },
+  // ---- cal:B3 ----
+  // ---- /cal:B3 ----
   "settings.spam.add": {
     "message": "Add spam address",
     "description": "settings > spam. src/renderer/settings.js (openSettings)"
@@ -4253,6 +4265,8 @@
     "message": "You were signed out because your password changed or this device was removed. Sign in again.",
     "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers signed_out or the input is refused. src/main/account/index.js (fail)."
   },
+  // ---- cal:A4 ----
+  // ---- /cal:A4 ----
   "settings.groups.sync": {
     "message": "Sync",
     "description": "Settings overview: group title above the Rukoo account row. src/renderer/settings.js (render)."
