@@ -148,6 +148,8 @@ function searchingAll() {
 async function refreshOnce() {
   const data = await api('state');
   S.data = data;
+  // A default account changed in Settings or a compose window: the editor's link beside From follows it.
+  S.composer?.accountsChanged(data);
   const languageChanged = renderedLanguage !== data.settings.language;
   setLanguage(data.settings.language);
   renderedLanguage = data.settings.language;
@@ -707,13 +709,18 @@ function renderSidebar() {
 function accountMenu(anchor) {
   const accounts = S.data.accounts;
   const counts = S.counts.accounts || {};
-  const items = accounts.map((a) => ({
-    icon: accountAvatar(a),
-    label: a.email,
-    hint: counts[a.id] ? String(counts[a.id]) : '',
-    current: S.scope === a.id,
-    action: () => switchScope(a.id)
-  }));
+  // Each account by the display name set in Settings, with its address underneath; the address alone without a name.
+  const items = accounts.map((a) => {
+    const name = (a.name || '').trim();
+    return {
+      icon: accountAvatar(a),
+      label: name || a.email,
+      sub: name && name.toLowerCase() !== a.email.toLowerCase() ? a.email : '',
+      hint: counts[a.id] ? String(counts[a.id]) : '',
+      current: S.scope === a.id,
+      action: () => switchScope(a.id)
+    };
+  });
   if (accounts.length > 1) {
     items.push({ icon: 'inbox', get label() { return t('mailbox.search.allAccounts'); }, hint: S.counts.all ? String(S.counts.all) : '', current: S.scope === 'all', action: () => switchScope('all') });
   }

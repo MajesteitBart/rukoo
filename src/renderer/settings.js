@@ -261,6 +261,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       ${toggle !== undefined ? `${sep ? '<span class="switch-sep"></span>' : ''}<span class="switch ${toggle ? 'on' : ''}" role="switch" aria-checked="${toggle}"></span>` : ''}
     </button>`;
 
+  // Marks the default account in the overview and the default address on the sender addresses page.
+  const defaultBadge = () => `<span class="default-badge">${esc(t('settings.account.defaultBadge'))}</span>`;
+
   // The Rukoo account's pages (rukoo-account.js).
   // Inbox categories (categories-settings.js); the account's privacy page says when Jev is on.
   const categoriesPage = categoryPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
@@ -894,13 +897,18 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
               : a.lastSync
                 ? t('settings.account.lastSync', { date: numericDate(a.lastSync), time: hhmm(a.lastSync) })
                 : t('mailbox.sync.never');
-          return row({
-            title: `${esc(a.email)}${a.isDefault ? t('settings.account.defaultSuffix') : ''}`,
-            desc: status,
-            action: `account:${a.id}`,
-            cls: 'indent',
-            lead: `<div class="avatar small" style="--accent:${a.color}">${esc((a.name || a.email).trim()[0] || '?').toUpperCase()}</div>`
-          });
+          // A button that opens the account; the default one has a badge, the others a button that makes them the
+          // default. Two buttons side by side, because a button can't sit inside the row's own.
+          const side = a.isDefault
+            ? ''
+            : `<button class="btn sm secondary" data-a="acc-make-default:${esc(a.id)}" aria-describedby="acc-email-${esc(a.id)}">${esc(t('settings.accounts.makeDefault'))}</button>`;
+          return `<div class="row static indent acc-row">
+            <button class="acc-main" data-a="account:${esc(a.id)}">
+              <div class="avatar small" style="--accent:${esc(a.color)}">${esc((a.name || a.email).trim()[0] || '?').toUpperCase()}</div>
+              <div class="text"><div class="title acc-title"><span class="acc-email" id="acc-email-${esc(a.id)}">${esc(a.email)}</span>${a.isDefault ? defaultBadge() : ''}</div>
+              <div class="desc">${status}</div></div>
+            </button>${side}
+          </div>`;
         })
         .join('');
       body = `
@@ -946,15 +954,19 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const a = state.accounts.find((x) => x.id === params.id);
       if (!a) return back();
       title = a.email;
+      // First on the page: whether new emails start from this account, or the way to make it so.
+      const defaultRow = a.isDefault
+        ? `<div class="row static" data-default-account><div class="text"><div class="title">${esc(t('settings.account.isDefault'))}</div><div class="desc">${esc(t('settings.account.makeDefaultHelp'))}</div></div></div>`
+        : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' });
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.account">${esc(t('settings.groups.account'))}</div>
         <div class="card">
+          ${defaultRow}
           ${row({ title: t('settings.account.name'), value: esc(a.name || ''), action: 'acc-name' })}
           ${usesGeneralSignature(a) ? generalSignatureRow(signatureHtml(s.signature, s.signatureHtml)) : signatureRow(accountSignatureHtml(a, s), 'acc-signature')}
           ${row({ title: t('settings.account.color'), value: labelOf(COLORS, a.color), action: 'acc-color' })}
           ${row({ title: t('settings.account.from'), value: esc(a.defaultFrom), action: 'acc-from' })}
           ${row({ title: t('settings.account.identities'), desc: a.identities.length > 1 ? t('settings.aliases.count', { count: a.identities.length - 1 }) : t('settings.account.noAliases'), action: 'acc-aliases' })}
-          ${a.isDefault ? '' : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' })}
           ${row({ title: t('settings.account.sync'), desc: a.lastSync ? t('settings.account.lastSync', { date: numericDate(a.lastSync), time: hhmm(a.lastSync) }) : '', action: 'acc-sync' })}
           ${a.provider === 'google' && s && state.googleAvailable ? row({ title: a.auth === 'oauth2' ? t('settings.account.googleReauth') : t('settings.account.googleSwitch'), desc: a.auth === 'oauth2' ? t('settings.account.googleReauthHelp') : t('settings.account.googleSwitchHelp'), action: 'acc-google' }) : ''}
           ${a.type === 'imap' ? row({ title: t('settings.account.server'), desc: [a.imap.host, a.smtp.host, a.caldav && hostOf(a.caldav.url)].filter(Boolean).map(esc).join(' / '), action: 'acc-server' }) : ''}
@@ -997,7 +1009,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${a.identities
             .map((i) =>
               row({
-                title: `${esc(i.address)}${i.address === a.defaultFrom ? t('settings.account.defaultSuffix') : ''}`,
+                title: `<span class="acc-title"><span class="acc-email">${esc(i.address)}</span>${i.address === a.defaultFrom ? defaultBadge() : ''}</span>`,
                 desc: i.primary ? t('settings.aliases.primary') : t('settings.aliases.manageHint'),
                 action: i.primary ? `alias-default:${encodeURIComponent(i.address)}` : `alias:${encodeURIComponent(i.address)}`
               })
@@ -1045,9 +1057,12 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (ACCOUNT_VIEWS.includes(view)) ({ title, body } = account.view(view));
     if (CATEGORY_VIEWS.includes(view)) ({ title, body } = categoriesPage.view(view));
 
+    // A redraw, such as the one after each update from main, keeps the keyboard on the control with the same action.
+    const focused = page.contains(document.activeElement) ? document.activeElement.dataset.a : null;
     page.innerHTML = `
       <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
+    if (focused) page.querySelector(`[data-a="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
     if (view === 'agents' && agentState) AGENT_IDS.forEach((id) => showAgentStatus(id));
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
     if (view === 'main') showMailto();
@@ -1117,6 +1132,19 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       return ctx.openSetup({ first: false });
     }
     if (a.startsWith('account:')) return go('account', { id: a.slice(8) });
+    if (a.startsWith('acc-make-default:')) {
+      const id = a.slice(17);
+      try {
+        await api('updateAccount', id, { makeDefault: true });
+      } catch (err) {
+        toast(err.message, 5000);
+      }
+      await render();
+      ctx.refresh();
+      // The pressed button made way for the badge; keep the keyboard on that account's row.
+      page.querySelector(`[data-a="account:${CSS.escape(id)}"]`)?.focus();
+      return;
+    }
     if (a.startsWith('toggle:')) {
       const key = a.slice(7);
       if (window.mail.platform === 'darwin' && key === 'closeToTray') {

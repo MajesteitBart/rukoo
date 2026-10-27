@@ -1507,6 +1507,10 @@
     "message": "Edit draft",
     "description": "composer > actions. src/renderer/app.js (messageMenu)"
   },
+  "composer.actions.makeDefault": {
+    "message": "Use as default account",
+    "description": "composer > actions. Small link beside the From field of a new message, shown when the chosen account is not the default; new emails then start from it. src/renderer/composer.js (template)"
+  },
   "composer.actions.popout": {
     "message": "Open in a separate window",
     "description": "composer > actions. src/renderer/composer.js (template); src/renderer/composer.js (mountComposer)"
@@ -1714,6 +1718,10 @@
   "composer.send.noSubjectTitle": {
     "message": "No subject",
     "description": "composer > send. src/renderer/composer.js (send)"
+  },
+  "composer.status.defaultAccount": {
+    "message": "{address} is now the default account",
+    "description": "composer > status. Toast after composer.actions.makeDefault. {address} is the account's email address. src/renderer/composer.js (makeDefault)"
   },
   "composer.status.deleted": {
     "message": "Draft deleted",
@@ -2888,13 +2896,13 @@
     "message": "Account color",
     "description": "settings > account. src/renderer/settings.js (render); src/renderer/settings.js (openSettings)"
   },
-  "settings.account.defaultSuffix": {
-    "message": " (default)",
-    "description": "settings > account. Account and sender address rows: suffix indicating the default choice; keep leading space."
+  "settings.account.defaultBadge": {
+    "message": "Default",
+    "description": "settings > accounts. Small badge after the default account's address in the accounts overview, and after the default address on the Sender addresses page. src/renderer/settings.js (defaultBadge)"
   },
   "settings.account.from": {
-    "message": "Default sender",
-    "description": "settings > account. src/renderer/settings.js (render); src/renderer/settings.js (openSettings)"
+    "message": "Send as",
+    "description": "settings > account. Row and dialog title for the address this account sends from when it has aliases; not the default account. src/renderer/settings.js (render); src/renderer/settings.js (openSettings)"
   },
   "settings.account.googleReauth": {
     "message": "Sign in to Google again",
@@ -2916,6 +2924,10 @@
     "message": "Sender addresses",
     "description": "settings > account. src/renderer/settings.js (render)"
   },
+  "settings.account.isDefault": {
+    "message": "Default account",
+    "description": "settings > account. First row on the default account's page, above settings.account.makeDefaultHelp; it states a fact and has no action. src/renderer/settings.js (render)"
+  },
   "settings.account.lastSync": {
     "message": "Last synced on {date} at {time}",
     "description": "settings > account. src/renderer/settings.js (render)"
@@ -2926,7 +2938,7 @@
   },
   "settings.account.makeDefaultHelp": {
     "message": "New emails will be sent from this account.",
-    "description": "settings > account. src/renderer/settings.js (render)"
+    "description": "settings > account. Under settings.account.makeDefault on other accounts' pages, and under settings.account.isDefault on the default account's page. src/renderer/settings.js (render)"
   },
   "settings.account.name": {
     "message": "Display name",
@@ -2963,6 +2975,10 @@
   "settings.accounts.add": {
     "message": "Add account",
     "description": "settings > accounts. src/renderer/app.js (accountMenu); src/renderer/settings.js (render)"
+  },
+  "settings.accounts.makeDefault": {
+    "message": "Set as default",
+    "description": "settings > accounts. Small button beside each account that is not the default in the accounts overview; new emails then start from that account. src/renderer/settings.js (render)"
   },
   "settings.accounts.overview": {
     "message": "Accounts and settings",

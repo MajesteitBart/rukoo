@@ -2166,6 +2166,11 @@ body:has(.page) .titlebar-actions {
   box-shadow: var(--shadow);
   animation: pop 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+/* A menu taller than the window's room for it, capped by showMenu(). */
+.menu.scrolls {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .menu button {
   display: flex;
   align-items: center;
@@ -2206,6 +2211,29 @@ body:has(.page) .titlebar-actions {
 .menu .ml {
   flex: 1;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A row with a second line under its label, such as an account's address under its name. */
+.menu button.two {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.menu .mt {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.menu .mt .ml {
+  flex: none;
+}
+.menu .ms {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2644,6 +2672,54 @@ body:has(.page) .titlebar-actions {
   background: color-mix(in srgb, var(--accent) 22%, var(--panel));
   color: var(--accent);
 }
+/* Settings > Accounts: a row is a button that opens the account, with Set as default beside it. */
+.row.acc-row {
+  padding: 0 16px 0 0;
+  gap: 10px;
+}
+.row.acc-row:hover {
+  background: var(--hover);
+}
+.acc-main {
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0 10px 16px;
+  text-align: left;
+}
+.acc-main:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--radius);
+}
+.acc-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.acc-email {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The default account or address. A state without a status color: field fill, grey text. */
+.default-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
 .switch {
   width: 36px;
   height: 20px;
@@ -3010,6 +3086,13 @@ body.compose-window {
 .cc-links .link-btn:hover {
   color: var(--link);
   text-decoration: none;
+}
+/* "Use as default account" beside From. Where the window has no room for it, it moves under the address. */
+.field.from-field {
+  flex-wrap: wrap;
+}
+.from-default {
+  margin-left: auto;
 }
 .recipients {
   flex: 1;

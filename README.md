@@ -28,7 +28,7 @@ Releases up to v1.2.0 contain only Windows packages; later releases add Linux an
 - "Sign in with Google" for Gmail and Google Workspace. You sign in in your browser (OAuth 2.0 with PKCE), after which IMAP and SMTP use XOAUTH2. No app password needed.
 - IMAP accounts for Yahoo, Outlook, Exchange, Office365 and any other provider, with preset servers per provider and manual IMAP/SMTP settings.
 - A demo account with English sample mail, so you can try the app without credentials.
-- An account switcher at the top of the sidebar, with a unified inbox across accounts ("All accounts"). In the unified inbox each message carries a short account label.
+- An account switcher at the top of the sidebar, with a unified inbox across accounts ("All accounts"). It lists each account by its display name, with the address underneath. In the unified inbox each message carries a short account label. A new message started there, from the tray or from an email link uses the default account, which Settings marks with a badge and lets you change beside each account. A new message from another account offers Use as default account beside From.
 - A sidebar with Inbox, VIPs, Starred, Drafts, Sent, Archive, Spam, Trash, Saved emails and your own folders. It collapses to an icon rail, and does so by itself in narrow windows.
 - Search in the title bar, in the current folder, the current account or all accounts. Quick filters above the list: Unread, Starred and Attachments.
 - The list shows sender logos for companies and initials for people, previews without "view in your browser" lines or greetings, and folds a run of three or more messages from one sender into a single row.
