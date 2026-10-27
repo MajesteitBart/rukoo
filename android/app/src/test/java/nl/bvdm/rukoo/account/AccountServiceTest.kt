@@ -126,6 +126,17 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a sign-in proof made for one server address is no good at another`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        val recoveryKey = desk.signUp("bound@example.com", PASSWORD).recoveryKey
+        // The same server under another address, as a server that passes requests on would be.
+        val relayed = device(null, "relayed").also { it.setServer(srv.url.replace("127.0.0.1", "localhost")) }
+        rejects("unauthorized") { relayed.signIn("bound@example.com", PASSWORD) }
+        rejects("unauthorized") { relayed.recover("bound@example.com", recoveryKey, "some new password") }
+    }
+
+    @Test
     fun `a second device signs in, gets the records and sends its own`() = runBlocking {
         val srv = server()
         val desk = device(srv, "desk")

@@ -133,10 +133,15 @@ object AccountKeys {
 
     class PasswordKeys(val authKey: ByteArray, val wrapKey: ByteArray)
 
-    /** authKey proves the password to the server; wrapKey opens the data key and stays on the phone. */
-    fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf): PasswordKeys {
+    /**
+     * authKey proves the password to one server: its address is part of the key, so a server someone was tricked into
+     * using can't pass the proof on to the real one. wrapKey opens the data key and stays on the phone. [server]: the
+     * canonical address (AccountServers.serverUrl).
+     */
+    fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf, server: String): PasswordKeys {
+        require(server.isNotEmpty()) { "server" }
         val master = masterKey(password, salt, kdf)
-        return PasswordKeys(hkdf(master, "rukoo/v1/auth"), hkdf(master, "rukoo/v1/wrap"))
+        return PasswordKeys(hkdf(master, "rukoo/v1/auth\n$server"), hkdf(master, "rukoo/v1/wrap"))
     }
 
     /** AES-256-GCM: the version byte 0x01, the nonce, the ciphertext and the tag. */
@@ -208,7 +213,11 @@ object AccountKeys {
 
     class RecoveryKeys(val recoveryAuth: ByteArray, val recoveryWrap: ByteArray)
 
-    fun recoveryKeys(recoveryKey: ByteArray) = RecoveryKeys(hkdf(recoveryKey, "rukoo/v1/recovery-auth"), hkdf(recoveryKey, "rukoo/v1/recovery-wrap"))
+    /** recoveryAuth is bound to the server like authKey; recoveryWrap opens the data key wherever the account lives. */
+    fun recoveryKeys(recoveryKey: ByteArray, server: String): RecoveryKeys {
+        require(server.isNotEmpty()) { "server" }
+        return RecoveryKeys(hkdf(recoveryKey, "rukoo/v1/recovery-auth\n$server"), hkdf(recoveryKey, "rukoo/v1/recovery-wrap"))
+    }
 
     fun recordKeys(dataKey: ByteArray) = RecordKeys(hkdf(dataKey, "rukoo/v1/records"), hkdf(dataKey, "rukoo/v1/index"))
 

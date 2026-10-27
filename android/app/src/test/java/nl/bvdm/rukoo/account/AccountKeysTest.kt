@@ -38,7 +38,7 @@ class AccountKeysTest {
         val kdf = Kdf(kdfJson.getValue("alg").jsonPrimitive.content, kdfJson.getValue("m").jsonPrimitive.int, kdfJson.getValue("t").jsonPrimitive.int, kdfJson.getValue("p").jsonPrimitive.int)
         assertEquals(v("normalizedEmail"), AccountKeys.normalizeEmail(v("email")))
         assertEquals(v("masterKey"), b64(AccountKeys.masterKey(v("password"), salt, kdf)))
-        val keys = AccountKeys.passwordKeys(v("password"), salt, kdf)
+        val keys = AccountKeys.passwordKeys(v("password"), salt, kdf, v("server"))
         assertEquals(v("authKey"), b64(keys.authKey))
         assertEquals(v("wrapKey"), b64(keys.wrapKey))
         assertEquals(v("authVerifier"), b64(MessageDigest.getInstance("SHA-256").digest(keys.authKey)))
@@ -48,7 +48,7 @@ class AccountKeysTest {
         val recovery = AccountKeys.unb64u(v("recoveryKeyBytes"))
         assertEquals(v("recoveryKey"), AccountKeys.formatRecoveryKey(recovery))
         assertArrayEquals(recovery, AccountKeys.parseRecoveryKey(v("recoveryKey")))
-        val rk = AccountKeys.recoveryKeys(recovery)
+        val rk = AccountKeys.recoveryKeys(recovery, v("server"))
         assertEquals(v("recoveryAuth"), b64(rk.recoveryAuth))
         assertEquals(v("recoveryWrap"), b64(rk.recoveryWrap))
         val records = AccountKeys.recordKeys(dataKey)
@@ -61,6 +61,24 @@ class AccountKeysTest {
         val expected = Rec(c, k, record.getValue("v"), record.getValue("t").jsonPrimitive.long)
         assertEquals(expected, AccountKeys.openRecord(records, v("recordId"), v("recordData")))
         assertEquals(SealedRecord(v("recordId"), v("recordData")), AccountKeys.sealRecord(records, expected, AccountKeys.unb64u(v("recordNonce"))))
+    }
+
+    @Test
+    fun `the proofs are bound to the server's address, and the data key isn't`() {
+        val salt = AccountKeys.randomBytes(16)
+        val a = AccountKeys.passwordKeys("a long enough password", salt, AccountKeys.DEFAULT_KDF, "https://one.example")
+        val b = AccountKeys.passwordKeys("a long enough password", salt, AccountKeys.DEFAULT_KDF, "https://two.example")
+        assertFalse(a.authKey.contentEquals(b.authKey))
+        assertArrayEquals("the data key opens the same everywhere", a.wrapKey, b.wrapKey)
+        val key = AccountKeys.randomBytes(20)
+        assertFalse(AccountKeys.recoveryKeys(key, "https://one.example").recoveryAuth.contentEquals(AccountKeys.recoveryKeys(key, "https://two.example").recoveryAuth))
+        assertArrayEquals(AccountKeys.recoveryKeys(key, "https://one.example").recoveryWrap, AccountKeys.recoveryKeys(key, "https://two.example").recoveryWrap)
+        try {
+            AccountKeys.recoveryKeys(key, "")
+            fail("no server, no proof")
+        } catch (e: IllegalArgumentException) {
+            // refused
+        }
     }
 
     @Test

@@ -247,8 +247,11 @@ class AccountService(
         secrets.encrypt("rukoo")
     }
 
+    /** The password's keys for the server this phone uses; its address is part of authKey (server/PROTOCOL.md, Keys). */
     private suspend fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf) =
-        withContext(Dispatchers.Default) { AccountKeys.passwordKeys(password, salt, kdf) }
+        withContext(Dispatchers.Default) { AccountKeys.passwordKeys(password, salt, kdf, server) }
+
+    private fun recoveryKeys(key: ByteArray) = AccountKeys.recoveryKeys(key, server)
 
     suspend fun signUp(email: String, password: String, invite: String = ""): SignUpResult {
         val address = AccountKeys.normalizeEmail(email)
@@ -259,7 +262,7 @@ class AccountService(
         val keys = passwordKeys(password, salt, kdf)
         val dataKey = AccountKeys.randomBytes(32)
         val recoveryKey = AccountKeys.randomBytes(20)
-        val recovery = AccountKeys.recoveryKeys(recoveryKey)
+        val recovery = recoveryKeys(recoveryKey)
         val res = call(
             "POST",
             "/v1/signup",
@@ -328,7 +331,7 @@ class AccountService(
         checkNew(address, password)
         val key = AccountKeys.parseRecoveryKey(recoveryKey) ?: throw fail("recovery_key")
         serverInfo()
-        val recovery = AccountKeys.recoveryKeys(key)
+        val recovery = recoveryKeys(key)
         val start = call("POST", "/v1/recover/start", buildJsonObject {
             put("email", address)
             put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
@@ -407,7 +410,7 @@ class AccountService(
         if (!signedIn) throw fail("signed_out")
         val keys = authFor(email(), password)
         val recoveryKey = AccountKeys.randomBytes(20)
-        val recovery = AccountKeys.recoveryKeys(recoveryKey)
+        val recovery = recoveryKeys(recoveryKey)
         call(
             "POST",
             "/v1/recovery",
