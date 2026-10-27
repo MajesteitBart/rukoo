@@ -25,7 +25,8 @@ internal class FakeImap(messages: List<Msg>, var capabilities: String, val tabs:
         thread(isDaemon = true) {
             while (!server.isClosed) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: break
-                thread(isDaemon = true) { runCatching { serve(socket) } }
+                // use closes the socket however serve ends: LOGOUT, the client hanging up, or a failed write.
+                thread(isDaemon = true) { socket.use { runCatching { serve(it) } } }
             }
         }
     }
