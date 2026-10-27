@@ -276,6 +276,11 @@ class FakeAccountServer(
             }
             "POST /v1/records" -> {
                 val a = acc!!
+                // Like the real server: one record over 16 KiB fails the whole push.
+                val tooLarge = (body["records"] as? JsonArray).orEmpty().any { r ->
+                    ((r as JsonObject)["data"] as? JsonPrimitive)?.contentOrNull?.let { Base64.getUrlDecoder().decode(it).size > 16384 } == true
+                }
+                if (tooLarge) return error(413, "too_large")
                 val results = (body["records"] as? JsonArray).orEmpty().map { it as JsonObject }.map { r ->
                     val id = r.str("id")
                     val had = a.records[id]

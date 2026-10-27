@@ -69,7 +69,7 @@ data class AccountState(
 /**
  * One record on this phone (account-records.json). The fields after [t] are the sync's bookkeeping: [dirty] waits
  * to go up, [ifAbsent] goes up as a first write, [first] is a first write no other device's copy has replaced yet,
- * [id] and [seq] are its name and place on the server. Mutable on purpose: like desktop, the sync tells a record
+ * [id] and [seq] are its name and place on the server, [tooLarge] stays here. Mutable on purpose: like desktop, the sync tells a record
  * that changed while it was on its way by identity.
  */
 @Serializable
@@ -84,6 +84,8 @@ class AccountEntry(
     var first: Boolean = false,
     var id: String? = null,
     var seq: Long? = null,
+    /** Too large for the server once sealed: it stays on this phone and doesn't go up. */
+    var tooLarge: Boolean = false,
 )
 
 @Serializable

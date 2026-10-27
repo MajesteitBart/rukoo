@@ -725,11 +725,21 @@ class AccountService(
             if (session == null) return refused
             val (batch, records) = synchronized(lock) {
                 if (this.session !== session) return refused
-                val batch = entries.values.filter { it.dirty }.take(PUSH_BATCH)
-                if (batch.isEmpty()) return refused
-                batch to buildJsonArray {
-                    for (e in batch) {
+                val dirty = entries.values.filter { it.dirty }.take(PUSH_BATCH)
+                if (dirty.isEmpty()) return refused
+                // A record too large for the server stays on this phone: sent along, it would fail the whole batch
+                // every time.
+                val batch = ArrayList<AccountEntry>()
+                val records = buildJsonArray {
+                    for (e in dirty) {
                         val sealed = AccountKeys.sealRecord(session.keys, Rec(e.c, e.k, if (e.deleted) JsonNull else e.v, e.t, e.deleted))
+                        if (AccountKeys.unb64u(sealed.data).size > RECORD_BYTES) {
+                            e.dirty = false
+                            e.ifAbsent = false
+                            e.tooLarge = true
+                            continue
+                        }
+                        batch += e
                         addJsonObject {
                             put("id", sealed.id)
                             put("data", sealed.data)
@@ -737,6 +747,11 @@ class AccountService(
                         }
                     }
                 }
+                batch to records
+            }
+            if (records.isEmpty()) {
+                synchronized(lock) { saveEntries() }
+                continue
             }
             val res = call("POST", "/v1/records", buildJsonObject { put("records", records) }, auth = true, session = session) as? JsonObject
             synchronized(lock) {
@@ -784,7 +799,7 @@ class AccountService(
     }
 
     private fun writeEntries() {
-        val copy = entries.values.map { AccountEntry(it.c, it.k, it.v, it.t, it.deleted, it.dirty, it.ifAbsent, it.first, it.id, it.seq) }
+        val copy = entries.values.map { AccountEntry(it.c, it.k, it.v, it.t, it.deleted, it.dirty, it.ifAbsent, it.first, it.id, it.seq, it.tooLarge) }
         runCatching { JsonFiles.write(recordsFile, StoredEntries.serializer(), StoredEntries(copy)) }
             .onFailure { AppLog.w(TAG, "could not save the account's records", it) }
     }
@@ -813,6 +828,9 @@ class AccountService(
         const val SAVE_AFTER = 1000L
         private const val PULL_LIMIT = 1000
         private const val PUSH_BATCH = 500
+
+        // The most a record may take on the server, once sealed (server/PROTOCOL.md).
+        private const val RECORD_BYTES = 16384
 
         // Rounds of pull and push in one sync, enough for a refused first write or a newer value that has to go up again.
         private const val SYNC_ROUNDS = 3

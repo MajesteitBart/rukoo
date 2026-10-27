@@ -503,6 +503,24 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a record too large for the server stays here and doesn't hold up the rest`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("big@example.com", PASSWORD)
+        val huge = buildJsonObject { put("note", "x".repeat(20000)) }
+        desk.put("sender", "huge@example.com", huge)
+        desk.put("sender", "fine@example.com", rule("money"))
+        desk.sync()
+        assertEquals(0, desk.status().pending)
+        assertEquals("kept on this phone", huge, desk.value("sender", "huge@example.com"))
+        val laptop = device(srv, "laptop")
+        laptop.signIn("big@example.com", PASSWORD)
+        laptop.sync()
+        assertEquals(rule("money"), laptop.value("sender", "fine@example.com"))
+        assertNull(laptop.value("sender", "huge@example.com"))
+    }
+
+    @Test
     fun `signing in with a wrong password fails without signing in`() = runBlocking {
         val srv = server()
         val desk = device(srv)
