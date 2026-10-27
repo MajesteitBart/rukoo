@@ -2,6 +2,7 @@
 const { test, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 test('Linux closes normally by default and persists opt-in tray settings', async () => {
   test.skip(process.platform !== 'linux');
@@ -36,10 +37,8 @@ test('Linux closes normally by default and persists opt-in tray settings', async
     expect(await win.evaluate(() => window.mail.call('state').then((s) => s.settings.closeToTray))).toBe(true);
     expect(await app.evaluate(() => Boolean(global.__semTray))).toBe(true);
   } finally {
-    if (app) {
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((w) => w.destroy())).catch(() => {});
-      await app.close();
-    }
+    // The quits above are what the test checks, so they stay plain. This one only ends what is left.
+    await closeApp(app);
     removeDir(dataDir);
   }
 });

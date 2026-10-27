@@ -2,13 +2,15 @@
 
 // Stands in for `codex app-server` (0.160.1) in the adapter tests: JSON lines on stdio, the message
 // shapes recorded from the real server (trimmed). The turn's script is chosen by the input text.
-// FAKE_CODEX_LOG, when set, receives the env check and every line the client sends.
+// FAKE_CODEX_LOG, when set, receives the pid and env check, and every line the client sends.
+// The argument hold-init makes it never answer initialize, as an app-server that is still starting.
 const fs = require('fs');
 const crypto = require('crypto');
 
 const log = process.env.FAKE_CODEX_LOG;
 const note = (entry) => log && fs.appendFileSync(log, JSON.stringify(entry) + '\n');
-note({ argv: process.argv.slice(2), env: { RUKOO_MCP_TOKEN: process.env.RUKOO_MCP_TOKEN || null, ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE || null } });
+note({ argv: process.argv.slice(2), pid: process.pid, env: { RUKOO_MCP_TOKEN: process.env.RUKOO_MCP_TOKEN || null, ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE || null } });
+const holdInit = process.argv.includes('hold-init');
 
 const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\n');
 const notify = (method, params) => send({ method, params });
@@ -166,6 +168,7 @@ function handle(msg) {
   const p = msg.params || {};
   switch (msg.method) {
     case 'initialize':
+      if (holdInit) return;
       return send({ id: msg.id, result: { userAgent: 'rukoo/0.160.1', codexHome: 'C:\\codex', platformFamily: 'windows', platformOs: 'windows' } });
     case 'initialized':
       return;

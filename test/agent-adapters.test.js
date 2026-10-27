@@ -30,7 +30,11 @@ const tmp = (name) => {
   made.push(dir);
   return dir;
 };
-test.after(() => {
+// Every Claude Code and Codex adapter the tests make. A test that fails before its own dispose() must not leave a
+// fake agent running: its process would keep this file, and npm test with it, from ever ending (#88).
+const adapters = [];
+test.after(async () => {
+  await Promise.allSettled(adapters.map((adapter) => adapter.dispose()));
   for (const dir of made) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 // A loopback port with nothing listening on it.
@@ -91,6 +95,41 @@ async function waitFor(check, ms = 5000) {
   }
   throw new Error('timed out waiting');
 }
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// The log a fake agent appends to, one JSON object per line, read while the fake still writes it. The file exists
+// before its first line is in, and the last line can be half written, so only lines that end in a newline count.
+function readLog(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const lines = text.split('\n');
+  // After the last newline: nothing, or a line still being written.
+  lines.pop();
+  return lines.filter((line) => line.trim()).map((line) => JSON.parse(line));
+}
+
+test('readLog: an empty log and a half-written last line read as the lines that are complete', () => {
+  const file = path.join(tmp('log'), 'log.jsonl');
+  assert.deepEqual(readLog(file), [], 'no file yet');
+  fs.writeFileSync(file, '');
+  assert.deepEqual(readLog(file), [], 'created, nothing written yet');
+  fs.writeFileSync(file, '{"argv":["-p"]}\n{"stdin":"{\\"type\\":');
+  assert.deepEqual(readLog(file), [{ argv: ['-p'] }]);
+  fs.appendFileSync(file, '\\"user\\"}"}\n');
+  assert.deepEqual(readLog(file), [{ argv: ['-p'] }, { stdin: '{"type":"user"}' }]);
+});
 
 // ---------- sse.js ----------
 
@@ -753,7 +792,8 @@ function claudeAdapter(extra = {}, hub = null) {
   process.env.FAKE_CLAUDE_LOG = logFile;
   const cfg = { enabled: true, exe: process.execPath, configDir: path.join(dir, 'cfg'), model: 'opus', access: 'ask', ...extra };
   const adapter = new ClaudeAdapter({ id: 'claude', config: () => cfg, hub, paths: { workspace: path.join(dir, 'ws'), attachments: path.join(dir, 'att') }, launchArgs: [path.join(FIXTURES, 'fake-claude.js')] });
-  const read = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  adapters.push(adapter);
+  const read = () => readLog(logFile);
   return { adapter, cfg, read, dir };
 }
 
@@ -1081,6 +1121,17 @@ test('claude: quitting kills a running session without blocking, and waits for t
   await done;
 });
 
+test('claude: a turn still looking up the program when Rukoo quits starts no process', async (t) => {
+  const { adapter, read } = claudeAdapter();
+  t.after(() => adapter.dispose());
+  // runTurn() awaits the program lookup before it spawns, so dispose() runs first.
+  const done = adapter.runTurn(fakeTurn(conv(), 'hello'));
+  await adapter.dispose();
+  assert.deepEqual(await done, { status: 'stopped' });
+  assert.equal(read().filter((e) => e.argv).length, 0, 'no claude process was started');
+  assert.equal(adapter.sessions.size, 0);
+});
+
 test('claude: tool previews', () => {
   assert.equal(toolDetail({ command: 'ls -la\n  /tmp', description: 'List' }), 'ls -la /tmp');
   assert.equal(toolDetail({ file_path: 'C:\\a.txt', content: 'x' }), 'C:\\a.txt');
@@ -1097,7 +1148,8 @@ function codexAdapter(extra = {}, hubExtra = {}, options = {}) {
   const cfg = { enabled: true, exe: process.execPath, model: '', access: 'ask', ...extra };
   const hub = { tokens: [], threads: [], expired: [], revoked: [], issueToken: (id) => (hub.tokens.push(id), 'codex-token'), mapThread: (t, c) => hub.threads.push([t, c]), expireApproval: (c, i) => hub.expired.push([c, i]), revokeToken: (t) => hub.revoked.push(t), ...hubExtra };
   const adapter = new CodexAdapter({ id: 'codex', config: () => cfg, hub, paths: { workspace: path.join(dir, 'ws') }, launchArgs: [path.join(FIXTURES, 'fake-codex.js')], ...options });
-  const read = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  adapters.push(adapter);
+  const read = () => readLog(logFile);
   const sent = (method) => read().filter((e) => e.in && e.in.method === method).map((e) => e.in);
   return { adapter, cfg, hub, read, sent };
 }
@@ -1106,6 +1158,58 @@ test('codex: quitting kills the app-server without blocking, and waits for the k
   const { adapter } = codexAdapter();
   assert.deepEqual(await adapter.runTurn(fakeTurn(conv(), 'hello')), { status: 'done' });
   await disposeWaitsForKill(adapter, adapter.server.child);
+});
+
+// The app-server is still starting for one chat, a second chat waits for it, and Rukoo quits. The waiting turn
+// used to start an app-server of its own once the first one was gone, which nothing ended, and npm test hung (#88).
+test('codex: quitting while the app-server starts leaves no app-server running, also for a turn that waits for it', async (t) => {
+  const fake = path.join(FIXTURES, 'fake-codex.js');
+  // hold-init: the first app-server never answers initialize, so the quit lands while it starts.
+  const { adapter, read, sent } = codexAdapter({}, {}, { launchArgs: [fake, 'hold-init'] });
+  t.after(() => adapter.dispose());
+  const first = adapter.runTurn(fakeTurn(conv('c_first'), 'hello'));
+  await waitFor(() => sent('initialize').length === 1);
+  // An app-server started after the quit would answer, and run the waiting turn to the end.
+  adapter.launchArgs = [fake];
+  const second = adapter.runTurn(fakeTurn(conv('c_second'), 'hello'));
+  // Only promise callbacks lie between runTurn() and its wait for the starting app-server; a timer runs after them.
+  await sleep(20);
+  await adapter.dispose();
+  const outcomes = await Promise.all([first, second]);
+  const started = read().filter((e) => e.argv);
+  assert.equal(started.length, 1, 'no app-server starts after dispose()');
+  assert.deepEqual(outcomes, [{ status: 'stopped' }, { status: 'stopped' }]);
+  assert.equal(adapter.server, null);
+  await waitFor(() => !alive(started[0].pid));
+});
+
+test('codex: a turn stopped while it waits for a start that fails starts no app-server', async (t) => {
+  const fake = path.join(FIXTURES, 'fake-codex.js');
+  const { adapter, read, sent } = codexAdapter({}, {}, { launchArgs: [fake, 'hold-init'] });
+  t.after(() => adapter.dispose());
+  const first = adapter.runTurn(fakeTurn(conv('c_first'), 'hello'));
+  await waitFor(() => sent('initialize').length === 1);
+  adapter.launchArgs = [fake];
+  const waiting = fakeTurn(conv('c_waiting'), 'hello');
+  const second = adapter.runTurn(waiting);
+  await sleep(20);
+  waiting.controller.abort();
+  // The first app-server dies before it answers: its start fails while the stopped turn still waits for it.
+  adapter.server.kill();
+  assert.equal((await first).status, 'error');
+  assert.deepEqual(await second, { status: 'stopped' });
+  assert.equal(read().filter((e) => e.argv).length, 1, 'the stopped turn started no app-server');
+  assert.equal(adapter.server, null);
+});
+
+test('codex: a turn still looking up the program when Rukoo quits starts no app-server', async (t) => {
+  const { adapter, read } = codexAdapter();
+  t.after(() => adapter.dispose());
+  const done = adapter.runTurn(fakeTurn(conv(), 'hello'));
+  await adapter.dispose();
+  assert.deepEqual(await done, { status: 'stopped' });
+  assert.equal(read().filter((e) => e.argv).length, 0, 'no app-server was started');
+  assert.equal(adapter.server, null);
 });
 
 test('codex: initialize, thread/start with the Rukoo MCP block, and a recorded turn', async (t) => {
@@ -1249,14 +1353,7 @@ test('codex: a turn that ignores the interrupt is killed with its process, and i
   const result = await otherDone;
   assert.equal(result.status, 'error');
   assert.match(result.error.detail, /restarted to stop another chat/);
-  await waitFor(() => {
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
-  });
+  await waitFor(() => !alive(pid));
   // The next turn gets a fresh app-server.
   assert.deepEqual(await adapter.runTurn(fakeTurn(conv('c_next'), 'hello')), { status: 'done' });
   assert.equal(sent('initialize').length, 2);
@@ -1278,14 +1375,7 @@ test('codex: a turn whose start gets no answer ends the app-server with what it 
   const otherResult = await otherDone;
   assert.equal(otherResult.status, 'error');
   assert.match(otherResult.error.detail, /did not start in time/);
-  await waitFor(() => {
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
-  });
+  await waitFor(() => !alive(pid));
   assert.deepEqual(await adapter.runTurn(fakeTurn(conv('c_next'), 'hello')), { status: 'done' });
   assert.equal(sent('initialize').length, 2, 'the next turn gets a fresh app-server');
 });
@@ -1866,9 +1956,9 @@ test('hermes: a run whose stop keeps being refused is never let go of, also not 
     const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { pollEvery: 10, pollMisses: 3, stopRetry: 5 } });
     const result = await adapter.runTurn(fakeTurn(conv(), 'unreachable and locked'));
     assert.match(result.error.detail, /keeps asking it to stop the run/, 'a 401 is not a stop');
-    // Retried, the wait doubling up to ten times the first: still held after many refusals.
-    await new Promise((r) => setTimeout(r, 300));
-    assert.ok(h.state.stopAttempts >= 6, `retried: ${h.state.stopAttempts} attempts`);
+    // Retried, the wait doubling up to ten times the first: still held after many refusals. A fixed 300 ms wait saw
+    // only five tries on a busy machine.
+    await waitFor(() => h.state.stopAttempts >= 6);
     assert.equal(adapter.unstopped.size, 1);
     const before = h.state.stopAttempts;
     await adapter.dispose();
