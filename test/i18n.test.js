@@ -41,6 +41,27 @@ test('registered catalogs have all keys, context, plural forms, and matching nam
   }
 });
 
+// macOS shows Info.plist usage descriptions in its own questions, such as the one about the local network. English
+// comes from build.mac.extendInfo in package.json. Every other language has <code>.lproj/InfoPlist.strings with the
+// same keys, which build.mac.extraResources copies into the app.
+test('macOS permission texts are translated in an InfoPlist.strings that the mac build packages', () => {
+  const { mac } = require('../package.json').build;
+  const english = Object.fromEntries(Object.entries(mac.extendInfo).filter(([key]) => key.endsWith('UsageDescription')));
+  assert.ok(english.NSLocalNetworkUsageDescription);
+  // A strings file holds "key" = "value"; entries and /* */ comments, nothing else.
+  const entry = /"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"\s*;/g;
+  const unescape = (text) => text.replace(/\\(["\\])/g, '$1');
+  for (const { code } of i18n.languages.filter((language) => language.code !== 'en')) {
+    const folder = `build/mac/${code}.lproj`;
+    assert.ok((mac.extraResources || []).some(({ from, to }) => from === folder && to === `${code}.lproj`), `${folder} is not packaged`);
+    const source = fs.readFileSync(path.join(__dirname, '..', folder, 'InfoPlist.strings'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.equal(source.replace(entry, '').trim(), '', `${folder}/InfoPlist.strings has text outside its entries`);
+    const strings = Object.fromEntries([...source.matchAll(entry)].map(([, key, value]) => [unescape(key), unescape(value)]));
+    assert.deepEqual(Object.keys(strings).sort(), Object.keys(english).sort(), folder);
+    for (const [key, text] of Object.entries(strings)) assert.ok(text.length > 20 && text !== english[key], `Untranslated: ${code}.${key}`);
+  }
+});
+
 test('all source translation references and persistent DOM labels exist in the English catalog', () => {
   for (const directory of ['main', 'renderer']) {
     // Subfolders too: the agent panel lives in renderer/agent and its main side in main/agents.

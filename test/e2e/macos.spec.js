@@ -179,3 +179,21 @@ test('menu bar icon setting reflects minimize behavior without changing normal M
   await icon.click();
   expect(await win.evaluate(() => window.mail.call('state').then(({ settings }) => [settings.closeToTray, settings.minimizeToTray]))).toEqual([true, false]);
 });
+
+test('the menu bar icon is 18 points with a Retina copy, with and without the unread dot', async () => {
+  await demo();
+  // Outside test mode main keeps its tray to itself: note the TrayIcon it makes.
+  await app.evaluate(({ app }) => {
+    const path = process.mainModule.require('path');
+    const { TrayIcon } = process.mainModule.require(path.join(app.getAppPath(), 'src', 'main', 'tray.js'));
+    const update = TrayIcon.prototype.update;
+    TrayIcon.prototype.update = function (state) {
+      global.__macTray = this;
+      return update.call(this, state);
+    };
+  });
+  await win.evaluate(() => window.mail.call('updateSettings', { closeToTray: true }));
+  const images = () => app.evaluate(() => global.__macTray && Object.values(global.__macTray.images).map((image) => ({ size: image.getSize(), scales: image.getScaleFactors() })));
+  const icon = { size: { width: 18, height: 18 }, scales: [1, 2] };
+  await expect.poll(images).toEqual([icon, icon]);
+});

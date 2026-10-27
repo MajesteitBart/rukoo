@@ -165,8 +165,8 @@ function updateTray() {
   if (wanted && !tray) {
     tray = new TrayIcon({
       icon: ICON,
-      // Windows draws tray icons at 16 px at 100% scaling; an image of exactly that size stays sharp.
-      size: Math.round(16 * screen.getPrimaryDisplay().scaleFactor),
+      platform: process.platform,
+      scaleFactor: screen.getPrimaryDisplay().scaleFactor,
       test: Boolean(process.env.SEM_HIDDEN),
       actions: {
         open: showWindow,

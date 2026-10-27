@@ -170,7 +170,9 @@ The red close button hides the main window while mail keeps syncing. Click Rukoo
 
 Use Command instead of Ctrl for mail, compose, calendar and zoom shortcuts. Mark as read uses **⌘ShiftU**, mark as unread uses **⌘U**, and **⌘Q** remains Quit. The native Edit menu supports copy, paste, undo and selection, and shortcuts shown in the interface use ⌘. Zoom and traffic-light spacing apply to both main and compose windows.
 
-Choose **Settings → General → Email links → Use Rukoo Mail** after installing the app. macOS may request confirmation. If needed, choose Rukoo Mail as the default email reader in **Apple Mail → Settings → General**. Links delivered while Rukoo starts wait until its windows are ready.
+Choose **Settings → General → Email links → Use Rukoo Mail** after installing the app. This works only for a copy in Applications or `~/Applications`. When Rukoo runs from the DMG or from Downloads, Settings asks you to move it there first, so email links never point at a copy that disappears later. macOS may request confirmation. If needed, choose Rukoo Mail as the default email reader in **Apple Mail → Settings → General**. Links delivered while Rukoo starts wait until its windows are ready.
+
+macOS 15 and later may ask whether Rukoo Mail can find devices on your local network, sometimes right after launch. Rukoo doesn't need that access with default settings, so denying it is safe. It may matter for a mail or calendar server on your own network, and for remote agent access, which connects Rukoo with an agent or a paired phone on another device over Tailscale. If one of those stops working after you denied it, turn Rukoo Mail on under **System Settings → Privacy & Security → Local Network**.
 
 The profile is `~/Library/Application Support/Rukoo Mail`; `data`, `logos`, `skills` and `google-oauth.json` live under that directory. `SEM_DATA_DIR` selects an isolated test profile. Credentials use Keychain; unlock the login keychain if Rukoo cannot save them. Finder-launched agents also search `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`.
 
