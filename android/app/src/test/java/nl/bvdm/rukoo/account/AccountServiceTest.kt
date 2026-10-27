@@ -402,6 +402,26 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a classification made again after its deletion went round stays`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("again@example.com", PASSWORD)
+        val laptop = device(srv, "laptop")
+        laptop.signIn("again@example.com", PASSWORD)
+        val key = "again@example.com\n<m@x>"
+        desk.put("classification", key, rule("money"), ifAbsent = true)
+        desk.sync()
+        desk.remove("classification", key)
+        desk.sync()
+        assertTrue(desk.put("classification", key, rule("updates"), ifAbsent = true))
+        desk.sync()
+        assertEquals(rule("updates"), desk.value("classification", key))
+        assertEquals(0, desk.status().pending)
+        laptop.sync()
+        assertEquals(rule("updates"), laptop.value("classification", key))
+    }
+
+    @Test
     fun `signing in with a wrong password fails without signing in`() = runBlocking {
         val srv = server()
         val desk = device(srv)

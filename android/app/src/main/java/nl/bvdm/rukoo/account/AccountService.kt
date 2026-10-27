@@ -69,8 +69,9 @@ class AccountService(
 ) {
     private val lock = Any()
 
-    // Its own supervisor, so a failed sync never cancels the scope it was given.
-    private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+    // Its own supervisor, so a failed sync never cancels the scope it was given, and off the main thread: a sync
+    // writes files and seals records.
+    private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default)
     val defaultServer: String = AccountServers.serverUrl(defaultServer, devHosts).orEmpty()
     private val deviceName = deviceName.ifBlank { "Rukoo" }.take(100)
 
@@ -527,7 +528,9 @@ class AccountService(
             val was = entries[key]
             if (ifAbsent && was != null && !was.deleted) return false
             val e = AccountEntry(c, k, v, maxOf(clock.now(), if (was != null) was.t + 1 else 0), dirty = true)
-            if (ifAbsent) {
+            // A first write, unless it takes the place of a deletion this phone knows of: the server keeps that deletion
+            // as a record, so a first write would bounce off it. This one settles by its time instead.
+            if (ifAbsent && was?.deleted != true) {
                 e.ifAbsent = true
                 e.first = true
             }

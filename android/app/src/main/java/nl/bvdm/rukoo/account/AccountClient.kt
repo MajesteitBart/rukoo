@@ -4,7 +4,9 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -77,7 +79,11 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
         .followSslRedirects(false)
         .build()
 
-    override suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?): JsonElement? {
+    // The answer is read off the main thread: OkHttp hands over the headers, and the body still has to come.
+    override suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?): JsonElement? =
+        withContext(Dispatchers.IO) { send(server, method, path, body, token) }
+
+    private suspend fun send(server: String, method: String, path: String, body: JsonElement?, token: String?): JsonElement? {
         val url = (server + path).toHttpUrlOrNull() ?: throw AccountError("no_server")
         // OkHttp wants a body on every POST; logout has nothing to say, so it sends an empty one.
         val payload = body?.let { RukooJson.encodeToString(JsonElement.serializer(), it).toRequestBody(JSON) }

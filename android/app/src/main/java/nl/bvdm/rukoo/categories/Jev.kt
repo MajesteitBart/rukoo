@@ -5,7 +5,9 @@ import java.text.Normalizer
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -49,7 +51,11 @@ class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi 
 
     override val model: String = MODEL
 
-    override suspend fun classify(key: String, m: MessageSummary, categories: List<Category>, toMe: Boolean): JevAnswer {
+    // The answer is read off the main thread, whoever asks.
+    override suspend fun classify(key: String, m: MessageSummary, categories: List<Category>, toMe: Boolean): JevAnswer =
+        withContext(Dispatchers.IO) { ask(key, m, categories, toMe) }
+
+    private suspend fun ask(key: String, m: MessageSummary, categories: List<Category>, toMe: Boolean): JevAnswer {
         val names = optionNames(categories)
         val request = Request.Builder().url(endpoint)
             .header("Authorization", "Bearer $key")

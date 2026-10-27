@@ -127,7 +127,8 @@ class Categories(
     private val clock: Clock = Clock.System,
     private val sortAfterMs: Long = SORT_AFTER,
 ) {
-    private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+    // Its own supervisor, off the main thread: a sort reads every inbox email.
+    private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default)
     private val lock = Any()
     private var local = LocalCategories()
     private var timer: Job? = null
