@@ -1,0 +1,586 @@
+package nl.bvdm.rukoo.account
+
+import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import nl.bvdm.rukoo.core.Clock
+import nl.bvdm.rukoo.core.SecretCipher
+import okhttp3.OkHttpClient
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+
+/** Plain text that says it is a secret, so tests can see that secrets go through the Keystore box. */
+object PlainSecrets : SecretCipher {
+    override fun encrypt(plain: String) = "plain:" + java.util.Base64.getEncoder().encodeToString(plain.toByteArray())
+
+    override fun decrypt(blob: String) = if (blob.startsWith("plain:")) String(java.util.Base64.getDecoder().decode(blob.removePrefix("plain:"))) else null
+}
+
+fun cat(name: String): JsonObject = buildJsonObject { put("name", name) }
+
+fun rule(category: String): JsonObject = buildJsonObject { put("category", category) }
+
+/**
+ * The account service against a server in memory: the cases of desktop's test/account.test.js, so both apps keep
+ * the same sync, conflict and session rules.
+ */
+class AccountServiceTest {
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    private val scopes = mutableListOf<CoroutineScope>()
+    private val servers = mutableListOf<FakeAccountServer>()
+    private val devices = mutableListOf<AccountService>()
+    private val okhttp = OkHttpClient()
+
+    @After
+    fun tearDown() {
+        devices.forEach { it.close() }
+        scopes.forEach { it.cancel() }
+        servers.forEach { it.close() }
+    }
+
+    private fun server(
+        signups: String = "open",
+        invites: List<String> = emptyList(),
+        limit: Int = 1000,
+        kdf: JsonObject = AccountKeys.DEFAULT_KDF.toJson(),
+    ) = FakeAccountServer(signups, invites, limit, kdf = kdf).also { servers += it }
+
+    private fun device(
+        srv: FakeAccountServer?,
+        name: String = "desk",
+        dir: File = tmp.newFolder(),
+        clock: Clock = Clock.System,
+        http: AccountHttp = OkHttpAccountHttp(okhttp),
+        pushAfterMs: Long = 60_000,
+    ): AccountService {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        return AccountService(dir, PlainSecrets, srv?.url.orEmpty(), name, http, scope, devHosts = true, platform = "linux", clock = clock, pushAfterMs = pushAfterMs)
+            .also { devices += it }
+    }
+
+    private suspend fun rejects(code: String, block: suspend () -> Unit) {
+        try {
+            block()
+            fail("expected $code")
+        } catch (e: AccountError) {
+            assertEquals(code, e.code)
+        }
+    }
+
+    /**
+     * A device whose session ended on the server. A sync of its own may notice before the test asks (signing in starts
+     * one), so this checks where it ends up rather than which sync noticed, as desktop's test does.
+     */
+    private suspend fun signedOut(device: AccountService) {
+        // The sync joined may be the one signing in started, whose calls were made before the session ended.
+        repeat(2) {
+            try {
+                device.sync()
+            } catch (e: AccountError) {
+                assertEquals("signed_out", e.code)
+            }
+        }
+        assertFalse(device.status().signedIn)
+        assertEquals("signed_out", device.status().error)
+    }
+
+    private fun AccountService.value(c: String, k: String): JsonElement? = get(c, k)
+
+    @Test
+    fun `signing up sends no password and nothing readable, and gives a recovery key`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        desk.put("category", "needs-you", cat("Needs you"))
+        val res = desk.signUp(" Bart@Example.com ", PASSWORD)
+        assertNotNull(AccountKeys.parseRecoveryKey(res.recoveryKey))
+        assertEquals("bart@example.com", desk.status().email)
+        desk.sync()
+        val sent = srv.calls.joinToString("\n") { it.body }
+        assertFalse("the password never leaves the device", sent.contains(PASSWORD))
+        assertFalse("records go up sealed", sent.contains("Needs you") || sent.contains("needs-you"))
+        assertEquals(1, srv.accounts.getValue("bart@example.com").records.size)
+        assertEquals(0, desk.status().pending)
+        // The phone says what it is.
+        assertTrue(srv.calls.first { it.route == "POST /v1/signup" }.body.contains("\"platform\":\"linux\""))
+    }
+
+    @Test
+    fun `a second device signs in, gets the records and sends its own`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("b@example.com", PASSWORD)
+        desk.put("category", "money", cat("Money"))
+        desk.put("sender", "bank@example.com", rule("money"))
+        desk.sync()
+
+        val laptop = device(srv, "laptop")
+        laptop.put("sender", "shop@example.com", rule("promotions"))
+        laptop.signIn("B@example.com", PASSWORD)
+        laptop.sync()
+        assertEquals(cat("Money"), laptop.value("category", "money"))
+        assertEquals(rule("money"), laptop.value("sender", "bank@example.com"))
+
+        desk.sync()
+        assertEquals("the laptop's own record went up", rule("promotions"), desk.value("sender", "shop@example.com"))
+        assertEquals(listOf("desk", "laptop"), desk.details().devices.map { it.name }.sorted())
+    }
+
+    @Test
+    fun `the newest change wins, a deletion travels, and the first classification stays`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("c@example.com", PASSWORD)
+        val laptop = device(srv, "laptop")
+        laptop.signIn("c@example.com", PASSWORD)
+
+        desk.put("sender", "x@example.com", rule("updates"))
+        desk.sync()
+        laptop.sync()
+        laptop.put("sender", "x@example.com", rule("needs-you"))
+        laptop.sync()
+        desk.sync()
+        assertEquals(rule("needs-you"), desk.value("sender", "x@example.com"))
+
+        desk.remove("sender", "x@example.com")
+        desk.sync()
+        laptop.sync()
+        assertNull(laptop.value("sender", "x@example.com"))
+
+        val key = "c@example.com\n<m1@x>"
+        desk.put("classification", key, rule("money"), ifAbsent = true)
+        laptop.put("classification", key, rule("updates"), ifAbsent = true)
+        desk.sync()
+        laptop.sync()
+        assertEquals("the server kept the first one", rule("money"), laptop.value("classification", key))
+        assertEquals(0, laptop.status().pending)
+    }
+
+    @Test
+    fun `a first write that loses a race still brings the winner down`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("race@example.com", PASSWORD)
+        val laptop = device(srv, "laptop")
+        laptop.signIn("race@example.com", PASSWORD)
+        desk.sync()
+        laptop.sync()
+
+        // Both have pulled; the desk's classification reaches the server first.
+        val key = "race@example.com\n<m@x>"
+        desk.put("classification", key, rule("money"), ifAbsent = true)
+        laptop.put("classification", key, rule("updates"), ifAbsent = true)
+        laptop.pull()
+        desk.sync()
+        laptop.push()
+        laptop.sync()
+        assertEquals(rule("money"), laptop.value("classification", key))
+        desk.sync()
+        assertEquals(rule("money"), desk.value("classification", key))
+    }
+
+    private class TestClock(var t: Long) : Clock {
+        override fun now() = t
+    }
+
+    @Test
+    fun `the later change wins whichever reaches the server last`() = runBlocking {
+        val srv = server()
+        val clock = TestClock(1000)
+        val desk = device(srv, "desk", clock = clock)
+        desk.signUp("lww@example.com", PASSWORD)
+        val laptop = device(srv, "laptop", clock = clock)
+        laptop.signIn("lww@example.com", PASSWORD)
+        desk.sync()
+        laptop.sync()
+
+        // Both pull, the laptop changes the rule at 2000 and the desk at 3000, and the older change arrives last.
+        desk.pull()
+        laptop.pull()
+        clock.t = 2000
+        laptop.put("sender", "x@example.com", rule("updates"))
+        clock.t = 3000
+        desk.put("sender", "x@example.com", rule("needs-you"))
+        desk.push()
+        laptop.push()
+        desk.sync()
+        laptop.sync()
+        assertEquals(rule("needs-you"), desk.value("sender", "x@example.com"))
+        assertEquals(rule("needs-you"), laptop.value("sender", "x@example.com"))
+
+        // A deletion at 4000 against a change at 5000 that arrives first: the change wins on both.
+        desk.pull()
+        laptop.pull()
+        clock.t = 4000
+        desk.remove("sender", "x@example.com")
+        clock.t = 5000
+        laptop.put("sender", "x@example.com", rule("money"))
+        laptop.push()
+        desk.push()
+        laptop.sync()
+        desk.sync()
+        assertEquals(rule("money"), laptop.value("sender", "x@example.com"))
+        assertEquals(rule("money"), desk.value("sender", "x@example.com"))
+
+        // And a later deletion wins over an earlier change.
+        clock.t = 6000
+        laptop.put("sender", "x@example.com", rule("updates"))
+        clock.t = 7000
+        desk.remove("sender", "x@example.com")
+        desk.push()
+        laptop.push()
+        desk.sync()
+        laptop.sync()
+        assertNull(desk.value("sender", "x@example.com"))
+        assertNull(laptop.value("sender", "x@example.com"))
+    }
+
+    @Test
+    fun `on the same time both devices keep the same version`() = runBlocking {
+        val srv = server()
+        val clock = TestClock(1000)
+        val desk = device(srv, "desk", clock = clock)
+        desk.signUp("tie@example.com", PASSWORD)
+        val laptop = device(srv, "laptop", clock = clock)
+        laptop.signIn("tie@example.com", PASSWORD)
+        desk.sync()
+        laptop.sync()
+        clock.t = 9000
+        desk.put("sender", "x@example.com", rule("money"))
+        laptop.put("sender", "x@example.com", rule("updates"))
+        laptop.push()
+        desk.push()
+        desk.sync()
+        laptop.sync()
+        desk.sync()
+        // The larger JSON of [0, v]: "updates" sorts after "money".
+        assertEquals(rule("updates"), desk.value("sender", "x@example.com"))
+        assertEquals(rule("updates"), laptop.value("sender", "x@example.com"))
+    }
+
+    @Test
+    fun `a deletion made while signed out goes up at the next sign-in`() = runBlocking {
+        val srv = server()
+        val dir = tmp.newFolder()
+        val desk = device(srv, "desk", dir)
+        desk.signUp("gone@example.com", PASSWORD)
+        desk.put("category", "promotions", cat("Promotions"))
+        desk.sync()
+        desk.signOut()
+        desk.remove("category", "promotions")
+        desk.signIn("gone@example.com", PASSWORD)
+        desk.sync()
+        assertNull(desk.value("category", "promotions"))
+        val laptop = device(srv, "laptop")
+        laptop.signIn("gone@example.com", PASSWORD)
+        laptop.sync()
+        assertNull(laptop.value("category", "promotions"))
+    }
+
+    @Test
+    fun `a sync still running for an account this device left changes nothing in the next one`() = runBlocking {
+        val srv = server()
+        val a = device(srv, "a-helper")
+        a.signUp("first@example.com", PASSWORD)
+        for (i in 0 until 5) a.put("sender", "a$i@example.com", rule("updates"))
+        a.sync()
+        val b = device(srv, "b-helper")
+        b.signUp("second@example.com", PASSWORD)
+        b.put("sender", "b0@example.com", rule("money"))
+        b.sync()
+
+        // The desk's first pull for the first account waits until the desk is in the second account.
+        val held = CompletableDeferred<Unit>()
+        var holding = true
+        val real = OkHttpAccountHttp(okhttp)
+        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token ->
+            if (holding && path.startsWith("/v1/records?")) {
+                holding = false
+                held.await()
+            }
+            real.request(server, method, path, body, token)
+        })
+        desk.signIn("first@example.com", PASSWORD)
+        val old = desk.running()!!
+        desk.signOut()
+        desk.signIn("second@example.com", PASSWORD)
+        desk.sync()
+        held.complete(Unit)
+        runCatching { old.await() }
+        assertEquals(rule("money"), desk.value("sender", "b0@example.com"))
+
+        b.put("sender", "b1@example.com", rule("to-read"))
+        b.sync()
+        desk.sync()
+        assertEquals("the old answer moved no cursor", rule("to-read"), desk.value("sender", "b1@example.com"))
+        assertNull(desk.value("sender", "a0@example.com"))
+        assertTrue(desk.status().signedIn)
+    }
+
+    @Test
+    fun `signing in with a wrong password fails without signing in`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        desk.signUp("d@example.com", PASSWORD)
+        val other = device(srv, "other")
+        rejects("unauthorized") { other.signIn("d@example.com", "not the password!") }
+        rejects("unauthorized") { other.signIn("nobody@example.com", PASSWORD) }
+        assertFalse(other.status().signedIn)
+    }
+
+    @Test
+    fun `sign-up checks the address and the password length first`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        rejects("invalid_email") { desk.signUp("not an address", PASSWORD) }
+        rejects("weak_password") { desk.signUp("e@example.com", "short") }
+        // Twelve characters are counted as characters, not as UTF-16 units: eleven emoji are too short.
+        rejects("weak_password") { desk.signUp("e@example.com", "😀".repeat(11)) }
+        assertEquals(0, srv.calls.size)
+    }
+
+    @Test
+    fun `a server that hands out a weak password hash is refused`() = runBlocking {
+        val srv = server(kdf = buildJsonObject {
+            put("alg", "argon2id")
+            put("m", 1024)
+            put("t", 1)
+            put("p", 1)
+        })
+        val desk = device(srv)
+        rejects("weak_kdf") { desk.signIn("f@example.com", PASSWORD) }
+        assertFalse("no key for the password went out", srv.calls.any { it.route == "POST /v1/login" })
+    }
+
+    @Test
+    fun `invite-only and closed servers say so`() = runBlocking {
+        val invite = server(signups = "invite", invites = listOf("WELCOME"))
+        val a = device(invite)
+        rejects("invite_required") { a.signUp("g@example.com", PASSWORD) }
+        a.signUp("g@example.com", PASSWORD, invite = " WELCOME ")
+        assertTrue(a.status().signedIn)
+        val closed = server(signups = "closed")
+        rejects("signups_closed") { device(closed).signUp("h@example.com", PASSWORD) }
+    }
+
+    @Test
+    fun `a changed password signs other devices out, and a typo does not sign this one out`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("i@example.com", PASSWORD)
+        desk.put("category", "to-read", cat("To read"))
+        desk.sync()
+        val laptop = device(srv, "laptop")
+        laptop.signIn("i@example.com", PASSWORD)
+
+        rejects("wrong_password") { desk.changePassword("wrong password!!", "another long password") }
+        assertTrue(desk.status().signedIn)
+        desk.changePassword(PASSWORD, "another long password")
+        signedOut(laptop)
+
+        val phone = device(srv, "phone")
+        phone.signIn("i@example.com", "another long password")
+        phone.sync()
+        assertEquals("the same data key under the new password", cat("To read"), phone.value("category", "to-read"))
+    }
+
+    @Test
+    fun `the recovery key sets a new password and keeps the data`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        val recoveryKey = desk.signUp("j@example.com", PASSWORD).recoveryKey
+        desk.put("sender", "boss@example.com", rule("needs-you"))
+        desk.sync()
+
+        val phone = device(srv, "phone")
+        rejects("recovery_key") { phone.recover("j@example.com", "nope", "brand new password") }
+        rejects("unauthorized") { phone.recover("j@example.com", AccountKeys.formatRecoveryKey(AccountKeys.randomBytes(20)), "brand new password") }
+        phone.recover("j@example.com", recoveryKey.lowercase(), "brand new password")
+        phone.sync()
+        assertEquals(rule("needs-you"), phone.value("sender", "boss@example.com"))
+        signedOut(desk)
+
+        val next = phone.newRecoveryKey("brand new password")
+        assertNotEquals(recoveryKey, next)
+        phone.signOut()
+        rejects("unauthorized") { phone.recover("j@example.com", recoveryKey, "yet another password") }
+    }
+
+    @Test
+    fun `signing in again on this phone survives a restart, and signing out keeps local data`() = runBlocking {
+        val srv = server()
+        val dir = tmp.newFolder()
+        val first = device(srv, "desk", dir)
+        first.signUp("k@example.com", PASSWORD)
+        first.put("category", "updates", cat("Updates"))
+        first.sync()
+        first.close()
+
+        val again = device(srv, "desk", dir)
+        assertTrue(again.status().signedIn)
+        assertEquals(cat("Updates"), again.value("category", "updates"))
+        again.put("category", "promotions", cat("Promotions"))
+        again.sync()
+        assertEquals(2, srv.accounts.getValue("k@example.com").records.size)
+
+        again.signOut()
+        assertFalse(again.status().signedIn)
+        assertEquals(cat("Promotions"), again.value("category", "promotions"))
+        val saved = File(dir, "account.json").readText()
+        assertFalse("no session left on disk", saved.contains("token") || saved.contains("dataKey"))
+    }
+
+    @Test
+    fun `a session stored under a Keystore key this phone lost signs in again`() = runBlocking {
+        val srv = server()
+        val dir = tmp.newFolder()
+        val first = device(srv, "desk", dir)
+        first.signUp("lost@example.com", PASSWORD)
+        first.put("category", "updates", cat("Updates"))
+        first.sync()
+        first.close()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val forgetful = object : SecretCipher {
+            override fun encrypt(plain: String) = PlainSecrets.encrypt(plain)
+
+            override fun decrypt(blob: String): String? = null
+        }
+        val again = AccountService(dir, forgetful, srv.url, "desk", OkHttpAccountHttp(okhttp), scope, devHosts = true).also { devices += it }
+        assertFalse(again.status().signedIn)
+        assertEquals("signed_out", again.status().error)
+        assertEquals("its records stay", cat("Updates"), again.value("category", "updates"))
+    }
+
+    @Test
+    fun `a device that was removed elsewhere finds itself signed out`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("l@example.com", PASSWORD)
+        val laptop = device(srv, "laptop")
+        laptop.signIn("l@example.com", PASSWORD)
+        val devices = desk.details().devices
+        desk.removeDevice(devices.first { it.name == "laptop" }.id)
+        signedOut(laptop)
+    }
+
+    @Test
+    fun `deleting the account needs the password and clears the server`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        desk.signUp("m@example.com", PASSWORD)
+        rejects("wrong_password") { desk.deleteAccount("wrong password!!") }
+        assertTrue("a wrong password is no lost session", desk.status().signedIn)
+        desk.deleteAccount(PASSWORD)
+        assertFalse(srv.accounts.containsKey("m@example.com"))
+        assertFalse(desk.status().signedIn)
+    }
+
+    @Test
+    fun `many records go up and come down in pages`() = runBlocking {
+        val srv = server(limit = 50)
+        val desk = device(srv, "desk")
+        desk.signUp("n@example.com", PASSWORD)
+        for (i in 0 until 620) desk.put("classification", "n@example.com\n<$i@x>", rule("updates"), ifAbsent = true)
+        desk.sync()
+        val laptop = device(srv, "laptop")
+        laptop.signIn("n@example.com", PASSWORD)
+        laptop.sync()
+        assertEquals(620, laptop.list("classification").size)
+        assertEquals(620, laptop.status().counts["classification"])
+    }
+
+    @Test
+    fun `the export holds every record, readable`() {
+        val srv = server()
+        val desk = device(srv)
+        desk.put("category", "money", cat("Money"))
+        val data = desk.exportData()
+        assertEquals(kotlinx.serialization.json.JsonNull, data["email"])
+        assertEquals(
+            """[{"collection":"category","key":"money","value":{"name":"Money"},"changed":"${AccountService.iso(desk.list("category").single().t)}"}]""",
+            data["records"].toString(),
+        )
+    }
+
+    @Test
+    fun `without a server the account says so`() = runBlocking {
+        val desk = device(null)
+        rejects("no_server") { desk.signUp("o@example.com", PASSWORD) }
+        try {
+            desk.setServer("http://example.com")
+            fail("http elsewhere is refused")
+        } catch (e: AccountError) {
+            assertEquals("no_server", e.code)
+        }
+        desk.setServer("https://sync.example.com")
+        assertEquals("https://sync.example.com", desk.status().server)
+    }
+
+    @Test
+    fun `the server can only change while signed out`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        desk.signUp("p@example.com", PASSWORD)
+        try {
+            desk.setServer("https://elsewhere.example.com")
+            fail("changed the server while signed in")
+        } catch (e: AccountError) {
+            assertEquals("signed_in", e.code)
+        }
+        desk.signOut()
+        desk.setServer("https://elsewhere.example.com")
+        assertEquals("https://elsewhere.example.com", desk.status().server)
+        // An empty address goes back to the default.
+        desk.setServer("")
+        assertEquals(srv.url, desk.status().server)
+    }
+
+    @Test
+    fun `a change goes up by itself shortly after it is made`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, pushAfterMs = 50)
+        desk.signUp("q@example.com", PASSWORD)
+        desk.sync()
+        desk.put("sender", "x@example.com", rule("money"))
+        withTimeout(10_000) {
+            while (srv.accounts.getValue("q@example.com").records.isEmpty() || desk.status().pending > 0) delay(20)
+        }
+        assertEquals(0, desk.status().pending)
+    }
+
+    @Test
+    fun `the server's info is kept for the server it came from`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        val info = desk.serverInfo()
+        assertEquals("Test operator", info.operator?.name)
+        assertEquals("eu", info.hosting?.jurisdiction)
+        assertEquals(info, desk.status().info)
+        desk.setServer("https://elsewhere.example.com")
+        assertNull("another server, another operator", desk.status().info)
+    }
+
+    private companion object {
+        const val PASSWORD = "a long enough password"
+    }
+}
