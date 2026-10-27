@@ -5,6 +5,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -346,6 +347,58 @@ class AccountServiceTest {
         assertEquals("the old answer moved no cursor", rule("to-read"), desk.value("sender", "b1@example.com"))
         assertNull(desk.value("sender", "a0@example.com"))
         assertTrue(desk.status().signedIn)
+    }
+
+    @Test
+    fun `a slow sign-out leaves alone the session made while it waited`() = runBlocking {
+        val srv = server()
+        val helper = device(srv, "helper")
+        helper.signUp("slow@example.com", PASSWORD)
+        val held = CompletableDeferred<Unit>()
+        val hold = java.util.concurrent.atomic.AtomicBoolean(false)
+        val waiting = CompletableDeferred<Unit>()
+        val real = OkHttpAccountHttp(okhttp)
+        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token ->
+            if (path == "/v1/logout" && hold.getAndSet(false)) {
+                waiting.complete(Unit)
+                held.await()
+            }
+            real.request(server, method, path, body, token)
+        })
+        desk.signIn("slow@example.com", PASSWORD)
+        desk.sync()
+        hold.set(true)
+        val leaving = async { desk.signOut() }
+        waiting.await()
+        // Meanwhile the session ends another way (another device signs this one out), and the person signs in again.
+        helper.removeDevice(helper.details().devices.first { it.name == "desk" }.id)
+        signedOut(desk)
+        desk.signIn("slow@example.com", PASSWORD)
+        held.complete(Unit)
+        leaving.await()
+        assertTrue(desk.status().signedIn)
+    }
+
+    @Test
+    fun `a classification deleted while signed out stays deleted when signing in`() = runBlocking {
+        val srv = server()
+        val clock = TestClock(100)
+        val helper = device(srv, "helper", clock = clock)
+        helper.signUp("tomb@example.com", PASSWORD)
+        val key = "tomb@example.com\n<old@x>"
+        helper.put("classification", key, rule("updates"), ifAbsent = true)
+        helper.sync()
+        val desk = device(srv, "desk", clock = clock)
+        desk.signIn("tomb@example.com", PASSWORD)
+        desk.sync()
+        desk.signOut()
+        clock.t = 201
+        desk.remove("classification", key)
+        desk.signIn("tomb@example.com", PASSWORD)
+        desk.sync()
+        assertNull(desk.value("classification", key))
+        helper.sync()
+        assertNull("the deletion reached the other device", helper.value("classification", key))
     }
 
     @Test

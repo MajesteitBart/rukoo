@@ -357,15 +357,26 @@ class AccountService(
         return detailsOf(res?.get("account"))
     }
 
+    /** Only the session this was asked for: a slow answer must not sign out one made meanwhile. */
     suspend fun signOut(): AccountStatus {
-        if (!signedIn) return status()
-        runCatching { call("POST", "/v1/logout", auth = true) }
-        synchronized(lock) {
-            state = state.copy(error = null)
-            forget()
+        val session = synchronized(lock) { session } ?: return status()
+        try {
+            call("POST", "/v1/logout", auth = true, session = session)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Signed out here all the same; the server ends the session when it next hears of it.
         }
-        changedStatus()
+        if (endIf(session)) changedStatus()
         return status()
+    }
+
+    /** Signs this phone out when [session] is still the one it has; true when it did. */
+    private fun endIf(session: Session): Boolean = synchronized(lock) {
+        if (this.session !== session) return false
+        state = state.copy(error = null)
+        forget()
+        true
     }
 
     suspend fun details(): AccountDetails {
@@ -426,14 +437,10 @@ class AccountService(
 
     /** Deletes the account and everything in it on the server. This phone keeps its own copy. */
     suspend fun deleteAccount(password: String): AccountStatus {
-        if (!signedIn) throw fail("signed_out")
+        val session = synchronized(lock) { session } ?: throw fail("signed_out")
         val keys = authFor(email(), password)
-        call("DELETE", "/v1/account", buildJsonObject { put("authKey", AccountKeys.b64u(keys.authKey)) }, auth = true)
-        synchronized(lock) {
-            state = state.copy(error = null)
-            forget()
-        }
-        changedStatus()
+        call("DELETE", "/v1/account", buildJsonObject { put("authKey", AccountKeys.b64u(keys.authKey)) }, auth = true, session = session)
+        if (endIf(session)) changedStatus()
         return status()
     }
 
@@ -466,7 +473,8 @@ class AccountService(
             for (e in entries.values) {
                 e.seq = null
                 e.dirty = true
-                if (e.c in FIRST_WRITE_WINS) {
+                // A first write, unless it is a deletion: that settles by its time, like any other.
+                if (e.c in FIRST_WRITE_WINS && !e.deleted) {
                     e.ifAbsent = true
                     e.first = true
                 }
