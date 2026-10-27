@@ -107,6 +107,21 @@ test('an email moves to another category, and its sender follows on request', as
   await expect(settings().locator('.row', { hasText: 'newsletter@anwb.nl' })).toHaveCount(0);
 });
 
+test('moving a selection to another category clears it from the reader too', async () => {
+  await turnOn();
+  await closeSettings();
+  await win.locator('.ctab', { hasText: 'Promotions' }).click();
+  await win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' }).click({ modifiers: ['Control'] });
+  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
+  await expect(win.locator('.reader .multi')).toBeVisible();
+  await win.locator('[data-bulk="more"]').click();
+  await win.locator('.menu button', { hasText: 'Move to category' }).click();
+  await win.locator('.scrim .radio-row', { hasText: 'Updates' }).click();
+  await expect(win.locator('.list-scroll .empty')).toContainText('Nothing in Promotions');
+  await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
+  await expect(win.locator('.reader .multi')).toHaveCount(0);
+});
+
 test('categories can be renamed, added, moved up and kept after a restart', async () => {
   await turnOn();
   await settings().locator('[data-a="cat-edit:money"]').click();

@@ -805,7 +805,8 @@ const api = {
   categoriesRemove: (id) => categories.removeCategory(accountText(id, 100)),
   categoriesReorder: (ids) => categories.reorder((Array.isArray(ids) ? ids : []).slice(0, 50).map((id) => accountText(id, 100))),
   categoriesMove: (ids, category, opts) =>
-    categories.move((Array.isArray(ids) ? ids : []).slice(0, 500).map((id) => accountText(id, 4000)), accountText(category, 100), { sender: plainObject(opts).sender === true }),
+    // Every selected email: a unified inbox can show several hundred per account.
+    categories.move((Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000)), accountText(category, 100), { sender: plainObject(opts).sender === true }),
   categoriesForgetSender: (address) => categories.forgetSender(accountText(address, 320)),
   categoriesSetJev: (input) => {
     const i = plainObject(input);

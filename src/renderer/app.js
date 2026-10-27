@@ -924,14 +924,20 @@ function renderList() {
   renderListHead();
   renderCategoryTabs();
   // A selection only holds emails the tab shows; one moved to another category leaves it.
+  let pruned = false;
   if (categoriesOn() && S.checked.size) {
     const shown = new Set(categoryRows().map((m) => m.id));
-    for (const id of S.checked) if (!shown.has(id)) S.checked.delete(id);
+    for (const id of S.checked) if (!shown.has(id)) pruned = S.checked.delete(id) || pruned;
   }
   renderListTools();
   const scroll = $('.list-scroll');
   scroll.innerHTML = listHtml();
   renderShell();
+  // The reader showed the selection; it follows what is left of it, as after a move or delete.
+  if (pruned) {
+    if (S.checked.size > 1 || $('.reader .multi')) renderReader();
+    agentViewChanged();
+  }
 }
 
 // Three or more messages in a row from one sender, on the same day, fold into one row.
