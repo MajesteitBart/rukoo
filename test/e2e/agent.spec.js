@@ -2048,6 +2048,60 @@ test('two emails dragged from the list show up as chips, and the agent reads bot
   await shot('24-emails-sent');
 });
 
+test('an attached email archived after Send still reads with the id the agent got, after a restart too, and a new session gets the id it has now', async () => {
+  await openChat('Call on Thursday');
+  await dragToChat('Your parcel is on its way');
+  await say('Compare these');
+  await expect(transcript()).toContainText('The email "Your parcel is on its way" is from', { timeout: 10000 });
+  const [given] = (await received()).emails;
+  const cid = await conversationId();
+
+  // Archived from the toolbar with the chat closed. The id the agent got names nothing now.
+  await input().focus();
+  await win.keyboard.press('Control+j');
+  await expect(pane()).toBeHidden();
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await win.click('[data-reader="archive"]');
+  await expect(win.locator('#toast')).toContainText('Archive');
+  await expect(win.locator('.item', { hasText: 'Your parcel is on its way' })).toHaveCount(0);
+  const unbound = await app.evaluate(async (_e, id) => {
+    const res = await global.__semAgents.callTool({ agent: 'clark', conversationId: null, remote: false }, 'read_message', { message_id: id }, {});
+    return res.isError ? res.content[0].text : null;
+  }, given);
+  expect(unbound).toMatch(/Ids change when mail moves/);
+
+  // Back in the chat, the agent reads it with the id it got.
+  const reads = () => transcript().evaluate((el) => el.innerText.split('The email "Your parcel is on its way" is in Archive now.').length - 1);
+  await openChat('Call on Thursday');
+  await say('Read them again');
+  await expect.poll(reads, { timeout: 10000 }).toBe(1);
+  await settled();
+  await shot('27-attached-email-archived');
+
+  // Rukoo restarts. The message kept the email's Message-ID, so the old id still reads.
+  await app.close();
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await item('Call on Thursday').click();
+  if (!(await pane().isVisible())) await win.keyboard.press('Control+j');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['Your parcel is on its way']);
+  await say('Read them again');
+  await expect.poll(reads, { timeout: 10000 }).toBe(2);
+  const now = (await tool(cid, 'read_message', { message_id: given })).data;
+  expect(now.folder).toBe('Archive');
+  expect(now.id).not.toBe(given);
+
+  // A lost session: the recap names the email by the id it has now.
+  await say('Did you keep a lost session?');
+  await expect(transcript()).toContainText('I started a new session. Rukoo sent me the email and a recap of our chat.', { timeout: 10000 });
+  const recap = (await received()).input;
+  expect(recap).toContain(`User: Compare these [attached: the email "Your parcel is on its way" (id ${now.id})]`);
+  expect(recap).not.toContain(given);
+  await settled();
+  await shot('28-attached-email-new-session');
+});
+
 test('the newer email a chat was continued from, dropped on the chat, is not added to the message again', async () => {
   await win.click('[data-view="sent"]');
   await openChat('Dinner on Saturday');

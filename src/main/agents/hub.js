@@ -1210,7 +1210,8 @@ class AgentHub extends EventEmitter {
 
   // Emails the user added to a message, by Rukoo id. Only an email Rukoo has itself counts: one in the user's
   // accounts, or a copy saved on this device. Subject and sender come from Rukoo's own cache, not the renderer.
-  // The chat's own email is there already.
+  // The chat's own email is there already. Each keeps its Message-ID and account, as the chat's own email does:
+  // a Rukoo id changes when the email moves, and with those Rukoo finds it again (refreshEmails(), relocate()).
   attachEmails(c, ids) {
     const list = [].concat(ids || []);
     if (list.length > MAX_EMAILS) throw new AgentError('invalid', `at most ${MAX_EMAILS} emails per message`);
@@ -1234,7 +1235,9 @@ class AgentHub extends EventEmitter {
       if ((c.continued || []).some((e) => e.id === id || same(e.messageId, m.messageId))) continue;
       if (m.messageId) seen.push(m.messageId);
       const from = isObj(m.from) ? { name: clip(m.from.name || '', 200), address: clip(m.from.address || '', 320) } : null;
-      out.push({ id, subject: clip(m.subject || '', 300), from });
+      // A saved copy's id names no account; its entry does.
+      const accountId = id.startsWith('saved:') ? m.accountId || null : tools.accountOfId(id);
+      out.push({ id, subject: clip(m.subject || '', 300), from, messageId: m.messageId ? clip(m.messageId, 1000) : null, accountId });
     }
     if (gone.length) throw missingError('email-missing', gone, 'an email added to the message is no longer here');
     return out;
@@ -1251,6 +1254,8 @@ class AgentHub extends EventEmitter {
     const adapter = this.adapters.get(c.agent);
     let result;
     if (action === 'approved') turn.approval = { display: display || text };
+    // Before the first await, so the message in the transcript has each email's Message-ID from the moment it is sent.
+    this.keepEmails(c, turn);
     try {
       if (!adapter) throw new AgentError('unknown', this.adapterErrors.get(c.agent) || `${c.agent} adapter not available`);
       // Mail work that still runs reports into the notes this turn takes: wait for all of it first, also for
@@ -1290,6 +1295,16 @@ class AgentHub extends EventEmitter {
       // of its own and can take a while; stopped meanwhile, as above.
       if (turn.attached && turn.attached.files.length) {
         turn.attached = { files: await this.files.forTurn(c.id, turn.attached.files, { signal: turn.controller.signal }), emails: turn.attached.emails };
+        if (turn.closed || turn.controller.signal.aborted) {
+          this.giveBack(c, turn);
+          return this.finishTurn(turn, { status: 'stopped' });
+        }
+      }
+      // An email the user attached can have moved since Send, and one attached to an earlier message since then: the
+      // agent gets the ids they have now. Finding a moved one can open a folder; stopped meanwhile, as above.
+      const emails = [...(turn.attached ? turn.attached.emails : []), ...(recap ? this.earlierEmails(c, turn) : [])];
+      if (emails.length) {
+        await this.refreshEmails(c, emails);
         if (turn.closed || turn.controller.signal.aborted) {
           this.giveBack(c, turn);
           return this.finishTurn(turn, { status: 'stopped' });
@@ -1427,6 +1442,40 @@ class AgentHub extends EventEmitter {
     return at < 0 ? c.items.slice() : c.items.slice(0, at);
   }
 
+  // The emails the user attached to the messages before this turn's own, as their messages keep them.
+  earlierEmails(c, turn) {
+    return this.earlier(c, turn).flatMap((i) => (i.type === 'user' && Array.isArray(i.emails) ? i.emails : []));
+  }
+
+  // The user's message keeps the emails it took along as this turn has them, with their Message-ID and account
+  // (attachEmails()), so a recap and read_message find one again after it moved. One list for both: an id the turn
+  // finds again (refreshEmails()) is the message's as well. Chats saved before Rukoo kept these have the id alone.
+  keepEmails(c, turn) {
+    const emails = turn.attached ? turn.attached.emails : [];
+    const item = emails.length ? c.items.find((i) => i.id === turn.userItem) : null;
+    if (item) item.emails = emails;
+  }
+
+  // Attached emails where they are now, found like the chat's own (currentMessageId): each one that moved gets
+  // its new id, in the transcript too. One without a Message-ID, or one that is gone, keeps the id it has. One at a
+  // time: finding a moved email can open its folder.
+  async refreshEmails(c, emails) {
+    for (const e of emails) {
+      if (isObj(e) && e.id && e.messageId) await this.currentMessageId(c, e);
+    }
+  }
+
+  // The current id of an email this chat gave the agent, by an id that no longer holds it: the chat's own, one it
+  // was continued from, or one the user attached. Each keeps its Message-ID and account, so one that moved is found
+  // again (locate). Nothing in the chat changes, so the agent can pass the same id again; a recap gives a new
+  // session the new ids (refreshEmails()). null when the chat gave no email that id, or the email is gone.
+  async relocate(c, id) {
+    if (!c || !id || this.conversations.get(c.id) !== c) return null;
+    const attached = c.items.flatMap((i) => (i.type === 'user' && Array.isArray(i.emails) ? i.emails : []));
+    const ref = [c.message, ...(c.continued || []), ...attached].find((e) => isObj(e) && e.id === id && e.messageId);
+    return ref ? this.locate({ id, messageHeader: ref.messageId, accountId: ref.accountId || null }) : null;
+  }
+
   // The agent lost the chat's session (Claude Code deletes old transcripts, say), and the adapter starts a new
   // one that knows nothing of the chat. Before the adapter sends anything, input becomes a first turn with the
   // chat's email and a recap of the chat. A turn that has the email already (ready) stays as it is: a first turn
@@ -1445,6 +1494,8 @@ class AgentHub extends EventEmitter {
     }
     // The new session has not had a newer email either, even if the old one did.
     const newer = turn.newer && turn.newer.length ? turn.newer : (c.continued || []).length ? await this.loadNewer(c, { again: true }) : [];
+    // The recap names the emails of earlier messages by the ids they have now.
+    await this.refreshEmails(c, this.earlierEmails(c, turn));
     // Stopped meanwhile: the adapter sees the abort and sends nothing.
     if (turn.closed || turn.controller.signal.aborted) return handle.input;
     turn.newer = newer;

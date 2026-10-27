@@ -9,7 +9,7 @@ const path = require('path');
 const { tempDir } = require('./tmp');
 const zlib = require('zlib');
 const { execFile, execFileSync } = require('child_process');
-const { Engine } = require('../src/main/engine');
+const { Engine, decodeId } = require('../src/main/engine');
 const { AgentHub } = require('../src/main/agents/hub');
 const context = require('../src/main/agents/context');
 const { pdfText, glyphText, parseCMap } = require('../src/main/pdftext');
@@ -386,6 +386,88 @@ test('a recap after a lost session names the files and emails with the ids that 
     assert.ok(input.includes(`User: Look at these [attached: report.pdf (file_id ${c.files[0].id}); the email "${a.subject}" (id ${a.id})]`), input);
     assert.match(input, /<unsafe_content source="file" file_id="f_[0-9a-f]{10}" filename="second\.txt">\nMore\n<\/unsafe_content>/);
     assert.equal(context.recap([{ type: 'user', text: '', files: [{ id: 'f_1', name: 'a.pdf' }] }]).entries[0], 'User: [attached: a.pdf (file_id f_1)]');
+  } finally {
+    await t.done();
+  }
+});
+
+test('an attached email that moves after Send still reads with the id the agent got, and a recap names where it is now', async () => {
+  const t = await setup();
+  try {
+    const thursday = t.find('Call on Thursday');
+    const c = t.hub.create({ agent: 'claude', message: { id: t.find('Your parcel is on its way').id } });
+    t.hub.send(c.id, { text: 'Compare these', emails: [thursday.id] });
+    await t.idle(c.id);
+    assert.deepEqual(t.turns.at(-1).emails, [thursday.id]);
+    // The message keeps what finds the email again: its Message-ID and account.
+    const user = c.items.find((i) => i.type === 'user');
+    assert.deepEqual(user.emails[0], { id: thursday.id, subject: 'Call on Thursday', from: user.emails[0].from, messageId: thursday.messageId, accountId: t.engine.accounts[0].id });
+
+    // Moved into a folder Rukoo has not opened: the id the agent has names nothing in the cache any more.
+    await t.engine.move(thursday.id, 'Travel');
+    const unbound = await t.hub.callTool({ agent: 'codex', conversationId: null, remote: false }, 'read_message', { message_id: thursday.id });
+    assert.equal(unbound.isError, true, 'without the chat, a stale id is unknown as before');
+    assert.match(unbound.content[0].text, /Ids change when mail moves/);
+    const read = await call(t.hub, c.id, 'read_message', { message_id: thursday.id });
+    assert.ok(!read.isError, read.content && read.content[0].text);
+    const moved = read.structuredContent.id;
+    assert.equal(decodeId(moved).folder, 'Travel');
+    assert.equal(read.structuredContent.subject, tagged('Call on Thursday'));
+    const att = await call(t.hub, c.id, 'read_attachment', { message_id: thursday.id, index: 0 });
+    assert.ok(!att.isError, att.content && att.content[0].text);
+    assert.equal(att.structuredContent.message_id, moved);
+    // The chat keeps the id the agent has, so it reads again; another chat never had that id.
+    assert.equal(user.emails[0].id, thursday.id);
+    assert.ok(!(await call(t.hub, c.id, 'read_message', { message_id: thursday.id })).isError);
+    const other = t.hub.create({ agent: 'claude', message: null });
+    assert.equal((await call(t.hub, other.id, 'read_message', { message_id: thursday.id })).isError, true);
+
+    // A new session gets the recap with the id the email has now, and the message keeps that one.
+    t.hub.send(c.id, { text: 'lost session' });
+    await t.idle(c.id);
+    assert.ok(t.turns.at(-1).again);
+    const recap = t.turns.at(-1).input;
+    assert.ok(recap.includes(`User: Compare these [attached: the email "Call on Thursday" (id ${moved})]`), recap);
+    assert.ok(!recap.includes(thursday.id), recap);
+    assert.equal(user.emails[0].id, moved);
+
+    // Moved on, and the next message carries a recap: it names the newest place.
+    await t.engine.move(moved, 'Invoices');
+    c.needsRecap = true;
+    t.hub.send(c.id, { text: 'And now?' });
+    await t.idle(c.id);
+    const later = user.emails[0].id;
+    assert.equal(decodeId(later).folder, 'Invoices');
+    assert.ok(t.turns.at(-1).input.includes(`[attached: the email "Call on Thursday" (id ${later})]`), t.turns.at(-1).input);
+  } finally {
+    await t.done();
+  }
+});
+
+test('an email that moves between Send and the turn goes to the agent with the id it has now', async () => {
+  const t = await setup();
+  try {
+    const own = t.find('Your parcel is on its way');
+    const thursday = t.find('Call on Thursday');
+    const c = t.hub.create({ agent: 'codex', message: { id: own.id } });
+    // The turn waits for the chat's own email while the attached one moves.
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const real = t.engine.getMessage.bind(t.engine);
+    t.engine.getMessage = async (id, ...rest) => {
+      if (id === own.id) await gate;
+      return real(id, ...rest);
+    };
+    t.hub.send(c.id, { text: 'Compare', emails: [thursday.id] });
+    await t.engine.move(thursday.id, 'Travel');
+    release();
+    await t.idle(c.id);
+    const turn = t.turns.at(-1);
+    const [now] = turn.emails;
+    assert.equal(decodeId(now).folder, 'Travel');
+    assert.ok(turn.input.includes(`- id ${now}: <unsafe_content source="email subject">Call on Thursday</unsafe_content>`), turn.input);
+    assert.ok(!turn.input.includes(thursday.id), 'the agent never gets the id that is gone');
+    assert.equal(c.items.find((i) => i.type === 'user').emails[0].id, now);
   } finally {
     await t.done();
   }
