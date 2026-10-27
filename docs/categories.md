@@ -22,7 +22,7 @@ Each email goes to one category. When several fit, the one higher in the list wi
 
 ## Moving mail
 
-Right-click an email, or choose More with several selected, and pick **Move to category**. The toast that follows offers **Also future mail**: then every later email from that sender goes there too. Settings lists these senders, and you can remove a rule there.
+Right-click an email, or choose More with several selected, and pick **Move to category**. On Android, press and hold an email (or select several) and choose More, or use More in the open email. The toast that follows offers **Also future mail**: then every later email from that sender goes there too. Settings lists these senders, and you can remove a rule there.
 
 ## How Rukoo sorts
 
@@ -47,6 +47,5 @@ When TypeSafe refuses the key, Rukoo stops using Jev until you enter another one
 
 ## Limits
 
-- Rukoo for Android doesn't show categories yet.
 - Categories apply to the inbox, in the newest messages Rukoo keeps for it.
 - Without Jev, mail from people is split only by whether you're in To or Cc, so Needs you and To read are a rough guess.
