@@ -128,6 +128,14 @@ async function watchQuit() {
     if (global.__semTray) wrap(global.__semTray, 'destroy', 'tray removed');
   }, quitLog);
 }
+// Answers the question about a draft with a button that lets the quit go on. Don't save quits at once, so the
+// window can close before Playwright's click has returned, which it reports as a closed page. quitEvents() then
+// checks that the quit really happened.
+async function answerAndQuit(where, button) {
+  await where.click(`.scrim .buttons button:text-is("${button}")`).catch((err) => {
+    if (!/closed/i.test(String(err && err.message))) throw err;
+  });
+}
 async function quitEvents() {
   // will-quit waits up to 5 s for the agents; a busy machine adds to that.
   await expect.poll(() => running, { timeout: 30000 }).toBe(false);
@@ -306,7 +314,7 @@ for (const [button, kept] of [["Don't save", false], ['Save', true]]) {
     await trayMenu('quit');
     await expect.poll(visible).toBe(true);
     await expect(win.locator('.scrim')).toContainText('Save draft?');
-    await win.click(`.scrim .buttons button:text-is("${button}")`);
+    await answerAndQuit(win, button);
     expect(await quitEvents()).toEqual(QUIT_AFTER_QUESTION);
     expect(savedDrafts().includes(subject)).toBe(kept);
   });
@@ -384,7 +392,7 @@ for (const [button, kept] of [["Don't save", false], ['Save', true]]) {
     await watchQuit();
     await trayMenu('quit');
     await expect(compose.locator('.scrim')).toContainText('Save draft?');
-    await compose.click(`.scrim .buttons button:text-is("${button}")`);
+    await answerAndQuit(compose, button);
     expect(await quitEvents()).toEqual(QUIT_AFTER_QUESTION);
     expect(savedDrafts().includes(subject)).toBe(kept);
   });
