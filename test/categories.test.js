@@ -304,6 +304,26 @@ test('a refused Jev key stops Jev until a new key, and busy waits, with the unce
   assert.equal(stored(1).source, 'rules');
 });
 
+test('turning Jev off stops the emails still queued for it', async (t) => {
+  let calls = 0;
+  let cats;
+  const fake = {
+    MODEL: 'jev-test',
+    classify: async (key, m, list) => {
+      calls++;
+      if (calls === 1) cats.setJev({ on: false, key: null });
+      await new Promise((r) => setImmediate(r));
+      return { category: list[0].id, confidence: 0.9, model: 'jev-test' };
+    }
+  };
+  const msgs = Array.from({ length: 8 }, (_, i) => ({ uid: 10 + i, messageId: `<q${i}@x>`, from: { name: 'Person Name', address: `person${i}@studio.example` }, to: [], cc: [{ address: 'me@work.example' }], subject: `Note ${i}`, date: i }));
+  ({ cats } = setup(t, msgs, { jevImpl: fake }));
+  cats.setEnabled(true);
+  cats.setJev({ key: 'KEY', on: true });
+  await cats.sort();
+  assert.equal(calls, 1, 'only the request already on its way');
+});
+
 test('categories can be added, renamed, reordered and deleted, within limits', (t) => {
   const { cats } = setup(t, inbox());
   cats.setEnabled(true);

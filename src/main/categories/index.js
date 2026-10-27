@@ -331,8 +331,14 @@ class Categories extends EventEmitter {
       } else if (key) forJev.push(item);
     }
     let stop = null;
+    // Turning Jev or categories off, or a new key, stops what is still queued: nothing more goes to TypeSafe.
+    let cancelled = false;
     const next = async () => {
-      while (forJev.length && !stop) {
+      while (forJev.length && !stop && !cancelled) {
+        if (!this.settings().enabled || this.jevKey() !== key) {
+          cancelled = true;
+          break;
+        }
         const { acc, m, key: k } = forJev.shift();
         try {
           const own = this.own(acc).map(lower);
