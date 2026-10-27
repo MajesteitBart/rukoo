@@ -5,6 +5,8 @@ import { call, device, key, newEmail, salt, sealed, KDF, INVITE, withVars } from
 import worker from '../src/index.js';
 import { createExecutionContext } from 'cloudflare:test';
 
+const escapeHtml = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 const OPERATOR = {
   OPERATOR_NAME: 'Example Sync',
   OPERATOR_URL: 'https://sync.example',
@@ -25,6 +27,9 @@ describe('GET /', () => {
     expect(res.text).toContain('in the European Union');
     expect(res.text).toContain('Device names and platforms, and when each device last connected.');
     expect(res.text).toContain("IP addresses, in Cloudflare's request logs and in the rate limiter.");
+    // Booking pages change what the server sees, and the page says how far the sealing goes.
+    expect(res.text).toContain('Account holders can also turn on a booking page here');
+    expect(res.text).toContain("pass through the server readable when they book; it stores them sealed to a key only the host's devices hold.");
     expect(res.text).toContain('href="https://sync.example/privacy"');
     expect(res.text).toContain('href="https://github.com/MajesteitBart/rukoo/blob/main/server/PROTOCOL.md"');
     expect(res.text).not.toMatch(/<script|<link|<img|src=/i);
@@ -61,6 +66,53 @@ describe('GET /privacy', () => {
     expect(res.text).toContain('Cloudflare, Inc. in the United States');
     expect(res.text).toContain('article 6(1)(b) GDPR');
     expect(res.text).not.toMatch(/<script|<link|<img|src=/i);
+  });
+
+  it('tells hosts and guests what a booking page shares, where it goes and how long it stays', async () => {
+    const en = (await call('GET', '/privacy?lang=en')).text;
+    const nl = (await call('GET', '/privacy?lang=nl')).text;
+    for (const [text, heading, next] of [
+      [en, '<h2 id="booking-pages">Booking pages</h2>', '<h2>Security</h2>'],
+      [nl, '<h2 id="booking-pages">Afsprakenpagina’s</h2>', '<h2>Beveiliging</h2>']
+    ]) {
+      expect(text.indexOf(heading)).toBeGreaterThan(-1);
+      expect(text.indexOf(heading)).toBeLessThan(text.indexOf(next));
+    }
+    for (const part of [
+      'you are a guest',
+      'the assistant’s name',
+      'the host’s calendar and mail provider, such as Google, sends you the invitation',
+      'article 6(1)(b) GDPR',
+      'keeps only that sealed copy',
+      'the details do pass through the server readable at the moment of booking, so the operator',
+      'until 30 days after the meeting',
+      'When the guest cancels, the host declines or a request lapses, the sealed details and the email hash are deleted at once',
+      'hashes made with a key that changes every day',
+      'Report this page',
+      'If you turn it on, it also runs your booking page',
+      'removes the account, every record and your booking page with its bookings at once'
+    ]) {
+      expect(en, part).toContain(escapeHtml(part));
+    }
+    for (const part of [
+      'dan ben je gast',
+      'de naam van die assistent',
+      'de agenda- en mailprovider van de host, zoals Google, stuurt je de uitnodiging',
+      'artikel 6 lid 1 onder b AVG',
+      'bewaart alleen die verzegelde kopie',
+      'Maar op het moment van boeken gaan de gegevens leesbaar door de server.',
+      'tot 30 dagen na de afspraak',
+      'dan worden de verzegelde gegevens en de hash van het e-mailadres meteen verwijderd',
+      'gemaakt met een sleutel die elke dag wisselt',
+      'Pagina melden',
+      'draait het ook je afsprakenpagina',
+      'je afsprakenpagina met de afspraken erop in één keer'
+    ]) {
+      expect(nl, part).toContain(escapeHtml(part));
+    }
+    // What stopped being true: the address is used for more than sign-ins now.
+    expect(en).not.toContain('uses it only to limit how often one address may try to sign in');
+    expect(nl).not.toContain('gebruikt het alleen om te beperken');
   });
 
   it('speaks Dutch when the browser or the address asks for it', async () => {
@@ -197,16 +249,36 @@ describe('routing', () => {
       ['GET', '/meeting'],
       ['GET', '/meet'],
       ['GET', '/meet/'],
-      ['GET', '/meet/nobody-has-this'],
-      ['GET', '/meet/Bart'],
-      ['GET', '/meet/api'],
-      ['GET', '/meet/assets/nothing.js']
+      ['GET', '/meet/assets/nothing.js'],
+      ['POST', '/meet/assets/booker.js'],
+      ['DELETE', '/meet/nobody-has-this']
     ]) {
       const res = await call(method, path);
       expect(res.status, `${method} ${path}`).toBe(404);
       expect(res.body.error).toBe('not_found');
       expect(res.headers.get('access-control-allow-origin')).toBe(null);
     }
+  });
+
+  // Pages people open answer with a page, the same one for every handle that has no page.
+  it('answers 404 pages for booking pages that aren’t there', async () => {
+    const bodies = new Set();
+    for (const [method, path] of [
+      ['GET', '/meet/nobody-has-this'],
+      ['GET', '/meet/Bart'],
+      ['GET', '/meet/api'],
+      ['GET', '/meet/nobody-has-this/30min'],
+      ['POST', '/meet/nobody-has-this/30min'],
+      ['GET', '/meet/nobody-has-this/booking/Rf63vMqqWdS0MICDAHKmrw']
+    ]) {
+      const res = await call(method, path, method === 'POST' ? { body: 'name=x', contentType: 'application/x-www-form-urlencoded' } : {});
+      expect(res.status, `${method} ${path}`).toBe(404);
+      expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+      expect(res.headers.get('access-control-allow-origin')).toBe(null);
+      expect(res.headers.get('link')).toBe(null);
+      if (path.split('/').length === 3) bodies.add(res.text.replace(/<footer[\s\S]*<\/footer>/, ''));
+    }
+    expect(bodies.size).toBe(1);
   });
 
   // The local runtime has no jurisdictions, so the namespace is wrapped to see which one the Worker asks for.

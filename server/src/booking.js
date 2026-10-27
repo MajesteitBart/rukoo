@@ -160,8 +160,9 @@ export class Booking extends DurableObject {
     };
   }
 
-  // Open starts of one type in [from, to). type null picks the only visible type.
-  slots({ type, from, to }, times) {
+  // Open starts of one type in [from, to). type null picks the only visible type. exclude: { id, keyHash } of a
+  // booking the guest is moving, which then doesn't count against its own new time (the key has to match).
+  slots({ type, from, to, exclude = null }, times) {
     const now = Date.now();
     const page = this.#page();
     if (!page) return fail('not_found');
@@ -171,13 +172,14 @@ export class Booking extends DurableObject {
     const resolved = resolveType(info.profile, type);
     if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible });
     this.#expire(now);
-    const starts = openSlots({ ...this.#slotInput(page, resolved.type, now, info), from, to }).map((s) => s.start);
+    const input = { ...this.#slotInput(page, resolved.type, now, info), exclude: this.#excluded(exclude) };
+    const starts = openSlots({ ...input, from, to }).map((s) => s.start);
     return { ok: true, page: info, type: resolved.type, starts, now };
   }
 
   // The open starts of every visible type in [from, to), at most limit each: the landing page's and llms.txt's
-  // "next open times". With slug, that type only (hidden types too).
-  overview({ from, to, limit = 40, slug = null }, times) {
+  // "next open times". With slug, that type only (hidden types too). exclude as for slots().
+  overview({ from, to, limit = 40, slug = null, exclude = null }, times) {
     const now = Date.now();
     const page = this.#page();
     if (!page) return fail('not_found');
@@ -185,14 +187,37 @@ export class Booking extends DurableObject {
     const info = this.#info(page, now, times);
     if (!info.accepting) return { ok: true, page: info, slots: {}, now };
     this.#expire(now);
+    const skip = this.#excluded(exclude);
     const slots = {};
     for (const type of info.profile.types) {
       if (slug ? type.slug !== slug : type.hidden) continue;
-      slots[type.slug] = openSlots({ ...this.#slotInput(page, type, now, info), from, to })
+      slots[type.slug] = openSlots({ ...this.#slotInput(page, type, now, info), exclude: skip, from, to })
         .slice(0, limit)
         .map((s) => s.start);
     }
     return { ok: true, page: info, slots, now };
+  }
+
+  // Whether one start is open, and if not the nearest open ones: for the booking form a link opens. Reads only.
+  check({ type, start, exclude = null }, times) {
+    const now = Date.now();
+    const page = this.#page();
+    if (!page) return fail('not_found');
+    if (this.#moved(page, now)) return fail('moved', { movedTo: page.movedTo });
+    const info = this.#info(page, now, times);
+    if (!info.accepting) return fail('not_accepting', { page: info });
+    const resolved = resolveType(info.profile, type);
+    if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible });
+    this.#expire(now);
+    const input = { ...this.#slotInput(page, resolved.type, now, info), exclude: this.#excluded(exclude) };
+    const open = isOpen(input, start);
+    return { ok: true, page: info, type: resolved.type, open, alternatives: open ? [] : nearest(input, start), now };
+  }
+
+  // The id of a booking to leave out of the slot rules, when its manage key matches; else nothing is left out.
+  #excluded(exclude) {
+    if (!exclude || typeof exclude.id !== 'string' || !exclude.keyHash) return null;
+    return this.#guestRow(exclude.id, exclude.keyHash) ? exclude.id : null;
   }
 
   #slotInput(page, type, now, info) {
@@ -468,6 +493,8 @@ export class Booking extends DurableObject {
     if (!row) return this.#noGuestRow(page, now);
     const info = this.#info(page, now, times);
     if (!ACTIVE.includes(row.status) || row.start <= now) return fail('not_active', { booking: publicRow(row), page: info });
+    // A move to the time it already has changes nothing: no move used, no new invitation, no mail.
+    if (start === row.start) return { ok: true, unchanged: true, booking: publicRow(row), page: info };
     if (!info.accepting) return fail('not_accepting', { page: info });
     if (row.reschedules >= GUEST_RESCHEDULES) return fail('limit_reached', { limit: 'reschedules', page: info });
     const confirmed = row.status === 'confirmed';
@@ -688,7 +715,14 @@ export class Booking extends DurableObject {
     if (!row) return fail('not_found');
     if (a.action === 'handled') {
       if (a.version > row.version) return fail('invalid', { field: 'version' });
-      this.sql.exec('UPDATE bookings SET handledVersion = MAX(handledVersion, ?) WHERE id = ?', a.version, id);
+      // uid: the UID the host's calendar really gave the event, when it kept another than the booking's (Google may
+      // ignore the iCalUID a client sends). The guest's calendar file uses it from then on, so the two merge.
+      this.sql.exec(
+        'UPDATE bookings SET handledVersion = MAX(handledVersion, ?), uid = COALESCE(?, uid) WHERE id = ?',
+        a.version,
+        a.uid ?? null,
+        id
+      );
       return { ok: true, booking: ownerRow(this.#row(id)) };
     }
     const stale = () => fail('stale_version', { booking: ownerRow(row) });

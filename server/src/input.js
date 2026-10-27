@@ -407,9 +407,18 @@ export function bookingPut(body, now, blocked = []) {
   return { handle: h, enabled, takeover, profile: profile(body.profile, names), windows, busy };
 }
 
+// A calendar UID as providers make them: 1 to 255 visible ASCII characters, such as abc123@google.com.
+export const EVENT_UID = /^[\x21-\x7e]{1,255}$/;
+
 export function ownerAction(body) {
   if (!OWNER_ACTIONS.includes(body.action)) throw invalid(`action must be one of ${OWNER_ACTIONS.join(', ')}.`, 'action');
   const out = { action: body.action, version: integer(body.version, 'version', 1, 1e9) };
+  if (body.action === 'handled' && body.uid !== undefined && body.uid !== null) {
+    if (typeof body.uid !== 'string' || !EVENT_UID.test(body.uid)) {
+      throw invalid('uid must be 1 to 255 visible ASCII characters, such as abc123@google.com.', 'uid');
+    }
+    out.uid = body.uid;
+  }
   if (body.action === 'reschedule') {
     if (!Number.isSafeInteger(body.start) || body.start <= 0) throw invalid('start must be a time in milliseconds.', 'start');
     out.start = body.start;

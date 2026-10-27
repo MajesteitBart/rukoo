@@ -324,10 +324,11 @@ export async function postReschedule(env, url, handle, id, key, body) {
   const zone = input.guestZone(body.time_zone);
   const result = await rescheduleBooking(env, handle, id, key, start);
   if (!result.ok) return failure(result, { l, bookingId: id, zone });
-  const out = guestAnswer(l, result, key, zone, (name, title, when) =>
-    result.booking.status === 'pending'
+  const out = guestAnswer(l, result, key, zone, (name, title, when) => {
+    if (result.unchanged) return `${title} with ${name} is already at ${when}. Nothing changed, and no move was used.`;
+    return result.booking.status === 'pending'
       ? `Moved: ${title} with ${name} to ${when}. It still waits for ${name} to confirm.`
-      : `Moved: ${title} with ${name} to ${when}. ${name}'s calendar sends the updated invitation, usually within minutes.`
-  );
+      : `Moved: ${title} with ${name} to ${when}. ${name}'s calendar sends the updated invitation, usually within minutes.`;
+  });
   return out;
 }

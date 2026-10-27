@@ -61,7 +61,7 @@ h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; margin-top: 2rem; } a { color:
 </head>
 <body>
 <h1>Rukoo account server</h1>
-<p>This is a server for Rukoo accounts. Rukoo is an open-source mail app. A Rukoo account keeps a person's inbox categories, the category each email got and their corrections in step between their devices. No mail and no mail passwords pass through this server. ${escape(newAccounts)}</p>
+<p>This is a server for Rukoo accounts. Rukoo is an open-source mail app. A Rukoo account keeps a person's inbox categories, the category each email got and their corrections in step between their devices. Account holders can also turn on a booking page here, where other people and their AI assistants book time with them. No mail and no mail passwords pass through this server. ${escape(newAccounts)}</p>
 
 <h2>Who runs it</h2>
 ${runBy}
@@ -76,6 +76,7 @@ ${runBy}
 <li>Device names and platforms, and when each device last connected.</li>
 <li>How many records there are, their sizes and when they change.</li>
 <li>IP addresses, in Cloudflare's request logs and in the rate limiter.</li>
+<li>For an account with a booking page: what the page publishes (the host's name and texts, meeting types, open hours and busy times) and the bookings made on it. A guest's name, email and note pass through the server readable when they book; it stores them sealed to a key only the host's devices hold. For each booking it counts the guest's network as a hash under a key that changes daily.</li>
 </ul>
 <p>It can't see what a record holds: no category names, no senders, no Message-IDs and nothing about the mail.</p>
 

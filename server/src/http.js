@@ -33,9 +33,13 @@ export function html(body, method) {
 export const MEET_CSP =
   "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
-// What every /meet answer sends.
+// What every /meet answer sends. same-origin: other websites never get a page's address, which can hold a manage key
+// or a guest's name and email, and the pages' own form posts still carry their real Origin, which no-referrer hides
+// (Fetch, "append a request Origin header"); browsers without Sec-Fetch-Site rely on that Origin to book.
+export const MEET_REFERRER = 'same-origin';
+
 export function meetHeaders(headers = {}) {
-  return baseHeaders({ 'content-security-policy': MEET_CSP, 'referrer-policy': 'no-referrer', ...headers });
+  return baseHeaders({ 'content-security-policy': MEET_CSP, 'referrer-policy': MEET_REFERRER, ...headers });
 }
 
 // Only GET reads may be read by other websites; writes never send CORS headers (PROTOCOL.md, Public routes).

@@ -29,7 +29,7 @@ const amsterdam = (ms) => zonedParts(ms, 'Europe/Amsterdam');
 
 function expectMeetHeaders(res) {
   expect(res.headers.get('content-security-policy')).toBe(MEET_CSP);
-  expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  expect(res.headers.get('referrer-policy')).toBe('same-origin');
   expect(res.headers.get('x-content-type-options')).toBe('nosniff');
   expect(res.headers.get('cache-control')).toBe('no-store');
 }
@@ -473,7 +473,7 @@ describe('a guest’s own booking', () => {
     expect(res.body.booking.start).toMatch(/\+09:00$/);
     expect(res.body.manage_url).toContain(`?k=${key}`);
     expect(res.body.message).toMatch(/^Confirmed: 30 minute meeting with Bart van der Meeren/);
-    for (const headers of [{}, bearer('wrong-key'), bearer(`${key.slice(0, -1)}A`)]) {
+    for (const headers of [{}, bearer('wrong-key'), bearer(`${key.slice(0, -1)}${key.endsWith('A') ? 'B' : 'A'}`)]) {
       const no = await call('GET', `/meet/${handle}/api/bookings/${booking.id}`, { headers });
       expect(no.status).toBe(404);
       expect(no.body.error).toBe('not_found');
@@ -637,7 +637,7 @@ describe('hostile text', () => {
     expect(api.body.types[0].location.value).toBe(HOSTILE);
     const html = await call('GET', `/meet/${handle}`);
     expect(html.status).toBe(200);
-    expect(html.text).not.toMatch(/<script|<img|onerror=alert\(1\)>|href="javascript/i);
+    expect(html.text.replace('<script src="/meet/assets/booker.js"></script>', '')).not.toMatch(/<script|<img|onerror=alert\(1\)>|href="javascript/i);
     expect(html.text).toContain('&lt;/script&gt;&lt;script&gt;');
     const booked = await book(handle, bookingBody(slotAhead(3)));
     expect(booked.status).toBe(201);

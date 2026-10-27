@@ -402,7 +402,7 @@ The page's bookings that changed after `since`, oldest change first, at most `li
 - `seq` is the page's change counter. Every change that raises `version` takes the next `seq`. `handled` doesn't, so a device doesn't see its own bookkeeping again. Purging an old booking produces no row; a device forgets its own copy 30 days after the meeting.
 - `sealed` is the guest's details (see Sealed guest details), null once the booking was cancelled, declined or lapsed.
 - `channel` is `web`, `api` or `mcp`.
-- `uid` is the booking's calendar UID: `<id>@<host of the page's url>`, fixed when the booking is made, so a later change of `BOOKING_ORIGIN` doesn't change it. The host's calendar event and the guest's `.ics` both use it; devices copy it and never work it out again.
+- `uid` is the booking's calendar UID: `<id>@<host of the page's url>`, fixed when the booking is made, so a later change of `BOOKING_ORIGIN` doesn't change it. The host's calendar event and the guest's `.ics` both use it; devices copy it and never work it out again. When the host's calendar gives the event another UID (Google may ignore the one a client sends), the booking device reports it with `handled` and `uid`, and from then on this field and the guest's `.ics` carry that one.
 - `notify` says whether the host's calendar may send mail for this version (see Limits, Mail budget). It is true for a confirmation (a new confirmed booking, a guest's reschedule, the host's confirm) and for a guest's cancellation while the day's mail budget lasts, and false past it. A host confirm counts toward the budget but its `notify` is always true. Pending, declined and lapsed versions, and the host's own cancellations and reschedules, have `notify: false`: no invitation goes out for them, or the host's calendar already sent what the host chose.
 - `cancelledBy` is `guest`, `host` or null; `reason` is null for a guest's cancellation, else what the host's device sent (`host_cancelled`, `host_deleted`, `guest_declined`); `message` is the host's message to the guest, at most 500 characters, shown on the guest's manage page.
 - `bookedStart` and `bookedEnd` are the times the booking was made for, which the sealed details carry. A reschedule changes `start` and `end` but can't change the sealed details, which the server can't open.
@@ -415,7 +415,7 @@ A booking action from the booking device. `<id>` is 22 characters of base64url.
 
 | `action` | Body | What it does |
 |---|---|---|
-| `handled` | `{ "action": "handled", "version": 2 }` | Sets `handledVersion` to the larger of the two. `version` may not be above the current one. |
+| `handled` | `{ "action": "handled", "version": 2, "uid": "3q5n8kb4o0b8j0q1k2r7c2a9vs@google.com" }` | Sets `handledVersion` to the larger of the two. `version` may not be above the current one. `uid` is optional: the UID the host's calendar gave the event, when it isn't the booking's own, 1 to 255 visible ASCII characters (`400 invalid`, field `uid`, otherwise). The server stores it as the booking's `uid`; like the rest of `handled` it doesn't advance the cursor. |
 | `confirm` | `{ "action": "confirm", "version": 1 }` | `pending` → `confirmed`. |
 | `decline` | `{ "action": "decline", "version": 1, "message": "…" }` | `pending` → `declined`; the slot is free again. `message` is optional. |
 | `cancel` | `{ "action": "cancel", "version": 3, "reason": "host_deleted", "message": "…" }` | `pending` or `confirmed` → `cancelled`. `reason` is `host_cancelled`, `host_deleted` or `guest_declined`; `message` is optional. |
@@ -456,22 +456,24 @@ The server works out the open times; devices only publish windows and busy times
 
 Every response under `/meet` sends:
 
-- `cache-control: no-store`, `x-content-type-options: nosniff`, `referrer-policy: no-referrer`
+- `cache-control: no-store`, `x-content-type-options: nosniff`, `referrer-policy: same-origin`: other websites never get a page's address, which can hold a manage key or a guest's name and email, and the pages' own requests keep their origin
 - `content-security-policy: default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
 
 | Routes | Also |
 |---|---|
-| HTML pages | `content-type: text/html; charset=utf-8`; `link: <https://…/meet/<handle>/llms.txt>; rel="alternate"; type="text/markdown"` |
-| `GET /meet/<handle>` | `vary: Accept` |
-| A form with `slot` or guest fields in its query, a form answered after a POST, manage pages, `.ics` files | `x-robots-tag: noindex` |
+| HTML pages | `content-type: text/html; charset=utf-8`; `link: <https://…/meet/<handle>/llms.txt>; rel="alternate"; type="text/markdown"` (not on the 404 page for a handle that has no page); `vary: Accept-Language` |
+| `GET /meet/<handle>` | `vary: Accept, Accept-Language`, for the page and for its markdown |
+| A page whose address has `slot`, guest fields or `reschedule` in its query, whatever it shows (the form, the booker, an off or missing page), a form answered after a POST, manage pages, `.ics` files | `x-robots-tag: noindex` |
 | JSON reads (GET) and `llms.txt` | `access-control-allow-origin: *` |
 | JSON writes | No CORS headers. `content-type: application/json` is required (`415 content_type`). |
 | Form posts | `application/x-www-form-urlencoded` only, at most 16 KiB (`415 content_type`, `413 too_large`) |
-| Every write (form, JSON) | An `Origin` header other than the page's own origin, or `Sec-Fetch-Site: cross-site`, gets `403 cross_site` before anything else happens. Clients that send no `Origin`, such as server-side agents, are fine. |
+| Every write (form, JSON) | An `Origin` header other than the page's own origin, or `Sec-Fetch-Site: cross-site`, gets `403 cross_site` before anything else happens. Clients that send no `Origin`, such as server-side agents, are fine. Because of `referrer-policy: same-origin`, browsers send the pages' own forms with the page's origin, including browsers that don't send `Sec-Fetch-Site` (Safari before 16.4). `Origin: null`, which a browser or extension that forces `no-referrer` sends, passes only with `Sec-Fetch-Site: same-origin`. |
 | `POST /meet/mcp` | `content-type: application/json`; any `Origin` is accepted, because the endpoint carries no credentials; no CORS headers |
 | `429` | `retry-after` in seconds |
 
-Unknown handles, handles in `BLOCKED_HANDLES` and reserved handles without a page answer 404, the same for each. A page that is off (`enabled` false, or deleted but still reserved) shows "not taking bookings through this page" with `contact` when there is one, answers `/api` with `accepting: false` and refuses slots and bookings with `409 not_accepting`.
+Unknown handles, handles in `BLOCKED_HANDLES` and reserved handles without a page answer 404, the same for each: the pages people open (the landing page, a meeting type, the form's POST, the manage page) with an HTML page that says the page isn't taking bookings, the JSON routes and `llms.txt` with JSON. A page that is off (`enabled` false, or deleted but still reserved) shows "not taking bookings through this page" with `contact` when there is one, answers `/api` with `accepting: false` and refuses slots and bookings with `409 not_accepting`.
+
+The human pages are English and Dutch (strings in `server/src/booking-text.js`) and work without JavaScript. Every page takes `lang` (`en` or `nl`; default from `Accept-Language`, then the page's `locale`), `tz` (an IANA zone; default the host's, never one guessed from the address) and `clock` (`12` or `24`; default from the full `Accept-Language` locale, so `en-US` gives 12 hours). A value that doesn't fit is ignored, never echoed. Links on the pages carry on the values the guest chose and leave defaults out.
 
 #### `GET|HEAD /meet/<handle>`
 
@@ -483,26 +485,28 @@ The booker for one type, hidden types included. Query parameters, each checked b
 
 | Parameter | Value |
 |---|---|
-| `month` | `YYYY-MM`, the month shown |
+| `month` | `YYYY-MM`, the month shown; kept between this month and the last one the type's horizon reaches |
 | `date` | `YYYY-MM-DD`, the day whose times are listed |
 | `tz` | an IANA zone; default the host's. Without JavaScript the zone is never taken from the IP address. |
 | `lang` | `en` or `nl`; default from `Accept-Language`, then the page's `locale` |
-| `slot` | a start in UTC, `2026-11-03T09:00Z` (seconds optional): shows the filled-in form for that time |
-| `name`, `email`, `notes`, `via` | fill in the form; a space in `email` reads as `+` |
+| `clock` | `12` or `24`; default from the `Accept-Language` locale |
+| `slot` | a start in UTC, `2026-11-03T09:00Z` (seconds optional; an offset works too, and a space before it reads as `+`): shows the filled-in form for that time |
+| `name`, `email`, `notes`, `via` | fill in the form; a space in `email` reads as `+`. Without `slot` they travel with every day and time, so the form opens filled in. |
+| `reschedule`, `k` | a booking id and its manage key: the guest picks a new time for that booking, which doesn't count against its own new time. The booking's own time isn't offered, and a `slot` at that time shows the booker. |
 
-With `slot`, the page shows the time in the host's zone, in UTC and in `tz`, the fields filled in, and "Your assistant filled this in. Check the details and press Book." When the slot is gone it lists the 3 nearest open times as links that keep the fields. Opening it books nothing.
+Without `slot` the page opens at the month and day of the first open time; days with times are links, and so are the day's times. With one that can't be read, it says so above the booker. With `slot`, the page shows the time in `tz` (or the host's zone), in the host's zone when that differs, and in UTC, the fields filled in, and "Your assistant filled this in. Check the details and press Book." when the link filled any in. When the slot is gone it lists the 3 nearest open times as links that keep the fields, and no form. With `reschedule` and `slot`, it asks "Move your booking to this time?" with a button that posts to the manage page. A booking of another type, or one that can't move any more, is sent to its manage page (303). Opening any of these books, holds and moves nothing.
 
-Times are written with the full `Accept-Language` locale (en-US gives 12-hour times) and carry their zone and UTC offset; a toggle switches between 12 and 24 hours. With JavaScript (`/meet/assets/booker.js`) the browser's zone replaces the server's before times show.
+Times are written with the full `Accept-Language` locale and carry their zone and UTC offset; a toggle switches between 12 and 24 hours. With JavaScript (`/meet/assets/booker.js`) the browser's zone replaces the server's before times show, when the server knows that zone; the form's `tz` is always the zone the page was written in.
 
 #### `POST /meet/<handle>/<slug>`
 
-The form's booking. Fields: `start` (as `slot`), `tz`, `name`, `email`, `notes`, `via`. → `303` to the manage page, or the form again with the error and the fields kept, with the error's status (400, 403, 409, 429).
+The form's booking. Fields: `start` (as `slot`), `tz`, `name`, `email`, `notes`, `via`, and from the page `lang`, `clock` and `idem`, a random key the form carries as its `Idempotency-Key`, so pressing Book twice gives the same booking and the same manage page. A `tz` the server doesn't know is taken as the host's zone, not refused: it is a hidden field, so the guest couldn't fix it. → `303` to the manage page (`/meet/<handle>/booking/<id>?k=…&tz=…`, plus `lang` and `clock` when the guest chose them), or the form again with the error and the fields kept, with the error's status (400, 403, 409, 429). A time that was just taken shows the 3 nearest open times instead of the form; a page that is off answers with its off page (409). The same type, time and address as an active booking answers 200 with a page that says so, without a key. Posts are rate-limited like the JSON writes (`BOOKING_LIMITER`).
 
 Under the form, in the page's language: "Your name, email and note go to {host}. {operator} keeps this booking on its server until 30 days after the meeting. Privacy", linking to the operator's privacy statement.
 
 #### `GET|POST /meet/<handle>/booking/<id>?k=<manageKey>`
 
-The guest's manage page: the time in the guest's and the host's zone, the type, the status, when a request lapses ("If {host} hasn't confirmed by {time}, this request lapses."), the host's message if any, and Cancel and Reschedule. It shows no external links, not even the meeting location's. A POST takes `k`, `action` (`cancel` or `reschedule`) and for a reschedule `start` (as `slot`) and `tz`, then answers `303` back to the page. Without the right key: 404.
+The guest's manage page: the status, the type, the time in the guest's zone (`tz`, else the host's) and in the host's, where the meeting is (the location's name only), as its first line that the invitation comes from the host's calendar (for a request: "{host} will confirm or decline." and when it lapses: "If {host} hasn't confirmed by {time}, this request lapses."), the host's message if any, the `.ics` as a secondary link, and Cancel and "Pick another time". It shows no external links, not even the meeting location's, and no "Report this page". A POST takes `k`, `action` (`cancel` or `reschedule`), for a reschedule `start` (as `slot`) and `tz`, and `lang` and `clock`, then answers `303` back to the page (a move to the booking's own time changes nothing), or the page again with the error (403 for a limit, 409 for a booking that can't change or a time just taken, which shows the 3 nearest times as links that keep the move). Without the right key: 404.
 
 #### `GET /meet/<handle>/booking/<id>.ics?k=<manageKey>`
 
@@ -632,7 +636,7 @@ An `Idempotency-Key` seen in the last 24 hours with the same body answers what t
 
 #### `POST /meet/<handle>/api/bookings/<id>/reschedule`
 
-`Authorization: Bearer <manageKey>`, body `{ "start": "2026-11-04T13:00:00Z", "time_zone": "Europe/Amsterdam" }` → `200 { "booking": { … }, "ics_url", "message" }`. A guest can reschedule a booking twice; a third time, past the page's mail budget, or a confirmed booking while the page is stale (see Slots), gets `403 limit_reached`. A pending request stays pending at its new time. Cancelled, declined, lapsed or past bookings: `409 not_active`.
+`Authorization: Bearer <manageKey>`, body `{ "start": "2026-11-04T13:00:00Z", "time_zone": "Europe/Amsterdam" }` → `200 { "booking": { … }, "ics_url", "message" }`. A guest can reschedule a booking twice; a third time, past the page's mail budget, or a confirmed booking while the page is stale (see Slots), gets `403 limit_reached`. A pending request stays pending at its new time. A move to the time the booking already has answers 200 and changes nothing: no move is used, `version` and `sequence` stay, nothing is mailed, and the message says so. Cancelled, declined, lapsed or past bookings: `409 not_active`.
 
 #### Public errors
 
@@ -685,7 +689,7 @@ Every argument is a string. `link` is the page address or handle; `start` an ISO
 
 #### `GET /meet/assets/booker.js`
 
-The booker's script: it switches times to the browser's zone and fills the form. The pages work without it.
+The pages' only script (`text/javascript`, served from the server itself for `script-src 'self'`). The pages work without it. On a page that used the host's zone or the locale's clock it loads the same address again with the browser's `tz` and the `clock` this browser chose before (kept in `localStorage`), from `<head>`, so times never show in the wrong zone first. It loads days and months without a full reload, announces the new times in a live region, and puts the browser's zone in a form shown again after a refused booking. It loads nothing from elsewhere; any failure leaves the page as the server wrote it.
 
 ### Limits
 

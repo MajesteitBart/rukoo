@@ -32,7 +32,7 @@ function tool(name, args, headers) {
 
 function expectMeetHeaders(res) {
   expect(res.headers.get('content-security-policy')).toBe(MEET_CSP);
-  expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  expect(res.headers.get('referrer-policy')).toBe('same-origin');
   expect(res.headers.get('x-content-type-options')).toBe('nosniff');
   expect(res.headers.get('cache-control')).toBe('no-store');
 }

@@ -152,8 +152,17 @@ export function slotRange({ from, to, timeZone }, now = Date.now()) {
 
 // ---- Reading and booking ----
 
+// A booking a guest is moving, as the Booking object takes it: { id, keyHash }, or null. The object leaves the
+// booking out of the slot rules only when the key matches it.
+async function excluded(exclude) {
+  if (!exclude) return null;
+  const hash = await keyHash(exclude.key);
+  return hash && input.BOOKING_ID.test(exclude.id) ? { id: exclude.id, keyHash: hash } : null;
+}
+
 // Open starts of one type in a date range on a zone's clock. query: { type, from, to, timeZone } as slotQuery()
-// returns them. Returns { ok: true, page, type, starts, timeZone, from, to, nextFrom } or the object's failure.
+// returns them, plus exclude: { id, key } for a guest moving their booking. Returns { ok: true, page, type, starts,
+// timeZone, from, to, nextFrom } or the object's failure.
 export async function listSlots(env, handle, query) {
   pathHandle(env, handle);
   const stub = bookingObject(env, handle);
@@ -164,7 +173,8 @@ export async function listSlots(env, handle, query) {
   if (!view.accepting) return { ok: false, error: 'not_accepting', page: view };
   const timeZone = query.timeZone ?? view.profile.timeZone;
   const range = slotRange({ from: query.from, to: query.to, timeZone });
-  const result = await stub.slots({ type: query.type ?? null, from: range.fromMs, to: range.toMs }, times);
+  const exclude = await excluded(query.exclude);
+  const result = await stub.slots({ type: query.type ?? null, from: range.fromMs, to: range.toMs, exclude }, times);
   if (!result.ok) return result;
   const horizonEnd = result.now + result.type.horizon * DAY;
   return {
@@ -180,10 +190,21 @@ export async function listSlots(env, handle, query) {
 }
 
 // The next open times of every visible type (or of one type, hidden ones too), for the landing page, the type
-// pages and llms.txt: the next days days, at most limit each.
-export async function nextSlots(env, handle, { days = 7, limit = 40, slug = null } = {}) {
+// pages and llms.txt: the next days days, at most limit each. exclude as for listSlots().
+export async function nextSlots(env, handle, { days = 7, limit = 40, slug = null, exclude = null } = {}) {
   const now = Date.now();
-  const result = await bookingObject(env, handle).overview({ from: now, to: now + days * DAY, limit, slug }, bookingTimes(env));
+  const skip = await excluded(exclude);
+  const result = await bookingObject(env, handle).overview({ from: now, to: now + days * DAY, limit, slug, exclude: skip }, bookingTimes(env));
+  if (!result.ok && result.error === 'not_found') throw notFound();
+  return result;
+}
+
+// Whether one start of a type is open now, and the 3 nearest open ones when it isn't: { ok: true, page, type, open,
+// alternatives, now } or the object's failure. Books and holds nothing.
+export async function checkSlot(env, handle, { type, start, exclude = null }) {
+  pathHandle(env, handle);
+  const skip = await excluded(exclude);
+  const result = await bookingObject(env, handle).check({ type, start, exclude: skip }, bookingTimes(env));
   if (!result.ok && result.error === 'not_found') throw notFound();
   return result;
 }

@@ -26,9 +26,9 @@ const EXAMPLE = { name: 'Jane Doe', email: 'jane@example.com', notes: 'Kickoff' 
 
 // Everything the renderers need: the page, its public profile, the next open times of each visible type (or of one
 // type, hidden ones too, for a type's own page) and the absolute addresses. Throws a 404 for unknown handles; a
-// moved page comes back as { moved }.
-export async function agentData(env, url, handle, { slug = null } = {}) {
-  const page = await loadPage(env, handle);
+// moved page comes back as { moved }. page: what loadPage() returned, when the caller has it already.
+export async function agentData(env, url, handle, { slug = null, page = null } = {}) {
+  page ??= await loadPage(env, handle);
   if (page.state === 'moved') return { moved: page.movedTo };
   const l = links(env, url, handle);
   const profile = publicProfile(page);
@@ -36,6 +36,7 @@ export async function agentData(env, url, handle, { slug = null } = {}) {
   const types = profile ? (slug ? profile.types.filter((t) => t.slug === slug) : visibleTypes(profile)) : [];
   return {
     handle,
+    page,
     links: l,
     accepting: page.accepting,
     profile,
@@ -209,9 +210,9 @@ function linkHtml(url) {
   return `<a href="${escape(url)}">${escape(url)}</a>`;
 }
 
-// The visible line at the top of a booking page.
+// The visible line at the top of a booking page. English on Dutch pages too, like everything written for assistants.
 export function assistantLine(data) {
-  return `<p class="for-assistants">AI assistant? Booking instructions are below and at ${linkHtml(data.links.llmsTxt)}.</p>`;
+  return `<p class="for-assistants" lang="en">AI assistant? Booking instructions are below and at ${linkHtml(data.links.llmsTxt)}.</p>`;
 }
 
 // The "For AI assistants" section, for <main> after the booker. Plain visible text and absolute links.
