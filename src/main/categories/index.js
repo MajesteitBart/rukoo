@@ -383,6 +383,13 @@ class Categories extends EventEmitter {
           const own = this.own(acc).map(lower);
           const toMe = (m.to || []).some((a) => own.includes(lower(a.address)));
           const res = await this.jev.classify(key, m, list, { toMe });
+          // Settings changed while the answer was on its way (Jev or categories off, a new key): it isn't stored,
+          // and the email waits for the sort that follows.
+          if (!this.settings().enabled || this.jevGeneration !== generation) {
+            later(k);
+            cancelled = true;
+            break;
+          }
           const category = res.confidence >= JEV_CONFIDENT ? res.category : unsure;
           if (store(k, { category, source: 'jev', confidence: res.confidence, model: res.model, at: Date.now() }) !== false) sorted++;
         } catch (err) {

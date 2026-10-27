@@ -361,6 +361,27 @@ test('turning Jev off stops the emails still queued for it', async (t) => {
   assert.equal(calls, 1, 'only the request already on its way');
 });
 
+test('an answer that comes back after Jev was turned off is not stored', async (t) => {
+  let answer;
+  const fake = {
+    MODEL: 'jev-test',
+    classify: () => new Promise((resolve) => (answer = () => resolve({ category: 'money', confidence: 0.9, model: 'jev-test' })))
+  };
+  const msgs = inbox();
+  const { cats, acc, account } = setup(t, msgs, { jevImpl: fake });
+  cats.setEnabled(true);
+  cats.setJev({ key: 'KEY', on: true });
+  const sorting = cats.sort();
+  await new Promise((r) => setImmediate(r));
+  cats.setJev({ on: false });
+  answer();
+  await sorting;
+  const stored = account.get('classification', cats.key(acc, msgs[0]));
+  assert.ok(!stored || stored.source !== 'jev', 'the late answer from Jev was dropped');
+  await cats.sort();
+  assert.equal(account.get('classification', cats.key(acc, msgs[0])).source, 'rules', 'the next sort, without Jev, sorts it');
+});
+
 test('a refusal for a key that was replaced meanwhile leaves the new key alone', async (t) => {
   let reject;
   const fake = {
