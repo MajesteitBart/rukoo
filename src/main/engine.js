@@ -292,8 +292,10 @@ class Engine extends EventEmitter {
       if (acc.email.toLowerCase() !== email) {
         throw new Error(t('errors.google.wrongAccount', { signedInEmail: grant.email, accountEmail: acc.email }));
       }
+      // Encrypted before the account changes: a keyring that can't store it leaves the account signing in as before.
+      const secret = this.secrets.encrypt(grant.refreshToken);
       acc.auth = 'oauth2';
-      acc.secret = this.secrets.encrypt(grant.refreshToken);
+      acc.secret = secret;
       acc.scopes = [...new Set(grant.scopes || [])].sort();
       this.tokens.set(acc.id, { accessToken: grant.accessToken, expiresAt: grant.expiresAt });
       this.grants.set(acc.id, this.grant(acc.id) + 1);
@@ -753,13 +755,16 @@ class Engine extends EventEmitter {
       background,
       // What inbox categories sort by (categories/).
       signals: info.role === 'inbox',
-      gmailTabs: info.role === 'inbox' && acc.provider === 'google'
+      gmailTabs: info.role === 'inbox' && acc.provider === 'google',
+      olderUnseen: info.role === 'inbox'
     });
     const sameValidity = prev && prev.uidValidity === res.uidValidity;
     const maxKnown = sameValidity ? Math.max(0, ...prev.messages.map((m) => m.uid)) : Infinity;
     cache.boxes[folderPath] = {
       uidValidity: res.uidValidity,
       exists: res.exists,
+      // The inbox's unread mail older than messages, as the server counted it; null when it couldn't. See olderUnread().
+      ...(info.role === 'inbox' ? { olderUnseen: Number.isInteger(res.olderUnseen) ? res.olderUnseen : null } : {}),
       syncedAt: Date.now(),
       messages: this.applyPending(acc.id, folderPath, res.messages)
     };
@@ -908,22 +913,43 @@ class Engine extends EventEmitter {
     return list;
   }
 
+  // Unread inbox mail older than the newest messages the cache keeps (LIMITS), which the server counted at the last
+  // sync; folderPath: of that folder only. Mail from senders on the spam list is in it too: it can't be told apart
+  // without its headers. Reading a message in the cache counts at once; one older than that counts from the next sync.
+  olderUnread(scope, folderPath = null) {
+    let n = 0;
+    for (const acc of this.scopeAccounts(scope)) {
+      const cache = this.caches.get(acc.id);
+      if (!cache) continue;
+      for (const f of cache.folders) {
+        if (f.role !== 'inbox' || (folderPath !== null && f.path !== folderPath)) continue;
+        const box = cache.boxes[f.path];
+        if (box && Number.isInteger(box.olderUnseen)) n += box.olderUnseen;
+      }
+    }
+    return n;
+  }
+
   // Unread mail in the inboxes of all accounts: the taskbar badge's "unread" count and the tray's tooltip.
   unreadCount() {
-    return this.collect('all', this.viewPredicate('unread')).length;
+    return this.collect('all', this.viewPredicate('unread')).length + this.olderUnread('all');
   }
 
   counts(scope = 'all') {
     const res = { accounts: {}, views: {} };
     for (const acc of this.accounts) {
-      res.accounts[acc.id] = this.collect(acc.id, this.viewPredicate('unread')).length;
+      res.accounts[acc.id] = this.collect(acc.id, this.viewPredicate('unread')).length + this.olderUnread(acc.id);
     }
     res.all = Object.values(res.accounts).reduce((a, b) => a + b, 0);
+    // The list only holds the newest inboxLimit messages of each inbox, so its header names the older unread mail apart.
+    res.olderUnread = this.olderUnread(scope);
+    res.inboxLimit = LIMITS.inbox;
     const count = (view, onlyUnread) =>
       this.collect(scope, this.viewPredicate(view)).filter((m) => !onlyUnread || m.unread).length;
+    // Only the inbox and Unread add the older mail: VIP picks its mail by sender, and other folders count their cache.
     res.views = {
-      inbox: count('inbox', true),
-      unread: count('unread', true),
+      inbox: count('inbox', true) + res.olderUnread,
+      unread: count('unread', true) + res.olderUnread,
       vip: count('vip', true),
       starred: count('starred'),
       saved: this.saved.filter((s) => scope === 'all' || s.accountId === scope).length,
@@ -937,7 +963,7 @@ class Engine extends EventEmitter {
     if (scope !== 'all') {
       const cache = this.caches.get(scope);
       for (const [p, box] of Object.entries((cache && cache.boxes) || {})) {
-        res.folders[p] = box.messages.filter((m) => m.unread).length;
+        res.folders[p] = box.messages.filter((m) => m.unread).length + this.olderUnread(scope, p);
       }
     }
     return res;

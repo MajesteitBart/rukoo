@@ -91,3 +91,30 @@ test('real IMAP/SMTP account: add, sync, preview, flags, send, append, delete', 
   assert.ok(!engine.listMessages({ scope: acc.id, view: 'inbox' }).some((m) => m.id === msg.id));
   await engine.close();
 });
+
+// #99, with a window of two messages instead of the inbox's 300.
+test('real IMAP account: the unread mail below the synced window is counted on the server', { timeout: 120000 }, async (t) => {
+  const eth = await testAccount();
+  if (!eth) return t.skip('Ethereal not reachable');
+
+  const session = new ImapAccount({ email: eth.user, imap: eth.imap, smtp: eth.smtp }, eth.pass);
+  try {
+    const before = (await session.syncFolder('INBOX', { limit: 1000 })).messages.filter((m) => m.unread).length;
+    // Oldest first. Below a window of two: Older 1 and Older 3 unread, Older 2 read.
+    for (const [n, seen] of [[1, false], [2, true], [3, false], [4, false], [5, true]]) {
+      const raw = await ImapAccount.compose({ from: { name: 'Integration test', address: 'test@example.com' }, to: [{ name: '', address: eth.user }], subject: `Older ${n}`, text: `Message ${n}` });
+      await session.append('INBOX', raw, seen ? ['\\Seen'] : []);
+    }
+    const res = await session.syncFolder('INBOX', { limit: 2, olderUnseen: true });
+    assert.deepEqual(res.messages.map((m) => m.subject), ['Older 4', 'Older 5']);
+    assert.equal(res.olderUnseen, before + 2);
+
+    // Read on the server, it no longer counts at the next sync.
+    const all = await session.syncFolder('INBOX', { limit: 1000, olderUnseen: true });
+    assert.equal(all.olderUnseen, 0, 'nothing is below a window that holds the whole inbox');
+    await session.setFlags('INBOX', all.messages.find((m) => m.subject === 'Older 1').uid, { unread: false });
+    assert.equal((await session.syncFolder('INBOX', { limit: 2, olderUnseen: true })).olderUnseen, before + 1);
+  } finally {
+    await session.close();
+  }
+});

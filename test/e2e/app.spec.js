@@ -83,6 +83,42 @@ test('opening a message renders it and marks it read', async () => {
   await expect(win.locator('.reader-subject')).toContainText('music industry');
 });
 
+// #99: the list holds the newest 300 inbox messages, and the sidebar's Inbox count adds the unread mail older than those.
+test('the list header names the unread mail older than the list, which Mark all as read does not reach', async () => {
+  await app.evaluate(async () => {
+    const engine = global.__semEngine;
+    const acc = engine.accounts[0];
+    while (engine.syncs.size) await new Promise((r) => setTimeout(r, 50));
+    // A server that counts 434 unread inbox messages below the window.
+    const session = engine.session(acc);
+    const sync = session.syncFolder.bind(session);
+    session.syncFolder = async (p, opts) => {
+      const res = await sync(p, opts);
+      return opts.olderUnseen ? { ...res, olderUnseen: 434 } : res;
+    };
+    await engine.syncAccount(acc.id);
+  });
+  const sub = win.locator('.list-title .sub');
+  const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
+  const unreadChip = win.locator('.filter[data-filter="unread"] .n');
+  await expect(inboxCount).toHaveText('441');
+  await expect(sub).toHaveText('7 ongelezen, nog 434 in oudere mail · demo@example.com');
+  await expect(sub).toHaveAttribute('title', /nieuwste 300 berichten\. 434 ongelezen berichten zijn ouder\./);
+  await expect(unreadChip).toHaveText('7');
+
+  // Mark all as read reaches the list only; the header then names just the older mail.
+  await win.click('[data-action="list-more"]');
+  await win.click('.menu [role="menuitem"]:has-text("Alles als gelezen markeren")');
+  await expect(inboxCount).toHaveText('434');
+  await expect(sub).toHaveText('434 ongelezen in oudere mail · demo@example.com');
+  await expect(unreadChip).toHaveCount(0);
+
+  // Other views count their own messages and say nothing about the older inbox mail.
+  await win.click('.nav-item[data-view="starred"]');
+  await expect(sub).toHaveText('demo@example.com');
+  await expect(sub).not.toHaveAttribute('title', /.+/);
+});
+
 test('previews skip "view in browser" lines and greetings', async () => {
   await expect(item('ANWB Newsletter').locator('.preview')).not.toContainText('View email in browser');
   await expect(item('Vandebron').locator('.preview')).toContainText('Customer number');

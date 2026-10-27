@@ -32,6 +32,79 @@ test('demo account syncs folders and inbox', async () => {
   await engine.close();
 });
 
+// #99: the cache keeps the newest 300 inbox messages; the server counts the unread mail older than those.
+test('unread counts include the inbox mail older than the cache, as the server counted it', async () => {
+  const { engine, acc, dir } = await freshEngine();
+  const session = engine.session(acc);
+  const sync = session.syncFolder.bind(session);
+  let older = 40;
+  const counted = [];
+  session.syncFolder = async (p, opts) => {
+    const res = await sync(p, opts);
+    if (!opts.olderUnseen) return res;
+    counted.push(p);
+    return { ...res, olderUnseen: older };
+  };
+  const unreadIn = (view) => engine.listMessages({ scope: acc.id, view }).filter((m) => m.unread).length;
+  const cached = unreadIn('inbox');
+  assert.ok(cached > 0);
+  await engine.syncAccount(acc.id);
+  assert.deepEqual(counted, ['INBOX'], 'only the inbox is counted on the server');
+  const expectUnread = (n) => {
+    const c = engine.counts(acc.id);
+    // The list's header names the older mail apart from the list's own unread mail, which the Unread filter counts.
+    assert.equal(c.olderUnread, Number.isInteger(older) ? older : 0);
+    assert.equal(engine.counts('all').olderUnread, c.olderUnread);
+    assert.equal(c.inboxLimit, 300);
+    assert.equal(c.views.inbox - c.olderUnread, unreadIn('inbox'));
+    assert.equal(c.accounts[acc.id], n);
+    assert.equal(c.all, n);
+    assert.equal(c.views.inbox, n);
+    assert.equal(c.views.unread, n);
+    assert.equal(c.folders.INBOX, n);
+    assert.equal(engine.counts('all').views.unread, n);
+    assert.equal(engine.unreadCount(), n);
+    // VIP picks its mail by sender, so it counts the cache only.
+    assert.equal(c.views.vip, unreadIn('vip'));
+    assert.equal(c.folders.Sent, 0);
+  };
+  engine.toggleVip('sanne@example.com');
+  expectUnread(cached + 40);
+
+  // Reading a message in the cache counts at once, before the server is asked again.
+  const first = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.unread);
+  const reading = engine.setFlags(first.id, { unread: false });
+  expectUnread(cached - 1 + 40);
+  await reading;
+
+  // The count is kept with the cache, so it is there after a restart before the first sync.
+  engine.flush();
+  const reopened = new Engine({ dataDir: dir }).init();
+  assert.equal(reopened.unreadCount(), cached - 1 + 40);
+  await reopened.close();
+
+  // A server that can't count leaves the cache's count.
+  older = null;
+  await engine.syncAccount(acc.id);
+  expectUnread(cached - 1);
+  await engine.close();
+});
+
+test('the demo account counts its unread inbox mail older than the window, like a server', async () => {
+  const { engine, acc } = await freshEngine();
+  const session = engine.session(acc);
+  const all = session.box('INBOX').messages;
+  const res = await session.syncFolder('INBOX', { limit: 5, olderUnseen: true });
+  const window = new Set(res.messages.map((m) => m.uid));
+  assert.equal(window.size, 5);
+  const unreadBelow = all.filter((m) => !window.has(m.uid) && !m.flags.includes('\\Seen')).length;
+  assert.ok(unreadBelow > 0);
+  assert.equal(res.olderUnseen, unreadBelow);
+  assert.equal((await session.syncFolder('INBOX', { limit: 300, olderUnseen: true })).olderUnseen, 0);
+  assert.equal('olderUnseen' in (await session.syncFolder('INBOX', { limit: 5 })), false);
+  await engine.close();
+});
+
 test('opening a message returns sanitized html and attachments', async () => {
   const { engine, acc } = await freshEngine();
   const withAttachment = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.hasAttachments);

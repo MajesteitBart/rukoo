@@ -149,6 +149,28 @@ test('a token refresh from before signing in again does not overwrite the new gr
   assert.deepEqual(acc.scopes, scopes);
 });
 
+test('switching to Google sign-in leaves the account as it was when the new credential cannot be stored (#71)', async () => {
+  // A locked Linux keyring or an unavailable macOS Keychain: storing a secret throws.
+  const secrets = {
+    encrypt: () => {
+      throw new Error('keyring locked');
+    },
+    decrypt: (s) => s
+  };
+  const engine = new Engine({ dataDir: tempDir('sem-gk-'), secrets, google: { available: () => true } }).init();
+  const acc = { id: 'a1', type: 'imap', provider: 'google', email: 'bart@example.com', secret: 'pw-cipher', scopes: ['openid'], imap: {}, smtp: {} };
+  engine.accounts.push(acc);
+  engine.syncAccount = async () => assert.fail('no sync');
+  const before = structuredClone(acc);
+  const grant = { email: 'bart@example.com', refreshToken: 'rt-new', accessToken: 'access-new', expiresAt: Date.now() + 3600000, scopes: ['https://mail.google.com/'] };
+  await assert.rejects(engine.addGoogleAccount(grant, { reauthId: 'a1' }), /keyring locked/);
+  assert.deepEqual(acc, before);
+  assert.equal(engine.publicAccount(acc).auth, 'password', 'Settings still shows a password account');
+  assert.equal(engine.grant('a1'), 0);
+  assert.equal(engine.tokens.has('a1'), false);
+  assert.equal(engine.credentials(acc), 'pw-cipher', 'syncs keep using the password');
+});
+
 test('refresh reports the scopes Google lists', async () => {
   const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ access_token: 'a', expires_in: 3599, scope: 'openid https://mail.google.com/' }) });
   const auth = new GoogleAuth({ configPath: configFile(), openBrowser: () => {}, fetchImpl });
