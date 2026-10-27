@@ -13,6 +13,7 @@ import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
 
 export { Account } from './account.js';
+export { Registry } from './registry.js';
 
 const JURISDICTIONS = ['eu', 'us', 'fedramp'];
 const SIGNUP_MODES = ['open', 'invite', 'closed'];
@@ -127,7 +128,18 @@ async function signup(request, env) {
     device: input.device(body.device)
   };
   const name = await accountName(env, fields.email);
-  return send(await stub(env, name).signup(name, fields, limits(env)));
+  // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
+  const registry = registryStub(env);
+  if (registry && !(await registry.reserve(maxAccounts(env)))) {
+    throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
+  }
+  let result;
+  try {
+    result = await stub(env, name).signup(name, fields, limits(env));
+  } finally {
+    if (registry && (!result || result.status !== 201)) await registry.release();
+  }
+  return send(result);
 }
 
 async function login(request, env) {
@@ -190,7 +202,10 @@ async function replaceRecovery(request, env) {
 async function deleteAccount(request, env) {
   const { stub, token } = session(request, env);
   const body = await input.readJson(request);
-  return send(await stub.deleteAccount(token, { authKey: input.key(body.authKey, 'authKey', 32) }));
+  const result = await stub.deleteAccount(token, { authKey: input.key(body.authKey, 'authKey', 32) });
+  const registry = registryStub(env);
+  if (registry && result.status === 204) await registry.release();
+  return send(result);
 }
 
 async function pull(request, env, url) {
@@ -201,6 +216,7 @@ async function pull(request, env, url) {
 
 async function push(request, env) {
   const { stub, token } = session(request, env);
+  await limitRate(request, env, env.PUSH_LIMITER);
   const body = await input.readPushJson(request);
   return send(await stub.push(token, input.records(body.records), limits(env)));
 }
@@ -217,6 +233,19 @@ async function accountName(env, email) {
   return toBase64url(await hmac(env.PEPPER, `account\n${email}`));
 }
 
+// The server-wide account count, when the REGISTRY binding exists.
+function registryStub(env) {
+  if (!env.REGISTRY) return null;
+  const where = jurisdiction(env);
+  const namespace = where ? env.REGISTRY.jurisdiction(where) : env.REGISTRY;
+  return namespace.get(namespace.idFromName('registry'));
+}
+
+function maxAccounts(env) {
+  const n = Number(env.MAX_ACCOUNTS);
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
+}
+
 function stub(env, name) {
   if (!NAME.test(name)) throw new HttpError(401, 'unauthorized', 'Sign in first.');
   const where = jurisdiction(env);
@@ -224,12 +253,12 @@ function stub(env, name) {
   return namespace.get(namespace.idFromName(name));
 }
 
-// Limits sign-in, sign-up and recovery attempts per client address when the RATE_LIMITER binding exists. IPv6 clients
-// usually have a whole /64 to pick addresses from, so they are counted by that.
-async function limitRate(request, env) {
-  if (!env.RATE_LIMITER) return;
+// Limits sign-in, sign-up and recovery attempts per client address when the RATE_LIMITER binding exists, and pushes
+// when PUSH_LIMITER does. IPv6 clients usually have a whole /64 to pick addresses from, so they are counted by that.
+async function limitRate(request, env, limiter = env.RATE_LIMITER) {
+  if (!limiter) return;
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-  const { success } = await env.RATE_LIMITER.limit({ key: ip.includes(':') ? ipv6Prefix(ip) : ip });
+  const { success } = await limiter.limit({ key: ip.includes(':') ? ipv6Prefix(ip) : ip });
   if (!success)
     throw new HttpError(429, 'rate_limited', 'Too many requests. Try again in a minute.', { 'retry-after': '60' });
 }

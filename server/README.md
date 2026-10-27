@@ -74,10 +74,11 @@ The `vars` block holds the server's settings:
 | `SIGNUPS` | `"open"` lets anyone make an account. `"invite"` needs a code from `INVITE_CODES` (step 7). `"closed"` takes no new accounts. Existing accounts keep working in every mode. |
 | `MAX_RECORDS` | The most records one account may keep. |
 | `MAX_BYTES` | The most bytes of records one account may keep. |
+| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. |
 
 The defaults (250,000 records and 100 MiB per account) are far more than one person uses.
 
-The `ratelimits` block limits sign-up, sign-in and recovery calls to 30 a minute per IP address. Its `namespace_id` can be any number that no other rate limiter in your Cloudflare account uses. To turn the limit off, delete the block. The account lock after ten wrong passwords applies either way.
+The `ratelimits` block limits sign-up, sign-in and recovery calls to 30 a minute per IP address (`RATE_LIMITER`), and writing records to 120 pushes a minute (`PUSH_LIMITER`). Their `namespace_id`s can be any numbers that no other rate limiter in your Cloudflare account uses. To turn a limit off, delete its entry. The account lock after ten wrong passwords applies either way.
 
 ### 5. Deploy
 

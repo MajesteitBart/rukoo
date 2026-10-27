@@ -706,3 +706,40 @@ describe('DELETE /v1/account', () => {
     expect((await call('GET', '/v1/account', { token: person.token })).status).toBe(200);
   });
 });
+
+describe('the cap on accounts', () => {
+  const registry = () => env.REGISTRY.get(env.REGISTRY.idFromName('registry'));
+  const count = () => runInDurableObject(registry(), (instance) => instance.count());
+
+  it('refuses a sign-up past MAX_ACCOUNTS, and a failed or deleted account frees its place', async () => {
+    const vars = { SIGNUPS: 'open', MAX_ACCOUNTS: String((await count()) + 1) };
+    const first = await signup({ vars });
+    expect(first.token).toBeTruthy();
+    const full = await call('POST', '/v1/signup', {
+      body: { email: newEmail(), kdf: KDF, salt: salt(), authKey: key(), wrappedKey: sealed(), recoveryAuth: key(), recoveryWrappedKey: sealed(), device: device() },
+      vars
+    });
+    expect(full.status).toBe(403);
+    expect(full.body.error).toBe('signups_closed');
+
+    // A sign-up for an address that has an account takes no place.
+    const before = await count();
+    const taken = await call('POST', '/v1/signup', {
+      body: { email: first.email, kdf: KDF, salt: salt(), authKey: key(), wrappedKey: sealed(), recoveryAuth: key(), recoveryWrappedKey: sealed(), device: device() },
+      vars: { SIGNUPS: 'open', MAX_ACCOUNTS: '0' }
+    });
+    expect(taken.status).toBe(409);
+    expect(await count()).toBe(before);
+
+    const deleted = await call('DELETE', '/v1/account', { token: first.token, body: { authKey: first.authKey }, vars });
+    expect(deleted.status).toBe(204);
+    expect(await count()).toBe(before - 1);
+    expect((await signup({ vars })).token).toBeTruthy();
+  });
+
+  it('counts without a cap when MAX_ACCOUNTS is 0', async () => {
+    const before = await count();
+    await signup({ vars: { MAX_ACCOUNTS: '0' } });
+    expect(await count()).toBe(before + 1);
+  });
+});

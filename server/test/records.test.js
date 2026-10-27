@@ -374,3 +374,19 @@ describe('upgrading', () => {
     expect(await usage(person)).toEqual({ records: 1, bytes: 40 });
   });
 });
+
+describe('the push limit', () => {
+  it('limits pushes per client address', async () => {
+    const person = await signup();
+    const ip = '192.0.2.88';
+    let limited = null;
+    for (let i = 0; i < 200 && !limited; i++) {
+      const res = await call('POST', '/v1/records', { token: person.token, body: { records: [] }, ip });
+      if (res.status === 429) limited = res;
+      else expect(res.status).toBe(200);
+    }
+    expect(limited?.body.error).toBe('rate_limited');
+    // Another address still gets through.
+    expect((await call('POST', '/v1/records', { token: person.token, body: { records: [] } })).status).toBe(200);
+  });
+});

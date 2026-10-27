@@ -82,7 +82,7 @@ The server speaks JSON over HTTPS. Requests that need a session send `Authorizat
 |---|---|
 | 400 | `invalid` (the request's shape or values are wrong) |
 | 401 | `unauthorized` (no session or an ended session; on `login` and `recover/*`, a wrong password or recovery key) |
-| 403 | `signups_closed`, `invite_required`, `wrong_password` (a signed-in request whose `authKey` doesn't match) |
+| 403 | `signups_closed` (also when the server holds as many accounts as it takes), `invite_required`, `wrong_password` (a signed-in request whose `authKey` doesn't match) |
 | 404 | `not_found` |
 | 409 | `exists` (sign-up for an address that has an account) |
 | 413 | `too_large`, `quota` |
@@ -127,7 +127,7 @@ Who runs this server and where it keeps data. No session needed. The app shows t
 
 `{ "email", "authKey", "device" }` → `{ "token", "wrappedKey", "account" }`.
 
-Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login` and `recover/*` (`429 rate_limited`).
+Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
 
 An account keeps at most 100 sessions; a new one past that ends the session seen longest ago.
 

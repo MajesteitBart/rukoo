@@ -193,6 +193,12 @@ describe('routing', () => {
       idFromName: (name) => env.ACCOUNTS.idFromName(name),
       get: (id) => env.ACCOUNTS.get(id)
     };
+    const REGISTRY = {
+      jurisdiction(where) {
+        asked.push(`registry:${where}`);
+        return env.REGISTRY;
+      }
+    };
     const body = {
       email: newEmail(),
       invite: INVITE,
@@ -205,9 +211,9 @@ describe('routing', () => {
       device: device()
     };
     const request = new Request('https://accounts.example/v1/signup', { method: 'POST', body: JSON.stringify(body) });
-    const res = await worker.fetch(request, withVars({ ACCOUNTS, JURISDICTION: 'eu' }), createExecutionContext());
+    const res = await worker.fetch(request, withVars({ ACCOUNTS, REGISTRY, JURISDICTION: 'eu' }), createExecutionContext());
     expect(res.status).toBe(201);
-    expect(asked).toEqual(['eu']);
+    expect(asked).toEqual(['registry:eu', 'eu']);
 
     const plain = await worker.fetch(
       new Request('https://accounts.example/v1/prelogin', {
@@ -218,7 +224,7 @@ describe('routing', () => {
       createExecutionContext()
     );
     expect(plain.status).toBe(200);
-    expect(asked).toEqual(['eu']);
+    expect(asked).toEqual(['registry:eu', 'eu'], 'prelogin without a jurisdiction asks for none');
   });
 });
 
