@@ -311,10 +311,23 @@ class Categories extends EventEmitter {
   }
 
   // Sorts what isn't sorted yet. again: sorts every inbox email again, apart from the ones people moved themselves.
+  // A sort asked for while one runs follows it, sorting again if any of those asks did, so nothing asked for is lost:
+  // "Sort the inbox again" during an ordinary sort, or the sort a new Jev key starts. The promise covers both.
   sort({ again = false } = {}) {
     if (!this.settings().enabled) return Promise.resolve(0);
-    if (this.sorting) return this.sorting;
-    this.sorting = this.run(again).finally(() => {
+    if (this.sorting) {
+      this.followUp = { again: Boolean(this.followUp && this.followUp.again) || again };
+      return this.sorting;
+    }
+    this.sorting = (async () => {
+      let total = 0;
+      for (let ask = { again }; ask; ask = this.followUp) {
+        this.followUp = null;
+        if (!this.settings().enabled) break;
+        total += await this.run(ask.again);
+      }
+      return total;
+    })().finally(() => {
       this.sorting = null;
     });
     return this.sorting;

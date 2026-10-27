@@ -923,6 +923,11 @@ function renderList() {
   renderShell();
   renderListHead();
   renderCategoryTabs();
+  // A selection only holds emails the tab shows; one moved to another category leaves it.
+  if (categoriesOn() && S.checked.size) {
+    const shown = new Set(categoryRows().map((m) => m.id));
+    for (const id of S.checked) if (!shown.has(id)) S.checked.delete(id);
+  }
   renderListTools();
   const scroll = $('.list-scroll');
   scroll.innerHTML = listHtml();

@@ -402,6 +402,37 @@ test('sorting again finishes the emails Jev was too busy for, once it answers', 
   assert.equal(cats.redo.size, 0);
 });
 
+test('sorting again while a sort runs follows it instead of getting lost', async (t) => {
+  let release;
+  let first = true;
+  const fake = {
+    MODEL: 'jev-test',
+    classify: async () => {
+      if (first) {
+        first = false;
+        await new Promise((r) => (release = r));
+      }
+      return { category: 'money', confidence: 0.9, model: 'jev-test' };
+    }
+  };
+  const msgs = inbox();
+  const { cats, acc, account } = setup(t, msgs, { jevImpl: fake });
+  const stored = (uid) => account.get('classification', cats.key(acc, msgs.find((m) => m.uid === uid)));
+  cats.setEnabled(true);
+  await cats.sort();
+  assert.equal(stored(3).source, 'rules');
+  // A new email starts an ordinary sort with Jev; "Sort again" comes while it waits on Jev.
+  msgs.push({ uid: 7, messageId: '<7@x>', from: { name: 'Person Name', address: 'person@studio.example' }, to: [], cc: [{ address: 'me@work.example' }], subject: 'FYI', date: 7 });
+  cats.setJev({ key: 'KEY', on: true });
+  const running = cats.sort();
+  await new Promise((r) => setImmediate(r));
+  const again = cats.sortAgain();
+  release();
+  await Promise.all([running, again]);
+  assert.equal(stored(7).source, 'jev');
+  assert.equal(stored(1).source, 'jev', 'sorted again, not left as it was');
+});
+
 test('categories can be added, renamed, reordered and deleted, within limits', (t) => {
   const { cats } = setup(t, inbox());
   cats.setEnabled(true);

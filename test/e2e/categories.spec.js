@@ -88,6 +88,16 @@ test('an email moves to another category, and its sender follows on request', as
   await win.locator('.ctab', { hasText: 'To read' }).click();
   await expect(win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' })).toHaveCount(1);
 
+  // Several selected and moved away: the selection doesn't keep them out of sight.
+  await win.locator('.ctab', { hasText: 'Promotions' }).click();
+  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
+  await win.locator('[data-bulk="more"]').click();
+  await win.locator('.menu button', { hasText: 'Move to category' }).click();
+  await win.locator('.scrim .radio-row', { hasText: 'Updates' }).click();
+  await expect(win.locator('.list-scroll .item', { hasText: 'Forward Future' })).toHaveCount(0);
+  await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
+  await win.locator('.ctab', { hasText: 'To read' }).click();
+
   await win.click('[data-action="settings"]');
   await settings().locator('[data-a="categories"]').click();
   const rule = settings().locator('.row', { hasText: 'newsletter@anwb.nl' });
