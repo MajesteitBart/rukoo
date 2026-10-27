@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "seal": [
+    {
+      "name": "basic",
+      "handle": "bart",
+      "bookingId": "Rf63vMqqWdS0MICDAHKmrw",
+      "owner": {
+        "privatePkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg47LLRwj7EpJU-36T5bsf1jmeDLIbUaGbFSPZvFj-_XmhRANCAASzLFmcIoPpCeD4kwlWuJEIJn0b6PdurhKa6L2aNPJcqRFN-Yjk7hNPEGHDx13QIIzLc6zj5zepbzhfFqt-Lfb2",
+        "publicRaw": "BLMsWZwig-kJ4PiTCVa4kQgmfRvo926uEprovZo08lypEU35iOTuE08QYcPHXdAgjMtzrOPnN6lvOF8Wq34t9vY",
+        "keyId": "022AU4L2OrU"
+      },
+      "ephemeral": {
+        "privatePkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLteWwL2bsU-JQyD0MCNO6l0PcUNZdGAv4tPJ0z9xtbGhRANCAASThQrw9qCtd5yMA3q5gC6TTKbr_zGe6TbxGMuCA8OQ7G0R3YrC6mb74acC1-s9YQ48Tl79-tFPB4gH5cQ7BYi5",
+        "publicRaw": "BJOFCvD2oK13nIwDermALpNMpuv_MZ7pNvEYy4IDw5DsbRHdisLqZvvhpwLX6z1hDjxOXv360U8HiAflxDsFiLk"
+      },
+      "nonce": "VGAKuZyn0Dqns4mK",
+      "plaintext": {
+        "name": "Jane Doe",
+        "email": "jane@example.com",
+        "notes": "Kickoff",
+        "timeZone": "Europe/Amsterdam",
+        "locale": "en",
+        "via": "",
+        "manageKey": "txjO8ayviKg7DhixbMjZBsQPNGfjIqLJ4llGNmGw8kk",
+        "type": "30min",
+        "start": 1793696400000,
+        "end": 1793698200000
+      },
+      "plaintextJson": "{\"name\":\"Jane Doe\",\"email\":\"jane@example.com\",\"notes\":\"Kickoff\",\"timeZone\":\"Europe/Amsterdam\",\"locale\":\"en\",\"via\":\"\",\"manageKey\":\"txjO8ayviKg7DhixbMjZBsQPNGfjIqLJ4llGNmGw8kk\",\"type\":\"30min\",\"start\":1793696400000,\"end\":1793698200000}",
+      "aad": "rukoo/v1/booking:bart:Rf63vMqqWdS0MICDAHKmrw",
+      "ikm": "gm781lPgavpp4QtD2LY0YZDIKPCECBSr7rfIWBdJHu8",
+      "key": "YPMDQsFttHOdZqerWWOjFLosJgBnwy5UEff6FU83Nws",
+      "blob": "AtNtgFOC9jq1BJOFCvD2oK13nIwDermALpNMpuv_MZ7pNvEYy4IDw5DsbRHdisLqZvvhpwLX6z1hDjxOXv360U8HiAflxDsFiLlUYAq5nKfQOqeziYoMo4nqzC28nsJQ9jYMchnMFo9MyYqRfZmyibgcVsKpyg6rYS5jG9l6hR2PUbFCQnFxpybfE8D33FCzXuqy5v7jlcb2fpZX3QTmxldxMlD__CqLlyTTDf8om6oshE6BBVLC9tvySCAbQ7f9uC9LCznrUNWF9Laq4Tna1VjWDn_bfDE17YAqHBnWAZeymIAfIX9ts_hYYUIbiqHqqEu77J8Sa2yoFCp8NAcoRTkdC1CqbYF9OE6je17DD_NqXpUQbQrxxASfRANyP2lc4eDKM9vQkjkSCNsNUl4qOq822KRTQf_nL2uO-SWHrGETfjGGrNIAprO5pWmOAA"
+    },
+    {
+      "name": "unicode",
+      "handle": "b-v-m",
+      "bookingId": "dMvJ2-BFHzVpb45YhA5meg",
+      "owner": {
+        "privatePkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgCG9y3ed8CxKOC_muO5ech22gijlUPyFqkQ4HgElU-QShRANCAAR3oQ6H2j-u8U9CX6N8fHgGBQY7TUsaQQEwdGBwBHlnMX1pYhzoVRDL9BZ_apaRLIE_2O-5sBEZOaBGhVDCo9Fa",
+        "publicRaw": "BHehDofaP67xT0Jfo3x8eAYFBjtNSxpBATB0YHAEeWcxfWliHOhVEMv0Fn9qlpEsgT_Y77mwERk5oEaFUMKj0Vo",
+        "keyId": "tJVDlUL9FLE"
+      },
+      "ephemeral": {
+        "privatePkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgGjaV0DUTPwYW2Boznr7uMR662s56FxUWTECpxtoIu5KhRANCAARr-5sULSrCsoR9uUHDa6rxhOiZdGz5pGUyVwg0G7lwhvU_zFk2BuIc9FmPh6rVD4EjhEvFVy5R4ggZKDG6Mwga",
+        "publicRaw": "BGv7mxQtKsKyhH25QcNrqvGE6Jl0bPmkZTJXCDQbuXCG9T_MWTYG4hz0WY-HqtUPgSOES8VXLlHiCBkoMbozCBo"
+      },
+      "nonce": "I3Wii5O0sJez-sx6",
+      "plaintext": {
+        "name": "Zoë Ångström-Müller 日本",
+        "email": "zoe.angstrom@example.nl",
+        "notes": "Bespreking over de ‘offerte’ 🚀\nTweede regel met \"aanhalingstekens\" en \\ backslash",
+        "timeZone": "Australia/Lord_Howe",
+        "locale": "nl",
+        "via": "ChatGPT",
+        "manageKey": "PHPKMStbUGkOrcqhn6s78orOF59Icpyuiel7ztz4Ql0",
+        "type": "intro-call",
+        "start": 1794560400000,
+        "end": 1794564000000
+      },
+      "plaintextJson": "{\"name\":\"Zoë Ångström-Müller 日本\",\"email\":\"zoe.angstrom@example.nl\",\"notes\":\"Bespreking over de ‘offerte’ 🚀\\nTweede regel met \\\"aanhalingstekens\\\" en \\\\ backslash\",\"timeZone\":\"Australia/Lord_Howe\",\"locale\":\"nl\",\"via\":\"ChatGPT\",\"manageKey\":\"PHPKMStbUGkOrcqhn6s78orOF59Icpyuiel7ztz4Ql0\",\"type\":\"intro-call\",\"start\":1794560400000,\"end\":1794564000000}",
+      "aad": "rukoo/v1/booking:b-v-m:dMvJ2-BFHzVpb45YhA5meg",
+      "ikm": "WGS2nt53ineczBxqm_anKwgCYTiKbbbrxiUkJ9i6uzg",
+      "key": "xg_Fq_yIEjHQH_9TwdjQwQio4PTBcGcymqYgqKm5A1U",
+      "blob": "ArSVQ5VC_RSxBGv7mxQtKsKyhH25QcNrqvGE6Jl0bPmkZTJXCDQbuXCG9T_MWTYG4hz0WY-HqtUPgSOES8VXLlHiCBkoMbozCBojdaKLk7Swl7P6zHq6_P-_ZdP7MnUdTMB2RoNkbNNRKFpK3R6VbUh4U3j5Iz-UuQ6vEJGyv27sMSWXUN4TO4Da-j4Fb5QnT2AXmxDOYtn2DWhkHRAmWCcLeyIWhrZQyI4RCotjYyrQWBBiMKqCE_6DCrs8S0u44Z4-JftGDar_yIkiqfeoT8LIqD4bFPmCqj5Cqw8nCezuqrpBcdW8I9FHMZu5y5SDtnJT8gqhbHFquBKk0fMpI6cstiRFCACI51yFXnjnYT5Zw8pBRteSFjZqWRqrNpCPlMfE3Q85ibABeqKNmMCJnk1J1IF5paFmE-QXMrcIvQuzL5oBWucAt6fwfuCi0Pgxpr6rYSk4tehfsNYPX2JuG2iPuycAyzKBXnsLmfOgZCzQtnvGaL8RKVSlZeFGkAVe63MHpvX3t9nhlAJbpYPxk-CH2UtqKJFpzDUts-1uagOonb4UG315MpD_Q3clVvyaJjkKduSfln6YAfIqyEa1oHnYL_5pk7GbvSQZuxrN9Q"
+    },
+    {
+      "name": "empty",
+      "handle": "abc",
+      "bookingId": "3kHL3UaU4C7WBEwFYgt_HA",
+      "owner": {
+        "privatePkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgKNmt2gsxOUbNz7aAOLUsMItRF_5Gh2UWVfZgq6tM00qhRANCAATtT2LFtOdoJi59nesD8B6n6tRxvQfB272CsSVAtrvfpilHMZX7dURKIW8iOpZAA1twanAhSJJ8oje1o1KinEPs",
+        "publicRaw": "BO1PYsW052gmLn2d6wPwHqfq1HG9B8HbvYKxJUC2u9-mKUcxlft1REohbyI6lkADW3BqcCFIknyiN7WjUqKcQ-w",
+        "keyId": "4V4Oq3ILPrw"
+      },
+      "ephemeral": {
+        "privatePkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQguZmS-kBUijPsLT4SApjVLRHfcJHVZPEY-r_vlHb96tuhRANCAASA110g7f8unfh_1FQBOLb547Vhy35L8dXl9yumfJEOWzoFT5y9Kj5901RR6pATtibMFIRxXeFCf0ndJM7EXqns",
+        "publicRaw": "BIDXXSDt_y6d-H_UVAE4tvnjtWHLfkvx1eX3K6Z8kQ5bOgVPnL0qPn3TVFHqkBO2JswUhHFd4UJ_Sd0kzsReqew"
+      },
+      "nonce": "lali31vMaA0-Yr3t",
+      "plaintext": {
+        "name": "Al",
+        "email": "al+cal@example.org",
+        "notes": "",
+        "timeZone": "UTC",
+        "locale": "en",
+        "via": "",
+        "manageKey": "zAPqzgb88bJnPz8P-2otXGBn2qHUKiPr5j5RqPKtjhk",
+        "type": "30min",
+        "start": 1793782800000,
+        "end": 1793784600000
+      },
+      "plaintextJson": "{\"name\":\"Al\",\"email\":\"al+cal@example.org\",\"notes\":\"\",\"timeZone\":\"UTC\",\"locale\":\"en\",\"via\":\"\",\"manageKey\":\"zAPqzgb88bJnPz8P-2otXGBn2qHUKiPr5j5RqPKtjhk\",\"type\":\"30min\",\"start\":1793782800000,\"end\":1793784600000}",
+      "aad": "rukoo/v1/booking:abc:3kHL3UaU4C7WBEwFYgt_HA",
+      "ikm": "le4loOsCu5LDFS-t9QVZrpchz24S4YbmYVQsuNlV1Jc",
+      "key": "s3bHgJJB8yr-sOhHUmvsdLDH2pyCpQeB0JkOdX3_KYc",
+      "blob": "AuFeDqtyCz68BIDXXSDt_y6d-H_UVAE4tvnjtWHLfkvx1eX3K6Z8kQ5bOgVPnL0qPn3TVFHqkBO2JswUhHFd4UJ_Sd0kzsReqeyVqWLfW8xoDT5ive3mVJhNLg9f5Hyhp0RLEtabDjwZ5005yigNmhiWPrzQxrIyXvJv8auP2e5U2NxkKrFfMiRhoMhY6Nk2I_f0XyMCq_fxYPOILAv0MSZjVKUxD3SGOMFIPV_VcFhH49T8vMYAoqimL525NdmxyEjQIF6xnh1QPE0dqnCsq6WUTnBdcvOtjqac1vOBV1hQ-n3ZBXWxOH_k-lfLmyup0q4UTedd8_8fI3BQbT7t-pioGoC8pAHmdgO0bKh1D-F2yC3dK5x675QR6NjfQot7bV_atEDGI1JdKY_2igcAil8Bc72P6w"
+    }
+  ],
+  "handles": {
+    "valid": [
+      "bart",
+      "b-v-m",
+      "abc",
+      "a1b2c3",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "invalid": [
+      "ab",
+      "-bart",
+      "bart-",
+      "b--m",
+      "Bart",
+      "bärt",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "bart.vdm",
+      "bart_vdm",
+      ""
+    ],
+    "reserved": [
+      "api",
+      "mcp",
+      "meet",
+      "llms",
+      "well-known",
+      "bvdm"
+    ]
+  },
+  "slugs": {
+    "valid": [
+      "30min",
+      "intro-call",
+      "x",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "invalid": [
+      "",
+      "-x",
+      "30_min",
+      "x-",
+      "Intro",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "reserved": [
+      "api",
+      "ics",
+      "mcp",
+      "manage",
+      "prepare"
+    ]
+  },
+  "acct": [
+    {
+      "email": "Bart@Example.com",
+      "acct": "FOZ2B43RaG2Xodx3"
+    },
+    {
+      "email": " jane.doe@Example.NL ",
+      "acct": "NQpGEl3zReqCUAao"
+    }
+  ]
+}

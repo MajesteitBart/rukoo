@@ -104,7 +104,8 @@ describe('GET /v1/info', () => {
       },
       hosting: { provider: 'Cloudflare', company: 'Cloudflare, Inc.', country: 'US', jurisdiction: 'eu' },
       signups: 'invite',
-      limits: { records: 250000, bytes: 104857600, recordBytes: 16384, batch: 500 }
+      limits: { records: 250000, bytes: 104857600, recordBytes: 16384, batch: 500 },
+      features: ['booking']
     });
   });
 
@@ -136,7 +137,19 @@ describe('not_configured', () => {
     ['POST', '/v1/recover/start', {}],
     ['GET', '/v1/account'],
     ['GET', '/v1/records'],
-    ['POST', '/v1/nothing-here']
+    ['POST', '/v1/nothing-here'],
+    ['GET', '/v1/booking'],
+    ['PUT', '/v1/booking', {}],
+    ['DELETE', '/v1/booking'],
+    ['GET', '/v1/booking/handles/bart'],
+    ['GET', '/v1/booking/bookings'],
+    ['POST', '/v1/booking/bookings/Rf63vMqqWdS0MICDAHKmrw', {}],
+    ['GET', '/meet/bart'],
+    ['GET', '/meet/bart/api'],
+    ['GET', '/meet/bart/api/slots'],
+    ['POST', '/meet/bart/api/bookings', {}],
+    ['GET', '/meet/bart/llms.txt'],
+    ['POST', '/meet/mcp', {}]
   ];
 
   for (const [method, path, body] of calls) {
@@ -173,7 +186,21 @@ describe('routing', () => {
       ['PUT', '/v1/records'],
       ['GET', '/v1/login'],
       ['OPTIONS', '/v1/login'],
-      ['POST', '/v1/info']
+      ['POST', '/v1/info'],
+      ['POST', '/v1/booking'],
+      ['PATCH', '/v1/booking'],
+      ['GET', '/v1/booking/nothing'],
+      ['POST', '/v1/booking/handles/bart'],
+      ['GET', '/v1/booking/bookings/Rf63vMqqWdS0MICDAHKmrw'],
+      ['DELETE', '/v1/booking/bookings/Rf63vMqqWdS0MICDAHKmrw'],
+      ['OPTIONS', '/v1/booking'],
+      ['GET', '/meeting'],
+      ['GET', '/meet'],
+      ['GET', '/meet/'],
+      ['GET', '/meet/nobody-has-this'],
+      ['GET', '/meet/Bart'],
+      ['GET', '/meet/api'],
+      ['GET', '/meet/assets/nothing.js']
     ]) {
       const res = await call(method, path);
       expect(res.status, `${method} ${path}`).toBe(404);

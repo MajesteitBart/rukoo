@@ -40,11 +40,12 @@ export function randomIp() {
 
 // Sends a request through the deployed configuration, or, given vars, through the Worker's fetch handler with those
 // vars changed. Either way the real Durable Objects answer.
-export async function call(method, path, { body, token, ip = randomIp(), vars, headers = {} } = {}) {
-  const init = { method, headers: { 'cf-connecting-ip': ip, ...headers } };
+// Redirects come back as they are, so tests see them.
+export async function call(method, path, { body, token, ip = randomIp(), vars, headers = {}, contentType = 'application/json' } = {}) {
+  const init = { method, headers: { 'cf-connecting-ip': ip, ...headers }, redirect: 'manual' };
   if (token) init.headers.authorization = `Bearer ${token}`;
   if (body !== undefined) {
-    init.headers['content-type'] = 'application/json';
+    init.headers['content-type'] = contentType;
     init.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
   const request = new Request(`https://accounts.example${path}`, init);

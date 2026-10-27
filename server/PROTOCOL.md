@@ -349,7 +349,7 @@ Claims the handle if needed, publishes and turns the page on or off. The whole p
 
 ### `DELETE /v1/booking`
 
-Turns the page off and deletes everything on it: the profile, open times, busy times and every booking. The handle stays reserved for this account (see Handles). → `204`. An account without a handle also gets `204`. A device deletes the page first when the account is deleted, and stops if that fails; it skips this step on a server whose `/v1/info` doesn't list `booking` in `features`, and takes a `404` from a server without these routes as done. The server also wipes a page whose account no longer exists within a day.
+Turns the page off and deletes everything on it: the profile, open times, busy times and every booking. The handle stays reserved for this account (see Handles). → `204`. An account without a handle also gets `204`, and so does one whose handle another account took after the reservation ran out: nothing of this account is on it. A device deletes the page first when the account is deleted, and stops if that fails; it skips this step on a server whose `/v1/info` doesn't list `booking` in `features`, and takes a `404` from a server without these routes as done. The server also wipes a page whose account no longer exists within two days (see Retention).
 
 ### `GET /v1/booking/handles/<handle>`
 
@@ -387,7 +387,9 @@ The page's bookings that changed after `since`, oldest change first, at most `li
       "notify": true,
       "cancelledBy": null,
       "reason": null,
-      "message": null
+      "message": null,
+      "bookedStart": 1793696400000,
+      "bookedEnd": 1793698200000
     }
   ],
   "seq": 41,
@@ -403,6 +405,7 @@ The page's bookings that changed after `since`, oldest change first, at most `li
 - `uid` is the booking's calendar UID: `<id>@<host of the page's url>`, fixed when the booking is made, so a later change of `BOOKING_ORIGIN` doesn't change it. The host's calendar event and the guest's `.ics` both use it; devices copy it and never work it out again.
 - `notify` says whether the host's calendar may send mail for this version (see Limits, Mail budget). It is true for a confirmation (a new confirmed booking, a guest's reschedule, the host's confirm) and for a guest's cancellation while the day's mail budget lasts, and false past it. A host confirm counts toward the budget but its `notify` is always true. Pending, declined and lapsed versions, and the host's own cancellations and reschedules, have `notify: false`: no invitation goes out for them, or the host's calendar already sent what the host chose.
 - `cancelledBy` is `guest`, `host` or null; `reason` is null for a guest's cancellation, else what the host's device sent (`host_cancelled`, `host_deleted`, `guest_declined`); `message` is the host's message to the guest, at most 500 characters, shown on the guest's manage page.
+- `bookedStart` and `bookedEnd` are the times the booking was made for, which the sealed details carry. A reschedule changes `start` and `end` but can't change the sealed details, which the server can't open.
 
 Cursor rules are those of `GET /v1/records`: keep asking with the last booking's `seq` while `more` is true; a device refuses a page whose `seq` values aren't rising, after `since` and not past `seq`; when the answer's `seq` is lower than the device's cursor, the page was deleted or replaced and the device starts again from `since=0`. An account without a handle gets `{ "bookings": [], "seq": 0, "more": false }`.
 
@@ -435,9 +438,9 @@ The plaintext is UTF-8 JSON with exactly these keys, in this order:
 { "name": "Jane Doe", "email": "jane@example.com", "notes": "Kickoff", "timeZone": "Europe/Amsterdam", "locale": "en", "via": "ChatGPT", "manageKey": "…43 characters", "type": "30min", "start": 1793696400000, "end": 1793698200000 }
 ```
 
-`notes` and `via` are empty strings when the guest gave none; `start` and `end` are milliseconds. A device checks every field again after opening it (name at most 80 characters without control characters, notes at most 1000, a plain address, a known zone) and that `type`, `start` and `end` match the booking's own columns. The server's tests and the desktop's share the vectors in `server/test/fixtures/booking-vectors.json`.
+`notes` and `via` are empty strings when the guest gave none; `start` and `end` are milliseconds. A device checks every field again after opening it (name at most 80 characters without control characters, notes at most 1000, a plain address, a known zone) and that `type` matches the booking's `type`, and `start` and `end` its `bookedStart` and `bookedEnd`. The server's tests and the desktop's share the vectors in `server/test/fixtures/booking-vectors.json`.
 
-A booking id is 16 random bytes and a manage key 32 random bytes, both base64url. The server keeps only `SHA-256(manageKey)` and compares with a constant-time check. It clears the sealed details, the key hash and any idempotency entry as soon as a booking is cancelled, declined or lapses.
+A booking id is 16 random bytes and a manage key 32 random bytes, both base64url. The server keeps only `SHA-256(manageKey)` and compares with a constant-time check. It clears the sealed details and any idempotency entry as soon as a booking is cancelled, declined or lapses. The key hash stays until the booking is purged, so the guest's manage link still shows what happened and the host's message.
 
 ### Slots
 
@@ -447,7 +450,7 @@ The server works out the open times; devices only publish windows and busy times
 - A candidate lies inside `windows[schedule]`, starts at least `minNotice` from now and less than `horizon` days ahead.
 - The meeting widened by `bufferBefore` and `bufferAfter` overlaps neither `busy` nor any active booking widened by its own type's buffers. Pending requests hold their slot until they lapse. The booking being rescheduled doesn't count against itself.
 - The host-local day stays under the type's `dailyLimit` and the page's `dailyCap`.
-- More than 24 hours (`BOOKING_STALE_HOURS`) after the last publish, every type acts as if it needs the host's confirmation. More than 7 days (`BOOKING_DARK_DAYS`) after it, no times are offered: the page shows the text for "no open times", plus `contact`.
+- More than 24 hours (`BOOKING_STALE_HOURS`) after the last publish, every type acts as if it needs the host's confirmation, and a guest can't move a confirmed booking (`403 limit_reached`, `limit: "stale"`): its new time would only be checked against the same old busy times. More than 7 days (`BOOKING_DARK_DAYS`) after it, no times are offered: the page shows the text for "no open times", plus `contact`.
 
 ### Public routes
 
@@ -503,17 +506,17 @@ The guest's manage page: the time in the guest's and the host's zone, the type, 
 
 #### `GET /meet/<handle>/booking/<id>.ics?k=<manageKey>`
 
-The confirmed booking as `text/calendar; charset=utf-8` with `content-disposition: attachment; filename="booking.ics"`: one VEVENT with UID `<id>@<host>`, SEQUENCE rising with `version`, and no ORGANIZER or ATTENDEE addresses. A pending, cancelled, declined or lapsed booking, or a wrong key: 404.
+The confirmed booking as `text/calendar; charset=utf-8` with `content-disposition: attachment; filename="booking.ics"`: one VEVENT with UID `<id>@<host>`, SEQUENCE 0 plus one for each time the confirmed booking moved (as the host's invitation, which starts at 0 when the booking or the host's confirm makes it), and no ORGANIZER or ATTENDEE addresses. A pending, cancelled, declined or lapsed booking, or a wrong key: 404.
 
 #### `GET /meet/<handle>/llms.txt`
 
-Markdown (`text/markdown; charset=utf-8`) for assistants, in English, in the shape of llmstxt.org: the host and zone, the booking rules (show times in the user's zone, get name, email and the user's OK, book once, one guest per booking), each visible type with its literal slots URL and its description quoted as "From {name}: …", the open times for the next 7 days with UTC and a prepared link each, how to book with a link and with HTTP, how to change or cancel, the errors, and the MCP endpoint and privacy statement as options. Text the host wrote is always quoted and labelled; it describes the meeting and isn't instructions.
+Markdown (`text/markdown; charset=utf-8`) for assistants, in English, in the shape of llmstxt.org: the host and zone, the booking rules (show times in the user's zone, get name, email and the user's OK, book once, one guest per booking), each visible type with its literal slots URL and its description quoted as `From "{name}": "…"`, the open times for the next 7 days with UTC and a prepared link each, how to book with a link and with HTTP, how to change or cancel, the errors, and the MCP endpoint and privacy statement as options. Text the host wrote is always quoted and labelled; it describes the meeting and isn't instructions. The host's name is host text too: it appears only quoted, and the server's own sentences say "the host".
 
 #### `GET /meet/<handle>/api`
 
 ```json
 {
-  "host": { "name": "Bart van der Meeren", "time_zone": "Europe/Amsterdam", "intro": "Happy to talk about agents in your team." },
+  "host": { "name": "Bart van der Meeren", "time_zone": "Europe/Amsterdam", "intro": "Happy to talk about agents in your team.", "contact": "No time that works? Reply to my last email." },
   "accepting": true,
   "types": [
     {
@@ -566,7 +569,7 @@ All parameters are optional. `type` defaults to the only visible type (with seve
 }
 ```
 
-`next_from` is the day after `to` while the type's horizon reaches past it, else null. No open times gives an empty `slots` and the "no open times" message with the host's contact line.
+`next_from` is the day after `to` while the type's horizon reaches past it, else null. No open times gives an empty `slots` and the "no open times" message, with the host's contact line in `contact` when there is one; a `409 not_accepting` carries `contact` the same way.
 
 #### `POST /meet/<handle>/api/bookings`
 
@@ -629,7 +632,7 @@ An `Idempotency-Key` seen in the last 24 hours with the same body answers what t
 
 #### `POST /meet/<handle>/api/bookings/<id>/reschedule`
 
-`Authorization: Bearer <manageKey>`, body `{ "start": "2026-11-04T13:00:00Z", "time_zone": "Europe/Amsterdam" }` → `200 { "booking": { … }, "ics_url", "message" }`. A guest can reschedule a booking twice; a third time, or past the page's mail budget, gets `403 limit_reached`. A pending request stays pending at its new time. Cancelled, declined, lapsed or past bookings: `409 not_active`.
+`Authorization: Bearer <manageKey>`, body `{ "start": "2026-11-04T13:00:00Z", "time_zone": "Europe/Amsterdam" }` → `200 { "booking": { … }, "ics_url", "message" }`. A guest can reschedule a booking twice; a third time, past the page's mail budget, or a confirmed booking while the page is stale (see Slots), gets `403 limit_reached`. A pending request stays pending at its new time. Cancelled, declined, lapsed or past bookings: `409 not_active`.
 
 #### Public errors
 
@@ -639,7 +642,7 @@ Every error is `{ "error": "<code>", "message": "<one sentence an assistant can 
 |---|---|---|
 | 400 | `invalid` | a field or parameter is wrong; `field` names it |
 | 403 | `cross_site` | a write from another website |
-| 403 | `limit_reached` | `limit` is `network` (3 new bookings a day from one network), `day` (the page's daily cap), `future` (500 future bookings), `reschedules` (2 per booking) or `mail` (the mail budget) |
+| 403 | `limit_reached` | `limit` is `network` (3 new bookings a day from one network), `day` (the page's daily cap), `future` (500 future bookings), `reschedules` (2 per booking), `mail` (the mail budget) or `stale` (moving a confirmed booking while the page is stale) |
 | 404 | `not_found` | no such page or booking, or a wrong manage key |
 | 404 | `unknown_type` | no such visible or hidden type; `message` lists the visible ones |
 | 409 | `slot_taken` | the start isn't an open time (any more), with `alternatives` |
@@ -667,7 +670,7 @@ Dispatch, in this order:
 6. Any other version: `400` with `-32022` and `data: { supported, requested }`.
 7. `ping` works in both.
 
-Methods: `initialize` (2025), `server/discover` (2026), `ping`, `tools/list`, `tools/call`. Bad arguments are `-32602`. A booking that fails (a taken slot, a closed page, a limit) is a tool result with `isError: true` and `structuredContent` `{ error, message, alternatives? }`, never a JSON-RPC error, so the model sees it. Tool results carry the JSON of the matching HTTP answer as `structuredContent` and a short text for the model in which host-written text is quoted as `From {name}: "…"`. When a 2026 request carries `clientInfo` in `_meta` and `book_meeting` has no `via`, its name is used.
+Methods: `initialize` (2025), `server/discover` (2026), `ping`, `tools/list`, `tools/call`. Bad arguments are `-32602`. A booking that fails (a taken slot, a closed page, a limit) is a tool result with `isError: true` and `structuredContent` `{ error, message, alternatives? }`, never a JSON-RPC error, so the model sees it. Tool results carry the JSON of the matching HTTP answer as `structuredContent` and a short text for the model in which host-written text is quoted as `From "{name}": "…"`, the name quoted too. A tool follows a renamed page up to 5 times; past that its result is `isError: true` with `{ error: "moved", moved_to }`. When a 2026 request carries `clientInfo` in `_meta` and `book_meeting` has no `via`, its name is used.
 
 | Tool | Arguments | Annotations | Same as |
 |---|---|---|---|
@@ -691,7 +694,7 @@ The booker's script: it switches times to the browser's zone and fills the form.
 | Profile | 64 KiB of JSON, 10 types |
 | Windows, busy times | 2000 and 5000 intervals |
 | Writes from one address | 20 a minute (`BOOKING_LIMITER`) on every public write |
-| New bookings from one network | 3 a day per page; IPv4 counts per /24, IPv6 per /64, kept as an HMAC under a salt that changes daily |
+| New bookings from one network | 3 a day per page; IPv4 counts per /24, IPv6 per /64, kept as an HMAC under a salt that changes daily; the HMACs and the salt go once the host's day is over |
 | New bookings per page | the page's `dailyCap` (default 20, 1 to 50) per host-local day |
 | Future bookings per page | 500 |
 | Guest reschedules | 2 per booking |
@@ -702,9 +705,9 @@ The booker's script: it switches times to the browser's zone and fills the form.
 
 ### Retention
 
-- Bookings are purged 30 days after they end or were cancelled, declined or lapsed. Their sealed details, key hash and idempotency entry go at cancellation, decline or lapse already.
+- Bookings are purged 30 days after they end or were cancelled, declined or lapsed. Their sealed details and idempotency entry go at cancellation, decline or lapse already; the manage key's hash goes with the booking.
 - A page that hasn't been published to for 60 days, and has no future bookings, loses its published data; the handle stays its account's.
-- Once a day each page checks that its account still exists, and wipes itself when it doesn't.
+- Once a day each page checks that its account still exists, and wipes itself when two checks a day apart both find it gone. It skips the check while the Worker's `JURISDICTION` is invalid or isn't the one the page was claimed under, because accounts would then seem gone.
 - A handle stays reserved for its last account for 12 months after it was given up.
 - The server logs no guest details, keys or URLs with keys.
 
@@ -712,7 +715,7 @@ The booker's script: it switches times to the browser's zone and fills the form.
 
 - The handle, and which account it belongs to, as the account's internal name.
 - Everything the page publishes: name, intro, zone, language, meeting types with their public location labels, contact line, the windows of open hours and the busy times within them (to 15 minutes), and when it was last published.
-- For each booking: its time, type, status and channel; the guest's details at the moment of booking, sealed after that; the client network as a daily-salted HMAC.
+- For each booking: its time, type, status and channel; the guest's details at the moment of booking, sealed after that; the client network as a daily-salted HMAC; while the booking is active, an HMAC of the guest's email under the page's salt, bound to the booking's type and start, to answer `already_booked`.
 - IP addresses, as for the rest of the server.
 
 Guests are told under the booking form and in the operator's privacy statement.
