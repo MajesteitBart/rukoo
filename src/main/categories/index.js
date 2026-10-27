@@ -43,8 +43,12 @@ class Categories extends EventEmitter {
     this.jev = jev;
     this.local = {};
     this.timer = null;
+    // The sort after TypeSafe was busy, apart from soon()'s timer, which every mail update moves.
+    this.retryTimer = null;
     this.sorting = null;
     this.jevBusyUntil = 0;
+    // Goes up with every change to Jev's settings; what a request made under older settings answers is dropped.
+    this.jevGeneration = 0;
   }
 
   file() {
@@ -321,6 +325,7 @@ class Categories extends EventEmitter {
     const unsure = ids.has(s.unsure) ? s.unsure : list[0].id;
     const wanted = this.jevWanted();
     const key = this.jevKey();
+    const generation = this.jevGeneration;
     const store = (k, value) => (again ? this.account.put('classification', k, value) : this.account.put('classification', k, value, { ifAbsent: true }));
     const forJev = [];
     let sorted = 0;
@@ -335,7 +340,7 @@ class Categories extends EventEmitter {
     let cancelled = false;
     const next = async () => {
       while (forJev.length && !stop && !cancelled) {
-        if (!this.settings().enabled || this.jevKey() !== key) {
+        if (!this.settings().enabled || this.jevGeneration !== generation || this.jevKey() !== key) {
           cancelled = true;
           break;
         }
@@ -353,9 +358,13 @@ class Categories extends EventEmitter {
     };
     const asked = forJev.length;
     await Promise.all(Array.from({ length: JEV_AT_ONCE }, next));
-    if (stop) this.jevFailed(stop);
-    // Jev answered again after being busy or out of reach. A refused key only clears with a new key (setJev).
-    else if (asked && this.local.jev && (this.local.jev.error === 'busy' || this.local.jev.error === 'network')) this.setJevError(null);
+    if (this.jevGeneration === generation) {
+      if (stop) this.jevFailed(stop);
+      // Jev answered again after being busy or out of reach. A refused key only clears with a new key (setJev).
+      else if (asked && this.local.jev && (this.local.jev.error === 'busy' || this.local.jev.error === 'network')) this.setJevError(null);
+    }
+    // Mail waits for Jev while TypeSafe is busy: make sure a sort follows the wait.
+    if (wanted && !key && Date.now() < this.jevBusyUntil && !this.retryTimer) this.retryAfter(this.jevBusyUntil - Date.now() + 1000);
     if (sorted) this.changed();
     return sorted;
   }
@@ -368,8 +377,17 @@ class Categories extends EventEmitter {
       const wait = 5 * 60 * 1000;
       this.jevBusyUntil = Date.now() + wait;
       this.setJevError(err && err.code === 'busy' ? 'busy' : 'network');
-      this.soon(wait + 1000);
+      this.retryAfter(wait + 1000);
     }
+  }
+
+  retryAfter(ms) {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.sort().catch(() => {});
+    }, ms);
+    if (this.retryTimer.unref) this.retryTimer.unref();
   }
 
   setJevError(code) {
@@ -387,6 +405,9 @@ class Categories extends EventEmitter {
     j.error = null;
     this.local.jev = j;
     this.jevBusyUntil = 0;
+    this.jevGeneration += 1;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.saveLocal();
     this.emit('changed');
     if (j.on) this.soon(0);
@@ -399,6 +420,7 @@ class Categories extends EventEmitter {
 
   close() {
     clearTimeout(this.timer);
+    clearTimeout(this.retryTimer);
   }
 }
 

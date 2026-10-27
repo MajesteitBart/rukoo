@@ -324,6 +324,54 @@ test('turning Jev off stops the emails still queued for it', async (t) => {
   assert.equal(calls, 1, 'only the request already on its way');
 });
 
+test('a refusal for a key that was replaced meanwhile leaves the new key alone', async (t) => {
+  let reject;
+  const fake = {
+    MODEL: 'jev-test',
+    classify: (key) =>
+      key === 'OLD'
+        ? new Promise((resolve, no) => {
+            reject = () => no(Object.assign(new Error('key'), { code: 'key' }));
+          })
+        : Promise.resolve({ category: 'money', confidence: 0.9, model: 'jev-test' })
+  };
+  const { cats } = setup(t, inbox(), { jevImpl: fake });
+  cats.setEnabled(true);
+  cats.setJev({ key: 'OLD', on: true });
+  const sorting = cats.sort();
+  await new Promise((r) => setImmediate(r));
+  cats.setJev({ key: 'NEW' });
+  reject();
+  await sorting;
+  assert.equal(cats.state().jev.error, null);
+  assert.equal(cats.jevKey(), 'NEW');
+});
+
+test('the sort after TypeSafe was busy survives other updates', async (t) => {
+  const fake = {
+    MODEL: 'jev-test',
+    classify: async () => {
+      throw Object.assign(new Error('busy'), { code: 'busy' });
+    }
+  };
+  const { cats, engine } = setup(t, inbox(), { jevImpl: fake });
+  cats.setEnabled(true);
+  cats.setJev({ key: 'KEY', on: true });
+  await cats.sort();
+  assert.equal(cats.state().jev.error, 'busy');
+  const retry = cats.retryTimer;
+  assert.ok(retry, 'a sort is set for after the wait');
+  engine.emit('updated');
+  cats.soon(0);
+  await cats.sort();
+  assert.equal(cats.retryTimer, retry, 'mail updates and early sorts leave it');
+  // Lost anyway (say, after a restart while busy): a sort during the wait sets it again.
+  clearTimeout(cats.retryTimer);
+  cats.retryTimer = null;
+  await cats.sort();
+  assert.ok(cats.retryTimer);
+});
+
 test('categories can be added, renamed, reordered and deleted, within limits', (t) => {
   const { cats } = setup(t, inbox());
   cats.setEnabled(true);
