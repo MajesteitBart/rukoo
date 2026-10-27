@@ -130,6 +130,7 @@ class Categories(
     // Its own supervisor, off the main thread: a sort reads every inbox email.
     private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default)
     private val lock = Any()
+    private val stateLock = Any()
     private var local = LocalCategories()
     private var timer: Job? = null
 
@@ -177,7 +178,8 @@ class Categories(
 
     /** Works the state out again, as after a change of language: the presets' texts follow it. */
     fun refresh() {
-        _state.value = computeState()
+        // Worked out and published in one step, so a slower thread can't put back an older state over a newer one.
+        synchronized(stateLock) { _state.value = computeState() }
     }
 
     private fun changed() = refresh()
