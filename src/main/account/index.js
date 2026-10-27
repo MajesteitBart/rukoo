@@ -530,12 +530,30 @@ class AccountService extends EventEmitter {
 
   async pull(session = this.session) {
     const touched = new Set();
+    let restarted = false;
     for (;;) {
       if (!session || this.session !== session) return;
       const since = Number(this.state.cursor) || 0;
       const res = await this.call('GET', `/v1/records?since=${since}&limit=${PULL_LIMIT}`, undefined, { auth: true, session });
       if (this.session !== session) return;
       const records = Array.isArray(res && res.records) ? res.records : [];
+      const top = Number(res && res.seq);
+      // The server's newest change is older than where this device got to: it lost data, or an earlier answer was
+      // false. Start again from the beginning, once; records already here are taken again without harm.
+      if (Number.isSafeInteger(top) && top < since) {
+        if (restarted) throw fail('server');
+        restarted = true;
+        this.state.cursor = 0;
+        continue;
+      }
+      // A page comes after since, in order, and not past the server's newest change; anything else is refused whole,
+      // so a false sequence number can't move the cursor past records this device hasn't seen.
+      let last = since;
+      for (const r of records) {
+        const seq = Number(r && r.seq);
+        if (!Number.isSafeInteger(seq) || seq <= last || (Number.isSafeInteger(top) && seq > top)) throw fail('server');
+        last = seq;
+      }
       for (const r of records) {
         const c = this.applyRemote(r);
         if (c) touched.add(c);

@@ -749,6 +749,24 @@ describe('the cap on accounts', () => {
     expect(await count()).toBe(before - 1);
   });
 
+  it('lets an invite code make one account, and gives the use back when the sign-up fails', async () => {
+    const vars = { SIGNUPS: 'invite', INVITE_USES: '1', INVITE_CODES: `once-${crypto.randomUUID()}` };
+    const body = (email) => ({ email, invite: vars.INVITE_CODES, kdf: KDF, salt: salt(), authKey: key(), wrappedKey: sealed(), recoveryAuth: key(), recoveryWrappedKey: sealed(), device: device() });
+    const taken = (await signup()).email;
+    // A sign-up that fails (the address has an account) doesn't use the code up.
+    expect((await call('POST', '/v1/signup', { body: body(taken), vars })).status).toBe(409);
+    const firstBody = body(newEmail());
+    const first = await call('POST', '/v1/signup', { body: firstBody, vars });
+    expect(first.status).toBe(201);
+    const second = await call('POST', '/v1/signup', { body: body(newEmail()), vars });
+    expect(second.status).toBe(403);
+    expect(second.body.error).toBe('invite_required');
+    // Deleting the account doesn't give the code back, or one code could make accounts one after another.
+    const removed = await call('DELETE', '/v1/account', { token: first.body.token, body: { authKey: firstBody.authKey }, vars });
+    expect(removed.status).toBe(204);
+    expect((await call('POST', '/v1/signup', { body: body(newEmail()), vars })).status).toBe(403);
+  });
+
   it('counts without a cap when MAX_ACCOUNTS is 0', async () => {
     const before = await count();
     await signup({ vars: { MAX_ACCOUNTS: '0' } });

@@ -29,6 +29,8 @@
     "JURISDICTION": "eu",
     // "open", "invite" (codes from the INVITE_CODES secret) or "closed".
     "SIGNUPS": "invite",
+    // How many accounts each invite code may make; 0 for any number.
+    "INVITE_USES": 1,
     // Per account: live records, and their total size in bytes.
     "MAX_RECORDS": 250000,
     "MAX_BYTES": 104857600,
@@ -74,6 +76,7 @@
         // Invite codes until sign-ups check the address (#121): with open sign-ups, invented addresses could fill
         // MAX_ACCOUNTS and keep everyone else out.
         "SIGNUPS": "invite",
+        "INVITE_USES": 1,
         "MAX_RECORDS": 250000,
         // 1,000 accounts of at most 32 MiB keep the worst case at 32 GB.
         "MAX_BYTES": 33554432,

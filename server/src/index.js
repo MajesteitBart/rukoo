@@ -110,7 +110,8 @@ async function signup(request, env) {
   const body = await input.readJson(request);
   const mode = signups(env);
   if (mode === 'closed') throw new HttpError(403, 'signups_closed', 'This server does not take new accounts.');
-  if (mode === 'invite' && !(await validInvite(env, body.invite))) {
+  const invite = mode === 'invite' ? await validInvite(env, body.invite) : null;
+  if (mode === 'invite' && !invite) {
     throw new HttpError(
       403,
       'invite_required',
@@ -130,14 +131,16 @@ async function signup(request, env) {
   const name = await accountName(env, fields.email);
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
   const registry = registryStub(env);
-  if (registry && !(await registry.reserve(maxAccounts(env)))) {
-    throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
+  if (registry) {
+    const place = await registry.reserve(maxAccounts(env), invite, inviteUses(env));
+    if (place === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
+    if (place === 'used') throw new HttpError(403, 'invite_required', 'This invite code has been used.');
   }
   let result;
   try {
     result = await stub(env, name).signup(name, fields, limits(env));
   } finally {
-    if (registry && (!result || result.status !== 201)) await registry.release();
+    if (registry && (!result || result.status !== 201)) await registry.release(invite);
   }
   return send(result);
 }
@@ -278,8 +281,9 @@ function ipv6Prefix(ip) {
 
 // Every listed code works. Each is compared through its hash, so the comparison takes the same time whatever the
 // codes' lengths, and every code is compared, so the time doesn't show which one matched.
+// The hash of the invite code when it is one of INVITE_CODES, else null. The registry counts its uses by this hash.
 async function validInvite(env, invite) {
-  if (typeof invite !== 'string' || !invite.trim()) return false;
+  if (typeof invite !== 'string' || !invite.trim()) return null;
   const codes = String(env.INVITE_CODES || '')
     .split(',')
     .map((code) => code.trim())
@@ -289,7 +293,14 @@ async function validInvite(env, invite) {
   for (const code of codes) {
     if (sameBytes(await sha256(utf8(code)), given)) found = true;
   }
-  return found;
+  return found ? toBase64url(given) : null;
+}
+
+// How many accounts one invite code may make; 0 for any number. The default is one each.
+function inviteUses(env) {
+  if (env.INVITE_USES === undefined || env.INVITE_USES === '') return 1;
+  const n = Number(env.INVITE_USES);
+  return Number.isSafeInteger(n) && n >= 0 ? n : 1;
 }
 
 function configProblem(env) {

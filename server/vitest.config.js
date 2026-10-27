@@ -12,6 +12,8 @@ export default defineConfig({
         bindings: {
           PEPPER: 'test-pepper-not-secret-0123456789',
           INVITE_CODES: 'first-code, second-code',
+          // Most tests sign up many times with one code; the invite tests set their own number of uses.
+          INVITE_USES: '0',
           JURISDICTION: ''
         }
       }

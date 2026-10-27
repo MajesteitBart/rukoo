@@ -426,6 +426,65 @@ test('a tombstone from the server erases nothing, since it proves nothing', asyn
   assert.deepEqual(laptop.get('sender', 'keep@example.com'), { category: 'money' });
 });
 
+test('a false sequence number from the server makes the device start over, not skip records', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'seq@example.com', password: PASSWORD });
+  desk.put('sender', 'a@example.com', { category: 'money' });
+  await desk.sync();
+  // One answer claims a change far ahead of the server's.
+  let lie = true;
+  const { request } = require('../src/main/account/client');
+  const laptop = new AccountService({
+    dataDir: tmpDir(t),
+    secrets,
+    defaultServer: srv.url,
+    deviceName: 'laptop',
+    request: async (...args) => {
+      const res = await request(...args);
+      if (lie && args[2].startsWith('/v1/records?')) {
+        lie = false;
+        return { records: [...res.records, { id: 'x'.repeat(43), seq: 999999, data: null }], seq: 999999, more: false };
+      }
+      return res;
+    }
+  }).init();
+  t.after(() => laptop.close());
+  await laptop.signIn({ email: 'seq@example.com', password: PASSWORD });
+  await laptop.sync();
+  desk.put('sender', 'b@example.com', { category: 'updates' });
+  await desk.sync();
+  await laptop.sync();
+  assert.deepEqual(laptop.get('sender', 'b@example.com'), { category: 'updates' }, 'nothing was skipped');
+  assert.ok(laptop.state.cursor < 999999);
+});
+
+test('a page out of order is refused whole and moves nothing', async (t) => {
+  const srv = await server(t);
+  const { request } = require('../src/main/account/client');
+  const desk = new AccountService({
+    dataDir: tmpDir(t),
+    secrets,
+    defaultServer: srv.url,
+    deviceName: 'desk',
+    request: async (...args) => {
+      const res = await request(...args);
+      if (args[2].startsWith('/v1/records?') && res.records.length) return { ...res, records: [...res.records].reverse(), seq: 1 };
+      return res;
+    }
+  }).init();
+  t.after(() => desk.close());
+  const helper = device(t, srv, 'helper');
+  await helper.signUp({ email: 'order@example.com', password: PASSWORD });
+  helper.put('sender', 'a@example.com', { category: 'money' });
+  helper.put('sender', 'b@example.com', { category: 'money' });
+  await helper.sync();
+  await desk.signIn({ email: 'order@example.com', password: PASSWORD });
+  await assert.rejects(desk.sync(), { code: 'server' });
+  assert.equal(desk.state.cursor, 0);
+  assert.equal(desk.get('sender', 'a@example.com'), undefined);
+});
+
 test('signing in with a wrong password fails without signing in', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);

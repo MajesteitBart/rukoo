@@ -84,7 +84,7 @@ The server speaks JSON over HTTPS. Requests that need a session send `Authorizat
 |---|---|
 | 400 | `invalid` (the request's shape or values are wrong) |
 | 401 | `unauthorized` (no session or an ended session; on `login` and `recover/*`, a wrong password or recovery key) |
-| 403 | `signups_closed` (also when the server holds as many accounts as it takes), `invite_required`, `wrong_password` (a signed-in request whose `authKey` doesn't match) |
+| 403 | `signups_closed` (also when the server holds as many accounts as it takes), `invite_required` (also for a code that has been used up), `wrong_password` (a signed-in request whose `authKey` doesn't match) |
 | 404 | `not_found` |
 | 409 | `exists` (sign-up for an address that has an account) |
 | 413 | `too_large`, `quota` |
@@ -180,6 +180,8 @@ Records changed after `since`, oldest first, at most `limit` (default and maximu
 ```
 
 `seq` is the newest change on the server. Keep asking with the last record's `seq` while `more` is true.
+
+A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`.
 
 ### `POST /v1/records`
 
