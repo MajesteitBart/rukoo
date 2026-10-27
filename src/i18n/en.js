@@ -1807,6 +1807,10 @@
     "message": "The connection to the mail server was closed. Try again.",
     "description": "errors > connection. A mail command that was still waiting when the account's connection closed, because the account was removed, signed in again or moved to another server. Shown in the reader or a toast. src/main/imap.js (ImapAccount.drain)"
   },
+  "errors.connection.googleAppPassword": {
+    "message": "Google didn't accept this password. Gmail only works here with an app password, not your normal Google password. Create one and try again.",
+    "description": "errors > connection. Shown in the setup form and under Server settings when Gmail turns down the password of an account that signs in with a password. The setup form shows a Create app password link under it. src/main/imap.js (friendlyError, verifyError)"
+  },
   "errors.connection.host": {
     "message": "Server not found. Check the server name.",
     "description": "errors > connection. src/main/imap.js (friendlyError)"
@@ -1818,6 +1822,10 @@
   "errors.connection.timeout": {
     "message": "The connection to the server timed out.",
     "description": "errors > connection. src/main/imap.js (friendlyError)"
+  },
+  "errors.connection.yahooAppPassword": {
+    "message": "Yahoo didn't accept this password. Yahoo Mail only works here with an app password, not your normal Yahoo password. Create one and try again.",
+    "description": "errors > connection. Shown in the setup form and under Server settings when Yahoo turns down the password of an account. The setup form shows a Create app password link under it. src/main/imap.js (friendlyError, verifyError)"
   },
   "errors.folder.duplicate": {
     "message": "A folder with that name already exists.",
@@ -1902,6 +1910,10 @@
   "errors.caldav.signIn": {
     "message": "The calendar server turned down the username or password. Check them in Server settings.",
     "description": "Calendar error when the CalDAV server answers 401 to the account's username and password. Shown in the calendar notice and under the Server settings form. src/main/calendar/caldav.js"
+  },
+  "errors.caldav.setupSignIn": {
+    "message": "The calendar server turned down the username or password. Check them, or leave the calendar server empty to add the account without its calendar.",
+    "description": "Setup form error when the CalDAV server entered while adding an account answers 401 to its username and password; the account isn't saved. src/main/engine.js (setupCalDav)"
   },
   "errors.caldav.unreachable": {
     "message": "Can't reach the calendar server. Check its address and your internet connection.",
@@ -3792,15 +3804,15 @@
   },
   "settings.server.caldav": {
     "message": "Calendar server (CalDAV)",
-    "description": "Server settings form: label of the optional field for the address of the account's CalDAV calendar server. src/renderer/settings.js (render)"
+    "description": "Server settings form and the manual servers of the setup form: label of the optional field for the address of the account's CalDAV calendar server. src/renderer/settings.js (render); src/renderer/setup.js (showLogin)"
   },
   "settings.server.caldavPlaceholder": {
     "message": "Optional, for example caldav.example.com",
-    "description": "Server settings form: placeholder in the empty CalDAV address field. src/renderer/settings.js (render)"
+    "description": "Server settings form and the manual servers of the setup form: placeholder in the empty CalDAV address field. src/renderer/settings.js (render); src/renderer/setup.js (showLogin)"
   },
   "settings.server.caldavHelp": {
     "message": "Rukoo signs in with the username and password above. Leave this empty to show no calendar for this account.",
-    "description": "Server settings form: help text under the CalDAV address field. src/renderer/settings.js (render)"
+    "description": "Server settings form and the manual servers of the setup form: help text under the CalDAV address field. In both forms the username and password fields are above it. src/renderer/settings.js (render); src/renderer/setup.js (showLogin)"
   },
   "settings.signature.generalValue": {
     "message": "General: {signature}",
@@ -3894,6 +3906,10 @@
     "message": "{email} has been added",
     "description": "setup > account. src/renderer/setup.js (done)"
   },
+  "setup.appPassword.create": {
+    "message": "Create app password",
+    "description": "Setup form for Google and Yahoo: link that opens the provider's app password page in the browser. Shown in the note above the password field and under a refused sign-in. src/renderer/setup.js (showLogin)"
+  },
   "setup.demo.action": {
     "message": "Try a demo account first",
     "description": "setup > demo. src/renderer/setup.js (showGrid)"
@@ -3901,6 +3917,10 @@
   "setup.demo.name": {
     "message": "Demo User",
     "description": "setup > demo. src/main/engine.js"
+  },
+  "setup.fields.appPasswordHint": {
+    "message": "App password",
+    "description": "Setup form for Google and Yahoo: placeholder in the password field, which only takes an app password there. src/renderer/setup.js (showLogin)"
   },
   "setup.fields.email": {
     "message": "Email address",
@@ -3998,6 +4018,10 @@
     "message": "Sign in to Google",
     "description": "setup > google. src/renderer/setup.js (showGoogle)"
   },
+  "setup.google.unavailable": {
+    "message": "Browser sign-in isn't available: this copy of Rukoo has no Google OAuth client.",
+    "description": "Google password form when Rukoo has no Google OAuth client: says why it shows the password form instead of browser sign-in. Followed by the Import Google OAuth client button. src/renderer/setup.js (showLogin)"
+  },
   "setup.google.wait": {
     "message": "Waiting for sign-in in your browser...",
     "description": "setup > google. src/renderer/setup.js (showGoogle)"
@@ -4019,8 +4043,8 @@
     "description": "setup > providers > exchange. src/main/providers.js"
   },
   "setup.providers.google.note": {
-    "message": "Use an app password from your Google account (myaccount.google.com/apppasswords). IMAP must be enabled in Gmail.",
-    "description": "setup > providers > google. src/main/providers.js"
+    "message": "Gmail only accepts an app password here, not your normal Google password. Create one in your Google account and enter it below. IMAP must be enabled in Gmail.",
+    "description": "Google password form: the note above the password field, followed by the Create app password link. src/main/providers.js; src/renderer/setup.js (showLogin)"
   },
   "setup.providers.office365.note": {
     "message": "Your administrator must enable IMAP and SMTP AUTH for your mailbox.",
@@ -4039,8 +4063,8 @@
     "description": "setup > providers > outlook. src/main/providers.js"
   },
   "setup.providers.yahoo.note": {
-    "message": "Yahoo requires an app password (Account security > Generate app password).",
-    "description": "setup > providers > yahoo. src/main/providers.js"
+    "message": "Yahoo Mail only accepts an app password here, not your normal Yahoo password. Create one under Account security and enter it below.",
+    "description": "Yahoo password form: the note above the password field, followed by the Create app password link to Yahoo's Account security page. src/main/providers.js; src/renderer/setup.js (showLogin)"
   },
   "setup.signIn.action": {
     "message": "Sign in",

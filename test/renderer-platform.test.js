@@ -45,7 +45,7 @@ test('native Edit menu routes text editing to Chromium and mailbox actions to sh
     window: {
       matchMedia: () => ({}),
       addEventListener() {},
-      mail: { platform: 'darwin', on: (listener) => { receive = listener; }, call: async (...args) => native.push(args) }
+      mail: { platform: 'darwin', on: (listener) => { receive = listener; }, invoke: async (...args) => (native.push(args), { ok: true, result: null }) }
     },
     document: { activeElement: active, documentElement: { style: { setProperty: (key, value) => styles.set(key, value) } }, addEventListener() {} },
     KeyboardEvent: class { constructor(type, options) { this.type = type; Object.assign(this, options); } }

@@ -2,18 +2,21 @@
 
 const { t } = require('../i18n');
 
-// Server presets for the provider tiles on the "E-mail instellen" screen.
+// Server presets for the provider tiles on the "E-mail instellen" screen. appPasswordUrl: the page where the user
+// creates an app password, for providers whose mail servers turn down the account's normal password.
 const PROVIDERS = {
   google: {
     label: 'Google',
     imap: { host: 'imap.gmail.com', port: 993, secure: true },
     smtp: { host: 'smtp.gmail.com', port: 465, secure: true },
+    appPasswordUrl: 'https://myaccount.google.com/apppasswords',
     get note() { return t('setup.providers.google.note'); }
   },
   yahoo: {
     label: 'Yahoo',
     imap: { host: 'imap.mail.yahoo.com', port: 993, secure: true },
     smtp: { host: 'smtp.mail.yahoo.com', port: 465, secure: true },
+    appPasswordUrl: 'https://login.yahoo.com/account/security',
     get note() { return t('setup.providers.yahoo.note'); }
   },
   outlook: {
@@ -69,15 +72,30 @@ function serverDefaults(providerId, email) {
   return { imap, smtp };
 }
 
+// The IMAP servers of the providers that only take an app password, for an account added under "Other" with such an
+// address (see DOMAIN_HINTS).
+const APP_PASSWORD_HOSTS = { google: /(^|\.)(gmail|googlemail)\.com$/i, yahoo: /(^|\.)yahoo\.com$/i };
+
+// 'google' or 'yahoo' when the account signs in with a password to a provider that only accepts an app password,
+// otherwise null. A Google account signed in through the browser has no password to get wrong.
+function appPasswordProvider(account) {
+  if (!account || account.type !== 'imap' || account.auth === 'oauth2') return null;
+  const preset = PROVIDERS[account.provider];
+  if (preset && preset.appPasswordUrl) return account.provider;
+  const host = String((account.imap && account.imap.host) || '');
+  return Object.keys(APP_PASSWORD_HOSTS).find((id) => APP_PASSWORD_HOSTS[id].test(host)) || null;
+}
+
 function publicProviders() {
   return Object.entries(PROVIDERS).map(([id, p]) => ({
     id,
     label: p.label,
     note: p.note,
     manual: Boolean(p.manual),
+    appPasswordUrl: p.appPasswordUrl || null,
     imap: p.imap,
     smtp: p.smtp
   }));
 }
 
-module.exports = { PROVIDERS, serverDefaults, publicProviders };
+module.exports = { PROVIDERS, serverDefaults, publicProviders, appPasswordProvider };

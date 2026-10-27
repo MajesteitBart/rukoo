@@ -1,7 +1,13 @@
 import { t, getLocale, shortcutLabel } from './i18n.js';
 import { icons } from './icons.js';
 
-export const api = (method, ...args) => window.mail.call(method, ...args);
+// Calls the main process. A failure throws main's message with what main passed on besides it: a code, such as
+// 'auth' for a sign-in the mail server turned down, and that code's details (see windowError in main.js).
+export const api = async (method, ...args) => {
+  const { ok, result, error, ...details } = await window.mail.invoke(method, ...args);
+  if (!ok) throw Object.assign(new Error(error), details);
+  return result;
+};
 
 export function esc(text) {
   return String(text ?? '')

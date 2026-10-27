@@ -83,19 +83,28 @@ export function openSetup(ctx, { first = false } = {}) {
     }
   }
 
+  // The link to a provider's app password page, for Google and Yahoo. id: the provider whose page it opens.
+  const appPasswordLink = (id) =>
+    `<button type="button" class="link-btn" data-s="app-password" data-app-password="${esc(id)}" data-i18n="setup.appPassword.create">${esc(t('setup.appPassword.create'))}${icons.popOut}</button>`;
+  const appPasswordUrl = (id) => providers.find((x) => x.id === id)?.appPasswordUrl || null;
+
   function showLogin(id, { forcePassword = false } = {}) {
     if (id === 'google' && !forcePassword && ctx.S.data.googleAvailable) return showGoogle();
     const p = providers.find((x) => x.id === id);
     const manual = p.manual;
+    // Google and Yahoo turn a normal password down, so their note comes before the password field, with the link.
+    const appPassword = Boolean(p.appPasswordUrl);
+    const passwordHint = appPassword ? 'setup.fields.appPasswordHint' : 'setup.fields.passwordHint';
     page.innerHTML = `
       <button class="icon-btn setup-back" data-s="grid" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button>
       <div class="setup-inner login">
         <div class="login-head"><span class="logo">${providerLogos[id]}</span><h2>${esc(t('setup.signIn.title', { provider: p.label }))}</h2></div>
         <form class="form" autocomplete="off">
           <label data-i18n="setup.fields.email">${esc(t('setup.fields.email'))}<input type="email" name="email" required data-i18n-placeholder="setup.fields.emailExample" placeholder="${esc(t('setup.fields.emailExample'))}" spellcheck="false"/></label>
-          <label data-i18n="setup.fields.password">${esc(t('setup.fields.password'))}<span class="pw"><input type="password" name="password" required data-i18n-placeholder="setup.fields.passwordHint" placeholder="${esc(t('setup.fields.passwordHint'))}"/>
+          ${appPassword ? `<div class="setup-callout">${icons.info}<div><p>${esc(p.note)}</p>${appPasswordLink(id)}</div></div>` : ''}
+          <label data-i18n="setup.fields.password">${esc(t('setup.fields.password'))}<span class="pw"><input type="password" name="password" required data-i18n-placeholder="${passwordHint}" placeholder="${esc(t(passwordHint))}"/>
             <button type="button" class="icon-btn" data-s="pw" data-i18n-title="setup.fields.showPassword" title="${esc(t('setup.fields.showPassword'))}">${icons.eye}</button></span></label>
-          <div class="note">${esc(p.note)}</div>
+          ${appPassword ? '' : `<div class="note">${esc(p.note)}</div>`}
           <div class="manual" ${manual ? '' : 'hidden'}>
             <div class="form" style="padding:0">
               <label data-i18n="setup.fields.username">${esc(t('setup.fields.username'))}<input type="text" name="user" data-i18n-placeholder="setup.fields.usernameHint" placeholder="${esc(t('setup.fields.usernameHint'))}" spellcheck="false"/></label>
@@ -105,6 +114,13 @@ export function openSetup(ctx, { first = false } = {}) {
               <div class="two"><label data-i18n="setup.fields.smtp">${esc(t('setup.fields.smtp'))}<input type="text" name="smtpHost" value="${esc(p.smtp.host)}"/></label>
                 <label data-i18n="setup.fields.port">${esc(t('setup.fields.port'))}<input type="number" name="smtpPort" value="${p.smtp.port}"/></label>
                 <label class="inline"><input type="checkbox" name="smtpSecure" ${p.smtp.secure ? 'checked' : ''}/> SSL/TLS</label></div>
+              ${
+                // Google's calendar needs browser sign-in; it doesn't take an app password over CalDAV.
+                id === 'google'
+                  ? ''
+                  : `<label data-i18n="settings.server.caldav">${esc(t('settings.server.caldav'))}<input type="text" name="caldavUrl" spellcheck="false" data-i18n-placeholder="settings.server.caldavPlaceholder" placeholder="${esc(t('settings.server.caldavPlaceholder'))}"/>
+                <span class="field-help" data-i18n="settings.server.caldavHelp">${esc(t('settings.server.caldavHelp'))}</span></label>`
+              }
             </div>
           </div>
           <div class="error" data-error></div>
@@ -114,6 +130,12 @@ export function openSetup(ctx, { first = false } = {}) {
             <button class="btn" type="submit" data-i18n="setup.signIn.action">${esc(t('setup.signIn.action'))}</button>
           </div>
         </form>
+        ${
+          id === 'google' && !ctx.S.data.googleAvailable
+            ? `<div class="setup-foot"><p data-i18n="setup.google.unavailable">${esc(t('setup.google.unavailable'))}</p>
+          <button type="button" class="link-btn" data-s="import-google" data-i18n="setup.google.import">${esc(t('setup.google.import'))}</button></div>`
+            : ''
+        }
       </div>`;
     page.dataset.provider = id;
     const form = $('form', page);
@@ -143,6 +165,8 @@ export function openSetup(ctx, { first = false } = {}) {
       const user = String(f.get('user') || '').trim() || emailValue;
       input.imap = { host: String(f.get('imapHost')).trim(), port: Number(f.get('imapPort')), secure: f.get('imapSecure') === 'on', user };
       input.smtp = { host: String(f.get('smtpHost')).trim(), port: Number(f.get('smtpPort')), secure: f.get('smtpSecure') === 'on', user };
+      const caldav = String(f.get('caldavUrl') || '').trim();
+      if (caldav) input.caldav = { url: caldav };
     }
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner"></span>${esc(t('setup.signIn.pending'))}`;
@@ -154,8 +178,11 @@ export function openSetup(ctx, { first = false } = {}) {
       err.textContent = ex.message;
       btn.disabled = false;
       btn.textContent = t('setup.signIn.action');
-      // A failed automatic setup is usually a server issue; show the manual fields.
-      if (!manualShown && /IMAP|SMTP|server|Verbinding|time-out/i.test(ex.message)) {
+      const refused = ex.code === 'auth';
+      // Main names the provider from the tile or, under Other, from the IMAP server, as its message does.
+      if (refused && appPasswordUrl(ex.appPasswordProvider)) err.insertAdjacentHTML('beforeend', `<div>${appPasswordLink(ex.appPasswordProvider)}</div>`);
+      // A failed automatic setup is usually a server issue; show the manual fields. A refused password is not.
+      if (!manualShown && !refused && /IMAP|SMTP|server|Verbinding|time-out/i.test(ex.message)) {
         form.querySelector('.manual').hidden = false;
         form.querySelector('[data-s="manual"]').hidden = true;
       }
@@ -210,12 +237,19 @@ export function openSetup(ctx, { first = false } = {}) {
           if (await api('googleImportClient')) {
             ctx.S.data = await api('state');
             toast(t('setup.google.ready'));
-            showGrid();
+            // From the Google password form, go on to browser sign-in; from the provider grid, stay there.
+            if (b.closest('.login')) showLogin('google');
+            else showGrid();
           }
         } catch (ex) {
           toast(ex.message, 5000);
         }
         return;
+      case 'app-password': {
+        const url = appPasswordUrl(b.dataset.appPassword);
+        if (url) api('openExternal', url);
+        return;
+      }
       case 'manual':
         b.hidden = true;
         page.querySelector('.manual').hidden = false;

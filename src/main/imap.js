@@ -7,6 +7,7 @@ const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const util = require('./mailutil');
 const { SIGNAL_HEADERS, mailSignals } = require('./categories/signals');
+const { appPasswordProvider } = require('./providers');
 
 const PREVIEW_BYTES = 4096;
 // What a cached message needs from the server besides its flags. These never change for a uid, so a sync fetches
@@ -20,11 +21,26 @@ const line = () => ({ client: null, busy: false, idle: Promise.resolve(), queue:
 // Hosts whose SMTP service already files a copy in the Sent folder.
 const AUTO_SENT_HOSTS = /(gmail\.com|googlemail\.com|office365\.com|outlook\.com)$/i;
 
-function friendlyError(err) {
-  const msg = String((err && (err.responseText || err.response || err.message)) || err);
+const errorText = (err) => String((err && (err.responseText || err.response || err.message)) || err);
+
+// Whether the server turned the username and password down, as opposed to not being reached. imapflow marks a failed
+// LOGIN or AUTHENTICATE, nodemailer a failed SMTP AUTH with EAUTH. Gmail says "Application-specific password
+// required" to a normal Google password, in IMAP and in SMTP.
+function authFailed(err) {
+  if (!err || err.oauth) return false;
+  if (err.authenticationFailed || err.code === 'EAUTH') return true;
+  return /AUTHENTICATIONFAILED|Invalid credentials|authentication failed|535|Username and Password not accepted|Application-specific password required/i.test(errorText(err));
+}
+
+// account: the account the error is for, when known. A refused sign-in at a provider that only takes an app
+// password then says so instead of the general message.
+function friendlyError(err, account = null) {
+  const msg = errorText(err);
   if (err && err.oauth) return msg;
-  if (err && err.authenticationFailed) return t('errors.connection.auth');
-  if (/AUTHENTICATIONFAILED|Invalid credentials|authentication failed|535|Username and Password not accepted/i.test(msg)) {
+  if (authFailed(err)) {
+    const provider = appPasswordProvider(account);
+    if (provider === 'google') return t('errors.connection.googleAppPassword');
+    if (provider === 'yahoo') return t('errors.connection.yahooAppPassword');
     return t('errors.connection.auth');
   }
   if (/ENOTFOUND|EAI_AGAIN/i.test(msg)) return t('errors.connection.host');
@@ -212,15 +228,28 @@ class ImapAccount {
       await client.logout();
     } catch (err) {
       client.close();
-      throw new Error(`IMAP: ${friendlyError(err)}`);
+      throw this.verifyError('IMAP', err);
     }
     try {
       const transport = await this.transport();
       await transport.verify();
       transport.close();
     } catch (err) {
-      throw new Error(`SMTP: ${friendlyError(err)}`);
+      throw this.verifyError('SMTP', err);
     }
+  }
+
+  // The reason after the server that gave it, with code 'auth' when that server turned the sign-in down, so the
+  // setup form can tell a wrong password from a server address to correct. A provider that only takes an app
+  // password gets its message without the server: the same app password signs in to both. appPasswordProvider names
+  // that provider, also for an account added under "Other", so the form links to the page its message points to.
+  verifyError(server, err) {
+    const auth = authFailed(err);
+    const provider = auth ? appPasswordProvider(this.account) : null;
+    const out = new Error(provider ? friendlyError(err, this.account) : `${server}: ${friendlyError(err, this.account)}`);
+    if (auth) out.code = 'auth';
+    if (provider) out.appPasswordProvider = provider;
+    return out;
   }
 
   listFolders({ background = false } = {}) {
