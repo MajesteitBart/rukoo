@@ -51,7 +51,7 @@ jobs:
             throw 'Use vMAJOR.MINOR.PATCH, optionally followed by -alpha.N, -beta.N or -rc.N.'
           }
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
@@ -73,9 +73,9 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           if ($LASTEXITCODE -ne 0) { throw 'Release tags must point to a commit merged into main.' }
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
 
       - run: npm ci
@@ -159,7 +159,7 @@ jobs:
         env:
           SEM_MAC_PACKAGED: '1'
         run: npx playwright test test/e2e/macos.spec.js
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && runner.os == 'macOS'
         with:
           name: macos-release-evidence-${{ matrix.arch }}
@@ -187,7 +187,7 @@ jobs:
           }
           [System.IO.File]::WriteAllText("$pwd/dist/SHA256SUMS-${{ matrix.platform }}.txt", ($checksums -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}-release
           path: |
@@ -212,7 +212,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: '*-release'
           merge-multiple: true
