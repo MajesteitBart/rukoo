@@ -22,6 +22,7 @@ App code builds HTML in template strings. Every value in them goes through `esc(
 
 - `.avatar` is a 32px circle with initials. Its color comes from `--h`, set by `avatar()` in `ui.js` through `hue()`: one hue per address, with fixed saturation and lightness per theme. `.avatar.logo` puts a company's own icon on white, the background it was designed for. `.avatar.lg` is 38px. Folder dots (`.ic.fdot`) and the panel's monograms take their color from `--h` the same way. Generate a color for a new kind of item like this, never from a hand-picked palette.
 - `.pill` is the small counter pill, such as "+3" on a folded stack. `.pill.vip` marks VIPs.
+- `.default-badge` is an 18px neutral pill (`--chip` fill, `--text-2` text) after a title. Settings marks the default account and the default sender address with it.
 - `.check` is the list checkbox. `.draft-tag` marks drafts.
 - `.item` is a list row. `.item.selected` uses `--sel`, and `.unread-dot` uses `--accent`.
 - `.filters` and `.filter` are the quick filters above the list. `.filter.active` is filled with `--primary`, and `.filter .n` is the count.
@@ -29,7 +30,7 @@ App code builds HTML in template strings. Every value in them goes through `esc(
 
 ### Menus, dialogs and notices
 
-- `showMenu(anchor, items, opts)` in `ui.js` opens a `.menu`: 10px radius, 4px padding, 32px rows with 6px corners, `--raised` with `--shadow`, popping in over 120ms. `.menu-heading` and `.menu-sep` group the items.
+- `showMenu(anchor, items, opts)` in `ui.js` opens a `.menu`: 10px radius, 4px padding, 32px rows with 6px corners, `--raised` with `--shadow`, popping in over 120ms. `.menu-heading` and `.menu-sep` group the items. An item's `sub` adds a quieter second line in `--text-3`, as the account switcher does with each address under the account's name. A menu taller than the room it has is capped there and scrolls (`.menu.scrolls`).
 - `dialog({ title, body, buttons, render })`, `confirmDialog()` and `choiceDialog()` in `ui.js` open a `.dialog` over a `.scrim`. `promptDialog()` in `settings.js` asks for text. Use these instead of building a new modal.
 - `toast(message, { action, ms })` in `ui.js` shows the notice at the bottom, with an optional action such as Undo. It stays 2.6s, or 8s with an action. The toast is dark in both themes on purpose, like Beautiful UI's tooltips, so it uses literal colors.
 

@@ -24,8 +24,15 @@ class MailtoQueue {
   }
 }
 
+// Launch Services records the mailto: handler by bundle ID and opens links with a copy of the app it knows about.
+// A copy run from the mounted DMG or from Downloads may be gone later, ejected or deleted, which leaves email links
+// with nowhere to go. So only a copy in /Applications or ~/Applications may register, as Settings already says.
+function inApplications(app) {
+  try { return app.isInApplicationsFolder() === true; } catch { return false; }
+}
+
 class MacMailClient {
-  constructor(app, isolated = false) { this.app = app; this.available = app.isPackaged && !isolated; }
+  constructor(app, isolated = false) { this.app = app; this.available = app.isPackaged && !isolated && inApplications(app); }
   status() {
     let name = null;
     try { name = this.app.getApplicationNameForProtocol('mailto:') || null; } catch { /* No registered handler. */ }

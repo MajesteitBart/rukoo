@@ -4,6 +4,7 @@ const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 test('sign in with "Overige" and read real IMAP mail', async () => {
   test.setTimeout(120000);
@@ -52,7 +53,7 @@ test('sign in with "Overige" and read real IMAP mail', async () => {
     await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('arrived via SMTP', { timeout: 30000 });
     await expect(win.locator('.sync-status')).toContainText(/updated/i);
   } finally {
-    await app.close();
+    await closeApp(app);
     removeDir(env.SEM_DATA_DIR);
   }
 });

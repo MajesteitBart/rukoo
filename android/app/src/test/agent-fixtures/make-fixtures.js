@@ -212,7 +212,8 @@ turn('PDF states the desktop reader reports', {
     { id: 'f_pdf0000005', name: 'd.pdf', size: 1000, type: 'application/pdf', kind: 'pdf', path: '/p/d.pdf', partial: true, failed: null },
     { id: 'f_pdf0000006', name: 'e.pdf', size: 1000, type: 'application/pdf', kind: 'pdf', path: '/p/e.pdf', partial: false, failed: null },
     { id: 'f_pdf0000007', name: 'f.pdf', size: 1000, type: 'application/pdf', kind: 'pdf', path: '/p/f.pdf', omitted: true, partial: true },
-    { id: 'f_pdf0000008', name: 'g.pdf', size: 1000, type: 'application/pdf', kind: 'pdf', path: '/p/g.pdf', failed: 'timeout' }
+    { id: 'f_pdf0000008', name: 'g.pdf', size: 1000, type: 'application/pdf', kind: 'pdf', path: '/p/g.pdf', failed: 'timeout' },
+    { id: 'f_pdf0000009', name: 'h.pdf', size: 1000, type: 'application/pdf', kind: 'pdf', path: '/p/h.pdf', failed: 'busy' }
   ]
 });
 

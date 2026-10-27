@@ -23,10 +23,17 @@ const HEAP_MB = 512;
 const AT_ONCE = 2;
 // The PDFs an agent asks for (read_attachment, read_chat_file) wait for a reader only while few others do. An agent
 // can ask for any number at once, and each read that waits keeps its file in memory; one past these limits fails at
-// once as 'busy'. A message's own PDFs do not count: the turn holds them in memory anyway, and the message's limits
-// bound them.
+// once as 'busy'.
 const TOOL_WAITING = 4;
 const TOOL_WAITING_BYTES = 32 * 1024 * 1024;
+// A message's own PDFs come with a loader instead (chatfiles.forTurn): the file is read only once a reader takes it,
+// so the PDFs of messages sent in several chats at once hold no memory while they wait, and at most AT_ONCE are in
+// memory.
+// Any PDF that still waits for a reader after TURN_WAIT gets no text ('busy'). A message's own then goes along
+// without text, and the agent hears that read_chat_file can try again; one an agent asked for ends its tool call. The
+// wait is needed because a reader stays taken until its loader lets go of the file, which a stalled disk can put off
+// for as long as it stalls.
+const TURN_WAIT = 30000;
 
 const CHILD = path.join(__dirname, 'pdfchild.js');
 
@@ -62,29 +69,37 @@ function spawn({ rssMax, reader }) {
 }
 
 class PdfReader {
-  // timeout, rssMax: the limits above. reader: another module for the child to read with, for tests.
-  constructor({ timeout = TIMEOUT, rssMax = RSS_MAX, reader = null } = {}) {
-    this.opts = { timeout, rssMax, reader };
+  // timeout, rssMax: the limits above. turnWait: TURN_WAIT. reader: another module for the child to read with, for
+  // tests.
+  constructor({ timeout = TIMEOUT, rssMax = RSS_MAX, turnWait = TURN_WAIT, reader = null } = {}) {
+    this.opts = { timeout, rssMax, turnWait, reader };
     this.queue = [];
     this.running = new Set();
     this.stopped = false;
   }
 
+  // source: the PDF's bytes, or a function that returns a promise of them, called once a reader is free, with a
+  // signal that is aborted when the read no longer needs the file.
   // pdftext's {text, pages, truncated, partial, encrypted} and failed: null once the reader finished, or why it has
-  // no text: 'timeout', 'memory' (over the cap), 'error' (the process ended without an answer), 'stopped' (signal
-  // aborted, or Rukoo is closing) or 'busy' (a tool read that found too many waiting). signal: the turn or tool call
-  // it is for; once that is stopped the read leaves the queue, or its process is killed, so it never keeps another
-  // chat's PDF waiting. tool: an agent asked for it, so TOOL_WAITING applies. Never rejects.
-  read(buffer, { maxChars = 200000, signal = null, tool = false } = {}) {
+  // no text: 'timeout', 'memory' (over the cap), 'error' (the process ended without an answer, or the loader
+  // failed), 'stopped' (signal aborted, or Rukoo is closing) or 'busy' (a tool read that found too many waiting, or
+  // any read that waited TURN_WAIT for a reader). signal: the turn or tool call it is for; once that is stopped the
+  // read leaves the queue, or its process is killed, so it never keeps another chat's PDF waiting. tool: an agent
+  // asked for it, so TOOL_WAITING applies too. Never rejects.
+  read(source, { maxChars = 200000, signal = null, tool = false } = {}) {
     if (this.stopped || (signal && signal.aborted)) return Promise.resolve(failed('stopped'));
+    const load = typeof source === 'function' ? source : null;
+    const buffer = load ? null : source;
+    // What the read holds while it waits: a loader holds nothing until a reader takes it.
+    const size = buffer ? buffer.length : 0;
     // It would wait: every reader is taken (next() keeps the queue empty otherwise).
     if (tool && this.running.size >= AT_ONCE) {
       const waiting = this.queue.filter((j) => j.tool);
-      const bytes = waiting.reduce((n, j) => n + j.buffer.length, buffer.length);
+      const bytes = waiting.reduce((n, j) => n + j.size, size);
       if (waiting.length >= TOOL_WAITING || bytes > TOOL_WAITING_BYTES) return Promise.resolve(failed('busy'));
     }
     return new Promise((resolve) => {
-      const job = { buffer, maxChars, signal, tool, resolve, run: null, done: false };
+      const job = { buffer, load, size, maxChars, signal, tool, resolve, run: null, done: false, wait: null };
       if (signal) {
         job.onAbort = () => {
           if (job.run) return job.run.finish(failed('stopped'));
@@ -95,12 +110,20 @@ class PdfReader {
       }
       this.queue.push(job);
       this.next();
+      if (!job.run && !job.done) {
+        job.wait = setTimeout(() => {
+          this.queue = this.queue.filter((j) => j !== job);
+          this.settle(job, failed('busy'));
+        }, this.opts.turnWait);
+      }
     });
   }
 
   settle(job, result) {
     if (job.done) return;
     job.done = true;
+    clearTimeout(job.wait);
+    job.buffer = null;
     if (job.signal) job.signal.removeEventListener('abort', job.onAbort);
     job.resolve(result);
   }
@@ -114,49 +137,75 @@ class PdfReader {
     }
   }
 
+  // The job has a reader from here on, also while its loader reads the file: so at most AT_ONCE PDFs are in memory.
+  // TIMEOUT counts from here, the loading included, so a file that stalls on its way from the disk can't keep its
+  // message waiting. A read that ends while its file still loads (stopped, or past TIMEOUT) tells the loader to stop,
+  // but keeps the reader taken until the loader has let go: what it read so far is in memory until then.
   start(job) {
-    let child;
-    try {
-      child = spawn(this.opts);
-    } catch (_) {
-      this.settle(job, failed('error'));
-      return;
-    }
+    clearTimeout(job.wait);
+    const loading = job.load ? new AbortController() : null;
+    let held = false;
+    let child = null;
     let stderr = '';
     let done = false;
+    const release = () => {
+      this.running.delete(run);
+      this.next();
+    };
     const run = {
       finish: (result) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
-        this.running.delete(run);
+        if (loading) loading.abort();
         try {
-          child.kill();
+          if (child) child.kill();
         } catch (_) {
           // Gone already.
         }
         this.settle(job, result);
-        this.next();
+        if (!held) release();
       }
     };
     job.run = run;
     this.running.add(run);
     const timer = setTimeout(() => run.finish(failed('timeout')), this.opts.timeout);
-    if (child.stderr) {
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (d) => {
-        if (stderr.length < 2000) stderr += d;
-      });
-    }
-    child.onMessage((msg) => run.finish(msg && typeof msg.text === 'string' ? { ...msg, failed: null } : failed('error')));
-    // The watchdog, or V8 when the heap is full, says why on stderr just before the process ends; what it wrote can
-    // come in after the exit.
-    child.onExit(() => setTimeout(() => run.finish(failed(/over the memory cap|heap out of memory/i.test(stderr) ? 'memory' : 'error')), 100));
-    try {
-      child.send({ data: job.buffer, maxChars: job.maxChars });
-    } catch (_) {
-      run.finish(failed('error'));
-    }
+    const launch = (data) => {
+      job.buffer = null;
+      if (!data) return run.finish(failed('error'));
+      try {
+        child = spawn(this.opts);
+      } catch (_) {
+        return run.finish(failed('error'));
+      }
+      if (child.stderr) {
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', (d) => {
+          if (stderr.length < 2000) stderr += d;
+        });
+      }
+      child.onMessage((msg) => run.finish(msg && typeof msg.text === 'string' ? { ...msg, failed: null } : failed('error')));
+      // The watchdog, or V8 when the heap is full, says why on stderr just before the process ends; what it wrote
+      // can come in after the exit.
+      child.onExit(() => setTimeout(() => run.finish(failed(/over the memory cap|heap out of memory/i.test(stderr) ? 'memory' : 'error')), 100));
+      try {
+        child.send({ data, maxChars: job.maxChars });
+      } catch (_) {
+        run.finish(failed('error'));
+      }
+    };
+    if (!job.load) return launch(job.buffer);
+    held = true;
+    // The loader has let go of the file: loaded, failed, or stopped by the abort above.
+    const loaded = (go) => {
+      held = false;
+      if (done) release();
+      else go();
+    };
+    new Promise((resolve) => resolve(job.load(loading.signal))).then(
+      (data) => loaded(() => launch(data)),
+      () => loaded(() => run.finish(failed('error')))
+    );
   }
 
   // Rukoo is closing: no new reads, and those still running are ended now.
@@ -167,4 +216,4 @@ class PdfReader {
   }
 }
 
-module.exports = { PdfReader, TIMEOUT, RSS_MAX, HEAP_MB };
+module.exports = { PdfReader, TIMEOUT, RSS_MAX, HEAP_MB, TURN_WAIT };

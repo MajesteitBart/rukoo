@@ -95,9 +95,18 @@ enum class TaskStatus {
 @Serializable
 data class ShownFile(val id: String, val name: String, val size: Long = 0, val type: String = "", val kind: String = "file")
 
-/** An email attached to a user message. Subject and sender come from Rukoo's cache, never from the UI. */
+/**
+ * An email attached to a user message. Subject and sender come from Rukoo's cache, never from the UI. [messageId]
+ * and [accountId] find it again after it moved, as the chat's own email's do; chats saved before have neither.
+ */
 @Serializable
-data class AttachedEmail(val id: String, val subject: String = "", val from: Address? = null)
+data class AttachedEmail(
+    val id: String,
+    val subject: String = "",
+    val from: Address? = null,
+    val messageId: String? = null,
+    val accountId: String? = null,
+)
 
 /** One row of an approval card. [key] names what the value is (command, url, diff ...); [truncated] counts the characters cut. */
 @Serializable

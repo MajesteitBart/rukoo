@@ -168,6 +168,8 @@ class CodexAdapter {
     this.runs = new Map();
     // Turns past ensureServer: while any is in flight, the app-server must not be swapped out.
     this.busy = 0;
+    // Set by dispose() when Rukoo quits: no app-server starts after that, since nothing would end it.
+    this.disposed = false;
   }
 
   settings() {
@@ -432,6 +434,9 @@ class CodexAdapter {
   async ensureServer(exe, turn, s = this.settings()) {
     // One that is still starting is the server to use, or to judge, once it is up.
     if (this.starting) await this.starting.catch(() => {});
+    // Quitting, or stopped: no app-server for this turn. Without this, a start that failed while the turn waited
+    // for it (dispose() closed it, say) would make the turn start another one below.
+    if (this.disposed || (turn.signal && turn.signal.aborted)) return null;
     const server = this.server && !this.server.exited ? this.server : null;
     if (server && server.exe === exe && !this.reloadNeeded(server, turn, s)) return server;
     // A new program path, or a reload, waits until no Codex turn is in flight: this turn must not run on the
@@ -481,9 +486,13 @@ class CodexAdapter {
     } catch (err) {
       server.close();
       if (this.server === server) this.server = null;
+      // dispose() ended it while it started: the turns waiting for it stop.
+      if (this.disposed) return null;
       if (err instanceof AgentError) throw err;
       throw new AgentError('spawn-failed', clip(err.message, 200));
     }
+    // dispose() ran while initialize was out and closed this server, but the answer came in before the process died.
+    if (this.disposed) return null;
     return server;
   }
 
@@ -568,6 +577,9 @@ class CodexAdapter {
   }
 
   async dispose() {
+    // First, so a turn on its way to ensureServer() or waiting for a start cannot start an app-server after this.
+    // A server that is still starting is this.server already, and closes below.
+    this.disposed = true;
     for (const run of [...this.runs.values()]) run.finish({ status: 'stopped' });
     const closing = this.server ? this.server.close() : null;
     this.server = null;

@@ -21,7 +21,8 @@ export const icons = {
   forward: p('<path d="M4 12h15M13 6l6 6-6 6"/>'),
   trash: p('<path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l1 13.5h9l1-13.5M10 10.5v6M14 10.5v6"/>'),
   send: p('<path d="M20.5 3.5 10 14"/><path d="m20.5 3.5-6.5 17-4-6.5-6.5-4z"/>'),
-  settings: p('<circle cx="12" cy="12" r="3"/><path d="M12 2.8 14 4l2.3-.3 1.2 2 2.1 1-.1 2.3 1.3 2-1.3 2 .1 2.3-2.1 1-1.2 2L14 20l-2 1.2L10 20l-2.3.3-1.2-2-2.1-1 .1-2.3L3.2 13l1.3-2-.1-2.3 2.1-1 1.2-2L10 4z"/>'),
+  // A cog with eight deep teeth, so it still reads as one at 16px: tips at r 9.5, roots on a 7px circle, a 3.3px hole.
+  settings: p('<circle cx="12" cy="12" r="3.3"/><path d="M10.1 5.3 10.6 2.6h2.8l.5 2.7A7 7 0 0 1 15.4 5.9l2.2-1.5 2 2-1.5 2.2a7 7 0 0 1 .6 1.5l2.7.5v2.8l-2.7.5a7 7 0 0 1-.6 1.5l1.5 2.2-2 2-2.2-1.5a7 7 0 0 1-1.5.6l-.5 2.7h-2.8l-.5-2.7a7 7 0 0 1-1.5-.6l-2.2 1.5-2-2 1.5-2.2a7 7 0 0 1-.6-1.5l-2.7-.5v-2.8l2.7-.5a7 7 0 0 1 .6-1.5L4.4 6.4l2-2 2.2 1.5a7 7 0 0 1 1.5-.6z"/>'),
   inbox: p('<rect x="3.5" y="4" width="17" height="16" rx="3"/><path d="M3.5 13.5H8l1.2 2.5h5.6l1.2-2.5h4.5"/>'),
   unread: p('<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4 7 8 6 8-6"/>'),
   saved: p('<rect x="4" y="3.5" width="16" height="17" rx="3"/><path d="M12 7.5v7M8.5 11.5 12 15l3.5-3.5"/>'),

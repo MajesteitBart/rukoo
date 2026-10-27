@@ -1,9 +1,12 @@
 'use strict';
 
-// The command queues of ImapAccount, with the connections replaced by stand-ins.
+// The command queues of ImapAccount, with the connections replaced by stand-ins, and its sign-in check against the
+// test IMAP server.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { ImapAccount } = require('../src/main/imap');
+const { t } = require('../src/i18n');
+const { ImapAccount, friendlyError } = require('../src/main/imap');
+const { imapServer, GMAIL_APP_PASSWORD_REQUIRED } = require('./fixtures/imap-server');
 
 // client: the stand-in, or a function that makes one for each connection (it gets 'main' or 'reader').
 function session(client = { usable: true }) {
@@ -375,4 +378,129 @@ test('a sync of another folder asks for neither', async () => {
   const res = await s.syncFolder('Sent', { limit: 10, known: new Map(), uidValidity: '9' });
   assert.ok(!asked.some((a) => a.query.includes('headers')));
   assert.equal('signals' in res.messages[0], false);
+  assert.equal('olderUnseen' in res, false);
+});
+
+test('an inbox sync counts the unread mail below the window by uid, and says null when the server does not tell', async () => {
+  const flags = { 3: [], 4: ['\\Seen'], 5: [], 6: [], 7: ['\\Seen'] };
+  const { client } = folder(Object.entries(flags).map(([uid, f]) => ({ uid: Number(uid), subject: `m${uid}`, flags: f })));
+  const searched = [];
+  client.search = async (query, opts) => {
+    searched.push({ query, opts });
+    const [from, to] = query.uid.split(':').map(Number);
+    return { count: Object.keys(flags).map(Number).filter((uid) => uid >= from && uid <= to && !flags[uid].includes('\\Seen')).length };
+  };
+  const s = session(client);
+  // The window is the newest two, uids 6 and 7. Below it 3 and 5 are unread and 4 is read.
+  const res = await s.syncFolder('INBOX', { limit: 2, olderUnseen: true });
+  assert.deepEqual(res.messages.map((m) => m.uid), [6, 7]);
+  assert.deepEqual(searched, [{ query: { seen: false, uid: '1:5' }, opts: { uid: true, returnOptions: ['COUNT'] } }]);
+  assert.equal(res.olderUnseen, 2);
+
+  // An answer with the uids instead of a count.
+  client.search = async () => [3, 5];
+  assert.equal((await s.syncFolder('INBOX', { limit: 2, olderUnseen: true })).olderUnseen, 2);
+
+  // A refused or failed search leaves the count unknown, and the sync itself goes through.
+  client.search = async () => false;
+  const refused = await s.syncFolder('INBOX', { limit: 2, olderUnseen: true });
+  assert.equal(refused.olderUnseen, null);
+  assert.deepEqual(refused.messages.map((m) => m.uid), [6, 7]);
+  client.search = async () => {
+    throw new Error('BAD');
+  };
+  assert.equal((await s.syncFolder('INBOX', { limit: 2, olderUnseen: true })).olderUnseen, null);
+
+  // A window that holds the whole folder has nothing below it to ask about.
+  client.search = async () => assert.fail('no search');
+  assert.equal((await s.syncFolder('INBOX', { limit: 10, olderUnseen: true })).olderUnseen, 0);
+  assert.equal('olderUnseen' in (await s.syncFolder('INBOX', { limit: 2 })), false);
+});
+
+// ---------- signing in ----------
+
+// An account on the test IMAP server. Its SMTP check is a stand-in that passes, or throws smtpError.
+function signIn(port, account, { smtpError = null } = {}) {
+  const s = new ImapAccount({ type: 'imap', email: 'me@gmail.com', imap: { host: '127.0.0.1', port, secure: false, user: 'me@gmail.com' }, smtp: {}, ...account }, 'normal-password');
+  s.transport = async () => ({
+    verify: async () => {
+      if (smtpError) throw smtpError;
+    },
+    close() {}
+  });
+  return s;
+}
+
+test('Gmail turning down a normal password says to use an app password, as a refused sign-in', async () => {
+  const server = await imapServer({ login: GMAIL_APP_PASSWORD_REQUIRED });
+  try {
+    // code 'auth' keeps the setup form from opening the server fields; the message has no "IMAP: " in front.
+    // appPasswordProvider tells the form which provider's app password page to link to.
+    await assert.rejects(signIn(server.port, { provider: 'google' }).verify(), { code: 'auth', appPasswordProvider: 'google', message: t('errors.connection.googleAppPassword') });
+    assert.match(server.logins[0], /LOGIN "?me@gmail\.com"? "?normal-password"?/);
+    await assert.rejects(signIn(server.port, { provider: 'yahoo' }).verify(), { code: 'auth', appPasswordProvider: 'yahoo', message: t('errors.connection.yahooAppPassword') });
+    // Other servers keep the general message, after the server that gave it, and get no link.
+    await assert.rejects(signIn(server.port, { provider: 'other' }).verify(), (err) => {
+      assert.equal(err.code, 'auth');
+      assert.equal(err.message, `IMAP: ${t('errors.connection.auth')}`);
+      assert.equal('appPasswordProvider' in err, false);
+      return true;
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test('an account added under Other at Gmail or Yahoo names that provider with its refused sign-in, for the link', async () => {
+  const server = await imapServer({ login: GMAIL_APP_PASSWORD_REQUIRED });
+  try {
+    // The account keeps the provider's server address; only the connection goes to the test server.
+    const at = (host) => {
+      const s = signIn(server.port, { provider: 'other', imap: { host, port: 993, secure: true, user: 'me@gmail.com' } });
+      const options = s.imapOptions.bind(s);
+      s.imapOptions = async () => ({ ...(await options()), host: '127.0.0.1', port: server.port, secure: false });
+      return s;
+    };
+    await assert.rejects(at('imap.gmail.com').verify(), { code: 'auth', appPasswordProvider: 'google', message: t('errors.connection.googleAppPassword') });
+    await assert.rejects(at('imap.mail.yahoo.com').verify(), { code: 'auth', appPasswordProvider: 'yahoo', message: t('errors.connection.yahooAppPassword') });
+    assert.equal(server.logins.length, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test('SMTP turning down the password is a refused sign-in too, also for the answer Gmail gives there', async () => {
+  const server = await imapServer();
+  try {
+    await signIn(server.port, { provider: 'google' }).verify();
+    const refused = Object.assign(new Error('Invalid login: 534-5.7.9 Application-specific password required.'), { code: 'EAUTH', responseCode: 534, command: 'AUTH PLAIN' });
+    await assert.rejects(signIn(server.port, { provider: 'google' }, { smtpError: refused }).verify(), { code: 'auth', message: t('errors.connection.googleAppPassword') });
+    await assert.rejects(signIn(server.port, { provider: 'other' }, { smtpError: refused }).verify(), { code: 'auth', message: `SMTP: ${t('errors.connection.auth')}` });
+  } finally {
+    await server.close();
+  }
+});
+
+test('a mail server that is not there is no refused sign-in', async () => {
+  const server = await imapServer();
+  const { port } = server;
+  await server.close();
+  await assert.rejects(signIn(port, { provider: 'google' }).verify(), (err) => {
+    assert.equal(err.code, undefined);
+    assert.equal(err.message, `IMAP: ${t('errors.connection.refused')}`);
+    return true;
+  });
+});
+
+test('the app password message goes to password accounts at Google and Yahoo, also when added under Other', () => {
+  const refused = Object.assign(new Error('Command failed'), { authenticationFailed: true, response: '[AUTHENTICATIONFAILED] Invalid credentials (Failure)' });
+  const account = (extra) => ({ type: 'imap', email: 'me@example.com', provider: 'other', imap: { host: 'imap.example.com' }, ...extra });
+  assert.equal(friendlyError(refused, account({ provider: 'google' })), t('errors.connection.googleAppPassword'));
+  assert.equal(friendlyError(refused, account({ imap: { host: 'imap.gmail.com' } })), t('errors.connection.googleAppPassword'));
+  assert.equal(friendlyError(refused, account({ imap: { host: 'imap.mail.yahoo.com' } })), t('errors.connection.yahooAppPassword'));
+  // Signed in through the browser there is no password to replace. Other providers and unknown accounts keep the
+  // general message.
+  assert.equal(friendlyError(refused, account({ provider: 'google', auth: 'oauth2' })), t('errors.connection.auth'));
+  assert.equal(friendlyError(refused, account({ provider: 'outlook', imap: { host: 'outlook.office365.com' } })), t('errors.connection.auth'));
+  assert.equal(friendlyError(refused), t('errors.connection.auth'));
 });

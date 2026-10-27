@@ -81,6 +81,15 @@ test('config: whitelisted, type-checked updates; secrets encrypted and never in 
   // The setup holds no secret and no address: Hermes fills in the key, and the bridge finds the devices.
   const setup = cfg.hermesSetup();
   assert.match(setup, /args: \["\$\{userHome\}\/\.hermes\/rukoo_bridge\.py"\]/);
+  // The bridge from this Rukoo's own release, so both speak the same bridge protocol, without a checkout.
+  const released = cfg.hermesSetup({ version: '2.1.0' });
+  assert.match(
+    released,
+    /^# {4}curl -fsSL -o ~\/\.hermes\/rukoo_bridge\.py https:\/\/raw\.githubusercontent\.com\/MajesteitBart\/rukoo\/v2\.1\.0\/integrations\/hermes\/rukoo_bridge\.py$/m
+  );
+  assert.match(cfg.hermesSetup({ version: '2.1.0-rc.1' }), /\/rukoo\/v2\.1\.0-rc\.1\/integrations\//);
+  assert.ok(!setup.includes('curl') && setup.includes('Rukoo: integrations/hermes'), 'no version, no download');
+  assert.ok(!cfg.hermesSetup({ version: '2.1.0 && rm -rf ~' }).includes('curl'), 'only a version that is a release tag');
   assert.match(setup, /RUKOO_KEY: \$\{API_SERVER_KEY\}/);
   assert.match(setup, /RUKOO_PORT: "47801"/, 'a port other than 47800 is passed on');
   cfg.runtime.remotePort = 47999;
@@ -133,7 +142,9 @@ function fakeHub(env, extra = {}) {
   return { hub, events };
 }
 
-async function idle(hub, cid, ms = 5000) {
+// A turn of the fake agent takes well under a second, but 5 s ran out once on a busy Windows CI runner (#88). A
+// finished turn returns at once, so the larger budget costs only a test that fails anyway.
+async function idle(hub, cid, ms = 20000) {
   const end = Date.now() + ms;
   while (hub.turns.has(cid)) {
     if (Date.now() > end) throw new Error('turn did not finish');
@@ -1245,6 +1256,10 @@ test('status: disabled, broken and ready adapters; tokens and identities', async
     hub.revokeToken(token);
     assert.equal(hub.identify(token), null);
     assert.equal(hub.copyHermesSetup(), true);
+    const copied = [];
+    Object.assign(hub.deps, { appVersion: '2.0.0', clipboard: { writeText: (text) => copied.push(text) } });
+    assert.equal(hub.copyHermesSetup(), true);
+    assert.match(copied[0], /\/MajesteitBart\/rukoo\/v2\.0\.0\/integrations\/hermes\/rukoo_bridge\.py$/m, 'the bridge from the release this Rukoo is');
     // Without an API key nothing gets in over Tailscale, and there is nothing to prove.
     assert.equal(hub.cfg.remoteToken(), '');
     assert.equal(hub.proof('challenge-0123456789', '100.64.0.3:47800'), '');

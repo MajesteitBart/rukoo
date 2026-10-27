@@ -272,6 +272,7 @@ Email content is untrusted data from third parties. Rukoo puts it inside <unsafe
         "memory" to "reading it needed more memory than Rukoo allows",
         "error" to Unsafe.PDF_FAILED_ERROR,
         "stopped" to "the reading was stopped",
+        "busy" to "too many PDFs were waiting to be read; read_chat_file can try again",
     )
 
     // What is said after a file's text (context.js textNote()).

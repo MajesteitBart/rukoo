@@ -147,3 +147,35 @@ test('another device can be signed out from here', async () => {
   laptop.close();
   removeDir(laptopDir);
 });
+
+test('a server that compresses its answers anyway makes sync fail where it shows, and the next sync works', async () => {
+  await openAccount();
+  await page().locator('[data-a="rukoo-go:rukoo-signup"]').click();
+  const form = page().locator('form[data-form="rukoo-signup"]');
+  await form.locator('[name="email"]').fill('gzip@example.com');
+  await form.locator('[name="password"]').fill(PASSWORD);
+  await form.locator('[name="repeat"]').fill(PASSWORD);
+  await form.locator('[name="understand"]').check();
+  await form.locator('button[type=submit]').click();
+  await win.locator('.scrim .buttons button', { hasText: 'I saved it' }).click({ timeout: 15000 });
+  const sync = page().locator('[data-a="rukoo-sync"]');
+  await expect(sync).toContainText('Last synced', { timeout: 15000 });
+
+  // Like a proxy that compresses whatever the app asked for: Rukoo refuses the answer rather than reading it as empty.
+  server.gzip = true;
+  await sync.click();
+  await expect(win.locator('#toast')).toHaveText('The server ran into a problem. Try again later.', { timeout: 15000 });
+  await expect(sync.locator('.error')).toHaveText('The server ran into a problem. Try again later.');
+  const pulls = server.calls.filter((c) => c.route === 'GET /v1/records');
+  expect(pulls.length).toBeGreaterThan(1);
+  expect(pulls.map((c) => c.acceptEncoding)).toEqual(pulls.map(() => 'identity'));
+  await page().locator('[data-a="back"]').click();
+  await expect(page().locator('[data-a="rukoo"]')).toContainText('The server ran into a problem.');
+
+  server.gzip = false;
+  await page().locator('[data-a="rukoo"]').click();
+  await sync.click();
+  await expect(win.locator('#toast')).toHaveText('Synced', { timeout: 15000 });
+  await expect(sync.locator('.error')).toHaveCount(0);
+  await expect(sync).toContainText('Last synced');
+});

@@ -10,6 +10,12 @@ const FALLBACK_PROTOCOL = '2025-06-18';
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_ABSURD = 64 * 1024 * 1024;
 const CHALLENGE = /^[A-Za-z0-9_-]{16,128}$/;
+// What Clark's bridge (integrations/hermes/rukoo_bridge.py) and Rukoo have to agree on: the challenge and its proof
+// (hub.js proof()), the token (config.js remoteTokenFor) and rukoo/hello. Updating Rukoo doesn't update the bridge,
+// so Rukoo sends this with the proof: a bridge that can't match a proof then knows whether the key differs or the
+// version does. Raise it for any change an older bridge can't follow, together with BRIDGE_PROTOCOL in the bridge
+// and in Android's McpHttpServer.kt.
+const BRIDGE_PROTOCOL = 2;
 
 const INSTRUCTIONS =
   "Rukoo Mail is the user's desktop email client. These tools read the user's mail across all their accounts " +
@@ -140,7 +146,10 @@ class McpServer {
       const challenge = String(req.headers['x-rukoo-challenge'] || '');
       // The address from the socket, not from a header: the one the bridge connected to if nothing relayed it.
       const endpoint = `${String(req.socket.localAddress || '').replace(/^::ffff:/, '')}:${req.socket.localPort}`;
-      const proof = entry.remote && CHALLENGE.test(challenge) ? { 'X-Rukoo-Proof': (this.hub.proof && this.hub.proof(challenge, endpoint)) || 'none' } : {};
+      const proof =
+        entry.remote && CHALLENGE.test(challenge)
+          ? { 'X-Rukoo-Proof': (this.hub.proof && this.hub.proof(challenge, endpoint)) || 'none', 'X-Rukoo-Bridge-Protocol': String(BRIDGE_PROTOCOL) }
+          : {};
       return this.reject(req, res, 401, { error: 'unauthorized' }, proof);
     }
     const tooLarge = () => json(res, 413, rpcError(null, -32600, 'Request body too large'), { Connection: 'close' });
@@ -268,4 +277,4 @@ class McpServer {
   }
 }
 
-module.exports = { McpServer, INSTRUCTIONS, PROTOCOLS, MAX_BODY, MAX_ABSURD, json, bearer };
+module.exports = { McpServer, INSTRUCTIONS, PROTOCOLS, BRIDGE_PROTOCOL, MAX_BODY, MAX_ABSURD, json, bearer };

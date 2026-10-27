@@ -128,6 +128,14 @@ async function watchQuit() {
     if (global.__semTray) wrap(global.__semTray, 'destroy', 'tray removed');
   }, quitLog);
 }
+// Answers the question about a draft with a button that lets the quit go on. Don't save quits at once, so the
+// window can close before Playwright's click has returned, which it reports as a closed page. quitEvents() then
+// checks that the quit really happened.
+async function answerAndQuit(where, button) {
+  await where.click(`.scrim .buttons button:text-is("${button}")`).catch((err) => {
+    if (!/closed/i.test(String(err && err.message))) throw err;
+  });
+}
 async function quitEvents() {
   // will-quit waits up to 5 s for the agents; a busy machine adds to that.
   await expect.poll(() => running, { timeout: 30000 }).toBe(false);
@@ -180,6 +188,60 @@ test('closing the window hides it in the tray, where mail keeps syncing and noti
   await expect(win.locator('.composer [data-field="subject"]')).toHaveValue('Half written');
   await expect(win.locator('.composer .editor')).toContainText('Still here');
   await expect(win.locator('.composer')).toHaveAttribute('data-dirty', 'true');
+});
+
+// Real nativeImages: the icons on this platform are built as before, and the macOS menu bar images (built here
+// too, since macOS CI only runs macos.spec.js) have both representations, each with the dot.
+test('the tray icon is built as before here, and the macOS menu bar icon is 18 points with a 2x copy', async () => {
+  const icons = await app.evaluate(({ app, nativeImage, screen }) => {
+    const path = process.mainModule.require('path');
+    const { trayImages, withDot } = process.mainModule.require(path.join(app.getAppPath(), 'src', 'main', 'tray.js'));
+    const icon = path.join(app.getAppPath(), 'build', 'icon.png');
+    const shape = (image) => ({ size: image.getSize(), scales: image.getScaleFactors() });
+    const { plain, dot } = global.__semTray.images;
+    const size = Math.round(16 * screen.getPrimaryDisplay().scaleFactor);
+    // The tray images as main made them before the menu bar change.
+    const before = nativeImage.createFromPath(icon).resize({ width: size, height: size, quality: 'best' });
+    const beforeDot = nativeImage.createFromBitmap(withDot(before.toBitmap(), size), { width: size, height: size });
+    // Shapes first: asking a resized image for another scale factor adds that representation.
+    const here = { plain: shape(plain), dot: shape(dot), size };
+    // Linux's tray asks for higher scale factors on HiDPI screens; the resized image draws those from the source.
+    here.scales = [1, 1.5, 2].map((scaleFactor) => {
+      const [a, b, c, d] = [plain, before, dot, beforeDot].map((image) => image.toBitmap({ scaleFactor }));
+      return { scaleFactor, bytes: a.length, plain: a.equals(b), dot: c.equals(d) };
+    });
+    const mac = trayImages(icon, 'darwin', 1);
+    return {
+      here,
+      mac: { plain: shape(mac.plain), dot: shape(mac.dot) },
+      bitmaps: [1, 2].map((scaleFactor) => {
+        const [a, b] = [mac.plain, mac.dot].map((image) => image.toBitmap({ scaleFactor }));
+        const side = 18 * scaleFactor;
+        const centre = (Math.floor(side * 0.78) * side + Math.floor(side * 0.78)) * 4;
+        const top = Math.floor(side / 3) * side * 4;
+        let opaque = 0;
+        for (let i = 3; i < a.length; i += 4) if (a[i] > 0) opaque++;
+        return { bytes: a.length, opaque, topSame: a.subarray(0, top).equals(b.subarray(0, top)), dot: [...b.subarray(centre, centre + 4)] };
+      })
+    };
+  });
+  if (process.platform !== 'darwin') {
+    const { size, scales } = icons.here;
+    for (const image of [icons.here.plain, icons.here.dot]) expect(image).toEqual({ size: { width: size, height: size }, scales: [1] });
+    for (const { scaleFactor, plain, dot } of scales) expect({ scaleFactor, plain, dot }).toEqual({ scaleFactor, plain: true, dot: true });
+    // At 2x the plain icon has twice the pixels each way, not the 1x bitmap again.
+    expect(scales.find((s) => s.scaleFactor === 2).bytes).toBe(2 * size * 2 * size * 4);
+  }
+  for (const image of [icons.mac.plain, icons.mac.dot]) expect(image).toEqual({ size: { width: 18, height: 18 }, scales: [1, 2] });
+  for (const [i, scaleFactor] of [1, 2].entries()) {
+    const side = 18 * scaleFactor;
+    const { bytes, opaque, topSame, dot } = icons.bitmaps[i];
+    expect(bytes).toBe(side * side * 4);
+    // The pigeon is there at this size, the dot leaves its top third alone and is the badge colour, in BGRA.
+    expect(opaque).toBeGreaterThan((side * side) / 4);
+    expect(topSame).toBe(true);
+    expect(dot).toEqual([0x6c, 0x33, 0xd6, 255]);
+  }
 });
 
 test('clicking a notification brings the hidden window back with the new email open', async () => {
@@ -306,7 +368,7 @@ for (const [button, kept] of [["Don't save", false], ['Save', true]]) {
     await trayMenu('quit');
     await expect.poll(visible).toBe(true);
     await expect(win.locator('.scrim')).toContainText('Save draft?');
-    await win.click(`.scrim .buttons button:text-is("${button}")`);
+    await answerAndQuit(win, button);
     expect(await quitEvents()).toEqual(QUIT_AFTER_QUESTION);
     expect(savedDrafts().includes(subject)).toBe(kept);
   });
@@ -384,7 +446,7 @@ for (const [button, kept] of [["Don't save", false], ['Save', true]]) {
     await watchQuit();
     await trayMenu('quit');
     await expect(compose.locator('.scrim')).toContainText('Save draft?');
-    await compose.click(`.scrim .buttons button:text-is("${button}")`);
+    await answerAndQuit(compose, button);
     expect(await quitEvents()).toEqual(QUIT_AFTER_QUESTION);
     expect(savedDrafts().includes(subject)).toBe(kept);
   });

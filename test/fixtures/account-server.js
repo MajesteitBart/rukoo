@@ -4,6 +4,7 @@
 // the app's side; the real server in server/ has its own tests. Start one with startAccountServer().
 const http = require('http');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 const sha = (b64) => crypto.createHash('sha256').update(Buffer.from(b64, 'base64url')).digest('base64url');
 const token = () => crypto.randomBytes(32).toString('base64url');
@@ -13,6 +14,9 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
   const accounts = new Map();
   const sessions = new Map();
   const calls = [];
+  // Set gzip on the started server to answer pulls compressed whatever the device asked for, as a proxy that
+  // compresses everything would.
+  const control = { gzip: false };
 
   const info = () => ({
     protocol: 1,
@@ -141,13 +145,19 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       } catch (_) {
         body = {};
       }
-      calls.push({ route, body });
+      calls.push({ route, body, acceptEncoding: req.headers['accept-encoding'] });
       const tok = String(req.headers.authorization || '').replace(/^Bearer /, '');
       const session = sessions.get(tok);
       const acc = session && accounts.get(session.email);
       const send = (status, json) => {
-        res.writeHead(status, json ? { 'content-type': 'application/json' } : {});
-        res.end(json ? JSON.stringify(json) : undefined);
+        const headers = json ? { 'content-type': 'application/json' } : {};
+        let out = json ? JSON.stringify(json) : undefined;
+        if (out && control.gzip && route === 'GET /v1/records') {
+          out = zlib.gzipSync(out);
+          headers['content-encoding'] = 'gzip';
+        }
+        res.writeHead(status, headers);
+        res.end(out);
       };
       if (route === 'DELETE /v1/devices') {
         if (!acc) return send(401, { error: 'unauthorized' });
@@ -169,13 +179,15 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address();
-      resolve({
-        url: `http://127.0.0.1:${port}`,
-        accounts,
-        sessions,
-        calls,
-        close: () => new Promise((r) => server.close(() => r()))
-      });
+      resolve(
+        Object.assign(control, {
+          url: `http://127.0.0.1:${port}`,
+          accounts,
+          sessions,
+          calls,
+          close: () => new Promise((r) => server.close(() => r()))
+        })
+      );
     });
   });
 }

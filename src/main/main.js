@@ -165,8 +165,8 @@ function updateTray() {
   if (wanted && !tray) {
     tray = new TrayIcon({
       icon: ICON,
-      // Windows draws tray icons at 16 px at 100% scaling; an image of exactly that size stays sharp.
-      size: Math.round(16 * screen.getPrimaryDisplay().scaleFactor),
+      platform: process.platform,
+      scaleFactor: screen.getPrimaryDisplay().scaleFactor,
       test: Boolean(process.env.SEM_HIDDEN),
       actions: {
         open: showWindow,
@@ -990,6 +990,19 @@ const windowApi = {
   }
 };
 
+// Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
+// setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
+// page. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
+// reads a code as one of the agent's own.
+const WINDOW_CODES = new Set(['auth']);
+
+// What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
+function windowError(err) {
+  const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
+  if (!code) return {};
+  return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
+}
+
 ipcMain.handle('mail:call', async (event, method, args) => {
   const own = Object.prototype.hasOwnProperty;
   if (!own.call(api, method) && !own.call(windowApi, method)) return { ok: false, error: `Onbekende actie: ${method}` };
@@ -998,7 +1011,7 @@ ipcMain.handle('mail:call', async (event, method, args) => {
     const result = own.call(windowApi, method) ? await windowApi[method](event.sender, ...(args || [])) : await api[method](...(args || []));
     return { ok: true, result };
   } catch (err) {
-    return { ok: false, error: (err && err.message) || String(err) };
+    return { ok: false, error: (err && err.message) || String(err), ...windowError(err) };
   } finally {
     if (process.env.SEM_TRACE) console.log(`[ipc] ${method} ${Date.now() - started}ms`);
   }

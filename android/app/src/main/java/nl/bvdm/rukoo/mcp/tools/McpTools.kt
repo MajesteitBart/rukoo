@@ -35,6 +35,7 @@ import nl.bvdm.rukoo.agents.model.ChoiceKind
 import nl.bvdm.rukoo.agents.model.ComputerProgram
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.Item
+import nl.bvdm.rukoo.agents.model.MessageRef
 import nl.bvdm.rukoo.agents.model.Origin
 import nl.bvdm.rukoo.agents.model.PlanTask
 import nl.bvdm.rukoo.agents.model.SourceRef
@@ -169,8 +170,8 @@ class McpTools(private val d: ToolDeps) : McpBackend {
     private suspend fun run(name: String, args: JsonObject, call: ToolCall): ToolOut = when (name) {
         "get_context" -> ToolOut.Data(getContext(call))
         "search_mail" -> ToolOut.Data(searchMail(args))
-        "read_message" -> ToolOut.Data(readMessage(args))
-        "read_attachment" -> readAttachment(args)
+        "read_message" -> ToolOut.Data(readMessage(args, call))
+        "read_attachment" -> readAttachment(args, call)
         "read_chat_file" -> readChatFile(args, call)
         "write_draft" -> ToolOut.Data(drafts.write(args, call))
         "get_draft" -> ToolOut.Data(drafts.current())
@@ -331,14 +332,34 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         .map { it.replace(TOKEN_EDGES, "") }
         .filter { it.isNotEmpty() }
 
-    private suspend fun readMessage(args: JsonObject): JsonObject {
-        val id = lookup.resolveId(args.str("message_id"))
+    // message_id for the tools that read an email (tools.js readableId()). Ids change when mail moves, so an id this
+    // chat gave the agent (its own email, one it was continued from, one the user attached) also reads the email
+    // where it is now: the chat keeps each one's Message-ID. Another stale id fails as resolveId says.
+    private suspend fun readableId(value: String?, call: ToolCall): String = try {
+        lookup.resolveId(value)
+    } catch (e: ToolError) {
+        val c = if (e.ambiguous) null else call.conversation?.let { d.hub.get(it.id) }
+        c?.let { relocate(it, value.orEmpty().trim()) } ?: throw e
+    }
+
+    // The current id of an email [c] gave the agent by an id that no longer holds it (hub.js relocate()). The chat
+    // keeps the id the agent has, so that id goes on working until a new session gets the new one. null when the
+    // chat gave no email that id, or the email is gone.
+    private suspend fun relocate(c: Conversation, id: String): String? {
+        if (id.isEmpty()) return null
+        val attached = c.items.filterIsInstance<Item.User>().flatMap { it.emails.orEmpty() }.map { MessageRef(it.id, it.messageId, it.accountId) }
+        val ref = (listOfNotNull(c.message) + c.continued.map { it.ref() } + attached).firstOrNull { it.id == id && !it.messageId.isNullOrEmpty() } ?: return null
+        return lookup.locate(ref)
+    }
+
+    private suspend fun readMessage(args: JsonObject, call: ToolCall): JsonObject {
+        val id = readableId(args.str("message_id"), call)
         val m = d.mail.fullMessage(id)
         return lookup.fullView(m, args.long("max_chars")?.toInt() ?: MailLookup.TEXT_MAX)
     }
 
-    private suspend fun readAttachment(args: JsonObject): ToolOut {
-        val id = lookup.resolveId(args.str("message_id"))
+    private suspend fun readAttachment(args: JsonObject, call: ToolCall): ToolOut {
+        val id = readableId(args.str("message_id"), call)
         val index = args.long("index")!!.toInt()
         val full = d.mail.fullMessage(id)
         val meta = full.attachments.firstOrNull { it.index == index }

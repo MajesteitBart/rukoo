@@ -116,6 +116,14 @@ function initialState(data, opts, m) {
   return s;
 }
 
+// Whether a new message opens with something in it besides its recipients: a subject, text or Cc/Bcc from a
+// mailto: link or an agent.
+function prefilled(st, opts) {
+  if (st.mode !== 'new') return false;
+  const text = opts.html != null ? new DOMParser().parseFromString(sanitizeAgentHtml(opts.html), 'text/html').body.textContent : opts.body;
+  return Boolean(st.subject.trim() || st.cc.length || st.bcc.length || String(text || '').trim());
+}
+
 function modeState(data, opts, m) {
   const accounts = data.accounts;
   const defaultAcc = accounts.find((a) => a.isDefault) || accounts[0];
@@ -275,6 +283,12 @@ function template(data, st, inline) {
           accounts.length > 1 ? accounts.map((a) => `<optgroup label="${esc(a.email)}">${fromOptions(a)}</optgroup>`).join('') : fromOptions(accounts[0])
         }</select>`
       : `<span class="from-static">${esc(me.name ? `${me.name} <${me.address}>` : me.address)}</span>`;
+  // New mail starts from the default account. A new message from another account offers to make that one the
+  // default, beside From like Cc and Bcc beside To. mountComposer() shows it only for an account that isn't.
+  const makeDefault =
+    st.mode === 'new' && accounts.length > 1
+      ? `<span class="cc-links from-default" data-default-link hidden><button class="link-btn" data-c="make-default" data-i18n="composer.actions.makeDefault">${esc(t('composer.actions.makeDefault'))}</button></span>`
+      : '';
   const quoteHead = st.original ? quoteHeader(st.original) : st.quoted ? st.quoted.head : '';
   const quote = st.original || st.quoted
     ? `<div class="quote-zone">
@@ -299,7 +313,7 @@ function template(data, st, inline) {
     }
     <div class="composer-scroll">
       <div class="compose-fields">
-        <div class="field"><label for="from" data-i18n="reader.headers.from">${esc(t('reader.headers.from'))}</label>${from}</div>
+        <div class="field from-field"><label for="from" data-i18n="reader.headers.from">${esc(t('reader.headers.from'))}</label>${from}${makeDefault}</div>
         <div class="field" data-rfield="to"><label data-i18n="reader.headers.to">${esc(t('reader.headers.to'))}</label><div class="recipients"></div>
           <span class="cc-links"><button class="link-btn" data-c="cc" data-i18n="reader.headers.cc" ${st.showCc ? 'hidden' : ''}>${esc(t('reader.headers.cc'))}</button><button class="link-btn" data-c="bcc" data-i18n="reader.headers.bcc" ${st.showBcc ? 'hidden' : ''}>${esc(t('reader.headers.bcc'))}</button></span></div>
         <div class="field" data-rfield="cc" ${st.showCc ? '' : 'hidden'}><label data-i18n="reader.headers.cc">${esc(t('reader.headers.cc'))}</label><div class="recipients"></div></div>
@@ -409,6 +423,42 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       .join('');
   };
   renderAttachments();
+
+  // ----- default account -----
+
+  // The link beside From, on new messages with several accounts: shown while the chosen account isn't the default.
+  const defaultLink = $('[data-default-link]', page);
+  let defaultId = null;
+  const showDefaultLink = () => {
+    if (defaultLink) defaultLink.hidden = st.accountId === defaultId;
+  };
+  // Main's list of accounts; the default can change in Settings or in another composer while this one is open.
+  const syncDefault = (accounts) => {
+    defaultId = (accounts.find((a) => a.isDefault) || accounts[0] || {}).id || null;
+    showDefaultLink();
+  };
+  syncDefault(data.accounts);
+
+  // As Settings > Accounts does. It changes no part of the message, so the draft stays as it was.
+  let makingDefault = false;
+  async function makeDefault(b) {
+    if (makingDefault) return;
+    makingDefault = true;
+    const id = st.accountId;
+    try {
+      await api('updateAccount', id, { makeDefault: true });
+      defaultId = id;
+      toast(t('composer.status.defaultAccount', { address: data.accounts.find((a) => a.id === id)?.email || '' }));
+    } catch (err) {
+      toast(err.message, 5000);
+    } finally {
+      makingDefault = false;
+    }
+    // The link makes way; the keyboard goes back to From.
+    const refocus = document.activeElement === b;
+    showDefaultLink();
+    if (refocus && defaultLink.hidden) $('#from', page).focus();
+  }
 
   // ----- dirty tracking and autosave -----
 
@@ -530,6 +580,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       const [accountId, ...rest] = t.value.split('|');
       st.accountId = accountId;
       st.from = rest.join('|');
+      showDefaultLink();
       changed();
     }
   });
@@ -772,6 +823,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         return close();
       case 'popout':
         return popOut();
+      case 'make-default':
+        return makeDefault(b);
       case 'more':
         return showMenu(b, [
           { icon: 'saved', get label() { return t('composer.actions.saveDraft'); }, shortcut: 'Ctrl+S', action: () => saveDraft({ auto: false }) },
@@ -1265,6 +1318,15 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   if (opts.focus !== false) focusStart();
   // Seeded by an agent: dirty from the start, so closing or moving on keeps it as a draft.
   if (opts.agent) changed({ by: opts.agent });
+  // Filled in by a mailto: link (or an unsubscribe by email): there is something to lose before anyone types, so
+  // closing asks and autosave keeps it. Not through changed(), which would count the link's words as the user's own
+  // edits. Recipients alone don't count, so a new message to a contact leaves no empty draft behind. A reply or
+  // forward nobody touched still closes without asking: it holds nothing the email it answers doesn't.
+  else if (prefilled(st, opts)) {
+    st.dirty = true;
+    describeSaved();
+    armAutosave();
+  }
 
   return {
     el: page,
@@ -1286,8 +1348,13 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     getDraft,
     undoAgent,
     canUndoAgent,
+    // Main's state after an update: the link beside From follows the default account.
+    accountsChanged: (next) => syncDefault(next.accounts),
     retheme(next) {
-      if (next) data = next;
+      if (next) {
+        data = next;
+        syncDefault(next.accounts);
+      }
       localize(page);
       page.setAttribute('aria-label', COMPOSE_TITLES[st.mode] || t('composer.titles.new'));
       const heading = page.querySelector('.composer-title');

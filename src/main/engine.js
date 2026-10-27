@@ -292,8 +292,10 @@ class Engine extends EventEmitter {
       if (acc.email.toLowerCase() !== email) {
         throw new Error(t('errors.google.wrongAccount', { signedInEmail: grant.email, accountEmail: acc.email }));
       }
+      // Encrypted before the account changes: a keyring that can't store it leaves the account signing in as before.
+      const secret = this.secrets.encrypt(grant.refreshToken);
       acc.auth = 'oauth2';
-      acc.secret = this.secrets.encrypt(grant.refreshToken);
+      acc.secret = secret;
       acc.scopes = [...new Set(grant.scopes || [])].sort();
       this.tokens.set(acc.id, { accessToken: grant.accessToken, expiresAt: grant.expiresAt });
       this.grants.set(acc.id, this.grant(acc.id) + 1);
@@ -476,16 +478,21 @@ class Engine extends EventEmitter {
       createdAt: Date.now()
     };
     if (acc.type === 'imap' && !input.password) throw new Error(t('errors.account.password'));
-    return this.finishAdd(acc);
+    // The calendar server from the setup form, optional. An empty field adds the account without a calendar.
+    const caldavUrl = acc.type === 'imap' && input.caldav ? String(input.caldav.url || '').trim() : '';
+    return this.finishAdd(acc, caldavUrl ? { caldav: { url: caldavUrl } } : {});
   }
 
-  async finishAdd(acc) {
+  // caldav: a calendar server entered while adding the account. It is checked with the same sign-in once the mail
+  // servers answered, and the account is only saved when it answers too, as in Server settings.
+  async finishAdd(acc, { caldav = null } = {}) {
     if (this.accounts.some((a) => a.email.toLowerCase() === acc.email.toLowerCase())) {
       throw new Error(t('errors.account.duplicate'));
     }
     const session = this.session(acc);
     try {
       await session.verify();
+      if (caldav) acc.caldav = await this.setupCalDav(acc, caldav);
     } catch (err) {
       this.sessions.delete(acc.id);
       this.tokens.delete(acc.id);
@@ -576,6 +583,17 @@ class Engine extends EventEmitter {
     if (acc.caldav && acc.caldav.url === url && !patch.password && user === (acc.imap.user || acc.email)) return { caldav: acc.caldav, changed: false };
     const found = await discoverCalDav({ url, user, password: this.credentials(next), fetchImpl: this.fetch });
     return { caldav: { url: found.url, home: found.home }, changed: true };
+  }
+
+  // The calendar server from the setup form, checked as Server settings check it. The account doesn't exist yet, so
+  // a refused sign-in can't send the user to its Server settings.
+  async setupCalDav(acc, caldav) {
+    try {
+      return (await this.checkCalDav(acc, acc, { caldav })).caldav;
+    } catch (err) {
+      if (err && err.code === 'password') throw Object.assign(new Error(t('errors.caldav.setupSignIn')), { calendar: true, code: 'password' });
+      throw err;
+    }
   }
 
   // Where the account's calendars live, found again after the server moved them. url: the server it was found on; a
@@ -693,6 +711,7 @@ class Engine extends EventEmitter {
     if (acc.auth === 'oauth2' && !acc.aliasesFetchedAt) await this.fetchGmailAliases(id).catch(() => {});
     // An account removed during that wait must not get a new session; see removeAccount().
     if (!this.accounts.includes(acc)) return fresh;
+    let failed = null;
     try {
       // The session as it is after that wait: signing in again replaces it, and the old one takes no more commands.
       cache.folders = await this.session(acc).listFolders({ background: true });
@@ -704,21 +723,31 @@ class Engine extends EventEmitter {
         if (!targets.includes(p) && cache.folders.some((f) => f.path === p)) targets.push(p);
       }
       for (const p of targets) {
-        fresh.push(...(await this.syncFolderInto(acc, p, { background: true })));
+        try {
+          fresh.push(...(await this.syncFolderInto(acc, p, { background: true })));
+        } catch (err) {
+          // A folder that fails leaves the others to sync. Not once the engine closed or the account went: the next
+          // folder would open a new session for it.
+          if (this.closed || !this.accounts.includes(acc)) throw err;
+          failed = failed || err;
+        }
       }
       for (const p of Object.keys(cache.boxes)) {
         if (!cache.folders.some((f) => f.path === p)) delete cache.boxes[p];
       }
-      cache.lastSync = Date.now();
-      cache.error = null;
+      // The last sync stays the last one that got through every folder.
+      if (!failed) cache.lastSync = Date.now();
+      cache.error = failed ? friendlyError(failed) : null;
     } catch (err) {
       cache.error = friendlyError(err);
       this.changed(id);
       throw err;
     }
     this.changed(id);
+    // New mail in the folders that did sync is announced now: the next sync no longer sees it as new.
     if (fresh.length) this.emit('new-mail', fresh);
     this.prefetch(id);
+    if (failed) throw failed;
     return fresh;
   }
 
@@ -737,13 +766,16 @@ class Engine extends EventEmitter {
       background,
       // What inbox categories sort by (categories/).
       signals: info.role === 'inbox',
-      gmailTabs: info.role === 'inbox' && acc.provider === 'google'
+      gmailTabs: info.role === 'inbox' && acc.provider === 'google',
+      olderUnseen: info.role === 'inbox'
     });
     const sameValidity = prev && prev.uidValidity === res.uidValidity;
     const maxKnown = sameValidity ? Math.max(0, ...prev.messages.map((m) => m.uid)) : Infinity;
     cache.boxes[folderPath] = {
       uidValidity: res.uidValidity,
       exists: res.exists,
+      // The inbox's unread mail older than messages, as the server counted it; null when it couldn't. See olderUnread().
+      ...(info.role === 'inbox' ? { olderUnseen: Number.isInteger(res.olderUnseen) ? res.olderUnseen : null } : {}),
       syncedAt: Date.now(),
       messages: this.applyPending(acc.id, folderPath, res.messages)
     };
@@ -892,22 +924,43 @@ class Engine extends EventEmitter {
     return list;
   }
 
+  // Unread inbox mail older than the newest messages the cache keeps (LIMITS), which the server counted at the last
+  // sync; folderPath: of that folder only. Mail from senders on the spam list is in it too: it can't be told apart
+  // without its headers. Reading a message in the cache counts at once; one older than that counts from the next sync.
+  olderUnread(scope, folderPath = null) {
+    let n = 0;
+    for (const acc of this.scopeAccounts(scope)) {
+      const cache = this.caches.get(acc.id);
+      if (!cache) continue;
+      for (const f of cache.folders) {
+        if (f.role !== 'inbox' || (folderPath !== null && f.path !== folderPath)) continue;
+        const box = cache.boxes[f.path];
+        if (box && Number.isInteger(box.olderUnseen)) n += box.olderUnseen;
+      }
+    }
+    return n;
+  }
+
   // Unread mail in the inboxes of all accounts: the taskbar badge's "unread" count and the tray's tooltip.
   unreadCount() {
-    return this.collect('all', this.viewPredicate('unread')).length;
+    return this.collect('all', this.viewPredicate('unread')).length + this.olderUnread('all');
   }
 
   counts(scope = 'all') {
     const res = { accounts: {}, views: {} };
     for (const acc of this.accounts) {
-      res.accounts[acc.id] = this.collect(acc.id, this.viewPredicate('unread')).length;
+      res.accounts[acc.id] = this.collect(acc.id, this.viewPredicate('unread')).length + this.olderUnread(acc.id);
     }
     res.all = Object.values(res.accounts).reduce((a, b) => a + b, 0);
+    // The list only holds the newest inboxLimit messages of each inbox, so its header names the older unread mail apart.
+    res.olderUnread = this.olderUnread(scope);
+    res.inboxLimit = LIMITS.inbox;
     const count = (view, onlyUnread) =>
       this.collect(scope, this.viewPredicate(view)).filter((m) => !onlyUnread || m.unread).length;
+    // Only the inbox and Unread add the older mail: VIP picks its mail by sender, and other folders count their cache.
     res.views = {
-      inbox: count('inbox', true),
-      unread: count('unread', true),
+      inbox: count('inbox', true) + res.olderUnread,
+      unread: count('unread', true) + res.olderUnread,
       vip: count('vip', true),
       starred: count('starred'),
       saved: this.saved.filter((s) => scope === 'all' || s.accountId === scope).length,
@@ -921,7 +974,7 @@ class Engine extends EventEmitter {
     if (scope !== 'all') {
       const cache = this.caches.get(scope);
       for (const [p, box] of Object.entries((cache && cache.boxes) || {})) {
-        res.folders[p] = box.messages.filter((m) => m.unread).length;
+        res.folders[p] = box.messages.filter((m) => m.unread).length + this.olderUnread(scope, p);
       }
     }
     return res;

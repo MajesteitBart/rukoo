@@ -63,7 +63,18 @@ const RAIL_W = 60;
 // The chat panel docks beside the reader in wide windows and slides over it in narrower ones.
 const AGENT_MIN = 320;
 const AGENT_MAX = 560;
-const AGENT_DOCK = 1240;
+// The breakpoints in styles.css, asked the way the CSS asks them. At a fractional zoom the window can be 1239.4 CSS px
+// wide: the CSS docks the panel there, while window.innerWidth, a whole number, says 1239 (#47).
+const OVERLAY_QUERY = matchMedia('(max-width: 1239px)');
+const NARROW_QUERY = matchMedia('(max-width: 860px)');
+
+// The window's width in whole CSS px, rounded down, for the sums that leave the reader its 420 px. window.innerWidth
+// can round up (1252.8 px gives 1253), which would take a fraction of a pixel from the reader. A media query sees the
+// exact width and, unlike measuring an element, costs no layout while the window is being resized.
+function viewWidth() {
+  const w = window.innerWidth;
+  return matchMedia(`(min-width: ${w}px)`).matches ? w : w - 1;
+}
 
 export const S = {
   data: null,
@@ -76,6 +87,9 @@ export const S = {
   list: [],
   counts: null,
   selectedId: null,
+  // The message last opened while unread: the Unread filter keeps showing it until another opens, also after
+  // Back in a narrow window.
+  keptId: null,
   checked: new Set(),
   anchorId: null,
   // The keyboard position while Shift+arrows grow a selection. selectedId stays the message on screen.
@@ -148,6 +162,8 @@ function searchingAll() {
 async function refreshOnce() {
   const data = await api('state');
   S.data = data;
+  // A default account changed in Settings or a compose window: the editor's link beside From follows it.
+  S.composer?.accountsChanged(data);
   const languageChanged = renderedLanguage !== data.settings.language;
   setLanguage(data.settings.language);
   renderedLanguage = data.settings.language;
@@ -201,7 +217,7 @@ async function refreshOnce() {
 function autoOpen() {
   if (!S.autoOpen) return;
   S.autoOpen = false;
-  if (S.composer || S.selectedId || S.checked.size || S.query.trim() || window.innerWidth <= 860) return;
+  if (S.composer || S.selectedId || S.checked.size || S.query.trim() || NARROW_QUERY.matches) return;
   // The newest message, whatever order the list is sorted in; a stack it is folded into opens with it.
   const newest = rows().reduce((a, b) => (!a || b.date > a.date ? b : a), null);
   if (newest) openMessage(newest.id, { auto: true });
@@ -264,7 +280,7 @@ function rows() {
   const list = categoryRows();
   switch (S.filter) {
     case 'unread':
-      return list.filter((m) => m.unread);
+      return list.filter((m) => m.unread || m.id === S.keptId);
     case 'starred':
       return list.filter((m) => m.starred);
     case 'attachments':
@@ -298,14 +314,14 @@ function cursor() {
 // ---------- shell ----------
 
 function agentDocked() {
-  return Boolean(prefs.agentOpen) && window.innerWidth >= AGENT_DOCK;
+  return Boolean(prefs.agentOpen) && !OVERLAY_QUERY.matches;
 }
 
 // Docked, the panel gives way so the list keeps its minimum and the reader its 420 px (4 px: the workspace's
 // two borders and the two dividers). The chosen width comes back when the window is wider again.
 function agentWidth() {
   let max = AGENT_MAX;
-  if (agentDocked()) max = Math.min(max, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - LIST_MIN - 420 - 4);
+  if (agentDocked()) max = Math.min(max, viewWidth() - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - LIST_MIN - 420 - 4);
   return Math.round(Math.max(AGENT_MIN, Math.min(max, Number(prefs.agentWidth) || 380)));
 }
 
@@ -313,8 +329,9 @@ function agentWidth() {
 // The rail button can bring them back for as long as the chat is open; below 1440 px a docked chat
 // needs the room, so the rail stays.
 function sidebarCollapsed() {
-  if (window.innerWidth < 1100) return true;
-  if (prefs.agentOpen) return !prefs.sidebarWithAgent || (agentDocked() && window.innerWidth < 1440);
+  const width = viewWidth();
+  if (width < 1100) return true;
+  if (prefs.agentOpen) return !prefs.sidebarWithAgent || (agentDocked() && width < 1440);
   return prefs.sidebarCollapsed;
 }
 
@@ -322,7 +339,7 @@ function listWidth() {
   // The docked chat plus its handle and the workspace's right edge. The 2 px after it: the workspace's left
   // edge and the divider between the list and the reader.
   const agent = agentDocked() ? agentWidth() + 2 : 0;
-  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - agent - 2 - 420));
+  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, viewWidth() - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - agent - 2 - 420));
   return Math.round(Math.max(LIST_MIN, Math.min(max, prefs.listWidth)));
 }
 
@@ -707,13 +724,18 @@ function renderSidebar() {
 function accountMenu(anchor) {
   const accounts = S.data.accounts;
   const counts = S.counts.accounts || {};
-  const items = accounts.map((a) => ({
-    icon: accountAvatar(a),
-    label: a.email,
-    hint: counts[a.id] ? String(counts[a.id]) : '',
-    current: S.scope === a.id,
-    action: () => switchScope(a.id)
-  }));
+  // Each account by the display name set in Settings, with its address underneath; the address alone without a name.
+  const items = accounts.map((a) => {
+    const name = (a.name || '').trim();
+    return {
+      icon: accountAvatar(a),
+      label: name || a.email,
+      sub: name && name.toLowerCase() !== a.email.toLowerCase() ? a.email : '',
+      hint: counts[a.id] ? String(counts[a.id]) : '',
+      current: S.scope === a.id,
+      action: () => switchScope(a.id)
+    };
+  });
   if (accounts.length > 1) {
     items.push({ icon: 'inbox', get label() { return t('mailbox.search.allAccounts'); }, hint: S.counts.all ? String(S.counts.all) : '', current: S.scope === 'all', action: () => switchScope('all') });
   }
@@ -806,6 +828,7 @@ function bindSidebar() {
 function changeView() {
   S.query = '';
   S.filter = 'all';
+  S.keptId = null;
   S.checked.clear();
   S.autoOpen = true;
   // A message from the previous folder would look like it belongs to this one.
@@ -847,13 +870,23 @@ function listTitle() {
   const acc = account(S.scope);
   const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? S.list.filter((m) => m.unread).length : 0;
   const where = acc ? acc.email : t('mailbox.search.allAccounts');
+  // The inbox count in the sidebar adds the unread mail older than the messages the list holds; name it apart here,
+  // where the list's own unread mail is counted.
+  const older = S.view === 'inbox' ? S.counts?.olderUnread || 0 : 0;
+  if (older) {
+    return {
+      title: viewLabel(),
+      sub: unread ? t('mailbox.list.unreadSummaryOlder', { count: unread, older, scope: where }) : t('mailbox.list.olderUnreadSummary', { older, scope: where }),
+      hint: t('mailbox.list.olderUnreadHint', { count: older, kept: S.counts.inboxLimit })
+    };
+  }
   return { title: viewLabel(), sub: unread ? t('mailbox.list.unreadSummary', { count: unread, scope: where }) : where };
 }
 
 function renderListHead() {
   const head = $('.list-head');
-  const { title, sub } = listTitle();
-  head.innerHTML = `<div class="list-title"><h1>${esc(title)}</h1><div class="sub">${esc(sub)}</div></div>
+  const { title, sub, hint } = listTitle();
+  head.innerHTML = `<div class="list-title"><h1>${esc(title)}</h1><div class="sub"${hint ? ` title="${esc(hint)}"` : ''}>${esc(sub)}</div></div>
     ${S.query.trim() ? `<button class="tbtn" data-action="search-clear" data-i18n-title="mailbox.search.clearShortcut" title="${esc(t('mailbox.search.clearShortcut'))}">${icons.close}<span data-i18n="common.actions.clear">${esc(t('common.actions.clear'))}</span></button>` : ''}
     <button class="icon-btn" data-action="sync" data-i18n-title="mailbox.sync.shortcut" title="${esc(t('mailbox.sync.shortcut'))}">${icons.sync}</button>
     <button class="icon-btn" data-action="list-more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>`;
@@ -914,12 +947,18 @@ function renderCategoryTabs() {
   el.innerHTML = tab(null, t('mailbox.categories.all'), null) + S.categories.categories.map((c) => tab(c.id, c.name, c.color)).join('');
 }
 
+// Rows folding out of the list (see letGo). Each renders the list once it is gone.
+const leaving = new Set();
+const LEAVE_MS = 320;
+
 function renderList() {
   // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends.
   if (swipeState.el) {
     swipeState.renderPending = true;
     return;
   }
+  // Likewise for a row that is folding away.
+  if (leaving.size) return;
   renderShell();
   renderListHead();
   renderCategoryTabs();
@@ -1136,6 +1175,42 @@ function syncRowClasses() {
 
 function revealRow(id) {
   $(`.list-scroll .item[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+
+// The message the Unread filter kept leaves once another opens. Its row, and a day heading it leaves empty,
+// fold away before the list redraws without them:
+//     0ms  the row fades out where it is
+//   110ms  its height closes and the rows below move up
+//   320ms  the list redraws
+function letGo(id) {
+  const m = S.list.find((x) => x.id === id);
+  if (!m || m.unread || S.filter !== 'unread') return;
+  const wrap = $(`.list-scroll .item-wrap[data-id="${CSS.escape(id)}"]`);
+  if (!wrap || matchMedia('(prefers-reduced-motion: reduce)').matches) return renderList();
+  const els = [wrap];
+  const head = wrap.previousElementSibling;
+  const next = wrap.nextElementSibling;
+  if (head?.classList.contains('group-head') && (!next || next.classList.contains('group-head'))) els.push(head);
+  leaving.add(id);
+  for (const el of els) {
+    const { paddingTop, paddingBottom } = getComputedStyle(el);
+    const height = `${el.offsetHeight}px`;
+    el.style.overflow = 'hidden';
+    el.style.pointerEvents = 'none';
+    el.animate(
+      [
+        { height, paddingTop, paddingBottom, opacity: 1, easing: 'cubic-bezier(0, 0, 0.2, 1)' },
+        { height, paddingTop, paddingBottom, opacity: 0, offset: 110 / LEAVE_MS, easing: 'cubic-bezier(0.77, 0, 0.175, 1)' },
+        { height: '0px', paddingTop: '0px', paddingBottom: '0px', opacity: 0 }
+      ],
+      { duration: LEAVE_MS, fill: 'forwards' }
+    );
+  }
+  // A timer, not the animation's promise: it also fires when a redraw took the row away mid-animation.
+  setTimeout(() => {
+    leaving.delete(id);
+    renderList();
+  }, LEAVE_MS);
 }
 
 function selectionChanged() {
@@ -1834,6 +1909,8 @@ export async function openMessage(id, { auto = false } = {}) {
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn) return;
   const m = S.list.find((x) => x.id === id);
+  const left = S.keptId && S.keptId !== id ? S.keptId : null;
+  if (S.keptId !== id) S.keptId = m && m.unread ? id : null;
   S.selectedId = id;
   S.anchorId = id;
   S.cursorId = id;
@@ -1841,6 +1918,7 @@ export async function openMessage(id, { auto = false } = {}) {
   S.loading = true;
   S.message = m ? { ...m, html: null, attachments: [] } : S.message;
   syncRowClasses();
+  if (left) letGo(left);
   revealRow(id);
   renderShell();
   renderReader();
@@ -2459,7 +2537,7 @@ export const ctx = {
   revealAgent: () => setAgentOpen(true),
   closeAgent: () => setAgentOpen(false),
   agentOpen: () => Boolean(prefs.agentOpen),
-  agentOverlay: () => Boolean(prefs.agentOpen) && window.innerWidth < AGENT_DOCK,
+  agentOverlay: () => Boolean(prefs.agentOpen) && OVERLAY_QUERY.matches,
   agentNews: (tone) => setAgentNews(tone),
   // For settings that change how mail is drawn: the open mail and the editor's quote.
   redrawMail: () => {

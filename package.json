@@ -109,6 +109,15 @@
           "role": "Viewer"
         }
       ],
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Rukoo Mail uses the local network only for things you set up: a mail or calendar server on your own network, or remote agent access, which connects Rukoo with an agent or your phone on another device. If you use neither, Rukoo works without this access."
+      },
+      "extraResources": [
+        {
+          "from": "build/mac/nl.lproj",
+          "to": "nl.lproj"
+        }
+      ],
       "hardenedRuntime": true
     }
   },

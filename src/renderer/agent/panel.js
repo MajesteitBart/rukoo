@@ -1920,11 +1920,19 @@ export function mountAgentPanel(ctx) {
     if (status === 'error' && error) showTurnError(error);
   }
 
-  function reveal(conversationId) {
-    // Before the panel opens, so its catch-up with the email on screen leaves this chat alone.
-    if (conversationId) keepChat();
-    ctx.revealAgent();
-    if (conversationId) openConversation(conversationId);
+  // The chat opens before the panel does. A closed panel still holds the chat it showed last, whose answer may be
+  // unread; opened first, the panel would tell main that chat is on screen, and main would mark the answer read (#79).
+  // keepChat() goes first as well, so the panel's catch-up with the email on screen leaves the new chat alone.
+  async function reveal(conversationId) {
+    try {
+      if (conversationId) {
+        keepChat();
+        await openConversation(conversationId);
+      }
+    } finally {
+      // Also when the chat could not be loaded: showError's toast says why.
+      ctx.revealAgent();
+    }
   }
 
   // ---------- UI bridge: agents writing into the composer ----------

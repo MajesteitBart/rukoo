@@ -25,4 +25,14 @@ function markOfTheWeb(file) {
   }
 }
 
-module.exports = { RISKY, safeName, markOfTheWeb };
+// The same without blocking: for copies made while other windows and requests have to go on (a chat's files).
+async function markOfTheWebAsync(file) {
+  if (process.platform !== 'win32') return;
+  try {
+    await fs.promises.writeFile(`${file}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n');
+  } catch (_) {
+    // Not NTFS: nothing to mark.
+  }
+}
+
+module.exports = { RISKY, safeName, markOfTheWeb, markOfTheWebAsync };

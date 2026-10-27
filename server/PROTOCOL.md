@@ -79,7 +79,7 @@ A device ignores collections it doesn't know, so a newer app can add one without
 
 ## HTTP API
 
-The server speaks JSON over HTTPS. Requests that need a session send `Authorization: Bearer <token>`. Errors come back as `{ "error": "<code>", "message": "<text>" }` with the status below.
+The server speaks JSON over HTTPS. Requests that need a session send `Authorization: Bearer <token>`. Devices send `Accept-Encoding: identity` and refuse an answer with any other `Content-Encoding`, so a device counts a body toward its limits as the server sent it, not as it unpacks. Errors come back as `{ "error": "<code>", "message": "<text>" }` with the status below.
 
 | Status | `error` |
 |---|---|
@@ -182,7 +182,7 @@ Records changed after `since`, oldest first, at most `limit` (default and maximu
 
 `seq` is the newest change on the server. Keep asking with the last record's `seq` while `more` is true.
 
-A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`. One pull takes at most 500 pages or 256 MiB of `data`, and a page with more records than the device asked for is refused; what is left comes with the next sync, so a server can't keep a device busy.
+A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`, and every `id` is 43 characters of base64url. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`. A pull stops asking for more after 500 pages, or once 256 MiB of answers have come in, counting every byte of each response body rather than only `data`. The device checks between pages, so the page that crosses 256 MiB is the last one taken. A page with more records than the device asked for is refused. What is left comes with the next sync, so a server can't keep a device busy.
 
 ### `POST /v1/records`
 

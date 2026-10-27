@@ -4,6 +4,12 @@ import { t, setLanguage } from './i18n.js';
 import { api, esc, toast, applyTheme, onSystemThemeChange } from './ui.js';
 import { mountComposer } from './composer.js';
 
+// The window's title bar and the custom title in it.
+function setTitle(text) {
+  document.title = text;
+  document.getElementById('compose-title').textContent = text;
+}
+
 async function init() {
   const host = document.getElementById('app');
   const [data, opts] = await Promise.all([api('state'), api('composeInit')]);
@@ -13,6 +19,7 @@ async function init() {
   // the language and theme like the editor, and turns into the editor, with the link's fields, once an account exists.
   if (!data.accounts.length) {
     const draw = () => {
+      setTitle(t('composer.titles.new'));
       host.innerHTML = `<div class="compose-error"><p data-compose-empty>${esc(t('composer.errors.noAccount'))}</p><button class="btn secondary">${esc(t('common.actions.close'))}</button></div>`;
       host.querySelector('button').addEventListener('click', () => api('composeClose'));
     };
@@ -45,10 +52,7 @@ async function init() {
     opts,
     message,
     inline: false,
-    onTitle: (text) => {
-      document.title = text;
-      document.getElementById('compose-title').textContent = text;
-    }
+    onTitle: setTitle
   });
   const retheme = async () => {
     const next = await api('state');
@@ -58,6 +62,9 @@ async function init() {
   };
   window.mail.on(({ type }) => (type === 'theme' || type === 'language') && retheme());
   onSystemThemeChange(retheme);
+  // Main's account updates reach only the main window. Coming back from it, the editor follows a default account
+  // changed there.
+  window.addEventListener('focus', () => api('state').then((next) => editor.accountsChanged(next)).catch(() => {}));
 }
 
 init().catch((err) => toast(err.message, 6000));

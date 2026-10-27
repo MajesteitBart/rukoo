@@ -12,6 +12,9 @@ const TIMEOUT = 20000;
 const TEXT_CHARS = 1000;
 // The most of an answer that is read; one takes a few hundred bytes.
 const MAX_ANSWER = 1024 * 1024;
+// What a model name the answer gives may look like. It is stored with every classification, so anything else, such
+// as most of a megabyte from a compromised endpoint, is stored as MODEL instead.
+const MODEL_NAME = /^[a-z0-9.-]{1,40}$/;
 
 class JevError extends Error {
   constructor(code, status = 0) {
@@ -129,7 +132,8 @@ async function classify(key, m, categories, { toMe = false, request } = {}) {
   const answer = res && res.answers && res.answers.category;
   const chosen = answer && [...names.entries()].find(([, name]) => name === answer.choice);
   if (!chosen) throw new JevError('answer');
-  return { category: chosen[0], confidence: Number(answer.confidence) || 0, model: String(res.model || MODEL) };
+  const model = typeof res.model === 'string' && MODEL_NAME.test(res.model) ? res.model : MODEL;
+  return { category: chosen[0], confidence: Number(answer.confidence) || 0, model };
 }
 
 module.exports = { MODEL, TEXT_CHARS, MAX_ANSWER, JevError, classify, optionNames, emailState };

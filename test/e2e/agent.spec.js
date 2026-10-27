@@ -786,6 +786,81 @@ test('a wide chat panel gives way, so the reader keeps its 420 px', async () => 
   await expect.poll(async () => (await size()).reader).toBeGreaterThanOrEqual(419);
 });
 
+// #47: at 125% and 175% the window can be a fraction of a pixel over 1239 CSS px, while window.innerWidth says 1239. The
+// CSS docks the panel there (it slides over the reader up to max-width: 1239px), so the layout code has to count it as
+// docked too: the reader keeps its 420 px and Escape leaves the panel open. The 860 px breakpoint agrees as well.
+test('at 125% and 175% zoom the layout code docks the chat panel where the CSS does, so the reader keeps its 420 px', async () => {
+  await openChat('Call on Thursday');
+  const toggle = win.locator('.titlebar [data-agent-toggle]');
+  // The display's own scale, at 100%.
+  const scale = await win.evaluate(() => devicePixelRatio);
+  const layout = () =>
+    win.evaluate(() => {
+      const width = (s) => document.querySelector(s).getBoundingClientRect().width;
+      return { css: width('html'), position: getComputedStyle(document.querySelector('.agentpane')).position, reader: width('.reader') };
+    });
+  const zoomTo = async (zoom) => {
+    await win.evaluate((z) => window.mail.call('setZoom', z), zoom);
+    await expect.poll(() => win.evaluate(() => devicePixelRatio)).toBeCloseTo((scale * zoom) / 100);
+  };
+  // Makes the page `dips` wide. Window frames differ per platform (on Windows a frameless window's content size
+  // includes its borders), so this measures the page and moves the window's edge by what is missing.
+  const fit = (zoom, dips) =>
+    expect
+      .poll(
+        async () => {
+          const now = Math.round(((await layout()).css * zoom) / 100);
+          if (now !== dips) {
+            await app.evaluate(({ BrowserWindow }, off) => {
+              const w = BrowserWindow.getAllWindows()[0];
+              const [width, height] = w.getSize();
+              w.setSize(width + off, height);
+            }, dips - now);
+          }
+          return now;
+        },
+        { intervals: [250] }
+      )
+      .toBe(dips);
+
+  for (const [zoom, dips] of [
+    [125, 1549],
+    [175, 2169]
+  ]) {
+    await zoomTo(zoom);
+    // 1239.2 and 1239.43 CSS px: docked, beside a reader of at least 420 px.
+    await fit(zoom, dips);
+    const docked = await layout();
+    expect(docked.css).toBeGreaterThan(1239);
+    expect(docked.css).toBeLessThan(1240);
+    expect(docked.position).toBe('static');
+    expect(docked.reader).toBeGreaterThanOrEqual(420);
+    await input().focus();
+    await win.keyboard.press('Escape');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(pane()).toBeVisible();
+    // 1238.4 and 1238.86 CSS px: it slides over the reader, and Escape closes it there.
+    await fit(zoom, dips - 1);
+    const overlay = await layout();
+    expect(overlay.css).toBeLessThan(1239);
+    expect(overlay.position).toBe('absolute');
+    await input().focus();
+    await win.keyboard.press('Escape');
+    await expect(pane()).toBeHidden();
+    await win.keyboard.press('Control+j');
+    await expect(pane()).toBeVisible();
+  }
+
+  // 860.57 CSS px, where window.innerWidth says 860: the CSS shows the list and the reader side by side, so another
+  // folder opens its newest email as in any wide window.
+  await fit(175, 1506);
+  const twoPanes = await layout();
+  expect(twoPanes.css).toBeGreaterThan(860);
+  expect(twoPanes.css).toBeLessThan(861);
+  await win.click('[data-view="sent"]');
+  await expect(win.locator('.reader-subject')).toBeVisible();
+});
+
 test('a PDF is read in a utility process: one that never finishes or takes ever more memory is ended there, the app keeps working, and quitting leaves no reader behind', async () => {
   const reader = path.join(__dirname, '..', 'fixtures', 'hostile-reader.js');
   const readers = () => app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().filter((m) => m.name === 'Rukoo PDF reader').map((m) => m.pid));
@@ -944,6 +1019,63 @@ test('the bell counts chats with news from off screen; its list follows them liv
   await expect(win.locator('.agentpane .ap-empty')).toBeVisible();
   await expect(bell()).toHaveAttribute('aria-label', 'Recent chats, 1 new');
   expect(await app.evaluate((_e, cid) => global.__semAgents.get(cid).unread, cid)).toBe('reply');
+});
+
+// #79: the closed panel still holds chat A, whose answer is unread. "Show" on another chat's approval toast must open that
+// chat without telling main that A was on screen for a moment, which would mark A's answer read.
+test('Show on an approval toast opens that chat and leaves the unread answer in the chat the closed panel held unread', async () => {
+  const bell = () => win.locator('.agentpane [data-ap="history"]');
+  const toggle = () => win.locator('.titlebar [data-agent-toggle]');
+  const unread = (cid) => app.evaluate((_e, cid) => global.__semAgents.get(cid).unread, cid);
+  const done = (cid) => expect.poll(() => app.evaluate((_e, cid) => global.__semAgents.turns.has(cid), cid)).toBe(false);
+  // C: a chat about the parcel email, done for now.
+  await openChat('Your parcel is on its way');
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked: "Hello there"', { timeout: 10000 });
+  const c = await conversationId();
+  await done(c);
+  // A: the chat about the email on screen when the panel closes.
+  await item('Call on Thursday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-empty')).toBeVisible();
+  await say('Summarize this');
+  await expect(transcript()).toContainText('You asked: "Summarize this"', { timeout: 10000 });
+  const a = await conversationId();
+  expect(a).not.toBe(c);
+  await done(a);
+  await win.click('.agentpane [data-ap="close"]');
+  await expect(pane()).toBeHidden();
+
+  // A answers while the panel is closed: news on the title bar button.
+  await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'And now?' }), a);
+  await expect.poll(() => unread(a), { timeout: 10000 }).toBe('reply');
+  await expect(toggle()).toHaveAttribute('data-news', 'unread');
+  // C's agent asks for approval; a toast says so.
+  await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'Add the proposal task; ask for approval first' }), c);
+  const toast = win.locator('#toast');
+  await expect(toast).toContainText('An agent is waiting for your approval', { timeout: 10000 });
+  await toast.locator('button', { hasText: 'Show' }).click();
+
+  // The panel opens on C, its approval card included; the email on screen stays.
+  await expect(pane()).toBeVisible();
+  await expect(transcript()).toContainText('You asked: "Hello there"');
+  await expect(transcript().locator('.bui-approval')).toContainText('Waiting for you');
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  expect(await app.evaluate(() => global.__semAgents.watching)).toBe(c);
+  // A's answer is still news: in main, on the bell and, with the panel closed again, on the title bar button.
+  expect(await unread(a)).toBe('reply');
+  await expect(bell()).toHaveAttribute('aria-label', 'Recent chats, 1 new');
+  await expect(bell()).toHaveAttribute('data-tone', 'unread');
+  await win.click('.agentpane [data-ap="close"]');
+  await expect(pane()).toBeHidden();
+  await expect(toggle()).toHaveClass(/has-news/);
+  expect(await unread(a)).toBe('reply');
+
+  // A chat that cannot be loaded still opens the panel, and the toast says why: here main refuses the id.
+  await app.evaluate(() => global.__semAgents.emitEvent({ kind: 'reveal', conversationId: 'x'.repeat(201) }));
+  await expect(pane()).toBeVisible();
+  await expect(toast).toHaveText('invalid');
+  await expect(transcript()).toContainText('You asked: "Hello there"');
 });
 
 test('the open chat list goes by the last message: a chat moves up as soon as its agent writes, before its turn ends', async () => {
@@ -1197,6 +1329,17 @@ test('Settings has an Agents page with status and a way back', async () => {
   await expect(win.locator('[data-agent-name="clark"]').first()).toHaveText('Clark');
   // Clark is the default agent, so that row follows the new name too.
   await expect(win.locator('[data-agent-default]')).toHaveText('Clark');
+  // Copy Hermes setup starts with the download of the bridge from this Rukoo's own release, so the two speak the
+  // same bridge protocol. Recorded in main rather than put on the desktop's own clipboard.
+  await app.evaluate(() => {
+    global.__semAgents.deps.clipboard = { writeText: (text) => (global.__copiedSetup = text) };
+  });
+  await win.locator('.page.settings .row', { hasText: 'Copy Hermes setup' }).click();
+  await expect(win.locator('#toast')).toContainText("Paste it into ~/.hermes/config.yaml on Clark's machine.");
+  const version = await app.evaluate(({ app: electronApp }) => electronApp.getVersion());
+  const copied = await app.evaluate(() => global.__copiedSetup);
+  expect(copied).toContain(`#    curl -fsSL -o ~/.hermes/rukoo_bridge.py https://raw.githubusercontent.com/MajesteitBart/rukoo/v${version}/integrations/hermes/rukoo_bridge.py\n`);
+  expect(copied).toContain('      RUKOO_KEY: ${API_SERVER_KEY}\n');
   fs.mkdirSync(SHOTS, { recursive: true });
   for (const theme of ['dark', 'light']) {
     await win.evaluate((t) => window.mail.call('updateSettings', { theme: t }), theme);
@@ -1979,12 +2122,12 @@ test('a send that fails while the files are copied keeps every chip, and sending
   // The disk fills up halfway through main's copy of the second file, once.
   await app.evaluate(() => {
     const fs = process.mainModule.require('fs');
-    const write = fs.writeFileSync;
+    const write = fs.promises.writeFile;
     let copies = 0;
-    fs.writeFileSync = function (file, data, ...rest) {
+    fs.promises.writeFile = async function (file, data, ...rest) {
       if (/[\\/]agent-workspace[\\/]files[\\/]/.test(String(file)) && !/:Zone\.Identifier$/.test(file) && ++copies === 2) {
-        fs.writeFileSync = write;
-        write.call(this, file, data.subarray(0, 2), ...rest);
+        fs.promises.writeFile = write;
+        await write.call(this, file, data.subarray(0, 2), ...rest);
         throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
       }
       return write.call(this, file, data, ...rest);
@@ -2001,6 +2144,44 @@ test('a send that fails while the files are copied keeps every chip, and sending
   await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['a.txt', 'b.txt']);
   await expect(fileChips()).toHaveCount(0);
   await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['a.txt', 'b.txt']);
+});
+
+test('a message with files is sent without blocking Rukoo: while a slow disk copies them, other requests are answered at once', async () => {
+  await openChat('Call on Thursday');
+  await dropFiles([{ name: 'scan.txt', type: 'text/plain', data: Buffer.from('Scanned on a slow disk') }]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['scan.txt']);
+  // Writing main's copy takes 1.5 s, whichever way it is written: the sync call blocks, the async one waits.
+  await app.evaluate(() => {
+    const fs = process.mainModule.require('fs');
+    const copy = (file) => /[\\/]agent-workspace[\\/]files[\\/]/.test(String(file)) && !/:Zone\.Identifier$/.test(String(file));
+    const write = fs.writeFileSync;
+    fs.writeFileSync = function (file, ...rest) {
+      if (copy(file)) for (const end = Date.now() + 1500; Date.now() < end; );
+      return write.call(this, file, ...rest);
+    };
+    const writeAsync = fs.promises.writeFile;
+    fs.promises.writeFile = async function (file, ...rest) {
+      if (copy(file)) await new Promise((resolve) => setTimeout(resolve, 1500));
+      return writeAsync.call(this, file, ...rest);
+    };
+  });
+  await input().fill('Read this scan');
+  // Sent from the page itself, so the clock starts before main has the message: Playwright's own commands pass
+  // through main and would wait for it. 300 ms later main is copying; another request still comes back at once, and
+  // the message isn't in the chat yet.
+  const took = await win.evaluate(async () => {
+    document.querySelector('.agentpane .bui-pb__send').click();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const started = performance.now();
+    await window.mail.call('agentSkills');
+    return performance.now() - started;
+  });
+  expect(took).toBeLessThan(500);
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  // Once the copy is there the message shows with its file, and the agent gets it.
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['scan.txt']);
+  await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['scan.txt']);
+  await expect(transcript()).toContainText('scan.txt starts with: Scanned on a slow disk', { timeout: 10000 });
 });
 
 test('two emails dragged from the list show up as chips, and the agent reads both', async () => {
@@ -2046,6 +2227,60 @@ test('two emails dragged from the list show up as chips, and the agent reads bot
   expect(got.input).toContain(`- id ${ids[0]}: <unsafe_content source="email subject">Your parcel is on its way</unsafe_content>`);
   await settled();
   await shot('24-emails-sent');
+});
+
+test('an attached email archived after Send still reads with the id the agent got, after a restart too, and a new session gets the id it has now', async () => {
+  await openChat('Call on Thursday');
+  await dragToChat('Your parcel is on its way');
+  await say('Compare these');
+  await expect(transcript()).toContainText('The email "Your parcel is on its way" is from', { timeout: 10000 });
+  const [given] = (await received()).emails;
+  const cid = await conversationId();
+
+  // Archived from the toolbar with the chat closed. The id the agent got names nothing now.
+  await input().focus();
+  await win.keyboard.press('Control+j');
+  await expect(pane()).toBeHidden();
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await win.click('[data-reader="archive"]');
+  await expect(win.locator('#toast')).toContainText('Archive');
+  await expect(win.locator('.item', { hasText: 'Your parcel is on its way' })).toHaveCount(0);
+  const unbound = await app.evaluate(async (_e, id) => {
+    const res = await global.__semAgents.callTool({ agent: 'clark', conversationId: null, remote: false }, 'read_message', { message_id: id }, {});
+    return res.isError ? res.content[0].text : null;
+  }, given);
+  expect(unbound).toMatch(/Ids change when mail moves/);
+
+  // Back in the chat, the agent reads it with the id it got.
+  const reads = () => transcript().evaluate((el) => el.innerText.split('The email "Your parcel is on its way" is in Archive now.').length - 1);
+  await openChat('Call on Thursday');
+  await say('Read them again');
+  await expect.poll(reads, { timeout: 10000 }).toBe(1);
+  await settled();
+  await shot('27-attached-email-archived');
+
+  // Rukoo restarts. The message kept the email's Message-ID, so the old id still reads.
+  await app.close();
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await item('Call on Thursday').click();
+  if (!(await pane().isVisible())) await win.keyboard.press('Control+j');
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['Your parcel is on its way']);
+  await say('Read them again');
+  await expect.poll(reads, { timeout: 10000 }).toBe(2);
+  const now = (await tool(cid, 'read_message', { message_id: given })).data;
+  expect(now.folder).toBe('Archive');
+  expect(now.id).not.toBe(given);
+
+  // A lost session: the recap names the email by the id it has now.
+  await say('Did you keep a lost session?');
+  await expect(transcript()).toContainText('I started a new session. Rukoo sent me the email and a recap of our chat.', { timeout: 10000 });
+  const recap = (await received()).input;
+  expect(recap).toContain(`User: Compare these [attached: the email "Your parcel is on its way" (id ${now.id})]`);
+  expect(recap).not.toContain(given);
+  await settled();
+  await shot('28-attached-email-new-session');
 });
 
 test('the newer email a chat was continued from, dropped on the chat, is not added to the message again', async () => {

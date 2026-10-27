@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const iconv = require('iconv-lite');
-const { RISKY, safeName, markOfTheWeb } = require('../files');
+const { RISKY, safeName, markOfTheWebAsync } = require('../files');
 const { isPdf } = require('../pdftext');
 
 // The same cap as read_attachment's.
@@ -30,13 +30,15 @@ const TURN_TEXT_MAX = 60000;
 const INLINE_IMAGE_MAX = Math.floor(3.75 * 1024 * 1024);
 
 // A file's bytes, read up to max, in steps, without blocking. null when it holds more: at most max + 1 bytes are
-// read, whatever its size said before.
-async function readCapped(file, max) {
+// read, whatever its size said before. signal: once aborted, no further step is read, and what was read goes.
+async function readCapped(file, max, signal = null) {
+  if (signal) signal.throwIfAborted();
   const handle = await fs.promises.open(file, 'r');
   try {
     const parts = [];
     let total = 0;
     for (;;) {
+      if (signal) signal.throwIfAborted();
       const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, max + 1 - total));
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
       if (!bytesRead) break;
@@ -134,8 +136,25 @@ function removeDir(dir) {
   }
 }
 
+async function removeFiles(files) {
+  await Promise.all(
+    files.map((full) =>
+      fs.promises.rm(full, { force: true }).catch(() => {
+        // In use already; the copy is not in the chat, and goes with its folder.
+      })
+    )
+  );
+}
+
 // A chat's folder name. Rukoo's ids are safe as they are; anything else becomes a hash, so no id can point outside.
 const folderOf = (cid) => (/^[A-Za-z0-9_-]{1,100}$/.test(String(cid)) ? String(cid) : `c_${crypto.createHash('sha256').update(String(cid)).digest('hex').slice(0, 24)}`);
+
+// The name of keep()'s copy of a file: its file_id, and the extension of the user's file name when it is a plain one.
+const copyName = (id, name) => {
+  const ext = path.extname(name).toLowerCase();
+  return `${id}${/^\.[a-z0-9]{1,10}$/.test(ext) ? ext : ''}`;
+};
+const COPY_NAME = /^f_[0-9a-f]{10}(\.[a-z0-9]{1,10})?$/;
 
 class ChatFiles {
   // pdf: the PdfReader (pdfread.js) that reads a PDF's text in a process of its own.
@@ -190,7 +209,7 @@ class ChatFiles {
     const entry = { id: `s_${rand(16)}`, name: clean, size: data.length, type, kind: kindOf(clean, type), data, at: Date.now() };
     this.staged.set(entry.id, entry);
     // Let go after STAGED_TTL even when nothing else is staged, so a message never sent doesn't keep its files.
-    entry.timer = setTimeout(() => this.unstage(entry.id), STAGED_TTL);
+    entry.timer = setTimeout(() => this.expire(entry.id), STAGED_TTL);
     if (entry.timer.unref) entry.timer.unref();
     return shown(entry);
   }
@@ -201,14 +220,23 @@ class ChatFiles {
     return this.staged.delete(id);
   }
 
+  // A file past STAGED_TTL goes, unless keep() is copying it into a chat: then it goes once the copy is over, sent
+  // or not. Its bytes are in memory until then, so they keep counting against STAGED_BYTES.
+  expire(id) {
+    const s = this.staged.get(id);
+    if (s && s.copying) s.expired = true;
+    else this.unstage(id);
+  }
+
   // Lets go of the files past STAGED_TTL, whose timers may not have fired yet.
   trim() {
     const now = Date.now();
-    for (const [id, s] of this.staged) if (now - s.at > STAGED_TTL) this.unstage(id);
+    for (const [id, s] of this.staged) if (now - s.at > STAGED_TTL) this.expire(id);
   }
 
-  // Rukoo is closing: the staged files go.
+  // Rukoo is closing: the staged files go, and a keep() still copying stops before its next file.
   dispose() {
+    this.closed = true;
     for (const id of [...this.staged.keys()]) this.unstage(id);
   }
 
@@ -217,12 +245,13 @@ class ChatFiles {
     return [...new Set(ids)].filter((id) => !this.pending([id]));
   }
 
-  // The staged files these tokens name, or null when one of them is gone, also when it is past STAGED_TTL.
+  // The staged files these tokens name, or null when one of them is gone, also when it is past STAGED_TTL or is
+  // being copied into a chat for another message.
   pending(ids) {
     const out = [];
     for (const id of ids) {
       const s = this.staged.get(id);
-      if (!s || Date.now() - s.at > STAGED_TTL) return null;
+      if (!s || s.copying || Date.now() - s.at > STAGED_TTL) return null;
       if (!out.includes(s)) out.push(s);
     }
     return out;
@@ -241,33 +270,43 @@ class ChatFiles {
     return fs.readFileSync(this.path(cid, f));
   }
 
+  // The same without blocking, up to FILE_MAX: the copy is Rukoo's own, but a changed conversations.json can name
+  // another file in the folder. signal: the read no longer needs the file; loading stops before the next step.
+  async load(cid, f, { signal = null } = {}) {
+    const data = await readCapped(this.path(cid, f), FILE_MAX, signal);
+    if (!data) throw new Error('larger than a chat file can be');
+    return data;
+  }
+
   // Writes staged files into the chat's folder and forgets them. Returns what the chat keeps of each. A copy is
   // named after its file_id: the user's file name can be anyone's text, and the path is shown to the agent plain.
-  // All or nothing: when a write fails (a full disk), the copies made so far go and every file stays staged, so
-  // the message can be sent again as it was.
-  keep(cid, entries) {
-    const dir = this.dir(cid);
-    fs.mkdirSync(dir, { recursive: true });
+  // Without blocking: a message brings up to ten files of 10 MB, and a slow disk, or a virus scanner that checks
+  // each new file, would hold up every window and request meanwhile. The files stay staged while they are copied,
+  // and STAGED_TTL waits for the copy (expire()). All or nothing: when a write fails (a full disk), the copies made
+  // so far go and every file stays staged, so the message can be sent again as it was.
+  async keep(cid, entries) {
+    for (const s of entries) s.copying = true;
     const kept = [];
     const written = [];
     try {
+      const dir = this.dir(cid);
+      await fs.promises.mkdir(dir, { recursive: true });
       for (const s of entries) {
+        // Rukoo is closing: no more copies, and the ones made go below.
+        if (this.closed) throw new Error('Rukoo is closing');
         const id = `f_${rand(10)}`;
-        const ext = path.extname(s.name).toLowerCase();
-        const file = `${id}${/^\.[a-z0-9]{1,10}$/.test(ext) ? ext : ''}`;
+        const file = copyName(id, s.name);
         const full = path.join(dir, file);
         written.push(full);
-        fs.writeFileSync(full, s.data);
-        markOfTheWeb(full);
+        await fs.promises.writeFile(full, s.data);
+        await markOfTheWebAsync(full);
         kept.push({ id, name: s.name, file, size: s.size, type: s.type, kind: s.kind, at: Date.now() });
       }
     } catch (err) {
-      for (const full of written) {
-        try {
-          fs.rmSync(full, { force: true });
-        } catch (_) {
-          // In use already; the copy is not in the chat, and goes with its folder.
-        }
+      await removeFiles(written);
+      for (const s of entries) {
+        s.copying = false;
+        if (s.expired) this.unstage(s.id);
       }
       throw err;
     }
@@ -275,67 +314,115 @@ class ChatFiles {
     return kept;
   }
 
+  // Removes copies keep() made for a message that did not go out after all (Rukoo closed meanwhile).
+  discard(cid, kept) {
+    return removeFiles(kept.map((f) => this.path(cid, f)));
+  }
+
   // What goes along with the message: each file with its path, and the start of its text for text files and PDFs.
   // The PDFs are read side by side, each in a process of its own; the text then shares TURN_TEXT_MAX in order.
-  // truncated: there is more text than went along. partial: the reader stopped before the end of the PDF, so the
-  // rest is only in the file. failed: why the reader got no text at all (pdfread.js). signal: the turn; stopped, its
-  // PDFs stop being read.
+  // Nothing here blocks, and a file is read only when its text is needed: a PDF once a reader takes it (pdfread.js),
+  // so the PDFs of messages in several chats that wait for a reader hold no memory, and a text file only while
+  // TURN_TEXT_MAX has room. truncated: there is more text than went along. partial: the reader stopped before the
+  // end of the PDF, so the rest is only in the file. failed: why the reader got no text at all (pdfread.js), also
+  // 'busy' when it waited too long for a reader. signal: the turn; stopped, its PDFs stop being read.
   async forTurn(cid, files, { signal = null } = {}) {
-    const loaded = await Promise.all(
+    const found = await Promise.all(
       files.map(async (f) => {
         const out = { ...shown(f), path: this.path(cid, f) };
-        let data;
         try {
-          data = this.read(cid, f);
+          const stat = await fs.promises.stat(out.path);
+          if (!stat.isFile()) throw new Error('not a file');
+          return { f, out, size: stat.size };
         } catch (_) {
-          return { out: { ...out, missing: true } };
+          return { f, out: { ...out, missing: true } };
         }
-        const pdf = f.kind === 'pdf' ? await this.pdf.read(data, { maxChars: FILE_TEXT_INLINE, signal }) : null;
-        return { out, data, pdf };
       })
     );
+    // The PDFs queue for a reader in the message's order, while the text files below are read. The reader stops a
+    // load it no longer needs (stopped, or past its time), so a stopped message's PDF doesn't go on filling memory.
+    for (const x of found) {
+      if (!x.out.missing && x.f.kind === 'pdf') x.pdf = this.pdf.read((stop) => this.load(cid, x.f, { signal: stop }), { maxChars: FILE_TEXT_INLINE, signal });
+    }
     let room = TURN_TEXT_MAX;
-    return loaded.map(({ out, data, pdf }) => {
-      if (out.missing) return out;
+    const result = [];
+    for (const { f, out, size, pdf } of found) {
+      if (out.missing) {
+        result.push(out);
+        continue;
+      }
       const max = Math.min(FILE_TEXT_INLINE, room);
       // omitted: the file has text, but the files before it used up TURN_TEXT_MAX; read_chat_file returns it.
       if (out.kind === 'text') {
         if (max > 0) {
+          let data;
+          try {
+            data = await this.load(cid, f);
+          } catch (_) {
+            result.push({ ...out, missing: true });
+            continue;
+          }
           const text = decodeText(data);
           out.text = text.slice(0, max);
           out.truncated = text.length > max;
-        } else out.omitted = data.length > 0;
+        } else out.omitted = size > 0;
       } else if (pdf) {
-        if (max > 0 && pdf.text) {
-          out.text = pdf.text.slice(0, max);
-          out.truncated = pdf.truncated || pdf.text.length > max;
-        } else if (pdf.text) out.omitted = true;
-        out.partial = pdf.partial === true;
-        out.failed = pdf.failed || null;
-        out.encrypted = pdf.encrypted;
-        out.empty = !pdf.text;
+        const read = await pdf;
+        if (max > 0 && read.text) {
+          out.text = read.text.slice(0, max);
+          out.truncated = read.truncated || read.text.length > max;
+        } else if (read.text) out.omitted = true;
+        out.partial = read.partial === true;
+        out.failed = read.failed || null;
+        out.encrypted = read.encrypted;
+        out.empty = !read.text;
       } else if (out.kind === 'image') {
-        out.inline = data.length <= INLINE_IMAGE_MAX;
+        out.inline = size <= INLINE_IMAGE_MAX;
       }
       room -= (out.text || '').length;
-      return out;
-    });
+      result.push(out);
+    }
+    return result;
   }
 
   remove(cid) {
     removeDir(this.dir(cid));
   }
 
-  // Folders of chats that are gone: removed while Rukoo was closed, or a removal a file in use stopped.
-  prune(cids) {
-    const known = new Set([...cids].map(folderOf));
+  // At start: the folders of chats that are gone (removed while Rukoo was closed, or a removal a file in use
+  // stopped), and in the others the copies no message kept: keep() made them while Rukoo quit, crashed or was ended
+  // with Windows, and the chat never got the message. Only keep()'s own copies go, known by their name; another
+  // file in a chat's folder (an agent's own) stays. chats: [id, files] of each chat.
+  prune(chats) {
+    const known = new Map();
+    for (const [cid, files] of chats) known.set(folderOf(cid), new Set((files || []).map((f) => path.basename(String(f.file)))));
     let names = [];
     try {
       names = fs.readdirSync(this.root);
     } catch (_) {
       return;
     }
-    for (const name of names) if (!known.has(name)) removeDir(path.join(this.root, name));
+    for (const name of names) {
+      const dir = path.join(this.root, name);
+      const kept = known.get(name);
+      if (!kept) {
+        removeDir(dir);
+        continue;
+      }
+      let copies = [];
+      try {
+        copies = fs.readdirSync(dir).filter((file) => COPY_NAME.test(file) && !kept.has(file));
+      } catch (_) {
+        continue;
+      }
+      for (const file of copies) {
+        try {
+          fs.rmSync(path.join(dir, file), { force: true });
+        } catch (_) {
+          // In use; the next start tries again.
+        }
+      }
+    }
   }
 }
 

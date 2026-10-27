@@ -1,7 +1,7 @@
 'use strict';
 
-// The tray's pure parts: the dot on the icon, the tooltip, the two settings, and saving the window's bounds
-// when it hides. The tray itself is covered end to end in test/e2e/tray.spec.js.
+// The tray's pure parts: the icon sizes, the dot on the icon, the tooltip, the two settings, and saving the
+// window's bounds when it hides. The tray itself is covered end to end in test/e2e/tray.spec.js.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
 const i18n = require('../src/i18n');
-const { withDot, tooltip } = require('../src/main/tray');
+const { withDot, tooltip, traySizes } = require('../src/main/tray');
 const { WindowState } = require('../src/main/windowstate');
 const { Engine } = require('../src/main/engine');
 
@@ -45,6 +45,18 @@ test('on a transparent icon the dot is opaque and premultiplied edges stay valid
   assert.deepEqual(at(out, size, 0, 0), [0, 0, 0, 0]);
   // Premultiplied alpha: no colour channel exceeds the pixel's alpha.
   for (let i = 0; i < out.length; i += 4) assert.ok(Math.max(out[i], out[i + 1], out[i + 2]) <= out[i + 3], `pixel ${i / 4}`);
+});
+
+test('the macOS menu bar icon is 18 points with a 2x copy; the Windows and Linux icon stays 16 px times the scaling', () => {
+  for (const scaleFactor of [1, 1.5, 2]) {
+    assert.deepEqual(traySizes('darwin', scaleFactor), [{ scaleFactor: 1, size: 18 }, { scaleFactor: 2, size: 36 }]);
+  }
+  for (const platform of ['win32', 'linux']) {
+    assert.deepEqual(traySizes(platform, 1), [{ scaleFactor: 1, size: 16 }]);
+    assert.deepEqual(traySizes(platform, 1.25), [{ scaleFactor: 1, size: 20 }]);
+    assert.deepEqual(traySizes(platform, 1.5), [{ scaleFactor: 1, size: 24 }]);
+    assert.deepEqual(traySizes(platform, 2), [{ scaleFactor: 1, size: 32 }]);
+  }
 });
 
 test('the tooltip counts unread mail in the interface language', () => {

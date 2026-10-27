@@ -212,7 +212,7 @@ class McpHttpServer(
         // The address from the socket, not from a header: the one the bridge connected to if nothing relayed it.
         val endpoint = runCatching { policy.endpoint(client.localAddress, client.localPort, req.headers["host"].orEmpty()) }.getOrDefault("")
         val proof = runCatching { auth.proof(challenge, endpoint) }.getOrDefault("").ifEmpty { "none" }
-        return json(401, ERROR_UNAUTHORIZED, mapOf("X-Rukoo-Proof" to proof))
+        return json(401, ERROR_UNAUTHORIZED, mapOf("X-Rukoo-Proof" to proof, "X-Rukoo-Bridge-Protocol" to BRIDGE_PROTOCOL.toString()))
     }
 
     private fun tooLarge() = json(413, McpHandler.rpcError(null, -32600, "Request body too large")).copy(close = true)
@@ -377,6 +377,14 @@ class McpHttpServer(
         private const val MAX_HEAD_BYTES = 16 * 1024
         private val HEAD_END = "\r\n\r\n".toByteArray(Charsets.ISO_8859_1)
         val CHALLENGE = Regex("^[A-Za-z0-9_-]{16,128}$")
+
+        /**
+         * desktop BRIDGE_PROTOCOL (mcp.js): what Clark's bridge and Rukoo have to agree on, sent with the proof so a
+         * bridge that can't match it knows whether the key differs or the version does. It goes up together with
+         * desktop's and the bridge's, for any change in the challenge, proof, token or rukoo/hello that an older
+         * bridge can't follow.
+         */
+        const val BRIDGE_PROTOCOL = 2
         private val BEARER = Regex("^Bearer\\s+(\\S+)\\s*$", RegexOption.IGNORE_CASE)
 
         private val ERROR_FORBIDDEN = JsonObject(mapOf("error" to JsonPrimitive("forbidden")))

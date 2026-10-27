@@ -7,13 +7,15 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const k = require('../src/main/account/crypto');
-const { AccountService, PULL_PAGES } = require('../src/main/account');
+const { AccountService, PULL_PAGES, PULL_DATA } = require('../src/main/account');
 const { AccountError, serverUrl } = require('../src/main/account/client');
 const { startAccountServer } = require('./fixtures/account-server');
 const vectors = require('./fixtures/account-vectors.json');
 
 const secrets = { encrypt: (s) => `plain:${Buffer.from(s).toString('base64')}`, decrypt: (s) => Buffer.from(String(s).slice(6), 'base64').toString() };
 const PASSWORD = 'a long enough password';
+// An id shaped like the ones devices make (43 characters of base64url), for records a test server makes up.
+const recordId = (text) => crypto.createHash('sha256').update(String(text)).digest('base64url');
 
 function tmpDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-account-'));
@@ -699,7 +701,7 @@ test("a server that always has more can't keep a pull going", async (t) => {
     if (method !== 'GET' || !route.startsWith('/v1/records')) return http(server, method, route, opts);
     const since = Number(new URL(route, 'http://x').searchParams.get('since'));
     pages += 1;
-    const records = Array.from({ length: size }, (_, i) => ({ id: `x${pages}-${i}`, seq: since + 1 + i, data: null }));
+    const records = Array.from({ length: size }, (_, i) => ({ id: recordId(`${pages}-${i}`), seq: since + 1 + i, data: null }));
     // Not quite forever, so that a device without a limit fails the test rather than hang it.
     return Promise.resolve({ records, seq: 1e9, more: pages < 2 * PULL_PAGES });
   };
@@ -707,6 +709,165 @@ test("a server that always has more can't keep a pull going", async (t) => {
   assert.equal(pages, PULL_PAGES);
   size = 1001;
   await assert.rejects(desk.pull(), { code: 'server' });
+});
+
+test("a server that pads its answers can't get past the bytes one pull may take", async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await desk.signUp({ email: 'padded@example.com', password: PASSWORD });
+  await desk.sync();
+  // Each page is one tombstone and 4 MiB of a field Rukoo ignores, from a server of its own, so every byte goes through
+  // the real client. The 'data' the old limit counted stays empty.
+  const pad = 'x'.repeat(4 * 1024 * 1024);
+  let pages = 0;
+  let sent = 0;
+  let last = 0;
+  const padded = require('http').createServer((req, res) => {
+    const since = Number(new URL(req.url, 'http://x').searchParams.get('since'));
+    pages += 1;
+    const body = JSON.stringify({ records: [{ id: recordId(pages), seq: since + 1, data: null }], seq: 1e9, more: pages < 2 * PULL_PAGES, pad });
+    last = Buffer.byteLength(body);
+    sent += last;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(body);
+  });
+  await new Promise((r) => padded.listen(0, '127.0.0.1', r));
+  t.after(() => {
+    padded.closeAllConnections();
+    padded.close();
+  });
+  const paddedUrl = `http://127.0.0.1:${padded.address().port}`;
+  const { request } = require('../src/main/account/client');
+  const http = desk.http;
+  desk.http = (server, method, route, opts) =>
+    method === 'GET' && route.startsWith('/v1/records') ? request(paddedUrl, method, route, opts) : http(server, method, route, opts);
+  await desk.pull();
+  assert.ok(pages < PULL_PAGES, `stopped by bytes, not pages (${pages} pages)`);
+  assert.ok(sent >= PULL_DATA && sent - last < PULL_DATA, 'the pull ends with the first page past the limit');
+  assert.equal(desk.state.cursor, pages, 'the pages taken still count; the rest waits for the next sync');
+});
+
+test("a server that hides padding in compressed answers can't get past the bytes one pull may take", async (t) => {
+  const zlib = require('zlib');
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await desk.signUp({ email: 'gzip@example.com', password: PASSWORD });
+  await desk.sync();
+  const before = desk.state.cursor;
+  // Each page is a few bytes of JSON in gzip, behind 4 MiB of padding in the gzip header's file name: tiny once
+  // unpacked, 4 MiB to download. The server sends it compressed whatever the device asks for.
+  let pages = 0;
+  const asked = [];
+  const padded = require('http').createServer((req, res) => {
+    asked.push(req.headers['accept-encoding']);
+    const since = Number(new URL(req.url, 'http://x').searchParams.get('since'));
+    pages += 1;
+    const gzip = zlib.gzipSync(JSON.stringify({ records: [{ id: recordId(pages), seq: since + 1, data: null }], seq: 1e9, more: pages < 2 * PULL_PAGES }));
+    // FNAME: a file name follows the 10-byte header, up to a zero byte.
+    gzip[3] |= 0x08;
+    res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' });
+    res.end(Buffer.concat([gzip.subarray(0, 10), Buffer.alloc(4 * 1024 * 1024, 'x'), Buffer.from([0]), gzip.subarray(10)]));
+  });
+  await new Promise((r) => padded.listen(0, '127.0.0.1', r));
+  t.after(() => {
+    padded.closeAllConnections();
+    padded.close();
+  });
+  const paddedUrl = `http://127.0.0.1:${padded.address().port}`;
+  const { request } = require('../src/main/account/client');
+  const http = desk.http;
+  desk.http = (server, method, route, opts) =>
+    method === 'GET' && route.startsWith('/v1/records') ? request(paddedUrl, method, route, opts) : http(server, method, route, opts);
+  const error = await desk.pull().then(() => null, (err) => err);
+  assert.equal(pages, 1, 'the first compressed answer ends the pull');
+  assert.equal(error && error.code, 'server');
+  assert.deepEqual(asked, ['identity'], 'the device asks for answers as they are');
+  assert.equal(desk.state.cursor, before, 'and moves nothing');
+});
+
+test("a server that pads its chunk framing can't get past the bytes one pull or one answer may take", async (t) => {
+  const net = require('net');
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await desk.signUp({ email: 'chunks@example.com', password: PASSWORD });
+  await desk.sync();
+  // Each page is a valid one-tombstone answer sent a byte per chunk, each chunk behind 16000 bytes of chunk extension
+  // (Node takes up to 16 KiB per chunk): about 2 MB to download for a body of about 125 bytes. With pad, one answer
+  // is over 32 MiB on its own.
+  const ext = 'x'.repeat(16000);
+  let pages = 0;
+  let sent = 0;
+  let last = 0;
+  let pad = '';
+  const padded = net.createServer((sock) => {
+    sock.on('error', () => {});
+    let head = '';
+    sock.on('data', (d) => {
+      head += d;
+      if (!head.includes('\r\n\r\n')) return;
+      const since = Number(new URL(head.split(' ')[1], 'http://x').searchParams.get('since'));
+      pages += 1;
+      const json = JSON.stringify({ records: [{ id: recordId(pages), seq: since + 1, data: null }], seq: 1e9, more: pages < 2 * PULL_PAGES, pad });
+      const parts = ['HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n'];
+      for (const c of json) parts.push(`1;${ext}\r\n${c}\r\n`);
+      parts.push('0\r\n\r\n');
+      const out = Buffer.from(parts.join(''));
+      last = out.length;
+      sent += last;
+      sock.end(out);
+    });
+  });
+  await new Promise((r) => padded.listen(0, '127.0.0.1', r));
+  t.after(() => padded.close());
+  const paddedUrl = `http://127.0.0.1:${padded.address().port}`;
+  const { request } = require('../src/main/account/client');
+  const http = desk.http;
+  desk.http = (server, method, route, opts) =>
+    method === 'GET' && route.startsWith('/v1/records') ? request(paddedUrl, method, route, opts) : http(server, method, route, opts);
+  await desk.pull();
+  assert.ok(pages < PULL_PAGES, `stopped by bytes, not pages (${pages} pages)`);
+  assert.ok(sent >= PULL_DATA && sent - last < PULL_DATA, 'the pull ends with the first page past the limit');
+  assert.equal(desk.state.cursor, pages, 'the pages taken still count; the rest waits for the next sync');
+  // The limit is checked between pages, so one answer that never ends has a limit of its own.
+  pad = 'p'.repeat(2200);
+  await assert.rejects(request(paddedUrl, 'GET', '/v1/records?since=0'), { code: 'too_large' });
+});
+
+test('a page with a record id no device could have made is refused whole and moves nothing', async (t) => {
+  const srv = await server(t);
+  const helper = device(t, srv, 'helper');
+  await helper.signUp({ email: 'ids@example.com', password: PASSWORD });
+  helper.put('sender', 'a@example.com', { category: 'money' });
+  await helper.sync();
+  // After the real record, a tombstone with an odd id, while the server lies.
+  let lying = true;
+  let bad;
+  const { request } = require('../src/main/account/client');
+  const desk = new AccountService({
+    dataDir: tmpDir(t),
+    secrets,
+    defaultServer: srv.url,
+    deviceName: 'desk',
+    request: async (...args) => {
+      const res = await request(...args);
+      if (!lying || !args[2].startsWith('/v1/records?')) return res;
+      return { ...res, records: [...res.records, { id: bad, seq: res.seq + 1, data: null }], seq: res.seq + 1 };
+    }
+  }).init();
+  t.after(() => desk.close());
+  // Too long (as padding would be), too short, a character outside base64url, padded base64, and not a string.
+  const odd = ['A'.repeat(44), 'A'.repeat(1000000), 'A'.repeat(42), `${'A'.repeat(42)}+`, `${'A'.repeat(41)}==`, 42, null, ['A'.repeat(43)]];
+  bad = odd[0];
+  await desk.signIn({ email: 'ids@example.com', password: PASSWORD });
+  for (const id of odd) {
+    bad = id;
+    await assert.rejects(desk.sync(), { code: 'server' }, `id ${JSON.stringify(id).slice(0, 50)}`);
+    assert.equal(desk.state.cursor, 0);
+    assert.equal(desk.get('sender', 'a@example.com'), undefined);
+  }
+  lying = false;
+  await desk.sync();
+  assert.deepEqual(desk.get('sender', 'a@example.com'), { category: 'money' });
 });
 
 test('the cursor on disk never runs ahead of the records on disk', async (t) => {

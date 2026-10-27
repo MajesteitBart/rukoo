@@ -852,8 +852,21 @@ async function searchMail(hub, args) {
   return out;
 }
 
-async function readMessage(hub, args) {
-  const id = resolveId(hub, args.message_id);
+// message_id for the tools that read an email. Ids change when mail moves, so an id this chat gave the agent (its
+// own email, one it was continued from, one the user attached) also reads the email where it is now: the chat keeps
+// each one's Message-ID (hub.relocate). Another stale id fails as resolveId says.
+async function readableId(hub, value, call) {
+  try {
+    return resolveId(hub, value);
+  } catch (err) {
+    const found = !err.ambiguous && call.conversation ? await hub.relocate(call.conversation, String(value || '').trim()) : null;
+    if (found) return found;
+    throw err;
+  }
+}
+
+async function readMessage(hub, args, call) {
+  const id = await readableId(hub, args.message_id, call);
   const m = await hub.engine.getMessage(id);
   return fullView(hub.engine, m, args.max_chars || TEXT_MAX);
 }
@@ -882,7 +895,7 @@ function writeTemp(hub, name, content) {
 
 async function readAttachment(hub, args, call) {
   const { engine } = hub;
-  const id = resolveId(hub, args.message_id);
+  const id = await readableId(hub, args.message_id, call);
   const full = await engine.getMessage(id);
   const meta = (full.attachments || []).find((a) => a.index === args.index);
   if (!meta) {
@@ -941,7 +954,8 @@ async function fileResult(hub, info, { name, type, content, local = null, uri, s
     // reader that stopped early or failed leaves the rest only in the file (partial, failed).
     const pdf = await hub.pdf.read(content, { maxChars: ATTACHMENT_TEXT_MAX, signal, tool: true });
     if (pdf.failed === 'busy') {
-      // Too many reads wait already (pdfread.js): no text and no file, so asking many times at once holds nothing.
+      // Too many reads wait already, or this one waited TURN_WAIT for a reader (pdfread.js): no text and no file, so
+      // asking many times at once holds nothing.
       const full = { ...out, failed: 'busy', note: `Rukoo is reading other PDFs for you and has no room for this one yet. Ask for it again once those reads are done${local ? `, or open the file at local_path. ${FILE_DATA}` : '.'}` };
       return raw([{ type: 'text', text: JSON.stringify(full) }], full);
     }

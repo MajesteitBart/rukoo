@@ -63,14 +63,17 @@ In the English catalog this object is the entry's `message`; in another catalog 
 1. Copy `src/i18n/nl.js` to the new language code, such as `src/i18n/de.js`. Keep the wrapper, change its registry code, and translate each value using the English descriptions. Do not translate keys or placeholders.
 2. Register the catalog in `src/i18n/index.js`: add its `require()` to the main-process catalog map, and add an entry to `languages` with its code, native name, `Intl` locale, and text direction. Native names make the picker understandable in every language.
 3. Add its catalog script to both `src/renderer/index.html` and `src/renderer/compose.html`, before `../i18n/index.js`. The sandbox loads local scripts and does not fetch translation files. The language pickers populate from the registry automatically.
-4. Run `npm run i18n:check`, `npm test`, and `npm run test:e2e`. The catalog check covers registered languages, key completeness, descriptions, plural forms, placeholders, and source references. Add UI assertions for the new language in `test/e2e/i18n.spec.js`.
-5. Inspect setup, settings, search, reading, composing, and native dialogs with the new language. Check long labels, dates, counts, and an open draft while switching languages. Right-to-left languages also need a layout review; setting the document direction alone does not prove layout support.
+4. Copy `build/mac/nl.lproj` to the new language code and translate its `InfoPlist.strings`, then add the folder to `build.mac.extraResources` in `package.json`. macOS shows these texts in its own questions for Rukoo, such as the one about local network access. The English texts are under `build.mac.extendInfo`.
+5. Run `npm run i18n:check`, `npm test`, and `npm run test:e2e`. The catalog check covers registered languages, key completeness, descriptions, plural forms, placeholders, source references and the macOS texts. Add UI assertions for the new language in `test/e2e/i18n.spec.js`.
+6. Inspect setup, settings, search, reading, composing, and native dialogs with the new language. Check long labels, dates, counts, and an open draft while switching languages. Right-to-left languages also need a layout review; setting the document direction alone does not prove layout support.
 
 The runtime works in both CommonJS and the sandboxed browser without a framework or build step. Date, time, file size, sender sorting, and plural rules use the registered `Intl` locale.
 
 ## Add or change a label
 
 Use an existing key when the meaning and context are shared. Give different meanings separate keys even when their English wording is identical. Add a description naming the screen, control, and purpose, and explain each parameter. Add the value to every registered catalog and keep it out of application code.
+
+The texts macOS shows in its permission questions live outside the catalogs: English under `build.mac.extendInfo` in `package.json`, other languages in `build/mac/<code>.lproj/InfoPlist.strings`. Change them together.
 
 Render changing labels when they are needed. A module-level translated string becomes stale after a language switch; use a function or getter instead. For controls that stay mounted, add `data-i18n` or `data-i18n-{attribute}` and call `localize()`. Dynamic labels with parameters must be refreshed by their owning renderer.
 

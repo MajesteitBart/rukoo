@@ -153,6 +153,9 @@ class AgentHub extends EventEmitter {
     this.adapterErrors = new Map();
     this.conversations = new Map();
     this.turns = new Map();
+    // Chats whose next message is still copying its files (send()): busy, as with a turn. Each with the send's
+    // promise, which dispose() waits for, so a copy made while Rukoo closes is gone before it quits.
+    this.sending = new Map();
     this.approvals = new Map();
     this.followUps = new Map();
     this.tokens = [];
@@ -419,6 +422,9 @@ class AgentHub extends EventEmitter {
     }
     const closing = [...this.adapters.values()].map((a) => Promise.resolve().then(() => a.dispose && a.dispose()));
     if (this.mcp) closing.push(this.mcp.close());
+    // Messages still copying their files: they stop at the next file and remove their copies (send()). A quit that
+    // can't wait that long leaves them to the next start (ChatFiles.prune).
+    closing.push(...this.sending.values());
     await Promise.allSettled(closing);
   }
 
@@ -479,7 +485,7 @@ class AgentHub extends EventEmitter {
     }
     // The files of chats that are gone. Not while a file Rukoo couldn't read is kept aside: its chats may come
     // back, and their files with them. After the next save the store alone would say they are gone.
-    if (!broken && !this.keptAside()) this.files.prune(this.conversations.keys());
+    if (!broken && !this.keptAside()) this.files.prune([...this.conversations.values()].map((c) => [c.id, c.files]));
   }
 
   keptAside() {
@@ -888,7 +894,7 @@ class AgentHub extends EventEmitter {
     const external = keep.origin === 'external';
     const max = external ? MAX_EXTERNAL : MAX_CONVERSATIONS;
     const same = [...this.conversations.values()].filter((c) => (c.origin === 'external') === external);
-    const idle = same.filter((c) => c !== keep && !this.turns.has(c.id)).sort((a, b) => a.updatedAt - b.updatedAt);
+    const idle = same.filter((c) => c !== keep && !this.turns.has(c.id) && !this.sending.has(c.id)).sort((a, b) => a.updatedAt - b.updatedAt);
     for (let n = same.length; n > max && idle.length; n--) this.drop(idle.shift(), true);
   }
 
@@ -1137,10 +1143,13 @@ class AgentHub extends EventEmitter {
   // on disk now.
   // files: tokens of files the user attached (stageFile); emails: Rukoo ids of emails the user added. A message
   // with either needs no text.
+  // A refusal throws at once, before anything changes. A message with files then returns a promise: the files are
+  // copied into the chat's folder without blocking (chatfiles.keep), the chat is busy meanwhile, and the message
+  // shows in the chat only once they are there. A failed copy rejects it and leaves the chat as it was.
   send(id, { text, action = null, display = null, skill = null, files = [], emails = [] } = {}) {
     const c = this.mustGet(id);
     if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
-    if (this.turns.has(c.id)) throw new AgentError('busy', 'a turn is running');
+    if (this.turns.has(c.id) || this.sending.has(c.id)) throw new AgentError('busy', 'a turn is running');
     if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
     if (skill) {
       const s = this.skills.get(skill);
@@ -1157,14 +1166,51 @@ class AgentHub extends EventEmitter {
     if (!staged) throw missingError('file-missing', this.files.missing(fileIds), 'a file is no longer ready to send; attach it again');
     const mails = this.attachEmails(c, emails);
     if (!body.trim() && !staged.length && !mails.length) throw new AgentError('invalid', 'empty message');
-    const firstTurn = !c.delivered;
-    // The agent's new session has not had the chat yet: the email and a recap go along again.
-    const recap = !firstTurn && c.needsRecap === true;
     const shown = display ? clip(display, 20000) : body;
     // display can be an approved proposal's title. Email text the agent quoted in it keeps its <unsafe_content>
     // tags for the agent (runTurn gets them); the user's line and the chat title show the text alone.
     const line = display ? context.untag(shown) : shown;
-    const kept = staged.length ? this.files.keep(c.id, staged) : [];
+    const message = { body, action, shown, line, mails };
+    if (!staged.length) return this.begin(c, message, []);
+    // Removed while its files were copied: what was copied goes with the chat's folder, whichever way the copy went.
+    const removed = () => {
+      if (this.conversations.get(c.id) === c) return false;
+      this.files.remove(c.id);
+      return true;
+    };
+    const sent = this.files.keep(c.id, staged).then(
+      async (kept) => {
+        try {
+          if (removed()) throw new AgentError('invalid', 'unknown conversation');
+          // Closed meanwhile: the chat keeps its earlier files only. dispose() waits for this.
+          if (this.disposed) {
+            await this.files.discard(c.id, kept);
+            throw new AgentError('stopped', 'Rukoo is closing');
+          }
+        } finally {
+          this.sending.delete(c.id);
+        }
+        return this.begin(c, message, kept);
+      },
+      (err) => {
+        this.sending.delete(c.id);
+        if (removed()) throw new AgentError('invalid', 'unknown conversation');
+        // keep() stopped copying once Rukoo began to close, and removed what it had copied.
+        if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
+        this.nextFollowUp(c.id);
+        throw err;
+      }
+    );
+    this.sending.set(c.id, sent);
+    return sent;
+  }
+
+  // The rest of send(), once the message's files are in the chat's folder (kept): the message goes into the chat,
+  // and its turn starts.
+  begin(c, { body, action, shown, line, mails }, kept) {
+    const firstTurn = !c.delivered;
+    // The agent's new session has not had the chat yet: the email and a recap go along again.
+    const recap = !firstTurn && c.needsRecap === true;
     if (kept.length) c.files = [...(c.files || []), ...kept];
     // A chat is named after its first message, or after what it brought when it has no text.
     const naming = !c.title;
@@ -1210,7 +1256,8 @@ class AgentHub extends EventEmitter {
 
   // Emails the user added to a message, by Rukoo id. Only an email Rukoo has itself counts: one in the user's
   // accounts, or a copy saved on this device. Subject and sender come from Rukoo's own cache, not the renderer.
-  // The chat's own email is there already.
+  // The chat's own email is there already. Each keeps its Message-ID and account, as the chat's own email does:
+  // a Rukoo id changes when the email moves, and with those Rukoo finds it again (refreshEmails(), relocate()).
   attachEmails(c, ids) {
     const list = [].concat(ids || []);
     if (list.length > MAX_EMAILS) throw new AgentError('invalid', `at most ${MAX_EMAILS} emails per message`);
@@ -1234,7 +1281,9 @@ class AgentHub extends EventEmitter {
       if ((c.continued || []).some((e) => e.id === id || same(e.messageId, m.messageId))) continue;
       if (m.messageId) seen.push(m.messageId);
       const from = isObj(m.from) ? { name: clip(m.from.name || '', 200), address: clip(m.from.address || '', 320) } : null;
-      out.push({ id, subject: clip(m.subject || '', 300), from });
+      // A saved copy's id names no account; its entry does.
+      const accountId = id.startsWith('saved:') ? m.accountId || null : tools.accountOfId(id);
+      out.push({ id, subject: clip(m.subject || '', 300), from, messageId: m.messageId ? clip(m.messageId, 1000) : null, accountId });
     }
     if (gone.length) throw missingError('email-missing', gone, 'an email added to the message is no longer here');
     return out;
@@ -1251,6 +1300,8 @@ class AgentHub extends EventEmitter {
     const adapter = this.adapters.get(c.agent);
     let result;
     if (action === 'approved') turn.approval = { display: display || text };
+    // Before the first await, so the message in the transcript has each email's Message-ID from the moment it is sent.
+    this.keepEmails(c, turn);
     try {
       if (!adapter) throw new AgentError('unknown', this.adapterErrors.get(c.agent) || `${c.agent} adapter not available`);
       // Mail work that still runs reports into the notes this turn takes: wait for all of it first, also for
@@ -1290,6 +1341,16 @@ class AgentHub extends EventEmitter {
       // of its own and can take a while; stopped meanwhile, as above.
       if (turn.attached && turn.attached.files.length) {
         turn.attached = { files: await this.files.forTurn(c.id, turn.attached.files, { signal: turn.controller.signal }), emails: turn.attached.emails };
+        if (turn.closed || turn.controller.signal.aborted) {
+          this.giveBack(c, turn);
+          return this.finishTurn(turn, { status: 'stopped' });
+        }
+      }
+      // An email the user attached can have moved since Send, and one attached to an earlier message since then: the
+      // agent gets the ids they have now. Finding a moved one can open a folder; stopped meanwhile, as above.
+      const emails = [...(turn.attached ? turn.attached.emails : []), ...(recap ? this.earlierEmails(c, turn) : [])];
+      if (emails.length) {
+        await this.refreshEmails(c, emails);
         if (turn.closed || turn.controller.signal.aborted) {
           this.giveBack(c, turn);
           return this.finishTurn(turn, { status: 'stopped' });
@@ -1427,6 +1488,40 @@ class AgentHub extends EventEmitter {
     return at < 0 ? c.items.slice() : c.items.slice(0, at);
   }
 
+  // The emails the user attached to the messages before this turn's own, as their messages keep them.
+  earlierEmails(c, turn) {
+    return this.earlier(c, turn).flatMap((i) => (i.type === 'user' && Array.isArray(i.emails) ? i.emails : []));
+  }
+
+  // The user's message keeps the emails it took along as this turn has them, with their Message-ID and account
+  // (attachEmails()), so a recap and read_message find one again after it moved. One list for both: an id the turn
+  // finds again (refreshEmails()) is the message's as well. Chats saved before Rukoo kept these have the id alone.
+  keepEmails(c, turn) {
+    const emails = turn.attached ? turn.attached.emails : [];
+    const item = emails.length ? c.items.find((i) => i.id === turn.userItem) : null;
+    if (item) item.emails = emails;
+  }
+
+  // Attached emails where they are now, found like the chat's own (currentMessageId): each one that moved gets
+  // its new id, in the transcript too. One without a Message-ID, or one that is gone, keeps the id it has. One at a
+  // time: finding a moved email can open its folder.
+  async refreshEmails(c, emails) {
+    for (const e of emails) {
+      if (isObj(e) && e.id && e.messageId) await this.currentMessageId(c, e);
+    }
+  }
+
+  // The current id of an email this chat gave the agent, by an id that no longer holds it: the chat's own, one it
+  // was continued from, or one the user attached. Each keeps its Message-ID and account, so one that moved is found
+  // again (locate). Nothing in the chat changes, so the agent can pass the same id again; a recap gives a new
+  // session the new ids (refreshEmails()). null when the chat gave no email that id, or the email is gone.
+  async relocate(c, id) {
+    if (!c || !id || this.conversations.get(c.id) !== c) return null;
+    const attached = c.items.flatMap((i) => (i.type === 'user' && Array.isArray(i.emails) ? i.emails : []));
+    const ref = [c.message, ...(c.continued || []), ...attached].find((e) => isObj(e) && e.id === id && e.messageId);
+    return ref ? this.locate({ id, messageHeader: ref.messageId, accountId: ref.accountId || null }) : null;
+  }
+
   // The agent lost the chat's session (Claude Code deletes old transcripts, say), and the adapter starts a new
   // one that knows nothing of the chat. Before the adapter sends anything, input becomes a first turn with the
   // chat's email and a recap of the chat. A turn that has the email already (ready) stays as it is: a first turn
@@ -1445,6 +1540,8 @@ class AgentHub extends EventEmitter {
     }
     // The new session has not had a newer email either, even if the old one did.
     const newer = turn.newer && turn.newer.length ? turn.newer : (c.continued || []).length ? await this.loadNewer(c, { again: true }) : [];
+    // The recap names the emails of earlier messages by the ids they have now.
+    await this.refreshEmails(c, this.earlierEmails(c, turn));
     // Stopped meanwhile: the adapter sees the abort and sends nothing.
     if (turn.closed || turn.controller.signal.aborted) return handle.input;
     turn.newer = newer;
@@ -1641,11 +1738,17 @@ class AgentHub extends EventEmitter {
     if (error && ['offline', 'unauthorized', 'not-configured', 'not-installed', 'spawn-failed'].includes(error.code)) {
       this.refreshStatus().catch(() => {});
     }
+    this.nextFollowUp(c.id);
+  }
+
+  // An approval that waited for the chat to be free (onProposal) goes now: its turn ended, or a message's files
+  // failed to copy.
+  nextFollowUp(cid) {
     if (this.disposed) return;
-    const queue = this.followUps.get(c.id);
+    const queue = this.followUps.get(cid);
     const next = queue && queue.shift();
-    if (queue && !queue.length) this.followUps.delete(c.id);
-    if (next) setImmediate(() => this.sendFollowUp(c.id, next));
+    if (queue && !queue.length) this.followUps.delete(cid);
+    if (next) setImmediate(() => this.sendFollowUp(cid, next));
   }
 
   sendFollowUp(cid, message) {
@@ -1814,7 +1917,7 @@ class AgentHub extends EventEmitter {
     if (item.detail) lines.push(`Details you proposed: ${item.detail}`);
     for (const f of item.fields || []) lines.push(`${f.label}: ${f.value}`);
     const message = { text: lines.join('\n'), display: item.title, action: 'approved' };
-    if (this.turns.has(c.id)) {
+    if (this.turns.has(c.id) || this.sending.has(c.id)) {
       const queue = this.followUps.get(c.id) || [];
       queue.push(message);
       this.followUps.set(c.id, queue);
@@ -2172,7 +2275,7 @@ class AgentHub extends EventEmitter {
   }
 
   copyHermesSetup() {
-    if (this.deps.clipboard) this.deps.clipboard.writeText(this.cfg.hermesSetup());
+    if (this.deps.clipboard) this.deps.clipboard.writeText(this.cfg.hermesSetup({ version: this.deps.appVersion }));
     return true;
   }
 

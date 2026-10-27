@@ -26,13 +26,32 @@ test('email URLs arriving before ready are queued once and later URLs open immed
 
 test('Mac default mail registration is explicit and never changes a source or isolated installation', () => {
   let writes = 0;
-  const app = { isPackaged: false, getApplicationNameForProtocol: () => 'Mail', isDefaultProtocolClient: () => false, setAsDefaultProtocolClient: (scheme) => { assert.equal(scheme, 'mailto'); writes++; return true; } };
+  const app = { isPackaged: false, isInApplicationsFolder: () => true, getApplicationNameForProtocol: () => 'Mail', isDefaultProtocolClient: () => false, setAsDefaultProtocolClient: (scheme) => { assert.equal(scheme, 'mailto'); writes++; return true; } };
   assert.equal(new MacMailClient(app).register(), false);
   app.isPackaged = true;
   assert.equal(new MacMailClient(app, true).register(), false);
   assert.equal(writes, 0);
   const client = new MacMailClient(app);
   assert.deepEqual(client.status(), { available: true, app: 'Mail', rukoo: false, platform: 'darwin' });
+  assert.equal(client.register(), true);
+  assert.equal(writes, 1);
+});
+
+test('only a packaged copy in Applications may become the Mac email app', () => {
+  let writes = 0;
+  const app = { isPackaged: true, getApplicationNameForProtocol: () => 'Mail', isDefaultProtocolClient: () => false, setAsDefaultProtocolClient: () => { writes++; return true; } };
+  // Run from the mounted DMG or from Downloads; or a check that fails, or an Electron without it.
+  for (const check of [() => false, () => { throw new Error('no bundle'); }, () => undefined, undefined]) {
+    app.isInApplicationsFolder = check;
+    const client = new MacMailClient(app);
+    assert.equal(client.status().available, false);
+    assert.equal(client.register(), false);
+  }
+  assert.equal(writes, 0);
+  // /Applications or ~/Applications: Electron's check covers both.
+  app.isInApplicationsFolder = () => true;
+  const client = new MacMailClient(app);
+  assert.equal(client.status().available, true);
   assert.equal(client.register(), true);
   assert.equal(writes, 1);
 });

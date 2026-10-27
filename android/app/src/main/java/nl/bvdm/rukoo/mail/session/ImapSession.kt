@@ -11,6 +11,7 @@ import java.util.Properties
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import nl.bvdm.rukoo.R
@@ -59,6 +60,8 @@ class ImapSession(
     private val strings: MailStrings,
     private val connectTimeoutMs: Int = 20_000,
     private val socketTimeoutMs: Int = 5 * 60_000,
+    /** Where IMAP commands run (ImapThreads); tests pass threads with a small stack to overflow it quickly. */
+    private val commandThreads: CoroutineDispatcher = ImapThreads.dispatcher,
 ) : MailSession {
     private class Line {
         val lock = PriorityLock()
@@ -170,7 +173,7 @@ class ImapSession(
     private suspend fun <T> execute(line: Line, store: IMAPStore, block: (IMAPStore) -> T): T {
         if (closed) throw closedError()
         return try {
-            withContext(ImapThreads.dispatcher) { block(store) }
+            withContext(commandThreads) { block(store) }
         } catch (e: Exception) {
             if (!withContext(Dispatchers.IO) { runCatching { store.isConnected }.getOrDefault(false) }) line.store = null
             throw e
@@ -178,7 +181,7 @@ class ImapSession(
             // The response reader stopped halfway through a reply, so the connection can't be trusted for the next command.
             withContext(Dispatchers.IO) { runCatching { store.close() } }
             line.store = null
-            throw MailException(strings.get(R.string.engine_errors_connection_too_deep), "too-deep")
+            throw MailException(strings.get(R.string.engine_errors_connection_too_deep), TOO_DEEP)
         }
     }
 
@@ -299,6 +302,55 @@ class ImapSession(
         background: Boolean,
         signals: Boolean,
         gmailTabs: Boolean,
+    ): FolderSync {
+        // New messages whose structure overflows the parser: they are fetched without it (see tooDeep).
+        var bare = emptySet<Long>()
+        while (true) {
+            var fresh = emptyList<Long>()
+            try {
+                return syncOnce(path, limit, known, uidValidity, background, signals, gmailTabs, bare) { fresh = it }
+            } catch (e: MailException) {
+                if (e.code != TOO_DEEP) throw e
+                // One overflow loses the whole batch, and the next sync would ask for the same batch again.
+                val deep = tooDeep(path, fresh - bare, background)
+                if (deep.isEmpty()) throw e
+                bare = bare + deep
+            }
+        }
+    }
+
+    /**
+     * Of [uids], which overflowed the parser when fetched together, the ones whose structure overflows it alone. Each
+     * half is fetched with nothing but its structure, and a half that overflows is halved again. Every overflow costs
+     * the connection (execute), so this only runs after a sync failed on one.
+     */
+    private suspend fun tooDeep(path: String, uids: List<Long>, background: Boolean): Set<Long> {
+        if (uids.size <= 1) return uids.toSet()
+        val out = HashSet<Long>()
+        for (half in uids.chunked((uids.size + 1) / 2)) {
+            try {
+                run(background) { store ->
+                    withFolder(store, path, Folder.READ_ONLY) { folder -> folder.protocol { p -> p.exec("UID FETCH ${uidSet(half)} (UID BODYSTRUCTURE)") } }
+                }
+            } catch (e: MailException) {
+                if (e.code != TOO_DEEP) throw e
+                out += tooDeep(path, half, background)
+            }
+        }
+        return out
+    }
+
+    /** One sync of [path]; the uids in [bare] are fetched without their structure. [onFresh] gets the uids the cache lacks. */
+    private suspend fun syncOnce(
+        path: String,
+        limit: Int,
+        known: Map<Long, CachedMessage>,
+        uidValidity: String?,
+        background: Boolean,
+        signals: Boolean,
+        gmailTabs: Boolean,
+        bare: Set<Long>,
+        onFresh: (List<Long>) -> Unit,
     ): FolderSync =
         run(background) { store ->
             withFolder(store, path, Folder.READ_ONLY) { folder ->
@@ -317,9 +369,13 @@ class ImapSession(
                     // Envelope, structure, date and size only for messages the cache doesn't have yet: on a large Gmail
                     // folder that is the slow part.
                     val fresh = rows.map { it.second }.filter { it !in cache }
+                    onFresh(fresh)
                     val details = mutableMapOf<Long, Detail>()
-                    if (fresh.isNotEmpty()) {
-                        for (fr in p.exec("UID FETCH ${uidSet(fresh)} (UID ENVELOPE BODYSTRUCTURE INTERNALDATE RFC822.SIZE)").filterIsInstance<FetchResponse>()) {
+                    // Without a structure a message is listed with its sender and subject, but no preview or attachment mark.
+                    val (flat, full) = fresh.partition { it in bare }
+                    for ((uids, items) in listOf(full to "ENVELOPE BODYSTRUCTURE", flat to "ENVELOPE")) {
+                        if (uids.isEmpty()) continue
+                        for (fr in p.exec("UID FETCH ${uidSet(uids)} (UID $items INTERNALDATE RFC822.SIZE)").filterIsInstance<FetchResponse>()) {
                             val uid = fr.getItem(UID::class.java)?.uid ?: continue
                             details[uid] = Detail(
                                 fr.getItem(ENVELOPE::class.java),
@@ -560,6 +616,9 @@ class ImapSession(
         const val PREVIEW_BYTES = 4096
         const val SIGNAL_BYTES = 8192
 
+        /** The code of the error a reply nested too deeply to parse becomes. */
+        private const val TOO_DEEP = "too-deep"
+
         /** Hosts whose SMTP service already files a copy in the Sent folder (imap.js:20). */
         val AUTO_SENT_HOSTS = Regex("(gmail\\.com|googlemail\\.com|office365\\.com|outlook\\.com)$", RegexOption.IGNORE_CASE)
 
@@ -650,12 +709,16 @@ class CopyUid(val uidValidity: String, val map: Map<Long, Long>) {
 /**
  * Threads for IMAP commands. Angus Mail parses a message's BODYSTRUCTURE recursively, without a depth limit, so a
  * crafted, deeply nested message could overflow a normal thread's stack during sync. These threads have a large
- * stack; an overflow that happens anyway becomes a mail error in [ImapSession].
+ * stack; an overflow that happens anyway becomes a mail error in [ImapSession], and a sync lists that message
+ * without its structure.
  */
 internal object ImapThreads {
     private const val STACK_BYTES = 32L * 1024 * 1024
 
-    val dispatcher: CoroutineDispatcher = Executors.newCachedThreadPool { work ->
-        Thread(null, work, "rukoo-imap", STACK_BYTES).apply { isDaemon = true }
+    val dispatcher: CoroutineDispatcher = withStack(STACK_BYTES)
+
+    /** Daemon threads with [stackBytes] of stack each. */
+    fun withStack(stackBytes: Long): ExecutorCoroutineDispatcher = Executors.newCachedThreadPool { work ->
+        Thread(null, work, "rukoo-imap", stackBytes).apply { isDaemon = true }
     }.asCoroutineDispatcher()
 }

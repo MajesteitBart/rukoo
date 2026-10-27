@@ -30,7 +30,11 @@ const tmp = (name) => {
   made.push(dir);
   return dir;
 };
-test.after(() => {
+// Every Claude Code and Codex adapter the tests make. A test that fails before its own dispose() must not leave a
+// fake agent running: its process would keep this file, and npm test with it, from ever ending (#88).
+const adapters = [];
+test.after(async () => {
+  await Promise.allSettled(adapters.map((adapter) => adapter.dispose()));
   for (const dir of made) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 // A loopback port with nothing listening on it.
@@ -91,6 +95,41 @@ async function waitFor(check, ms = 5000) {
   }
   throw new Error('timed out waiting');
 }
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// The log a fake agent appends to, one JSON object per line, read while the fake still writes it. The file exists
+// before its first line is in, and the last line can be half written, so only lines that end in a newline count.
+function readLog(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const lines = text.split('\n');
+  // After the last newline: nothing, or a line still being written.
+  lines.pop();
+  return lines.filter((line) => line.trim()).map((line) => JSON.parse(line));
+}
+
+test('readLog: an empty log and a half-written last line read as the lines that are complete', () => {
+  const file = path.join(tmp('log'), 'log.jsonl');
+  assert.deepEqual(readLog(file), [], 'no file yet');
+  fs.writeFileSync(file, '');
+  assert.deepEqual(readLog(file), [], 'created, nothing written yet');
+  fs.writeFileSync(file, '{"argv":["-p"]}\n{"stdin":"{\\"type\\":');
+  assert.deepEqual(readLog(file), [{ argv: ['-p'] }]);
+  fs.appendFileSync(file, '\\"user\\"}"}\n');
+  assert.deepEqual(readLog(file), [{ argv: ['-p'] }, { stdin: '{"type":"user"}' }]);
+});
 
 // ---------- sse.js ----------
 
@@ -753,7 +792,8 @@ function claudeAdapter(extra = {}, hub = null) {
   process.env.FAKE_CLAUDE_LOG = logFile;
   const cfg = { enabled: true, exe: process.execPath, configDir: path.join(dir, 'cfg'), model: 'opus', access: 'ask', ...extra };
   const adapter = new ClaudeAdapter({ id: 'claude', config: () => cfg, hub, paths: { workspace: path.join(dir, 'ws'), attachments: path.join(dir, 'att') }, launchArgs: [path.join(FIXTURES, 'fake-claude.js')] });
-  const read = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  adapters.push(adapter);
+  const read = () => readLog(logFile);
   return { adapter, cfg, read, dir };
 }
 
@@ -1081,6 +1121,17 @@ test('claude: quitting kills a running session without blocking, and waits for t
   await done;
 });
 
+test('claude: a turn still looking up the program when Rukoo quits starts no process', async (t) => {
+  const { adapter, read } = claudeAdapter();
+  t.after(() => adapter.dispose());
+  // runTurn() awaits the program lookup before it spawns, so dispose() runs first.
+  const done = adapter.runTurn(fakeTurn(conv(), 'hello'));
+  await adapter.dispose();
+  assert.deepEqual(await done, { status: 'stopped' });
+  assert.equal(read().filter((e) => e.argv).length, 0, 'no claude process was started');
+  assert.equal(adapter.sessions.size, 0);
+});
+
 test('claude: tool previews', () => {
   assert.equal(toolDetail({ command: 'ls -la\n  /tmp', description: 'List' }), 'ls -la /tmp');
   assert.equal(toolDetail({ file_path: 'C:\\a.txt', content: 'x' }), 'C:\\a.txt');
@@ -1097,7 +1148,8 @@ function codexAdapter(extra = {}, hubExtra = {}, options = {}) {
   const cfg = { enabled: true, exe: process.execPath, model: '', access: 'ask', ...extra };
   const hub = { tokens: [], threads: [], expired: [], revoked: [], issueToken: (id) => (hub.tokens.push(id), 'codex-token'), mapThread: (t, c) => hub.threads.push([t, c]), expireApproval: (c, i) => hub.expired.push([c, i]), revokeToken: (t) => hub.revoked.push(t), ...hubExtra };
   const adapter = new CodexAdapter({ id: 'codex', config: () => cfg, hub, paths: { workspace: path.join(dir, 'ws') }, launchArgs: [path.join(FIXTURES, 'fake-codex.js')], ...options });
-  const read = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+  adapters.push(adapter);
+  const read = () => readLog(logFile);
   const sent = (method) => read().filter((e) => e.in && e.in.method === method).map((e) => e.in);
   return { adapter, cfg, hub, read, sent };
 }
@@ -1106,6 +1158,58 @@ test('codex: quitting kills the app-server without blocking, and waits for the k
   const { adapter } = codexAdapter();
   assert.deepEqual(await adapter.runTurn(fakeTurn(conv(), 'hello')), { status: 'done' });
   await disposeWaitsForKill(adapter, adapter.server.child);
+});
+
+// The app-server is still starting for one chat, a second chat waits for it, and Rukoo quits. The waiting turn
+// used to start an app-server of its own once the first one was gone, which nothing ended, and npm test hung (#88).
+test('codex: quitting while the app-server starts leaves no app-server running, also for a turn that waits for it', async (t) => {
+  const fake = path.join(FIXTURES, 'fake-codex.js');
+  // hold-init: the first app-server never answers initialize, so the quit lands while it starts.
+  const { adapter, read, sent } = codexAdapter({}, {}, { launchArgs: [fake, 'hold-init'] });
+  t.after(() => adapter.dispose());
+  const first = adapter.runTurn(fakeTurn(conv('c_first'), 'hello'));
+  await waitFor(() => sent('initialize').length === 1);
+  // An app-server started after the quit would answer, and run the waiting turn to the end.
+  adapter.launchArgs = [fake];
+  const second = adapter.runTurn(fakeTurn(conv('c_second'), 'hello'));
+  // Only promise callbacks lie between runTurn() and its wait for the starting app-server; a timer runs after them.
+  await sleep(20);
+  await adapter.dispose();
+  const outcomes = await Promise.all([first, second]);
+  const started = read().filter((e) => e.argv);
+  assert.equal(started.length, 1, 'no app-server starts after dispose()');
+  assert.deepEqual(outcomes, [{ status: 'stopped' }, { status: 'stopped' }]);
+  assert.equal(adapter.server, null);
+  await waitFor(() => !alive(started[0].pid));
+});
+
+test('codex: a turn stopped while it waits for a start that fails starts no app-server', async (t) => {
+  const fake = path.join(FIXTURES, 'fake-codex.js');
+  const { adapter, read, sent } = codexAdapter({}, {}, { launchArgs: [fake, 'hold-init'] });
+  t.after(() => adapter.dispose());
+  const first = adapter.runTurn(fakeTurn(conv('c_first'), 'hello'));
+  await waitFor(() => sent('initialize').length === 1);
+  adapter.launchArgs = [fake];
+  const waiting = fakeTurn(conv('c_waiting'), 'hello');
+  const second = adapter.runTurn(waiting);
+  await sleep(20);
+  waiting.controller.abort();
+  // The first app-server dies before it answers: its start fails while the stopped turn still waits for it.
+  adapter.server.kill();
+  assert.equal((await first).status, 'error');
+  assert.deepEqual(await second, { status: 'stopped' });
+  assert.equal(read().filter((e) => e.argv).length, 1, 'the stopped turn started no app-server');
+  assert.equal(adapter.server, null);
+});
+
+test('codex: a turn still looking up the program when Rukoo quits starts no app-server', async (t) => {
+  const { adapter, read } = codexAdapter();
+  t.after(() => adapter.dispose());
+  const done = adapter.runTurn(fakeTurn(conv(), 'hello'));
+  await adapter.dispose();
+  assert.deepEqual(await done, { status: 'stopped' });
+  assert.equal(read().filter((e) => e.argv).length, 0, 'no app-server was started');
+  assert.equal(adapter.server, null);
 });
 
 test('codex: initialize, thread/start with the Rukoo MCP block, and a recorded turn', async (t) => {
@@ -1249,14 +1353,7 @@ test('codex: a turn that ignores the interrupt is killed with its process, and i
   const result = await otherDone;
   assert.equal(result.status, 'error');
   assert.match(result.error.detail, /restarted to stop another chat/);
-  await waitFor(() => {
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
-  });
+  await waitFor(() => !alive(pid));
   // The next turn gets a fresh app-server.
   assert.deepEqual(await adapter.runTurn(fakeTurn(conv('c_next'), 'hello')), { status: 'done' });
   assert.equal(sent('initialize').length, 2);
@@ -1278,14 +1375,7 @@ test('codex: a turn whose start gets no answer ends the app-server with what it 
   const otherResult = await otherDone;
   assert.equal(otherResult.status, 'error');
   assert.match(otherResult.error.detail, /did not start in time/);
-  await waitFor(() => {
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
-  });
+  await waitFor(() => !alive(pid));
   assert.deepEqual(await adapter.runTurn(fakeTurn(conv('c_next'), 'hello')), { status: 'done' });
   assert.equal(sent('initialize').length, 2, 'the next turn gets a fresh app-server');
 });
@@ -1674,6 +1764,122 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   assert.deepEqual([...new Set(outdated.seen)], [null], 'no token for an outdated Rukoo either');
 });
 
+test('hermes bridge: a Rukoo of another bridge protocol is reported as newer or older, not as another key', async (t) => {
+  const python = findPython();
+  if (!python) return t.skip('no Python 3.8+ on PATH');
+  const { spawn, spawnSync } = require('child_process');
+  // A Rukoo that answers the challenge the way its own protocol signs it, with the bridge's key or another one.
+  // protocol null: a Rukoo from before it named its protocol.
+  const signer = async ({ key, protocol, signs }) => {
+    const hash = crypto.createHash('sha256').update(remoteTokenFor(key)).digest();
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push(req.headers.authorization || null);
+      req.on('end', () => {
+        const message = signs(`127.0.0.1:${server.address().port}`, String(req.headers['x-rukoo-challenge'] || ''));
+        const headers = { 'Content-Type': 'application/json', 'X-Rukoo-Proof': crypto.createHmac('sha256', hash).update(message).digest('base64url') };
+        if (protocol !== null) headers['X-Rukoo-Bridge-Protocol'] = String(protocol);
+        res.writeHead(401, headers);
+        res.end('{"error":"unauthorized"}');
+      });
+      req.resume();
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return { server, seen, url: `http://127.0.0.1:${server.address().port}/mcp` };
+  };
+  // The same key, in a proof format from after this bridge, and in the one from before the proof covered the address.
+  const newer = await signer({ key: 'hermes-key', protocol: 3, signs: (endpoint, challenge) => `rukoo-proof-3:${endpoint}:${challenge}` });
+  const older = await signer({ key: 'hermes-key', protocol: 1, signs: (endpoint, challenge) => `rukoo-proof:${challenge}` });
+  // A newer Rukoo whose proof happens to still match: its protocol says the bridge can't follow it anyway.
+  const newerSameProof = await signer({ key: 'hermes-key', protocol: 3, signs: (endpoint, challenge) => `rukoo-proof:${endpoint}:${challenge}` });
+  // Another key, from today's Rukoo (the real server, which names its protocol) and from one before the header.
+  const otherKey = await fakeRukoo({ key: 'another-key' });
+  const beforeHeader = await signer({ key: 'another-key', protocol: null, signs: (endpoint, challenge) => `rukoo-proof:${endpoint}:${challenge}` });
+  t.after(async () => {
+    await otherKey.close();
+    for (const { server } of [newer, older, newerSameProof, beforeHeader]) if (server.listening) server.close();
+  });
+  // No Rukoo here ever proves the key, so the cache stays empty: like a bridge that has never reached Rukoo.
+  const cache = path.join(tmp('bridge-protocol'), 'tools.json');
+  const start = (urls) => {
+    const child = spawn(python, [path.join(__dirname, '..', 'integrations', 'hermes', 'rukoo_bridge.py')], {
+      env: { ...process.env, RUKOO_KEY: 'hermes-key', RUKOO_URL: urls.join(','), RUKOO_DISCOVER: '0', RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8' },
+      windowsHide: true
+    });
+    t.after(() => child.kill());
+    const replies = [];
+    readJsonLines(child.stdout, (m) => replies.push(m));
+    const ask = async (msg) => {
+      const n = replies.length;
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
+      await waitFor(() => replies.length > n, 15000);
+      return replies[n];
+    };
+    return { child, ask };
+  };
+  const call = async (...urls) => {
+    const b = start(urls);
+    const reply = await b.ask({ id: 1, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+    b.child.stdin.end();
+    assert.equal(reply.result.isError, true);
+    return reply.result.content[0].text;
+  };
+  // What Hermes does when it starts the bridge: the handshake, then the tool list, which has nothing to fall back on.
+  const discover = async (...urls) => {
+    const b = start(urls);
+    await b.ask({ id: 0, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
+    b.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+    const reply = await b.ask({ id: 1, method: 'tools/list' });
+    b.child.stdin.end();
+    assert.equal(reply.result, undefined);
+    assert.equal(reply.error.code, -32603);
+    assert.match(reply.error.message, /^The Rukoo bridge has no tool list yet\. /);
+    return reply.error.message;
+  };
+  const keyMessage = /open on 127\.0\.0\.1, but doesn't have your current API server key\. Ask the user to enter your current API server key/;
+
+  const bridgeBehind = await call(newer.url);
+  assert.match(bridgeBehind, /open on 127\.0\.0\.1, but this Rukoo bridge is older than that Rukoo and can't check its key\./);
+  assert.match(bridgeBehind, /download the rukoo_bridge\.py that goes with their Rukoo.*"Copy Hermes setup".*\/reload-mcp/);
+  assert.doesNotMatch(bridgeBehind, /API server key/);
+  assert.match(await call(newerSameProof.url), /this Rukoo bridge is older than that Rukoo/);
+  const rukooBehind = await call(older.url);
+  assert.match(rukooBehind, /open on 127\.0\.0\.1, but that Rukoo is older than this bridge, which can't check its key\. Ask the user to install the latest Rukoo there\./);
+  assert.doesNotMatch(rukooBehind, /API server key/);
+  // The same protocol, or none named: a proof that doesn't match still means another key.
+  assert.match(await call(otherKey.url), keyMessage);
+  assert.match(await call(beforeHeader.url), keyMessage);
+  // Another version comes first: until the versions match, the bridge can't tell whether the key does.
+  assert.match(await call(otherKey.url, newer.url), /this Rukoo bridge is older than that Rukoo/);
+  // Hermes asks for the tool list before any call. Without a cached list, its error says why, so the version
+  // reaches the user on the first start as well.
+  const firstStart = await discover(newer.url);
+  assert.match(firstStart, /open on 127\.0\.0\.1, but this Rukoo bridge is older than that Rukoo and can't check its key\./);
+  assert.match(firstStart, /"Copy Hermes setup".*\/reload-mcp/);
+  assert.doesNotMatch(firstStart, /API server key/);
+  assert.match(await discover(older.url), /that Rukoo is older than this bridge/);
+  assert.match(await discover(otherKey.url), keyMessage);
+  // A Rukoo that proved the key but didn't send its tools: the error names that device, not a missing Rukoo.
+  const failedList = spawnSync(python, ['-c', [
+    'import json, sys',
+    'sys.path.insert(0, sys.argv[1])',
+    'import rukoo_bridge as b',
+    'b.DEVICES.pick = lambda *a: ("http://100.64.0.4:47800/mcp", "desk-pc")',
+    'def fail(*a, **k): raise OSError("timed out")',
+    'b.post = fail',
+    'print(json.dumps(b.list_tools({"id": 1})))'
+  ].join('\n'), path.join(__dirname, '..', 'integrations', 'hermes')], {
+    encoding: 'utf8',
+    env: { ...process.env, RUKOO_KEY: 'hermes-key', RUKOO_CACHE: cache, PYTHONDONTWRITEBYTECODE: '1' },
+    windowsHide: true
+  });
+  assert.equal(failedList.status, 0, failedList.stderr);
+  assert.equal(JSON.parse(failedList.stdout).error.message, "The Rukoo bridge has no tool list yet. Rukoo Mail on desk-pc didn't send its tool list.");
+  // None of them got the token, and nothing was cached.
+  assert.ok(!fs.existsSync(cache));
+  for (const rukoo of [newer, older, newerSameProof, otherKey, beforeHeader]) assert.deepEqual([...new Set(rukoo.seen)], [null]);
+});
+
 test('hermes bridge: finds online Windows, Linux, Mac and Android devices but skips tagged and shared devices', (t) => {
   const python = findPython();
   if (!python) return t.skip('no Python 3.8+ on PATH');
@@ -1866,9 +2072,9 @@ test('hermes: a run whose stop keeps being refused is never let go of, also not 
     const adapter = new HermesAdapter({ id: 'clark', config: () => ({ name: 'Clark', url: h.url, key: h.key }), timing: { pollEvery: 10, pollMisses: 3, stopRetry: 5 } });
     const result = await adapter.runTurn(fakeTurn(conv(), 'unreachable and locked'));
     assert.match(result.error.detail, /keeps asking it to stop the run/, 'a 401 is not a stop');
-    // Retried, the wait doubling up to ten times the first: still held after many refusals.
-    await new Promise((r) => setTimeout(r, 300));
-    assert.ok(h.state.stopAttempts >= 6, `retried: ${h.state.stopAttempts} attempts`);
+    // Retried, the wait doubling up to ten times the first: still held after many refusals. A fixed 300 ms wait saw
+    // only five tries on a busy machine.
+    await waitFor(() => h.state.stopAttempts >= 6);
     assert.equal(adapter.unstopped.size, 1);
     const before = h.state.stopAttempts;
     await adapter.dispose();
@@ -2181,7 +2387,7 @@ async function withAttachments(agent, adapter) {
     const c = hub.create({ agent, message: null });
     const pdf = hub.stageFile('Quarterly report.pdf', makePdf([['Quarterly report 2026', 'Revenue grew by 12%']]));
     const png = hub.stageFile('photo.png', PNG);
-    hub.send(c.id, { text: 'hello', files: [pdf.id, png.id], emails: emails.map((m) => m.id) });
+    await hub.send(c.id, { text: 'hello', files: [pdf.id, png.id], emails: emails.map((m) => m.id) });
     await waitFor(() => !hub.turns.has(c.id), 15000);
     const copy = (name) => path.join(dir, 'ws', 'files', c.id, c.files.find((f) => f.name === name).file);
     return { c, emails, copy };
