@@ -352,9 +352,18 @@ class Categories(
 
     // ---- which category an email is in ----
 
-    /** The key an email's records are stored under: the account's address and the email's Message-ID. */
+    /**
+     * The key an email's records are stored under: the account's address and the email's Message-ID. A Message-ID is
+     * the sender's to choose, also its length: a very long one is kept as its hash, so no email can make a record too
+     * large to sync.
+     */
     fun key(acc: Account, m: MessageSummary): String {
-        val id = m.messageId?.takeIf { it.isNotEmpty() } ?: "h:" + sha256Hex("${lower(m.from.address)}\n${m.date}\n${m.subject}")
+        val messageId = m.messageId
+        val id = when {
+            messageId.isNullOrEmpty() -> "h:" + sha256Hex("${lower(m.from.address)}\n${m.date}\n${m.subject}")
+            messageId.length > MESSAGE_ID_MAX -> "m:" + sha256Hex(messageId)
+            else -> messageId
+        }
         return "${lower(acc.email)}\n$id"
     }
 
@@ -674,6 +683,7 @@ class Categories(
 
     companion object {
         const val MAX_CATEGORIES = 12
+        private const val MESSAGE_ID_MAX = 256
         const val SORT_AFTER = 1500L
         private const val SETTING = "categories"
         private const val JEV_AT_ONCE = 3

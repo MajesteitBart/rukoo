@@ -200,6 +200,19 @@ class CategoriesTest {
     }
 
     @Test
+    fun `a very long Message-ID is kept as its hash`() {
+        val s = setup(inbox())
+        val long = "<${"x".repeat(20000)}@evil.example>"
+        val key = s.cats.key(s.acc, s.mail.inbox[0].copy(messageId = long))
+        assertTrue(key, Regex("me@work\\.example\nm:[0-9a-f]{64}").matches(key))
+        assertEquals("me@work.example\n<short@x>", s.cats.key(s.acc, s.mail.inbox[0].copy(messageId = "<short@x>")))
+        // 256 characters is still a Message-ID; one more becomes its hash.
+        val edge = "<" + "y".repeat(254) + ">"
+        assertEquals("me@work.example\n$edge", s.cats.key(s.acc, s.mail.inbox[0].copy(messageId = edge)))
+        assertTrue(s.cats.key(s.acc, s.mail.inbox[0].copy(messageId = "$edge!")).contains("\nm:"))
+    }
+
+    @Test
     fun `sorting stores the rules result once, first write wins`() = runBlocking {
         val s = setup(inbox())
         s.cats.setEnabled(true)
