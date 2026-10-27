@@ -250,25 +250,58 @@ test('Jev sorts the uncertain mail, and an unsure answer goes to the unsure cate
   assert.equal(get(3).source, 'rules');
 });
 
-test('a refused Jev key stops Jev until a new key, and busy waits', async (t) => {
+test('a refused Jev key stops Jev until a new key, and busy waits, with the uncertain mail kept for Jev', async (t) => {
   let fail = 'key';
+  let calls = 0;
   const fake = {
     MODEL: 'jev-test',
-    classify: async () => {
-      throw Object.assign(new Error(fail), { code: fail });
+    classify: async (key, m, list) => {
+      calls++;
+      if (fail) throw Object.assign(new Error(fail), { code: fail });
+      return { category: list[2].id, confidence: 0.9, model: 'jev-test' };
     }
   };
-  const { cats } = setup(t, inbox(), { jevImpl: fake });
+  const msgs = inbox();
+  const { cats, acc, account } = setup(t, msgs, { jevImpl: fake });
+  const stored = (uid) => account.get('classification', cats.key(acc, msgs.find((m) => m.uid === uid)));
   cats.setEnabled(true);
   cats.setJev({ key: 'BAD', on: true });
   await cats.sort();
   assert.equal(cats.state().jev.error, 'key');
-  cats.setJev({ key: 'NEW' });
-  assert.equal(cats.state().jev.error, null);
+  assert.equal(stored(1), undefined, 'the uncertain email waits for Jev');
+  assert.equal(stored(3).source, 'rules', 'a strong rule is stored as always');
+  const shown = cats.of(acc, msgs[0]);
+  assert.equal(shown, 'needs-you', 'the rules show a category meanwhile');
+
+  // No more calls with the refused key, however often the inbox is sorted.
+  const before = calls;
+  await cats.sort();
+  await cats.sort();
+  assert.equal(calls, before);
+  assert.equal(cats.state().jev.error, 'key');
+
+  // Busy: no calls during the wait, and the email still waits.
   fail = 'busy';
+  cats.setJev({ key: 'NEW' });
   await cats.sort();
   assert.equal(cats.state().jev.error, 'busy');
   assert.ok(cats.jevBusyUntil > Date.now());
+  const during = calls;
+  await cats.sort();
+  assert.equal(calls, during);
+  assert.equal(stored(1), undefined);
+
+  // After the wait, Jev sorts it.
+  fail = null;
+  cats.jevBusyUntil = 0;
+  await cats.sort();
+  assert.equal(stored(1).source, 'jev');
+  assert.equal(cats.state().jev.error, null);
+
+  // Jev turned off: the rules store what is left.
+  cats.setJev({ on: false });
+  await cats.sortAgain();
+  assert.equal(stored(1).source, 'rules');
 });
 
 test('categories can be added, renamed, reordered and deleted, within limits', (t) => {

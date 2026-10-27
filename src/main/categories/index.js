@@ -285,9 +285,17 @@ class Categories extends EventEmitter {
     return out.sort((a, b) => b.m.date - a.m.date);
   }
 
+  // Whether this computer sorts with Jev: on, with a key. Mail Jev should sort waits for it, also while TypeSafe
+  // refuses the key or is busy; the rules show a category for it meanwhile (of()), without storing one.
+  jevWanted() {
+    const j = this.local.jev;
+    return Boolean(j && j.on && j.key);
+  }
+
+  // The key to call Jev with now: none after TypeSafe refused it (until a new one) or while TypeSafe is busy.
   jevKey() {
     const j = this.local.jev;
-    if (!j || !j.on || !j.key) return null;
+    if (!this.jevWanted() || j.error === 'key' || Date.now() < this.jevBusyUntil) return null;
     try {
       return this.secrets.decrypt(j.key);
     } catch (_) {
@@ -311,14 +319,16 @@ class Categories extends EventEmitter {
     const ids = new Set(list.map((c) => c.id));
     const s = this.settings();
     const unsure = ids.has(s.unsure) ? s.unsure : list[0].id;
-    const key = Date.now() >= this.jevBusyUntil ? this.jevKey() : null;
+    const wanted = this.jevWanted();
+    const key = this.jevKey();
     const store = (k, value) => (again ? this.account.put('classification', k, value) : this.account.put('classification', k, value, { ifAbsent: true }));
     const forJev = [];
     let sorted = 0;
     for (const item of this.unsorted({ again })) {
       const rule = this.byRules(item.acc, item.m, ids, unsure);
-      if (key && rule.strength !== 'strong') forJev.push(item);
-      else if (store(item.key, { category: rule.category, source: 'rules', at: Date.now() }) !== false) sorted++;
+      if (rule.strength === 'strong' || !wanted) {
+        if (store(item.key, { category: rule.category, source: 'rules', at: Date.now() }) !== false) sorted++;
+      } else if (key) forJev.push(item);
     }
     let stop = null;
     const next = async () => {
@@ -335,9 +345,11 @@ class Categories extends EventEmitter {
         }
       }
     };
+    const asked = forJev.length;
     await Promise.all(Array.from({ length: JEV_AT_ONCE }, next));
     if (stop) this.jevFailed(stop);
-    else if (this.local.jev && this.local.jev.error && forJev.length === 0) this.setJevError(null);
+    // Jev answered again after being busy or out of reach. A refused key only clears with a new key (setJev).
+    else if (asked && this.local.jev && (this.local.jev.error === 'busy' || this.local.jev.error === 'network')) this.setJevError(null);
     if (sorted) this.changed();
     return sorted;
   }
@@ -347,8 +359,10 @@ class Categories extends EventEmitter {
   jevFailed(err) {
     if (err && err.code === 'key') this.setJevError('key');
     else {
-      this.jevBusyUntil = Date.now() + 5 * 60 * 1000;
+      const wait = 5 * 60 * 1000;
+      this.jevBusyUntil = Date.now() + wait;
       this.setJevError(err && err.code === 'busy' ? 'busy' : 'network');
+      this.soon(wait + 1000);
     }
   }
 
