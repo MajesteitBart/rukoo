@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const k = require('../src/main/account/crypto');
-const { AccountService } = require('../src/main/account');
+const { AccountService, PULL_PAGES } = require('../src/main/account');
 const { AccountError, serverUrl } = require('../src/main/account/client');
 const { startAccountServer } = require('./fixtures/account-server');
 const vectors = require('./fixtures/account-vectors.json');
@@ -684,6 +684,29 @@ test('records taken before a later page failed are announced', async (t) => {
   laptop.http = http;
   await laptop.sync();
   assert.equal(laptop.list('category').length, 5);
+});
+
+test("a server that always has more can't keep a pull going", async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await desk.signUp({ email: 'endless@example.com', password: PASSWORD });
+  await desk.sync();
+  // A page of one more tombstone each time, forever; then more records than asked for.
+  const http = desk.http;
+  let pages = 0;
+  let size = 1;
+  desk.http = (server, method, route, opts) => {
+    if (method !== 'GET' || !route.startsWith('/v1/records')) return http(server, method, route, opts);
+    const since = Number(new URL(route, 'http://x').searchParams.get('since'));
+    pages += 1;
+    const records = Array.from({ length: size }, (_, i) => ({ id: `x${pages}-${i}`, seq: since + 1 + i, data: null }));
+    // Not quite forever, so that a device without a limit fails the test rather than hang it.
+    return Promise.resolve({ records, seq: 1e9, more: pages < 2 * PULL_PAGES });
+  };
+  await desk.pull();
+  assert.equal(pages, PULL_PAGES);
+  size = 1001;
+  await assert.rejects(desk.pull(), { code: 'server' });
 });
 
 test('the export holds every record, readable', async (t) => {

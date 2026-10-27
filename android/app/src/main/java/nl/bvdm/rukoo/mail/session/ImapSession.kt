@@ -362,7 +362,8 @@ class ImapSession(
         if (uids.isEmpty()) return emptyMap()
         val fields = MailSignals.HEADERS.joinToString(" ") { it.uppercase() }
         val out = HashMap<Long, MailSignals>()
-        for (fr in p.exec("UID FETCH ${uidSet(uids)} (UID BODY.PEEK[HEADER.FIELDS ($fields)])").filterIsInstance<FetchResponse>()) {
+        // The first 8 KiB of them: anyone can send mail with huge headers, and a batch holds up to 300 messages.
+        for (fr in p.exec("UID FETCH ${uidSet(uids)} (UID BODY.PEEK[HEADER.FIELDS ($fields)]<0.$SIGNAL_BYTES>)").filterIsInstance<FetchResponse>()) {
             val uid = fr.getItem(UID::class.java)?.uid ?: continue
             val bytes = fr.getItem(BODY::class.java)?.byteArray?.newBytes ?: ByteArray(0)
             out[uid] = MailSignals.parse(String(bytes, Charsets.UTF_8))
@@ -557,6 +558,7 @@ class ImapSession(
 
     companion object {
         const val PREVIEW_BYTES = 4096
+        const val SIGNAL_BYTES = 8192
 
         /** Hosts whose SMTP service already files a copy in the Sent folder (imap.js:20). */
         val AUTO_SENT_HOSTS = Regex("(gmail\\.com|googlemail\\.com|office365\\.com|outlook\\.com)$", RegexOption.IGNORE_CASE)

@@ -96,8 +96,11 @@ class ImapCategoriesTest {
                             when {
                                 command.contains("HEADER.FIELDS") -> {
                                     val section = command.substringAfter("BODY.PEEK[").substringBefore("]")
-                                    val body = m.headers + "\r\n"
-                                    sb.append("* ${i + 1} FETCH (UID ${m.uid} BODY[$section] {${body.length}}\r\n$body)\r\n")
+                                    // A partial fetch (<0.n>) gets the first n bytes, as a server sends them.
+                                    val most = Regex("\\]<0\\.(\\d+)>").find(command)?.groupValues?.get(1)?.toInt()
+                                    val body = (m.headers + "\r\n").let { if (most != null) it.take(most) else it }
+                                    val origin = if (most != null) "<0>" else ""
+                                    sb.append("* ${i + 1} FETCH (UID ${m.uid} BODY[$section]$origin {${body.length}}\r\n$body)\r\n")
                                 }
                                 command.contains("ENVELOPE") -> sb.append(
                                     "* ${i + 1} FETCH (UID ${m.uid} RFC822.SIZE 105 INTERNALDATE \"01-Jan-2026 10:00:00 +0000\" " +
@@ -181,6 +184,20 @@ class ImapCategoriesTest {
         assertFalse(server.commands.any { it.startsWith("UID SEARCH") })
         assertFalse("every message's kind is known now", server.commands.any { it.contains("HEADER.FIELDS") })
         assertEquals("promotions", again.messages.first { it.uid == 3L }.gmailTab)
+    }
+
+    @Test
+    fun `huge headers are read only as far as their first 8 KiB`() = runBlocking {
+        val server = FakeImap(
+            listOf(Msg(7, "huge", "Precedence: bulk\r\nX-Mailer: ${"x".repeat(100_000)}\r\nList-Id: <later@example.com>")),
+            "IMAP4rev1",
+            emptyMap(),
+        ).also { servers += it }
+        val res = session(server).syncFolder("INBOX", 10, emptyMap(), "9", signals = true)
+        val headers = server.commands.single { it.contains("HEADER.FIELDS") }
+        assertTrue(headers, headers.endsWith("]<0.${ImapSession.SIGNAL_BYTES}>)"))
+        // What came after the cut isn't known; what came before is.
+        assertEquals(MailSignals(bulk = true), res.messages.single().signals)
     }
 
     @Test

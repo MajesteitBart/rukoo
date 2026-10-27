@@ -182,7 +182,7 @@ Records changed after `since`, oldest first, at most `limit` (default and maximu
 
 `seq` is the newest change on the server. Keep asking with the last record's `seq` while `more` is true.
 
-A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`.
+A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`. One pull takes at most 500 pages or 256 MiB of `data`, and a page with more records than the device asked for is refused; what is left comes with the next sync, so a server can't keep a device busy.
 
 ### `POST /v1/records`
 

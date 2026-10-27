@@ -12,9 +12,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretCipher
 import okhttp3.OkHttpClient
@@ -740,6 +743,42 @@ class AccountServiceTest {
         failPage.set(0)
         laptop.sync()
         assertEquals(5, laptop.list("category").size)
+    }
+
+    @Test
+    fun `a server that always has more can't keep a pull going`() = runBlocking {
+        val srv = server()
+        val pages = AtomicInteger()
+        // 0: the real server; 1: a page of one more tombstone each time, forever; 2: more records than asked for.
+        val mode = AtomicInteger()
+        val base = OkHttpAccountHttp(okhttp)
+        val http = AccountHttp { server, method, path, body, token ->
+            if (mode.get() == 0 || method != "GET" || !path.startsWith("/v1/records")) return@AccountHttp base.request(server, method, path, body, token)
+            val since = path.substringAfter("since=").substringBefore('&').toLong()
+            val n = pages.incrementAndGet()
+            buildJsonObject {
+                putJsonArray("records") {
+                    repeat(if (mode.get() == 1) 1 else 1001) { i ->
+                        addJsonObject {
+                            put("id", "x$n-$i")
+                            put("seq", since + 1 + i)
+                            put("data", JsonNull)
+                        }
+                    }
+                }
+                put("seq", 1_000_000_000L)
+                // Not quite forever, so that a phone without a limit fails the test rather than hang it.
+                put("more", n < 2 * AccountService.PULL_PAGES)
+            }
+        }
+        val desk = device(srv, http = http)
+        desk.signUp("endless@example.com", PASSWORD)
+        desk.sync()
+        mode.set(1)
+        desk.pull()
+        assertEquals(AccountService.PULL_PAGES, pages.get())
+        mode.set(2)
+        rejects("server") { desk.pull() }
     }
 
     @Test

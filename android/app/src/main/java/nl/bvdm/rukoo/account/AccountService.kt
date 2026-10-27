@@ -672,8 +672,13 @@ class AccountService(
     private suspend fun pullPages(session: Session?, touched: MutableSet<String>) {
         var restarted = false
         var more = true
+        var pages = 0
+        var data = 0L
         while (more) {
             if (session == null || !synchronized(lock) { this.session === session }) return
+            // A server that keeps answering more can't keep the phone busy: what is left comes with the next sync.
+            if (pages >= PULL_PAGES || data >= PULL_DATA) return
+            pages++
             val since = synchronized(lock) { state.cursor }
             val res = call("GET", "/v1/records?since=$since&limit=$PULL_LIMIT", auth = true, session = session) as? JsonObject
             more = synchronized(lock) {
@@ -690,6 +695,7 @@ class AccountService(
                 }
                 // A page comes after since, in order, and not past the server's newest change; anything else is refused
                 // whole, so a false sequence number can't move the cursor past records this phone hasn't seen.
+                if (records.size > PULL_LIMIT) throw fail("server")
                 var last = since
                 for (r in records) {
                     val seq = safeInteger((r as? JsonObject)?.get("seq"))
@@ -701,8 +707,9 @@ class AccountService(
                     val o = r as JsonObject
                     val id = (o["id"] as? JsonPrimitive)?.content ?: continue
                     val seq = safeInteger(o["seq"]) ?: continue
-                    val data = (o["data"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-                    applyRemote(session, id, seq, data)?.let { touched += it }
+                    val sealed = (o["data"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    data += sealed?.length ?: 0
+                    applyRemote(session, id, seq, sealed)?.let { touched += it }
                     if (seq > cursor) cursor = seq
                 }
                 state = state.copy(cursor = cursor)
@@ -845,6 +852,11 @@ class AccountService(
         const val SAVE_AFTER = 1000L
         private const val PULL_LIMIT = 1000
         private const val PUSH_BATCH = 500
+
+        // The most one pull takes: an account's records and tombstones a page of 1000 at a time, or 256 MiB of sealed
+        // records (as base64url text), well over what an account may hold (server/PROTOCOL.md).
+        internal const val PULL_PAGES = 500
+        private const val PULL_DATA = 256L * 1024 * 1024
 
         // The most a record may take on the server, once sealed (server/PROTOCOL.md).
         private const val RECORD_BYTES = 16384

@@ -22,6 +22,10 @@ const PUSH_AFTER = 2000;
 const SAVE_AFTER = 1000;
 const PULL_LIMIT = 1000;
 const PUSH_BATCH = 500;
+// The most one pull takes: an account's records and tombstones a page of 1000 at a time, or 256 MiB of sealed records
+// (as base64url text), well over what an account may hold (server/PROTOCOL.md).
+const PULL_PAGES = 500;
+const PULL_DATA = 256 * 1024 * 1024;
 // The most a record may take on the server, once sealed (server/PROTOCOL.md).
 const RECORD_BYTES = 16384;
 // Collections whose records are decided once, by the first device to write one (server/PROTOCOL.md, Collections).
@@ -543,8 +547,13 @@ class AccountService extends EventEmitter {
 
   async pullPages(session, touched) {
     let restarted = false;
+    let pages = 0;
+    let data = 0;
     for (;;) {
       if (!session || this.session !== session) return;
+      // A server that keeps answering more can't keep this device busy: what is left comes with the next sync.
+      if (pages >= PULL_PAGES || data >= PULL_DATA) return;
+      pages += 1;
       const since = Number(this.state.cursor) || 0;
       const res = await this.call('GET', `/v1/records?since=${since}&limit=${PULL_LIMIT}`, undefined, { auth: true, session });
       if (this.session !== session) return;
@@ -560,6 +569,7 @@ class AccountService extends EventEmitter {
       }
       // A page comes after since, in order, and not past the server's newest change; anything else is refused whole,
       // so a false sequence number can't move the cursor past records this device hasn't seen.
+      if (records.length > PULL_LIMIT) throw fail('server');
       let last = since;
       for (const r of records) {
         const seq = Number(r && r.seq);
@@ -567,6 +577,7 @@ class AccountService extends EventEmitter {
         last = seq;
       }
       for (const r of records) {
+        if (typeof r.data === 'string') data += r.data.length;
         const c = this.applyRemote(r);
         if (c) touched.add(c);
         if (Number(r.seq) > this.state.cursor) this.state.cursor = Number(r.seq);
@@ -677,4 +688,4 @@ class AccountService extends EventEmitter {
   }
 }
 
-module.exports = { AccountService, MIN_PASSWORD };
+module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES };
