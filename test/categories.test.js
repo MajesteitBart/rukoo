@@ -439,6 +439,34 @@ test('sorting again finishes the emails Jev was too busy for, once it answers', 
   assert.equal(cats.redo.size, 0);
 });
 
+test('a re-sort Jev was too busy for is finished after a restart', async (t) => {
+  let busy = true;
+  const fake = {
+    MODEL: 'jev-test',
+    classify: async () => {
+      if (busy) throw Object.assign(new Error('busy'), { code: 'busy' });
+      return { category: 'money', confidence: 0.9, model: 'jev-test' };
+    }
+  };
+  const msgs = inbox();
+  const { cats, acc, account, engine } = setup(t, msgs, { jevImpl: fake });
+  const stored = (uid) => account.get('classification', cats.key(acc, msgs.find((m) => m.uid === uid)));
+  cats.setEnabled(true);
+  await cats.sort();
+  cats.setJev({ key: 'KEY', on: true });
+  await cats.sortAgain();
+  assert.ok(cats.redo.size > 0);
+  cats.close();
+  // The app starts again: a new Categories on the same profile, with TypeSafe answering.
+  busy = false;
+  const again = new Categories({ engine, account, secrets, dataDir: cats.dataDir, jev: fake }).init();
+  t.after(() => again.close());
+  assert.equal(again.redo.size, cats.redo.size);
+  await again.sort();
+  assert.equal(stored(1).source, 'jev');
+  assert.equal(again.redo.size, 0);
+});
+
 test('sorting again while a sort runs follows it instead of getting lost', async (t) => {
   let release;
   let first = true;

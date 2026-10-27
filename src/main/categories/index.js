@@ -60,6 +60,7 @@ class Categories extends EventEmitter {
 
   init() {
     this.local = readJson(this.file(), {});
+    this.redo = new Set(Array.isArray(this.local.redo) ? this.local.redo.filter((k) => typeof k === 'string') : []);
     this.engine.categoryOf = (acc, m) => this.of(acc, m);
     this.account.on('records', ({ collections }) => {
       if (collections.some((c) => ['category', 'classification', 'override', 'sender', 'setting'].includes(c))) this.changed();
@@ -68,7 +69,10 @@ class Categories extends EventEmitter {
     return this;
   }
 
+  // What stays on this computer: Jev's settings, and the emails a re-sort still has to do (redo), so a restart
+  // doesn't forget them.
   saveLocal() {
+    this.local.redo = [...this.redo];
     fs.mkdirSync(this.dataDir, { recursive: true });
     fs.writeFileSync(this.file(), JSON.stringify(this.local));
   }
@@ -397,6 +401,7 @@ class Categories extends EventEmitter {
     }
     // Mail waits for Jev while TypeSafe is busy: make sure a sort follows the wait.
     if (wanted && !key && Date.now() < this.jevBusyUntil && !this.retryTimer) this.retryAfter(this.jevBusyUntil - Date.now() + 1000);
+    if (this.redo.size || (this.local.redo && this.local.redo.length)) this.saveLocal();
     if (sorted) this.changed();
     return sorted;
   }
