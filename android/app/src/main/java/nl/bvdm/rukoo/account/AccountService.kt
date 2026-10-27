@@ -250,7 +250,14 @@ class AccountService(
 
     /** The password's keys for the server this phone uses; its address is part of authKey (server/PROTOCOL.md, Keys). */
     private suspend fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf) =
-        withContext(Dispatchers.Default) { AccountKeys.passwordKeys(password, salt, kdf, server) }
+        withContext(Dispatchers.Default) {
+            try {
+                AccountKeys.passwordKeys(password, salt, kdf, server)
+            } catch (e: OutOfMemoryError) {
+                // The hash's memory is one block that is freed again; the app carries on.
+                throw fail("heavy_kdf")
+            }
+        }
 
     private fun recoveryKeys(key: ByteArray) = AccountKeys.recoveryKeys(key, server)
 
@@ -296,6 +303,7 @@ class AccountService(
         } catch (e: IllegalArgumentException) {
             throw fail("weak_kdf")
         }
+        if (!AccountKeys.affordable(kdf)) throw fail("heavy_kdf")
         val salt = try {
             AccountKeys.unb64u((pre?.get("salt") as? JsonPrimitive)?.takeIf { it.isString }?.content, 16)
         } catch (e: IllegalArgumentException) {

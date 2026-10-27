@@ -157,6 +157,23 @@ class AccountKeysTest {
     }
 
     @Test
+    fun `a phone runs at most 256 MiB, half of its memory and 1 GiB of passes`() {
+        val gib = 1024L * 1024 * 1024
+        assertTrue(AccountKeys.affordable(AccountKeys.DEFAULT_KDF, heap = 4 * gib))
+        // Allowed by the protocol, too much for a phone.
+        assertFalse(AccountKeys.affordable(Kdf("argon2id", 1048576, 10, 4), heap = 4 * gib))
+        assertFalse(AccountKeys.affordable(Kdf("argon2id", 524288, 2, 1), heap = 4 * gib))
+        assertTrue(AccountKeys.affordable(Kdf("argon2id", 262144, 4, 1), heap = 4 * gib))
+        assertFalse("m × t over 1 GiB", AccountKeys.affordable(Kdf("argon2id", 262144, 5, 1), heap = 4 * gib))
+        assertTrue(AccountKeys.affordable(Kdf("argon2id", 65536, 10, 4), heap = 4 * gib))
+        // Half of a 256 MiB heap is 128 MiB.
+        assertTrue(AccountKeys.affordable(Kdf("argon2id", 131072, 3, 1), heap = gib / 4))
+        assertFalse(AccountKeys.affordable(Kdf("argon2id", 131073, 3, 1), heap = gib / 4))
+        // Rukoo's own settings, even on a small heap.
+        assertTrue(AccountKeys.affordable(AccountKeys.DEFAULT_KDF, heap = gib / 16))
+    }
+
+    @Test
     fun `only https servers, or http on this machine and the emulator's host in debug builds`() {
         val s = AccountServers
         assertEquals("https://sync.example.com", s.serverUrl("https://sync.example.com/", false))

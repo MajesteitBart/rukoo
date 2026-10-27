@@ -20,6 +20,7 @@
     <string name="account_errors_weak_password">Use a password of at least 12 characters.</string>
     <string name="account_errors_recovery_key">That isn\'t a recovery key. A recovery key has 32 letters and digits in groups of four.</string>
     <string name="account_errors_weak_kdf">The server asked for weaker password protection than Rukoo allows, so Rukoo didn\'t send your password\'s key.</string>
+    <string name="account_errors_heavy_kdf">This phone can\'t spare the memory for the password protection this server asks for, so Rukoo stopped.</string>
     <string name="account_errors_no_server">Enter the address of a Rukoo account server, starting with https://.</string>
     <string name="account_errors_protocol">This isn\'t a Rukoo account server, or it needs a newer version of Rukoo.</string>
     <string name="account_errors_signed_in">Sign out of your Rukoo account first.</string>

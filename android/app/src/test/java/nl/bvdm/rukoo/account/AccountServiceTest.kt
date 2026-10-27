@@ -556,6 +556,25 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a server that asks for more work than a phone can spare is refused before hashing`() = runBlocking {
+        // Both within the protocol's limits, which a desktop can afford: 1 GiB and ten passes, and 256 MiB (which the
+        // test's heap holds) with five passes, which would take a phone a long while.
+        for ((m, t) in listOf(1048576 to 10, 262144 to 5)) {
+            val srv = server(kdf = buildJsonObject {
+                put("alg", "argon2id")
+                put("m", m)
+                put("t", t)
+                put("p", 4)
+            })
+            val desk = device(srv)
+            val started = System.nanoTime()
+            rejects("heavy_kdf") { desk.signIn("f@example.com", PASSWORD) }
+            assertTrue("refused without running the hash", System.nanoTime() - started < 2_000_000_000L)
+            assertFalse("no key for the password went out", srv.calls.any { it.route == "POST /v1/login" })
+        }
+    }
+
+    @Test
     fun `invite-only and closed servers say so`() = runBlocking {
         val invite = server(signups = "invite", invites = listOf("WELCOME"))
         val a = device(invite)

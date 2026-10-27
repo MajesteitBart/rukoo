@@ -54,6 +54,10 @@ object AccountKeys {
     private const val MAX_M = 1048576
     private const val MAX_T = 10
     private const val MAX_P = 4
+    // What a phone spends on one password hash at most. The limits above are the protocol's, which a desktop can
+    // afford; a server asking for 1 GiB and ten passes would run the app out of memory or stall it for minutes.
+    private const val PHONE_M = 262144
+    private const val PHONE_WORK = 1048576L
     private const val VERSION: Byte = 1
     private const val NONCE = 12
     private const val TAG = 16
@@ -101,6 +105,15 @@ object AccountKeys {
     }
 
     fun checkKdf(kdf: Kdf): Kdf = checkKdf(kdf.toJson())
+
+    /**
+     * Whether this phone can run [k]: at most 256 MiB and half of the app's [heap], and m × t at most 1 GiB of passes.
+     * Rukoo's own settings always fit.
+     */
+    fun affordable(k: Kdf, heap: Long = Runtime.getRuntime().maxMemory()): Boolean {
+        val memory = maxOf(DEFAULT_KDF.m.toLong(), minOf(PHONE_M.toLong(), heap / 2 / 1024))
+        return k.m <= memory && k.m.toLong() * k.t <= PHONE_WORK
+    }
 
     /** Argon2id (version 0x13) of the password, normalized to NFC, with the account's salt: 32 bytes. */
     fun masterKey(password: String, salt: ByteArray, kdf: Kdf): ByteArray {

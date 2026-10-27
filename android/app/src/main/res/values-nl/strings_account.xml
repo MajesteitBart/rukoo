@@ -18,6 +18,7 @@
     <string name="account_errors_weak_password">Gebruik een wachtwoord van minstens 12 tekens.</string>
     <string name="account_errors_recovery_key">Dat is geen herstelsleutel. Een herstelsleutel heeft 32 letters en cijfers in groepjes van vier.</string>
     <string name="account_errors_weak_kdf">De server vroeg om zwakkere wachtwoordbeveiliging dan Rukoo toestaat. Daarom heeft Rukoo de sleutel van je wachtwoord niet verstuurd.</string>
+    <string name="account_errors_heavy_kdf">Deze telefoon heeft niet genoeg geheugen vrij voor de wachtwoordbeveiliging die deze server vraagt. Daarom is Rukoo gestopt.</string>
     <string name="account_errors_no_server">Vul het adres van een Rukoo-accountserver in, beginnend met https://.</string>
     <string name="account_errors_protocol">Dit is geen Rukoo-accountserver, of hij heeft een nieuwere versie van Rukoo nodig.</string>
     <string name="account_errors_signed_in">Log eerst uit bij je Rukoo-account.</string>

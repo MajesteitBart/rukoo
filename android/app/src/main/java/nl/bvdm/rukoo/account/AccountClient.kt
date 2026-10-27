@@ -31,6 +31,8 @@ class AccountError(val code: String, val status: Int = 0, message: String? = nul
             "invalid", "unauthorized", "locked", "rate_limited", "exists", "signups_closed", "invite_required", "quota", "too_large",
             "not_configured", "network", "server", "invalid_email", "weak_password", "recovery_key", "weak_kdf", "no_server", "protocol",
             "signed_in", "signed_out", "wrong_password",
+            // Only the phone has a limit on how heavy a password hash may be.
+            "heavy_kdf",
         )
 
         fun known(code: String?): String = if (code != null && code in CODES) code else "server"

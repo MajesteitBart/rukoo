@@ -89,6 +89,7 @@ fun accountErrorRes(code: String?): Int = when (AccountError.known(code)) {
     "weak_password" -> R.string.account_errors_weak_password
     "recovery_key" -> R.string.account_errors_recovery_key
     "weak_kdf" -> R.string.account_errors_weak_kdf
+    "heavy_kdf" -> R.string.account_errors_heavy_kdf
     "no_server" -> R.string.account_errors_no_server
     "protocol" -> R.string.account_errors_protocol
     "signed_in" -> R.string.account_errors_signed_in
