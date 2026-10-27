@@ -186,6 +186,9 @@ class Categories(
             account.status.collect { refresh() }
         }
         this.scope.launch { mail.changes.collect { soon() } }
+        // A sort at startup: a re-sort left from before a restart, or mail still waiting for Jev, goes on without
+        // waiting for new mail.
+        soon()
     }
 
     /** Under [lock]. */

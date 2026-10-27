@@ -3,7 +3,6 @@ package nl.bvdm.rukoo.categories
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
@@ -37,8 +36,9 @@ class EngineCategoryMail(private val engine: MailEngine, scope: CoroutineScope) 
 
     override fun writtenTo(): Set<String> = written
 
-    // Every change to the inbox, as desktop sorts after each 'updated' of its engine.
-    override val changes: Flow<Unit> = engine.messages(MailView.AllInboxes).drop(1).map { }
+    // The inbox as it is when the categories start, and every change after, as desktop sorts after each 'updated' of
+    // its engine. The first one counts too: a cache loaded before the categories started never changes for them.
+    override val changes: Flow<Unit> = engine.messages(MailView.AllInboxes).map { }
 }
 
 /** The presets' texts from the app's resources, so they follow the language. */

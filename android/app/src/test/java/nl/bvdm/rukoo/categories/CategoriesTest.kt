@@ -8,6 +8,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
@@ -511,6 +512,42 @@ class CategoriesTest {
         assertEquals("jev", s.stored(one)?.get("source")?.jsonPrimitive?.content)
         assertTrue(again.redo.isEmpty())
         assertFalse("the finished re-sort is gone from the file too", java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
+    }
+
+    @Test
+    fun `after a restart the left-over re-sort runs without any mail change`() = runBlocking {
+        var busy = true
+        val fake = FakeJev { _, _, _ ->
+            if (busy) throw JevError("busy")
+            JevAnswer("money", 0.9, "jev-test")
+        }
+        val s = setup(inbox(), fake)
+        val one = s.mail.inbox[0]
+        s.cats.setEnabled(true)
+        s.cats.sort()
+        s.cats.setJev(on = true, key = "KEY")
+        s.cats.sortAgain()
+        assertTrue(s.cats.redo.isNotEmpty())
+        s.cats.close()
+        // The app starts again with its cache already loaded; the mail doesn't change.
+        busy = false
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val again = Categories(s.account, s.mail, PlainSecrets, s.dir, fake, EnglishPresets, scope, sortAfterMs = 20)
+        closers += { again.close() }
+        withTimeout(10_000) {
+            while (s.stored(one)?.get("source")?.jsonPrimitive?.content != "jev") delay(20)
+        }
+        assertTrue(again.redo.isEmpty())
+    }
+
+    @Test
+    fun `the engine's inbox counts as a change the first time too`() = runBlocking {
+        val engine = nl.bvdm.rukoo.mail.demo.PreviewMailEngine()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        // Loaded before the categories look at it; nothing changes afterwards.
+        engine.listMessages(nl.bvdm.rukoo.mail.model.MailView.AllInboxes)
+        val mail = EngineCategoryMail(engine, scope)
+        withTimeout(10_000) { mail.changes.first() }
     }
 
     @Test
