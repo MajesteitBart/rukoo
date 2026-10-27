@@ -94,6 +94,12 @@ export const icons = {
   booking: p('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
   // ---- /cal:B1 icons ----
   // ---- cal:B2 icons ----
+  // Duplicate an event: two sheets.
+  copy: p('<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/>'),
+  // A time zone, such as a booking guest's.
+  globe: p('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.5 5.2 3.5 8.5s-1.2 6.1-3.5 8.5c-2.3-2.4-3.5-5.2-3.5-8.5s1.2-6.1 3.5-8.5z"/>'),
+  // The conflict line: something overlaps.
+  warning: p('<path d="M10.3 4.6 3.4 16.8a2 2 0 0 0 1.7 3h13.8a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 16.8h.01"/>'),
   // ---- /cal:B2 icons ----
   // ---- cal:B3 icons ----
   // ---- /cal:B3 icons ----

@@ -1052,6 +1052,94 @@
     "description": "Chat transcript tool chip while the agent's own tool runs: image analysis. Present tense; the done form is agent.tools.generic.vision."
   },
   // ---- cal:B4 ----
+  "agent.tools.list_events": {
+    "message": "Checked your calendar",
+    "description": "Chat transcript tool chip: the agent read the events in your calendar (list_events). src/renderer/agent/panel.js (toolProps)."
+  },
+  "agent.tools.find_free_time": {
+    "message": "Looked for free time",
+    "description": "Chat transcript tool chip: the agent looked for open time in your calendars (find_free_time)."
+  },
+  "agent.tools.create_event": {
+    "message": "Proposed an event",
+    "description": "Chat transcript tool chip: the agent asked Rukoo to add an event to your calendar (create_event); Rukoo asks you first."
+  },
+  "agent.tools.get_booking_link": {
+    "message": "Got your booking link",
+    "description": "Chat transcript tool chip: the agent read the link to your booking page (get_booking_link)."
+  },
+  "agent.tools.running.list_events": {
+    "message": "Checking your calendar...",
+    "description": "Chat transcript tool chip while it runs: the agent reads your calendar. Present tense; the done form is agent.tools.list_events."
+  },
+  "agent.tools.running.find_free_time": {
+    "message": "Looking for free time...",
+    "description": "Chat transcript tool chip while it runs: the agent looks for open time in your calendars. Present tense; the done form is agent.tools.find_free_time."
+  },
+  "agent.tools.running.create_event": {
+    "message": "Proposing an event...",
+    "description": "Chat transcript tool chip while it runs: the agent asks Rukoo to add an event. Present tense; the done form is agent.tools.create_event."
+  },
+  "agent.tools.running.get_booking_link": {
+    "message": "Getting your booking link...",
+    "description": "Chat transcript tool chip while it runs: the agent reads the link to your booking page. Present tense; the done form is agent.tools.get_booking_link."
+  },
+  "agent.approval.calendarTitle": {
+    "message": "{name} wants to add an event to your calendar",
+    "description": "Chat transcript approval card title when an agent asks to add an event (create_event). name: agent name. src/renderer/agent/panel.js (localizeEvent)."
+  },
+  "agent.approval.calendarDecided": {
+    "message": "Add \"{title}\" to your calendar",
+    "description": "Chat transcript calendar approval card once you answered it: its title, next to Approved or Declined. title: the event's title."
+  },
+  "agent.approval.calendarFieldTitle": {
+    "message": "Title",
+    "description": "Chat transcript calendar approval card: label of the event's title."
+  },
+  "agent.approval.calendarFieldWhen": {
+    "message": "When",
+    "description": "Chat transcript calendar approval card: label of the event's date and times."
+  },
+  "agent.approval.calendarFieldCalendar": {
+    "message": "Calendar",
+    "description": "Chat transcript calendar approval card: label of the calendar the event goes in, shown as the calendar's name and its account."
+  },
+  "agent.approval.calendarFieldGuests": {
+    "message": "Guests",
+    "description": "Chat transcript calendar approval card: label of the people who get an invitation."
+  },
+  "agent.approval.calendarFieldVideo": {
+    "message": "Video call",
+    "description": "Chat transcript calendar approval card: label before \"Google Meet\" when the event gets a Meet link."
+  },
+  "agent.approval.calendarFieldLocation": {
+    "message": "Location",
+    "description": "Chat transcript calendar approval card: label of the event's place."
+  },
+  "agent.approval.calendarFieldDescription": {
+    "message": "Description",
+    "description": "Chat transcript calendar approval card: label of the event's notes, which guests see."
+  },
+  "agent.approval.calendarAllDay": {
+    "message": "{days}, all day",
+    "description": "Chat transcript calendar approval card: when an all-day event takes place. days: a date or a range of dates, such as \"Tue, 3 Nov 2026\"."
+  },
+  "agent.approval.calendarInvites": {
+    "message": "Guests get an invitation from {address}.",
+    "description": "Chat transcript calendar approval card: line under the title when the event has guests. address: the email account whose calendar sends the invitations."
+  },
+  "agent.approval.calendarCreate": {
+    "message": "Create",
+    "description": "Chat transcript calendar approval card: button that adds the event to the calendar."
+  },
+  "agent.calendar.created": {
+    "message": "Added \"{title}\" to your calendar",
+    "description": "Chat transcript notice after you approved an event an agent asked for and Rukoo added it. title: the event's title."
+  },
+  "agent.calendar.failed": {
+    "message": "Couldn't add \"{title}\" to your calendar",
+    "description": "Chat transcript notice when Rukoo couldn't add an event you approved; the calendar's error is shown under it. title: the event's title."
+  },
   // ---- /cal:B4 ----
   "calendar.title": {
     "message": "Calendar",
@@ -1390,8 +1478,8 @@
     "description": "Event dialog: label of the description field. src/renderer/calendar.js (formHtml)"
   },
   "calendar.dialog.seriesNote": {
-    "message": "Changes apply to this event only, not to the rest of the series.",
-    "description": "Event dialog: note when the user edits one occurrence of a recurring event. src/renderer/calendar.js (formHtml)"
+    "message": "This event repeats. When you save, you choose which events change.",
+    "description": "Event dialog: note when the user edits one occurrence of a recurring event; Save then asks this event, this and following, or all. src/renderer/calendar-event.js (formHtml)"
   },
   "calendar.dialog.missingTime": {
     "message": "Fill in when the event starts and ends.",
@@ -1628,6 +1716,522 @@
   },
   // ---- /cal:B1 ----
   // ---- cal:B2 ----
+  "calendar.event.duplicate": {
+    "message": "Duplicate",
+    "description": "Tooltip of the event card button that opens the event dialog as a new event with the same fields. src/renderer/calendar-event.js (popHtml)"
+  },
+  "calendar.dialog.more": {
+    "message": "More",
+    "description": "Event dialog: the button that opens and closes the section with repeat, reminders, time zone, show as and visibility; a short summary of what is set follows it. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.quick.more": {
+    "message": "More options",
+    "description": "Button in the quick popover for a new event that opens the full event dialog with what was typed. src/renderer/calendar-event.js (quickHtml)"
+  },
+  "calendar.guests.label": {
+    "message": "Guests",
+    "description": "Event dialog: label of the guest field, where guests show as chips. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.guests.add": {
+    "message": "Add guests",
+    "description": "Placeholder and accessible name of the field that adds guests by address, with suggestions from synced mail. src/renderer/calendar-event.js (guestsHtml)"
+  },
+  "calendar.guests.optional": {
+    "message": "Optional",
+    "description": "Marks a guest whose attendance is optional: on the guest's chip, as the checkbox item in the chip's menu, and after the name on the event card. src/renderer/calendar-event.js (chipHtml, bindGuests, popHtml)"
+  },
+  "calendar.guests.remove": {
+    "message": "Remove {name}",
+    "description": "Accessible name of the small x button on a guest's chip; name is the guest's name or address. src/renderer/calendar-event.js (chipHtml)"
+  },
+  "calendar.guests.removeGuest": {
+    "message": "Remove guest",
+    "description": "Item in a guest chip's menu that takes the guest off the event. src/renderer/calendar-event.js (bindGuests)"
+  },
+  "calendar.guests.invalid": {
+    "message": "\"{text}\" isn't an email address.",
+    "description": "Line under the guest field when what was typed isn't an address; text is what was typed. src/renderer/calendar-event.js (bindGuests)"
+  },
+  "calendar.guests.fix": {
+    "message": "Check the guest addresses.",
+    "description": "Error in the event dialog or quick popover when Save was pressed while the guest field holds something that isn't an address. src/renderer/calendar-event.js (readForm, quickCreate)"
+  },
+  "calendar.meet.add": {
+    "message": "Google Meet video call",
+    "description": "Switch in the event dialog and the quick popover that adds Google Meet to the event, or removes it when switched off; only on Google calendars that allow Meet. src/renderer/calendar-event.js (formHtml, quickHtml)"
+  },
+  "calendar.conflict.one": {
+    "message": "Overlaps {title} {time}",
+    "description": "Conflict line in the event dialog and quick popover: another busy event overlaps the times; title is its title, time its times such as 14:00–15:00, or calendar.conflict.allDay. src/renderer/calendar-event.js (conflictWatcher)"
+  },
+  "calendar.conflict.many": {
+    "message": { "one": "Overlaps {title} {time} and {count} more event", "other": "Overlaps {title} {time} and {count} more events" },
+    "description": "Conflict line when several busy events overlap the times; title and time are the first one's, count is how many more there are. src/renderer/calendar-event.js (conflictWatcher)"
+  },
+  "calendar.conflict.allDay": {
+    "message": "(all day)",
+    "description": "Conflict line: takes the place of the times when the overlapping event lasts all day. src/renderer/calendar-event.js (conflictWatcher)"
+  },
+  "calendar.conflict.unchecked": {
+    "message": "Couldn't check {email}.",
+    "description": "Conflict line: one account's calendar couldn't be read, so its events may overlap without showing; email is that account's address. src/renderer/calendar-event.js (conflictWatcher)"
+  },
+  "calendar.conflict.uncheckedMany": {
+    "message": { "one": "Couldn't check {count} account.", "other": "Couldn't check {count} accounts." },
+    "description": "Conflict line: several accounts' calendars couldn't be read; count is how many. src/renderer/calendar-event.js (conflictWatcher)"
+  },
+  "calendar.move.note": {
+    "message": "Saving moves the event to {calendar}.",
+    "description": "Event dialog: line under the calendar field once another calendar of the same account is chosen for an existing event; calendar is its name. src/renderer/calendar-event.js (bindForm)"
+  },
+  "calendar.move.seriesNote": {
+    "message": "Saving moves the whole series to {calendar}.",
+    "description": "Event dialog: as calendar.move.note, for a recurring event, which moves as a whole; calendar is the name of the calendar chosen. src/renderer/calendar-event.js (bindForm)"
+  },
+  "calendar.move.done": {
+    "message": "Moved to {calendar}",
+    "description": "Toast after an event moved to another calendar of its account; calendar is that calendar's name. src/renderer/calendar-event.js (saveEdit)"
+  },
+  "calendar.notify.createTitle": {
+    "message": "Send invitations to the guests?",
+    "description": "Dialog before a new event with guests is saved on a Google calendar; followed by calendar.notify.help. src/renderer/calendar-event.js (askInvite)"
+  },
+  "calendar.series.following": {
+    "message": "This and following events",
+    "description": "Choice for a recurring event: the occurrence opened and every later one. Offered only to the organizer. src/renderer/calendar-event.js (seriesChoice)"
+  },
+  "calendar.series.editTitle": {
+    "message": "Change a recurring event",
+    "description": "Title of the choice of which occurrences a change in the event dialog is for. src/renderer/calendar-event.js (saveEdit)"
+  },
+  "calendar.recurrence.label": {
+    "message": "Repeat",
+    "description": "Event dialog, More section: label of the repeat choice. src/renderer/calendar-event.js (repeatHtml)"
+  },
+  "calendar.recurrence.loading": {
+    "message": "Loading…",
+    "description": "Event dialog: the repeat choice while the series' rule is being read. src/renderer/calendar-event.js (repeatHtml)"
+  },
+  "calendar.recurrence.none": {
+    "message": "Does not repeat",
+    "description": "Repeat choice: a single event. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.daily": {
+    "message": "Every day",
+    "description": "Repeat choice: daily. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.weekdays": {
+    "message": "Every weekday (Monday to Friday)",
+    "description": "Repeat choice: Monday to Friday every week. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.weekly": {
+    "message": "Weekly on {weekday}",
+    "description": "Repeat choice: every week on the start's weekday; weekday is its name, such as Tuesday. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.monthlyDay": {
+    "message": "Monthly on day {day}",
+    "description": "Repeat choice: every month on the start's day of the month; day is a number such as 27. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.monthlyFirst": {
+    "message": "Monthly on the first {weekday}",
+    "description": "Repeat choice: every month on the first such weekday, when the start is one; weekday is its name. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.monthlySecond": {
+    "message": "Monthly on the second {weekday}",
+    "description": "Repeat choice: every month on the second such weekday, when the start is one; weekday is its name. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.monthlyThird": {
+    "message": "Monthly on the third {weekday}",
+    "description": "Repeat choice: every month on the third such weekday, when the start is one; weekday is its name. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.monthlyFourth": {
+    "message": "Monthly on the fourth {weekday}",
+    "description": "Repeat choice: every month on the fourth such weekday, when the start is one; weekday is its name. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.monthlyLast": {
+    "message": "Monthly on the last {weekday}",
+    "description": "Repeat choice, offered when the start is in its month's last seven days: every month on the last such weekday; weekday is its name. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.yearly": {
+    "message": "Yearly on {date}",
+    "description": "Repeat choice: every year on the start's date; date is a day and month such as 27 October. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.custom": {
+    "message": "Custom…",
+    "description": "Repeat choice that opens the custom form: every N days, weeks, months or years, the weekdays, and when it ends. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.customSummary": {
+    "message": "Custom repeat",
+    "description": "Summary after the event dialog's More button when the event has a custom repeat. src/renderer/calendar-event.js (repeatSummary)"
+  },
+  "calendar.recurrence.kept": {
+    "message": "Custom rule, kept",
+    "description": "Repeat choice for a series whose rule, made in another app, is more than the editor can show; it is kept as it is unless another choice is made. src/renderer/calendar-event.js (repeatChoices)"
+  },
+  "calendar.recurrence.keptHelp": {
+    "message": "Rukoo can't edit this rule. It stays as it is unless you choose another.",
+    "description": "Line under the repeat choice when it shows calendar.recurrence.kept. src/renderer/calendar-event.js (repeatHtml)"
+  },
+  "calendar.recurrence.every": {
+    "message": "Repeat every",
+    "description": "Custom repeat form: text before the number field and the unit choice, as in 'Repeat every 2 weeks'. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.unitLabel": {
+    "message": "Repeat unit",
+    "description": "Custom repeat form: accessible name of the choice between days, weeks, months and years. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.unitDays": {
+    "message": { "one": "day", "other": "days" },
+    "description": "Custom repeat form: unit after the number in 'Repeat every 2 days'; count is that number. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.unitWeeks": {
+    "message": { "one": "week", "other": "weeks" },
+    "description": "Custom repeat form: unit after the number in 'Repeat every 2 weeks'; count is that number. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.unitMonths": {
+    "message": { "one": "month", "other": "months" },
+    "description": "Custom repeat form: unit after the number in 'Repeat every 2 months'; count is that number. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.unitYears": {
+    "message": { "one": "year", "other": "years" },
+    "description": "Custom repeat form: unit after the number in 'Repeat every 2 years'; count is that number. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onDays": {
+    "message": "Repeat on",
+    "description": "Custom repeat form: accessible name of the row of weekday buttons for a weekly repeat. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onMonthly": {
+    "message": "Day of the month",
+    "description": "Custom repeat form: accessible name of the choice which day of the month a monthly repeat falls on. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onDay": {
+    "message": "On day {day}",
+    "description": "Custom repeat form, monthly: on the start's day of the month; day is a number. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onFirst": {
+    "message": "On the first {weekday}",
+    "description": "Custom repeat form, monthly: on the first such weekday of the month; weekday is its name. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onSecond": {
+    "message": "On the second {weekday}",
+    "description": "Custom repeat form, monthly: on the second such weekday of the month; weekday is its name. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onThird": {
+    "message": "On the third {weekday}",
+    "description": "Custom repeat form, monthly: on the third such weekday of the month; weekday is its name. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onFourth": {
+    "message": "On the fourth {weekday}",
+    "description": "Custom repeat form, monthly: on the fourth such weekday of the month; weekday is its name. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.onLast": {
+    "message": "On the last {weekday}",
+    "description": "Custom repeat form, monthly: on the last such weekday of the month; weekday is its name. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.ends": {
+    "message": "Ends",
+    "description": "Custom repeat form: label of the choice between never, on a date and after a number of times. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.never": {
+    "message": "Never",
+    "description": "Custom repeat form: the repeat doesn't end. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.on": {
+    "message": "On",
+    "description": "Custom repeat form: the repeat ends on the date in the field after it. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.untilLabel": {
+    "message": "Last date",
+    "description": "Custom repeat form: accessible name of the date the repeat ends on. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.after": {
+    "message": "After",
+    "description": "Custom repeat form: the repeat ends after the number of times in the field after it. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.countLabel": {
+    "message": "Number of times",
+    "description": "Custom repeat form: accessible name of the field with how many times the event happens. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.times": {
+    "message": { "one": "time", "other": "times" },
+    "description": "Custom repeat form: unit after the number field in 'After 10 times'; count is that number. src/renderer/calendar-event.js (customHtml)"
+  },
+  "calendar.recurrence.shortMonths": {
+    "message": "Months with fewer than {day} days are skipped.",
+    "description": "Warning under a monthly repeat on day 29, 30 or 31; day is that number. src/renderer/calendar-event.js (repeatHtml)"
+  },
+  "calendar.recurrence.badInterval": {
+    "message": "Repeat every 1 to 99.",
+    "description": "Event dialog error when the custom repeat's number is out of range. src/renderer/calendar-event.js (repeatProblem)"
+  },
+  "calendar.recurrence.noDays": {
+    "message": "Choose at least one day.",
+    "description": "Event dialog error when a custom weekly repeat has no weekday chosen. src/renderer/calendar-event.js (repeatProblem)"
+  },
+  "calendar.recurrence.badCount": {
+    "message": "Repeat 1 to 999 times.",
+    "description": "Event dialog error when the custom repeat's number of times is out of range. src/renderer/calendar-event.js (repeatProblem)"
+  },
+  "calendar.recurrence.badUntil": {
+    "message": "The last date comes before the event.",
+    "description": "Event dialog error when the custom repeat ends on a date before the event's start. src/renderer/calendar-event.js (repeatProblem)"
+  },
+  "calendar.reminders.label": {
+    "message": "Reminders",
+    "description": "Event dialog, More section: label of the event's reminders. src/renderer/calendar-event.js (remindersHtml)"
+  },
+  "calendar.reminders.add": {
+    "message": "Add reminder",
+    "description": "Event dialog: button that adds a reminder, up to five. src/renderer/calendar-event.js (remindersHtml)"
+  },
+  "calendar.reminders.remove": {
+    "message": "Remove reminder",
+    "description": "Event dialog: tooltip and accessible name of the x after a reminder. src/renderer/calendar-event.js (remindersHtml)"
+  },
+  "calendar.reminders.which": {
+    "message": "Reminder {n}",
+    "description": "Event dialog: accessible name of a reminder's choice; n is its number in the list. src/renderer/calendar-event.js (remindersHtml)"
+  },
+  "calendar.reminders.atStart": {
+    "message": "At the start",
+    "description": "Reminder choice for a timed event: when it starts. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.minutes": {
+    "message": { "one": "{count} minute before", "other": "{count} minutes before" },
+    "description": "Reminder choice for a timed event; count is the number of minutes before the start. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.hours": {
+    "message": { "one": "{count} hour before", "other": "{count} hours before" },
+    "description": "Reminder choice for a timed event; count is the number of hours before the start. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.days": {
+    "message": { "one": "{count} day before", "other": "{count} days before" },
+    "description": "Reminder choice for a timed event; count is the number of days before the start. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.weeks": {
+    "message": { "one": "{count} week before", "other": "{count} weeks before" },
+    "description": "Reminder choice for a timed event; count is the number of weeks before the start. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.before": {
+    "message": "{time} before",
+    "description": "Reminder set elsewhere to an uncommon time before a timed event; time is a length such as 45 min or 1 hr, 30 min. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.onTheDay": {
+    "message": "On the day at {time}",
+    "description": "Reminder choice for an all-day event: on its first day at a time such as 09:00. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.dayBefore": {
+    "message": "The day before at {time}",
+    "description": "Reminder choice for an all-day event: the day before at a time such as 09:00. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.daysBefore": {
+    "message": { "one": "{count} day before at {time}", "other": "{count} days before at {time}" },
+    "description": "Reminder choice for an all-day event; count is the number of days before its first day, time a time such as 09:00. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.weekBefore": {
+    "message": "A week before at {time}",
+    "description": "Reminder choice for an all-day event: a week before its first day at a time such as 09:00. src/renderer/calendar-event.js (reminderLabel)"
+  },
+  "calendar.reminders.email": {
+    "message": "{when}, by email",
+    "description": "Event dialog: an email reminder, shown as it is and kept; Rukoo doesn't change email reminders. when is a reminder label such as '1 day before'. src/renderer/calendar-event.js (remindersHtml)"
+  },
+  "calendar.reminders.useDefault": {
+    "message": "Use the calendar's default reminders",
+    "description": "Event dialog checkbox, only for calendars with default reminders (Google); the defaults follow in brackets for timed events. src/renderer/calendar-event.js (remindersHtml)"
+  },
+  "calendar.reminders.none": {
+    "message": "No reminders",
+    "description": "Event dialog: the event has no reminders; also in the More section's summary. src/renderer/calendar-event.js (remindersHtml, moreSummary)"
+  },
+  "calendar.reminders.fallback": {
+    "message": "Rukoo reminds you {when}, as set in Settings → Calendar.",
+    "description": "Event dialog: a timed event without reminders of its own gets the default reminder from Settings → Calendar; when is a reminder label such as '10 minutes before' (calendar.reminders.minutes). src/renderer/calendar-event.js (remindersHtml)"
+  },
+  "calendar.reminders.count": {
+    "message": { "one": "{count} reminder", "other": "{count} reminders" },
+    "description": "Summary after the event dialog's More button; count is the number of reminders. src/renderer/calendar-event.js (moreSummary)"
+  },
+  "calendar.timezone.label": {
+    "message": "Time zone",
+    "description": "Event dialog, More section: label of the event's time zone, a field that searches the list of zones as you type. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.timezone.computer": {
+    "message": "{offset}, this computer's time zone",
+    "description": "Line under the time zone field when it is the computer's own zone; offset is like GMT+01:00. src/renderer/calendar-event.js (zoneHelp)"
+  },
+  "calendar.timezone.inZone": {
+    "message": "{time} in {zone}",
+    "description": "Event dialog: the event's times on its own zone's clock, when that isn't the computer's; time is like 03:00 – 04:00, zone a name such as America/New York. src/renderer/calendar-event.js (zoneNote)"
+  },
+  "calendar.timezone.invalid": {
+    "message": "Choose a time zone from the list.",
+    "description": "Event dialog error when the time zone field holds something that isn't a time zone. src/renderer/calendar-event.js (readForm)"
+  },
+  "calendar.timezone.unknown": {
+    "message": "Not a time zone Rukoo knows. It stays as it is unless you choose another.",
+    "description": "Line under the time zone field when the event's zone, set in another app, isn't one Rukoo knows. src/renderer/calendar-event.js (zoneHelp)"
+  },
+  "calendar.showAs.label": {
+    "message": "Show as",
+    "description": "Event dialog, More section: label of the choice between busy and free. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.showAs.busy": {
+    "message": "Busy",
+    "description": "Show-as choice: the event makes the user busy, also for availability and the booking page. src/renderer/calendar-event.js (formHtml, moreSummary)"
+  },
+  "calendar.showAs.free": {
+    "message": "Free",
+    "description": "Show-as choice: the event leaves the user free. New all-day events start as free. src/renderer/calendar-event.js (formHtml, moreSummary)"
+  },
+  "calendar.visibility.label": {
+    "message": "Visibility",
+    "description": "Event dialog, More section: label of who can see the event's details. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.visibility.default": {
+    "message": "Default visibility",
+    "description": "Visibility choice: as the calendar's sharing settings say. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.visibility.private": {
+    "message": "Private",
+    "description": "Visibility choice: people the calendar is shared with see only that the time is taken. src/renderer/calendar-event.js (formHtml, moreSummary)"
+  },
+  "calendar.visibility.public": {
+    "message": "Public",
+    "description": "Visibility set in another app: anyone who can see the calendar sees the details. Shown only for events that have it. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.visibility.confidential": {
+    "message": "Confidential",
+    "description": "Visibility set in another app (CalDAV CLASS:CONFIDENTIAL). Shown only for events that have it. src/renderer/calendar-event.js (formHtml)"
+  },
+  "calendar.booking.booked": {
+    "message": "Booked through your booking page",
+    "description": "Event card: first line of an event made from a booking; the meeting type follows under it. src/renderer/calendar-event.js (popHtml)"
+  },
+  "calendar.booking.noDetails": {
+    "message": "The guest's details can't be read on this computer.",
+    "description": "Booking or request card when the sealed guest details couldn't be opened here. src/renderer/calendar-event.js (guestRows)"
+  },
+  "calendar.booking.guestTime": {
+    "message": "Guest's time: {time} ({zone})",
+    "description": "Booking or request card: the meeting on the guest's clock; time is like 09:00 – 09:30, zone the guest's time zone such as Europe/London. src/renderer/calendar-event.js (guestRows)"
+  },
+  "calendar.booking.guestZone": {
+    "message": "Guest's time zone: {zone}",
+    "description": "Booking or request card: the guest's time zone, when it can't be used to show their time. src/renderer/calendar-event.js (guestRows)"
+  },
+  "calendar.booking.via": {
+    "message": "Booked via {via}",
+    "description": "Booking or request card: who made the booking for the guest, as the booking said, such as an assistant's name. via is the guest's own text. src/renderer/calendar-event.js (guestRows)"
+  },
+  "calendar.booking.customLength": {
+    "message": "Length changed in your calendar",
+    "description": "Event card of a booked event whose length the host changed; the booking keeps its own length. src/renderer/calendar-event.js (popHtml)"
+  },
+  "calendar.booking.cancelShortcut": {
+    "message": "Cancel booking (Delete)",
+    "description": "Tooltip of the event card's delete button on a booked event, on the computer that handles bookings, with its keyboard shortcut. src/renderer/calendar-event.js (popHtml)"
+  },
+  "calendar.booking.cancelTitle": {
+    "message": "Cancel this booking?",
+    "description": "Title of the dialog before a booked event is deleted and its booking cancelled. src/renderer/calendar-event.js (cancelBooking)"
+  },
+  "calendar.booking.cancelHelp": {
+    "message": "{name} gets a cancellation for {when}.",
+    "description": "Text in the cancel-booking dialog; name is the guest's name, when the event's day and times. src/renderer/calendar-event.js (cancelBooking)"
+  },
+  "calendar.booking.cancelHelpNoName": {
+    "message": "The guest gets a cancellation for {when}.",
+    "description": "Text in the cancel-booking dialog when the guest's details can't be read; when is the event's day and times. src/renderer/calendar-event.js (cancelBooking)"
+  },
+  "calendar.booking.message": {
+    "message": "Message to the guest (optional)",
+    "description": "Label of the field for a short message to the guest when a booking is cancelled or a request declined. src/renderer/calendar-event.js (cancelBooking, declineRequest)"
+  },
+  "calendar.booking.messageHelp": {
+    "message": "It shows on the guest's booking page.",
+    "description": "Line under the message field in the cancel-booking dialog. src/renderer/calendar-event.js (cancelBooking)"
+  },
+  "calendar.booking.keep": {
+    "message": "Keep booking",
+    "description": "Button in the cancel-booking dialog that closes it without cancelling. src/renderer/calendar-event.js (cancelBooking)"
+  },
+  "calendar.booking.cancel": {
+    "message": "Cancel booking",
+    "description": "Button in the cancel-booking dialog that deletes the event and cancels the booking. src/renderer/calendar-event.js (cancelBooking)"
+  },
+  "calendar.booking.cancelled": {
+    "message": "Booking cancelled",
+    "description": "Toast after a booking was cancelled from its event card. src/renderer/calendar-event.js (cancelBooking)"
+  },
+  "calendar.booking.deleteTitle": {
+    "message": "Delete this booked event?",
+    "description": "Title of the confirmation before a booked event is deleted on a computer that doesn't handle the bookings. src/renderer/calendar-event.js (removeEvent)"
+  },
+  "calendar.booking.deleteElsewhere": {
+    "message": "The booking is cancelled when {device}, which handles your bookings, syncs next.",
+    "description": "Text of that confirmation; device is the name of the computer that handles bookings, or calendar.booking.otherComputer. src/renderer/calendar-event.js (removeEvent)"
+  },
+  "calendar.booking.otherComputer": {
+    "message": "your other computer",
+    "description": "Stands for the computer that handles bookings when its name isn't known, inside calendar.booking.deleteElsewhere and calendar.booking.requestElsewhere. src/renderer/calendar-event.js (bookingDevice)"
+  },
+  "calendar.booking.request": {
+    "message": "Booking request",
+    "description": "Title of a booking request's card when the guest's name can't be read. src/renderer/calendar-event.js (requestHtml)"
+  },
+  "calendar.booking.requestFrom": {
+    "message": "Booking request from {name}",
+    "description": "Title of a booking request's card; name is the guest's name. src/renderer/calendar-event.js (requestHtml)"
+  },
+  "calendar.booking.expires": {
+    "message": "Lapses if not answered by {when}",
+    "description": "Request card: when the request lapses unanswered; when is a day and time. src/renderer/calendar-event.js (requestHtml)"
+  },
+  "calendar.booking.accept": {
+    "message": "Accept",
+    "description": "Request card button that confirms the booking; the event goes into the calendar and the guest gets the invitation. src/renderer/calendar-event.js (requestHtml)"
+  },
+  "calendar.booking.decline": {
+    "message": "Decline",
+    "description": "Request card button, and the button in its dialog, that declines the booking request. src/renderer/calendar-event.js (requestHtml, declineRequest)"
+  },
+  "calendar.booking.accepted": {
+    "message": "Request accepted",
+    "description": "Toast after a booking request was accepted. src/renderer/calendar-event.js (acceptRequest)"
+  },
+  "calendar.booking.declined": {
+    "message": "Request declined",
+    "description": "Toast after a booking request was declined. src/renderer/calendar-event.js (declineRequest)"
+  },
+  "calendar.booking.declineTitle": {
+    "message": "Decline this request?",
+    "description": "Title of the dialog before a booking request is declined. src/renderer/calendar-event.js (declineRequest)"
+  },
+  "calendar.booking.declineHelp": {
+    "message": "{name} sees on their booking page that the request was declined.",
+    "description": "Text in the decline dialog; name is the guest's name. src/renderer/calendar-event.js (declineRequest)"
+  },
+  "calendar.booking.declineHelpNoName": {
+    "message": "The guest sees on their booking page that the request was declined.",
+    "description": "Text in the decline dialog when the guest's details can't be read. src/renderer/calendar-event.js (declineRequest)"
+  },
+  "calendar.booking.declineEmail": {
+    "message": "Also email the message to the guest",
+    "description": "Checkbox in the decline dialog, off by default; the email goes from the booking page's calendar account. src/renderer/calendar-event.js (declineRequest)"
+  },
+  "calendar.booking.declineEmailFrom": {
+    "message": "Also email the message from {address}",
+    "description": "As calendar.booking.declineEmail, with the address the email goes from. src/renderer/calendar-event.js (declineRequest)"
+  },
+  "calendar.booking.requestElsewhere": {
+    "message": "{device} handles your bookings. Answer the request there.",
+    "description": "Request card on a computer that doesn't handle bookings, instead of Accept and Decline; device is the name of the computer that does, or calendar.booking.otherComputer. src/renderer/calendar-event.js (requestHtml)"
+  },
+  "calendar.booking.requestGone": {
+    "message": "This request was answered or has lapsed.",
+    "description": "Toast when a booking request's card is asked for but the request is no longer pending. src/renderer/calendar-event.js (openRequest)"
+  },
   // ---- /cal:B2 ----
   "common.actions.add": {
     "message": "Add",
@@ -4184,6 +4788,1038 @@
     "description": "settings > signature. src/renderer/settings.js (openSettings)"
   },
   // ---- cal:B3 ----
+  "calendar.free.title": {
+    "message": "Availability",
+    "description": "Title of the calendar's availability side panel, which lists open time across the calendars that count toward availability; also the name of its toolbar button. src/renderer/calendar-free.js"
+  },
+  "calendar.free.length": {
+    "message": "Length",
+    "description": "Availability panel and the composer's free-times dialog: label of the meeting length choice (15 to 90 minutes, or the meeting type's length). src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.range": {
+    "message": "Period",
+    "description": "Availability panel and the composer's free-times dialog: label of the choice of period to look in. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.rangeThisWeek": {
+    "message": "This week",
+    "description": "Period option: from now to the end of this week. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.rangeNextWeek": {
+    "message": "Next week",
+    "description": "Period option: the whole of next week. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.range14": {
+    "message": "Next 14 days",
+    "description": "Period option: from now to 14 days ahead. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.hours": {
+    "message": "Hours",
+    "description": "Label of the choice of which hours count as open: booking page hours, working hours or any time. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.hoursBooking": {
+    "message": "Booking hours",
+    "description": "Hours option: the hours set for the booking page; only offered while the booking page is on. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.hoursWorking": {
+    "message": "Working hours",
+    "description": "Hours option: the working hours from Settings > Calendar. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.hoursAny": {
+    "message": "Any time",
+    "description": "Hours option: the whole day and night count as open. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.zone": {
+    "message": "Time zone",
+    "description": "Label of the time zone the open times are shown in. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.zoneHere": {
+    "message": "{zone} (this computer)",
+    "description": "Time zone list: the zone this computer is set to, listed first; zone is an IANA name such as Europe/Amsterdam. src/renderer/calendar-shared.js (zoneOptions)"
+  },
+  "calendar.free.checked": {
+    "message": { "one": "Checked: {count} calendar", "other": "Checked: {count} calendars" },
+    "description": "Availability panel: link that shows which calendars were read for busy time; count is how many. src/renderer/calendar-free.js"
+  },
+  "calendar.free.checkedNone": {
+    "message": "No calendar counts toward availability, so every time looks open.",
+    "description": "Availability panel: warning when no calendar counts toward availability. src/renderer/calendar-free.js"
+  },
+  "calendar.free.checkedChange": {
+    "message": "Change in Settings",
+    "description": "Availability panel: link to Settings > Calendar, where calendars are set to count toward availability. src/renderer/calendar-free.js"
+  },
+  "calendar.free.failed": {
+    "message": "Couldn't check {email}. These times may be wrong.",
+    "description": "Warning in the availability panel and the free-times preview for an account whose calendars couldn't be read; email is that account's address. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.empty": {
+    "message": "No open time of {length} in this period.",
+    "description": "Availability panel: nothing found; length is the chosen length, such as \"30 min\". src/renderer/calendar-free.js"
+  },
+  "calendar.free.loading": {
+    "message": "Looking for open time…",
+    "description": "Shown while the open times are worked out, in the availability panel and the free-times dialog. src/renderer/calendar-free.js, src/renderer/composer.js"
+  },
+  "calendar.free.allDay": {
+    "message": "All day: {title}",
+    "description": "Availability panel: an all-day event on that day, shown under the day even when it doesn't make you busy; title is the event's title. src/renderer/calendar-free.js"
+  },
+  "calendar.free.copyText": {
+    "message": "Copy as text",
+    "description": "Availability panel button: copies the open times as lines of text. src/renderer/calendar-free.js"
+  },
+  "calendar.free.copied": {
+    "message": "Open times copied",
+    "description": "Toast after Copy as text. src/renderer/calendar-free.js"
+  },
+  "calendar.free.copyLink": {
+    "message": "Copy booking link",
+    "description": "Availability panel button: copies the booking page's address; only while the page is on. src/renderer/calendar-free.js"
+  },
+  "calendar.free.linkCopied": {
+    "message": "Booking link copied",
+    "description": "Toast after Copy booking link. src/renderer/calendar-free.js"
+  },
+  "calendar.free.block": {
+    "message": "Block this day",
+    "description": "Availability panel: link beside a day that stops the booking page from offering times on it; only while the page is on. src/renderer/calendar-free.js"
+  },
+  "calendar.free.blockLabel": {
+    "message": "Block {date} on your booking page",
+    "description": "Accessible name of Block this day; date is the day, such as \"Tuesday 3 November\". src/renderer/calendar-free.js"
+  },
+  "calendar.free.blocked": {
+    "message": "{date} is blocked on your booking page",
+    "description": "Toast after Block this day, with Undo; date is the day. src/renderer/calendar-free.js"
+  },
+  "calendar.free.blockZone": {
+    "message": "Days on your booking page are blocked in its time zone.",
+    "description": "Availability panel: note under the days when they are shown in another time zone than the booking page's, so Block this day isn't offered; followed by calendar.free.blockZoneAction. src/renderer/calendar-free.js"
+  },
+  "calendar.free.blockZoneAction": {
+    "message": "Show times in {zone}",
+    "description": "Availability panel: link after calendar.free.blockZone that shows the days in the booking page's time zone; zone is an IANA name such as America/Los Angeles. src/renderer/calendar-free.js"
+  },
+  "calendar.free.show": {
+    "message": "Show this day in the calendar",
+    "description": "Tooltip of an open time in the availability panel; a click moves the calendar to that day. src/renderer/calendar-free.js"
+  },
+  "calendar.free.zoneLine": {
+    "message": "Times in {zone}",
+    "description": "Last line of the text Copy as text puts on the clipboard; zone is an IANA name such as Europe/Amsterdam. src/renderer/calendar-free.js"
+  },
+  "composer.booking.button": {
+    "message": "Insert from calendar",
+    "description": "Tooltip of the calendar button in the composer's bottom bar, which opens a menu to insert the booking link or free times. src/renderer/composer.js"
+  },
+  "composer.booking.insertLink": {
+    "message": "Insert booking link",
+    "description": "Composer calendar menu: inserts the booking page's address; only while the page is on. src/renderer/composer.js"
+  },
+  "composer.booking.insertTimes": {
+    "message": "Insert my free times…",
+    "description": "Composer calendar menu: opens the dialog that inserts a list of free times. src/renderer/composer.js"
+  },
+  "composer.booking.timesTitle": {
+    "message": "Insert free times",
+    "description": "Title of the composer's free-times dialog. src/renderer/composer.js"
+  },
+  "composer.booking.type": {
+    "message": "Meeting type",
+    "description": "Free-times dialog: choice of the booking page's meeting type, whose length the times then use; shown instead of Length when the booking link goes in too. src/renderer/composer.js"
+  },
+  "composer.booking.withLink": {
+    "message": "Add my booking link",
+    "description": "Free-times dialog checkbox: also inserts the booking page's link under the times. src/renderer/composer.js"
+  },
+  "composer.booking.withLinkHelp": {
+    "message": "The times then follow your booking page's hours, and the meeting type's length and minimum notice. The page may offer fewer, because free time around meetings and the limit per day only count there.",
+    "description": "Free-times dialog: help under Add my booking link. src/renderer/composer.js"
+  },
+  "composer.booking.preview": {
+    "message": "Preview",
+    "description": "Free-times dialog: heading of the preview of what will be inserted. src/renderer/composer.js"
+  },
+  "composer.booking.insert": {
+    "message": "Insert",
+    "description": "Free-times dialog: the button that puts the times into the message. src/renderer/composer.js"
+  },
+  "composer.booking.none": {
+    "message": "No open time in this period. Try another period, length or hours.",
+    "description": "Free-times dialog preview when nothing is open. src/renderer/composer.js"
+  },
+  "composer.booking.intro": {
+    "message": "I'm free at these times:",
+    "description": "First line of the free times inserted into a message, read by its recipient. src/renderer/composer.js"
+  },
+  "composer.booking.zoneLine": {
+    "message": "Times are in {zone}.",
+    "description": "Line under the free times inserted into a message; zone is an IANA name such as Europe/Amsterdam. src/renderer/composer.js"
+  },
+  "composer.booking.linkLine": {
+    "message": "Or pick a time that suits you: {url}",
+    "description": "Line under the free times inserted into a message when the booking link goes in too; url becomes the link, with the address as its text. src/renderer/composer.js"
+  },
+  "composer.booking.footerDefault": {
+    "message": "Want to meet with me? Pick a time, or share this link with your agent: {url}",
+    "description": "Default text of the booking link under the signature, in the booking page's language, read by the mail's recipient; url becomes the link, with the address as its text. \"Agent\" means an AI assistant. src/renderer/composer.js (bookingFooterHtml)"
+  },
+  "settings.groups.calendar": {
+    "message": "Calendar",
+    "description": "Settings overview: heading of the group with the Calendar and Booking page rows. src/renderer/settings.js (render)"
+  },
+  "settings.calendar.title": {
+    "message": "Calendar",
+    "description": "Title of Settings > Calendar and of its row on the Settings overview. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.rowDesc": {
+    "message": "Week, working hours, reminders and which calendars count",
+    "description": "Settings overview: second line of the Calendar row. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.week": {
+    "message": "Week and working hours",
+    "description": "Settings > Calendar: group heading. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.weekStart": {
+    "message": "Week starts on",
+    "description": "Settings > Calendar: row and dialog title for the first day of the week. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.weekStartAuto": {
+    "message": "Automatic ({day})",
+    "description": "Week starts on: the language's own first day; day is that weekday's name. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.weekends": {
+    "message": "Show weekends",
+    "description": "Settings > Calendar switch. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.weekendsHelp": {
+    "message": "Off: a week shows only Monday to Friday.",
+    "description": "Settings > Calendar: help under Show weekends. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.workDays": {
+    "message": "Working days",
+    "description": "Settings > Calendar: row with a toggle button per weekday. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.workHours": {
+    "message": "Working hours",
+    "description": "Settings > Calendar: row with the start and end time of the working day. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.workHoursHelp": {
+    "message": "The calendar dims the time outside them. Free time and your booking page use them too.",
+    "description": "Settings > Calendar: help under Working hours. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.workFrom": {
+    "message": "From",
+    "description": "Accessible name of a start time field (working hours, a booking date's hours). src/renderer/calendar-settings.js, src/renderer/booking-settings.js"
+  },
+  "settings.calendar.workTo": {
+    "message": "To",
+    "description": "Accessible name of an end time field (working hours, a booking date's hours). src/renderer/calendar-settings.js, src/renderer/booking-settings.js"
+  },
+  "settings.calendar.workInvalid": {
+    "message": "The end of the day has to come after its start.",
+    "description": "Settings > Calendar: error under working hours that end before they start. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.noWorkDays": {
+    "message": "No working days",
+    "description": "Working hours as text when no weekday is a working day. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.events": {
+    "message": "New events and reminders",
+    "description": "Settings > Calendar: group heading. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.duration": {
+    "message": "Default event length",
+    "description": "Settings > Calendar: row and dialog title; the length a new event gets with one click. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.notify": {
+    "message": "Event reminders",
+    "description": "Settings > Calendar switch: desktop notifications before events. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.notifyHelp": {
+    "message": "A notification on your desktop before an event starts.",
+    "description": "Settings > Calendar: help under Event reminders. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.reminder": {
+    "message": "Default reminder",
+    "description": "Settings > Calendar: row and dialog title for the reminder of timed events whose calendar has none. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.reminderHelp": {
+    "message": "For timed events whose calendar doesn't set reminders, such as CalDAV. Google events keep their own.",
+    "description": "Settings > Calendar: help under Default reminder. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.reminderAtStart": {
+    "message": "At the start",
+    "description": "Default reminder option: when the event starts. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.reminderBefore": {
+    "message": "{length} before",
+    "description": "Default reminder option; length is a duration such as \"10 min\". src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.calendars": {
+    "message": "Calendars",
+    "description": "Settings > Calendar: group heading of the list of calendars. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.calendarsHelp": {
+    "message": "When a calendar counts toward availability, its busy time is left out of your free time, the free times you insert in mail and your booking page. Hiding a calendar doesn't change this.",
+    "description": "Settings > Calendar: text above the calendars. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.counts": {
+    "message": "Counts toward availability",
+    "description": "Settings > Calendar: label beside each calendar's switch. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.countsLabel": {
+    "message": "{name} counts toward availability",
+    "description": "Accessible name of a calendar's switch; name is the calendar's name. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.color": {
+    "message": "Color of {name}",
+    "description": "Tooltip of a calendar's color swatch, which opens the color choice; name is the calendar's name. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.colorTitle": {
+    "message": "Color of {name}",
+    "description": "Title of the dialog with the color swatches; name is the calendar's name. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.readOnly": {
+    "message": "Read-only",
+    "description": "Settings > Calendar: note under a calendar you can't change. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.noCalendars": {
+    "message": "No calendars yet. Add a Google or CalDAV account, or open the calendar once.",
+    "description": "Shown instead of the calendars when there are none. src/renderer/calendar-settings.js, src/renderer/booking-settings.js"
+  },
+  "settings.calendar.listFailed": {
+    "message": "Couldn't read your calendars.",
+    "description": "Settings > Calendar: the calendar list couldn't be loaded. src/renderer/calendar-settings.js"
+  },
+  "settings.calendar.reconnect": {
+    "message": "Sign in again in the calendar to see these calendars.",
+    "description": "Settings > Calendar: an account that needs to sign in again before its calendars can be read. src/renderer/calendar-settings.js"
+  },
+  "settings.footer.title": {
+    "message": "Booking link under signature",
+    "description": "Settings row beside the signature (general and per account): adds a line with the booking page's link under the signature. src/renderer/booking-settings.js"
+  },
+  "settings.footer.help": {
+    "message": "Every new message ends with a line and your booking link.",
+    "description": "Settings: help under Booking link under signature. src/renderer/booking-settings.js"
+  },
+  "settings.footer.needsPage": {
+    "message": "Shows once your booking page is on.",
+    "description": "Settings: help under Booking link under signature while the booking page is off. src/renderer/booking-settings.js"
+  },
+  "settings.footer.text": {
+    "message": "Text of the booking link",
+    "description": "Settings row and dialog for the text of the line with the booking link. src/renderer/booking-settings.js"
+  },
+  "settings.footer.textDefault": {
+    "message": "Default text, in your booking page's language",
+    "description": "Value of Text of the booking link while the default text is used. src/renderer/booking-settings.js"
+  },
+  "settings.footer.textHelp": {
+    "message": "{url} is where your link goes. The link shows as its address, so it also works in plain text.",
+    "description": "Help under the footer text field; url is the literal text {url}. src/renderer/booking-settings.js"
+  },
+  "settings.footer.needUrl": {
+    "message": "Keep {url} in the text: that's where the link goes.",
+    "description": "Error in the footer text dialog; url is the literal text {url}. src/renderer/booking-settings.js"
+  },
+  "settings.footer.tooLong": {
+    "message": "At most {count} characters.",
+    "description": "Error in the footer text dialog; count is the limit. src/renderer/booking-settings.js"
+  },
+  "settings.footer.useDefault": {
+    "message": "Use default text",
+    "description": "Footer text dialog button that goes back to the default text. src/renderer/booking-settings.js"
+  },
+  "settings.footer.on": {
+    "message": "On",
+    "description": "Booking link under signature: on. src/renderer/booking-settings.js"
+  },
+  "settings.footer.off": {
+    "message": "Off",
+    "description": "Booking link under signature: off. src/renderer/booking-settings.js"
+  },
+  "settings.footer.onOwnText": {
+    "message": "On, with its own text",
+    "description": "Account settings: the account's booking link has a text of its own. src/renderer/booking-settings.js"
+  },
+  "settings.footer.accountGeneral": {
+    "message": "Follows the general setting ({state})",
+    "description": "Account settings: the account follows the general booking link setting; state is On or Off. src/renderer/booking-settings.js"
+  },
+  "settings.footer.choiceGeneral": {
+    "message": "Follow the general setting",
+    "description": "Account choice for the booking link under the signature. src/renderer/booking-settings.js"
+  },
+  "settings.footer.choiceOn": {
+    "message": "On for this account",
+    "description": "Account choice for the booking link under the signature. src/renderer/booking-settings.js"
+  },
+  "settings.footer.choiceOff": {
+    "message": "Off for this account",
+    "description": "Account choice for the booking link under the signature. src/renderer/booking-settings.js"
+  },
+  "settings.footer.choiceText": {
+    "message": "On, with its own text…",
+    "description": "Account choice that opens the text dialog for this account's booking link. src/renderer/booking-settings.js"
+  },
+  "settings.booking.title": {
+    "message": "Booking page",
+    "description": "Title of Settings > Booking page and its row: the page where people book time with you. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowOff": {
+    "message": "Let people and their AI assistants book time with you",
+    "description": "Settings overview: second line of the Booking page row while it is off. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowOn": {
+    "message": "On · {url}",
+    "description": "Settings overview: the booking page is on; url is its address without https://. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowSignedOut": {
+    "message": "Needs a Rukoo account",
+    "description": "Settings overview: the booking page needs a Rukoo account first. src/renderer/booking-settings.js"
+  },
+  "settings.booking.signedOutIntro": {
+    "message": "Your booking page is a link where people, and their AI assistants, pick a time with you. It runs on your Rukoo account, so create one or sign in first. You come back here afterwards.",
+    "description": "Booking page while signed out of the Rukoo account. src/renderer/booking-settings.js"
+  },
+  "settings.booking.inviteNote": {
+    "message": "{server} takes new accounts by invite code only.",
+    "description": "Booking page while signed out, for a server with invite-only sign-ups; server is its operator or host name. src/renderer/booking-settings.js"
+  },
+  "settings.booking.createAccount": {
+    "message": "Create account",
+    "description": "Booking page while signed out: opens the Rukoo account sign-up. src/renderer/booking-settings.js"
+  },
+  "settings.booking.signIn": {
+    "message": "Sign in",
+    "description": "Booking page while signed out: opens the Rukoo account sign-in. src/renderer/booking-settings.js"
+  },
+  "settings.booking.privacyNote": {
+    "message": "Turning the page on changes what the account server sees: your open and busy times, your meeting types and each booking as it comes in. It stores guests' details sealed, so only your devices can read them afterwards.",
+    "description": "Booking page: what turning it on shares with the account server. src/renderer/booking-settings.js"
+  },
+  "settings.booking.unsupported": {
+    "message": "{server} doesn't support booking pages. Ask whoever runs it, or use a server that does.",
+    "description": "Booking page on an account server without booking pages; server is its operator or host name. src/renderer/booking-settings.js"
+  },
+  "settings.booking.loadFailed": {
+    "message": "Couldn't load your booking page: {message}",
+    "description": "Booking page: its state couldn't be read; message is the reason. src/renderer/booking-settings.js"
+  },
+  "settings.booking.setupTitle": {
+    "message": "Set up booking page",
+    "description": "Title of the booking page setup screen. src/renderer/booking-settings.js"
+  },
+  "settings.booking.setupIntro": {
+    "message": "Set up your page on this screen. You can change all of it later.",
+    "description": "Booking page setup: text above the form. src/renderer/booking-settings.js"
+  },
+  "settings.booking.offIntro": {
+    "message": "Your booking page is off. Turn it on again with these settings, or change them first.",
+    "description": "Booking page setup when the page was on before. src/renderer/booking-settings.js"
+  },
+  "settings.booking.handle": {
+    "message": "Link",
+    "description": "Booking page: the field and row for the last part of the page's address (the handle). src/renderer/booking-settings.js"
+  },
+  "settings.booking.handleHelp": {
+    "message": "3 to 32 lowercase letters, digits or hyphens.",
+    "description": "Booking page: what a handle may contain; also its error. src/renderer/booking-settings.js"
+  },
+  "settings.booking.handleChecking": {
+    "message": "Checking…",
+    "description": "Booking page setup: the handle is being checked with the server. src/renderer/booking-settings.js"
+  },
+  "settings.booking.handleAvailable": {
+    "message": "Available",
+    "description": "Booking page setup: nobody has this handle. src/renderer/booking-settings.js"
+  },
+  "settings.booking.handleYours": {
+    "message": "This one is yours",
+    "description": "Booking page setup: the account already holds this handle. src/renderer/booking-settings.js"
+  },
+  "settings.booking.handleTaken": {
+    "message": "Someone else has this one",
+    "description": "Booking page setup: another account holds this handle. src/renderer/booking-settings.js"
+  },
+  "settings.booking.handleReserved": {
+    "message": "This name is reserved",
+    "description": "Booking page setup: the handle is reserved. src/renderer/booking-settings.js"
+  },
+  "settings.booking.name": {
+    "message": "Your name on the page",
+    "description": "Booking page: field and row for the name guests see. src/renderer/booking-settings.js"
+  },
+  "settings.booking.nameNeeded": {
+    "message": "Fill in the name people see.",
+    "description": "Booking page: error when the name is empty. src/renderer/booking-settings.js"
+  },
+  "settings.booking.zone": {
+    "message": "Time zone",
+    "description": "Booking page: field, row and dialog for the page's time zone. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hours": {
+    "message": "Available hours",
+    "description": "Booking page: the hours the page offers times in; also the hours page's title. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hoursWorking": {
+    "message": "Your working hours: {hours}",
+    "description": "Booking page: the page follows the working hours; hours is such as \"Mon–Fri, 09:00–17:00\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.hoursCustom": {
+    "message": "Own schedule",
+    "description": "Booking page: the page has hours of its own. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hoursSetupHelp": {
+    "message": "You can set other hours after turning the page on.",
+    "description": "Booking page setup: help under the hours. src/renderer/booking-settings.js"
+  },
+  "settings.booking.calendars": {
+    "message": "Check these calendars for conflicts",
+    "description": "Booking page setup: heading of the calendars whose busy time is never offered. src/renderer/booking-settings.js"
+  },
+  "settings.booking.calendarsHelp": {
+    "message": "Times when you're busy in these calendars are never offered.",
+    "description": "Booking page setup: help under the calendar choice. src/renderer/booking-settings.js"
+  },
+  "settings.booking.destination": {
+    "message": "Add bookings to",
+    "description": "Booking page: the calendar that bookings are added to. src/renderer/booking-settings.js"
+  },
+  "settings.booking.invitesFrom": {
+    "message": "Guests see invitations from {address}.",
+    "description": "Booking page: under Add bookings to; address is that calendar's mail account. src/renderer/booking-settings.js"
+  },
+  "settings.booking.noInvites": {
+    "message": "This calendar sends no invitations. Guests only get the booking page's confirmation.",
+    "description": "Booking page: under Add bookings to, for a calendar that can't invite (the demo account). src/renderer/booking-settings.js"
+  },
+  "settings.booking.noDestination": {
+    "message": "No calendar can take bookings yet. Connect a Google calendar, or a CalDAV calendar whose server sends invitations.",
+    "description": "Booking page setup: no calendar can be the destination. src/renderer/booking-settings.js"
+  },
+  "settings.booking.destinationGone": {
+    "message": "Not found on this computer",
+    "description": "Booking page: the destination calendar isn't on this computer. src/renderer/booking-settings.js"
+  },
+  "settings.booking.turnOn": {
+    "message": "Turn on",
+    "description": "Booking page setup: the button that turns the page on. src/renderer/booking-settings.js"
+  },
+  "settings.booking.turningOn": {
+    "message": "Turning on…",
+    "description": "Booking page setup: the page is being turned on. src/renderer/booking-settings.js"
+  },
+  "settings.booking.doneTitle": {
+    "message": "Your booking page is on",
+    "description": "Booking page: card right after turning it on, with Copy link, Preview page and Add to signature. src/renderer/booking-settings.js"
+  },
+  "settings.booking.copyLink": {
+    "message": "Copy link",
+    "description": "Booking page button: copies the page's address. src/renderer/booking-settings.js"
+  },
+  "settings.booking.preview": {
+    "message": "Preview page",
+    "description": "Booking page button: opens the page in the browser. src/renderer/booking-settings.js"
+  },
+  "settings.booking.addToSignature": {
+    "message": "Add to signature",
+    "description": "Booking page button after turning it on: turns on the booking link under the signature. src/renderer/booking-settings.js"
+  },
+  "settings.booking.inSignature": {
+    "message": "In your signature",
+    "description": "Booking page: the booking link is already under the signature. src/renderer/booking-settings.js"
+  },
+  "settings.booking.addedToSignature": {
+    "message": "New messages now end with your booking link",
+    "description": "Toast after Add to signature. src/renderer/booking-settings.js"
+  },
+  "settings.booking.copied": {
+    "message": "Link copied",
+    "description": "Toast after Copy link. src/renderer/booking-settings.js"
+  },
+  "settings.booking.yourLink": {
+    "message": "Your link",
+    "description": "Booking page: group heading of the page's address and its state. src/renderer/booking-settings.js"
+  },
+  "settings.booking.taking": {
+    "message": "Take bookings",
+    "description": "Booking page switch that turns the page off. src/renderer/booking-settings.js"
+  },
+  "settings.booking.takingHelp": {
+    "message": "Turning this off deletes your page and its bookings from the server. Events already booked stay in your calendar.",
+    "description": "Booking page: help under Take bookings. src/renderer/booking-settings.js"
+  },
+  "settings.booking.offTitle": {
+    "message": "Turn off your booking page?",
+    "description": "Booking page: title of the question before turning it off. src/renderer/booking-settings.js"
+  },
+  "settings.booking.offConfirm": {
+    "message": "Your page and its bookings are deleted from the server, and your link stops taking bookings. Events already booked stay in your calendar. Your settings stay, so you can turn the page on again.",
+    "description": "Booking page: the question before turning it off. src/renderer/booking-settings.js"
+  },
+  "settings.booking.offAction": {
+    "message": "Turn off",
+    "description": "Booking page: the button that confirms turning it off. src/renderer/booking-settings.js"
+  },
+  "settings.booking.turnedOff": {
+    "message": "Your booking page is off",
+    "description": "Toast after turning the booking page off. src/renderer/booking-settings.js"
+  },
+  "settings.booking.syncNow": {
+    "message": "Check for bookings now",
+    "description": "Booking page row: publishes the open times and fetches new bookings. src/renderer/booking-settings.js"
+  },
+  "settings.booking.syncing": {
+    "message": "Checking…",
+    "description": "Booking page: a check is running. src/renderer/booking-settings.js"
+  },
+  "settings.booking.synced": {
+    "message": "Booking page up to date",
+    "description": "Toast after Check for bookings now. src/renderer/booking-settings.js"
+  },
+  "settings.booking.lastUpdated": {
+    "message": "Last updated from this computer: {ago}",
+    "description": "Booking page: when this computer last published the open times; ago is such as \"3 minutes ago\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.neverUpdated": {
+    "message": "Not published from this computer yet",
+    "description": "Booking page: this computer hasn't published yet. src/renderer/booking-settings.js"
+  },
+  "settings.booking.staleHelp": {
+    "message": "Until Rukoo publishes again, new bookings wait for your approval.",
+    "description": "Booking page: after Last updated, when that was over a day ago. src/renderer/booking-settings.js"
+  },
+  "settings.booking.unchecked": {
+    "message": "Couldn't check {email} since {time}.",
+    "description": "Booking page: an account whose busy time couldn't be read; email is its address, time such as \"Tuesday 3 November, 14:00\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.otherDevice": {
+    "message": "Bookings are handled by {device}",
+    "description": "Booking page on a computer that isn't the booking device; device is the other computer's name. src/renderer/booking-settings.js"
+  },
+  "settings.booking.otherDeviceGone": {
+    "message": "Bookings are handled by a computer that has signed out",
+    "description": "Booking page: the booking device's session has ended. src/renderer/booking-settings.js"
+  },
+  "settings.booking.otherDeviceHelp": {
+    "message": "That computer publishes your open times and adds bookings to your calendar. Use this one instead if that computer stays off.",
+    "description": "Booking page: help under the other computer's name. src/renderer/booking-settings.js"
+  },
+  "settings.booking.takeover": {
+    "message": "Use this computer",
+    "description": "Booking page button: this computer becomes the one that handles bookings. src/renderer/booking-settings.js"
+  },
+  "settings.booking.takenOver": {
+    "message": "This computer now handles your bookings",
+    "description": "Toast after Use this computer. src/renderer/booking-settings.js"
+  },
+  "settings.booking.requests": {
+    "message": "Requests",
+    "description": "Booking page: group heading of bookings that wait for approval. src/renderer/booking-settings.js"
+  },
+  "settings.booking.bookings": {
+    "message": "Upcoming bookings",
+    "description": "Booking page: group heading of confirmed bookings still to come. src/renderer/booking-settings.js"
+  },
+  "settings.booking.noBookings": {
+    "message": "No bookings yet.",
+    "description": "Booking page: no upcoming bookings. src/renderer/booking-settings.js"
+  },
+  "settings.booking.settingsMissing": {
+    "message": "This page's settings haven't reached this computer yet. They show up here after the next sync.",
+    "description": "Booking page: the page is on but its settings record isn't on this computer yet (it was set up on another computer), so meeting types, hours and page details can't be changed here yet. Also a toast when one of those rows is clicked then. src/renderer/booking-settings.js"
+  },
+  "settings.booking.guestUnknown": {
+    "message": "Guest details can't be read on this computer",
+    "description": "Booking page: a booking whose guest details this computer can't open. src/renderer/booking-settings.js"
+  },
+  "settings.booking.via": {
+    "message": "via {via}",
+    "description": "Booking page: the assistant or app the guest booked through, as the guest wrote it. src/renderer/booking-settings.js"
+  },
+  "settings.booking.customLength": {
+    "message": "custom length",
+    "description": "Booking page: the host changed the event's length in the calendar. src/renderer/booking-settings.js"
+  },
+  "settings.booking.expires": {
+    "message": "waits for you until {time}",
+    "description": "Booking page: a request lapses at time, such as \"Tuesday 3 November, 14:00\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.accept": {
+    "message": "Accept",
+    "description": "Booking page button: accepts a request. src/renderer/booking-settings.js"
+  },
+  "settings.booking.decline": {
+    "message": "Decline",
+    "description": "Booking page button: declines a request; also confirms it in the dialog. src/renderer/booking-settings.js"
+  },
+  "settings.booking.cancel": {
+    "message": "Cancel booking",
+    "description": "Booking page button: cancels a confirmed booking; also confirms it in the dialog. src/renderer/booking-settings.js"
+  },
+  "settings.booking.keep": {
+    "message": "Go back",
+    "description": "Decline and cancel dialogs: closes without doing anything. src/renderer/booking-settings.js"
+  },
+  "settings.booking.declineTitle": {
+    "message": "Decline this request?",
+    "description": "Title of the decline dialog. src/renderer/booking-settings.js"
+  },
+  "settings.booking.declineEmail": {
+    "message": "Also email this message from {address}",
+    "description": "Decline dialog checkbox; address is the destination calendar's mail account. src/renderer/booking-settings.js"
+  },
+  "settings.booking.message": {
+    "message": "Message to the guest (optional)",
+    "description": "Decline and cancel dialogs: the host's message, shown on the guest's booking page. src/renderer/booking-settings.js"
+  },
+  "settings.booking.cancelTitle": {
+    "message": "Cancel this booking?",
+    "description": "Title of the cancel dialog. src/renderer/booking-settings.js"
+  },
+  "settings.booking.cancelHelp": {
+    "message": "The event leaves your calendar and the guest's booking is cancelled. Your message shows on the guest's booking page.",
+    "description": "Cancel dialog text. src/renderer/booking-settings.js"
+  },
+  "settings.booking.cancelNotify": {
+    "message": "Send the guest a cancellation from your calendar",
+    "description": "Cancel dialog checkbox, on by default. src/renderer/booking-settings.js"
+  },
+  "settings.booking.accepted": {
+    "message": "Request accepted",
+    "description": "Toast after Accept. src/renderer/booking-settings.js"
+  },
+  "settings.booking.declined": {
+    "message": "Request declined",
+    "description": "Toast after Decline. src/renderer/booking-settings.js"
+  },
+  "settings.booking.cancelled": {
+    "message": "Booking cancelled",
+    "description": "Toast after Cancel booking. src/renderer/booking-settings.js"
+  },
+  "settings.booking.types": {
+    "message": "Meeting types",
+    "description": "Booking page: group heading of the kinds of meeting people can book. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeConfirm": {
+    "message": "Needs your approval",
+    "description": "Meeting type: bookings wait as requests; in the type's description and as its checkbox. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeHidden": {
+    "message": "Hidden",
+    "description": "Meeting type description: the type isn't listed on the page. src/renderer/booking-settings.js"
+  },
+  "settings.booking.addType": {
+    "message": "Add meeting type",
+    "description": "Booking page row that adds a meeting type (up to 10). src/renderer/booking-settings.js"
+  },
+  "settings.booking.availability": {
+    "message": "Availability",
+    "description": "Booking page: group heading of hours, calendars, destination and the daily cap. src/renderer/booking-settings.js"
+  },
+  "settings.booking.checked": {
+    "message": "Calendars checked for conflicts",
+    "description": "Booking page row that leads to Settings > Calendar. src/renderer/booking-settings.js"
+  },
+  "settings.booking.checkedCount": {
+    "message": { "one": "{count} calendar", "other": "{count} calendars" },
+    "description": "Booking page: how many calendars are checked for conflicts. src/renderer/booking-settings.js"
+  },
+  "settings.booking.overridesCount": {
+    "message": { "one": "{count} date with other hours", "other": "{count} dates with other hours" },
+    "description": "Booking page: after the hours, how many dates have hours of their own. src/renderer/booking-settings.js"
+  },
+  "settings.booking.dailyCap": {
+    "message": "Bookings per day",
+    "description": "Booking page row and prompt: the most new bookings a day. src/renderer/booking-settings.js"
+  },
+  "settings.booking.dailyCapHelp": {
+    "message": "At most this many new bookings a day, from 1 to 50.",
+    "description": "Booking page: help under Bookings per day; also its error. src/renderer/booking-settings.js"
+  },
+  "settings.booking.page": {
+    "message": "Page",
+    "description": "Booking page: group heading of the page's name, texts, zone, language and link. src/renderer/booking-settings.js"
+  },
+  "settings.booking.intro": {
+    "message": "Introduction",
+    "description": "Booking page row and prompt: a short text at the top of the page. src/renderer/booking-settings.js"
+  },
+  "settings.booking.contact": {
+    "message": "Contact line",
+    "description": "Booking page row and prompt: a line shown when no times are open. src/renderer/booking-settings.js"
+  },
+  "settings.booking.contactHelp": {
+    "message": "Shows when no times are open or the page is off.",
+    "description": "Booking page: help under Contact line. src/renderer/booking-settings.js"
+  },
+  "settings.booking.contactPlaceholder": {
+    "message": "No time that works? Reply to my last email.",
+    "description": "Placeholder of the contact line prompt. src/renderer/booking-settings.js"
+  },
+  "settings.booking.pageLanguage": {
+    "message": "Page language",
+    "description": "Booking page row and dialog: the page's default language. src/renderer/booking-settings.js"
+  },
+  "settings.booking.pageLanguageHelp": {
+    "message": "Also the language of the booking link's text and of booked events' titles.",
+    "description": "Booking page: help under Page language. src/renderer/booking-settings.js"
+  },
+  "settings.booking.saved": {
+    "message": "Saved",
+    "description": "Toast after a booking page change was saved. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeNew": {
+    "message": "New meeting type",
+    "description": "Title of the meeting type editor for a new type. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeTitle": {
+    "message": "Title",
+    "description": "Meeting type editor: the type's title. src/renderer/booking-settings.js"
+  },
+  "settings.booking.titleNeeded": {
+    "message": "Give the meeting type a title.",
+    "description": "Meeting type editor: error when the title is empty. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeSlug": {
+    "message": "Name in the link",
+    "description": "Meeting type editor: the last part of the type's own address. src/renderer/booking-settings.js"
+  },
+  "settings.booking.slugHelp": {
+    "message": "Up to 40 lowercase letters, digits or hyphens, and not a reserved word.",
+    "description": "Meeting type editor: error for a name in the link that isn't allowed. src/renderer/booking-settings.js"
+  },
+  "settings.booking.slugTaken": {
+    "message": "Another meeting type already uses this name.",
+    "description": "Meeting type editor: error for a name in the link another type has. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeLength": {
+    "message": "Length",
+    "description": "Meeting type editor: the meeting's length. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeDescription": {
+    "message": "Description",
+    "description": "Meeting type editor: the type's description on the page. src/renderer/booking-settings.js"
+  },
+  "settings.booking.location": {
+    "message": "Location",
+    "description": "Meeting type editor: the kind of location. src/renderer/booking-settings.js"
+  },
+  "settings.booking.kindMeet": {
+    "message": "Google Meet",
+    "description": "Location kind: a Google Meet video call. src/renderer/booking-settings.js"
+  },
+  "settings.booking.kindPhone": {
+    "message": "Phone call",
+    "description": "Location kind: a phone call. src/renderer/booking-settings.js"
+  },
+  "settings.booking.kindInPerson": {
+    "message": "In person",
+    "description": "Location kind: meeting in person. src/renderer/booking-settings.js"
+  },
+  "settings.booking.kindLink": {
+    "message": "Meeting link",
+    "description": "Location kind: a link to another video service. src/renderer/booking-settings.js"
+  },
+  "settings.booking.kindNone": {
+    "message": "No location",
+    "description": "Location kind: none. src/renderer/booking-settings.js"
+  },
+  "settings.booking.locationValue": {
+    "message": "Details",
+    "description": "Meeting type editor: the phone number, address or link of the location. src/renderer/booking-settings.js"
+  },
+  "settings.booking.valuePhone": {
+    "message": "Phone number",
+    "description": "Placeholder of the location details for a phone call. src/renderer/booking-settings.js"
+  },
+  "settings.booking.valueAddress": {
+    "message": "Address",
+    "description": "Placeholder of the location details for in person. src/renderer/booking-settings.js"
+  },
+  "settings.booking.valueLink": {
+    "message": "Link to the meeting",
+    "description": "Placeholder of the location details for a meeting link. src/renderer/booking-settings.js"
+  },
+  "settings.booking.locationPublic": {
+    "message": "Show these details on the booking page",
+    "description": "Meeting type editor checkbox: publishes the location details. src/renderer/booking-settings.js"
+  },
+  "settings.booking.locationPrivateHelp": {
+    "message": "Otherwise only the guest's invitation has them.",
+    "description": "Meeting type editor: help under the checkbox. src/renderer/booking-settings.js"
+  },
+  "settings.booking.locationLabel": {
+    "message": "Label on the page",
+    "description": "Meeting type editor: what the page says about the location. src/renderer/booking-settings.js"
+  },
+  "settings.booking.locationLabelPlaceholder": {
+    "message": "Such as Phone call, or In person, Amsterdam",
+    "description": "Placeholder of the location label. src/renderer/booking-settings.js"
+  },
+  "settings.booking.meetUnavailable": {
+    "message": "Google Meet needs a Google calendar that allows Meet under Add bookings to.",
+    "description": "Meeting type editor: why Google Meet can't be chosen. src/renderer/booking-settings.js"
+  },
+  "settings.booking.linkHttps": {
+    "message": "A meeting link starts with https://.",
+    "description": "Meeting type editor: error for a link that isn't https. src/renderer/booking-settings.js"
+  },
+  "settings.booking.more": {
+    "message": "More options",
+    "description": "Meeting type editor: folded section with buffers, notice, window, interval, limit, approval and hidden. src/renderer/booking-settings.js"
+  },
+  "settings.booking.bufferBefore": {
+    "message": "Free time before",
+    "description": "Meeting type editor: buffer before a booking. src/renderer/booking-settings.js"
+  },
+  "settings.booking.bufferAfter": {
+    "message": "Free time after",
+    "description": "Meeting type editor: buffer after a booking. src/renderer/booking-settings.js"
+  },
+  "settings.booking.minNotice": {
+    "message": "Minimum notice",
+    "description": "Meeting type editor: how long before the start a booking can be made. src/renderer/booking-settings.js"
+  },
+  "settings.booking.noNotice": {
+    "message": "No minimum",
+    "description": "Minimum notice option: none. src/renderer/booking-settings.js"
+  },
+  "settings.booking.horizon": {
+    "message": "How far ahead",
+    "description": "Meeting type editor: how many days ahead can be booked. src/renderer/booking-settings.js"
+  },
+  "settings.booking.slotInterval": {
+    "message": "Start times every",
+    "description": "Meeting type editor: the step between offered start times. src/renderer/booking-settings.js"
+  },
+  "settings.booking.slotSame": {
+    "message": "Same as the length",
+    "description": "Start times every option: the meeting's length. src/renderer/booking-settings.js"
+  },
+  "settings.booking.dailyLimit": {
+    "message": "At most per day",
+    "description": "Meeting type editor: the most bookings of this type a day. src/renderer/booking-settings.js"
+  },
+  "settings.booking.noLimit": {
+    "message": "No limit",
+    "description": "At most per day option: none. src/renderer/booking-settings.js"
+  },
+  "settings.booking.days": {
+    "message": { "one": "{count} day", "other": "{count} days" },
+    "description": "A number of days, in the meeting type editor. src/renderer/booking-settings.js"
+  },
+  "settings.booking.perDay": {
+    "message": { "one": "{count} a day", "other": "{count} a day" },
+    "description": "At most per day option; count is the number. src/renderer/booking-settings.js"
+  },
+  "settings.booking.confirmHelp": {
+    "message": "Bookings of this type wait as requests until you accept them.",
+    "description": "Meeting type editor: help under Needs your approval. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hide": {
+    "message": "Hide from the page",
+    "description": "Meeting type editor checkbox. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hideHelp": {
+    "message": "Only people with its own link can book it.",
+    "description": "Meeting type editor: help under Hide from the page. src/renderer/booking-settings.js"
+  },
+  "settings.booking.deleteType": {
+    "message": "Delete meeting type",
+    "description": "Meeting type editor button and question title. src/renderer/booking-settings.js"
+  },
+  "settings.booking.deleteTypeConfirm": {
+    "message": "Delete {title}? Its link stops working.",
+    "description": "Meeting type editor question; title is the type's title. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hoursCustomToggle": {
+    "message": "Use different hours for my booking page",
+    "description": "Hours page switch. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hoursCustomHelp": {
+    "message": "The page offers times only in the hours below.",
+    "description": "Hours page: help while the page has its own hours. src/renderer/booking-settings.js"
+  },
+  "settings.booking.hoursWorkingHelp": {
+    "message": "Off: the page follows your working hours from Settings > Calendar: {hours}.",
+    "description": "Hours page: help while the page follows the working hours; hours is such as \"Mon–Fri, 09:00–17:00\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.weekly": {
+    "message": "Weekly hours",
+    "description": "Hours page: group heading of the hours per weekday. src/renderer/booking-settings.js"
+  },
+  "settings.booking.unavailableDay": {
+    "message": "Unavailable",
+    "description": "Hours page: a weekday without hours. src/renderer/booking-settings.js"
+  },
+  "settings.booking.addRange": {
+    "message": "Add hours on {day}",
+    "description": "Hours page button; day is a weekday's name. src/renderer/booking-settings.js"
+  },
+  "settings.booking.removeRange": {
+    "message": "Remove these hours",
+    "description": "Hours page button beside a range. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rangeFrom": {
+    "message": "{day}: from",
+    "description": "Accessible name of a range's start field; day is a weekday or date. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rangeTo": {
+    "message": "{day}: to",
+    "description": "Accessible name of a range's end field; day is a weekday or date. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rangeInvalid": {
+    "message": "Each range has to end after it starts, and ranges on one day can't overlap. At most six a day.",
+    "description": "Hours page error. src/renderer/booking-settings.js"
+  },
+  "settings.booking.overrides": {
+    "message": "Dates with other hours",
+    "description": "Hours page: group heading of the date overrides. src/renderer/booking-settings.js"
+  },
+  "settings.booking.overridesHelp": {
+    "message": "Block a day, or set other hours for one date.",
+    "description": "Hours page: text above the date overrides. src/renderer/booking-settings.js"
+  },
+  "settings.booking.addOverride": {
+    "message": "Add date",
+    "description": "Hours page row and dialog title. src/renderer/booking-settings.js"
+  },
+  "settings.booking.overrideDate": {
+    "message": "Date",
+    "description": "Add date dialog: the date. src/renderer/booking-settings.js"
+  },
+  "settings.booking.overrideDateNeeded": {
+    "message": "Pick a date from today on.",
+    "description": "Add date dialog error. src/renderer/booking-settings.js"
+  },
+  "settings.booking.overrideBlock": {
+    "message": "Block the whole day",
+    "description": "Add date dialog option. src/renderer/booking-settings.js"
+  },
+  "settings.booking.overrideHours": {
+    "message": "Other hours",
+    "description": "Add date dialog option. src/renderer/booking-settings.js"
+  },
+  "settings.booking.blockedDay": {
+    "message": "Blocked",
+    "description": "Hours page: a date without any hours. src/renderer/booking-settings.js"
+  },
+  "settings.booking.removeOverride": {
+    "message": "Remove {date}",
+    "description": "Hours page button; date is such as \"Tuesday 3 November\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.privacyTitle": {
+    "message": "With your booking page on",
+    "description": "Settings > Rukoo account > What's stored and shared: heading of what the server sees for a booking page. src/renderer/rukoo-account.js (privacyPage)"
+  },
+  "settings.booking.privacySee": {
+    "message": "Your open and busy times, your meeting types and each booking as it comes in. Guests' details are stored sealed, so only your devices can read them afterwards.",
+    "description": "Settings > Rukoo account > What's stored and shared: what the server sees while the booking page is on. src/renderer/rukoo-account.js (privacyPage)"
+  },
   // ---- /cal:B3 ----
   "settings.spam.add": {
     "message": "Add spam address",
@@ -4566,6 +6202,414 @@
     "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers signed_out or the input is refused. src/main/account/index.js (fail)."
   },
   // ---- cal:A4 ----
+  "account.errors.handle_taken": {
+    "message": "Another account uses this address. Pick another one.",
+    "description": "Rukoo account error from the booking routes: the booking page address (handle) belongs to another account. Settings > Booking page. src/main/account/index.js (fail)."
+  },
+  "account.errors.handle_reserved": {
+    "message": "That address is reserved. Pick another one.",
+    "description": "Rukoo account error from the booking routes: the booking page address is a reserved word or still reserved for its last owner. src/main/account/index.js (fail)."
+  },
+  "account.errors.handle_lost": {
+    "message": "Your booking page's address belongs to another account now. Turn the page on with a new address.",
+    "description": "Rukoo account error from the booking routes: this account no longer owns its booking page's address. src/main/account/index.js (fail)."
+  },
+  "account.errors.handle_changes": {
+    "message": "You changed your booking page's address 3 times in the last 30 days. Try again later.",
+    "description": "Rukoo account error from the booking routes: a booking page address can change at most 3 times in 30 days. src/main/account/index.js (fail)."
+  },
+  "account.errors.has_bookings": {
+    "message": "The address can't change while bookings are coming up.",
+    "description": "Rukoo account error from the booking routes: renaming the booking page is refused while it has future bookings. src/main/account/index.js (fail)."
+  },
+  "account.errors.other_device": {
+    "message": "Another computer handles your bookings.",
+    "description": "Rukoo account error from the booking routes: only the booking device may publish or act on bookings. src/main/account/index.js (fail)."
+  },
+  "account.errors.not_found": {
+    "message": "It isn't on the server any more.",
+    "description": "Rukoo account error: the server answered not_found, for a booking or a device that no longer exists. src/main/account/index.js (fail)."
+  },
+  "account.errors.slot_taken": {
+    "message": "That time isn't free.",
+    "description": "Rukoo account error from the booking routes: the time asked for isn't an open slot. src/main/account/index.js (fail)."
+  },
+  "account.errors.stale_version": {
+    "message": "The booking changed in the meantime. Rukoo now shows it as it is.",
+    "description": "Rukoo account error from the booking routes: the booking changed since this computer last read it; Rukoo reads it again. src/main/account/index.js (fail)."
+  },
+  "booking.errors.unsupported": {
+    "message": "This server doesn't support booking pages.",
+    "description": "Booking page error: the Rukoo account server doesn't list booking in its features. src/main/booking/index.js."
+  },
+  "booking.errors.signedOut": {
+    "message": "Sign in to your Rukoo account to use a booking page.",
+    "description": "Booking page error: a booking action needs a signed-in Rukoo account. src/main/booking/index.js."
+  },
+  "booking.errors.noDestination": {
+    "message": "Choose a calendar that can take bookings: a Google calendar you can edit, or a CalDAV calendar whose server sends invitations.",
+    "description": "Booking page error: the calendar chosen for bookings can't take them. Settings > Booking page setup. src/main/booking/index.js."
+  },
+  "booking.errors.destinationGone": {
+    "message": "The calendar for bookings isn't on this computer any more. Choose another one.",
+    "description": "Booking page error: the destination calendar can't be found or written on this computer. src/main/booking/index.js."
+  },
+  "booking.errors.calendarUnreadable": {
+    "message": "Rukoo couldn't read the calendar for bookings. Check the connection and try again.",
+    "description": "Booking page error: the destination calendar couldn't be read, so Rukoo can't tell whether a booked event is still there (for example when cancelling a booking). src/main/booking/index.js (bookingEvents, findEvent)."
+  },
+  "booking.errors.noKey": {
+    "message": "Rukoo couldn't set up the key for your booking page. Check your connection and try again.",
+    "description": "Booking page error: the key pair guest details are sealed to couldn't be made or confirmed with the account server. src/main/booking/index.js (ensureKey)."
+  },
+  "booking.errors.keyMismatch": {
+    "message": "The key for your booking page on this computer is damaged. Sync your Rukoo account and try again.",
+    "description": "Booking page error: the stored key pair doesn't hold together. src/main/booking/index.js (ensureKey)."
+  },
+  "booking.errors.tooLarge": {
+    "message": "Your booking page settings are too long. Shorten the descriptions or remove a meeting type.",
+    "description": "Booking page error: the settings record is over 12 KiB. Settings > Booking page. src/main/booking/rules.js (checkSettings)."
+  },
+  "booking.errors.invalidHandle": {
+    "message": "Use 3 to 32 lowercase letters, digits and single hyphens, without a hyphen at the start or end.",
+    "description": "Booking page error next to the address (handle) field: the handle doesn't follow the rules. src/main/booking/rules.js."
+  },
+  "booking.errors.reservedHandle": {
+    "message": "That address is reserved. Pick another one.",
+    "description": "Booking page error next to the address (handle) field: the handle is a reserved word such as api or meet. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidSlug": {
+    "message": "A link name uses 1 to 40 lowercase letters, digits and single hyphens.",
+    "description": "Booking page error next to a meeting type's link name (slug). src/main/booking/rules.js."
+  },
+  "booking.errors.reservedSlug": {
+    "message": "That link name is reserved. Pick another one.",
+    "description": "Booking page error next to a meeting type's link name: the slug is a reserved word such as api or ics. src/main/booking/rules.js."
+  },
+  "booking.errors.duplicateSlug": {
+    "message": "Two meeting types have the same link name.",
+    "description": "Booking page error: two meeting types share a slug. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidType": {
+    "message": "Check the meeting type: one of its fields isn't valid.",
+    "description": "Booking page error: a meeting type field is out of range (length, buffers, notice, window, interval, limit, location). src/main/booking/rules.js."
+  },
+  "booking.errors.invalidHours": {
+    "message": "Check the hours: each range ends after it starts, ranges can't overlap, and a day has at most 6.",
+    "description": "Booking page error: the booking hours or a date's hours don't make valid ranges. src/main/booking/rules.js."
+  },
+  "booking.errors.noMeet": {
+    "message": "Google Meet needs a Google calendar that allows it as the calendar for bookings.",
+    "description": "Booking page error: a meeting type uses Google Meet but the destination calendar can't add it. src/main/booking/rules.js."
+  },
+  "booking.errors.notBookingDevice": {
+    "message": "Another computer handles your bookings. Use this computer for bookings first.",
+    "description": "Booking page error: only the booking device can publish, rename the page or act on bookings. src/main/booking/index.js."
+  },
+  "booking.errors.deleteFirst": {
+    "message": "Rukoo couldn't turn off your booking page, so your account wasn't deleted. Check your connection and try again.",
+    "description": "Settings > Rukoo account > Delete account: deleting stops because the booking page couldn't be turned off first. src/main/booking/index.js (disableForDelete)."
+  },
+  "booking.errors.invalidName": {
+    "message": "Enter a name of up to 100 characters.",
+    "description": "Booking page error next to the display name field. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidIntro": {
+    "message": "The introduction can be at most 1000 characters.",
+    "description": "Booking page error next to the introduction field. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidContact": {
+    "message": "The contact line can be at most 200 characters on one line.",
+    "description": "Booking page error next to the contact line shown when no times are open. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidZone": {
+    "message": "Choose a time zone from the list.",
+    "description": "Booking page error next to the time zone field. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidCap": {
+    "message": "The daily limit is a number from 1 to 50.",
+    "description": "Booking page error next to the daily booking limit. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidOverrides": {
+    "message": "Check the dates with other hours: at most 60 dates with up to 6 ranges each.",
+    "description": "Booking page error: the date overrides (blocked days or other hours) don't fit the limits. src/main/booking/rules.js."
+  },
+  "booking.errors.invalidMessage": {
+    "message": "The message can be at most 500 characters.",
+    "description": "Booking page error: the host's message to a guest when declining or cancelling is too long. src/main/booking/index.js (action)."
+  },
+  "booking.errors.notFound": {
+    "message": "This booking isn't there any more.",
+    "description": "Booking page error: an action names a booking or notice this computer doesn't have, or one that can't take it. src/main/booking/index.js (action)."
+  },
+  "booking.errors.notOn": {
+    "message": "Your booking page is off.",
+    "description": "Booking page error: an action that needs the page to be on. src/main/booking/index.js."
+  },
+  "booking.errors.serverAnswer": {
+    "message": "The server sent an answer Rukoo can't use. Try again later.",
+    "description": "Booking page error: the list of bookings from the account server breaks the protocol's order rules. src/main/booking/index.js (fetchRows)."
+  },
+  "booking.defaults.typeTitle": {
+    "message": "30 minute meeting",
+    "description": "Booking page: title of the first meeting type, in the booking page's language. src/main/booking/rules.js (defaultType)."
+  },
+  "booking.event.title": {
+    "message": "{type}: {host} and {guest}",
+    "description": "Title of the calendar event a booking becomes, in the booking page's language. type is the meeting type's title, host the page's display name, guest the guest's cleaned short name. src/main/booking/index.js (eventInput)."
+  },
+  "booking.event.titleNoGuest": {
+    "message": "{type}: {host}",
+    "description": "Title of the calendar event a booking becomes when the guest's name has nothing usable. type is the meeting type's title, host the page's display name. src/main/booking/index.js (eventInput)."
+  },
+  "booking.event.description": {
+    "message": "Booked via {url}",
+    "description": "Last line of a booked event's description, in the booking page's language; guests see it in their invitation. url is the booking page. src/main/booking/index.js (eventInput)."
+  },
+  "booking.decline.subject": {
+    "message": "{type} on {when}",
+    "description": "Subject of the optional email to a guest whose request the host declined, in the booking page's language. type is the meeting type, when the requested time. src/main/booking/index.js (declineMail)."
+  },
+  "booking.decline.body": {
+    "message": "Sorry, I can't make {type} on {when}.",
+    "description": "Body of the optional decline email when the host wrote no message, in the booking page's language, written as the host. src/main/booking/index.js (declineMail)."
+  },
+  "booking.decline.again": {
+    "message": "You can pick another time here: {url}",
+    "description": "Last line of the optional decline email, in the booking page's language. url is the booking page. src/main/booking/index.js (declineMail)."
+  },
+  "booking.notifications.newTitle": {
+    "message": "New booking",
+    "description": "Desktop notification or toast title when someone books time on the booking page. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.newBody": {
+    "message": "{guest} booked {type} for {when}.",
+    "description": "Desktop notification text for a new booking. guest is the guest's cleaned short name, type the meeting type, when the day and time. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.requestTitle": {
+    "message": "Booking request",
+    "description": "Desktop notification title for a booking that waits for the host's approval. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.requestBody": {
+    "message": "{guest} asks for {type} on {when}. Accept or decline it in Rukoo.",
+    "description": "Desktop notification text for a booking request. guest is the guest's cleaned short name, type the meeting type, when the day and time. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.rescheduledTitle": {
+    "message": "Booking moved",
+    "description": "Desktop notification title when a guest moves a booking. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.rescheduledBody": {
+    "message": "{guest} moved {type} to {when}.",
+    "description": "Desktop notification text when a guest moves a booking. guest is the guest's cleaned short name, type the meeting type, when the new day and time. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.cancelledTitle": {
+    "message": "Booking cancelled",
+    "description": "Desktop notification title when a guest cancels a booking. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.cancelledBody": {
+    "message": "{guest} cancelled {type} on {when}.",
+    "description": "Desktop notification text when a guest cancels. guest is the guest's cleaned short name, type the meeting type, when the day and time. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.withdrawnTitle": {
+    "message": "Request withdrawn",
+    "description": "Desktop notification title when a guest cancels a booking request the host hadn't answered yet. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.withdrawnBody": {
+    "message": "{guest} withdrew the request for {type} on {when}.",
+    "description": "Desktop notification text when a guest cancels a booking request. guest is the guest's cleaned short name, type the meeting type, when the requested day and time. src/main/booking/index.js (tell)."
+  },
+  "booking.notifications.someone": {
+    "message": "A guest",
+    "description": "Booking notifications and notices: stands in for a guest whose name has nothing usable. src/main/booking/index.js."
+  },
+  "booking.notices.actions.keep": {
+    "message": "Keep",
+    "description": "Booking notice button: keep a booking that overlaps another event. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.actions.cancel": {
+    "message": "Cancel booking",
+    "description": "Booking notice button: cancel the booking the notice is about. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.actions.reconnect": {
+    "message": "Reconnect",
+    "description": "Booking notice button: sign in to a calendar account again. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.actions.takeover": {
+    "message": "Use this computer",
+    "description": "Booking notice button: make this computer the one that handles bookings. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.actions.dismiss": {
+    "message": "Dismiss",
+    "description": "Booking notice button: hide the notice. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.actions.open": {
+    "message": "Open",
+    "description": "Booking notice button: open the booked event or request. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.handleLostTitle": {
+    "message": "Your booking page's address is gone",
+    "description": "Booking notice title: another account now owns the page's address. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.handleLostText": {
+    "message": "Another account has {handle} now. Turn your booking page on again with a new address.",
+    "description": "Booking notice text when the page's address was lost. handle is the old address. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.otherDeviceTitle": {
+    "message": "Bookings are handled by {device}",
+    "description": "Booking notice title on a computer that isn't the booking device. device is that computer's name. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.otherDeviceText": {
+    "message": "That computer publishes your free times and adds bookings to your calendar.",
+    "description": "Booking notice text on a computer that isn't the booking device. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.otherDeviceUnknown": {
+    "message": "another computer",
+    "description": "Booking notices: stands in for the booking device's name when the server doesn't know it, inside a sentence. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.keyTitle": {
+    "message": "Guest details can't be opened",
+    "description": "Booking notice title: the key guest details are sealed to is missing, different or damaged on this computer. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.keyMissingText": {
+    "message": "This computer doesn't have the key for your booking page yet. Sync your Rukoo account.",
+    "description": "Booking notice text: the key pair hasn't reached this computer. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.keyMismatchText": {
+    "message": "Your booking page uses a key this computer doesn't have. Sync your Rukoo account, or turn the page off and on again.",
+    "description": "Booking notice text: the published key isn't in this computer's keyring. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.keyUnreadableText": {
+    "message": "The key for your booking page on this computer is damaged, so new bookings can't be opened.",
+    "description": "Booking notice text: the keyring itself doesn't open on this computer. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.unopenedTitle": {
+    "message": { "one": "{count} booking can't be opened", "other": "{count} bookings can't be opened" },
+    "description": "Booking notice title: the guest details of upcoming bookings or requests couldn't be opened on this computer. count is how many. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.unopenedText": {
+    "message": { "one": "Rukoo couldn't open the guest details of {count} booking, so it isn't in your calendar. The details may be damaged, or locked with a key this computer doesn't have.", "other": "Rukoo couldn't open the guest details of {count} bookings, so they aren't in your calendar. The details may be damaged, or locked with a key this computer doesn't have." },
+    "description": "Booking notice text when guest details couldn't be opened. count is how many bookings. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.staleTitle": {
+    "message": "Your booking page is out of date",
+    "description": "Booking notice title: the free times weren't published for over 24 hours. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.staleText": {
+    "message": "Rukoo hasn't updated your free times for over 24 hours, so new bookings wait for your approval.",
+    "description": "Booking notice text on the booking device when its last publish is over 24 hours old. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.staleOtherText": {
+    "message": "{device} hasn't updated your free times for over 24 hours, so new bookings wait for your approval. Start Rukoo there, or use this computer.",
+    "description": "Booking notice text on another computer when the booking device hasn't published for over 24 hours. device is the booking device's name. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.capTitle": {
+    "message": "Today's booking limit reached",
+    "description": "Booking notice title: the page took as many bookings today as its daily limit. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.capText": {
+    "message": { "one": "Your booking page took {count} booking today, its daily limit. It offers times again tomorrow.", "other": "Your booking page took {count} bookings today, its daily limit. It offers times again tomorrow." },
+    "description": "Booking notice text when the daily limit is reached. count is the limit. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.uncheckedTitle": {
+    "message": "Couldn't check {email}",
+    "description": "Booking notice title: a calendar account that counts toward availability couldn't be read for 12 hours. email is that account's address. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.uncheckedText": {
+    "message": "Rukoo couldn't read this calendar for 12 hours, so every booking now waits for your approval. Reconnect the account to fix this.",
+    "description": "Booking notice text when a calendar account couldn't be read for 12 hours. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.publishFailedTitle": {
+    "message": "Couldn't update your booking page",
+    "description": "Booking notice title: the last publish of free times failed. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.publishFailedText": {
+    "message": "Rukoo tries again in a few minutes. {error}",
+    "description": "Booking notice text when publishing failed. error is the localised reason. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.overlapTitle": {
+    "message": "A booking overlaps another event",
+    "description": "Booking notice title: a new or moved booking overlaps another busy event. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.overlapText": {
+    "message": "{type} with {guest} on {when} overlaps something in your calendar. Keep both, or cancel the booking.",
+    "description": "Booking notice text for an overlap. type is the meeting type, guest the cleaned short name, when the day and time. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.mailBudgetTitle": {
+    "message": "No email sent to a guest",
+    "description": "Booking notice title: the page reached its daily email limit, so a calendar change went out without mail. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.mailBudgetText": {
+    "message": "Your booking page reached today's email limit, so Rukoo changed {type} with {guest} on {when} in your calendar without emailing them.",
+    "description": "Booking notice text when a change was made without mail. type is the meeting type, guest the cleaned short name, when the day and time. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.guestCancelledTitle": {
+    "message": "{guest} cancelled",
+    "description": "Booking notice title when a guest cancelled. guest is the cleaned short name; type and when are given too. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.guestCancelledText": {
+    "message": "{type} on {when} is off. Rukoo removed it from your calendar.",
+    "description": "Booking notice text when a guest cancelled. type is the meeting type, when the day and time; guest is given too. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.guestDeclinedTitle": {
+    "message": "{guest} declined",
+    "description": "Booking notice title when the guest declined the calendar invitation. guest is the cleaned short name. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.guestDeclinedText": {
+    "message": "{guest} declined the invitation for {type} on {when}, so Rukoo cancelled the booking.",
+    "description": "Booking notice text when the guest declined the invitation. guest is the cleaned short name, type the meeting type, when the day and time. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.hostDeletedTitle": {
+    "message": "Booking cancelled",
+    "description": "Booking notice title: the host deleted a booked event, so the booking was cancelled. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.hostDeletedText": {
+    "message": "You deleted {type} with {guest} on {when} from your calendar, so Rukoo cancelled the booking.",
+    "description": "Booking notice text when the host deleted a booked event. type is the meeting type, guest the cleaned short name, when the day and time. src/main/booking/index.js (notices)."
+  },
+  "reminders.untitled": {
+    "message": "(No title)",
+    "description": "Desktop reminder notification title for an event without a title. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.now": {
+    "message": "Starts now",
+    "description": "Desktop reminder notification text for an event that starts now. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.in": {
+    "message": { "one": "Starts in {count} minute", "other": "Starts in {count} minutes" },
+    "description": "Desktop reminder notification text for an event starting within the hour. count is minutes. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.started": {
+    "message": { "one": "Started {count} minute ago", "other": "Started {count} minutes ago" },
+    "description": "Desktop reminder notification text for a timed event that started up to 5 minutes ago. count is minutes. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.at": {
+    "message": "{day} at {time}",
+    "description": "Desktop reminder notification text for an event more than an hour away. day is Today, Tomorrow or a date; time the start time. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.today": {
+    "message": "Today",
+    "description": "Desktop reminder notifications: the day word for today, inside reminders.at and reminders.allDay. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.tomorrow": {
+    "message": "Tomorrow",
+    "description": "Desktop reminder notifications: the day word for tomorrow, inside reminders.at and reminders.allDay. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.allDay": {
+    "message": "{day}, all day",
+    "description": "Desktop reminder notification text for an all-day event. day is Today, Tomorrow or a date. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.join": {
+    "message": "Click to join",
+    "description": "Desktop reminder notification line for an event with a video meeting link; a click opens the event card with its Join button. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.many": {
+    "message": { "one": "{count} event coming up", "other": "{count} events coming up" },
+    "description": "Desktop reminder notification title when several reminders show at once. count is the number of events. src/main/calendar/reminder-runner.js."
+  },
+  "reminders.more": {
+    "message": { "one": "and {count} more", "other": "and {count} more" },
+    "description": "Last line of a combined desktop reminder when more events are due than it lists. count is how many more. src/main/calendar/reminder-runner.js."
+  },
   // ---- /cal:A4 ----
   "settings.groups.sync": {
     "message": "Sync",

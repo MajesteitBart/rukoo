@@ -37,6 +37,8 @@ import { openSettings, promptDialog } from './settings.js';
 import { openSetup } from './setup.js';
 import * as calendar from './calendar.js';
 // ---- cal:B3 imports ----
+// The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
+import { applyBooking } from './calendar-free.js';
 // ---- /cal:B3 imports ----
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
@@ -2494,6 +2496,10 @@ window.mail.on(async ({ type, payload }) => {
   }
   // ---- /cal:B1 events ----
   // ---- cal:B3 events ----
+  // The booking page's state: requests and booked events on the grid, its notices above it, the link for the composer.
+  // Its notices come translated from main, so a language change asks for them again.
+  if (type === 'booking') applyBooking(payload);
+  if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
   // ---- /cal:B3 events ----
   if (type === 'categories') {
     S.categories = payload;
@@ -2581,5 +2587,6 @@ export const ctx = {
 
 calendar.init(ctx);
 // ---- cal:B3 init ----
+api('bookingState').then(applyBooking).catch(() => {});
 // ---- /cal:B3 init ----
 refresh().catch((err) => toast(err.message, 6000));

@@ -865,7 +865,6 @@ test('week start, weekends and working hours follow Settings → Calendar', asyn
 test('a side panel, open time on the grid, booking requests and calendar-open from main', async () => {
   await openCalendar();
   const button = win.locator('[data-cal-panel="free"]');
-  await expect(button).toBeHidden();
   // A panel as calendar-free.js registers one.
   await win.evaluate(async () => {
     const shared = await import('./calendar-shared.js');

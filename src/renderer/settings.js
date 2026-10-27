@@ -18,6 +18,8 @@ import { editSignature, signaturePreview } from './signature.js';
 import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
 import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
 // ---- cal:B3 imports ----
+import { calendarSettingsPages, CALENDAR_VIEWS } from './calendar-settings.js';
+import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
 // ---- /cal:B3 imports ----
 
 const THEMES = [
@@ -228,6 +230,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (type === 'account') account.onStatus(payload);
     if (type === 'categories') categoriesPage.onState(payload);
     // ---- cal:B3 events ----
+    // The booking page's state from main: the page and the overview follow it, forms keep what is typed.
+    if (type === 'booking') bookingPage.onState(payload);
     // ---- /cal:B3 events ----
   });
 
@@ -273,6 +277,27 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const categoriesPage = categoryPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
   const account = accountPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog, jevOn: () => categoriesPage.jevOn() });
   // ---- cal:B3 pages ----
+  // Settings > Calendar (calendar-settings.js) and Settings > Booking page (booking-settings.js), which also draws the
+  // booking link rows beside the signature rows.
+  const calendarPage = calendarSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
+  const bookingPage = bookingPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
+  // A redraw of the screen already showing keeps its scroll position on the pages with calendar and booking rows: the
+  // booking page changes while it is open, and a switch near the bottom shouldn't send the page back to the top.
+  // Another page, or the booking page's setup becoming the page, starts at the top.
+  const scrollKept = { key: null, top: 0 };
+  function keepScroll(view) {
+    const scroller = page.querySelector('.page-scroll');
+    const kept = view === 'main' || view === 'account' || CALENDAR_VIEWS.includes(view) || BOOKING_VIEWS.includes(view);
+    const key = !kept || !scroller ? null : BOOKING_VIEWS.includes(view) ? bookingPage.screen() : `${view}:${params.id || ''}`;
+    if (key && key === scrollKept.key && scrollKept.top > 0) {
+      const top = scrollKept.top;
+      scroller.scrollTop = top;
+      // Rows that fill in just after the redraw can still make the page long enough.
+      if (scroller.scrollTop < top) requestAnimationFrame(() => scroller.isConnected && (scroller.scrollTop = top));
+    } else scrollKept.top = 0;
+    scrollKept.key = key;
+    if (key) scroller.addEventListener('scroll', () => scrollKept.key === key && (scrollKept.top = scroller.scrollTop), { passive: true });
+  }
   // ---- /cal:B3 pages ----
 
   // A signature row: the signature as it will be sent, or None.
@@ -890,6 +915,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
       view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
       // ---- cal:B3 prepare ----
+      view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
+      view === 'main' || view === 'account' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
       // ---- /cal:B3 prepare ----
     ]);
     if (stack[stack.length - 1] !== view) return;
@@ -920,6 +947,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         })
         .join('');
       // ---- cal:B3 main rows ----
+      // The booking link goes beside the signature; Calendar and the booking page get a group after General.
+      const footerRow = bookingPage.footerRow(s);
+      const calendarGroup = `
+        <div class="settings-group-title" data-i18n="settings.groups.calendar">${esc(t('settings.groups.calendar'))}</div>
+        <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}</div>`;
       // ---- /cal:B3 main rows ----
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
@@ -945,9 +977,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
           ${mailtoRow()}
           ${signatureRow(signatureHtml(s.signature, s.signatureHtml), 'signature')}
+          ${footerRow}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
+        ${calendarGroup}
         <div class="settings-group-title" data-i18n="settings.groups.sync">${esc(t('settings.groups.sync'))}</div>
         <div class="card">${account.rowHtml()}</div>
         <div class="settings-group-title" data-i18n="settings.groups.agents">${esc(t('settings.groups.agents'))}</div>
@@ -969,6 +1003,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         ? `<div class="row static" data-default-account><div class="text"><div class="title">${esc(t('settings.account.isDefault'))}</div><div class="desc">${esc(t('settings.account.makeDefaultHelp'))}</div></div></div>`
         : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' });
       // ---- cal:B3 account rows ----
+      // The booking link under this account's signature, after its signature row.
+      const accountFooterRow = bookingPage.accountFooterRow(a, s);
       // ---- /cal:B3 account rows ----
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.account">${esc(t('settings.groups.account'))}</div>
@@ -976,6 +1012,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${defaultRow}
           ${row({ title: t('settings.account.name'), value: esc(a.name || ''), action: 'acc-name' })}
           ${usesGeneralSignature(a) ? generalSignatureRow(signatureHtml(s.signature, s.signatureHtml)) : signatureRow(accountSignatureHtml(a, s), 'acc-signature')}
+          ${accountFooterRow}
           ${row({ title: t('settings.account.color'), value: labelOf(COLORS, a.color), action: 'acc-color' })}
           ${row({ title: t('settings.account.from'), value: esc(a.defaultFrom), action: 'acc-from' })}
           ${row({ title: t('settings.account.identities'), desc: a.identities.length > 1 ? t('settings.aliases.count', { count: a.identities.length - 1 }) : t('settings.account.noAliases'), action: 'acc-aliases' })}
@@ -1100,6 +1137,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (ACCOUNT_VIEWS.includes(view)) ({ title, body } = account.view(view));
     if (CATEGORY_VIEWS.includes(view)) ({ title, body } = categoriesPage.view(view));
     // ---- cal:B3 views ----
+    if (CALENDAR_VIEWS.includes(view)) ({ title, body } = calendarPage.view(view));
+    if (BOOKING_VIEWS.includes(view)) ({ title, body } = bookingPage.view(view));
     // ---- /cal:B3 views ----
 
     // A redraw, such as the one after each update from main, keeps the keyboard on the control with the same action.
@@ -1113,6 +1152,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (view === 'main') showMailto();
     if (view === 'main' || ACCOUNT_VIEWS.includes(view)) account.fill(view);
     // ---- cal:B3 fill ----
+    calendarPage.fill(view, page);
+    bookingPage.fill(view, page);
+    keepScroll(view);
     // ---- /cal:B3 fill ----
   }
 
@@ -1121,6 +1163,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const form = e.target;
     if (String(form.dataset.form || '').startsWith('rukoo')) return account.submit(form);
     // ---- cal:B3 submit ----
+    if (String(form.dataset.form || '').startsWith('booking')) return bookingPage.submit(form);
     // ---- /cal:B3 submit ----
     const f = new FormData(form);
     const err = form.querySelector('[data-error]');
@@ -1166,6 +1209,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a.startsWith('rukoo') && (await account.click(a))) return;
     if ((a === 'categories' || a.startsWith('cat-')) && (await categoriesPage.click(a))) return;
     // ---- cal:B3 click ----
+    if (a.startsWith('calset-') && (await calendarPage.click(a))) return;
+    if (a.startsWith('booking-') && (await bookingPage.click(a))) return;
     // ---- /cal:B3 click ----
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);

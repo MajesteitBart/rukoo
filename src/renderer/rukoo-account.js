@@ -309,6 +309,7 @@ export function accountPages({ row, go, back, rerender, current, promptDialog, j
         ${staticRow(esc(t('settings.rukoo.see.devices')))}
         ${staticRow(esc(t('settings.rukoo.see.records')))}
         ${staticRow(esc(t('settings.rukoo.see.ip')))}
+        ${staticRow(esc(t('settings.booking.privacyTitle')), esc(t('settings.booking.privacySee')))}
       </div>
       <div class="settings-group-title">${esc(t('settings.rukoo.cantSee'))}</div>
       <div class="card">${staticRow(esc(t('settings.rukoo.cantSeeHelp')))}</div>

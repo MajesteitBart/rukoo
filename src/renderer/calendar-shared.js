@@ -324,4 +324,52 @@ export function fromNow(ms) {
 // ---- cal:B2 shared ----
 // ---- /cal:B2 shared ----
 // ---- cal:B3 shared ----
+// Free time, for the availability panel (calendar-free.js) and the composer's free times (composer.js, which runs in
+// the compose window too, where there is no calendar view): the lengths and periods to choose from, and time zones.
+export const FREE_LENGTHS = [15, 30, 45, 60, 90];
+export const FREE_RANGES = ['week', 'next', 'days14'];
+export const pcZone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch (_) {
+    return 'UTC';
+  }
+};
+
+// The period a free-time choice means, from now: the rest of this week, next week, or the next 14 days. calendar:
+// settings.calendar, for the week's first day (the language's when it chose none).
+export function freeRange(kind, calendar, now = Date.now()) {
+  let first = calendar && [0, 1, 6].includes(calendar.weekStart) ? calendar.weekStart : null;
+  if (first === null) {
+    try {
+      const locale = new Intl.Locale(getLocale());
+      const info = typeof locale.getWeekInfo === 'function' ? locale.getWeekInfo() : locale.weekInfo;
+      first = info && info.firstDay ? info.firstDay % 7 : 1;
+    } catch (_) {
+      first = 1;
+    }
+  }
+  const today = startOfDay(now);
+  const week = addDays(today, -((new Date(today).getDay() - first + 7) % 7));
+  if (kind === 'next') return { start: addDays(week, 7), end: addDays(week, 14) };
+  if (kind === 'days14') return { start: now, end: addDays(today, 14) };
+  return { start: now, end: addDays(week, 7) };
+}
+
+// The time zones to pick from, as <option>s: this computer's first, then any extra ones (such as the booking page's),
+// then every zone the system knows.
+export function zoneOptions(selected, extra = []) {
+  let all = [];
+  try {
+    all = Intl.supportedValuesOf('timeZone');
+  } catch (_) {
+    all = [];
+  }
+  const here = pcZone();
+  const first = [here, ...extra.filter((z) => z && z !== here)];
+  const rest = all.filter((z) => !first.includes(z));
+  if (selected && !first.includes(selected) && !rest.includes(selected)) first.push(selected);
+  const option = (z) => `<option value="${esc(z)}"${z === selected ? ' selected' : ''}>${esc(z === here ? t('calendar.free.zoneHere', { zone: z }) : z.replace(/_/g, ' '))}</option>`;
+  return `${first.map(option).join('')}<option disabled>──────────</option>${rest.map(option).join('')}`;
+}
 // ---- /cal:B3 shared ----
