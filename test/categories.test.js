@@ -525,8 +525,9 @@ test('a re-sort the app quits during goes on after a restart', async (t) => {
   const msgs = inbox();
   const { cats, acc, account, engine } = setup(t, msgs, { jevImpl: fake });
   const stored = (uid) => account.get('classification', cats.key(acc, msgs.find((m) => m.uid === uid)));
-  cats.setEnabled(true);
+  // Jev first: turning categories on sorts at once.
   cats.setJev({ key: 'KEY', on: true });
+  cats.setEnabled(true);
   await cats.sort();
   assert.equal(stored(1).category, 'promotions');
 
@@ -544,6 +545,24 @@ test('a re-sort the app quits during goes on after a restart', async (t) => {
   await again.sort();
   assert.equal(stored(1).category, 'money', 'the re-sort replaced the old answer');
   assert.equal(again.redo.size, 0);
+});
+
+test("a finished re-sort's answers are on disk before the list that says it's done", async (t) => {
+  let category = 'promotions';
+  const fake = { MODEL: 'jev-test', classify: async () => ({ category, confidence: 0.9, model: 'jev-test' }) };
+  const msgs = inbox();
+  const { cats, acc } = setup(t, msgs, { jevImpl: fake });
+  // Jev first: turning categories on sorts at once.
+  cats.setJev({ key: 'KEY', on: true });
+  cats.setEnabled(true);
+  await cats.sort();
+  category = 'money';
+  await cats.sortAgain();
+  assert.deepEqual(JSON.parse(fs.readFileSync(cats.file(), 'utf8')).redo, []);
+  // The app quits now, within the account's second before it saves: a new account service reads what is on disk.
+  const account = new AccountService({ dataDir: cats.dataDir, secrets, defaultServer: '', deviceName: 'desk' }).init();
+  t.after(() => account.close());
+  assert.equal(account.get('classification', cats.key(acc, msgs[0])).category, 'money');
 });
 
 test('a very long Message-ID is kept as its hash', (t) => {

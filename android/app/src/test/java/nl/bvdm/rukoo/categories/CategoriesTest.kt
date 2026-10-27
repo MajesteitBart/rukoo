@@ -79,10 +79,10 @@ class CategoriesTest {
         fun stored(m: MessageSummary): JsonObject? = account.get("classification", cats.key(acc, m)) as? JsonObject
     }
 
-    private fun setup(messages: List<MessageSummary>, jev: JevApi = NoJev, sent: List<MessageSummary> = emptyList()): Setup {
+    private fun setup(messages: List<MessageSummary>, jev: JevApi = NoJev, sent: List<MessageSummary> = emptyList(), saveAfterMs: Long = 1000): Setup {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         val dir = tmp.newFolder()
-        val account = AccountService(dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _ -> null }, scope, pushAfterMs = 60_000)
+        val account = AccountService(dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _ -> null }, scope, pushAfterMs = 60_000, saveAfterMs = saveAfterMs)
         val mail = FakeMail(messages, sent)
         // A long wait before sorting by itself, so each test sorts when it says so.
         val cats = Categories(account, mail, PlainSecrets, dir, jev, EnglishPresets, scope, sortAfterMs = 60_000)
@@ -535,8 +535,9 @@ class CategoriesTest {
         }
         val s = setup(inbox(), fake)
         val one = s.mail.inbox[0]
-        s.cats.setEnabled(true)
+        // Jev first: turning categories on sorts at once, on another thread.
         s.cats.setJev(on = true, key = "KEY")
+        s.cats.setEnabled(true)
         s.cats.sort()
         assertEquals("promotions", s.stored(one)?.get("category")?.jsonPrimitive?.content)
 
@@ -556,6 +557,27 @@ class CategoriesTest {
         again.sort()
         assertEquals("the re-sort replaced the old answer", "money", s.stored(one)?.get("category")?.jsonPrimitive?.content)
         assertTrue(again.redoKeys().isEmpty())
+    }
+
+    @Test
+    fun `a finished re-sort's answers are on disk before the list that says it's done`() = runBlocking {
+        var category = "promotions"
+        val fake = FakeJev { _, _, _ -> JevAnswer(category, 0.9, "jev-test") }
+        // The account saves its records only long after a change, so only what Categories writes is on disk.
+        val s = setup(inbox(), fake, saveAfterMs = 60_000)
+        val one = s.mail.inbox[0]
+        // Jev first: turning categories on sorts at once, on another thread.
+        s.cats.setJev(on = true, key = "KEY")
+        s.cats.setEnabled(true)
+        s.cats.sort()
+        category = "money"
+        s.cats.sortAgain()
+        assertFalse(java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
+        // Android stops the app now: a new account service reads what is on disk.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val account = AccountService(s.dir, PlainSecrets, "", "desk", AccountHttp { _, _, _, _, _ -> null }, scope, pushAfterMs = 60_000)
+        closers += { account.close() }
+        assertEquals("money", (account.get("classification", s.cats.key(s.acc, one)) as? JsonObject)?.get("category")?.jsonPrimitive?.content)
     }
 
     @Test

@@ -828,6 +828,11 @@ class AccountService(
             .onFailure { AppLog.w(TAG, "could not save the account's records", it) }
     }
 
+    /** Writes the records that wait for their save now. */
+    fun flush() = synchronized(lock) {
+        if (saveJob != null) saveEntries(now = true)
+    }
+
     /** Writes what waits and stops the timers, for quitting and for tests. */
     fun close() = synchronized(lock) {
         pushJob?.cancel()

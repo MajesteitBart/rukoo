@@ -672,11 +672,16 @@ class AccountService extends EventEmitter {
     if (this.timers.save.unref) this.timers.save.unref();
   }
 
+  // Writes the records that wait for their save now.
+  flush() {
+    if (this.timers.save) this.saveEntries(true);
+  }
+
   // Writes what waits and stops the timers, for quitting.
   close() {
     clearInterval(this.timers.every);
     clearTimeout(this.timers.push);
-    if (this.timers.save) this.saveEntries(true);
+    this.flush();
   }
 
   changedStatus() {

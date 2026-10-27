@@ -73,6 +73,9 @@ class Categories extends EventEmitter {
   // What stays on this computer: Jev's settings, and the emails a re-sort still has to do (redo), so a restart
   // doesn't forget them.
   saveLocal() {
+    // The account's records go to disk first: a re-sort list without an email whose new category is still only in
+    // memory would forget that email for good if the app quit right then.
+    this.account.flush();
     this.local.redo = [...this.redo];
     fs.mkdirSync(this.dataDir, { recursive: true });
     fs.writeFileSync(this.file(), JSON.stringify(this.local));
