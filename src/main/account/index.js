@@ -410,7 +410,6 @@ class AccountService extends EventEmitter {
     }
     this.open({ token, dataKey });
     this.saveState();
-    this.saveEntries(true);
     this.changedStatus();
     this.sync().catch(() => {});
   }
@@ -429,7 +428,6 @@ class AccountService extends EventEmitter {
     const { server, info, error } = this.state;
     this.state = { server, info, error };
     this.saveState();
-    this.saveEntries(true);
   }
 
   // ---- records ----
@@ -525,7 +523,7 @@ class AccountService extends EventEmitter {
       } finally {
         if (this.syncing && this.syncing.promise === promise) this.syncing = null;
         if (current()) this.saveState();
-        this.saveEntries(true);
+        else this.saveEntries(true);
         this.changedStatus();
       }
       return this.status();
@@ -638,7 +636,9 @@ class AccountService extends EventEmitter {
       }
       const res = await this.call('POST', '/v1/records', { records }, { auth: true, session });
       if (this.session !== session) return refused;
-      const results = new Map((Array.isArray(res && res.results) ? res.results : []).map((r) => [r.id, r]));
+      const results = new Map((Array.isArray(res && res.results) ? res.results : []).map((r) => [r && r.id, r]));
+      // A server that leaves a record out of its answer would get it again, forever.
+      if (batch.some((e) => !results.has(e.id))) throw fail('server');
       for (const e of batch) {
         const r = results.get(e.id);
         // Changed again while this was on its way: it goes up with the next batch.
@@ -660,7 +660,9 @@ class AccountService extends EventEmitter {
 
   // ---- persistence and events ----
 
+  // The records go first: a cursor on disk past records that aren't would have them skipped for good after a restart.
   saveState() {
+    this.saveEntries(true);
     writeJson(this.file('account.json'), this.state);
   }
 

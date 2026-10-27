@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.account
 
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -779,6 +780,67 @@ class AccountServiceTest {
         assertEquals(AccountService.PULL_PAGES, pages.get())
         mode.set(2)
         rejects("server") { desk.pull() }
+    }
+
+    @Test
+    fun `the cursor on disk never runs ahead of the records on disk`() = runBlocking {
+        val srv = server(limit = 2)
+        val desk = device(srv, "desk")
+        desk.signUp("disk@example.com", PASSWORD)
+        val pages = AtomicInteger()
+        val trap = AtomicBoolean(false)
+        val second = CompletableDeferred<Unit>()
+        val base = OkHttpAccountHttp(okhttp)
+        val http = AccountHttp { server, method, path, body, token ->
+            if (trap.get() && method == "GET" && path.startsWith("/v1/records") && pages.incrementAndGet() == 2) {
+                // The second page never comes: Android stops the app while it waits.
+                second.complete(Unit)
+                CompletableDeferred<Unit>().await()
+            }
+            base.request(server, method, path, body, token)
+        }
+        val dir = tmp.newFolder()
+        val laptop = device(srv, "laptop", dir = dir, http = http)
+        laptop.signIn("disk@example.com", PASSWORD)
+        laptop.sync()
+        for (i in 1..5) desk.put("category", "c$i", cat("C$i"))
+        desk.sync()
+
+        trap.set(true)
+        val stuck = scopes.first().async { laptop.sync() }
+        withTimeout(10_000) { second.await() }
+        // The first page is taken; something saves the account meanwhile (the account page asks who runs the server).
+        laptop.serverInfo()
+        stuck.cancel()
+        // The app starts again, offline, so what it shows is what was on disk.
+        val fresh = device(srv, "fresh", dir = dir, http = AccountHttp { _, _, _, _, _ -> throw AccountError("network") })
+        assertTrue("the cursor moved", fresh.cursor() > 0)
+        assertEquals("the records it moved past are on disk too", 2, fresh.list("category").size)
+    }
+
+    @Test
+    fun `a server that leaves records out of its answer doesn't get them again forever`() = runBlocking {
+        val srv = server()
+        val posts = AtomicInteger()
+        val empty = AtomicBoolean(false)
+        val base = OkHttpAccountHttp(okhttp)
+        val http = AccountHttp { server, method, path, body, token ->
+            // Not quite forever, so that a phone without the check fails the test rather than hang it.
+            if (empty.get() && method == "POST" && path == "/v1/records" && posts.incrementAndGet() <= 20) {
+                return@AccountHttp buildJsonObject {
+                    putJsonArray("results") {}
+                    put("seq", 0)
+                }
+            }
+            base.request(server, method, path, body, token)
+        }
+        val desk = device(srv, http = http)
+        desk.signUp("acks@example.com", PASSWORD)
+        desk.sync()
+        desk.put("category", "money", cat("Money"))
+        empty.set(true)
+        rejects("server") { desk.sync() }
+        assertEquals(1, posts.get())
     }
 
     @Test

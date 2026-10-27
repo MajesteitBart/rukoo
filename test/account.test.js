@@ -709,6 +709,59 @@ test("a server that always has more can't keep a pull going", async (t) => {
   await assert.rejects(desk.pull(), { code: 'server' });
 });
 
+test('the cursor on disk never runs ahead of the records on disk', async (t) => {
+  const srv = await server(t, { limit: 2 });
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'disk@example.com', password: PASSWORD });
+  const dir = tmpDir(t);
+  const laptop = device(t, srv, 'laptop', dir);
+  await laptop.signIn({ email: 'disk@example.com', password: PASSWORD });
+  await laptop.sync();
+  for (let i = 1; i <= 5; i++) desk.put('category', `c${i}`, { name: `C${i}` });
+  await desk.sync();
+
+  // The second page never comes: the app quits while it waits.
+  const http = laptop.http;
+  let pages = 0;
+  let second;
+  const waiting = new Promise((r) => (second = r));
+  laptop.http = (server, method, route, opts) => {
+    if (method === 'GET' && route.startsWith('/v1/records') && ++pages === 2) {
+      second();
+      return new Promise(() => {});
+    }
+    return http(server, method, route, opts);
+  };
+  laptop.sync().catch(() => {});
+  await waiting;
+  // The first page is taken; something saves the account meanwhile (the account page asks who runs the server).
+  await laptop.serverInfo();
+  // The app starts again, offline, so what it shows is what was on disk.
+  const fresh = new AccountService({ dataDir: dir, secrets, defaultServer: srv.url, deviceName: 'fresh', platform: 'linux' });
+  fresh.http = () => Promise.reject(new AccountError('network'));
+  fresh.init();
+  t.after(() => fresh.close());
+  assert.ok(fresh.state.cursor > 0, 'the cursor moved');
+  assert.equal(fresh.list('category').length, 2, 'the records it moved past are on disk too');
+});
+
+test("a server that leaves records out of its answer doesn't get them again forever", async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await desk.signUp({ email: 'acks@example.com', password: PASSWORD });
+  await desk.sync();
+  const http = desk.http;
+  let posts = 0;
+  desk.http = (server, method, route, opts) => {
+    // Not quite forever, so that a device without the check fails the test rather than hang it.
+    if (method === 'POST' && route === '/v1/records' && ++posts <= 20) return Promise.resolve({ results: [], seq: 0 });
+    return http(server, method, route, opts);
+  };
+  desk.put('category', 'money', { name: 'Money' });
+  await assert.rejects(desk.sync(), { code: 'server' });
+  assert.equal(posts, 1);
+});
+
 test('the export holds every record, readable', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);

@@ -490,7 +490,6 @@ class AccountService(
             }
             open(token, dataKey)
             saveState()
-            saveEntries(now = true)
         }
         changedStatus()
         startSync()
@@ -510,7 +509,6 @@ class AccountService(
         }
         state = AccountState(server = state.server, info = state.info, error = state.error)
         saveState()
-        saveEntries(now = true)
     }
 
     // ---- records ----
@@ -650,8 +648,7 @@ class AccountService(
         } finally {
             synchronized(lock) {
                 if (syncing?.session === session) syncing = null
-                if (this.session === session) saveState()
-                saveEntries(now = true)
+                if (this.session === session) saveState() else saveEntries(now = true)
             }
             changedStatus()
         }
@@ -782,6 +779,8 @@ class AccountService(
                 if (this.session !== session) return refused
                 val results = (res?.get("results") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
                     .associateBy { (it["id"] as? JsonPrimitive)?.content }
+                // A server that leaves a record out of its answer would get it again, forever.
+                if (batch.any { !results.containsKey(it.id) }) throw fail("server")
                 for (e in batch) {
                     val r = results[e.id]
                     // Changed again while this was on its way: it goes up with the next batch.
@@ -806,8 +805,12 @@ class AccountService(
 
     // ---- persistence and events ----
 
-    /** Under the lock. */
+    /**
+     * Under the lock. The records go first: a cursor on disk past records that aren't would have them skipped for good
+     * after a restart.
+     */
     private fun saveState() {
+        saveEntries(now = true)
         runCatching { JsonFiles.write(stateFile, AccountState.serializer(), state) }.onFailure { AppLog.w(TAG, "could not save the account", it) }
     }
 
