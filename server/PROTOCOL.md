@@ -18,14 +18,16 @@ All key derivation happens on the device.
 | Name | How it is made |
 |---|---|
 | `masterKey` | Argon2id (version 0x13) of the password, with the account's 16-byte `salt` and its `kdf` parameters, 32 bytes out |
-| `authKey` | `HKDF(masterKey, "rukoo/v1/auth")` |
+| `authKey` | `HKDF(masterKey, "rukoo/v1/auth\n" + server)` |
 | `wrapKey` | `HKDF(masterKey, "rukoo/v1/wrap")` |
 | `dataKey` | 32 random bytes, made once at sign-up; it never changes |
 | `recordKey` | `HKDF(dataKey, "rukoo/v1/records")` |
 | `indexKey` | `HKDF(dataKey, "rukoo/v1/index")` |
 | `recoveryKey` | 20 random bytes, made at sign-up and shown to the person once |
-| `recoveryAuth` | `HKDF(recoveryKey, "rukoo/v1/recovery-auth")` |
+| `recoveryAuth` | `HKDF(recoveryKey, "rukoo/v1/recovery-auth\n" + server)` |
 | `recoveryWrap` | `HKDF(recoveryKey, "rukoo/v1/recovery-wrap")` |
+
+`server` is the server's address as the device uses it: scheme, host, port only when it isn't the default one, and path, without a trailing slash, in lowercase apart from the path, such as `https://rukoo-account.bvdm.ai`. With it in `authKey` and `recoveryAuth`, a proof made for one server is no good at another. A server someone was tricked into using can't pass a person's sign-in on to their real server. The other side of this: an account belongs to the address it was made at, so a server that moves to another address has to keep answering at the old one.
 
 `HKDF(ikm, info)` is HKDF-SHA256 (RFC 5869) with an empty salt, which gives the same keys as a salt of 32 zero bytes, and 32 bytes of output. `info` is the label's UTF-8 bytes.
 

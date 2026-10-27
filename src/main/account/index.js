@@ -206,10 +206,10 @@ class AccountService extends EventEmitter {
     await this.serverInfo();
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
-    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf);
+    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, this.server);
     const dataKey = crypto.randomBytes(32);
     const recoveryKey = crypto.randomBytes(20);
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey);
+    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, this.server);
     const res = await this.call('POST', '/v1/signup', {
       email: address,
       ...(invite ? { invite: String(invite).trim() } : {}),
@@ -240,7 +240,7 @@ class AccountService extends EventEmitter {
     } catch (_) {
       throw fail('server');
     }
-    return keys.passwordKeys(password, salt, kdf);
+    return keys.passwordKeys(password, salt, kdf, this.server);
   }
 
   async signIn({ email, password }) {
@@ -269,7 +269,7 @@ class AccountService extends EventEmitter {
     const key = keys.parseRecoveryKey(recoveryKey);
     if (!key) throw fail('recovery_key');
     await this.serverInfo();
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key);
+    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key, this.server);
     const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: keys.b64u(recoveryAuth) });
     let dataKey;
     try {
@@ -279,7 +279,7 @@ class AccountService extends EventEmitter {
     }
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
-    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf);
+    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, this.server);
     const res = await this.call('POST', '/v1/recover/finish', {
       email: address,
       recoveryAuth: keys.b64u(recoveryAuth),
@@ -319,7 +319,7 @@ class AccountService extends EventEmitter {
     const { authKey } = await this.authFor(this.state.email, current);
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
-    const fresh = await keys.passwordKeys(next, salt, kdf);
+    const fresh = await keys.passwordKeys(next, salt, kdf, this.server);
     await this.call(
       'POST',
       '/v1/password',
@@ -340,7 +340,7 @@ class AccountService extends EventEmitter {
     if (!this.signedIn) throw fail('signed_out');
     const { authKey } = await this.authFor(this.state.email, password);
     const recoveryKey = crypto.randomBytes(20);
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey);
+    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, this.server);
     await this.call(
       'POST',
       '/v1/recovery',

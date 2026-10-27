@@ -75,5 +75,5 @@ On desktop the code is in `src/main/account/`, and the settings pages are in `sr
 ## Limits
 
 - Rukoo for Android doesn't have the account yet.
-- A device uses one server. Moving an account to another server means signing up there again.
+- A device uses one server. Moving an account to another server means signing up there again. An account also belongs to the address of its server, so an operator who moves the server to a new address has to keep the old one working.
 - Signing in on another device needs your password; there is no sign-in by QR code yet.

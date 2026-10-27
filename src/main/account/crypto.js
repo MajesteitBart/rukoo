@@ -49,10 +49,13 @@ async function masterKey(password, salt, kdf) {
 
 const hkdf = (ikm, info) => Buffer.from(crypto.hkdfSync('sha256', ikm, Buffer.alloc(0), Buffer.from(info, 'utf8'), 32));
 
-// authKey proves the password to the server; wrapKey opens the data key and stays here.
-async function passwordKeys(password, salt, kdf) {
+// authKey proves the password to one server: its address is part of the key, so a server someone was tricked into
+// using can't pass the proof on to the real one. wrapKey opens the data key and stays here. server: the canonical
+// address (client.js serverUrl).
+async function passwordKeys(password, salt, kdf, server) {
+  if (!server) throw new Error('server');
   const master = await masterKey(password, salt, kdf);
-  return { authKey: hkdf(master, 'rukoo/v1/auth'), wrapKey: hkdf(master, 'rukoo/v1/wrap') };
+  return { authKey: hkdf(master, `rukoo/v1/auth\n${server}`), wrapKey: hkdf(master, 'rukoo/v1/wrap') };
 }
 
 function seal(key, plaintext, aad, nonce = crypto.randomBytes(NONCE)) {
@@ -116,10 +119,14 @@ function parseRecoveryKey(text) {
   return Buffer.from(out);
 }
 
-const recoveryKeys = (recoveryKey) => ({
-  recoveryAuth: hkdf(recoveryKey, 'rukoo/v1/recovery-auth'),
-  recoveryWrap: hkdf(recoveryKey, 'rukoo/v1/recovery-wrap')
-});
+// recoveryAuth is bound to the server like authKey; recoveryWrap opens the data key wherever the account lives.
+function recoveryKeys(recoveryKey, server) {
+  if (!server) throw new Error('server');
+  return {
+    recoveryAuth: hkdf(recoveryKey, `rukoo/v1/recovery-auth\n${server}`),
+    recoveryWrap: hkdf(recoveryKey, 'rukoo/v1/recovery-wrap')
+  };
+}
 
 const recordKeys = (dataKey) => ({ recordKey: hkdf(dataKey, 'rukoo/v1/records'), indexKey: hkdf(dataKey, 'rukoo/v1/index') });
 const recordId = (indexKey, c, k) => b64u(crypto.createHmac('sha256', indexKey).update(`${c}\n${k}`, 'utf8').digest());

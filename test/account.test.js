@@ -48,7 +48,7 @@ test('the keys match the shared vectors', async () => {
   const salt = k.unb64u(vectors.salt, 16);
   assert.equal(k.normalizeEmail(vectors.email), vectors.normalizedEmail);
   assert.equal(k.b64u(await k.masterKey(vectors.password, salt, vectors.kdf)), vectors.masterKey);
-  const { authKey, wrapKey } = await k.passwordKeys(vectors.password, salt, vectors.kdf);
+  const { authKey, wrapKey } = await k.passwordKeys(vectors.password, salt, vectors.kdf, vectors.server);
   assert.equal(k.b64u(authKey), vectors.authKey);
   assert.equal(k.b64u(wrapKey), vectors.wrapKey);
   assert.equal(crypto.createHash('sha256').update(authKey).digest('base64url'), vectors.authVerifier);
@@ -57,7 +57,7 @@ test('the keys match the shared vectors', async () => {
   assert.equal(k.b64u(k.seal(wrapKey, dataKey, 'rukoo/v1/data-key', k.unb64u(vectors.wrapNonce))), vectors.wrappedKey);
   const recovery = k.unb64u(vectors.recoveryKeyBytes);
   assert.equal(k.formatRecoveryKey(recovery), vectors.recoveryKey);
-  const { recoveryAuth, recoveryWrap } = k.recoveryKeys(recovery);
+  const { recoveryAuth, recoveryWrap } = k.recoveryKeys(recovery, vectors.server);
   assert.equal(k.b64u(recoveryAuth), vectors.recoveryAuth);
   assert.equal(k.b64u(recoveryWrap), vectors.recoveryWrap);
   const rk = k.recordKeys(dataKey);
@@ -66,6 +66,23 @@ test('the keys match the shared vectors', async () => {
   assert.equal(k.recordId(rk.indexKey, vectors.record.c, vectors.record.k), vectors.recordId);
   assert.deepEqual(k.openRecord(rk, vectors.recordId, vectors.recordData), vectors.record);
   assert.deepEqual(k.sealRecord(rk, vectors.record, k.unb64u(vectors.recordNonce)), { id: vectors.recordId, data: vectors.recordData });
+});
+
+test('a sign-in proof made for one server address is no good at another', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  const { recoveryKey } = await desk.signUp({ email: 'bound@example.com', password: PASSWORD });
+  // The same server under another address, as a server that passes requests on would be.
+  const other = srv.url.replace('127.0.0.1', 'localhost');
+  const relayed = new AccountService({ dataDir: tmpDir(t), secrets, defaultServer: other, deviceName: 'relayed' }).init();
+  t.after(() => relayed.close());
+  await assert.rejects(relayed.signIn({ email: 'bound@example.com', password: PASSWORD }), { code: 'unauthorized' });
+  await assert.rejects(relayed.recover({ email: 'bound@example.com', recoveryKey, password: 'some new password' }), { code: 'unauthorized' });
+  const salt = crypto.randomBytes(16);
+  const a = await k.passwordKeys(PASSWORD, salt, k.DEFAULT_KDF, 'https://one.example');
+  const b = await k.passwordKeys(PASSWORD, salt, k.DEFAULT_KDF, 'https://two.example');
+  assert.notDeepEqual(a.authKey, b.authKey);
+  assert.deepEqual(a.wrapKey, b.wrapKey, 'the data key opens the same everywhere');
 });
 
 test('a sealed record refuses another id, other bytes and another key', () => {
