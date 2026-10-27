@@ -87,6 +87,20 @@ export class Account extends DurableObject {
     // account, and those objects should stay empty so they leave nothing behind.
     this.exists =
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
+    if (this.exists) this.migrate();
+  }
+
+  // Brings an account made by an older version of the server up to the current tables. Each step checks for itself
+  // whether it is needed, so running it again changes nothing.
+  migrate() {
+    const columns = new Set(this.sql.exec("SELECT name FROM pragma_table_info('meta')").toArray().map((c) => c.name));
+    if (!columns.has('tombstones')) {
+      // The first version didn't count tombstones; count the ones there are.
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec('ALTER TABLE meta ADD COLUMN tombstones INTEGER NOT NULL DEFAULT 0');
+        this.sql.exec('UPDATE meta SET tombstones = (SELECT COUNT(*) FROM records WHERE data IS NULL) WHERE id = 1');
+      });
+    }
   }
 
   async prelogin() {

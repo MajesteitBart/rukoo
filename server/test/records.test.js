@@ -353,3 +353,24 @@ describe('counters', () => {
     expect(await usage(person)).toEqual({ records: 9, bytes: 64 * 7 + 200 + 31 });
   });
 });
+
+describe('upgrading', () => {
+  it('counts the tombstones of an account made before they were counted, and serves it as before', async () => {
+    const person = await signup();
+    const records = many(3);
+    await push(person.token, records);
+    await push(person.token, [{ id: records[0].id, data: null }]);
+    // The tables as the first version made them: no tombstones column.
+    await runInDurableObject(await accountStub(person.email), (instance, state) => {
+      state.storage.sql.exec('ALTER TABLE meta DROP COLUMN tombstones');
+      instance.migrate();
+      instance.migrate();
+      expect(state.storage.sql.exec('SELECT tombstones FROM meta').one().tombstones).toBe(1);
+    });
+    const pulled = await pull(person.token);
+    expect(pulled.status).toBe(200);
+    expect(pulled.body.records).toHaveLength(3);
+    expect((await push(person.token, [{ id: records[1].id, data: null }])).status).toBe(200);
+    expect(await usage(person)).toEqual({ records: 1, bytes: 40 });
+  });
+});
