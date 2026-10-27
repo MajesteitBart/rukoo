@@ -1197,6 +1197,17 @@ test('Settings has an Agents page with status and a way back', async () => {
   await expect(win.locator('[data-agent-name="clark"]').first()).toHaveText('Clark');
   // Clark is the default agent, so that row follows the new name too.
   await expect(win.locator('[data-agent-default]')).toHaveText('Clark');
+  // Copy Hermes setup starts with the download of the bridge from this Rukoo's own release, so the two speak the
+  // same bridge protocol. Recorded in main rather than put on the desktop's own clipboard.
+  await app.evaluate(() => {
+    global.__semAgents.deps.clipboard = { writeText: (text) => (global.__copiedSetup = text) };
+  });
+  await win.locator('.page.settings .row', { hasText: 'Copy Hermes setup' }).click();
+  await expect(win.locator('#toast')).toContainText("Paste it into ~/.hermes/config.yaml on Clark's machine.");
+  const version = await app.evaluate(({ app: electronApp }) => electronApp.getVersion());
+  const copied = await app.evaluate(() => global.__copiedSetup);
+  expect(copied).toContain(`#    curl -fsSL -o ~/.hermes/rukoo_bridge.py https://raw.githubusercontent.com/MajesteitBart/rukoo/v${version}/integrations/hermes/rukoo_bridge.py\n`);
+  expect(copied).toContain('      RUKOO_KEY: ${API_SERVER_KEY}\n');
   fs.mkdirSync(SHOTS, { recursive: true });
   for (const theme of ['dark', 'light']) {
     await win.evaluate((t) => window.mail.call('updateSettings', { theme: t }), theme);

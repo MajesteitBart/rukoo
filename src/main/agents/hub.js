@@ -2172,7 +2172,7 @@ class AgentHub extends EventEmitter {
   }
 
   copyHermesSetup() {
-    if (this.deps.clipboard) this.deps.clipboard.writeText(this.cfg.hermesSetup());
+    if (this.deps.clipboard) this.deps.clipboard.writeText(this.cfg.hermesSetup({ version: this.deps.appVersion }));
     return true;
   }
 

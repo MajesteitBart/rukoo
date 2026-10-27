@@ -84,6 +84,9 @@ function remoteTokenFor(key) {
   return key ? crypto.createHmac('sha256', key).update('rukoo-mcp-v1').digest('base64url') : '';
 }
 
+// The bridge as a single file from a release tag, so it matches the Rukoo it comes with.
+const BRIDGE_DOWNLOAD = 'https://raw.githubusercontent.com/MajesteitBart/rukoo/<tag>/integrations/hermes/rukoo_bridge.py';
+
 // The tokens OpenClaw's MCP client sends to Rukoo, made from the gateway token: they change with that token, and
 // they don't give away the gateway token itself. There are two, so each works on one listener only: the local one on
 // 127.0.0.1, the remote one on the Tailscale listener, and that one only while the user allows a remote gateway.
@@ -492,14 +495,21 @@ class AgentConfig {
 
   // The block for ~/.hermes/config.yaml on Clark's machine. It holds no secret and is the same on every device:
   // the bridge finds Rukoo over Tailscale and signs in with the API server key, which Hermes fills in from its
-  // .env. ${userHome} is a Hermes config variable.
-  hermesSetup() {
+  // .env. ${userHome} is a Hermes config variable. version is this Rukoo's: the bridge comes from the same release
+  // (tagged v<version>), so the two speak the same bridge protocol and nobody needs a checkout of the repository.
+  hermesSetup({ version = '' } = {}) {
     // The configured port, which other devices share. A port this device fell back to applies to it alone.
     const port = this.data.mcp.port;
     const name = this.displayName('clark');
+    const release = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version) ? `v${version}` : '';
     return [
       `# Rukoo Mail: lets ${name} read mail, write drafts and ask for approval in Rukoo, on any of your devices.`,
-      '# 1. Copy rukoo_bridge.py (Rukoo: integrations/hermes) to ~/.hermes/ on this machine.',
+      ...(release
+        ? [
+            `# 1. Download the bridge for Rukoo ${version} to ~/.hermes/ on this machine:`,
+            `#    curl -fsSL -o ~/.hermes/rukoo_bridge.py ${BRIDGE_DOWNLOAD.replace('<tag>', release)}`
+          ]
+        : ['# 1. Copy rukoo_bridge.py (Rukoo: integrations/hermes) to ~/.hermes/ on this machine.']),
       '# 2. Merge this block into ~/.hermes/config.yaml (keep your other mcp_servers).',
       '# 3. Check it with: hermes mcp test rukoo',
       `# On each device, turn on Settings > Agents > "Let ${name} use Rukoo".`,

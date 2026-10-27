@@ -1674,6 +1674,122 @@ test('hermes bridge: picks the right device, sends the token only to Rukoo with 
   assert.deepEqual([...new Set(outdated.seen)], [null], 'no token for an outdated Rukoo either');
 });
 
+test('hermes bridge: a Rukoo of another bridge protocol is reported as newer or older, not as another key', async (t) => {
+  const python = findPython();
+  if (!python) return t.skip('no Python 3.8+ on PATH');
+  const { spawn, spawnSync } = require('child_process');
+  // A Rukoo that answers the challenge the way its own protocol signs it, with the bridge's key or another one.
+  // protocol null: a Rukoo from before it named its protocol.
+  const signer = async ({ key, protocol, signs }) => {
+    const hash = crypto.createHash('sha256').update(remoteTokenFor(key)).digest();
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push(req.headers.authorization || null);
+      req.on('end', () => {
+        const message = signs(`127.0.0.1:${server.address().port}`, String(req.headers['x-rukoo-challenge'] || ''));
+        const headers = { 'Content-Type': 'application/json', 'X-Rukoo-Proof': crypto.createHmac('sha256', hash).update(message).digest('base64url') };
+        if (protocol !== null) headers['X-Rukoo-Bridge-Protocol'] = String(protocol);
+        res.writeHead(401, headers);
+        res.end('{"error":"unauthorized"}');
+      });
+      req.resume();
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return { server, seen, url: `http://127.0.0.1:${server.address().port}/mcp` };
+  };
+  // The same key, in a proof format from after this bridge, and in the one from before the proof covered the address.
+  const newer = await signer({ key: 'hermes-key', protocol: 3, signs: (endpoint, challenge) => `rukoo-proof-3:${endpoint}:${challenge}` });
+  const older = await signer({ key: 'hermes-key', protocol: 1, signs: (endpoint, challenge) => `rukoo-proof:${challenge}` });
+  // A newer Rukoo whose proof happens to still match: its protocol says the bridge can't follow it anyway.
+  const newerSameProof = await signer({ key: 'hermes-key', protocol: 3, signs: (endpoint, challenge) => `rukoo-proof:${endpoint}:${challenge}` });
+  // Another key, from today's Rukoo (the real server, which names its protocol) and from one before the header.
+  const otherKey = await fakeRukoo({ key: 'another-key' });
+  const beforeHeader = await signer({ key: 'another-key', protocol: null, signs: (endpoint, challenge) => `rukoo-proof:${endpoint}:${challenge}` });
+  t.after(async () => {
+    await otherKey.close();
+    for (const { server } of [newer, older, newerSameProof, beforeHeader]) if (server.listening) server.close();
+  });
+  // No Rukoo here ever proves the key, so the cache stays empty: like a bridge that has never reached Rukoo.
+  const cache = path.join(tmp('bridge-protocol'), 'tools.json');
+  const start = (urls) => {
+    const child = spawn(python, [path.join(__dirname, '..', 'integrations', 'hermes', 'rukoo_bridge.py')], {
+      env: { ...process.env, RUKOO_KEY: 'hermes-key', RUKOO_URL: urls.join(','), RUKOO_DISCOVER: '0', RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8' },
+      windowsHide: true
+    });
+    t.after(() => child.kill());
+    const replies = [];
+    readJsonLines(child.stdout, (m) => replies.push(m));
+    const ask = async (msg) => {
+      const n = replies.length;
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
+      await waitFor(() => replies.length > n, 15000);
+      return replies[n];
+    };
+    return { child, ask };
+  };
+  const call = async (...urls) => {
+    const b = start(urls);
+    const reply = await b.ask({ id: 1, method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+    b.child.stdin.end();
+    assert.equal(reply.result.isError, true);
+    return reply.result.content[0].text;
+  };
+  // What Hermes does when it starts the bridge: the handshake, then the tool list, which has nothing to fall back on.
+  const discover = async (...urls) => {
+    const b = start(urls);
+    await b.ask({ id: 0, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
+    b.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+    const reply = await b.ask({ id: 1, method: 'tools/list' });
+    b.child.stdin.end();
+    assert.equal(reply.result, undefined);
+    assert.equal(reply.error.code, -32603);
+    assert.match(reply.error.message, /^The Rukoo bridge has no tool list yet\. /);
+    return reply.error.message;
+  };
+  const keyMessage = /open on 127\.0\.0\.1, but doesn't have your current API server key\. Ask the user to enter your current API server key/;
+
+  const bridgeBehind = await call(newer.url);
+  assert.match(bridgeBehind, /open on 127\.0\.0\.1, but this Rukoo bridge is older than that Rukoo and can't check its key\./);
+  assert.match(bridgeBehind, /download the rukoo_bridge\.py that goes with their Rukoo.*"Copy Hermes setup".*\/reload-mcp/);
+  assert.doesNotMatch(bridgeBehind, /API server key/);
+  assert.match(await call(newerSameProof.url), /this Rukoo bridge is older than that Rukoo/);
+  const rukooBehind = await call(older.url);
+  assert.match(rukooBehind, /open on 127\.0\.0\.1, but that Rukoo is older than this bridge, which can't check its key\. Ask the user to install the latest Rukoo there\./);
+  assert.doesNotMatch(rukooBehind, /API server key/);
+  // The same protocol, or none named: a proof that doesn't match still means another key.
+  assert.match(await call(otherKey.url), keyMessage);
+  assert.match(await call(beforeHeader.url), keyMessage);
+  // Another version comes first: until the versions match, the bridge can't tell whether the key does.
+  assert.match(await call(otherKey.url, newer.url), /this Rukoo bridge is older than that Rukoo/);
+  // Hermes asks for the tool list before any call. Without a cached list, its error says why, so the version
+  // reaches the user on the first start as well.
+  const firstStart = await discover(newer.url);
+  assert.match(firstStart, /open on 127\.0\.0\.1, but this Rukoo bridge is older than that Rukoo and can't check its key\./);
+  assert.match(firstStart, /"Copy Hermes setup".*\/reload-mcp/);
+  assert.doesNotMatch(firstStart, /API server key/);
+  assert.match(await discover(older.url), /that Rukoo is older than this bridge/);
+  assert.match(await discover(otherKey.url), keyMessage);
+  // A Rukoo that proved the key but didn't send its tools: the error names that device, not a missing Rukoo.
+  const failedList = spawnSync(python, ['-c', [
+    'import json, sys',
+    'sys.path.insert(0, sys.argv[1])',
+    'import rukoo_bridge as b',
+    'b.DEVICES.pick = lambda *a: ("http://100.64.0.4:47800/mcp", "desk-pc")',
+    'def fail(*a, **k): raise OSError("timed out")',
+    'b.post = fail',
+    'print(json.dumps(b.list_tools({"id": 1})))'
+  ].join('\n'), path.join(__dirname, '..', 'integrations', 'hermes')], {
+    encoding: 'utf8',
+    env: { ...process.env, RUKOO_KEY: 'hermes-key', RUKOO_CACHE: cache, PYTHONDONTWRITEBYTECODE: '1' },
+    windowsHide: true
+  });
+  assert.equal(failedList.status, 0, failedList.stderr);
+  assert.equal(JSON.parse(failedList.stdout).error.message, "The Rukoo bridge has no tool list yet. Rukoo Mail on desk-pc didn't send its tool list.");
+  // None of them got the token, and nothing was cached.
+  assert.ok(!fs.existsSync(cache));
+  for (const rukoo of [newer, older, newerSameProof, otherKey, beforeHeader]) assert.deepEqual([...new Set(rukoo.seen)], [null]);
+});
+
 test('hermes bridge: finds online Windows, Linux, Mac and Android devices but skips tagged and shared devices', (t) => {
   const python = findPython();
   if (!python) return t.skip('no Python 3.8+ on PATH');
