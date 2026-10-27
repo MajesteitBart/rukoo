@@ -12,10 +12,15 @@ const { RISKY, safeName, markOfTheWeb } = require('../files');
 const { htmlToPlain, decodeCharset } = require('../mailutil');
 const mailto = require('../mailto');
 const { toHtml } = require('./markdown');
-const { unsafeBlock, unsafeInline, unsafeValue, untag, clipTagged, PDF_FAILED, IMAGE_DATA, FILE_DATA } = require('./context');
+const { unsafeBlock, unsafeInline, unsafeValue, unsafeFrom, untag, clipTagged, PDF_FAILED, IMAGE_DATA, FILE_DATA } = require('./context');
 const { SkillError, toolDescription } = require('./skills');
 const { decodeText, TEXT_TYPES, TEXT_EXT, IMAGE_TYPES } = require('./chatfiles');
 const { isPdf } = require('../pdftext');
+const i18n = require('../../i18n');
+const EN = require('../../i18n/en');
+const { calendarKey } = require('../calendar');
+const { zonedParts, zonedInstant, addDays, isZone, pcZone } = require('../calendar/zone');
+const { slugProblem } = require('../booking/rules');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -272,6 +277,76 @@ const TOOLS = [
     }),
     annotations: READ,
     run: readSkill
+  },
+  {
+    name: 'list_events',
+    title: 'List calendar events',
+    description:
+      "Returns the events in the user's calendars between start and end (at most 92 days apart), by start time, from every account Rukoo has a calendar for. Times are ISO 8601 in the user's time zone (time_zone in get_context); all-day events have dates, and their end is the day after the last day. Each event names its account and calendar, whether it shows as busy, the user's response and whether it came through the user's booking page. Use find_free_time for open time.",
+    inputSchema: schema(
+      {
+        start: { type: 'string', description: 'An ISO 8601 date or date-time, e.g. "2026-11-02" or "2026-11-02T09:00:00+01:00". Without an offset it is in the user\'s time zone.', maxLength: 64 },
+        end: { type: 'string', description: 'Like start. A date alone is the start of that day.', maxLength: 64 },
+        account: copied({ type: 'string', description: 'Account id or email address, from get_context. Default: every account.', maxLength: 320 }),
+        calendar: copied({ type: 'string', description: 'Calendar id or name, as list_events gives them. Default: the calendars the user shows in Rukoo.', maxLength: 500 }),
+        query: copied({ type: 'string', description: 'Words that must all appear in the title, place, description or guests.', maxLength: 200 }),
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum events (default 50).' }
+      },
+      ['start', 'end']
+    ),
+    annotations: READ,
+    run: listEvents
+  },
+  {
+    name: 'find_free_time',
+    title: 'Find free time',
+    description:
+      "Returns the open windows of at least duration_minutes between start and end (at most 31 days apart) across the calendars that count toward the user's availability, within the hours asked for, plus the same windows as one line of text per day. Accounts Rukoo could not read are in failed: their busy time is missing, so tell the user.",
+    inputSchema: schema(
+      {
+        start: { type: 'string', description: 'An ISO 8601 date or date-time, e.g. "2026-11-02" or "2026-11-02T09:00:00+01:00". Without an offset it is in time_zone.', maxLength: 64 },
+        end: { type: 'string', description: 'Like start. A date alone is the start of that day.', maxLength: 64 },
+        duration_minutes: { type: 'integer', minimum: 5, maximum: 480, description: 'How long each window must be at least, in minutes.' },
+        hours: { type: 'string', enum: ['working', 'booking', 'any'], description: "Which hours count: the user's working hours (default), the hours of their booking page, or any time." },
+        time_zone: { type: 'string', description: 'IANA time zone of start and end and of the result, e.g. "Europe/Amsterdam". Default: the user\'s.', maxLength: 64 }
+      },
+      ['start', 'end', 'duration_minutes']
+    ),
+    annotations: READ,
+    run: findFreeTime
+  },
+  {
+    name: 'create_event',
+    title: 'Add an event to the calendar',
+    description:
+      "Asks Rukoo to add an event to one of the user's calendars. Rukoo shows the user a card first; you get status waiting_for_user, and the outcome with your next message. Guests get an invitation from the calendar's account. Only calendars that send invitations take guests: Google calendars, and CalDAV calendars whose server sends them. A date alone in start makes an all-day event.",
+    inputSchema: schema(
+      {
+        title: copied(whole({ type: 'string', description: 'The title, e.g. "Call with Sanne".', maxLength: 300 })),
+        start: { type: 'string', description: 'An ISO 8601 date-time, e.g. "2026-11-03T14:00:00+01:00", or a date for an all-day event. Without an offset it is in time_zone.', maxLength: 64 },
+        end: { type: 'string', description: "Like start. Default: the user's default event length after start; for an all-day event the next day, as end is the day after the last day.", maxLength: 64 },
+        all_day: { type: 'boolean', description: 'An all-day event. Default: true when start is a date alone.' },
+        time_zone: { type: 'string', description: 'IANA time zone of the event, e.g. "Europe/Amsterdam". Default: the user\'s.', maxLength: 64 },
+        account: copied({ type: 'string', description: 'Account id or email address whose calendar gets the event. Default: the default account.', maxLength: 320 }),
+        calendar: copied({ type: 'string', description: "Calendar id or name. Default: the account's main calendar.", maxLength: 500 }),
+        location: copied(whole({ type: 'string', maxLength: 500 })),
+        description: copied(whole({ type: 'string', description: 'Notes on the event. Guests see them.', maxLength: 5000 })),
+        guests: { type: 'array', description: 'People to invite.', items: PERSON, maxItems: 50 },
+        google_meet: { type: 'boolean', description: 'Add a Google Meet link. Only Google calendars that allow Meet.' }
+      },
+      ['title', 'start']
+    ),
+    annotations: WRITE,
+    run: createEvent
+  },
+  {
+    name: 'get_booking_link',
+    title: 'Get the booking link',
+    description:
+      "Returns the link to the user's booking page, where other people or their assistants pick a time from the user's open times, with a link per meeting type. on says whether the page is turned on. Share the links as they are.",
+    inputSchema: schema({}),
+    annotations: READ,
+    run: getBookingLink
   }
 ];
 
@@ -1558,12 +1633,529 @@ function mailtoAddress(url) {
   return first && ADDRESS.test(first.address) ? first.address.slice(0, 320) : null;
 }
 
+// ---------- calendar ----------
+
+// The calendar store and free time come from main (deps.calendars, deps.calendarFree, deps.bookingHours,
+// deps.bookingLink). Times go out as ISO 8601 with the offset of the user's time zone, or of the zone asked for.
+// Rukoo's ids, accounts and dates stay plain. What an organizer, a guest or a booker wrote is tagged with source
+// "calendar": titles, places, descriptions, video links, people, and the names of calendars shared with the user.
+
+const DAY_MS = 86400000;
+const LIST_DAYS = 92;
+const FREE_DAYS = 31;
+const EVENT_DAYS = 31;
+const ALL_DAY_MAX = 366;
+const EVENT_TEXT_MAX = 4000;
+const ATTENDEES_MAX = 50;
+// list_events' answer stays within what MCP clients take from one tool call (Claude Code's default is 25,000 tokens):
+// past LIST_TEXT_MAX characters of JSON, descriptions and guest lists get shorter, then events stop.
+const LIST_TEXT_MAX = 40000;
+const SHORT_TEXT_MAX = 500;
+const SHORT_ATTENDEES_MAX = 10;
+const EVENT_STATUSES = new Set(['confirmed', 'tentative', 'cancelled']);
+const RESPONSES = new Set(['accepted', 'declined', 'tentative', 'needsAction']);
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const LOCAL_TIME = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?$/i;
+const ZONED_TIME = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?)(Z|[+-]\d{2}:?\d{2})$/i;
+// As the calendar store checks guests: a dot in the domain.
+const GUEST_ADDRESS = /^[^@\s<>,;"]+@[^@\s<>,;"]+\.[^@\s<>,;"]+$/;
+const pad2 = (n) => String(n).padStart(2, '0');
+const line = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+
+function calendarStore(hub) {
+  const calendars = hub.deps && hub.deps.calendars;
+  if (!calendars) throw new ToolError('Rukoo has no calendar here.');
+  return calendars;
+}
+
+// A moment an agent names: a date-time with Z or an offset, or a date or date-time on the clock of zone. A date
+// alone is the start of that day.
+function moment(value, field, zone) {
+  const v = String(value == null ? '' : value).trim();
+  let ms = NaN;
+  try {
+    const local = LOCAL_TIME.exec(v);
+    const zoned = ZONED_TIME.exec(v);
+    if (DATE_ONLY.test(v)) ms = zonedInstant(v, '00:00', zone);
+    else if (local) ms = zonedInstant(local[1], `${local[2]}:${local[3]}`, zone) + Number(local[4] || 0) * 1000;
+    else if (zoned) {
+      // zonedInstant refuses a day that doesn't exist (30 February), which Date.parse may move into the next month.
+      zonedInstant(zoned[1], '00:00', 'UTC');
+      ms = Date.parse(`${zoned[1]}T${zoned[2]}${zoned[3].toUpperCase().replace(/^([+-]\d{2})(\d{2})$/, '$1:$2')}`);
+    }
+  } catch (_) {
+    // A date or time zonedInstant refuses, such as 2026-02-30 or 25:00.
+    ms = NaN;
+  }
+  if (!Number.isFinite(ms)) throw new ToolError(`${field} must be an ISO 8601 date or date-time, such as "2026-11-02" or "2026-11-02T14:00:00+01:00".`);
+  return ms;
+}
+
+function zoneArg(value) {
+  if (value === undefined) return pcZone();
+  const v = String(value).trim();
+  if (!isZone(v)) throw new ToolError(`time_zone must be an IANA time zone, such as "Europe/Amsterdam"; ${unsafeValue(v)} is not one.`);
+  return v;
+}
+
+// "2026-11-03T14:00:00+01:00": the moment on the clock of zone, with its offset.
+function isoIn(ms, zone) {
+  const offset = Math.round(zonedParts(ms, zone).offset);
+  const a = Math.abs(offset);
+  return `${new Date(ms + offset * 60000).toISOString().slice(0, 19)}${offset < 0 ? '-' : '+'}${pad2(Math.floor(a / 60))}:${pad2(a % 60)}`;
+}
+
+// The calendar's errors are in the interface language; agents get English. A message without parameters is found
+// back by its text in the catalog; any other stays as it is.
+const CALENDAR_ERRORS = Object.keys(EN).filter((k) => /^errors\.(calendar|caldav)\./.test(k));
+function englishError(err) {
+  const message = String((err && err.message) || err || '');
+  if (i18n.getLanguage() === 'en') return message;
+  for (const key of CALENDAR_ERRORS) {
+    let text;
+    try {
+      text = i18n.t(key);
+    } catch (_) {
+      continue;
+    }
+    if (text === message) return i18n.translate('en', key);
+  }
+  return message;
+}
+
+// What agents see as a calendar's name. The user named their own calendars; one shared with them carries a name
+// someone else chose, so that one is tagged.
+const calendarName = (cal) => (cal.owned || cal.primary ? cal.name : unsafeFrom('calendar', cal.name));
+
+function calendarChoices(accounts, keep = () => true) {
+  const list = accounts.flatMap((acc) => acc.calendars.filter(keep).map((cal) => `${calendarName(cal)} (id ${cal.id}, ${acc.email}${cal.writable ? '' : ', read-only'})`));
+  return list.join('; ') || 'none';
+}
+
+// The accounts with a calendar, each with its calendars. Calendars of accounts never opened in Rukoo are read first,
+// without touching the calendar view. failed: the accounts whose calendars couldn't be read.
+async function calendarAccounts(hub, account) {
+  const calendars = calendarStore(hub);
+  const failed = await calendars.loadCalendars();
+  let accounts = calendars.list().filter((a) => a.calendars.length);
+  if (account === undefined) return { calendars, accounts, failed };
+  const acc = findAccount(hub.engine, account);
+  const missed = failed.find((f) => f.accountId === acc.id);
+  if (missed) throw new ToolError(`Rukoo could not read the calendars of ${acc.email} (${missed.code}). Tell the user.`);
+  accounts = accounts.filter((a) => a.id === acc.id);
+  if (!accounts.length) {
+    const others = calendars.list().filter((a) => a.calendars.length).map((a) => a.email);
+    throw new ToolError(`${acc.email} has no calendar in Rukoo. Accounts with a calendar: ${others.join(', ') || 'none'}.`);
+  }
+  return { calendars, accounts, failed: [] };
+}
+
+// A calendar by its id, else by its name in any case.
+function matchCalendars(accounts, value) {
+  const v = String(value).trim();
+  const all = accounts.flatMap((acc) => acc.calendars.map((cal) => ({ acc, cal })));
+  const byId = all.filter(({ cal }) => cal.id === v);
+  if (byId.length) return byId;
+  const lv = v.toLowerCase();
+  const hits = all.filter(({ cal }) => String(cal.id).toLowerCase() === lv || String(cal.name || '').toLowerCase() === lv);
+  if (!hits.length) throw new ToolError(`No calendar ${unsafeValue(v)}. Calendars: ${calendarChoices(accounts)}.`);
+  return hits;
+}
+
+// Accounts named once each, with what that costs the answer.
+function failedPart(failed, what) {
+  const seen = new Set();
+  const list = failed.filter((f) => !seen.has(f.accountId) && seen.add(f.accountId));
+  const reconnect = list.some((f) => f.code === 'reconnect') ? '; the user can connect it again in Rukoo' : '';
+  return {
+    failed: list.map((f) => ({ account: f.email, code: f.code })),
+    note: `Rukoo could not read the calendar of ${list.map((f) => f.email).join(', ')}${reconnect}, so ${what}. Tell the user.`
+  };
+}
+
+// An invitation can make any value as long as it likes, so each one is cut to what a real one needs, as
+// create_event's schema takes them; a longer video link would be a broken one, so it goes.
+const clip = (v, max) => String(v == null ? '' : v).slice(0, max);
+const calendarPerson = (p) => ({ name: unsafeFrom('calendar', clip(p && p.name, 200)), address: unsafeFrom('calendar', clip(p && p.address, 320)) });
+const responseOf = (v) => (RESPONSES.has(v) ? v : null);
+
+// short: the shorter form list_events falls back to for a long answer.
+function eventView(e, acc, cal, zone, short = false) {
+  const textMax = short ? SHORT_TEXT_MAX : EVENT_TEXT_MAX;
+  const peopleMax = short ? SHORT_ATTENDEES_MAX : ATTENDEES_MAX;
+  const description = String(e.description || '');
+  const attendees = Array.isArray(e.attendees) ? e.attendees : [];
+  const day = (date, ms) => date || zonedParts(ms, zone).date;
+  const out = {
+    id: e.id,
+    account: acc.email,
+    calendar_id: e.calendarId,
+    calendar: cal ? calendarName(cal) : e.calendarId,
+    title: unsafeFrom('calendar', clip(e.title, 300)),
+    start: e.allDay ? day(e.startDate, e.start) : isoIn(e.start, zone),
+    end: e.allDay ? day(e.endDate, e.end) : isoIn(e.end, zone),
+    all_day: Boolean(e.allDay),
+    // An invitation's TZID is whatever its sender wrote, so only a zone Intl knows goes out, like the store's own.
+    time_zone: e.timeZone === 'UTC' || (typeof e.timeZone === 'string' && isZone(e.timeZone)) ? e.timeZone : null,
+    busy: e.busy !== false,
+    status: EVENT_STATUSES.has(e.status) ? e.status : 'confirmed',
+    response: responseOf(e.response),
+    recurring: Boolean(e.recurring),
+    booking: Boolean(e.bookingId),
+    video_link: (String(e.meeting || '').length <= 2000 && unsafeFrom('calendar', e.meeting)) || null,
+    location: unsafeFrom('calendar', clip(e.location, 500)),
+    description: description ? unsafeBlock(description.slice(0, textMax), { source: 'calendar', event_id: e.id }) : '',
+    organizer: e.organizer ? { ...calendarPerson(e.organizer), self: Boolean(e.organizer.self) } : null,
+    attendees: attendees.slice(0, peopleMax).map((a) => ({ ...calendarPerson(a), response: responseOf(a.response), self: Boolean(a.self), optional: Boolean(a.optional) }))
+  };
+  if (description.length > textMax) out.description_truncated = true;
+  if (attendees.length > peopleMax || e.moreAttendees) out.more_attendees = true;
+  return out;
+}
+
+// The events that fit in LIST_TEXT_MAX: whole while they all fit, else in the short form, as many as fit.
+function eventViews(list, view) {
+  const size = (v) => JSON.stringify(v).length + 1;
+  const whole = list.map((e) => view(e, false));
+  if (whole.reduce((n, v) => n + size(v), 0) <= LIST_TEXT_MAX) return { events: whole, short: false };
+  const events = [];
+  let used = 0;
+  for (const e of list) {
+    const v = view(e, true);
+    used += size(v);
+    if (used > LIST_TEXT_MAX && events.length) break;
+    events.push(v);
+  }
+  return { events, short: true };
+}
+
+async function listEvents(hub, args) {
+  const zone = pcZone();
+  const start = moment(args.start, 'start', zone);
+  const end = moment(args.end, 'end', zone);
+  if (end <= start) throw new ToolError('end must be after start.');
+  if (end - start > LIST_DAYS * DAY_MS) throw new ToolError(`start and end are at most ${LIST_DAYS} days apart. Ask for a shorter stretch.`);
+  const { calendars, accounts, failed: unread } = await calendarAccounts(hub, args.account);
+  // Without a calendar named, the ones the user shows in Rukoo, as they see their week.
+  const picked = args.calendar !== undefined ? matchCalendars(accounts, args.calendar) : accounts.flatMap((acc) => acc.calendars.filter((cal) => cal.visible).map((cal) => ({ acc, cal })));
+  const byKey = new Map(picked.map((p) => [calendarKey(p.acc.id, p.cal.id), p]));
+  const read = byKey.size ? await calendars.read({ start, end, calendars: [...byKey.keys()] }) : { events: [], failed: [] };
+  const words = tokens(args.query);
+  const person = (p) => (p ? `${p.name || ''} ${p.address || ''}` : '');
+  const hay = (e) => fold([e.title, e.location, e.description, person(e.organizer), ...(e.attendees || []).map(person)].join(' '));
+  const hits = read.events.filter((e) => !words.length || words.every((w) => hay(e).includes(w)));
+  const asked = hits.slice(0, args.limit || 50);
+  const shown = eventViews(asked, (e, short) => {
+    const p = byKey.get(calendarKey(e.accountId, e.calendarId));
+    return eventView(e, p ? p.acc : { email: e.accountId }, p ? p.cal : null, zone, short);
+  });
+  const out = {
+    time_zone: zone,
+    start: isoIn(start, zone),
+    end: isoIn(end, zone),
+    events: shown.events,
+    total: hits.length
+  };
+  const notes = [];
+  if (shown.short) {
+    const cut = shown.events.length < asked.length;
+    if (cut) out.truncated = true;
+    notes.push(
+      `The answer is long, so descriptions are cut at ${SHORT_TEXT_MAX} characters and guest lists at ${SHORT_ATTENDEES_MAX}${cut ? `, and it stops after ${shown.events.length} of ${hits.length} events` : ''}. For the rest, ask for a shorter stretch, one calendar or a query.`
+    );
+  }
+  const failed = [...unread, ...read.failed];
+  if (failed.length) {
+    const part = failedPart(failed, 'its events are missing here');
+    out.failed = part.failed;
+    notes.push(part.note);
+  }
+  if (notes.length) out.note = notes.join(' ');
+  return out;
+}
+
+async function findFreeTime(hub, args) {
+  const deps = hub.deps || {};
+  if (typeof deps.calendarFree !== 'function') throw new ToolError('Rukoo has no calendar here.');
+  const zone = zoneArg(args.time_zone);
+  const start = moment(args.start, 'start', zone);
+  const end = moment(args.end, 'end', zone);
+  if (end <= start) throw new ToolError('end must be after start.');
+  if (end - start > FREE_DAYS * DAY_MS) throw new ToolError(`start and end are at most ${FREE_DAYS} days apart. Ask for a shorter stretch.`);
+  const notes = [];
+  let hours = args.hours || 'working';
+  // Without a booking page there are no booking hours: free time then uses the working hours, and says so.
+  if (hours === 'booking' && !(typeof deps.bookingHours === 'function' && (await deps.bookingHours()))) {
+    hours = 'working';
+    notes.push("The user's booking page is off, so these are within their working hours.");
+  }
+  let result;
+  try {
+    result = await deps.calendarFree({ start, end, length: args.duration_minutes, hours, timeZone: zone, locale: 'en' });
+  } catch (err) {
+    throw new ToolError(`Rukoo could not find free time: ${englishError(err)}`);
+  }
+  const shown = result.timeZone || zone;
+  const out = {
+    time_zone: shown,
+    hours,
+    duration_minutes: args.duration_minutes,
+    windows: (result.windows || []).map(([s, e]) => ({ start: isoIn(s, shown), end: isoIn(e, shown) })),
+    lines: result.lines || [],
+    calendars_checked: (result.checked || []).length
+  };
+  if (!out.calendars_checked) notes.push("None of the user's calendars counts toward their availability, so these times are not checked against any calendar. Tell the user.");
+  if ((result.failed || []).length) {
+    const part = failedPart(result.failed, 'its busy time is missing and these times may be wrong');
+    out.failed = part.failed;
+    notes.push(part.note);
+  }
+  if (notes.length) out.note = notes.join(' ');
+  return out;
+}
+
+function guestList(list) {
+  const out = [];
+  const seen = new Set();
+  for (const g of people(list, 'guests') || []) {
+    const address = g.address.toLowerCase();
+    if (!GUEST_ADDRESS.test(address)) throw new ToolError(`guests: ${unsafeValue(g.address)} is not an email address.`);
+    if (seen.has(address)) continue;
+    seen.add(address);
+    out.push(g.name ? { address, name: g.name } : { address });
+  }
+  return out;
+}
+
+function timedTimes(args, zone, engine) {
+  const start = moment(args.start, 'start', zone);
+  const length = Number(engine.settings && engine.settings.calendar && engine.settings.calendar.duration) || 60;
+  const end = args.end !== undefined ? moment(args.end, 'end', zone) : start + length * 60000;
+  if (end <= start) throw new ToolError('end must be after start.');
+  if (end - start > EVENT_DAYS * DAY_MS) throw new ToolError(`An event with times is at most ${EVENT_DAYS} days long. Make a longer one all-day.`);
+  return { start, end };
+}
+
+// An all-day event's dates; end is the day after the last day. A date-time counts for its date in zone, and an end
+// on the start date means that one day.
+function allDayTimes(args, zone) {
+  const date = (v, field) => {
+    const s = String(v).trim();
+    const ms = moment(s, field, zone);
+    return DATE_ONLY.test(s) ? s : zonedParts(ms, zone).date;
+  };
+  const startDate = date(args.start, 'start');
+  let endDate = args.end !== undefined ? date(args.end, 'end') : addDays(startDate, 1);
+  if (endDate === startDate) endDate = addDays(startDate, 1);
+  if (endDate < startDate) throw new ToolError('end must be after start.');
+  if (endDate > addDays(startDate, ALL_DAY_MAX)) throw new ToolError(`An all-day event is at most ${ALL_DAY_MAX} days long.`);
+  return { startDate, endDate, start: zonedInstant(startDate, '00:00', zone), end: zonedInstant(endDate, '00:00', zone) };
+}
+
+// The card's time in English: "Tue 3 Nov 2026, 14:00–15:00 (Europe/Amsterdam)", or "Tue 3 Nov 2026, all day". The
+// chat panel shows its own, in the interface language.
+function eventWhen(spec) {
+  const day = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
+  if (spec.allDay) {
+    const f = new Intl.DateTimeFormat('en-GB', { ...day, timeZone: 'UTC' });
+    const first = Date.parse(`${spec.startDate}T00:00:00Z`);
+    const last = Date.parse(`${addDays(spec.endDate, -1)}T00:00:00Z`);
+    return `${first === last ? f.format(first) : f.formatRange(first, last)}, all day`;
+  }
+  const f = new Intl.DateTimeFormat('en-GB', { ...day, hour: '2-digit', minute: '2-digit', timeZone: spec.timeZone });
+  return `${f.formatRange(spec.start, spec.end)} (${spec.timeZone})`;
+}
+
+function eventFields(spec) {
+  const fields = [
+    { label: 'Title', value: spec.title },
+    { label: 'When', value: eventWhen(spec) },
+    { label: 'Calendar', value: `${spec.calendar} (${spec.account})` }
+  ];
+  if (spec.guests.length) fields.push({ label: 'Guests', value: spec.guests.map((g) => (g.name ? `${g.name} <${g.address}>` : g.address)).join(', ') });
+  if (spec.meet) fields.push({ label: 'Video call', value: 'Google Meet' });
+  if (spec.location) fields.push({ label: 'Location', value: spec.location });
+  if (spec.description) fields.push({ label: 'Description', value: spec.description });
+  return fields;
+}
+
+// The tool asks for approval itself, like mail_action: the card shows the event as it will be made, and an approval
+// makes exactly that (hub.decide, executeCalendar). Refusals the calendar would make come back before any card.
+async function createEvent(hub, args, call) {
+  const { engine } = hub;
+  const zone = zoneArg(args.time_zone);
+  const { calendars, accounts } = await calendarAccounts(hub, args.account);
+  let target = null;
+  if (args.calendar !== undefined) {
+    const hits = matchCalendars(accounts, args.calendar);
+    if (hits.length > 1) {
+      const err = new ToolError(`More than one calendar is called ${unsafeValue(args.calendar)}: ${hits.map(({ acc, cal }) => `id ${cal.id} in ${acc.email}`).join(', ')}. Pass the id, or the account.`);
+      err.ambiguous = true;
+      throw err;
+    }
+    target = hits[0];
+  } else {
+    // The default account's main calendar, else the first account with a calendar that takes events.
+    const first = engine.defaultAccount && engine.defaultAccount();
+    const ordered = first ? [...accounts.filter((a) => a.id === first.id), ...accounts.filter((a) => a.id !== first.id)] : accounts;
+    for (const acc of ordered) {
+      const cal = acc.calendars.find((c) => c.primary && c.writable) || acc.calendars.find((c) => c.writable);
+      if (cal) {
+        target = { acc, cal };
+        break;
+      }
+    }
+    if (!target) throw new ToolError(`None of the user's calendars takes new events. Calendars: ${calendarChoices(accounts)}.`);
+  }
+  const { acc, cal } = target;
+  const name = calendarName(cal);
+  if (!cal.writable) throw new ToolError(`${name} in ${acc.email} is read-only. Calendars that take events: ${calendarChoices(accounts, (c) => c.writable)}.`);
+  if (acc.state === 'reconnect') throw new ToolError(`The calendar of ${acc.email} needs the user to connect it again in Rukoo first. Tell the user.`);
+  const guests = guestList(args.guests);
+  if (guests.length && cal.invites !== 'provider') {
+    const inviting = (c) => c.writable && c.invites === 'provider';
+    const others = accounts.some((a) => a.calendars.some(inviting)) ? `, or pick a calendar that sends invitations: ${calendarChoices(accounts, inviting)}` : '';
+    throw new ToolError(
+      `${name} in ${acc.email} doesn't send invitations, so Rukoo can't add guests to its events. Leave guests out and tell the user to invite them themselves${others}.`
+    );
+  }
+  if (args.google_meet && !cal.conference) throw new ToolError(`${name} in ${acc.email} can't add Google Meet. Leave google_meet out, or pick a Google calendar that allows Meet.`);
+  const title = line(args.title);
+  if (!title) throw new ToolError('title is required.');
+  const allDay = args.all_day !== undefined ? args.all_day : DATE_ONLY.test(String(args.start).trim());
+  const when = allDay ? allDayTimes(args, zone) : timedTimes(args, zone, engine);
+  const input = {
+    accountId: acc.id,
+    calendarId: cal.id,
+    title,
+    location: line(args.location),
+    description: String(args.description || '').trim(),
+    allDay,
+    start: when.start,
+    end: when.end,
+    ...(allDay ? { startDate: when.startDate, endDate: when.endDate } : {}),
+    timeZone: zone,
+    ...(guests.length ? { guests: { add: guests } } : {}),
+    ...(args.google_meet ? { addMeet: true } : {})
+  };
+  try {
+    calendars.clean(input);
+  } catch (err) {
+    throw new ToolError(`Rukoo can't add this event: ${englishError(err)}`);
+  }
+  const c = hub.ensureConversation(call);
+  const spec = {
+    input,
+    // Guests hear of it from their calendar; without guests nobody does.
+    notify: guests.length > 0,
+    title,
+    account: acc.email,
+    calendar: cal.name,
+    allDay,
+    start: when.start,
+    end: when.end,
+    startDate: when.startDate || null,
+    endDate: when.endDate || null,
+    timeZone: zone,
+    guests,
+    meet: Boolean(args.google_meet),
+    location: input.location,
+    description: input.description
+  };
+  const pending = hub.requestApproval(c.id, {
+    title: `Add "${title}" to the calendar`,
+    detail: guests.length ? `Guests get an invitation from ${acc.email}.` : '',
+    fields: eventFields(spec),
+    choices: [
+      { id: 'approve', label: 'Create', kind: 'primary' },
+      { id: 'decline', label: 'Cancel', kind: 'default' }
+    ],
+    source: 'rukoo',
+    kind: 'calendar',
+    calendar: spec
+  });
+  return {
+    conversation_id: c.id,
+    proposal_id: pending.itemId,
+    status: 'waiting_for_user',
+    note: 'Rukoo is asking the user. Do not repeat the request; you will be told the outcome in your next message.'
+  };
+}
+
+// Adds an approved event, posts the notice and says what happened, for the agent's next message. The notice keeps
+// the calendar's own message, in the interface language; the agent gets it in English.
+async function executeCalendar(hub, c, spec = {}) {
+  const title = line(spec.title).slice(0, 300);
+  let event = null;
+  let error = null;
+  try {
+    event = await calendarStore(hub).create(spec.input, { notify: spec.notify === true });
+  } catch (err) {
+    error = err;
+  }
+  if (event) {
+    hub.addItem(c, {
+      type: 'notice',
+      text: `Added "${title}" to the calendar`,
+      tone: 'success',
+      code: null,
+      undo: null,
+      calendar: { action: 'created', title, id: event.id, start: event.start, allDay: Boolean(event.allDay) }
+    });
+    const where = spec.calendar ? ` in ${line(spec.calendar)} (${spec.account})` : '';
+    return { ok: true, event, text: `Added the event${where}, id ${event.id}${spec.notify ? '. The guests get an invitation' : ''}` };
+  }
+  hub.addItem(c, {
+    type: 'notice',
+    text: `Could not add "${title}" to the calendar`,
+    detail: String((error && error.message) || error || ''),
+    tone: 'error',
+    code: null,
+    undo: null,
+    calendar: { action: 'failed', title }
+  });
+  return { ok: false, error, text: `Could not add the event: ${englishError(error)}` };
+}
+
+// The booking page's address comes from the account server, which Rukoo only partly trusts, and agents pass it on
+// as it is. So it goes out only as a plain web address: URL characters only, https, or http on this computer
+// (wrangler dev, the test server), as composer.js safeBookingUrl has it. The phone's BookingLink.kt has the same rule.
+const BOOKING_URL = /^[A-Za-z0-9\-._~:/?#[\]@!$&()*+,;=%]{1,300}$/;
+function bookingUrl(v) {
+  if (typeof v !== 'string' || !BOOKING_URL.test(v)) return null;
+  try {
+    const u = new URL(v);
+    if (u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname))) return v;
+  } catch (_) {
+    // Not an address.
+  }
+  return null;
+}
+
+async function getBookingLink(hub) {
+  const deps = hub.deps || {};
+  const link = typeof deps.bookingLink === 'function' ? await deps.bookingLink() : null;
+  const url = link && bookingUrl(link.url);
+  if (!url) {
+    return { on: false, url: null, types: [], note: 'The user has no booking page turned on. They can turn it on in Rukoo under Settings > Booking page.' };
+  }
+  return {
+    on: true,
+    url,
+    types: (link.types || [])
+      .filter((type) => slugProblem(type.slug) === null && bookingUrl(type.url))
+      .map((type) => ({ slug: type.slug, title: String(type.title || ''), duration_minutes: type.duration, url: type.url })),
+    note: "Anyone with a link can book one of the user's open times, and the invitation comes from the user's own calendar."
+  };
+}
+
 module.exports = {
   TOOLS,
   TOOL_NAMES,
   list,
   callTool,
   executeMail,
+  executeCalendar,
   isRukooTool,
   bareName,
   validate,

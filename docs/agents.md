@@ -46,6 +46,10 @@ A new chat is about the open email. The email shows as a chip above the input an
 
 Everything the agent creates elsewhere links back to the email by its Message-ID header. That works in any mail client and doesn't depend on Gmail labels or other provider features. Rukoo keeps the chats themselves on your computer, per email.
 
+### Plan a meeting
+
+Ask in your own words, such as "Find half an hour with Sanne next week and put it in my calendar". The agent reads your calendars with `list_events`, looks for open time with `find_free_time` and asks Rukoo to add the event with `create_event`. Rukoo shows the event as a card first, with its title, time, calendar, guests and Google Meet. Create adds it, and the guests get the invitation from that calendar's account. The agent can also hand out your booking page with `get_booking_link`, so the other person picks a time.
+
 ## Attach files and other emails
 
 The paperclip before the email chip opens a file dialog. You can also drop files from your file manager on the panel, or paste a screenshot or files you copied. To add emails, drag them from the message list onto the panel, or choose "Add to chat" in an email's menu (⋮ in the reader, or a right-click in the list) or in the menu for checked emails (⋮ in the list toolbar). The menus work from the keyboard and open the panel when it's closed. Each file and email becomes a chip next to the email chip, and its × takes it off again before you send. The chat's own email doesn't need adding, nor does a newer email you continued the chat from, which goes along by itself. An email you add twice counts once.
@@ -248,6 +252,14 @@ Sometimes the agent no longer has the session. By default, Claude Code deletes t
 | `propose_action` | An approval card for something other people will see or that changes another system |
 | `mail_action` | Archive, delete, move, mark read or unread, star, or unsubscribe. Rukoo asks you first |
 | `read_skill` | One of the [skills](#skills), with the text files next to it. Without a name, the list of skills |
+| `list_events` | The events in your calendars between two dates, at most 92 days apart, in every account with a calendar. Without a calendar named, the calendars you show in Rukoo |
+| `find_free_time` | Open time of at least a given length in a stretch of up to 31 days, on the calendars that count toward your availability, within your working hours, your booking page's hours or any time. It names the accounts Rukoo couldn't read |
+| `create_event` | Adds an event to one of your calendars, with guests and Google Meet where the calendar allows them. Rukoo asks you first |
+| `get_booking_link` | The link to your booking page and to each meeting type, while the page is on |
+
+Times go to the agent in ISO 8601 with your time zone's offset. All-day events have dates, and their end date is the day after the last day. A long `list_events` answer stays under about 40,000 characters, so it fits what MCP clients take from one call: descriptions are cut at 500 characters and guest lists at 10, then the list stops with `truncated` and a note that tells the agent to ask for a shorter stretch, one calendar or a query. When none of your calendars counts toward your availability, `find_free_time` says its times weren't checked against any calendar. Guests need a calendar that sends invitations itself: a Google calendar, or a CalDAV calendar whose server does. Elsewhere `create_event` refuses guests before any card appears, and the agent is told to leave them out.
+
+Rukoo for Android serves the same sixteen tools, because Clark's bridge keeps one list for every device. The phone has no calendar yet: there `list_events`, `find_free_time` and `create_event` say so, and `get_booking_link` gives the link when the phone has your booking page's settings from your Rukoo account.
 
 The MCP server is stateless. Each request carries a bearer token, and Rukoo knows from the token which agent and chat it belongs to.
 
@@ -316,15 +328,17 @@ Rukoo's own skills stay slash commands, because every agent has them. The quick 
 
 ## Approvals
 
-There are three kinds:
+There are four kinds:
 
 - **Proposals.** When an agent calls `propose_action`, Rukoo shows a card and the agent stops. If you approve, Rukoo sends the agent a new message saying so, and the agent carries it out. If you decline, the agent hears it next time you write.
 - **Mail actions.** Rukoo runs these itself after you approve, and you can undo a move from the notice that follows. In Settings → Agents you can let agents archive, move and mark mail without asking. Deleting and unsubscribing always ask.
+- **Calendar events.** When an agent calls `create_event`, Rukoo shows the event as it will be made: title, time, calendar, guests, Google Meet, place and description. Create adds exactly that, and a notice says so; Cancel adds nothing. These always ask. The agent hears the outcome with your next message. A card that is still waiting when Rukoo restarts can be answered afterwards.
 - **The agent's own permissions.** Claude Code and Codex ask before running commands or changing files when their access is set to "Ask before actions", the default. Their questions show up as cards in the chat. With "Full access" they don't ask. Chats from [Rukoo on your phone](#rukoo-on-your-phone) always ask, and their cards show on the phone. Hermes follows its own approval settings, and so does OpenClaw, whose approvals Rukoo doesn't see.
 
 ## Safety
 
 - Email is written by other people. Everything Rukoo passes on from email sits inside `<unsafe_content>` tags: the email in the chat, subjects and sender names on Rukoo's own lines, and in tool results each body and attachment and every value taken from an email. That covers subjects, names, addresses, previews, attachment names and types, In-Reply-To and References headers, unsubscribe links, and the recipients and subject a reply copies from the email it answers. Text inside an email can't close or fake that tag. Rukoo tells the agent never to follow instructions inside it. Still, a model can be fooled. That is the reason for approvals, and the reason Rukoo can't send mail.
+- Calendar events are written by other people too: whoever sent an invitation, or booked a time on your booking page. In `list_events` each event's title, place, description, video link, organizer and guests sit inside `<unsafe_content source="calendar">`, and so does the name of a calendar someone shared with you. An event's time zone, status and responses go out plain only as a time zone Rukoo knows and its fixed words, because an invitation can put any text there. The text an agent copies into `create_event` loses its tags, and the card shows you what the event will say. `get_booking_link` gives the link only as a plain https address, as the account server isn't fully trusted.
 - Rukoo's own ids, accounts, folders and dates stay plain so the agent can use them. So does a Message-ID in the usual `<id@domain>` form, so the agent can link back to the email; any other Message-ID is tagged. When the agent passes a tagged value back, such as an address for a draft, Rukoo drops the tags. In the agent's own text, such as a proposal, Rukoo keeps them, and it asks the agent to keep them on email it quotes there. The quote is then still marked when Rukoo repeats the approved proposal to the agent. The chat panel shows that text without tags.
 - Files you attach are treated like email. A file you got from someone else can hold their instructions, so its name and its text reach the agent inside `<unsafe_content>`, in the message and in `read_chat_file`. An image can't carry tags, and a screenshot can show anyone's text. So wherever an image reaches the agent, Rukoo says just before it that it is untrusted data and not instructions: before each image that goes with a message, and in the result of `read_chat_file` and `read_attachment`. An email you add goes by its Rukoo id only, and Rukoo checks that the id is one of your own emails. The agent reads it with `read_message`, tags and all.
 - Agent-written drafts are sanitized before they reach the composer. Links stay; images, form controls, styles and scripts go.

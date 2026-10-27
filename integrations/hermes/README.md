@@ -26,7 +26,7 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
 
 ## Rukoo on an Android phone
 
-[Rukoo for Android](../../docs/android.md) serves the same twelve tools as the desktop app, on the phone's Tailscale address and port 47800, and answers the bridge's challenge the same way. On the phone, enter the same API server key for Clark and turn on "Let agents use Rukoo on this phone"; the bridge then finds the phone like any other device. A Hermes chat started on the phone belongs to the phone, so its tool calls go there. A call without a chat goes to the device you used last; the phone counts as used while Rukoo is in the foreground.
+[Rukoo for Android](../../docs/android.md) serves the same sixteen tools as the desktop app, on the phone's Tailscale address and port 47800, and answers the bridge's challenge the same way. The phone has no calendar yet, so its calendar tools answer that Clark should ask you to use Rukoo on your computer; `get_booking_link` works there too. On the phone, enter the same API server key for Clark and turn on "Let agents use Rukoo on this phone"; the bridge then finds the phone like any other device. A Hermes chat started on the phone belongs to the phone, so its tool calls go there. A call without a chat goes to the device you used last; the phone counts as used while Rukoo is in the foreground.
 
 Phones on mobile data often reach the tailnet through a relay. The bridge waits up to 8 seconds for a phone's first answer and its hello, instead of the 4 seconds it gives a computer. Bridge version 4 (`serverInfo.version` `bridge-4`) is the first that looks for phones. With an older bridge, add the phone with `RUKOO_URL=http://<phone's Tailscale IP>:47800/mcp`.
 
@@ -62,7 +62,7 @@ Phones on mobile data often reach the tailnet through a relay. The bridge waits 
    ```sh
    hermes mcp test rukoo
    ```
-   It should list Rukoo's twelve tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 12 tool(s)`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
+   It should list Rukoo's sixteen tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 16 tool(s)`. An older Rukoo on one of your devices serves twelve, without the calendar tools; Clark gets the list of whichever device answered last, so update Rukoo everywhere and send `/reload-mcp`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
 
 The first `tools/list` has to reach Rukoo once to fill the cache. After that, Hermes keeps the tools even when Rukoo is closed.
 
@@ -81,7 +81,7 @@ Updating Rukoo doesn't update the bridge. Most releases leave the bridge protoco
 - The bridge waits up to 115 seconds for a tool call, including the time it takes to find the device. `write_draft` waits for Rukoo's composer, which takes at most 20 seconds. Mail actions answer within 90 seconds. Everything else answers in well under a second.
 - Choosing a device adds one short request per open Rukoo to each call. Looking for devices takes up to 4 seconds, or 8 when a phone is online, because a Windows PC without Rukoo drops the connection without answering. That happens in the background, except when no known Rukoo answers.
 - `timeout: 120` is Hermes' own limit for a call to this server.
-- Rukoo's tools don't block while they wait for the user. `propose_action` and `mail_action` put an approval card in Rukoo and return right away. When the user approves, Rukoo sends Clark a new message. So the entry doesn't need `trust: untrusted`, and Hermes' approval timeout doesn't come into play.
+- Rukoo's tools don't block while they wait for the user. `propose_action`, `mail_action` and `create_event` put an approval card in Rukoo and return right away. When the user approves, Rukoo sends Clark a new message. So the entry doesn't need `trust: untrusted`, and Hermes' approval timeout doesn't come into play.
 
 ## Troubleshooting
 

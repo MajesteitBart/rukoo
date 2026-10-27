@@ -106,9 +106,16 @@ class TurnContextTest {
         val phone = TurnContext.instructions().split("\n")
         assertEquals(desktop.size, phone.size)
         val changed = desktop.indices.filter { desktop[it] != phone[it] }
-        assertEquals(listOf(0, desktop.indexOfFirst { it.startsWith("- Keep chat answers short") }), changed)
+        val propose = desktop.indexOfFirst { it.startsWith("- Before you do anything other people will see") }
+        val calendar = desktop.indexOfFirst { it.startsWith("- For the calendar, use list_events") }
+        val short = desktop.indexOfFirst { it.startsWith("- Keep chat answers short") }
+        assertEquals(listOf(0, propose, calendar, short), changed)
         assertTrue(phone[0].startsWith("You are working inside Rukoo Mail, the email app on the user's phone"))
-        assertEquals("- Keep chat answers short and plain. The user reads them on a phone screen.", phone[changed[1]])
+        // The phone has no calendar yet: an event elsewhere still goes through propose_action, and the calendar tools
+        // say they can't, where the computer's add events with create_event.
+        assertTrue(phone[propose].contains("CRM record or calendar event), call propose_action and stop."))
+        assertTrue(phone[calendar].startsWith("- Rukoo on this phone has no calendar yet: list_events, find_free_time and create_event say so"))
+        assertEquals("- Keep chat answers short and plain. The user reads them on a phone screen.", phone[short])
         assertFalse(TurnContext.instructions().contains("desktop"))
     }
 }

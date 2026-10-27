@@ -31,6 +31,7 @@ import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.agents.ChatFiles
 import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.Tailnet
+import nl.bvdm.rukoo.mcp.tools.BookingLink
 import nl.bvdm.rukoo.mcp.tools.ChatFileReader
 import nl.bvdm.rukoo.mcp.tools.McpTools
 import nl.bvdm.rukoo.mcp.tools.ToolDeps
@@ -142,6 +143,8 @@ class AndroidMcpController(private val container: AppContainer) : McpController 
                 },
                 zone = { ZoneId.systemDefault() },
                 clock = c.clock,
+                // get_booking_link: the link desktop's booking service stored in the Rukoo account.
+                bookingSettings = { BookingLink.settings(c.account) },
             ),
         )
     }

@@ -642,6 +642,8 @@ const KIND_ICONS = {
   command: 'terminal',
   web: 'globe',
   file: 'file',
+  calendar: 'calendar',
+  link: 'link',
   tool: 'wrench'
 };
 
@@ -908,6 +910,8 @@ export function approvalCard(item = {}, { labels = {}, onChoose } = {}) {
     fields.hidden = !fields.childElementCount;
     const status = current.status || 'pending';
     el.dataset.status = status;
+    // Which card it is (proposal, mail, calendar, runtime), for its styles.
+    if (current.kind) el.dataset.kind = current.kind;
     if (status === shownStatus) return;
     shownStatus = status;
     if (status === 'pending') {

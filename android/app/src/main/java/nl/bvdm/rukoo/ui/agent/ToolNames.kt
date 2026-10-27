@@ -14,6 +14,8 @@ enum class ToolChipKind(val icon: String) {
     COMMAND("terminal"),
     WEB("globe"),
     FILE("file"),
+    CALENDAR("calendar"),
+    LINK("link"),
     TOOL("wrench"),
 }
 
@@ -50,10 +52,14 @@ object ToolNames {
         "read_attachment" to ToolChipKind.FILE,
         "read_chat_file" to ToolChipKind.FILE,
         "read_skill" to ToolChipKind.FILE,
+        "list_events" to ToolChipKind.CALENDAR,
+        "find_free_time" to ToolChipKind.CALENDAR,
+        "create_event" to ToolChipKind.CALENDAR,
+        "get_booking_link" to ToolChipKind.LINK,
     )
 
     // These put their own card in the transcript, so once they succeed a chip saying the same is noise.
-    private val CARD_TOOLS = setOf("write_draft", "show_plan", "show_sources", "propose_action", "mail_action")
+    private val CARD_TOOLS = setOf("write_draft", "show_plan", "show_sources", "propose_action", "mail_action", "create_event")
 
     private fun re(pattern: String) = Regex(pattern, RegexOption.IGNORE_CASE)
 
