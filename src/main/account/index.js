@@ -20,6 +20,7 @@ const MIN_PASSWORD = 12;
 const SYNC_EVERY = 5 * 60 * 1000;
 const PUSH_AFTER = 2000;
 const SAVE_AFTER = 1000;
+const SAVE_RETRY = 30000;
 const PULL_LIMIT = 1000;
 const PUSH_BATCH = 500;
 // The most one pull takes: an account's records and tombstones a page of 1000 at a time, or 256 MiB of sealed records
@@ -88,6 +89,7 @@ class AccountService extends EventEmitter {
     this.session = null;
     this.syncing = null;
     this.timers = { push: null, save: null, every: null };
+    this.durableCursor = 0;
   }
 
   file(name) {
@@ -100,6 +102,8 @@ class AccountService extends EventEmitter {
     for (const e of Array.isArray(saved.entries) ? saved.entries : []) {
       if (e && typeof e.c === 'string' && typeof e.k === 'string') this.entries.set(entryKey(e.c, e.k), e);
     }
+    // The cursor as of the records last written to disk: the state on disk never goes past it.
+    this.durableCursor = Number(this.state.cursor) || 0;
     if (this.state.email && this.state.token && this.state.dataKey) {
       try {
         this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64') });
@@ -663,20 +667,39 @@ class AccountService extends EventEmitter {
   // The records go first: a cursor on disk past records that aren't would have them skipped for good after a restart.
   saveState() {
     this.saveEntries(true);
-    writeJson(this.file('account.json'), this.state);
+    // When the records couldn't be written (a full disk), the cursor on disk stays where they last were.
+    const state = this.state.cursor === undefined ? this.state : { ...this.state, cursor: Math.min(Number(this.state.cursor) || 0, this.durableCursor) };
+    writeJson(this.file('account.json'), state);
   }
 
+  // Now (false when that failed), or a second after the last change.
   saveEntries(now = false) {
     clearTimeout(this.timers.save);
-    const write = () => writeJson(this.file('account-records.json'), { entries: [...this.entries.values()] });
-    if (now) return write();
-    this.timers.save = setTimeout(write, SAVE_AFTER);
+    this.timers.save = null;
+    if (now) return this.writeEntries();
+    this.timers.save = setTimeout(() => this.writeEntries(), SAVE_AFTER);
     if (this.timers.save.unref) this.timers.save.unref();
+    return true;
   }
 
-  // Writes the records that wait for their save now.
+  // False when the disk refused the records; they are tried again a little later then.
+  writeEntries() {
+    this.timers.save = null;
+    const cursor = Number(this.state.cursor) || 0;
+    try {
+      writeJson(this.file('account-records.json'), { entries: [...this.entries.values()] });
+      this.durableCursor = cursor;
+      return true;
+    } catch (_) {
+      this.timers.save = setTimeout(() => this.writeEntries(), SAVE_RETRY);
+      if (this.timers.save.unref) this.timers.save.unref();
+      return false;
+    }
+  }
+
+  // Writes the records that wait for their save now; false when they couldn't be written.
   flush() {
-    if (this.timers.save) this.saveEntries(true);
+    return this.timers.save ? this.saveEntries(true) : true;
   }
 
   // Writes what waits and stops the timers, for quitting.

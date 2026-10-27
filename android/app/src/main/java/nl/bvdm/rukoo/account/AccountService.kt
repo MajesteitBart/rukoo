@@ -81,6 +81,9 @@ class AccountService(
     private class Syncing(val session: Session, val job: Deferred<AccountStatus>)
 
     private var state = AccountState()
+
+    // The cursor as of the records last written to disk: the state on disk never goes past it.
+    private var durableCursor = 0L
     private val entries = LinkedHashMap<String, AccountEntry>()
     private val ids = HashMap<String, String>()
     private var session: Session? = null
@@ -112,6 +115,7 @@ class AccountService(
         state = runCatching { JsonFiles.read(stateFile, AccountState.serializer(), AccountState()) }.getOrElse { AccountState() }
         val saved = runCatching { JsonFiles.read(recordsFile, StoredEntries.serializer(), StoredEntries()) }.getOrElse { StoredEntries() }
         for (e in saved.entries) entries[entryKey(e.c, e.k)] = e
+        durableCursor = state.cursor
         val email = state.email
         val token = state.token
         val dataKey = state.dataKey
@@ -811,11 +815,13 @@ class AccountService(
      */
     private fun saveState() {
         saveEntries(now = true)
-        runCatching { JsonFiles.write(stateFile, AccountState.serializer(), state) }.onFailure { AppLog.w(TAG, "could not save the account", it) }
+        // When the records couldn't be written (a full disk), the cursor on disk stays where they last were.
+        val saved = state.copy(cursor = minOf(state.cursor, durableCursor))
+        runCatching { JsonFiles.write(stateFile, AccountState.serializer(), saved) }.onFailure { AppLog.w(TAG, "could not save the account", it) }
     }
 
-    /** Under the lock; [now] writes at once, else a second after the last change. */
-    private fun saveEntries(now: Boolean = false) {
+    /** Under the lock; [now] writes at once (false when that failed), else a second after the last change. */
+    private fun saveEntries(now: Boolean = false): Boolean {
         saveJob?.cancel()
         saveJob = null
         if (now) return writeEntries()
@@ -823,17 +829,30 @@ class AccountService(
             delay(saveAfterMs)
             synchronized(lock) { writeEntries() }
         }
+        return true
     }
 
-    private fun writeEntries() {
+    /** Under the lock. False when the disk refused the records; they are tried again a little later then. */
+    private fun writeEntries(): Boolean {
         val copy = entries.values.map { AccountEntry(it.c, it.k, it.v, it.t, it.deleted, it.dirty, it.ifAbsent, it.first, it.id, it.seq, it.tooLarge) }
-        runCatching { JsonFiles.write(recordsFile, StoredEntries.serializer(), StoredEntries(copy)) }
+        val cursor = state.cursor
+        val written = runCatching { JsonFiles.write(recordsFile, StoredEntries.serializer(), StoredEntries(copy)) }
             .onFailure { AppLog.w(TAG, "could not save the account's records", it) }
+            .isSuccess
+        if (written) {
+            durableCursor = cursor
+        } else {
+            saveJob = scope.launch {
+                delay(SAVE_RETRY)
+                synchronized(lock) { writeEntries() }
+            }
+        }
+        return written
     }
 
-    /** Writes the records that wait for their save now. */
-    fun flush() = synchronized(lock) {
-        if (saveJob != null) saveEntries(now = true)
+    /** Writes the records that wait for their save now; false when they couldn't be written. */
+    fun flush(): Boolean = synchronized(lock) {
+        if (saveJob != null) saveEntries(now = true) else true
     }
 
     /** Writes what waits and stops the timers, for quitting and for tests. */
@@ -858,6 +877,7 @@ class AccountService(
         const val SYNC_EVERY = 5 * 60 * 1000L
         const val PUSH_AFTER = 2000L
         const val SAVE_AFTER = 1000L
+        private const val SAVE_RETRY = 30_000L
         private const val PULL_LIMIT = 1000
         private const val PUSH_BATCH = 500
 

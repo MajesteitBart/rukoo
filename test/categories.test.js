@@ -565,6 +565,24 @@ test("a finished re-sort's answers are on disk before the list that says it's do
   assert.equal(account.get('classification', cats.key(acc, msgs[0])).category, 'money');
 });
 
+test('a re-sort whose answers the disk refuses stays on the list on disk', async (t) => {
+  let category = 'promotions';
+  const fake = { MODEL: 'jev-test', classify: async () => ({ category, confidence: 0.9, model: 'jev-test' }) };
+  const msgs = inbox();
+  const { cats, acc } = setup(t, msgs, { jevImpl: fake });
+  // Jev first: turning categories on sorts at once.
+  cats.setJev({ key: 'KEY', on: true });
+  cats.setEnabled(true);
+  await cats.sort();
+  // The disk refuses the account's records from now on: a directory where their file goes stands in for a full disk.
+  const records = path.join(cats.dataDir, 'account-records.json');
+  fs.rmSync(records, { force: true });
+  fs.mkdirSync(path.join(records, 'x'), { recursive: true });
+  category = 'money';
+  await cats.sortAgain();
+  assert.ok(JSON.parse(fs.readFileSync(cats.file(), 'utf8')).redo.includes(cats.key(acc, msgs[0])), 'the email stays on the list on disk');
+});
+
 test('a very long Message-ID is kept as its hash', (t) => {
   const { cats, acc } = setup(t, inbox());
   const long = `<${'x'.repeat(20000)}@evil.example>`;

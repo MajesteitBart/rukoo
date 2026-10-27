@@ -844,6 +844,36 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `records the disk refuses keep the cursor on disk behind them`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("full@example.com", PASSWORD)
+        val dir = tmp.newFolder()
+        val laptop = device(srv, "laptop", dir = dir)
+        laptop.signIn("full@example.com", PASSWORD)
+        laptop.sync()
+        val before = laptop.cursor()
+        for (i in 1..3) desk.put("category", "c$i", cat("C$i"))
+        desk.sync()
+
+        // The disk refuses the records from now on: a directory where their file goes stands in for a full disk.
+        val records = File(dir, "account-records.json")
+        records.delete()
+        File(records, "x").mkdirs()
+        laptop.sync()
+        assertTrue("the pull moved the cursor in memory", laptop.cursor() > before)
+        val offline = AccountHttp { _, _, _, _, _ -> throw AccountError("network") }
+        assertEquals("but not on disk", before, device(srv, "fresh", dir = dir, http = offline).cursor())
+
+        // Once the disk takes them again, the next save catches up.
+        records.deleteRecursively()
+        laptop.sync()
+        val again = device(srv, "again", dir = dir, http = offline)
+        assertEquals(laptop.cursor(), again.cursor())
+        assertEquals(3, again.list("category").size)
+    }
+
+    @Test
     fun `the export holds every record, readable`() {
         val srv = server()
         val desk = device(srv)

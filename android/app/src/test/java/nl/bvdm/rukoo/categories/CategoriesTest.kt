@@ -581,6 +581,25 @@ class CategoriesTest {
     }
 
     @Test
+    fun `a re-sort whose answers the disk refuses stays on the list on disk`() = runBlocking {
+        var category = "promotions"
+        val fake = FakeJev { _, _, _ -> JevAnswer(category, 0.9, "jev-test") }
+        val s = setup(inbox(), fake)
+        // Jev first: turning categories on sorts at once, on another thread.
+        s.cats.setJev(on = true, key = "KEY")
+        s.cats.setEnabled(true)
+        s.cats.sort()
+        // The disk refuses the account's records from now on: a directory where their file goes stands in for a full
+        // disk.
+        val records = java.io.File(s.dir, "account-records.json")
+        records.delete()
+        java.io.File(records, "x").mkdirs()
+        category = "money"
+        s.cats.sortAgain()
+        assertTrue("the email stays on the list on disk", java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
+    }
+
+    @Test
     fun `after a restart the left-over re-sort runs without any mail change`() = runBlocking {
         var busy = true
         val fake = FakeJev { _, _, _ ->

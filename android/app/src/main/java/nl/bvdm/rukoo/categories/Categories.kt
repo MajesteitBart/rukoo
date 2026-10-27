@@ -194,11 +194,12 @@ class Categories(
 
     /**
      * Under [lock]. The account's records go to disk first: a re-sort list without an email whose new category is
-     * still only in memory would forget that email for good if the app stopped right then.
+     * still only in memory would forget that email for good if the app stopped right then. When they can't be written,
+     * the emails on the list on disk stay on it.
      */
     private fun saveLocal() {
-        account.flush()
-        local = local.copy(redo = redo.toList())
+        val kept = if (account.flush()) redo.toList() else (local.redo + redo).distinct()
+        local = local.copy(redo = kept)
         runCatching { JsonFiles.write(file, LocalCategories.serializer(), local) }.onFailure { AppLog.w(TAG, "could not save categories.json", it) }
     }
 

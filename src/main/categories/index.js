@@ -74,9 +74,10 @@ class Categories extends EventEmitter {
   // doesn't forget them.
   saveLocal() {
     // The account's records go to disk first: a re-sort list without an email whose new category is still only in
-    // memory would forget that email for good if the app quit right then.
-    this.account.flush();
-    this.local.redo = [...this.redo];
+    // memory would forget that email for good if the app quit right then. When they can't be written, the emails on
+    // the list on disk stay on it.
+    const written = this.account.flush();
+    this.local.redo = written ? [...this.redo] : [...new Set([...(this.local.redo || []), ...this.redo])];
     fs.mkdirSync(this.dataDir, { recursive: true });
     fs.writeFileSync(this.file(), JSON.stringify(this.local));
   }

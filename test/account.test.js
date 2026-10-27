@@ -762,6 +762,34 @@ test("a server that leaves records out of its answer doesn't get them again fore
   assert.equal(posts, 1);
 });
 
+test('records the disk refuses keep the cursor on disk behind them', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'full@example.com', password: PASSWORD });
+  const dir = tmpDir(t);
+  const laptop = device(t, srv, 'laptop', dir);
+  await laptop.signIn({ email: 'full@example.com', password: PASSWORD });
+  await laptop.sync();
+  const before = laptop.state.cursor;
+  for (let i = 1; i <= 3; i++) desk.put('category', `c${i}`, { name: `C${i}` });
+  await desk.sync();
+
+  // The disk refuses the records from now on: a directory where their file goes stands in for a full disk.
+  const records = path.join(dir, 'account-records.json');
+  fs.rmSync(records, { force: true });
+  fs.mkdirSync(path.join(records, 'x'), { recursive: true });
+  await laptop.sync();
+  assert.ok(laptop.state.cursor > before, 'the pull moved the cursor in memory');
+  const onDisk = () => JSON.parse(fs.readFileSync(path.join(dir, 'account.json'), 'utf8')).cursor;
+  assert.equal(onDisk(), before, 'but not on disk');
+
+  // Once the disk takes them again, the next save catches up.
+  fs.rmSync(records, { recursive: true, force: true });
+  await laptop.sync();
+  assert.equal(onDisk(), laptop.state.cursor);
+  assert.equal(JSON.parse(fs.readFileSync(records, 'utf8')).entries.filter((e) => e.c === 'category').length, 3);
+});
+
 test('the export holds every record, readable', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);
