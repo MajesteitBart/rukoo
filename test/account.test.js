@@ -117,6 +117,26 @@ test('weak or odd key derivation settings are refused', () => {
   assert.deepEqual(k.checkKdf({ alg: 'argon2id', m: 65536, t: 3, p: 1, extra: true }), k.DEFAULT_KDF);
 });
 
+test('each request has a connection of its own, so a server that drops an idle one can\'t fail it', async (t) => {
+  const http = require('http');
+  const { request } = require('../src/main/account/client');
+  const served = new WeakSet();
+  // A server that drops a connection as soon as it is used a second time, like one whose idle timeout runs out just
+  // as the next request arrives.
+  const server = http.createServer((req, res) => {
+    if (served.has(req.socket)) return req.socket.destroy();
+    served.add(req.socket);
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+  assert.deepEqual(await request(url, 'GET', '/v1/info'), { ok: true });
+  assert.deepEqual(await request(url, 'GET', '/v1/info'), { ok: true });
+});
+
 test('only https servers, or http on this computer', () => {
   assert.equal(serverUrl('https://sync.example.com/'), 'https://sync.example.com');
   assert.equal(serverUrl('https://example.com/rukoo/'), 'https://example.com/rukoo');
