@@ -278,7 +278,7 @@
     <string name="settings_general_dark_emails">Dark email display</string>
     <string name="settings_general_dark_emails_help">Adjust HTML email colors in dark mode.</string>
     <string name="settings_general_swipe">Swipe actions</string>
-    <string name="settings_general_swipe_help">Swipe right to mark as read or unread, and left to delete.</string>
+    <string name="settings_general_swipe_help">Swipe an email in the list to the right or left.</string>
 
     <!-- Language -->
     <string name="settings_general_language">Language</string>
@@ -304,4 +304,13 @@
     <string name="onboarding_add_help">Google, Outlook, Yahoo or any other mail account</string>
     <string name="onboarding_demo">Try the demo account</string>
     <string name="onboarding_pair_title">Connect to your computer</string>
+    <string name="settings_swipe_right">Swipe right</string>
+    <string name="settings_swipe_left">Swipe left</string>
+    <string name="settings_actions_none">Nothing</string>
+    <string name="settings_actions_read">Mark as read or unread</string>
+    <string name="settings_actions_archive">Archive</string>
+    <string name="settings_actions_delete">Delete</string>
+    <string name="settings_actions_star">Star</string>
+    <string name="settings_actions_move">Move to folder</string>
+    <string name="settings_actions_category">Move to category</string>
 </resources>

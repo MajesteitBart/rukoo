@@ -61,6 +61,7 @@ import nl.bvdm.rukoo.mail.model.SortOrder
 import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.mail.model.QuickFilter as ListFilter
 import nl.bvdm.rukoo.settings.Density
+import nl.bvdm.rukoo.settings.SwipeAction
 import nl.bvdm.rukoo.ui.agent.AgentEntryButton
 import nl.bvdm.rukoo.ui.agent.rememberAgentNews
 import nl.bvdm.rukoo.ui.components.EmptyState
@@ -118,9 +119,9 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
     val all = loaded.orEmpty()
     val filter = if (nav.searching) ListFilter.ALL else nav.filter
 
-    // Inbox categories show as tabs in the inbox, while categories are on and nothing is searched (app.js
-    // categoriesOn). Each email's category is worked out off the main thread whenever the list, the categories or
-    // any record changes.
+    // Inbox categories sit under Inbox in the folder drawer; the inbox shows the one picked there, while categories
+    // are on and nothing is searched (app.js categoriesOn). Each email's category is worked out off the main thread
+    // whenever the list, the categories or any record changes.
     val categories = app.services.categories
     val noCategories = remember { MutableStateFlow(CategoriesState()) }
     val catState by (categories?.state ?: noCategories).collectAsStateWithLifecycle()
@@ -131,7 +132,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
         value = if (tabsOn && categories != null) withContext(Dispatchers.Default) { categories.of(accounts, all) } else emptyMap()
     }
     val tab = nav.category?.takeIf { id -> tabsOn && catState.categories.any { it.id == id } }
-    // The list in the category tab on screen; the quick filters and their counts work on it.
+    // The list in the category on screen; the quick filters and their counts work on it.
     val inTab = remember(all, tab, categoryOf) { if (tab != null) all.filter { categoryOf[it.id] == tab } else all }
     val messages = remember(inTab, filter) { ListModel.applyFilter(inTab, filter) }
     val byDate = settings.sort == SortOrder.DATE_DESC || settings.sort == SortOrder.DATE_ASC
@@ -170,15 +171,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
             when {
                 selecting -> SelectionBar(app, messages.filter { it.id in checked }, messages)
                 nav.searching -> SearchBar(app, nav.query, nav.view, folders)
-                else -> ListHeader(app, nav.view, all, accounts.map { it.id to it.email }, folders)
-            }
-            if (tabsOn) {
-                CategoryTabs(
-                    categories = catState.categories,
-                    selected = tab,
-                    unread = { id -> all.count { it.unread && (id == null || categoryOf[it.id] == id) } },
-                    onSelect = app::setCategory,
-                )
+                else -> ListHeader(app, nav.view, inTab, accounts.map { it.id to it.email }, folders, category = tab?.let { id -> catState.categories.firstOrNull { it.id == id }?.name })
             }
             if (!selecting) {
                 if (nav.searching) {
@@ -255,7 +248,11 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
                         accounts.associate { it.id to it.email },
                         emptyTab = tab?.let { id -> catState.categories.firstOrNull { it.id == id }?.name },
                     )
-                    else -> MessageList(app, rows, drafts, listState, dates, now, settings.density == Density.COMPACT, selecting, checked, nav.openMessageId, multi, labels, showFolder, folders, settings.swipeActions)
+                    else -> MessageList(
+                        app, rows, drafts, listState, dates, now, settings.density == Density.COMPACT, selecting, checked, nav.openMessageId, multi, labels, showFolder, folders,
+                        swipeRight = settings.swipeRight.takeIf { settings.swipeActions && it != SwipeAction.NONE },
+                        swipeLeft = settings.swipeLeft.takeIf { settings.swipeActions && it != SwipeAction.NONE },
+                    )
                 }
             }
         }
@@ -287,7 +284,8 @@ private fun MessageList(
     labels: Map<String, String>,
     showFolder: Boolean,
     folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>,
-    swipe: Boolean,
+    swipeRight: SwipeAction?,
+    swipeLeft: SwipeAction?,
 ) {
     val c = Rk.colors
     val ui = app.mailUi
@@ -338,8 +336,8 @@ private fun MessageList(
                                 app.openMessage(m.id)
                             },
                             toggleChecked = { app.toggleChecked(m.id) },
-                            toggleRead = if (swipe) ({ ui.setUnread(listOf(m), !m.unread) }) else null,
-                            delete = if (swipe) ({ ui.delete(listOf(m)) }) else null,
+                            right = swipeRight?.let { rowSwipe(ui, it, m) },
+                            left = swipeLeft?.let { rowSwipe(ui, it, m) },
                             toggleStack = row.stack?.let { s -> { app.toggleStack(s.key) } },
                         ),
                         stack = row.stack,
@@ -350,6 +348,36 @@ private fun MessageList(
             }
         }
     }
+}
+
+/**
+ * What a swipe with [action] does to [m], or null where it can't: a saved or draft email only goes away, and only
+ * inbox mail has a category (desktop's rowActionAvailable).
+ */
+private fun rowSwipe(ui: MailUi, action: SwipeAction, m: MessageSummary): RowSwipe? {
+    val one = listOf(m)
+    val run: () -> Unit = when (action) {
+        SwipeAction.NONE -> return null
+        SwipeAction.DELETE -> ({ ui.delete(one) })
+        else -> {
+            if (m.role == FolderRole.DRAFTS && action != SwipeAction.STAR) return null
+            when (action) {
+                SwipeAction.READ -> ({ ui.setUnread(one, !m.unread) })
+                SwipeAction.ARCHIVE -> {
+                    if (m.role == FolderRole.ARCHIVE) return null
+                    ({ ui.archive(one) })
+                }
+                SwipeAction.STAR -> ({ ui.setStarred(one, !m.starred) })
+                SwipeAction.MOVE -> ({ ui.pickFolder(one) })
+                SwipeAction.CATEGORY -> {
+                    if (m.id !in ui.categoriesOf(one)) return null
+                    ({ ui.pickCategory(one) })
+                }
+                else -> return null
+            }
+        }
+    }
+    return RowSwipe(action, run)
 }
 
 /** A sticky day head (styles.css:1222-1231): 11.5/600 `text3` on `panel`. */
@@ -364,13 +392,20 @@ private fun GroupHead(label: String) {
     )
 }
 
-/** "N unread · account" when the view counts unread mail, else the account or "All accounts" (app.js listTitle). */
+/**
+ * "N unread · account" when the view counts unread mail, else the account or "All accounts" (app.js listTitle). A
+ * category under Inbox titles the list with its name, and "N unread · Inbox" below it.
+ */
 @Composable
-private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSummary>, accounts: List<Pair<String, String>>, folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>) {
+private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSummary>, accounts: List<Pair<String, String>>, folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>, category: String? = null) {
     val c = Rk.colors
-    val where = view.accountId?.let { id -> accounts.firstOrNull { it.first == id }?.second }
-        ?: accounts.singleOrNull()?.second
-        ?: stringResource(R.string.mailbox_search_all_accounts)
+    val where = if (category != null) {
+        viewTitle(view, folders)
+    } else {
+        view.accountId?.let { id -> accounts.firstOrNull { it.first == id }?.second }
+            ?: accounts.singleOrNull()?.second
+            ?: stringResource(R.string.mailbox_search_all_accounts)
+    }
     val counts = view.kind in setOf(ViewKind.INBOX, ViewKind.FOLDER, ViewKind.VIP, ViewKind.JUNK, ViewKind.ARCHIVE, ViewKind.UNREAD)
     val unread = if (counts) list.count { it.unread } else 0
     val sub = if (unread > 0) stringResource(R.string.mailbox_list_unread_summary, unread, where) else where
@@ -379,7 +414,7 @@ private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSumm
     val settings by app.services.settingsSnapshot.collectAsStateWithLifecycle()
     val news = rememberAgentNews(app)
     RkTopBar(
-        title = viewTitle(view, folders),
+        title = category ?: viewTitle(view, folders),
         subtitle = sub,
         titleStyle = Rk.type.pageTitle,
         height = 64.dp,

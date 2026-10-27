@@ -77,14 +77,25 @@ function keyDialog(hasKey) {
 // pages: what settings.js needs. row: its row helper; go and rerender: its navigation; current(): the page on top.
 export function categoryPages({ row, go, rerender, current }) {
   let state = null;
+  // What the sorting is doing (categories/index.js, activity()): "Sort the inbox again" counts along.
+  let activity = null;
 
   async function prepare() {
-    state = await api('categoriesState').catch(() => state);
+    [state, activity] = await Promise.all([api('categoriesState').catch(() => state), api('categoriesActivity').catch(() => activity)]);
   }
 
   function onState(next) {
     state = next;
     if (current() === 'categories') rerender();
+  }
+
+  const againDesc = () => (activity && activity.running ? t('categories.activity.progress', { done: activity.done, total: activity.total }) : t('settings.categories.againHelp'));
+
+  // Many times a second while Jev sorts: only the line under "Sort the inbox again" changes.
+  function onActivity(next) {
+    activity = next;
+    const desc = document.querySelector('.page.settings [data-a="cat-again"] .desc');
+    if (desc) desc.textContent = againDesc();
   }
 
   // The row on the Settings overview.
@@ -137,7 +148,7 @@ export function categoryPages({ row, go, rerender, current }) {
         ${row({ title: esc(t('settings.categories.key')), value: esc(t(state.jev.hasKey ? 'settings.categories.keySet' : 'settings.categories.keyMissing')), action: 'cat-key' })}
       </div>
       <p class="settings-text">${esc(t('settings.categories.jevShares'))}</p>
-      <div class="card">${row({ title: esc(t('settings.categories.again')), desc: esc(t('settings.categories.againHelp')), action: 'cat-again' })}</div>
+      <div class="card">${row({ title: esc(t('settings.categories.again')), desc: esc(againDesc()), action: 'cat-again' })}</div>
       ${
         state.senders.length
           ? `<div class="settings-group-title">${esc(t('settings.categories.senders'))}</div>
@@ -232,5 +243,5 @@ export function categoryPages({ row, go, rerender, current }) {
     return false;
   }
 
-  return { prepare, onState, rowHtml, view, click, enabled: () => Boolean(state && state.enabled), jevOn: () => Boolean(state && state.jev.on) };
+  return { prepare, onState, onActivity, rowHtml, view, click, enabled: () => Boolean(state && state.enabled), jevOn: () => Boolean(state && state.jev.on) };
 }

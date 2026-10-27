@@ -22,6 +22,7 @@ import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.Density
 import nl.bvdm.rukoo.settings.Language
 import nl.bvdm.rukoo.settings.SettingsStore
+import nl.bvdm.rukoo.settings.SwipeAction
 import nl.bvdm.rukoo.settings.ThemeMode
 
 /** An account the export carried that the phone couldn't take. */
@@ -188,6 +189,8 @@ object DesktopImport {
             language = language,
             darkEmails = exported.darkEmails ?: current.darkEmails,
             swipeActions = exported.swipeActions ?: current.swipeActions,
+            swipeRight = SwipeAction.of(exported.swipeRight) ?: current.swipeRight,
+            swipeLeft = SwipeAction.of(exported.swipeLeft) ?: current.swipeLeft,
             notifyMail = exported.notifications ?: current.notifyMail,
             syncMinutes = exported.syncInterval?.coerceIn(0, 24 * 60) ?: current.syncMinutes,
             density = density,

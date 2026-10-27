@@ -41,7 +41,7 @@ object ExportFixtures {
   "settings": {
     "defaultAccountId": "acc-google", "language": "nl", "theme": "dark", "signature": "Bart van der Meeren",
     "signatureHtml": "", "vips": [], "spam": [], "syncInterval": 15, "hiddenViews": [], "darkEmails": false,
-    "swipeActions": false, "notifications": true, "sort": "unread", "density": "compact"
+    "swipeActions": false, "swipeRight": "archive", "swipeLeft": "star", "notifications": true, "sort": "unread", "density": "compact"
   },
   "agents": {
     "defaultAgent": "claude", "autoMailActions": true, "shortcuts": null,

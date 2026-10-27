@@ -283,6 +283,62 @@ class CategoriesTest {
     }
 
     @Test
+    fun `the drawer can follow Jev's progress and its last decisions`() = runBlocking {
+        val gate = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val fake = FakeJev { _, m, _ ->
+            gate.receive()
+            if (m.subject == "Sale") JevAnswer("promotions", 0.3, "jev-test") else JevAnswer("money", 0.9, "jev-test")
+        }
+        val msgs = inbox().mapIndexed { i, m -> if (i == 1) m.copy(from = Address("Shop", "hello@shop.example")) else m }
+        val s = setup(msgs, fake)
+        s.cats.setJev(on = true, key = "K")
+        s.cats.setEnabled(true)
+        // The rules placed the login alert straight away; two wait for Jev.
+        var a = withTimeout(5_000) { s.cats.activity.first { it.running && it.asked == 2 } }
+        assertEquals(listOf(true, 3, 1, 0, true), listOf(a.user, a.total, a.done, a.answered, a.jev))
+        gate.send(Unit)
+        a = withTimeout(5_000) { s.cats.activity.first { it.answered == 1 } }
+        assertEquals(2, a.done)
+        assertEquals(1, a.recent.size)
+        gate.send(Unit)
+        a = withTimeout(5_000) { s.cats.activity.first { !it.running && it.finishedAt > 0 } }
+        assertEquals(listOf(3, 3, 0), listOf(a.done, a.sorted, a.waiting))
+        val sale = a.recent.first { it.subject == "Sale" }
+        assertEquals("an unsure answer shows where it went", listOf("to-read", "promotions", false, "acc1"), listOf(sale.category, sale.chose, sale.sure, sale.accountId))
+        assertEquals("Sanne de Vries", a.recent.first { it.subject == "Can you sign this?" }.from)
+
+        // A sort nobody asked for with nothing to do leaves the last one's progress alone.
+        s.cats.sort()
+        assertEquals(a.finishedAt, s.cats.activity.value.finishedAt)
+
+        // Sorted again, an email shows once, with its newest decision.
+        repeat(2) { gate.send(Unit) }
+        s.cats.sortAgain()
+        assertEquals(listOf("Can you sign this?", "Sale"), s.cats.activity.value.recent.map { it.subject }.sorted())
+    }
+
+    @Test
+    fun `mail waiting for Jev is counted, with why and until when`() = runBlocking {
+        val s = setup(inbox(), FakeJev { _, _, _ -> throw JevError("busy") })
+        s.cats.setJev(on = true, key = "K")
+        s.cats.setEnabled(true)
+        s.cats.sort()
+        var a = s.cats.activity.value
+        assertEquals("busy", a.error)
+        assertTrue(a.retryAt > System.currentTimeMillis())
+        assertEquals("the email the rules are unsure about waits", 1, a.waiting)
+        // While TypeSafe is busy, nothing is asked and the count stays.
+        s.cats.sort()
+        a = s.cats.activity.value
+        assertEquals(1, a.waiting)
+        assertFalse(a.running)
+        // Jev off: nothing waits for it any more.
+        s.cats.setJev(on = false)
+        a = s.cats.activity.value
+        assertEquals(listOf(false, null, 0L, 0), listOf(a.jev, a.error, a.retryAt, a.waiting))
+    }
+
+    @Test
     fun `a refused Jev key stops Jev until a new key, and busy waits, with the uncertain mail kept for Jev`() = runBlocking {
         var failing: String? = "key"
         val fake = FakeJev { _, _, list ->

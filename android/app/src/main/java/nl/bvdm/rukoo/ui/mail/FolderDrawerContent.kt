@@ -37,9 +37,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.categories.CategoriesState
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailCounts
 import nl.bvdm.rukoo.mail.model.MailView
@@ -56,6 +58,7 @@ import nl.bvdm.rukoo.ui.components.StatusDot
 import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
+import nl.bvdm.rukoo.ui.settings.CategoryDot
 import nl.bvdm.rukoo.ui.theme.AccountColors
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.medium
@@ -72,7 +75,11 @@ import nl.bvdm.rukoo.ui.theme.weight
 @Composable
 fun FolderDrawerContent(app: AppViewModel, modifier: Modifier = Modifier) {
     Column(modifier.background(Rk.colors.bg).windowInsetsPadding(WindowInsets.systemBars)) {
-        Folders(app, Modifier.weight(1f).verticalScroll(rememberScrollState()), pick = app::selectView)
+        Folders(app, Modifier.weight(1f).verticalScroll(rememberScrollState()), pick = app::selectView, pickCategory = { view, id ->
+            app.selectView(view)
+            app.setCategory(id)
+        })
+        SortStatusLine(app)
         Hairline()
         Footer(app)
     }
@@ -109,16 +116,26 @@ fun FolderSheet(app: AppViewModel, onDismiss: () -> Unit) {
                 app,
                 Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 pick = { view -> scope.launch { sheetState.hide() }.invokeOnCompletion { app.selectView(view) } },
+                pickCategory = { view, id ->
+                    scope.launch { sheetState.hide() }.invokeOnCompletion {
+                        app.selectView(view)
+                        app.setCategory(id)
+                    }
+                },
             )
+            SortStatusLine(app)
             Hairline()
             Footer(app)
         }
     }
 }
 
-/** The account switch, the unified views and each account's folders; [pick] shows a view. */
+/**
+ * The account switch, the unified views and each account's folders; [pick] shows a view. While categories are on,
+ * they sit under Inbox (desktop's sidebar); [pickCategory] shows the inbox with one of them, or all of it for null.
+ */
 @Composable
-private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> Unit) {
+private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> Unit, pickCategory: (MailView, String?) -> Unit) {
     val c = Rk.colors
     val mail = app.services.mail
     val nav by app.state.collectAsStateWithLifecycle()
@@ -130,6 +147,10 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
     val counts by countsFlow.collectAsStateWithLifecycle(MailCounts())
     val scoped = if (scope == null) accounts else accounts.filter { it.id == scope }
     var switching by remember { mutableStateOf(false) }
+    val categories = app.services.categories
+    val noCategories = remember { MutableStateFlow(CategoriesState()) }
+    val catState by (categories?.state ?: noCategories).collectAsStateWithLifecycle()
+    val subs = if (categories != null && catState.enabled) catState.categories else emptyList()
 
     Column(modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
         // The account switch (styles.css:655-694).
@@ -172,14 +193,25 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
             if (kind == ViewKind.JUNK && !hasJunk) continue
             val view = MailView(kind, scope)
             val n = (counts.views[kind] ?: 0) + if (kind == ViewKind.DRAFTS) localCount else 0
+            val inbox = kind == ViewKind.INBOX && subs.isNotEmpty()
             NavItem(
                 label = viewTitle(view, folders),
                 icon = viewIcon(kind),
-                selected = nav.view == view,
+                selected = nav.view == view && !(inbox && nav.category != null),
                 count = n.takeIf { it > 0 && kind in COUNTED },
                 strong = kind == ViewKind.INBOX,
-                onClick = { pick(view) },
+                onClick = { if (inbox) pickCategory(view, null) else pick(view) },
             )
+            if (inbox) {
+                for (cat in subs) {
+                    NavItem(
+                        label = cat.name,
+                        category = cat.color,
+                        selected = nav.view == view && nav.category == cat.id,
+                        onClick = { pickCategory(view, cat.id) },
+                    )
+                }
+            }
         }
 
         for (a in scoped) {
@@ -244,15 +276,17 @@ private fun NavItem(
     dot: String? = null,
     count: Int? = null,
     strong: Boolean = false,
+    // An inbox category: its color dot, indented under Inbox.
+    category: String? = null,
 ) {
     val c = Rk.colors
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 44.dp)
+            .heightIn(min = if (category != null) 40.dp else 44.dp)
             .background(if (selected) c.active else androidx.compose.ui.graphics.Color.Transparent, Rk.shapes.control)
             .rkClickable(Rk.shapes.control, onClick = onClick)
-            .padding(start = 10.dp, end = 10.dp),
+            .padding(start = if (category != null) 20.dp else 10.dp, end = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -260,6 +294,7 @@ private fun NavItem(
             when {
                 icon != null -> RkIcon(icon, null, size = 18.dp, tint = if (selected) c.text2 else c.text3)
                 dot != null -> FolderDot(dot)
+                category != null -> CategoryDot(category, size = 8.dp)
             }
         }
         Text(

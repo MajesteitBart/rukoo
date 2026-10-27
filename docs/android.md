@@ -6,11 +6,11 @@ The app's code is in [`android/`](../android). It is a native Kotlin and Jetpack
 
 ## What it does
 
-- Mail accounts on the phone: Gmail with Google sign-in, other providers with an app password or password, and the demo account. Inbox, folders, unified views, search, swipe and selection actions with Undo, a reader for HTML mail, a composer with formatting for replies, forwards and new mail, drafts saved to the account's Drafts folder, and new-mail notifications.
+- Mail accounts on the phone: Gmail with Google sign-in, other providers with an app password or password, and the demo account. Inbox, folders, unified views, search, swipe actions you choose in Settings > Appearance (read or unread, archive, delete, star, move to a folder or a category), selection actions with Undo, a reader for HTML mail, a composer with formatting for replies, forwards and new mail, drafts saved to the account's Drafts folder, and new-mail notifications.
 - The agent chat next to the email, with every desktop quick action and your own shortcuts, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
 - Rukoo's twelve MCP tools served by the phone, so an agent can read the phone's mail, write into its composer and ask for approval on its screen.
 - Pairing with Rukoo on your computer, which brings over your accounts and agent settings once and lets the phone use the computer's Claude Code and Codex.
-- A [Rukoo account](account.md), end-to-end encrypted, which keeps Rukoo's own data the same on the phone and your computers, and [inbox categories](categories.md): tabs above the inbox, sorted on the phone.
+- A [Rukoo account](account.md), end-to-end encrypted, which keeps Rukoo's own data the same on the phone and your computers, and [inbox categories](categories.md): under Inbox in the folder drawer, sorted on the phone.
 - English and Dutch, light and dark.
 
 ## Install
@@ -95,9 +95,11 @@ The server is `https://rukoo-account.bvdm.ai` unless you choose another while si
 
 ## Inbox categories
 
-Settings > Inbox categories turns [inbox categories](categories.md) on. The inbox then gets a row of tabs on both screens, All and then each category with its color and unread count; a tab shows only its mail, and switching tabs clears a selection. The tabs show in the inbox only, and not while you search. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
+Settings > Inbox categories turns [inbox categories](categories.md) on. The folder drawer then lists them under Inbox, each with its color; one shows only its mail, under its own name, and switching clears a selection. Inbox still shows all of it, and a search covers every category. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
 
-The settings page has the desktop's parts: the categories with up and down, editing a name, description and color, adding up to twelve and deleting; When Rukoo isn't sure; Sort with Jev and the TypeSafe API key, which stays on this phone, encrypted like the mail passwords; Sort the inbox again; and the senders with a rule.
+The settings page has the desktop's parts: the categories with up and down, editing a name, description and color, adding up to twelve and deleting; When Rukoo isn't sure; Sort with Jev and the TypeSafe API key, which stays on this phone, encrypted like the mail passwords; Sort the inbox again, which counts along while it runs; and the senders with a rule.
+
+While Jev sorts, waits for TypeSafe or can't use its key, the folder drawer says so in a line above the sync status, as the desktop's sidebar does. A tap opens a sheet with the progress, why Jev waits, and its last decisions; tap one to open that email in its category.
 
 The phone sorts like the desktop. During each inbox sync it fetches a few headers of new mail (List-Id, List-Unsubscribe, Precedence, Auto-Submitted, Feedback-ID, X-Campaign and X-Mailer), and for Gmail accounts it asks Gmail which tab each message is in (`X-GM-RAW "category:…"`). The first device to sort an email stores the result in the account, so the phone and the computer show the same.
 
@@ -160,5 +162,5 @@ Code map, under `android/app/src/main/java/nl/bvdm/rukoo/`:
 | `categories/` | Inbox categories: the mail signals, the rules, Jev, and which category each inbox email is in (`Categories.kt`), a port of desktop's `src/main/categories/` |
 | `mcp/` | The phone's MCP server, its tokens and proof, and the twelve tools |
 | `desktop/` | Pairing with a computer, the import and the client of the computer's `/phone/v1` routes |
-| `ui/` | Compose screens: `root/` (layout and navigation), `mail/` (with the category tabs), `reader/`, `composer/`, `agent/`, `settings/` (with the Rukoo account's pages and Inbox categories), `onboarding/`, and the theme, icons and components ported from the desktop |
+| `ui/` | Compose screens: `root/` (layout and navigation), `mail/` (with the category sheet), `reader/`, `composer/`, `agent/`, `settings/` (with the Rukoo account's pages and Inbox categories), `onboarding/`, and the theme, icons and components ported from the desktop |
 | `core/` | Storage, the Keystore box, Tailnet checks and the `<unsafe_content>` helpers |
