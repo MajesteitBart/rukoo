@@ -408,9 +408,10 @@ test('a reopened draft keeps its attachment', async () => {
   await expect(again.locator('.compose-attachments')).toContainText('Proposal-v3.pdf');
 });
 
-test('default sender: add an alias, make it default, compose and send from it', async () => {
+test('send as: add an alias, make it default, compose and send from it', async () => {
   await win.click('[data-action="settings"]');
   await win.click('.row:has-text("demo@example.com")');
+  await expect(win.locator('[data-a="acc-from"] .title')).toHaveText('Verzenden als');
   await expect(win.locator('[data-a="acc-from"] .value')).toHaveText('demo@example.com');
   await win.click('[data-a="acc-aliases"]');
   await expect(win.locator('.settings h1')).toHaveText('Afzenderadressen');
@@ -420,7 +421,8 @@ test('default sender: add an alias, make it default, compose and send from it', 
   await expect(win.locator('.settings .row', { hasText: 'bart@bvdm.ai' })).toBeVisible();
   await win.click('.settings .row:has-text("bart@bvdm.ai")');
   await win.click('.scrim .buttons button:has-text("Standaard maken")');
-  await expect(win.locator('.settings .row', { hasText: 'bart@bvdm.ai (standaard)' })).toBeVisible();
+  await expect(win.locator('.settings .row', { hasText: 'bart@bvdm.ai' }).locator('.default-badge')).toHaveText('Standaard');
+  await expect(win.locator('.settings .row', { hasText: 'demo@example.com' }).locator('.default-badge')).toHaveCount(0);
   await win.click('[data-a="back"]');
   await expect(win.locator('[data-a="acc-from"] .value')).toHaveText('bart@bvdm.ai');
   await win.click('[data-a="back"]');
@@ -430,6 +432,8 @@ test('default sender: add an alias, make it default, compose and send from it', 
   const from = c.locator('[data-field="account"]');
   await expect(from).toBeVisible();
   expect(await from.evaluate((s) => s.selectedOptions[0].textContent)).toContain('bart@bvdm.ai');
+  // One account with an alias picks an address, not an account: there is no default account to offer.
+  await expect(c.locator('[data-c="make-default"]')).toHaveCount(0);
   await c.fill('[data-rinput="to"]', 'demo@example.com');
   await c.fill('[data-field="subject"]', 'From my alias');
   await c.click('[data-c="send"]');
@@ -440,6 +444,206 @@ test('default sender: add an alias, make it default, compose and send from it', 
   // Replying to mail that came from one of your own addresses keeps that address.
   const reply = await composer(() => win.click('[data-reader="reply"]'));
   expect(await reply.locator('[data-field="account"]').evaluate((s) => s.selectedOptions[0].textContent)).toContain('bart@bvdm.ai');
+});
+
+// Another account beside the demo one: an IMAP account whose server these tests never reach (port 1 on this
+// machine), with a cache that says it synced, so the menu, Settings and the composer show it like any other account.
+async function addAccount({ id = 'w1', email = 'werk@example.com', name = 'Werk' } = {}) {
+  await app.evaluate((_e, { id, email, name }) => {
+    const engine = global.__semEngine;
+    const server = { host: '127.0.0.1', port: 1, secure: false, user: email };
+    engine.accounts.push({ id, type: 'imap', provider: 'other', email, name, label: email, color: '#ff8a3d', signature: null, secret: 'plain:', imap: server, smtp: server, createdAt: Date.now() });
+    engine.caches.set(id, { folders: [], boxes: {}, lastSync: Date.now() });
+    engine.emit('updated');
+  }, { id, email, name });
+}
+
+// The window learns about added accounts through main's update, which may come after the first click.
+async function openAccountMenu(last = 'werk@example.com') {
+  await expect(async () => {
+    await win.click('[data-action="accounts"]');
+    await expect(win.locator('.menu button', { hasText: last })).toBeVisible({ timeout: 500 });
+  }).toPass();
+}
+
+test('the account menu shows each display name with the address underneath, or the address alone', async () => {
+  await addAccount({ name: '' });
+  const entry = (address) => win.locator('.menu button', { hasText: address });
+  await openAccountMenu();
+  await expect(entry('demo@example.com').locator('.ml')).toHaveText('Demo Gebruiker');
+  await expect(entry('demo@example.com').locator('.ms')).toHaveText('demo@example.com');
+  await expect(entry('werk@example.com').locator('.ml')).toHaveText('werk@example.com');
+  await expect(entry('werk@example.com').locator('.ms')).toHaveCount(0);
+  await win.keyboard.press('Escape');
+
+  // The display name set in Settings is the one the menu shows, as text even when it looks like markup.
+  await win.click('[data-action="settings"]');
+  await win.click('.settings [data-a="account:w1"]');
+  await win.click('[data-a="acc-name"]');
+  await win.fill('.scrim .form-input', '<b>Werk</b>');
+  await win.click('.scrim .buttons button:text-is("Opslaan")');
+  await expect(win.locator('[data-a="acc-name"] .value')).toHaveText('<b>Werk</b>');
+  await win.click('[data-a="back"]');
+  await win.click('[data-a="back"]');
+  await expect(win.locator('.settings')).toHaveCount(0);
+  await win.click('[data-action="accounts"]');
+  await expect(entry('werk@example.com').locator('.ml')).toHaveText('<b>Werk</b>');
+  await expect(entry('werk@example.com').locator('.ms')).toHaveText('werk@example.com');
+  await expect(win.locator('.menu b')).toHaveCount(0);
+});
+
+test('a tall account menu stays inside a short window at 200 percent and scrolls to its last item', async () => {
+  // Four named accounts take two lines each. At 1000 by 580 and 200 percent the page is 290px high.
+  await addAccount();
+  await addAccount({ id: 'w2', email: 'sport@example.com', name: 'Sportclub' });
+  await addAccount({ id: 'w3', email: 'familie@example.com', name: 'Familie' });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 580));
+  await win.evaluate(() => window.mail.call('setZoom', 200));
+  await expect.poll(() => win.evaluate(() => window.innerHeight)).toBeLessThan(300);
+  await openAccountMenu('familie@example.com');
+  const menu = win.locator('.menu');
+  const height = await win.evaluate(() => window.innerHeight);
+  const box = await menu.boundingBox();
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(height);
+  // The menu scrolls instead of running off the window, so its last item is there to press, also by keyboard.
+  expect(await menu.evaluate((m) => m.scrollHeight > m.clientHeight)).toBe(true);
+  await win.keyboard.press('End');
+  const last = menu.locator('button', { hasText: 'Accounts en instellingen' });
+  await expect(last).toBeFocused();
+  await expect(last).toBeInViewport({ ratio: 1 });
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.settings h1')).toHaveText('E-mailinstellingen');
+});
+
+test('Settings shows the default account and makes another one the default in place; new mail then starts there', async () => {
+  await addAccount();
+  await win.click('[data-action="settings"]');
+  const accountRow = (address) => win.locator('.settings .acc-row', { hasText: address });
+  const makeDefault = (address) => accountRow(address).locator('[data-a^="acc-make-default:"]');
+  await expect(accountRow('demo@example.com').locator('.default-badge')).toHaveText('Standaard');
+  await expect(makeDefault('demo@example.com')).toHaveCount(0);
+  await expect(accountRow('werk@example.com').locator('.default-badge')).toHaveCount(0);
+  await expect(makeDefault('werk@example.com')).toHaveText('Standaard maken');
+
+  await makeDefault('werk@example.com').click();
+  await expect(accountRow('werk@example.com').locator('.default-badge')).toHaveText('Standaard');
+  await expect(accountRow('demo@example.com').locator('.default-badge')).toHaveCount(0);
+  await expect(makeDefault('demo@example.com')).toBeVisible();
+  // The pressed button made way for the badge. The keyboard stays on that account, also after main's update redraws
+  // the page a moment later.
+  const werk = win.locator('.settings [data-a="account:w1"]');
+  await expect(werk).toBeFocused();
+  await win.waitForTimeout(300);
+  await expect(werk).toBeFocused();
+  expect(JSON.parse(fs.readFileSync(path.join(dataDir, 'data', 'settings.json'), 'utf8')).defaultAccountId).toBe('w1');
+
+  // The default account's page says so in its first row, and offers nothing to press there.
+  const firstRow = () => win.locator('.settings .card').first().locator('.row').first();
+  await werk.click();
+  await expect(win.locator('.settings h1')).toHaveText('werk@example.com');
+  await expect(firstRow()).toHaveAttribute('data-default-account', '');
+  await expect(firstRow()).toContainText('Standaardaccount');
+  await expect(win.locator('[data-a="acc-default"]')).toHaveCount(0);
+  await win.click('[data-a="back"]');
+  await win.click('[data-a="back"]');
+
+  // Across all accounts, a new message starts from the new default.
+  await win.click('[data-action="accounts"]');
+  await win.click('.menu button:has-text("Alle accounts")');
+  const c = await composer(() => win.click('[data-action="compose"]'));
+  await expect(c.locator('[data-field="account"]')).toHaveValue('w1|werk@example.com');
+  await c.click('[data-c="close"]');
+  await composerGone();
+
+  // The other account's page offers it first, above the display name.
+  await win.click('[data-action="settings"]');
+  await accountRow('demo@example.com').locator('.acc-main').click();
+  await expect(firstRow()).toHaveAttribute('data-a', 'acc-default');
+  await expect(firstRow()).toContainText('Instellen als standaardaccount');
+  await firstRow().click();
+  await expect(firstRow()).toHaveAttribute('data-default-account', '');
+  await win.click('[data-a="back"]');
+  await expect(accountRow('demo@example.com').locator('.default-badge')).toHaveText('Standaard');
+  await expect(makeDefault('werk@example.com')).toBeVisible();
+});
+
+const defaultAccountId = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'data', 'settings.json'), 'utf8')).defaultAccountId;
+const settingsBadge = (address) => win.locator('.settings .acc-row', { hasText: address }).locator('.default-badge');
+
+test('a new message from another account offers Use as default account beside From, and follows Settings', async () => {
+  await addAccount();
+  const demoId = await app.evaluate(() => global.__semEngine.accounts.find((a) => a.type === 'demo').id);
+  await openAccountMenu();
+  await win.click('.menu button:has-text("Alle accounts")');
+  const c = await composer(() => win.click('[data-action="compose"]'));
+  const from = c.locator('.composer [data-field="account"]');
+  const link = c.locator('.composer [data-c="make-default"]');
+  // The default account needs no offer.
+  await expect(from).toHaveValue(`${demoId}|demo@example.com`);
+  await expect(link).toBeHidden();
+  await from.selectOption('w1|werk@example.com');
+  await expect(link).toHaveText('Gebruiken als standaardaccount');
+
+  // By keyboard: the link makes way and From keeps the keyboard.
+  await link.focus();
+  await win.keyboard.press('Enter');
+  await expect(link).toBeHidden();
+  await expect(from).toBeFocused();
+  await expect(win.locator('.toast')).toHaveText('werk@example.com is nu het standaardaccount');
+  await expect.poll(defaultAccountId).toBe('w1');
+  await from.selectOption(`${demoId}|demo@example.com`);
+  await expect(link).toBeVisible();
+
+  // Settings, in front of the open message, shows the change. Changing the default back there reaches the link.
+  await win.click('[data-action="settings"]');
+  await expect(settingsBadge('werk@example.com')).toHaveText('Standaard');
+  await win.locator('.settings .acc-row', { hasText: 'demo@example.com' }).locator('[data-a^="acc-make-default:"]').click();
+  await expect(settingsBadge('demo@example.com')).toHaveText('Standaard');
+  await win.click('[data-a="back"]');
+  await expect(win.locator('.settings')).toHaveCount(0);
+  await expect(link).toBeHidden();
+  await from.selectOption('w1|werk@example.com');
+  await expect(link).toBeVisible();
+});
+
+test('the compose window offers Use as default account too, without touching the message', async () => {
+  await addAccount();
+  await openAccountMenu();
+  await win.keyboard.press('Escape');
+  const [popup] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new', accountId: 'w1' }))]);
+  await popup.waitForSelector('.composer .editor');
+  const from = popup.locator('[data-field="account"]');
+  const link = popup.locator('[data-c="make-default"]');
+  await expect(from).toHaveValue('w1|werk@example.com');
+  await expect(link).toHaveText('Gebruiken als standaardaccount');
+  await expect(popup.locator('.composer')).toHaveAttribute('data-dirty', 'false');
+
+  await link.click();
+  await expect(link).toBeHidden();
+  await expect(from).toBeFocused();
+  await expect(popup.locator('.toast')).toHaveText('werk@example.com is nu het standaardaccount');
+  await expect.poll(defaultAccountId).toBe('w1');
+  // Nothing in the message changed, so it still closes without asking.
+  await expect(popup.locator('.composer')).toHaveAttribute('data-dirty', 'false');
+  await win.click('[data-action="settings"]');
+  await expect(settingsBadge('werk@example.com')).toHaveText('Standaard');
+
+  // Made the default again in the main window: back in the compose window, the link returns.
+  await win.locator('.settings .acc-row', { hasText: 'demo@example.com' }).locator('[data-a^="acc-make-default:"]').click();
+  await expect.poll(defaultAccountId).not.toBe('w1');
+  await popup.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(link).toBeVisible();
+});
+
+test('a reply keeps its own account and offers no default', async () => {
+  await addAccount();
+  await openAccountMenu();
+  await win.click('.menu button:has-text("Alle accounts")');
+  await item('ANWB Newsletter').click();
+  const c = await composer(() => win.click('[data-reader="reply"]'));
+  await c.locator('.composer [data-field="account"]').selectOption('w1|werk@example.com');
+  await expect(c.locator('.composer [data-c="make-default"]')).toHaveCount(0);
 });
 
 // ---------- finding and layout ----------

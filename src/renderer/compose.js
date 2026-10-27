@@ -62,6 +62,9 @@ async function init() {
   };
   window.mail.on(({ type }) => (type === 'theme' || type === 'language') && retheme());
   onSystemThemeChange(retheme);
+  // Main's account updates reach only the main window. Coming back from it, the editor follows a default account
+  // changed there.
+  window.addEventListener('focus', () => api('state').then((next) => editor.accountsChanged(next)).catch(() => {}));
 }
 
 init().catch((err) => toast(err.message, 6000));

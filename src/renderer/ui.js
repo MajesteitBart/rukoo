@@ -219,7 +219,8 @@ export function closeMenu({ refocus = false } = {}) {
 
 export const menuOpen = () => Boolean(openMenu);
 
-// items: [{ label, action, icon, shortcut, danger, checked, disabled }] or { separator: true } or { heading }.
+// items: [{ label, sub, action, icon, shortcut, danger, checked, disabled }] or { separator: true } or { heading }.
+// sub is an optional quieter second line under the label, such as an account's address under its name.
 // Opens below the anchor element, or at { x, y } for context menus.
 export function showMenu(anchor, items, { above = false, at = null, align = 'right' } = {}) {
   closeMenu();
@@ -239,11 +240,12 @@ export function showMenu(anchor, items, { above = false, at = null, align = 'rig
     const b = document.createElement('button');
     b.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemcheckbox');
     if (item.checked !== undefined) b.setAttribute('aria-checked', String(Boolean(item.checked)));
-    b.className = `${item.danger ? 'danger' : ''} ${item.current ? 'current' : ''}`;
+    b.className = `${item.danger ? 'danger' : ''} ${item.current ? 'current' : ''} ${item.sub ? 'two' : ''}`;
     if (item.current) b.setAttribute('aria-current', 'true');
     b.disabled = Boolean(item.disabled);
     const lead = item.checked !== undefined ? (item.checked ? icons.check : '') : item.icon ? icons[item.icon] || item.icon : '';
-    b.innerHTML = `<span class="mi">${lead}</span><span class="ml">${esc(item.label)}</span>${item.hint ? `<span class="mh">${esc(item.hint)}</span>` : ''}${
+    const label = item.sub ? `<span class="mt"><span class="ml">${esc(item.label)}</span><span class="ms">${esc(item.sub)}</span></span>` : `<span class="ml">${esc(item.label)}</span>`;
+    b.innerHTML = `<span class="mi">${lead}</span>${label}${item.hint ? `<span class="mh">${esc(item.hint)}</span>` : ''}${
       item.shortcut ? `<kbd>${esc(shortcutLabel(item.shortcut))}</kbd>` : ''
     }`;
     b.addEventListener('click', (e) => {
@@ -270,7 +272,14 @@ export function showMenu(anchor, items, { above = false, at = null, align = 'rig
     menu.style.transformOrigin = `${above ? 'bottom' : 'top'} ${align === 'left' ? 'left' : 'right'}`;
   }
   menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - mw - 8))}px`;
-  menu.style.top = `${Math.max(8, top)}px`;
+  top = Math.max(8, top);
+  menu.style.top = `${top}px`;
+  // Taller than the room it has, such as several accounts in a short window at 200 percent: it scrolls instead of
+  // running off the bottom, where nothing could reach its last items.
+  if (top + mh > window.innerHeight - 8) {
+    menu.style.maxHeight = `${window.innerHeight - 8 - top}px`;
+    menu.classList.add('scrolls');
+  }
   openMenu = menu;
   menuAnchor = anchor || null;
   menu.addEventListener('keydown', (e) => {
