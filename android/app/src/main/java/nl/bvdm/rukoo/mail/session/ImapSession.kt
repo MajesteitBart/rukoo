@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.categories.MailSignals
 import nl.bvdm.rukoo.mail.MailException
 import nl.bvdm.rukoo.mail.MailStrings
 import nl.bvdm.rukoo.mail.mime.ComposedMail
@@ -38,6 +39,7 @@ import org.eclipse.angus.mail.imap.protocol.ENVELOPE
 import org.eclipse.angus.mail.imap.protocol.FLAGS
 import org.eclipse.angus.mail.imap.protocol.FetchResponse
 import org.eclipse.angus.mail.imap.protocol.IMAPProtocol
+import org.eclipse.angus.mail.imap.protocol.IMAPResponse
 import org.eclipse.angus.mail.imap.protocol.INTERNALDATE
 import org.eclipse.angus.mail.imap.protocol.RFC822SIZE
 import org.eclipse.angus.mail.imap.protocol.UID
@@ -289,7 +291,15 @@ class ImapSession(
 
     private class Detail(val envelope: ENVELOPE?, val structure: BODYSTRUCTURE?, val internalDate: Long?, val size: Long)
 
-    override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean): FolderSync =
+    override suspend fun syncFolder(
+        path: String,
+        limit: Int,
+        known: Map<Long, CachedMessage>,
+        uidValidity: String?,
+        background: Boolean,
+        signals: Boolean,
+        gmailTabs: Boolean,
+    ): FolderSync =
         run(background) { store ->
             withFolder(store, path, Folder.READ_ONLY) { folder ->
                 val validity = folder.uidValidity.toString()
@@ -320,6 +330,15 @@ class ImapSession(
                         }
                     }
                     val previews = previews(p, details)
+                    // A few header lines, for new messages and for ones cached before Rukoo kept them.
+                    val kinds = if (signals) signalsOf(p, rows.map { it.second }.filter { it in details || cache[it]?.signals == null }) else emptyMap()
+                    // Gmail doesn't show its tabs as folders, but its own search finds them (X-GM-RAW). Asked again on every
+                    // sync, since a message can move to another tab. What none of them holds is in Primary.
+                    val tabs = if (gmailTabs && rows.isNotEmpty() && p.hasCapability("X-GM-EXT-1")) gmailTabsOf(p, rows.minOf { it.second }) else null
+                    fun CachedMessage.extra(prior: CachedMessage?): CachedMessage = copy(
+                        signals = kinds[uid] ?: prior?.signals,
+                        gmailTab = if (tabs != null) tabs[uid] ?: "primary" else prior?.gmailTab,
+                    )
                     val messages = rows.mapNotNull { (_, uid, flags) ->
                         val unread = !flags.contains(Flags.Flag.SEEN)
                         val starred = flags.contains(Flags.Flag.FLAGGED)
@@ -327,8 +346,8 @@ class ImapSession(
                         val detail = details[uid]
                         val prior = cache[uid]
                         when {
-                            detail != null -> fromDetail(uid, detail, previews[uid] ?: prior?.preview.orEmpty(), unread, starred, answered)
-                            prior != null -> prior.copy(unread = unread, starred = starred, answered = answered)
+                            detail != null -> fromDetail(uid, detail, previews[uid] ?: prior?.preview.orEmpty(), unread, starred, answered).extra(prior)
+                            prior != null -> prior.copy(unread = unread, starred = starred, answered = answered).extra(prior)
                             // Gone between the two fetches (moved or deleted meanwhile): the next sync no longer lists it.
                             else -> null
                         }
@@ -337,6 +356,30 @@ class ImapSession(
                 }
             }
         }
+
+    /** The signal headers of [uids] (MailSignals.HEADERS), read into signals. */
+    private fun signalsOf(p: IMAPProtocol, uids: List<Long>): Map<Long, MailSignals> {
+        if (uids.isEmpty()) return emptyMap()
+        val fields = MailSignals.HEADERS.joinToString(" ") { it.uppercase() }
+        val out = HashMap<Long, MailSignals>()
+        for (fr in p.exec("UID FETCH ${uidSet(uids)} (UID BODY.PEEK[HEADER.FIELDS ($fields)])").filterIsInstance<FetchResponse>()) {
+            val uid = fr.getItem(UID::class.java)?.uid ?: continue
+            val bytes = fr.getItem(BODY::class.java)?.byteArray?.newBytes ?: ByteArray(0)
+            out[uid] = MailSignals.parse(String(bytes, Charsets.UTF_8))
+        }
+        return out
+    }
+
+    /** The Gmail tab of each message from uid [first] on, or null when Gmail's search failed: then the cached tabs stay. */
+    private fun gmailTabsOf(p: IMAPProtocol, first: Long): Map<Long, String>? = try {
+        val tabs = HashMap<Long, String>()
+        for (tab in GMAIL_TABS) {
+            for (uid in searchUids(p.exec("UID SEARCH UID $first:* X-GM-RAW \"category:$tab\""))) tabs[uid] = tab
+        }
+        tabs
+    } catch (e: Exception) {
+        null
+    }
 
     /** A few KB of the readable part of each new message, one fetch per part number (imap.js:281-306). */
     private fun previews(p: IMAPProtocol, details: Map<Long, Detail>): Map<Long, String> {
@@ -517,6 +560,23 @@ class ImapSession(
 
         /** Hosts whose SMTP service already files a copy in the Sent folder (imap.js:20). */
         val AUTO_SENT_HOSTS = Regex("(gmail\\.com|googlemail\\.com|office365\\.com|outlook\\.com)$", RegexOption.IGNORE_CASE)
+
+        /** The tabs Gmail sorts its inbox into besides Primary, as its search names them. */
+        val GMAIL_TABS = listOf("promotions", "social", "updates", "forums")
+
+        /** The uids of the SEARCH lines in a command's responses. */
+        fun searchUids(responses: Array<Response>): List<Long> {
+            val out = ArrayList<Long>()
+            for (r in responses) {
+                if (r !is IMAPResponse || !r.keyEquals("SEARCH")) continue
+                while (true) {
+                    val n = r.readLong()
+                    if (n < 0) break
+                    out += n
+                }
+            }
+            return out
+        }
 
         private val SPECIAL_USE = setOf("\\inbox", "\\sent", "\\drafts", "\\trash", "\\junk", "\\archive", "\\all", "\\flagged", "\\important")
 

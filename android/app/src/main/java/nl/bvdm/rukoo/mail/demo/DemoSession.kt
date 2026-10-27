@@ -10,6 +10,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.core.Clock
+import nl.bvdm.rukoo.categories.MailSignals
 import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.mail.MailException
 import nl.bvdm.rukoo.mail.MailStrings
@@ -114,7 +115,7 @@ class DemoSession(
         s.copy(boxes = s.boxes + (name to DemoBox()), extraFolders = s.extraFolders + name) to name
     }
 
-    override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean): FolderSync =
+    override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean, signals: Boolean, gmailTabs: Boolean): FolderSync =
         read { s ->
             val box = s.box(path)
             FolderSync(box.uidValidity, box.messages.size, box.messages.takeLast(limit).map(::cached))
@@ -137,6 +138,8 @@ class DemoSession(
         // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
         hasAttachments = m.attachments.any { it.cid == null },
         size = (m.html ?: m.text ?: "").length.toLong(),
+        // The demo's own headers, as desktop's demo reads them (demo.js mailSignals(m.headers)).
+        signals = MailSignals.fromHeaders(m.headers),
     )
 
     override suspend fun fetchSource(path: String, uid: Long, background: Boolean): ByteArray {

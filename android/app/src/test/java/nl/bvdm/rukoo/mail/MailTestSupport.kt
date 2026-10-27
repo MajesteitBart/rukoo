@@ -114,7 +114,7 @@ class FakeServer(val folders: List<FolderRecord>) {
             return name
         }
 
-        override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean): FolderSync {
+        override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean, signals: Boolean, gmailTabs: Boolean): FolderSync {
             maybeFail("syncFolder")
             val box = box(path)
             val useKnown = if (uidValidity == box.uidValidity) known else emptyMap()

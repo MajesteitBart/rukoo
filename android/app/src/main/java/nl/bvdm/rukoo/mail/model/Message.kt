@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.mail.model
 
 import kotlinx.serialization.Serializable
+import nl.bvdm.rukoo.categories.MailSignals
 
 /** A mailbox, desktop's `{name, address}`. Either part can be empty. */
 @Serializable
@@ -36,6 +37,10 @@ data class CachedMessage(
     val answered: Boolean = false,
     val hasAttachments: Boolean = false,
     val size: Long = 0,
+    /** What kind of mail an inbox message is, from its headers (inbox categories); null until a sync fetched them. */
+    val signals: MailSignals? = null,
+    /** The Gmail tab an inbox message is in (`primary`, `promotions`, `social`, `updates`, `forums`), for Gmail accounts. */
+    val gmailTab: String? = null,
 )
 
 /**
@@ -65,6 +70,9 @@ data class MessageSummary(
     val hasAttachments: Boolean = false,
     /** The sender is in the user's VIP list. */
     val vip: Boolean = false,
+    /** What inbox categories sort by: the message's signals and its Gmail tab (CachedMessage). */
+    val signals: MailSignals? = null,
+    val gmailTab: String? = null,
 )
 
 /**

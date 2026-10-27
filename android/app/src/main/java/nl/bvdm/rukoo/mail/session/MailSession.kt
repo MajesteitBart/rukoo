@@ -38,9 +38,19 @@ interface MailSession {
 
     /**
      * The newest [limit] messages of [path] by sequence number. Messages in [known] (cached under the
-     * same [uidValidity]) only get their flags refreshed; the rest are fetched in full.
+     * same [uidValidity]) only get their flags refreshed; the rest are fetched in full. [signals]: also what kind of
+     * mail each message is (MailSignals), for new ones and cached ones without; [gmailTabs]: also the Gmail tab each
+     * message is in. Both are for the inbox and its categories.
      */
-    suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean = false): FolderSync
+    suspend fun syncFolder(
+        path: String,
+        limit: Int,
+        known: Map<Long, CachedMessage>,
+        uidValidity: String?,
+        background: Boolean = false,
+        signals: Boolean = false,
+        gmailTabs: Boolean = false,
+    ): FolderSync
 
     /** The raw source of a message. Doesn't mark it read. */
     suspend fun fetchSource(path: String, uid: Long, background: Boolean = false): ByteArray
