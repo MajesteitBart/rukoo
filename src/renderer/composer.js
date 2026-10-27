@@ -116,6 +116,14 @@ function initialState(data, opts, m) {
   return s;
 }
 
+// Whether a new message opens with something in it besides its recipients: a subject, text or Cc/Bcc from a
+// mailto: link or an agent.
+function prefilled(st, opts) {
+  if (st.mode !== 'new') return false;
+  const text = opts.html != null ? new DOMParser().parseFromString(sanitizeAgentHtml(opts.html), 'text/html').body.textContent : opts.body;
+  return Boolean(st.subject.trim() || st.cc.length || st.bcc.length || String(text || '').trim());
+}
+
 function modeState(data, opts, m) {
   const accounts = data.accounts;
   const defaultAcc = accounts.find((a) => a.isDefault) || accounts[0];
@@ -1265,6 +1273,15 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   if (opts.focus !== false) focusStart();
   // Seeded by an agent: dirty from the start, so closing or moving on keeps it as a draft.
   if (opts.agent) changed({ by: opts.agent });
+  // Filled in by a mailto: link (or an unsubscribe by email): there is something to lose before anyone types, so
+  // closing asks and autosave keeps it. Not through changed(), which would count the link's words as the user's own
+  // edits. Recipients alone don't count, so a new message to a contact leaves no empty draft behind. A reply or
+  // forward nobody touched still closes without asking: it holds nothing the email it answers doesn't.
+  else if (prefilled(st, opts)) {
+    st.dirty = true;
+    describeSaved();
+    armAutosave();
+  }
 
   return {
     el: page,
