@@ -2902,6 +2902,53 @@ body:has(.page) .titlebar-actions {
   height: 36px;
   padding: 0 18px;
 }
+/* Above the password field for a provider that only takes an app password: what to enter, and the link to make one. */
+.setup-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--chip);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.setup-callout > svg {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin-top: 2px;
+  color: var(--text-2);
+}
+.setup-callout > div {
+  min-width: 0;
+}
+.setup-callout p {
+  margin: 0;
+  text-wrap: pretty;
+}
+.setup-callout .link-btn,
+.login .error .link-btn {
+  margin: 4px 0 0 -4px;
+  white-space: normal;
+}
+/* Under the Google password form when Rukoo has no Google OAuth client: why, and the way to add one. */
+.setup-foot {
+  margin-top: 24px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.setup-foot p {
+  margin: 0;
+  text-wrap: pretty;
+}
+.setup-foot .link-btn {
+  margin: 4px 0 0 -4px;
+}
 
 /* ---------- composer (inline in the reader, or in a compose window) ---------- */
 

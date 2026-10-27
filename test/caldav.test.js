@@ -683,3 +683,64 @@ test('a calendar home that moved is found again and remembered, but not once ano
     assert.deepEqual(engine.account('c1').caldav, { url: 'https://new.example/', home: 'https://new.example/home/' });
   });
 });
+
+test('a calendar server entered while adding an account is checked after the mail servers, and the account is only saved when it answers', async () => {
+  await withServer({ objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const dataDir = tempDir('sem-caldav-add-');
+    const engine = new Engine({ dataDir }).init();
+    const calendars = new Calendars({ engine });
+    // Mail servers that accept the sign-in unless told otherwise, with no mail to fetch.
+    let mailRefuses = false;
+    const sessions = [];
+    engine.session = () => {
+      const s = {
+        closed: false,
+        verify: async () => {
+          if (mailRefuses) throw Object.assign(new Error('IMAP: Sign-in failed.'), { code: 'auth' });
+        },
+        close: async () => {
+          s.closed = true;
+        }
+      };
+      sessions.push(s);
+      return s;
+    };
+    engine.syncAccount = async () => [];
+    const servers = { imap: { host: '127.0.0.1', port: 1, secure: false, user: ME }, smtp: { host: '127.0.0.1', port: 1, secure: false, user: ME } };
+    const add = (caldav, extra = {}) => engine.addAccount({ provider: 'other', email: ME, password: 'secret', ...servers, caldav, ...extra });
+    const saved = () => new Engine({ dataDir }).init().accounts;
+
+    // An address Rukoo won't send the password to fails the form with its reason; nothing is saved.
+    await assert.rejects(add({ url: 'http://dav.example.com/' }), { code: 'insecure' });
+    assert.equal(engine.accounts.length, 0);
+    assert.deepEqual(saved(), []);
+    assert.equal(sessions.at(-1).closed, true);
+
+    // A password the calendar server turns down says so without pointing at Server settings, which don't exist yet.
+    await assert.rejects(add({ url: `${server.url}/` }, { password: 'wrong' }), { code: 'password', message: /leave the calendar server empty/ });
+    assert.equal(engine.accounts.length, 0);
+
+    // Mail servers that refuse the sign-in fail first: the calendar server isn't asked.
+    mailRefuses = true;
+    const before = server.requests.length;
+    await assert.rejects(add({ url: `${server.url}/` }), { code: 'auth' });
+    assert.equal(server.requests.length, before);
+    mailRefuses = false;
+
+    // An empty field adds the account as before, without a calendar and without a request to any calendar server.
+    const plain = await engine.addAccount({ provider: 'other', email: 'other@example.com', password: 'secret', ...servers, caldav: { url: '   ' } });
+    assert.equal(plain.caldav, null);
+    assert.equal(engine.account(plain.id).caldav, undefined);
+    assert.equal(server.requests.length, before);
+
+    // An address that answers is saved with the home it found, and the account shows its calendars right away.
+    const acc = await add({ url: `${server.url}/` });
+    assert.deepEqual(acc.caldav, { url: `${server.url}/` });
+    assert.deepEqual(saved().find((a) => a.id === acc.id).caldav, { url: `${server.url}/`, home: server.home });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const view = calendars.view(WEEK);
+    assert.deepEqual(view.accounts.map((a) => [a.email, a.kind, a.state, a.calendars.map((c) => c.name).join(',')]), [[ME, 'caldav', 'ready', 'Home,Shared with me']]);
+    assert.deepEqual(view.events.map((e) => e.title).sort(), ['Stand-up', 'Stand-up, later']);
+  });
+});

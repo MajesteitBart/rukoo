@@ -476,16 +476,21 @@ class Engine extends EventEmitter {
       createdAt: Date.now()
     };
     if (acc.type === 'imap' && !input.password) throw new Error(t('errors.account.password'));
-    return this.finishAdd(acc);
+    // The calendar server from the setup form, optional. An empty field adds the account without a calendar.
+    const caldavUrl = acc.type === 'imap' && input.caldav ? String(input.caldav.url || '').trim() : '';
+    return this.finishAdd(acc, caldavUrl ? { caldav: { url: caldavUrl } } : {});
   }
 
-  async finishAdd(acc) {
+  // caldav: a calendar server entered while adding the account. It is checked with the same sign-in once the mail
+  // servers answered, and the account is only saved when it answers too, as in Server settings.
+  async finishAdd(acc, { caldav = null } = {}) {
     if (this.accounts.some((a) => a.email.toLowerCase() === acc.email.toLowerCase())) {
       throw new Error(t('errors.account.duplicate'));
     }
     const session = this.session(acc);
     try {
       await session.verify();
+      if (caldav) acc.caldav = await this.setupCalDav(acc, caldav);
     } catch (err) {
       this.sessions.delete(acc.id);
       this.tokens.delete(acc.id);
@@ -576,6 +581,17 @@ class Engine extends EventEmitter {
     if (acc.caldav && acc.caldav.url === url && !patch.password && user === (acc.imap.user || acc.email)) return { caldav: acc.caldav, changed: false };
     const found = await discoverCalDav({ url, user, password: this.credentials(next), fetchImpl: this.fetch });
     return { caldav: { url: found.url, home: found.home }, changed: true };
+  }
+
+  // The calendar server from the setup form, checked as Server settings check it. The account doesn't exist yet, so
+  // a refused sign-in can't send the user to its Server settings.
+  async setupCalDav(acc, caldav) {
+    try {
+      return (await this.checkCalDav(acc, acc, { caldav })).caldav;
+    } catch (err) {
+      if (err && err.code === 'password') throw Object.assign(new Error(t('errors.caldav.setupSignIn')), { calendar: true, code: 'password' });
+      throw err;
+    }
   }
 
   // Where the account's calendars live, found again after the server moved them. url: the server it was found on; a
