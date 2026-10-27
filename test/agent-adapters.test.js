@@ -2181,7 +2181,7 @@ async function withAttachments(agent, adapter) {
     const c = hub.create({ agent, message: null });
     const pdf = hub.stageFile('Quarterly report.pdf', makePdf([['Quarterly report 2026', 'Revenue grew by 12%']]));
     const png = hub.stageFile('photo.png', PNG);
-    hub.send(c.id, { text: 'hello', files: [pdf.id, png.id], emails: emails.map((m) => m.id) });
+    await hub.send(c.id, { text: 'hello', files: [pdf.id, png.id], emails: emails.map((m) => m.id) });
     await waitFor(() => !hub.turns.has(c.id), 15000);
     const copy = (name) => path.join(dir, 'ws', 'files', c.id, c.files.find((f) => f.name === name).file);
     return { c, emails, copy };

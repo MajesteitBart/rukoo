@@ -153,6 +153,9 @@ class AgentHub extends EventEmitter {
     this.adapterErrors = new Map();
     this.conversations = new Map();
     this.turns = new Map();
+    // Chats whose next message is still copying its files (send()): busy, as with a turn. Each with the send's
+    // promise, which dispose() waits for, so a copy made while Rukoo closes is gone before it quits.
+    this.sending = new Map();
     this.approvals = new Map();
     this.followUps = new Map();
     this.tokens = [];
@@ -419,6 +422,9 @@ class AgentHub extends EventEmitter {
     }
     const closing = [...this.adapters.values()].map((a) => Promise.resolve().then(() => a.dispose && a.dispose()));
     if (this.mcp) closing.push(this.mcp.close());
+    // Messages still copying their files: they stop at the next file and remove their copies (send()). A quit that
+    // can't wait that long leaves them to the next start (ChatFiles.prune).
+    closing.push(...this.sending.values());
     await Promise.allSettled(closing);
   }
 
@@ -479,7 +485,7 @@ class AgentHub extends EventEmitter {
     }
     // The files of chats that are gone. Not while a file Rukoo couldn't read is kept aside: its chats may come
     // back, and their files with them. After the next save the store alone would say they are gone.
-    if (!broken && !this.keptAside()) this.files.prune(this.conversations.keys());
+    if (!broken && !this.keptAside()) this.files.prune([...this.conversations.values()].map((c) => [c.id, c.files]));
   }
 
   keptAside() {
@@ -888,7 +894,7 @@ class AgentHub extends EventEmitter {
     const external = keep.origin === 'external';
     const max = external ? MAX_EXTERNAL : MAX_CONVERSATIONS;
     const same = [...this.conversations.values()].filter((c) => (c.origin === 'external') === external);
-    const idle = same.filter((c) => c !== keep && !this.turns.has(c.id)).sort((a, b) => a.updatedAt - b.updatedAt);
+    const idle = same.filter((c) => c !== keep && !this.turns.has(c.id) && !this.sending.has(c.id)).sort((a, b) => a.updatedAt - b.updatedAt);
     for (let n = same.length; n > max && idle.length; n--) this.drop(idle.shift(), true);
   }
 
@@ -1137,10 +1143,13 @@ class AgentHub extends EventEmitter {
   // on disk now.
   // files: tokens of files the user attached (stageFile); emails: Rukoo ids of emails the user added. A message
   // with either needs no text.
+  // A refusal throws at once, before anything changes. A message with files then returns a promise: the files are
+  // copied into the chat's folder without blocking (chatfiles.keep), the chat is busy meanwhile, and the message
+  // shows in the chat only once they are there. A failed copy rejects it and leaves the chat as it was.
   send(id, { text, action = null, display = null, skill = null, files = [], emails = [] } = {}) {
     const c = this.mustGet(id);
     if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
-    if (this.turns.has(c.id)) throw new AgentError('busy', 'a turn is running');
+    if (this.turns.has(c.id) || this.sending.has(c.id)) throw new AgentError('busy', 'a turn is running');
     if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
     if (skill) {
       const s = this.skills.get(skill);
@@ -1157,14 +1166,51 @@ class AgentHub extends EventEmitter {
     if (!staged) throw missingError('file-missing', this.files.missing(fileIds), 'a file is no longer ready to send; attach it again');
     const mails = this.attachEmails(c, emails);
     if (!body.trim() && !staged.length && !mails.length) throw new AgentError('invalid', 'empty message');
-    const firstTurn = !c.delivered;
-    // The agent's new session has not had the chat yet: the email and a recap go along again.
-    const recap = !firstTurn && c.needsRecap === true;
     const shown = display ? clip(display, 20000) : body;
     // display can be an approved proposal's title. Email text the agent quoted in it keeps its <unsafe_content>
     // tags for the agent (runTurn gets them); the user's line and the chat title show the text alone.
     const line = display ? context.untag(shown) : shown;
-    const kept = staged.length ? this.files.keep(c.id, staged) : [];
+    const message = { body, action, shown, line, mails };
+    if (!staged.length) return this.begin(c, message, []);
+    // Removed while its files were copied: what was copied goes with the chat's folder, whichever way the copy went.
+    const removed = () => {
+      if (this.conversations.get(c.id) === c) return false;
+      this.files.remove(c.id);
+      return true;
+    };
+    const sent = this.files.keep(c.id, staged).then(
+      async (kept) => {
+        try {
+          if (removed()) throw new AgentError('invalid', 'unknown conversation');
+          // Closed meanwhile: the chat keeps its earlier files only. dispose() waits for this.
+          if (this.disposed) {
+            await this.files.discard(c.id, kept);
+            throw new AgentError('stopped', 'Rukoo is closing');
+          }
+        } finally {
+          this.sending.delete(c.id);
+        }
+        return this.begin(c, message, kept);
+      },
+      (err) => {
+        this.sending.delete(c.id);
+        if (removed()) throw new AgentError('invalid', 'unknown conversation');
+        // keep() stopped copying once Rukoo began to close, and removed what it had copied.
+        if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
+        this.nextFollowUp(c.id);
+        throw err;
+      }
+    );
+    this.sending.set(c.id, sent);
+    return sent;
+  }
+
+  // The rest of send(), once the message's files are in the chat's folder (kept): the message goes into the chat,
+  // and its turn starts.
+  begin(c, { body, action, shown, line, mails }, kept) {
+    const firstTurn = !c.delivered;
+    // The agent's new session has not had the chat yet: the email and a recap go along again.
+    const recap = !firstTurn && c.needsRecap === true;
     if (kept.length) c.files = [...(c.files || []), ...kept];
     // A chat is named after its first message, or after what it brought when it has no text.
     const naming = !c.title;
@@ -1641,11 +1687,17 @@ class AgentHub extends EventEmitter {
     if (error && ['offline', 'unauthorized', 'not-configured', 'not-installed', 'spawn-failed'].includes(error.code)) {
       this.refreshStatus().catch(() => {});
     }
+    this.nextFollowUp(c.id);
+  }
+
+  // An approval that waited for the chat to be free (onProposal) goes now: its turn ended, or a message's files
+  // failed to copy.
+  nextFollowUp(cid) {
     if (this.disposed) return;
-    const queue = this.followUps.get(c.id);
+    const queue = this.followUps.get(cid);
     const next = queue && queue.shift();
-    if (queue && !queue.length) this.followUps.delete(c.id);
-    if (next) setImmediate(() => this.sendFollowUp(c.id, next));
+    if (queue && !queue.length) this.followUps.delete(cid);
+    if (next) setImmediate(() => this.sendFollowUp(cid, next));
   }
 
   sendFollowUp(cid, message) {
@@ -1814,7 +1866,7 @@ class AgentHub extends EventEmitter {
     if (item.detail) lines.push(`Details you proposed: ${item.detail}`);
     for (const f of item.fields || []) lines.push(`${f.label}: ${f.value}`);
     const message = { text: lines.join('\n'), display: item.title, action: 'approved' };
-    if (this.turns.has(c.id)) {
+    if (this.turns.has(c.id) || this.sending.has(c.id)) {
       const queue = this.followUps.get(c.id) || [];
       queue.push(message);
       this.followUps.set(c.id, queue);

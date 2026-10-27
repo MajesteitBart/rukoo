@@ -941,7 +941,8 @@ async function fileResult(hub, info, { name, type, content, local = null, uri, s
     // reader that stopped early or failed leaves the rest only in the file (partial, failed).
     const pdf = await hub.pdf.read(content, { maxChars: ATTACHMENT_TEXT_MAX, signal, tool: true });
     if (pdf.failed === 'busy') {
-      // Too many reads wait already (pdfread.js): no text and no file, so asking many times at once holds nothing.
+      // Too many reads wait already, or this one waited TURN_WAIT for a reader (pdfread.js): no text and no file, so
+      // asking many times at once holds nothing.
       const full = { ...out, failed: 'busy', note: `Rukoo is reading other PDFs for you and has no room for this one yet. Ask for it again once those reads are done${local ? `, or open the file at local_path. ${FILE_DATA}` : '.'}` };
       return raw([{ type: 'text', text: JSON.stringify(full) }], full);
     }

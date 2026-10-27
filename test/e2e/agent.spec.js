@@ -1979,12 +1979,12 @@ test('a send that fails while the files are copied keeps every chip, and sending
   // The disk fills up halfway through main's copy of the second file, once.
   await app.evaluate(() => {
     const fs = process.mainModule.require('fs');
-    const write = fs.writeFileSync;
+    const write = fs.promises.writeFile;
     let copies = 0;
-    fs.writeFileSync = function (file, data, ...rest) {
+    fs.promises.writeFile = async function (file, data, ...rest) {
       if (/[\\/]agent-workspace[\\/]files[\\/]/.test(String(file)) && !/:Zone\.Identifier$/.test(file) && ++copies === 2) {
-        fs.writeFileSync = write;
-        write.call(this, file, data.subarray(0, 2), ...rest);
+        fs.promises.writeFile = write;
+        await write.call(this, file, data.subarray(0, 2), ...rest);
         throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
       }
       return write.call(this, file, data, ...rest);
@@ -2001,6 +2001,44 @@ test('a send that fails while the files are copied keeps every chip, and sending
   await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['a.txt', 'b.txt']);
   await expect(fileChips()).toHaveCount(0);
   await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['a.txt', 'b.txt']);
+});
+
+test('a message with files is sent without blocking Rukoo: while a slow disk copies them, other requests are answered at once', async () => {
+  await openChat('Call on Thursday');
+  await dropFiles([{ name: 'scan.txt', type: 'text/plain', data: Buffer.from('Scanned on a slow disk') }]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(['scan.txt']);
+  // Writing main's copy takes 1.5 s, whichever way it is written: the sync call blocks, the async one waits.
+  await app.evaluate(() => {
+    const fs = process.mainModule.require('fs');
+    const copy = (file) => /[\\/]agent-workspace[\\/]files[\\/]/.test(String(file)) && !/:Zone\.Identifier$/.test(String(file));
+    const write = fs.writeFileSync;
+    fs.writeFileSync = function (file, ...rest) {
+      if (copy(file)) for (const end = Date.now() + 1500; Date.now() < end; );
+      return write.call(this, file, ...rest);
+    };
+    const writeAsync = fs.promises.writeFile;
+    fs.promises.writeFile = async function (file, ...rest) {
+      if (copy(file)) await new Promise((resolve) => setTimeout(resolve, 1500));
+      return writeAsync.call(this, file, ...rest);
+    };
+  });
+  await input().fill('Read this scan');
+  // Sent from the page itself, so the clock starts before main has the message: Playwright's own commands pass
+  // through main and would wait for it. 300 ms later main is copying; another request still comes back at once, and
+  // the message isn't in the chat yet.
+  const took = await win.evaluate(async () => {
+    document.querySelector('.agentpane .bui-pb__send').click();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const started = performance.now();
+    await window.mail.call('agentSkills');
+    return performance.now() - started;
+  });
+  expect(took).toBeLessThan(500);
+  await expect(transcript().locator('.bui-ub')).toHaveCount(0);
+  // Once the copy is there the message shows with its file, and the agent gets it.
+  await expect(transcript().locator('.bui-ubatt .bui-entity__name')).toHaveText(['scan.txt']);
+  await expect.poll(async () => ((await received()) || { files: [] }).files.map((f) => f.name)).toEqual(['scan.txt']);
+  await expect(transcript()).toContainText('scan.txt starts with: Scanned on a slow disk', { timeout: 10000 });
 });
 
 test('two emails dragged from the list show up as chips, and the agent reads both', async () => {
