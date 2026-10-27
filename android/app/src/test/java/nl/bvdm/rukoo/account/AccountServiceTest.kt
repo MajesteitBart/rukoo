@@ -422,6 +422,27 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a tombstone from the server erases nothing, since it proves nothing`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("tomb2@example.com", PASSWORD)
+        desk.put("sender", "keep@example.com", rule("money"))
+        desk.sync()
+        val laptop = device(srv, "laptop")
+        laptop.signIn("tomb2@example.com", PASSWORD)
+        laptop.sync()
+        // The server swaps the record for a tombstone of its own.
+        val stored = srv.accounts.getValue("tomb2@example.com")
+        synchronized(stored) {
+            val id = stored.records.keys.first()
+            stored.seq += 1
+            stored.records[id] = FakeAccountServer.Stored(stored.seq, null)
+        }
+        laptop.sync()
+        assertEquals(rule("money"), laptop.value("sender", "keep@example.com"))
+    }
+
+    @Test
     fun `signing in with a wrong password fails without signing in`() = runBlocking {
         val srv = server()
         val desk = device(srv)

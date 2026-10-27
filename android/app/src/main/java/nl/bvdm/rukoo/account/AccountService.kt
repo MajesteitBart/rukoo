@@ -678,15 +678,9 @@ class AccountService(
 
     /** Takes one record from the server; returns its collection when this phone's data changed. Under the lock. */
     private fun applyRemote(session: Session, id: String, seq: Long, data: String?): String? {
-        val key = ids[id]
-        val local = key?.let { entries[it] }
-        // A tombstone the server keeps for data null. Rukoo deletes with d: true instead, but takes these too.
-        if (data == null) {
-            if (local == null || local.dirty) return null
-            entries.remove(key)
-            ids.remove(id)
-            return local.c
-        }
+        // A tombstone (data null) proves nothing about who wrote it, so a server could use one to erase records here.
+        // Devices delete with sealed d: true records, which do prove it; tombstones are left alone.
+        if (data == null) return null
         val rec = AccountKeys.openRecord(session.keys, id, data) ?: return null
         val k = entryKey(rec.c, rec.k)
         val mine = entries[k]
