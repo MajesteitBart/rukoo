@@ -293,12 +293,16 @@ class AccountService extends EventEmitter {
     return { account: res.account };
   }
 
+  // Only the session this was asked for: a slow answer must not sign out one made meanwhile.
   async signOut() {
     if (!this.signedIn) return this.status();
-    await this.call('POST', '/v1/logout', undefined, { auth: true }).catch(() => {});
-    this.state.error = null;
-    this.forget();
-    this.changedStatus();
+    const session = this.session;
+    await this.call('POST', '/v1/logout', undefined, { auth: true, session }).catch(() => {});
+    if (this.session === session) {
+      this.state.error = null;
+      this.forget();
+      this.changedStatus();
+    }
     return this.status();
   }
 
@@ -357,11 +361,14 @@ class AccountService extends EventEmitter {
   // Deletes the account and everything in it on the server. This computer keeps its own copy.
   async deleteAccount(password) {
     if (!this.signedIn) throw fail('signed_out');
+    const session = this.session;
     const { authKey } = await this.authFor(this.state.email, password);
-    await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey) }, { auth: true });
-    this.state.error = null;
-    this.forget();
-    this.changedStatus();
+    await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey) }, { auth: true, session });
+    if (this.session === session) {
+      this.state.error = null;
+      this.forget();
+      this.changedStatus();
+    }
     return this.status();
   }
 
@@ -392,7 +399,8 @@ class AccountService extends EventEmitter {
     for (const e of this.entries.values()) {
       delete e.seq;
       e.dirty = true;
-      if (FIRST_WRITE_WINS.has(e.c)) e.ifAbsent = e.first = true;
+      // A first write, unless it is a deletion: that settles by its time, like any other.
+      if (FIRST_WRITE_WINS.has(e.c) && !e.deleted) e.ifAbsent = e.first = true;
     }
     this.open({ token, dataKey });
     this.saveState();

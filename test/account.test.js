@@ -335,6 +335,60 @@ test('a sync still running for an account this device left changes nothing in th
   assert.equal(desk.status().signedIn, true);
 });
 
+test('a slow sign-out leaves alone the session made while it waited', async (t) => {
+  const srv = await server(t);
+  const helper = device(t, srv, 'helper');
+  await helper.signUp({ email: 'slow@example.com', password: PASSWORD });
+  let release;
+  let hold = false;
+  const { request } = require('../src/main/account/client');
+  const desk = new AccountService({
+    dataDir: tmpDir(t),
+    secrets,
+    defaultServer: srv.url,
+    deviceName: 'desk',
+    request: async (...args) => {
+      if (hold && args[2] === '/v1/logout') {
+        hold = false;
+        await new Promise((r) => (release = r));
+      }
+      return request(...args);
+    }
+  }).init();
+  t.after(() => desk.close());
+  await desk.signIn({ email: 'slow@example.com', password: PASSWORD });
+  hold = true;
+  const leaving = desk.signOut();
+  await new Promise((r) => setImmediate(r));
+  // Meanwhile the session ends another way and the person signs in again.
+  desk.forget();
+  await desk.signIn({ email: 'slow@example.com', password: PASSWORD });
+  release();
+  await leaving;
+  assert.equal(desk.status().signedIn, true);
+});
+
+test('a classification deleted while signed out stays deleted when signing in', async (t) => {
+  const srv = await server(t);
+  const clock = { t: 100 };
+  const helper = clocked(t, srv, 'helper', clock);
+  await helper.signUp({ email: 'tomb@example.com', password: PASSWORD });
+  const key = 'tomb@example.com\n<old@x>';
+  helper.put('classification', key, { category: 'updates' }, { ifAbsent: true });
+  await helper.sync();
+  const desk = clocked(t, srv, 'desk', clock);
+  await desk.signIn({ email: 'tomb@example.com', password: PASSWORD });
+  await desk.sync();
+  await desk.signOut();
+  clock.t = 201;
+  desk.remove('classification', key);
+  await desk.signIn({ email: 'tomb@example.com', password: PASSWORD });
+  await desk.sync();
+  assert.equal(desk.get('classification', key), undefined);
+  await helper.sync();
+  assert.equal(helper.get('classification', key), undefined, 'the deletion reached the other device');
+});
+
 test('signing in with a wrong password fails without signing in', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);
