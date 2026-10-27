@@ -225,16 +225,17 @@ jobs:
           cd release
           cat SHA256SUMS-windows.txt SHA256SUMS-linux.txt SHA256SUMS-macos-arm64.txt SHA256SUMS-macos-x64.txt > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
-          flags=(--latest)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            flags=(--prerelease --latest=false)
-          fi
           # The maintainer writes the title and notes in a draft release before the run.
-          if ! found=$(gh release view "$RELEASE_TAG" --json isDraft,name --jq '"\(.isDraft)\t\(.name)"'); then
+          if ! found=$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,name --jq '"\(.isDraft)\t\(.isPrerelease)\t\(.name)"'); then
             echo "::error::There is no draft release for $RELEASE_TAG. Write one, then re-run the failed jobs."
             exit 1
           fi
-          IFS=$'\t' read -r draft title <<< "$found"
+          IFS=$'\t' read -r draft prerelease title <<< "$found"
+          # A tag such as v2.1.0-rc.1, or a draft marked as a pre-release, publishes as a pre-release.
+          flags=(--latest)
+          if [[ "$RELEASE_TAG" == *-* || "$prerelease" == true ]]; then
+            flags=(--prerelease --latest=false)
+          fi
           if [[ "$draft" != true ]]; then
             echo "::error::$RELEASE_TAG is already published."
             exit 1
