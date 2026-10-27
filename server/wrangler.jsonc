@@ -71,9 +71,11 @@
         "OPERATOR_CONTACT": "https://bvdm.ai/nl/contact",
         "PRIVACY_URL": "",
         "JURISDICTION": "eu",
-        "SIGNUPS": "open",
+        // Invite codes until sign-ups check the address (#121): with open sign-ups, invented addresses could fill
+        // MAX_ACCOUNTS and keep everyone else out.
+        "SIGNUPS": "invite",
         "MAX_RECORDS": 250000,
-        // Open sign-ups: 1,000 accounts of at most 32 MiB keep the worst case at 32 GB.
+        // 1,000 accounts of at most 32 MiB keep the worst case at 32 GB.
         "MAX_BYTES": 33554432,
         "MAX_ACCOUNTS": 1000
       },

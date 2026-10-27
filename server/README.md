@@ -74,7 +74,7 @@ The `vars` block holds the server's settings:
 | `SIGNUPS` | `"open"` lets anyone make an account. `"invite"` needs a code from `INVITE_CODES` (step 7). `"closed"` takes no new accounts. Existing accounts keep working in every mode. |
 | `MAX_RECORDS` | The most records one account may keep. |
 | `MAX_BYTES` | The most bytes of records one account may keep. |
-| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. |
+| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. The server doesn't check addresses yet, so invite codes are the safer choice for a server on the internet. |
 
 The defaults (250,000 records and 100 MiB per account) are far more than one person uses.
 
@@ -148,7 +148,7 @@ To make your server the default in your own build of Rukoo, set `rukoo.accountSe
 
 ## The server Rukoo uses
 
-The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo-account.bvdm.ai`, run by Rukoo's maintainer. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
+The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo-account.bvdm.ai`, run by Rukoo's maintainer. It takes new accounts by invite code. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
 
 ## What lands in Cloudflare's logs
 
