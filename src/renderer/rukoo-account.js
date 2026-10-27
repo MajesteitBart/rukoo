@@ -112,8 +112,8 @@ function changePasswordDialog() {
 }
 
 // pages: what settings.js needs. row: its row helper; go, back and rerender: its navigation; current(): the page on
-// top; promptDialog: its text prompt.
-export function accountPages({ row, go, back, rerender, current, promptDialog }) {
+// top; promptDialog: its text prompt; jevOn(): whether this computer sorts mail with Jev, which the privacy page names.
+export function accountPages({ row, go, back, rerender, current, promptDialog, jevOn = () => false }) {
   let status = null;
   let info = null;
   let infoFailed = false;
@@ -323,6 +323,7 @@ export function accountPages({ row, go, back, rerender, current, promptDialog })
               )
             : ''
         }
+        ${jevOn() ? staticRow(esc(t('settings.rukoo.typesafe')), esc(t('settings.rukoo.typesafeHelp'))) : ''}
         ${staticRow(esc(t('settings.rukoo.mailProviders')), esc(t('settings.rukoo.mailProvidersHelp')))}
         ${staticRow(esc(t('settings.rukoo.nobodyElse')), esc(t('settings.rukoo.nobodyElseHelp')))}
       </div>

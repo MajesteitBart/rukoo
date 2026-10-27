@@ -734,7 +734,10 @@ class Engine extends EventEmitter {
       limit,
       known,
       uidValidity: prev ? prev.uidValidity : null,
-      background
+      background,
+      // What inbox categories sort by (categories/).
+      signals: info.role === 'inbox',
+      gmailTabs: info.role === 'inbox' && acc.provider === 'google'
     });
     const sameValidity = prev && prev.uidValidity === res.uidValidity;
     const maxKnown = sameValidity ? Math.max(0, ...prev.messages.map((m) => m.uid)) : Infinity;
@@ -802,7 +805,9 @@ class Engine extends EventEmitter {
       starred: m.starred,
       answered: m.answered,
       hasAttachments: m.hasAttachments,
-      vip: this.isVip(m.from)
+      vip: this.isVip(m.from),
+      // The inbox category (categories/), set by main once categories are on; null elsewhere.
+      category: this.categoryOf && info && info.role === 'inbox' ? this.categoryOf(acc, m) : null
     };
   }
 

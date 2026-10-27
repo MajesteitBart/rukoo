@@ -73,6 +73,7 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | `classification` | account email + `"\n"` + the email's Message-ID, or `"h:"` + SHA-256 hex of sender, date and subject when it has none | `{ category, source, confidence, model, at }` | first write wins (`ifAbsent`) |
 | `override` | the same key as `classification` | `{ category, at }` | last write wins |
 | `sender` | a lowercased sender address | `{ category, at }` | last write wins |
+| `setting` | a setting's name, such as `categories` | that setting's value, such as `{ enabled, unsure, seeded }` | last write wins |
 
 A device ignores collections it doesn't know, so a newer app can add one without breaking older ones.
 

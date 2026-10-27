@@ -90,7 +90,10 @@ export const S = {
   // Open the newest message after the next load (at start and on a folder switch).
   autoOpen: true,
   // The inline editor in the reading pane, when one is open.
-  composer: null
+  composer: null,
+  // Inbox categories from main (categories/), and the tab on screen: a category id, or null for all of the inbox.
+  categories: null,
+  category: null
 };
 
 // Layout preferences live in the renderer; they only matter to this window. mode: 'mail' or 'calendar'.
@@ -162,9 +165,10 @@ async function refreshOnce() {
   const query = searchingAll()
     ? { scope: S.searchScope === 'all' ? 'all' : S.scope, view: 'everything', query: S.query }
     : { scope: S.scope, view: S.view, folder: S.folder, query: S.query };
-  const [list, counts] = await Promise.all([api('list', query), api('counts', S.scope)]);
+  const [list, counts, categories] = await Promise.all([api('list', query), api('counts', S.scope), api('categoriesState').catch(() => S.categories)]);
   S.list = list;
   S.counts = counts;
+  S.categories = categories;
   const ids = new Set(list.map((m) => m.id));
   for (const id of S.checked) if (!ids.has(id)) S.checked.delete(id);
   const wasLight = isLight();
@@ -246,17 +250,27 @@ function accountLabel(acc) {
   return labelCache.labels[acc.id] || acc.email;
 }
 
-// The list as shown: S.list narrowed by the quick filter.
+// Inbox categories show as tabs in the inbox, while categories are on and nothing is searched.
+const categoriesOn = () => Boolean(S.categories && S.categories.enabled && S.categories.categories.length) && S.view === 'inbox' && !S.query.trim();
+const categoryOf = (id) => (S.categories && S.categories.categories.find((c) => c.id === id)) || null;
+
+// The list in the category tab on screen.
+function categoryRows() {
+  return categoriesOn() && categoryOf(S.category) ? S.list.filter((m) => m.category === S.category) : S.list;
+}
+
+// The list as shown: the category tab's list narrowed by the quick filter.
 function rows() {
+  const list = categoryRows();
   switch (S.filter) {
     case 'unread':
-      return S.list.filter((m) => m.unread);
+      return list.filter((m) => m.unread);
     case 'starred':
-      return S.list.filter((m) => m.starred);
+      return list.filter((m) => m.starred);
     case 'attachments':
-      return S.list.filter((m) => m.hasAttachments);
+      return list.filter((m) => m.hasAttachments);
     default:
-      return S.list;
+      return list;
   }
 }
 
@@ -321,6 +335,7 @@ function renderShell() {
         <section class="calendar" data-i18n-aria-label="calendar.title" aria-label="${esc(t('calendar.title'))}"></section>
         <section class="listpane" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}">
           <div class="list-head"></div>
+          <div class="category-tabs" role="tablist" hidden></div>
           <div class="list-tools"></div>
           <div class="list-scroll" tabindex="0" role="listbox" aria-multiselectable="true" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}"></div>
         </section>
@@ -866,16 +881,37 @@ function renderListTools() {
     return;
   }
   tools.className = 'list-tools';
+  const list = categoryRows();
   const n = (id) => {
-    if (id === 'unread') return S.list.filter((m) => m.unread).length;
-    if (id === 'starred') return S.list.filter((m) => m.starred).length;
-    if (id === 'attachments') return S.list.filter((m) => m.hasAttachments).length;
+    if (id === 'unread') return list.filter((m) => m.unread).length;
+    if (id === 'starred') return list.filter((m) => m.starred).length;
+    if (id === 'attachments') return list.filter((m) => m.hasAttachments).length;
     return 0;
   };
   tools.innerHTML = `<div class="filters" role="tablist" data-i18n-aria-label="mailbox.filters.label" aria-label="${esc(t('mailbox.filters.label'))}">${FILTERS.map((f) => {
     const c = n(f.id);
     return `<button class="filter ${S.filter === f.id ? 'active' : ''}" role="tab" aria-selected="${S.filter === f.id}" data-filter="${f.id}">${esc(f.label)}${c ? `<span class="n">${c}</span>` : ''}</button>`;
   }).join('')}</div>`;
+}
+
+// The category tabs above the inbox: All, then each category, each with its unread count.
+function renderCategoryTabs() {
+  const el = $('.category-tabs');
+  if (!categoriesOn()) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  if (S.category && !categoryOf(S.category)) S.category = null;
+  const unread = (id) => S.list.filter((m) => m.unread && (id === null || m.category === id)).length;
+  const tab = (id, name, color) => {
+    const n = unread(id);
+    const on = S.category === id;
+    return `<button class="ctab ${on ? 'active' : ''}" role="tab" aria-selected="${on}" data-category="${id === null ? '' : esc(id)}"${color ? ` style="--cat:${esc(color)}"` : ''}>${color ? '<span class="dot" aria-hidden="true"></span>' : ''}<span class="name">${esc(name)}</span>${n ? `<span class="n" aria-label="${esc(t('mailbox.categories.unreadCount', { count: n }))}">${n}</span>` : ''}</button>`;
+  };
+  el.hidden = false;
+  el.setAttribute('aria-label', t('mailbox.categories.label'));
+  el.innerHTML = tab(null, t('mailbox.categories.all'), null) + S.categories.categories.map((c) => tab(c.id, c.name, c.color)).join('');
 }
 
 function renderList() {
@@ -886,6 +922,7 @@ function renderList() {
   }
   renderShell();
   renderListHead();
+  renderCategoryTabs();
   renderListTools();
   const scroll = $('.list-scroll');
   scroll.innerHTML = listHtml();
@@ -939,6 +976,8 @@ function listHtml() {
     if (S.query.trim()) {
       msg = t('mailbox.empty.search');
       hint = S.searchScope === 'view' ? t('mailbox.empty.searchAll') : t('mailbox.empty.searchOther');
+    } else if (S.filter === 'all' && categoriesOn() && categoryOf(S.category)) {
+      msg = esc(t('mailbox.categories.empty', { name: categoryOf(S.category).name }));
     } else if (S.filter !== 'all') {
       msg = t('mailbox.empty.filter');
       hint = `<button class="link-btn" data-filter="all" data-i18n="mailbox.empty.showAll">${esc(t('mailbox.empty.showAll'))}</button>`;
@@ -1129,11 +1168,26 @@ function clearChecks() {
 function bindList() {
   const pane = $('.listpane');
   const scroll = $('.list-scroll');
+  // A mouse wheel scrolls the category tabs sideways when they don't fit.
+  $('.category-tabs').addEventListener(
+    'wheel',
+    (e) => {
+      const el = e.currentTarget;
+      if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      el.scrollLeft += e.deltaY;
+      e.preventDefault();
+    },
+    { passive: false }
+  );
   pane.addEventListener('click', (e) => {
     const btn = e.target.closest('button');
     if (btn && btn.dataset.action) return listAction(btn.dataset.action, btn);
     if (btn && btn.dataset.filter) {
       S.filter = btn.dataset.filter;
+      return renderList();
+    }
+    if (btn && btn.dataset.category !== undefined) {
+      S.category = btn.dataset.category || null;
       return renderList();
     }
     if (btn && btn.dataset.bulk) return bulkAction(btn.dataset.bulk, btn);
@@ -1549,6 +1603,38 @@ async function pickFolder(list) {
   return choiceDialog(list.length === 1 ? t('mailbox.move.title') : t('mailbox.move.countTitle', { count: list.length }), options, null);
 }
 
+// Puts emails in another inbox category. Nothing changes on the mail server; the toast offers to do the same for
+// their senders' later mail.
+async function moveToCategory(list) {
+  list = list.filter((m) => m && m.category);
+  if (!list.length || !S.categories) return;
+  const options = S.categories.categories.map((c) => ({ value: c.id, label: c.name }));
+  const same = list.every((m) => m.category === list[0].category);
+  const id = await choiceDialog(t('mailbox.categories.pick'), options, same ? list[0].category : null);
+  if (!id) return;
+  const ids = list.map((m) => m.id);
+  try {
+    await api('categoriesMove', ids, id, {});
+  } catch (err) {
+    return toast(err.message, 5000);
+  }
+  const name = (categoryOf(id) || {}).name || '';
+  const senders = new Set(list.map((m) => String((m.from && m.from.address) || '').toLowerCase()).filter(Boolean));
+  toast(t('mailbox.categories.moved', { name }), {
+    action: {
+      label: t('mailbox.categories.always'),
+      run: async () => {
+        try {
+          await api('categoriesMove', ids, id, { sender: true });
+        } catch (err) {
+          return toast(err.message, 5000);
+        }
+        toast(senders.size === 1 ? t('mailbox.categories.alwaysDone', { sender: person(list[0].from), name }) : t('mailbox.categories.alwaysDoneMany', { count: senders.size, name }));
+      }
+    }
+  });
+}
+
 async function moveWithPicker(list) {
   list = list.filter((m) => m && m.role !== 'saved');
   if (!list.length) return;
@@ -1589,6 +1675,7 @@ function bulkMenu(list) {
     addToChatItem(list),
     { separator: true },
     { icon: 'move', get label() { return t('mailbox.actions.moveMenu'); }, shortcut: 'Ctrl+Shift+V', action: () => moveWithPicker(list) },
+    list.some((m) => m.category) ? { icon: 'inbox', get label() { return t('mailbox.categories.move'); }, action: () => moveToCategory(list) } : null,
     canArchive ? { icon: 'archive', get label() { return t('common.actions.archive'); }, action: () => archiveMessages(list) } : null,
     { separator: true },
     { icon: 'trash', label: t('mailbox.delete.countAction', { count: list.length }), shortcut: 'Delete', action: () => removeMessages(list), danger: true }
@@ -1610,6 +1697,7 @@ function messageMenu(m) {
     saved ? null : { icon: m.unread ? 'mailOpen' : 'markUnread', label: m.unread ? t('mailbox.actions.read') : t('mailbox.actions.unread'), shortcut: m.unread ? 'Ctrl+Q' : 'Ctrl+U', action: () => setUnread([m], !m.unread) },
     saved ? null : { icon: 'star', label: m.starred ? t('mailbox.actions.unstar') : t('mailbox.actions.addStar'), action: () => setStarred([m], !m.starred) },
     saved ? null : { icon: 'move', get label() { return t('mailbox.actions.moveMenu'); }, shortcut: 'Ctrl+Shift+V', action: () => moveWithPicker([m]) },
+    m.category ? { icon: 'inbox', get label() { return t('mailbox.categories.move'); }, action: () => moveToCategory([m]) } : null,
     canArchive ? { icon: 'archive', get label() { return t('common.actions.archive'); }, action: () => archiveMessages([m]) } : null,
     { separator: true },
     {
@@ -2283,6 +2371,10 @@ function drawBadge(count) {
 window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
+  if (type === 'categories') {
+    S.categories = payload;
+    renderList();
+  }
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);

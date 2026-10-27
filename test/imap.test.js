@@ -274,6 +274,7 @@ function folder(messages) {
         if (query.internalDate) row.internalDate = new Date(2026, 9, m.uid);
         if (query.size) row.size = 100 + m.uid;
         if (query.bodyParts) row.bodyParts = new Map([['1', Buffer.from(`preview of ${m.uid}`)]]);
+        if (query.headers) row.headers = Buffer.from(m.headers || '');
         yield row;
       }
     }
@@ -329,4 +330,49 @@ test('after a UIDVALIDITY change a sync uses nothing of the cache', async () => 
   const res = await s.syncFolder('INBOX', { limit: 10, known: new Map([[3, stored(3, 'stale')]]), uidValidity: '8' });
   assert.equal(asked[1].range, '3');
   assert.equal(res.messages[0].subject, 'reassigned');
+});
+
+test('an inbox sync collects the mail-kind headers once and asks Gmail for its tabs every time', async () => {
+  const { client, asked } = folder([
+    { uid: 3, subject: 'old newsletter', flags: [], headers: 'List-Unsubscribe: <https://x>\r\n' },
+    { uid: 4, subject: 'old, kinds known', flags: [] },
+    { uid: 5, subject: 'new', flags: [], headers: 'Auto-Submitted: auto-generated\r\n' }
+  ]);
+  client.capabilities = new Map([['X-GM-EXT-1', true]]);
+  const searched = [];
+  client.search = async (query) => {
+    searched.push(query);
+    return { 'category:promotions': [3], 'category:updates': [5] }[query.gmraw] || [];
+  };
+  const s = session(client);
+  const known = new Map([
+    [3, stored(3, 'cached')],
+    [4, { ...stored(4, 'cached 4'), signals: { bulk: true }, gmailTab: 'social' }]
+  ]);
+  const res = await s.syncFolder('INBOX', { limit: 10, known, uidValidity: '9', signals: true, gmailTabs: true });
+  const headers = asked.find((a) => a.query.includes('headers'));
+  assert.equal(headers.range, '3,5', 'not for the message whose kind is known');
+  assert.deepEqual(searched.map((q) => q.gmraw), ['category:promotions', 'category:social', 'category:updates', 'category:forums']);
+  assert.equal(searched[0].uid, '3:*');
+  const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+  assert.deepEqual(byUid.get(3).signals, { list: true });
+  assert.deepEqual(byUid.get(4).signals, { bulk: true });
+  assert.deepEqual(byUid.get(5).signals, { auto: true });
+  assert.deepEqual([3, 4, 5].map((uid) => byUid.get(uid).gmailTab), ['promotions', 'primary', 'updates']);
+
+  // Without Gmail's extension the tabs aren't asked, and what the cache had stays.
+  client.capabilities = new Map();
+  searched.length = 0;
+  const again = await s.syncFolder('INBOX', { limit: 10, known: new Map(res.messages.map((m) => [m.uid, m])), uidValidity: '9', signals: true, gmailTabs: true });
+  assert.equal(searched.length, 0);
+  assert.equal(again.messages.find((m) => m.uid === 3).gmailTab, 'promotions');
+});
+
+test('a sync of another folder asks for neither', async () => {
+  const { client, asked } = folder([{ uid: 3, subject: 'sent', flags: [] }]);
+  client.search = async () => assert.fail('no search');
+  const s = session(client);
+  const res = await s.syncFolder('Sent', { limit: 10, known: new Map(), uidValidity: '9' });
+  assert.ok(!asked.some((a) => a.query.includes('headers')));
+  assert.equal('signals' in res.messages[0], false);
 });

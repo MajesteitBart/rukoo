@@ -5,6 +5,7 @@ const path = require('path');
 const { simpleParser } = require('mailparser');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const util = require('./mailutil');
+const { mailSignals } = require('./categories/signals');
 
 const DEMO_EMAIL = 'demo@example.com';
 
@@ -407,7 +408,8 @@ class DemoAccount {
         answered: m.flags.includes('\\Answered'),
         // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
         hasAttachments: (m.attachments || []).some((a) => !a.cid),
-        size: (m.html || m.text || '').length
+        size: (m.html || m.text || '').length,
+        signals: mailSignals(m.headers)
       }))
     };
   }
