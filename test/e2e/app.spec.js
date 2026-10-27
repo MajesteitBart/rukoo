@@ -438,6 +438,61 @@ test('quick filters narrow the list', async () => {
   await expect(win.locator('.item').nth(5)).toBeVisible();
 });
 
+test('the Unread filter keeps an opened message until another opens, then folds it away', async () => {
+  await win.emulateMedia({ reducedMotion: 'no-preference' });
+  await win.click('[data-filter="unread"]');
+  await expect(win.locator('.item')).toHaveCount(7);
+  await item('Forward Future').click();
+  await expect(win.locator('.reader-subject')).toHaveText("The music industry can't agree on AI");
+  // Read and selected, but still in the list, so the reader can step from it.
+  await expect(item('Forward Future')).not.toHaveClass(/unread/);
+  await expect(item('Forward Future')).toHaveClass(/selected/);
+  await expect(win.locator('.item')).toHaveCount(7);
+  await expect(win.locator('[data-filter="unread"] .n')).toHaveText('6');
+  await expect(win.locator('[data-reader="prev"]')).toBeEnabled();
+  await expect(win.locator('[data-reader="next"]')).toBeEnabled();
+  // Opening the next one folds the read row away before the list drops it.
+  const folding = await win.evaluate(() => {
+    document.querySelector('[data-reader="next"]').click();
+    const wrap = [...document.querySelectorAll('.list-scroll .item-wrap')].find((w) => w.textContent.includes('Forward Future'));
+    return Boolean(wrap && wrap.getAnimations().length);
+  });
+  expect(folding).toBe(true);
+  await expect(win.locator('.reader-subject')).toHaveText('Here is another copy of your contract');
+  await expect(win.locator('.item.selected')).not.toHaveClass(/unread/);
+  await expect(win.locator('.item', { hasText: 'Forward Future' })).toHaveCount(0);
+  await expect(win.locator('.item')).toHaveCount(6);
+  // With reduced motion the row goes at once.
+  await win.emulateMedia({ reducedMotion: 'reduce' });
+  const left = await win.evaluate(() => {
+    [...document.querySelectorAll('.list-scroll .item')].find((i) => i.textContent.includes('Google')).click();
+    return document.querySelectorAll('.list-scroll .item').length;
+  });
+  expect(left).toBe(5);
+});
+
+test('in a narrow window, Back returns to the Unread list with the read message still in it', async () => {
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(820, 700));
+  // The newest message opened at the start and now covers the list.
+  await win.click('[data-reader="back"]');
+  await win.click('[data-filter="unread"]');
+  await item('Forward Future').click();
+  await expect(win.locator('.reader-subject')).toHaveText("The music industry can't agree on AI");
+  await expect(win.locator('.item.selected')).not.toHaveClass(/unread/);
+  await win.click('[data-reader="back"]');
+  await expect(item('Forward Future')).toBeVisible();
+  await expect(item('Forward Future')).not.toHaveClass(/unread/);
+  await expect(win.locator('.item')).toHaveCount(7);
+  // Opening another one lets it go.
+  await item('Google').click();
+  await expect(win.locator('.reader-subject')).toHaveText('You updated some of your Google Account details');
+  await expect(win.locator('.item.selected')).not.toHaveClass(/unread/);
+  await win.click('[data-reader="back"]');
+  await expect(win.locator('.item', { hasText: 'Forward Future' })).toHaveCount(0);
+  await expect(item('Google')).not.toHaveClass(/unread/);
+  await expect(win.locator('.item')).toHaveCount(6);
+});
+
 test('the message list can be resized from the keyboard', async () => {
   const before = (await win.locator('.listpane').boundingBox()).width;
   await win.locator('.divider').focus();

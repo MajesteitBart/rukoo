@@ -76,6 +76,9 @@ export const S = {
   list: [],
   counts: null,
   selectedId: null,
+  // The message last opened while unread: the Unread filter keeps showing it until another opens, also after
+  // Back in a narrow window.
+  keptId: null,
   checked: new Set(),
   anchorId: null,
   // The keyboard position while Shift+arrows grow a selection. selectedId stays the message on screen.
@@ -264,7 +267,7 @@ function rows() {
   const list = categoryRows();
   switch (S.filter) {
     case 'unread':
-      return list.filter((m) => m.unread);
+      return list.filter((m) => m.unread || m.id === S.keptId);
     case 'starred':
       return list.filter((m) => m.starred);
     case 'attachments':
@@ -806,6 +809,7 @@ function bindSidebar() {
 function changeView() {
   S.query = '';
   S.filter = 'all';
+  S.keptId = null;
   S.checked.clear();
   S.autoOpen = true;
   // A message from the previous folder would look like it belongs to this one.
@@ -914,12 +918,18 @@ function renderCategoryTabs() {
   el.innerHTML = tab(null, t('mailbox.categories.all'), null) + S.categories.categories.map((c) => tab(c.id, c.name, c.color)).join('');
 }
 
+// Rows folding out of the list (see letGo). Each renders the list once it is gone.
+const leaving = new Set();
+const LEAVE_MS = 320;
+
 function renderList() {
   // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends.
   if (swipeState.el) {
     swipeState.renderPending = true;
     return;
   }
+  // Likewise for a row that is folding away.
+  if (leaving.size) return;
   renderShell();
   renderListHead();
   renderCategoryTabs();
@@ -1136,6 +1146,42 @@ function syncRowClasses() {
 
 function revealRow(id) {
   $(`.list-scroll .item[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+
+// The message the Unread filter kept leaves once another opens. Its row, and a day heading it leaves empty,
+// fold away before the list redraws without them:
+//     0ms  the row fades out where it is
+//   110ms  its height closes and the rows below move up
+//   320ms  the list redraws
+function letGo(id) {
+  const m = S.list.find((x) => x.id === id);
+  if (!m || m.unread || S.filter !== 'unread') return;
+  const wrap = $(`.list-scroll .item-wrap[data-id="${CSS.escape(id)}"]`);
+  if (!wrap || matchMedia('(prefers-reduced-motion: reduce)').matches) return renderList();
+  const els = [wrap];
+  const head = wrap.previousElementSibling;
+  const next = wrap.nextElementSibling;
+  if (head?.classList.contains('group-head') && (!next || next.classList.contains('group-head'))) els.push(head);
+  leaving.add(id);
+  for (const el of els) {
+    const { paddingTop, paddingBottom } = getComputedStyle(el);
+    const height = `${el.offsetHeight}px`;
+    el.style.overflow = 'hidden';
+    el.style.pointerEvents = 'none';
+    el.animate(
+      [
+        { height, paddingTop, paddingBottom, opacity: 1, easing: 'cubic-bezier(0, 0, 0.2, 1)' },
+        { height, paddingTop, paddingBottom, opacity: 0, offset: 110 / LEAVE_MS, easing: 'cubic-bezier(0.77, 0, 0.175, 1)' },
+        { height: '0px', paddingTop: '0px', paddingBottom: '0px', opacity: 0 }
+      ],
+      { duration: LEAVE_MS, fill: 'forwards' }
+    );
+  }
+  // A timer, not the animation's promise: it also fires when a redraw took the row away mid-animation.
+  setTimeout(() => {
+    leaving.delete(id);
+    renderList();
+  }, LEAVE_MS);
 }
 
 function selectionChanged() {
@@ -1834,6 +1880,8 @@ export async function openMessage(id, { auto = false } = {}) {
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn) return;
   const m = S.list.find((x) => x.id === id);
+  const left = S.keptId && S.keptId !== id ? S.keptId : null;
+  if (S.keptId !== id) S.keptId = m && m.unread ? id : null;
   S.selectedId = id;
   S.anchorId = id;
   S.cursorId = id;
@@ -1841,6 +1889,7 @@ export async function openMessage(id, { auto = false } = {}) {
   S.loading = true;
   S.message = m ? { ...m, html: null, attachments: [] } : S.message;
   syncRowClasses();
+  if (left) letGo(left);
   revealRow(id);
   renderShell();
   renderReader();
