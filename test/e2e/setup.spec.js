@@ -22,7 +22,9 @@ test.beforeEach(async () => {
   // No Google OAuth client, as in a build from source: the Google tile shows the password form.
   delete env.SEM_GOOGLE_CLIENT_ID;
   delete env.SEM_GOOGLE_CLIENT_SECRET;
-  app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
+  // Adding an account stores its password with safeStorage, which needs the real keyring on Linux (see the IMAP tests).
+  const entry = process.platform === 'linux' ? path.join(__dirname, '..', 'fixtures', 'linux-keyring-app.js') : '.';
+  app = await electron.launch({ args: [entry], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1200, 950));
   await win.waitForSelector('.provider-grid', { timeout: 15000 });
