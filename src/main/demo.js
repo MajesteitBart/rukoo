@@ -386,12 +386,15 @@ class DemoAccount {
     return name;
   }
 
-  async syncFolder(p, { limit = 200 } = {}) {
+  // olderUnseen: also how many messages older than the window are unread, as ImapAccount.syncFolder reports it.
+  async syncFolder(p, { limit = 200, olderUnseen = false } = {}) {
     const box = this.box(p);
     const list = box.messages.slice(-limit);
+    const older = box.messages.slice(0, Math.max(0, box.messages.length - limit));
     return {
       uidValidity: box.uidValidity,
       exists: box.messages.length,
+      ...(olderUnseen ? { olderUnseen: older.filter((m) => !m.flags.includes('\\Seen')).length } : {}),
       messages: list.map((m) => ({
         uid: m.uid,
         messageId: m.messageId,

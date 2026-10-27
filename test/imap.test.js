@@ -375,4 +375,41 @@ test('a sync of another folder asks for neither', async () => {
   const res = await s.syncFolder('Sent', { limit: 10, known: new Map(), uidValidity: '9' });
   assert.ok(!asked.some((a) => a.query.includes('headers')));
   assert.equal('signals' in res.messages[0], false);
+  assert.equal('olderUnseen' in res, false);
+});
+
+test('an inbox sync counts the unread mail below the window by uid, and says null when the server does not tell', async () => {
+  const flags = { 3: [], 4: ['\\Seen'], 5: [], 6: [], 7: ['\\Seen'] };
+  const { client } = folder(Object.entries(flags).map(([uid, f]) => ({ uid: Number(uid), subject: `m${uid}`, flags: f })));
+  const searched = [];
+  client.search = async (query, opts) => {
+    searched.push({ query, opts });
+    const [from, to] = query.uid.split(':').map(Number);
+    return { count: Object.keys(flags).map(Number).filter((uid) => uid >= from && uid <= to && !flags[uid].includes('\\Seen')).length };
+  };
+  const s = session(client);
+  // The window is the newest two, uids 6 and 7. Below it 3 and 5 are unread and 4 is read.
+  const res = await s.syncFolder('INBOX', { limit: 2, olderUnseen: true });
+  assert.deepEqual(res.messages.map((m) => m.uid), [6, 7]);
+  assert.deepEqual(searched, [{ query: { seen: false, uid: '1:5' }, opts: { uid: true, returnOptions: ['COUNT'] } }]);
+  assert.equal(res.olderUnseen, 2);
+
+  // An answer with the uids instead of a count.
+  client.search = async () => [3, 5];
+  assert.equal((await s.syncFolder('INBOX', { limit: 2, olderUnseen: true })).olderUnseen, 2);
+
+  // A refused or failed search leaves the count unknown, and the sync itself goes through.
+  client.search = async () => false;
+  const refused = await s.syncFolder('INBOX', { limit: 2, olderUnseen: true });
+  assert.equal(refused.olderUnseen, null);
+  assert.deepEqual(refused.messages.map((m) => m.uid), [6, 7]);
+  client.search = async () => {
+    throw new Error('BAD');
+  };
+  assert.equal((await s.syncFolder('INBOX', { limit: 2, olderUnseen: true })).olderUnseen, null);
+
+  // A window that holds the whole folder has nothing below it to ask about.
+  client.search = async () => assert.fail('no search');
+  assert.equal((await s.syncFolder('INBOX', { limit: 10, olderUnseen: true })).olderUnseen, 0);
+  assert.equal('olderUnseen' in (await s.syncFolder('INBOX', { limit: 2 })), false);
 });

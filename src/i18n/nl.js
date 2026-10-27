@@ -602,8 +602,14 @@
   "mailbox.layout.listWidth": "Breedte van de lijst",
   "mailbox.layout.message": "Bericht",
   "mailbox.layout.messages": "Berichten",
+  "mailbox.list.olderUnreadHint": {
+    "one": "Rukoo bewaart van elke inbox de nieuwste {kept} berichten. {count} ongelezen bericht is ouder. Het blijft op de server, telt mee in het totaal van Postvak IN en staat niet in deze lijst, dus Alles als gelezen markeren bereikt het niet.",
+    "other": "Rukoo bewaart van elke inbox de nieuwste {kept} berichten. {count} ongelezen berichten zijn ouder. Ze blijven op de server, tellen mee in het totaal van Postvak IN en staan niet in deze lijst, dus Alles als gelezen markeren bereikt ze niet."
+  },
+  "mailbox.list.olderUnreadSummary": "{older} ongelezen in oudere mail · {scope}",
   "mailbox.list.sentTo": "Aan: {recipients}",
   "mailbox.list.unreadSummary": "{count} ongelezen · {scope}",
+  "mailbox.list.unreadSummaryOlder": "{count} ongelezen, nog {older} in oudere mail · {scope}",
   "mailbox.message.attachment": "Bijlage",
   "mailbox.message.collapse": "Inklappen",
   "mailbox.message.noRecipient": "(Geen ontvanger)",

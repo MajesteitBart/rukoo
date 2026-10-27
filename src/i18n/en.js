@@ -2324,6 +2324,17 @@
     "message": "Messages",
     "description": "mailbox > layout. src/renderer/app.js (renderShell)"
   },
+  "mailbox.list.olderUnreadHint": {
+    "message": {
+      "one": "Rukoo keeps the newest {kept} messages of each inbox. {count} unread message is older than those. It stays on the server, counts toward the Inbox total and isn't in this list, so Mark all as read doesn't reach it.",
+      "other": "Rukoo keeps the newest {kept} messages of each inbox. {count} unread messages are older than those. They stay on the server, count toward the Inbox total and aren't in this list, so Mark all as read doesn't reach them."
+    },
+    "description": "Message list header: tooltip on the inbox subtitle when unread mail is older than the messages the list holds. {kept} is how many inbox messages Rukoo keeps per account (300); {count} the older unread messages the server counted. src/renderer/app.js (listTitle)"
+  },
+  "mailbox.list.olderUnreadSummary": {
+    "message": "{older} unread in older mail · {scope}",
+    "description": "Message list header: inbox subtitle when every message in the list is read but the server counted unread mail older than it. {older} is that count, {scope} the account address or All accounts. src/renderer/app.js (listTitle)"
+  },
   "mailbox.list.sentTo": {
     "message": "To: {recipients}",
     "description": "mailbox > list. src/renderer/app.js (senderLine)"
@@ -2331,6 +2342,10 @@
   "mailbox.list.unreadSummary": {
     "message": "{count} unread · {scope}",
     "description": "mailbox > list. src/renderer/app.js (listTitle)"
+  },
+  "mailbox.list.unreadSummaryOlder": {
+    "message": "{count} unread, {older} more in older mail · {scope}",
+    "description": "Message list header: inbox subtitle when the server counted unread mail older than the messages the list holds. {count} is the unread mail in the list (what the Unread filter shows), {older} the older unread mail; together they make the sidebar's Inbox count. {scope} is the account address or All accounts. src/renderer/app.js (listTitle)"
   },
   "mailbox.message.attachment": {
     "message": "Attachment",

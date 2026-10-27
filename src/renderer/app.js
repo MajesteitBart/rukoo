@@ -847,13 +847,23 @@ function listTitle() {
   const acc = account(S.scope);
   const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? S.list.filter((m) => m.unread).length : 0;
   const where = acc ? acc.email : t('mailbox.search.allAccounts');
+  // The inbox count in the sidebar adds the unread mail older than the messages the list holds; name it apart here,
+  // where the list's own unread mail is counted.
+  const older = S.view === 'inbox' ? S.counts?.olderUnread || 0 : 0;
+  if (older) {
+    return {
+      title: viewLabel(),
+      sub: unread ? t('mailbox.list.unreadSummaryOlder', { count: unread, older, scope: where }) : t('mailbox.list.olderUnreadSummary', { older, scope: where }),
+      hint: t('mailbox.list.olderUnreadHint', { count: older, kept: S.counts.inboxLimit })
+    };
+  }
   return { title: viewLabel(), sub: unread ? t('mailbox.list.unreadSummary', { count: unread, scope: where }) : where };
 }
 
 function renderListHead() {
   const head = $('.list-head');
-  const { title, sub } = listTitle();
-  head.innerHTML = `<div class="list-title"><h1>${esc(title)}</h1><div class="sub">${esc(sub)}</div></div>
+  const { title, sub, hint } = listTitle();
+  head.innerHTML = `<div class="list-title"><h1>${esc(title)}</h1><div class="sub"${hint ? ` title="${esc(hint)}"` : ''}>${esc(sub)}</div></div>
     ${S.query.trim() ? `<button class="tbtn" data-action="search-clear" data-i18n-title="mailbox.search.clearShortcut" title="${esc(t('mailbox.search.clearShortcut'))}">${icons.close}<span data-i18n="common.actions.clear">${esc(t('common.actions.clear'))}</span></button>` : ''}
     <button class="icon-btn" data-action="sync" data-i18n-title="mailbox.sync.shortcut" title="${esc(t('mailbox.sync.shortcut'))}">${icons.sync}</button>
     <button class="icon-btn" data-action="list-more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>`;

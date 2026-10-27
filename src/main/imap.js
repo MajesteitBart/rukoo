@@ -34,6 +34,22 @@ function friendlyError(err) {
   return msg;
 }
 
+// How many messages in the open folder are unread below uid first, the oldest message of the window a sync fetches;
+// null when the server doesn't say. Only below the window: the engine counts the window's unread mail in its cache,
+// where reading a message counts at once. With ESEARCH the server sends only the count; otherwise imapflow counts the
+// uids it gets.
+async function unseenBelow(client, first) {
+  if (!first) return null;
+  if (first === 1) return 0;
+  try {
+    const found = await client.search({ seen: false, uid: `1:${first - 1}` }, { uid: true, returnOptions: ['COUNT'] });
+    if (Array.isArray(found)) return found.length;
+    return found && Number.isInteger(found.count) ? found.count : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 class ImapAccount {
   // credentials: a password string, or { accessToken: async () => token } for OAuth (XOAUTH2).
   constructor(account, credentials) {
@@ -253,8 +269,9 @@ class ImapAccount {
   }
 
   // signals: also what kind of mail each message is (categories/signals.js); gmailTabs: also the Gmail tab each
-  // message is in. Both are for the inbox and its categories.
-  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false, signals = false, gmailTabs = false } = {}) {
+  // message is in. Both are for the inbox and its categories. olderUnseen: also how many messages older than the
+  // window are unread, which the inbox's unread count adds to the window's own.
+  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false, signals = false, gmailTabs = false, olderUnseen = false } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path, { readOnly: true });
       try {
@@ -267,6 +284,7 @@ class ImapAccount {
         // The flags of every message in the window: all that can change about a message the cache already has.
         const rows = [];
         for await (const m of client.fetch(`${start}:*`, { uid: true, flags: true })) rows.push(m);
+        const first = rows.length ? Math.min(...rows.map((r) => r.uid)) : null;
         const cached = (uid) => {
           const prior = known.get(uid);
           return Boolean(prior) && STORED.every((k) => k in prior);
@@ -323,16 +341,16 @@ class ImapAccount {
         let tabs = null;
         if (gmailTabs && rows.length && client.capabilities && client.capabilities.has('X-GM-EXT-1')) {
           tabs = new Map();
-          const from = Math.min(...rows.map((r) => r.uid));
           try {
             for (const tab of ['promotions', 'social', 'updates', 'forums']) {
-              const uids = await client.search({ uid: `${from}:*`, gmraw: `category:${tab}` }, { uid: true });
+              const uids = await client.search({ uid: `${first}:*`, gmraw: `category:${tab}` }, { uid: true });
               for (const uid of uids || []) tabs.set(uid, tab);
             }
           } catch (_) {
             tabs = null;
           }
         }
+        if (olderUnseen) result.olderUnseen = start === 1 ? 0 : await unseenBelow(client, first);
         const extra = (uid, prior) => {
           const out = {};
           const kind = kinds.get(uid) || (prior && prior.signals);
