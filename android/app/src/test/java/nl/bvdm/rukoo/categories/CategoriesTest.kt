@@ -407,6 +407,34 @@ class CategoriesTest {
     }
 
     @Test
+    fun `a re-sort Jev was too busy for is finished after a restart`() = runBlocking {
+        var busy = true
+        val fake = FakeJev { _, _, _ ->
+            if (busy) throw JevError("busy")
+            JevAnswer("money", 0.9, "jev-test")
+        }
+        val s = setup(inbox(), fake)
+        val one = s.mail.inbox[0]
+        s.cats.setEnabled(true)
+        s.cats.sort()
+        s.cats.setJev(on = true, key = "KEY")
+        s.cats.sortAgain()
+        val left = s.cats.redo.toSet()
+        assertTrue(left.isNotEmpty())
+        s.cats.close()
+        // The app starts again: new Categories on the same files, with TypeSafe answering.
+        busy = false
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val again = Categories(s.account, s.mail, PlainSecrets, s.dir, fake, EnglishPresets, scope, sortAfterMs = 60_000)
+        closers += { again.close() }
+        assertEquals(left, again.redo.toSet())
+        again.sort()
+        assertEquals("jev", s.stored(one)?.get("source")?.jsonPrimitive?.content)
+        assertTrue(again.redo.isEmpty())
+        assertFalse("the finished re-sort is gone from the file too", java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
+    }
+
+    @Test
     fun `sorting again while a sort runs follows it instead of getting lost`() = runBlocking {
         val release = CompletableDeferred<Unit>()
         val waiting = CompletableDeferred<Unit>()

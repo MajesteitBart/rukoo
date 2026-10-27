@@ -99,9 +99,12 @@ interface CategoryMail {
     val changes: Flow<Unit>
 }
 
-/** categories.json: what stays on this phone, Jev's switch and key (encrypted like mail passwords). */
+/**
+ * categories.json: what stays on this phone: Jev's switch and key (encrypted like mail passwords), and the emails a
+ * re-sort still has to do ([redo]), so a restart doesn't forget them.
+ */
 @Serializable
-data class LocalCategories(val jev: LocalJev? = null)
+data class LocalCategories(val jev: LocalJev? = null, val redo: List<String> = emptyList())
 
 @Serializable
 data class LocalJev(val on: Boolean = false, val key: String? = null, val error: String? = null)
@@ -162,6 +165,7 @@ class Categories(
 
     init {
         local = runCatching { JsonFiles.read(file, LocalCategories.serializer(), LocalCategories()) }.getOrElse { LocalCategories() }
+        redo += local.redo
         _state.value = computeState()
         this.scope.launch {
             account.records.collect { collections -> if (collections.any { it in COLLECTIONS }) changed() }
@@ -172,7 +176,9 @@ class Categories(
         this.scope.launch { mail.changes.collect { soon() } }
     }
 
+    /** Under [lock]. */
     private fun saveLocal() {
+        local = local.copy(redo = redo.toList())
         runCatching { JsonFiles.write(file, LocalCategories.serializer(), local) }.onFailure { AppLog.w(TAG, "could not save categories.json", it) }
     }
 
@@ -572,6 +578,8 @@ class Categories(
         // Mail waits for Jev while TypeSafe is busy: make sure a sort follows the wait.
         val now = clock.now()
         if (wanted && key == null && now < jevBusyUntil && synchronized(lock) { retryTimer == null }) retryAfter(jevBusyUntil - now + 1000)
+        // A re-sort that left work, or finished what was left, is kept for after a restart.
+        synchronized(lock) { if (redo.isNotEmpty() || local.redo.isNotEmpty()) saveLocal() }
         if (sorted > 0) changed()
         sorted
     }
