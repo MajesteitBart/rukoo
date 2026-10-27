@@ -153,4 +153,14 @@ class NavStateTest {
         assertEquals("", start.setQuery("call").activeQuery)
         assertEquals("call", start.openSearch().setQuery(" call ").activeQuery)
     }
+
+    @Test
+    fun `another category tab clears the selection, and the tab survives a restart`() {
+        val picked = NavState().setChecked(listOf("a", "b"))
+        val tabbed = picked.setCategory("money")
+        assertEquals("money", tabbed.category)
+        assertTrue("a selection doesn't carry over to another tab", tabbed.checked.isEmpty())
+        assertNull(tabbed.setCategory(null).category)
+        assertEquals(tabbed, RukooJson.decodeFromString(NavState.serializer(), RukooJson.encodeToString(NavState.serializer(), tabbed)))
+    }
 }

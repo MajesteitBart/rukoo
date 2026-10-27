@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CancellationException
+import nl.bvdm.rukoo.account.AccountBackground
 import nl.bvdm.rukoo.appContainer
 import nl.bvdm.rukoo.core.AppLog
 
@@ -14,7 +15,13 @@ import nl.bvdm.rukoo.core.AppLog
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         return try {
-            applicationContext.appContainer.mail.refresh(null)
+            val container = applicationContext.appContainer
+            try {
+                container.mail.refresh(null)
+            } finally {
+                // The new mail's categories, and what other devices sorted, travel with every background sync.
+                AccountBackground.afterMailSync(container.account, container.categories)
+            }
             Result.success()
         } catch (e: CancellationException) {
             throw e

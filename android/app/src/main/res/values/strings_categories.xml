@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Inbox categories: the five presets, the tabs above the inbox, Move to category and Settings > Inbox categories.
+     Wording from the desktop catalog (src/i18n/en.js: categories.*, mailbox.categories.*, settings.categories.* and
+     settings.general.categories*), with "this computer" said as "this phone". -->
+<resources>
+    <string name="categories_presets_needs_you_name">Needs you</string>
+    <string name="categories_presets_needs_you_description">Mail from people that asks you to do something: reply, decide, approve, sign, pay or show up.</string>
+    <string name="categories_presets_to_read_name">To read</string>
+    <string name="categories_presets_to_read_description">Mail from people or organisations worth reading that needs nothing from you: news from colleagues, threads you are copied on, personal updates.</string>
+    <string name="categories_presets_money_name">Money</string>
+    <string name="categories_presets_money_description">Invoices, payment requests, receipts, order confirmations, bank and tax mail, subscriptions and refunds.</string>
+    <string name="categories_presets_updates_name">Updates</string>
+    <string name="categories_presets_updates_description">Automatic notifications: deliveries, account and security alerts, comments and mentions in apps, social networks and forums.</string>
+    <string name="categories_presets_promotions_name">Promotions</string>
+    <string name="categories_presets_promotions_description">Newsletters, marketing, offers and discounts, and events or webinars someone is selling.</string>
+    <string name="categories_errors_too_many">You can have up to %1$d categories.</string>
+    <string name="categories_errors_need_name">Give the category a name.</string>
+    <string name="categories_errors_last">Keep at least one category. To stop sorting, turn categories off.</string>
+
+    <!-- The tabs above the inbox and Move to category -->
+    <string name="mailbox_categories_label">Inbox categories</string>
+    <string name="mailbox_categories_all">All</string>
+    <string name="mailbox_categories_move">Move to category</string>
+    <string name="mailbox_categories_pick">Move to category</string>
+    <string name="mailbox_categories_moved">Moved to %1$s</string>
+    <string name="mailbox_categories_always">Also future mail</string>
+    <string name="mailbox_categories_always_done">Mail from %1$s goes to %2$s from now on</string>
+    <string name="mailbox_categories_always_done_many">Mail from these %1$d senders goes to %2$s from now on</string>
+    <string name="mailbox_categories_empty">Nothing in %1$s</string>
+    <plurals name="mailbox_categories_unread_count">
+        <item quantity="one">%1$d unread</item>
+        <item quantity="other">%1$d unread</item>
+    </plurals>
+
+    <!-- Settings -->
+    <string name="settings_general_categories">Inbox categories</string>
+    <string name="settings_general_categories_on">On</string>
+    <string name="settings_general_categories_off">Off</string>
+    <string name="settings_categories_title">Inbox categories</string>
+    <string name="settings_categories_on">Sort the inbox into categories</string>
+    <string name="settings_categories_on_help">The inbox gets tabs, like Needs you and Promotions. Nothing moves or changes on your mail server, and other mail apps see your inbox as before.</string>
+    <string name="settings_categories_list">Categories</string>
+    <string name="settings_categories_list_help">Each email goes to one category. When several fit, the one higher in the list wins.</string>
+    <string name="settings_categories_add">Add a category</string>
+    <string name="settings_categories_up">Move up</string>
+    <string name="settings_categories_down">Move down</string>
+    <string name="settings_categories_unsure">When Rukoo isn\'t sure</string>
+    <string name="settings_categories_edit_title">Edit category</string>
+    <string name="settings_categories_new_title">New category</string>
+    <string name="settings_categories_name">Name</string>
+    <string name="settings_categories_description">What belongs here</string>
+    <string name="settings_categories_description_help">Rukoo, and Jev when it is on, read this to decide which mail goes here. Name the kinds of mail and senders.</string>
+    <string name="settings_categories_color">Color</string>
+    <string name="settings_categories_restore">Use Rukoo\'s text</string>
+    <string name="settings_categories_delete_title">Delete %1$s?</string>
+    <string name="settings_categories_delete_help">Its mail goes to the other categories. Sender rules for it stop working.</string>
+    <string name="settings_categories_sorting">Sorting</string>
+    <string name="settings_categories_rules">Rukoo sorts by the sender and the mail\'s headers, and by Gmail\'s own tabs for Gmail accounts. You can move any email, and choose to do the same for its sender from then on.</string>
+    <string name="settings_categories_jev">Sort with Jev</string>
+    <string name="settings_categories_jev_help">Jev, a decision model by TypeSafe, reads each new email and picks a category from your descriptions. Needs your own TypeSafe API key.</string>
+    <string name="settings_categories_jev_shares">With Jev on, this phone sends the sender, the subject and the first 1,000 characters of each new inbox email, with your category names and descriptions, to TypeSafe, Inc. in the United States. TypeSafe\'s own terms apply to what it keeps. Nothing else leaves this phone.</string>
+    <string name="settings_categories_key">TypeSafe API key</string>
+    <string name="settings_categories_key_set">Set on this phone</string>
+    <string name="settings_categories_key_missing">Not set</string>
+    <string name="settings_categories_key_prompt">TypeSafe API key</string>
+    <string name="settings_categories_key_remove">Remove key</string>
+    <string name="settings_categories_need_key">Add your TypeSafe API key first.</string>
+    <string name="settings_categories_jev_error_key">TypeSafe didn\'t accept the API key. Check it, or turn Jev off.</string>
+    <string name="settings_categories_jev_error_busy">TypeSafe is busy. Rukoo tries again in a few minutes and sorts by rules meanwhile.</string>
+    <string name="settings_categories_jev_error_network">Can\'t reach TypeSafe. Rukoo tries again in a few minutes and sorts by rules meanwhile.</string>
+    <string name="settings_categories_again">Sort the inbox again</string>
+    <string name="settings_categories_again_help">From the start, apart from the emails you moved yourself</string>
+    <plurals name="settings_categories_again_done">
+        <item quantity="one">Sorted %1$d email</item>
+        <item quantity="other">Sorted %1$d emails</item>
+    </plurals>
+    <string name="settings_categories_senders">Senders with a rule</string>
+    <string name="settings_categories_sender_help">Goes to %1$s. Choose to remove the rule.</string>
+    <string name="settings_categories_sender_remove">Remove the rule for %1$s?</string>
+    <string name="settings_categories_sender_remove_help">New mail from this sender is sorted like any other mail again.</string>
+    <string name="settings_categories_sync">Your categories, the category each email got and your corrections are in your Rukoo account, so your other devices show the same.</string>
+    <string name="settings_categories_sync_local">These stay on this phone. Sign in to a Rukoo account to see the same categories on your other devices.</string>
+</resources>

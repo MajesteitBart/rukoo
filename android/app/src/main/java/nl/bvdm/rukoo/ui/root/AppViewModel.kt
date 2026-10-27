@@ -82,7 +82,7 @@ class AppViewModel(
     /** Set by the chat input on focus, so folding keeps the chat in front. */
     var chatFocused: Boolean = false
 
-    val mailUi = MailUi(services.mail, viewModelScope, this)
+    val mailUi = MailUi(services.mail, viewModelScope, this, categories = services.categories)
 
     private val _effects = MutableSharedFlow<UiEffect>(extraBufferCapacity = 8)
     val effects: SharedFlow<UiEffect> = _effects
@@ -229,6 +229,8 @@ class AppViewModel(
     fun clearChecked() = set { it.clearChecked() }
 
     fun toggleStack(key: String) = set { it.toggleStack(key) }
+
+    fun setCategory(id: String?) = set { it.setCategory(id) }
 
     fun setSort(sort: nl.bvdm.rukoo.mail.model.SortOrder) {
         viewModelScope.launch { services.settings.update { it.copy(sort = sort) } }

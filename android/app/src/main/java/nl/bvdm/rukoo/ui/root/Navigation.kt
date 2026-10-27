@@ -50,6 +50,8 @@ data class NavState(
     val checked: List<String> = emptyList(),
     /** Stacks the user opened, by their key (day label and sender). */
     val openStacks: List<String> = emptyList(),
+    /** The inbox category tab on screen, or null for All. */
+    val category: String? = null,
 ) {
     val top: Pane get() = stack.last()
 
@@ -104,6 +106,9 @@ data class NavState(
     fun setChecked(ids: List<String>): NavState = copy(checked = ids.distinct())
 
     fun clearChecked(): NavState = if (checked.isEmpty()) this else copy(checked = emptyList())
+
+    /** Another category tab. A selection doesn't carry over: its emails aren't shown there to act on. */
+    fun setCategory(id: String?): NavState = copy(category = id, checked = emptyList(), lastInteracted = Pane.LIST)
 
     fun toggleStack(key: String): NavState = copy(openStacks = if (key in openStacks) openStacks - key else openStacks + key)
 
