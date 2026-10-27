@@ -56,6 +56,9 @@ async function tables(email) {
   );
 }
 
+// 32 bytes that can't pass for a sealed value: the version byte is wrong. A random key() starts with 0x01 once in 256.
+const notSealed = () => toBase64url(new Uint8Array(32).fill(2));
+
 describe('sign-up', () => {
   it('makes an account with an invite code and returns a session and the account', async () => {
     const body = signupBody({ email: '  Someone.New@Example.COM ', invite: ' second-code ' });
@@ -527,7 +530,7 @@ describe('POST /v1/password', () => {
     expect((await call('POST', '/v1/password', { body: { authKey: person.authKey } })).status).toBe(401);
     expect((await change(person, { kdf: { ...KDF, m: 1024 } })).status).toBe(400);
     expect((await change(person, { newAuthKey: undefined })).status).toBe(400);
-    expect((await change(person, { wrappedKey: key() })).status).toBe(400);
+    expect((await change(person, { wrappedKey: notSealed() })).status).toBe(400);
   });
 });
 
@@ -735,6 +738,15 @@ describe('the cap on accounts', () => {
     expect(deleted.status).toBe(204);
     expect(await count()).toBe(before - 1);
     expect((await signup({ vars })).token).toBeTruthy();
+  });
+
+  it('gives a place back once when the same account is deleted twice at once', async () => {
+    const person = await signup();
+    const before = await count();
+    const remove = () => call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } });
+    const results = await Promise.all([remove(), remove(), remove()]);
+    expect(results.map((r) => r.status).sort()).toEqual([204, 401, 401]);
+    expect(await count()).toBe(before - 1);
   });
 
   it('counts without a cap when MAX_ACCOUNTS is 0', async () => {

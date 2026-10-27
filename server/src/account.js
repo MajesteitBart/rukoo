@@ -246,11 +246,24 @@ export class Account extends DurableObject {
 
   async deleteAccount(token, input) {
     const hash = await sha256(input.authKey);
-    const result = await this.#signedIn(token, (session, now) => this.#withPassword(hash, now, () => reply(204)));
+    // The account is gone from the moment the password checks out, before anything is awaited: a second delete
+    // arriving meanwhile finds no account (401) instead of deleting it again, so the Worker gives its place under
+    // MAX_ACCOUNTS back once.
+    const result = await this.#signedIn(token, (session, now) =>
+      this.#withPassword(hash, now, () => {
+        this.exists = false;
+        return reply(204);
+      })
+    );
     if (result.status !== 204) return result;
-    // deleteAll removes the whole SQLite database, so the object is as empty as one that never had an account.
-    await this.ctx.storage.deleteAll();
-    this.exists = false;
+    try {
+      // deleteAll removes the whole SQLite database, so the object is as empty as one that never had an account.
+      await this.ctx.storage.deleteAll();
+    } catch (err) {
+      this.exists =
+        this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
+      throw err;
+    }
     return result;
   }
 
