@@ -6,7 +6,7 @@
 // never sees (windows, busy times, the public key, the owner, limits and private location values).
 
 import { sha256, utf8 } from './bytes.js';
-import { blockedHandles, bookingObject, bookingOrigin, bookingTimes, config } from './config.js';
+import { blockedHandles, bookingBase, bookingObject, bookingOrigin, bookingTimes, config } from './config.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
 import { DAY, addDays, daysBetween, zonedInstant, zonedParts } from './zone.js';
@@ -19,18 +19,21 @@ export const LOCATION_LABEL = { googleMeet: 'Google Meet', phone: 'Phone call', 
 export const MAX_SLOT_DAYS = 31;
 export const DEFAULT_SLOT_DAYS = 14;
 
-// The addresses a page's public routes use, all absolute.
+// The addresses a page's public routes use, all absolute: https://rukoo.io/<handle>… under BOOKING_ORIGIN, else
+// https://<this server>/meet/<handle>…. base is the part before the handle.
 export function links(env, url, handle) {
   const origin = bookingOrigin(env, url);
-  const page = `${origin}/meet/${handle}`;
+  const base = bookingBase(env, url);
+  const page = `${base}/${handle}`;
   return {
     origin,
+    base,
     page,
     llmsTxt: `${page}/llms.txt`,
     api: `${page}/api`,
     slots: `${page}/api/slots`,
     bookings: `${page}/api/bookings`,
-    mcp: `${origin}/meet/mcp`,
+    mcp: `${base}/mcp`,
     privacy: config(env, url).operator.privacy,
     type: (slug) => `${page}/${slug}`,
     slotsFor: (slug) => `${page}/api/slots?type=${encodeURIComponent(slug)}`,

@@ -44,8 +44,9 @@
     // after which a page offers no times at all.
     "BOOKING_STALE_HOURS": 24,
     "BOOKING_DARK_DAYS": 7,
-    // A short address booking pages are shared under, such as "https://meet.example", routed to this Worker as well.
-    // "" uses the address each request came in on.
+    // An address booking pages live at the root of, such as "https://meet.example/<handle>", routed to this Worker as
+    // well; /meet on any other address redirects there. "" keeps them under /meet on the address each request came in
+    // on.
     "BOOKING_ORIGIN": "",
     // Handles taken down by the operator, comma-separated: they answer 404 and can't be claimed.
     "BLOCKED_HANDLES": ""
@@ -71,6 +72,8 @@
 
   // The server Rukoo itself uses, run by its maintainer: npm run deploy -- --env bvdm. A fork deploys the settings
   // above with its own vars instead. Bindings and vars don't carry over into an environment, so they're repeated.
+  // rukoo.io reaches this Worker through the rukoo-site Worker's ACCOUNT service binding (README.md); the custom
+  // domain below stays for devices that still sync with it and for old /meet links, which redirect to rukoo.io.
   "env": {
     "bvdm": {
       "name": "rukoo-account",
@@ -98,8 +101,8 @@
         "MAX_ACCOUNTS": 1000,
         "BOOKING_STALE_HOURS": 24,
         "BOOKING_DARK_DAYS": 7,
-        // Until a short booking domain is set up, pages live at rukoo-account.bvdm.ai/meet/<handle>.
-        "BOOKING_ORIGIN": "",
+        // Booking pages, /mcp and /llms.txt live at the root of rukoo.io, next to the website.
+        "BOOKING_ORIGIN": "https://rukoo.io",
         "BLOCKED_HANDLES": ""
       },
       "ratelimits": [

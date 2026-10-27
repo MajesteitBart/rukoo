@@ -90,19 +90,41 @@ export function positive(value, fallback) {
   return Number.isSafeInteger(n) && n > 0 ? n : fallback;
 }
 
-// Where booking pages live: BOOKING_ORIGIN when the operator set one (a short domain that routes to this Worker),
-// else the origin the request came in on.
-export function bookingOrigin(env, url) {
+// BOOKING_ORIGIN as an origin, or null when it is empty or broken. With one, booking pages live at the root of that
+// address (https://rukoo.io/<handle>) and /meet redirects there from every address. Without one they live under /meet
+// on every address. A broken setting counts as none rather than making links nobody can open.
+export function bookingRoot(env) {
   const value = text(env.BOOKING_ORIGIN);
-  if (value) {
-    try {
-      const origin = new URL(value);
-      if (origin.protocol === 'https:' || origin.protocol === 'http:') return origin.origin;
-    } catch {
-      // A broken setting falls back to the request's own origin rather than making links nobody can open.
-    }
+  if (!value) return null;
+  try {
+    const origin = new URL(value);
+    if (origin.protocol === 'https:' || origin.protocol === 'http:') return origin.origin;
+  } catch {
+    // Treated as unset.
   }
-  return url.origin;
+  return null;
+}
+
+// The origin booking pages are shared under: BOOKING_ORIGIN, else the one the request came in on.
+export function bookingOrigin(env, url) {
+  return bookingRoot(env) ?? url.origin;
+}
+
+// The absolute address every booking page's address starts with: https://rukoo.io, or https://<this server>/meet.
+export function bookingBase(env, url) {
+  return bookingRoot(env) ?? `${url.origin}/meet`;
+}
+
+// The same as a path on this request's address, for links inside the pages: '' at the root of BOOKING_ORIGIN, else
+// '/meet'.
+export function bookingPrefix(env, url) {
+  return bookingRoot(env) === url.origin ? '' : '/meet';
+}
+
+// The pages' script: /booker.js at the root (/assets/ belongs to the website there), else /meet/assets/booker.js.
+export function bookerPath(env, url) {
+  const prefix = bookingPrefix(env, url);
+  return prefix ? `${prefix}/assets/booker.js` : '/booker.js';
 }
 
 // The origins a booking write may come from: the page's own, as served on either address.

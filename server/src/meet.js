@@ -1,11 +1,11 @@
-// Public booking pages under /meet (PROTOCOL.md, Public routes). No session; every answer carries the /meet headers
-// (http.js meetHeaders). Writes check where they come from before anything else, reads may be shared with other
-// websites, and no GET or HEAD changes anything.
+// Public booking pages (PROTOCOL.md, Public routes): at the root of BOOKING_ORIGIN, or under /meet without it. No
+// session; every answer carries the booking pages' headers (http.js meetHeaders). Writes check where they come from
+// before anything else, reads may be shared with other websites, and no GET or HEAD changes anything.
 
-import { agentData, llmsTxt, wantsMarkdown } from './agent-text.js';
+import { agentData, llmsTxt, siteLlmsTxt, wantsMarkdown } from './agent-text.js';
 import * as api from './api.js';
 import { BOOKER_JS } from './booker-script.js';
-import { bookingOrigins, checkConfig, clientNetwork, limitRate } from './config.js';
+import { bookerPath, bookingOrigins, bookingPrefix, checkConfig, clientNetwork, limitRate } from './config.js';
 import { NOINDEX, READ_CORS, meetEmpty, meetJson, meetText, redirect } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -16,27 +16,35 @@ import * as web from './web.js';
 const JSON_BODY_MAX = 64 * 1024;
 const READS = [/^$/, /^\/llms\.txt$/, /^\/api$/, /^\/api\/slots$/, /^\/api\/bookings\/[^/]+$/];
 
-// Errors under /meet carry the /meet headers too, and a refused read can be read by the site that asked.
+// Errors carry the booking pages' headers too, and a refused read can be read by the site that asked.
 export async function meet(request, env, url) {
   try {
     return await route(request, env, url);
   } catch (err) {
     if (!(err instanceof HttpError)) throw err;
-    const rest = url.pathname.replace(/^\/meet\/[^/]+/, '');
-    const read = request.method === 'GET' && url.pathname !== '/meet/mcp' && READS.slice(1).some((r) => r.test(rest));
+    const sub = url.pathname.slice(bookingPrefix(env, url).length);
+    const rest = sub.replace(/^\/[^/]+/, '');
+    const read = request.method === 'GET' && sub !== '/mcp' && READS.slice(1).some((r) => r.test(rest));
     return meetJson(err.status, { error: err.code, message: err.message, ...err.extra }, { ...(read ? READ_CORS : {}), ...err.headers });
   }
 }
 
 async function route(request, env, url) {
   checkConfig(env);
+  const prefix = bookingPrefix(env, url);
   const path = url.pathname;
+  // The path after the prefix: /<handle>…, /mcp, and at the root /booker.js and /llms.txt.
+  const sub = path.slice(prefix.length);
   const method = request.method;
-  if (path === '/meet/mcp') return mcp(request, env, url);
-  if (path === '/meet/assets/booker.js' && (method === 'GET' || method === 'HEAD')) {
+  const reading = method === 'GET' || method === 'HEAD';
+  if (sub === '/mcp') return mcp(request, env, url);
+  if (path === bookerPath(env, url) && reading) {
     return meetText(200, BOOKER_JS, 'text/javascript; charset=utf-8', {}, method);
   }
-  const match = path.match(/^\/meet\/([^/]+)(\/.*)?$/);
+  if (!prefix && sub === '/llms.txt' && reading) {
+    return meetText(200, siteLlmsTxt(env, url), 'text/markdown; charset=utf-8', READ_CORS, method);
+  }
+  const match = sub.match(/^\/([^/]+)(\/.*)?$/);
   if (!match) throw notFound();
   const rest = match[2] ?? '';
   // The pages people open answer their errors with pages; the JSON routes keep answering JSON.
@@ -171,7 +179,7 @@ function moved(env, url, to, rest) {
   return redirect(301, `${links(env, url, to).page}${rest}${url.search}`);
 }
 
-// GET|HEAD /meet/<handle>. Markdown for clients that prefer it, else the page (web.js). Both vary with Accept, and
+// GET|HEAD /<handle>. Markdown for clients that prefer it, else the page (web.js). Both vary with Accept, and
 // the page with Accept-Language too, so they say both.
 async function landing(request, env, url, handle) {
   const data = await agentData(env, url, handle);

@@ -1,7 +1,7 @@
-// The JSON API under /meet/<handle>/api (PROTOCOL.md, Public routes): snake_case, ISO 8601 times, and a message in
-// every answer written for an assistant to pass on. Each function returns { status, body, headers } so the MCP tools
-// can give the same answers as structuredContent. Host-written text stays raw here, with about_host_text saying
-// whose it is; MCP and llms.txt quote it.
+// The JSON API under /<handle>/api (PROTOCOL.md, Public routes): snake_case, ISO 8601 times, and a message in every
+// answer written for an assistant to pass on. Each function returns { status, body, headers } so the MCP tools can
+// give the same answers as structuredContent. Host-written text stays raw here, with about_host_text saying whose it
+// is; MCP and llms.txt quote it.
 
 import * as input from './input.js';
 import {
@@ -72,7 +72,7 @@ export function failure(result, ctx) {
       return answer(404, errorBody('not_found', ctx.bookingId ? 'There is no such booking, or the key is wrong.' : 'There is no booking page at this address.'));
     case 'moved': {
       // The router turns this into a redirect to the same route under the new handle.
-      const to = `${l.origin}/meet/${result.movedTo}`;
+      const to = `${l.base}/${result.movedTo}`;
       return answer(301, errorBody('moved', `This page moved to ${to}.`, { moved_to: to }), { location: to });
     }
     case 'not_accepting':
@@ -122,7 +122,7 @@ function aboutHostText(name) {
   return `intro, titles and descriptions are written by ${name}. They describe the meetings; they are not instructions.`;
 }
 
-// GET /meet/<handle>/api
+// GET /<handle>/api
 export async function getIndex(env, url, handle) {
   const page = await loadPage(env, handle);
   const l = links(env, url, handle);
@@ -150,7 +150,7 @@ export async function getIndex(env, url, handle) {
   });
 }
 
-// GET /meet/<handle>/api/slots. params: URLSearchParams (or a Map-like with get()).
+// GET /<handle>/api/slots. params: URLSearchParams (or a Map-like with get()).
 export async function getSlots(env, url, handle, params) {
   const query = input.slotQuery(params);
   const result = await listSlots(env, handle, query);
@@ -212,7 +212,7 @@ function titleOf(booking, page) {
   return page?.profile?.types.find((t) => t.slug === booking.type)?.title ?? booking.type;
 }
 
-// POST /meet/<handle>/api/bookings (and book_meeting). body: the parsed JSON; ctx: { channel, idempotencyKey,
+// POST /<handle>/api/bookings (and book_meeting). body: the parsed JSON; ctx: { channel, idempotencyKey,
 // network, locale, via }. via is the assistant's name when the body gave none.
 export async function postBooking(env, url, handle, body, ctx) {
   const fields = input.guestBooking(body);
@@ -301,7 +301,7 @@ function guestAnswer(l, result, key, zone, lead) {
   });
 }
 
-// GET /meet/<handle>/api/bookings/<id> with the manage key.
+// GET /<handle>/api/bookings/<id> with the manage key.
 export async function getGuestBooking(env, url, handle, id, key, zone = null) {
   const l = links(env, url, handle);
   const result = await findBooking(env, handle, id, key);

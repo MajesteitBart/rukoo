@@ -4,7 +4,7 @@
 
 import { HANDLE_CHANGES } from './account.js';
 import { fromBase64url, toBase64url } from './bytes.js';
-import { accountObject, blockedHandles, bookingObject, bookingOrigin, bookingTimes, ACCOUNT_NAME } from './config.js';
+import { accountObject, blockedHandles, bookingBase, bookingObject, bookingTimes, ACCOUNT_NAME } from './config.js';
 import { json, send } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -80,13 +80,13 @@ function ownerJson(env, url, auth, view, used) {
 }
 
 function pageUrl(env, url, handle) {
-  return `${bookingOrigin(env, url)}/meet/${handle}`;
+  return `${bookingBase(env, url)}/${handle}`;
 }
 
 export async function getBooking(request, env, url) {
   const { auth } = await signedIn(request, env);
   if (!auth.handle) return json(200, ownerJson(env, url, auth, null, auth.changes));
-  const result = await bookingObject(env, auth.handle).ownerView(auth.name, bookingTimes(env));
+  const result = await bookingObject(env, auth.handle).ownerView(auth.name, bookingTimes(env), auth.deviceId);
   if (!result.ok) throw refuse(result);
   return json(200, ownerJson(env, url, auth, result.empty ? null : result.view, auth.changes));
 }
@@ -155,10 +155,11 @@ export async function putBooking(request, env, url) {
 }
 
 // Turns the page off and deletes what is on it; the handle stays this account's. Works from any session, and a page
-// that isn't this account's (any more) has nothing of it to delete.
+// that isn't this account's (any more) has nothing of it to delete. Turned off from another session than the booking
+// device's, the page refuses that device's publishes without takeover until it has read GET /v1/booking.
 export async function deleteBooking(request, env) {
   const { auth } = await signedIn(request, env);
-  if (auth.handle) await bookingObject(env, auth.handle).wipe(auth.name);
+  if (auth.handle) await bookingObject(env, auth.handle).wipe(auth.name, auth.deviceId);
   return new Response(null, { status: 204, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
 }
 

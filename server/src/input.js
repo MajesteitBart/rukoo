@@ -187,10 +187,17 @@ function whole(text, fallback, name) {
 
 export const HANDLE = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,31}$/;
 export const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
+// The server's own paths, words people would take for Rukoo's, and the website's paths at the root of BOOKING_ORIGIN
+// (rukoo.io serves its site and booking pages side by side), with room for the site to grow.
 export const RESERVED_HANDLES = new Set(
-  'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking bookings cal calendar openapi well-known static abuse security status operator bvdm'.split(
-    ' '
-  )
+  [
+    'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking',
+    'bookings cal calendar openapi well-known static abuse security status operator bvdm',
+    'img media download downloads github releases styles app film video docs blog about pricing features terms legal',
+    'press contact changelog android windows mac linux robots sitemap favicon index booker'
+  ]
+    .join(' ')
+    .split(' ')
 );
 export const RESERVED_SLUGS = new Set('api mcp booking bookings llms openapi ics assets manage prepare'.split(' '));
 export const BOOKING_ID = /^[A-Za-z0-9_-]{22}$/;
@@ -491,7 +498,7 @@ function optionalLine(value, field, max) {
   return line(value, field, { max });
 }
 
-// The JSON body of a booking (POST /meet/<handle>/api/bookings and book_meeting), in the form the Booking object
+// The JSON body of a booking (POST /<handle>/api/bookings and book_meeting), in the form the Booking object
 // takes. type stays null when absent; the page picks its only visible type.
 export function guestBooking(body) {
   const out = {

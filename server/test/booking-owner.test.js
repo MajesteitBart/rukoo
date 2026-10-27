@@ -174,7 +174,7 @@ describe('PUT /v1/booking', () => {
     const key = await hostKey();
     const handle = newHandle();
     const res = await publish(person, page(handle, key), { vars: { BOOKING_ORIGIN: 'https://meet.example/' } });
-    expect(res.body.url).toBe(`https://meet.example/meet/${handle}`);
+    expect(res.body.url).toBe(`https://meet.example/${handle}`);
   });
 
   it('refuses invalid, reserved and blocked handles, and another account’s', async () => {
@@ -385,6 +385,57 @@ describe('DELETE /v1/booking', () => {
   it('answers 204 for an account without a page', async () => {
     const person = await signup();
     expect((await call('DELETE', '/v1/booking', { token: person.token })).status).toBe(204);
+  });
+
+  // The booking device may publish from what it knew before another computer turned the page off. That would turn
+  // the page on again against the user's choice, so it needs a takeover until it has read the page.
+  it('refuses the booking device’s publish after another session turned the page off, until it reads the page', async () => {
+    const { person, key, handle } = await host(signup);
+    const second = (await login(person)).body;
+    expect((await call('DELETE', '/v1/booking', { token: second.token })).status).toBe(204);
+
+    const stale = await publish(person, page(handle, key));
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toBe('other_device');
+    const renamed = newHandle('stale');
+    const rename = await publish(person, page(renamed, key));
+    expect(rename.body.error).toBe('other_device');
+    expect(await tables(bookingStub(renamed))).toEqual([]);
+    // Another session reading the page changes nothing for the booking device.
+    expect((await call('GET', '/v1/booking', { token: second.token })).body).toMatchObject({ enabled: false, device: null });
+    expect((await publish(person, page(handle, key))).body.error).toBe('other_device');
+
+    // Once it has read the page off, turning it on is the user's choice again.
+    expect((await call('GET', '/v1/booking', { token: person.token })).body).toMatchObject({ handle, enabled: false, device: null });
+    const on = await publish(person, page(handle, key));
+    expect(on.status).toBe(200);
+    expect(on.body).toMatchObject({ enabled: true, device: { current: true } });
+  });
+
+  it('lets the booking device take over at once after another session turned the page off', async () => {
+    const { person, key, handle } = await host(signup);
+    const second = (await login(person)).body;
+    await call('DELETE', '/v1/booking', { token: second.token });
+    const taken = await publish(person, page(handle, key, { takeover: true }));
+    expect(taken.status).toBe(200);
+    expect(taken.body.device.current).toBe(true);
+    // The other session didn't handle the page, so it isn't held back.
+    await call('DELETE', '/v1/booking', { token: person.token });
+    expect((await publish(second, page(handle, key))).status).toBe(200);
+  });
+
+  it('lets a device turn its own page off and on again, and a new session turn it on', async () => {
+    const { person, key, handle } = await host(signup);
+    expect((await call('DELETE', '/v1/booking', { token: person.token })).status).toBe(204);
+    const again = await publish(person, page(handle, key));
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ enabled: true, device: { current: true } });
+
+    // Signed in again on the same computer after another session turned it off: a new session, so nothing to catch up on.
+    const second = (await login(person)).body;
+    await call('DELETE', '/v1/booking', { token: second.token });
+    const fresh = (await login(person, 'Same desktop, signed in again')).body;
+    expect((await publish(fresh, page(handle, key))).status).toBe(200);
   });
 });
 

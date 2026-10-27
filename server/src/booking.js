@@ -39,6 +39,7 @@ const SCHEMA = `
     id INTEGER PRIMARY KEY CHECK (id = 1),
     owner TEXT NOT NULL,
     deviceId TEXT,
+    offDevice TEXT,
     handle TEXT NOT NULL,
     profile TEXT,
     windows TEXT,
@@ -522,11 +523,20 @@ export class Booking extends DurableObject {
   // ---- What the host's devices do (the Worker has checked the session and passes the account's routing name) ----
 
   // For GET /v1/booking. Without tables the handle is free again: the account still names it, nothing is on it.
-  ownerView(owner, times) {
+  // deviceId: the caller's session. A booking device whose page another session turned off has now seen that, so its
+  // publishes no longer need a takeover (see publish()).
+  ownerView(owner, times, deviceId = null) {
     const page = this.#page();
     if (!page) return { ok: true, empty: true };
     if (page.owner !== owner) return fail('handle_lost');
+    if (deviceId && page.offDevice === deviceId) this.sql.exec('UPDATE page SET offDevice = NULL WHERE id = 1');
     return { ok: true, view: this.#ownerView(times) };
+  }
+
+  // A publish (or rename) that must take over: from the booking device after another session turned the page off,
+  // before that device read the page again. Publishing what it knew from before would turn the page back on.
+  #unaware(page, deviceId, takeover) {
+    return !takeover && Boolean(deviceId) && page.offDevice === deviceId;
   }
 
   #ownerView(times) {
@@ -583,10 +593,11 @@ export class Booking extends DurableObject {
     const page = this.#page();
     if (page.owner !== owner) return fail('other_owner', { retired: Boolean(page.retiredAt) });
     if (page.deviceId && page.deviceId !== deviceId && !takeover && !page.retiredAt) return fail('other_device');
+    if (this.#unaware(page, deviceId, takeover)) return fail('other_device');
     const previous = { fresh, retiredAt: page.retiredAt, movedTo: page.movedTo, movedUntil: page.movedUntil, enabled: page.enabled };
     this.sql.exec(
       `UPDATE page SET handle = ?, profile = ?, windows = ?, busy = ?, publishedAt = ?, enabled = ?, deviceId = ?,
-         retiredAt = NULL, movedTo = NULL, movedUntil = NULL, missingSince = NULL WHERE id = 1`,
+         offDevice = NULL, retiredAt = NULL, movedTo = NULL, movedUntil = NULL, missingSince = NULL WHERE id = 1`,
       data.handle,
       JSON.stringify(data.profile),
       JSON.stringify(data.windows),
@@ -619,6 +630,7 @@ export class Booking extends DurableObject {
     if (!page) return { ok: true, previous: null };
     if (page.owner !== owner) return fail('handle_lost');
     if (deviceId && page.deviceId && page.deviceId !== deviceId && !takeover && !page.retiredAt) return fail('other_device');
+    if (this.#unaware(page, deviceId, takeover)) return fail('other_device');
     this.#expire(now);
     const ahead = this.sql.exec("SELECT COUNT(*) AS n FROM bookings WHERE status IN ('pending', 'confirmed') AND end > ?", now).one().n;
     if (ahead > 0) return fail('has_bookings');
@@ -657,23 +669,30 @@ export class Booking extends DurableObject {
   }
 
   // DELETE /v1/booking and account deletion: everything on the page goes; the claim stays, reserved for this account.
-  wipe(owner) {
+  // deviceId: the session that turned the page off, for DELETE /v1/booking.
+  wipe(owner, deviceId = null) {
     const page = this.#page();
     if (!page) return { ok: true };
     if (page.owner !== owner) return fail('handle_lost');
-    this.#wipe(Date.now());
+    this.#wipe(Date.now(), deviceId);
     return { ok: true };
   }
 
-  #wipe(now) {
+  // When another session turns the page off, the booking device doesn't know yet and may still publish what it had,
+  // which would turn the page on again. offDevice keeps that device until it reads the page or takes over.
+  #wipe(now, deviceId = null) {
     const page = this.#page();
+    // The booking device, or the one an earlier turn-off left unaware; never the session that turns it off now.
+    const unaware = page.deviceId ?? page.offDevice;
+    const offDevice = deviceId && unaware !== deviceId ? unaware : null;
     this.ctx.storage.transactionSync(() => {
       this.sql.exec('DELETE FROM bookings');
       this.sql.exec('DELETE FROM idem');
       this.sql.exec('DELETE FROM counters');
       this.sql.exec(
         `UPDATE page SET profile = NULL, windows = NULL, busy = NULL, publishedAt = NULL, enabled = 0, deviceId = NULL,
-           retiredAt = ?, seq = 0, salt = ?, daySalt = NULL, day = NULL, missingSince = NULL WHERE id = 1`,
+           offDevice = ?, retiredAt = ?, seq = 0, salt = ?, daySalt = NULL, day = NULL, missingSince = NULL WHERE id = 1`,
+        offDevice,
         page.retiredAt ?? now,
         blob(randomBytes(32))
       );

@@ -8,7 +8,7 @@ The server is a sync relay for small encrypted records. Each device encrypts a r
 
 It is not a mail server. No mail, no mail passwords and no Google tokens pass through it. It never sees what a record holds. What it can see is listed in [PROTOCOL.md](PROTOCOL.md#what-the-server-can-see): the email address of each account, device names, record counts and sizes, and IP addresses.
 
-It also serves booking pages: an account holder can turn one on in Rukoo, and other people and their AI assistants then book time with them at `/meet/<handle>`. A page that is on is readable by the server, and so are a guest's details at the moment they book. [Booking pages](#booking-pages) below covers what that means for running the server.
+It also serves booking pages: an account holder can turn one on in Rukoo, and other people and their AI assistants then book time with them at `/meet/<handle>`, or at `/<handle>` on a booking address you set up (`BOOKING_ORIGIN`). A page that is on is readable by the server, and so are a guest's details at the moment they book. [Booking pages](#booking-pages) below covers what that means for running the server.
 
 It can't reset a password either. A person who forgets their password needs their recovery key. Without both, their synced data is gone. Their mail is not affected.
 
@@ -153,7 +153,7 @@ To make your server the default in your own build of Rukoo, set `rukoo.accountSe
 
 ## Booking pages
 
-A booking page is off until an account holder turns it on in Rukoo. Then the server offers times from what the holder's computer published, takes bookings from people, from assistants that read the page or call the JSON API, and from MCP clients at `/meet/mcp`, and keeps each booking until the holder's Rukoo picks it up and puts it in their calendar. The server never sends mail and holds no calendar access. [PROTOCOL.md](PROTOCOL.md#booking-pages) has the details; the privacy statement at `/privacy` has a Booking pages section that guests are pointed to under the booking form.
+A booking page is off until an account holder turns it on in Rukoo. Then the server offers times from what the holder's computer published, takes bookings from people, from assistants that read the page or call the JSON API, and from MCP clients at `/meet/mcp` (`/mcp` on a booking address), and keeps each booking until the holder's Rukoo picks it up and puts it in their calendar. The server never sends mail and holds no calendar access. [PROTOCOL.md](PROTOCOL.md#booking-pages) has the details; the privacy statement at `/privacy` has a Booking pages section that guests are pointed to under the booking form.
 
 What `wrangler.jsonc` already sets up, in the top level and in every environment you add:
 
@@ -166,7 +166,7 @@ The settings in `vars`:
 |---|---|
 | `BOOKING_STALE_HOURS` | Hours after the holder's computer last published before every meeting type waits for the holder's confirmation. Default 24. |
 | `BOOKING_DARK_DAYS` | Days after the last publish before a page offers no times at all. Default 7. |
-| `BOOKING_ORIGIN` | A short address for booking pages, such as `https://meet.example.org`. Empty means each page lives on the address it was opened on. |
+| `BOOKING_ORIGIN` | An address booking pages live at the root of, such as `https://meet.example.org`, so a page is `https://meet.example.org/<handle>`. Empty means each page lives under `/meet` on the address it was opened on. See below. |
 | `BLOCKED_HANDLES` | Handles you took down, separated by commas. They answer like a handle nobody has and can't be claimed. |
 
 Set `OPERATOR_CONTACT` before you let people turn pages on. Every booking page has a "Report this page" link, and it goes there: an email address becomes a mail with the page's address in the subject, a web address is linked as it is. Without it the link isn't shown, and `BLOCKED_HANDLES` is how you act on a report.
@@ -183,22 +183,39 @@ Booking links end up in email footers, so a short domain helps. Route it to this
 "vars": { "BOOKING_ORIGIN": "https://meet.example.org" }
 ```
 
-Pages then give `https://meet.example.org/meet/<handle>` as their address, in the app and in every link the pages, `llms.txt`, the JSON API and MCP hand out. Both domains keep serving the pages, and forms work on either. A booking's calendar UID keeps the host it was made under, so changing `BOOKING_ORIGIN` later doesn't split anyone's calendar entries.
+Pages then live at the root of that address, without `/meet`: `https://meet.example.org/<handle>`, with the MCP endpoint at `/mcp`, the pages' script at `/booker.js` and a guide for assistants at `/llms.txt`. The app shows that address, and every link the pages, `llms.txt`, the JSON API and MCP hand out uses it. Any other path there counts as a handle, so an unknown one gets the booking pages' 404. The account API (`/v1/…`) and `/privacy` work on both domains.
+
+`/meet/…` on any address redirects to the same path on `BOOKING_ORIGIN` (301 for reads, 308 for posts), so links handed out before you set it keep working. A booking's calendar UID keeps the host it was made under, so changing `BOOKING_ORIGIN` later doesn't split anyone's calendar entries.
+
+[PROTOCOL.md](PROTOCOL.md#where-public-routes-live) lists the routes on each kind of address.
 
 ### Let assistants through
 
 The point of a booking page is that someone can paste it into their assistant. Chat assistants such as ChatGPT, Gemini and Perplexity fetch it from their own servers, and coding agents use curl or Python. Cloudflare's bot protection can answer those fetches with a challenge page, which the assistant then reports as "the page didn't load". Nothing in the Worker can see or undo that, because it happens before the request reaches it. On the zone that serves the pages, check:
 
 - **Bot Fight Mode.** It challenges clients it thinks are bots and can't be skipped for some paths. Turn it off on that zone.
-- **Super Bot Fight Mode** (paid plans). Add a WAF custom rule that skips it for `/meet/*`, or set definitely automated traffic to Allow.
-- **AI Crawl Control and "Block AI bots".** Allow the assistants' fetchers, at least for `/meet/*`.
-- **WAF managed rules and challenges.** Don't put a managed challenge on `/meet/*`.
+- **Super Bot Fight Mode** (paid plans). Add a WAF custom rule that skips it for `/meet/*`, or for the whole booking address with `BOOKING_ORIGIN`, or set definitely automated traffic to Allow.
+- **AI Crawl Control and "Block AI bots".** Allow the assistants' fetchers, at least for the booking pages' paths.
+- **WAF managed rules and challenges.** Don't put a managed challenge on the booking pages' paths.
 
-Then try it: paste a page into an assistant and ask for the open times, and fetch it with `curl https://<your address>/meet/<handle>`. A Cloudflare challenge page instead of the booking page means one of the settings above still blocks it. `wrangler dev` skips all of this, so only a deployed address shows it.
+Then try it: paste a page into an assistant and ask for the open times, and fetch it with `curl https://<your address>/meet/<handle>` (or `curl https://<booking address>/<handle>`). A Cloudflare challenge page instead of the booking page means one of the settings above still blocks it. `wrangler dev` skips all of this, so only a deployed address shows it.
 
 ## The server Rukoo uses
 
-The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo-account.bvdm.ai`, run by Rukoo's maintainer. It takes new accounts by invite code. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
+The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
+
+### How rukoo.io is set up
+
+rukoo.io serves Rukoo's website and this server from one domain, through two Workers:
+
+1. `rukoo-site`, from the separate rukoo-site repository, has the custom domains `rukoo.io` and `www.rukoo.io` (www redirects to the apex). It serves the website's static files first. A request that matches no file goes on, unchanged, through a service binding named `ACCOUNT` to the `rukoo-account` Worker: the same method, URL and headers, so this server sees `https://rukoo.io/...` addresses, the client's `cf-connecting-ip` for its rate limits, and the `Origin` and `Sec-Fetch-Site` headers its write checks read.
+2. `rukoo-account`, this folder, deployed with `--env bvdm`. Its `BOOKING_ORIGIN` is `https://rukoo.io`, so booking pages are `https://rukoo.io/<handle>`, MCP is `https://rukoo.io/mcp` and the account API is `https://rukoo.io/v1/...`. A booking's calendar UID ends in `@rukoo.io`.
+
+The website's paths (`/`, `/index.html`, `/404.html`, `/app.js`, `/styles.css`, `/assets/*`, `/img/*`, `/media/*`, and its redirects `/download/*`, `/releases` and `/github`) always win, because the site Worker answers them before anything reaches this server. That is why the server reserves those names and likely future ones as handles. `/` on this server is only a fallback page; on rukoo.io the website answers it.
+
+The Worker keeps its old custom domain `rukoo-account.bvdm.ai`. Devices that still sync with that address keep working, since the account API answers on every address, and its `/meet/...` links redirect to the same page on rukoo.io.
+
+Both addresses reach the same Worker and the same storage, so they hold the same accounts and booking pages: an account made on one signs in on the other.
 
 ## What lands in Cloudflare's logs
 
@@ -225,7 +242,7 @@ Put a pepper in `.dev.vars`. Leave `JURISDICTION` empty there: the local runtime
 npm run dev
 ```
 
-The server runs at `http://localhost:8787` and keeps its data in `.wrangler/`. Neither `.dev.vars` nor `.wrangler/` is committed. Put an invite code in `INVITE_CODES` there too if you want to sign up from the app. A booking page you turn on from a Rukoo pointed at this address is at `http://localhost:8787/meet/<handle>`.
+The server runs at `http://localhost:8787` and keeps its data in `.wrangler/`. Neither `.dev.vars` nor `.wrangler/` is committed. Put an invite code in `INVITE_CODES` there too if you want to sign up from the app. A booking page you turn on from a Rukoo pointed at this address is at `http://localhost:8787/meet/<handle>`. To try the root layout rukoo.io uses, start it with `npx wrangler dev --var BOOKING_ORIGIN:http://localhost:8787`; the page is then at `http://localhost:8787/<handle>`, and `/meet/<handle>` redirects there.
 
 Run the tests with:
 

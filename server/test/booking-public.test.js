@@ -421,9 +421,11 @@ describe('abuse limits', () => {
     }
     const own = await book(handle, body, { headers: { origin: 'https://accounts.example', 'sec-fetch-site': 'same-origin' } });
     expect(own.status).toBe(201);
-    const onShort = await book(handle, bookingBody(slotAhead(4)), {
+    const onShort = await call('POST', `/${handle}/api/bookings`, {
+      body: bookingBody(slotAhead(4)),
       headers: { origin: 'https://meet.example' },
-      vars: { BOOKING_ORIGIN: 'https://meet.example' }
+      vars: { BOOKING_ORIGIN: 'https://meet.example' },
+      origin: 'https://meet.example'
     });
     expect(onShort.status).toBe(201);
     const plain = await call('POST', `/meet/${handle}/api/bookings`, { body: { ...body, email: 'plain@example.com' }, contentType: 'text/plain' });

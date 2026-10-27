@@ -39,16 +39,21 @@ export function randomIp() {
 }
 
 // Sends a request through the deployed configuration, or, given vars, through the Worker's fetch handler with those
-// vars changed. Either way the real Durable Objects answer.
+// vars changed. Either way the real Durable Objects answer. origin: the address the request comes in on, as when a
+// test plays BOOKING_ORIGIN.
 // Redirects come back as they are, so tests see them.
-export async function call(method, path, { body, token, ip = randomIp(), vars, headers = {}, contentType = 'application/json' } = {}) {
+export async function call(
+  method,
+  path,
+  { body, token, ip = randomIp(), vars, headers = {}, contentType = 'application/json', origin = 'https://accounts.example' } = {}
+) {
   const init = { method, headers: { 'cf-connecting-ip': ip, ...headers }, redirect: 'manual' };
   if (token) init.headers.authorization = `Bearer ${token}`;
   if (body !== undefined) {
     init.headers['content-type'] = contentType;
     init.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
-  const request = new Request(`https://accounts.example${path}`, init);
+  const request = new Request(`${origin}${path}`, init);
   const response = vars
     ? await worker.fetch(request, withVars(vars), createExecutionContext())
     : await exports.default.fetch(request);

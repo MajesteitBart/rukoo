@@ -2,7 +2,7 @@
 // gathers the data and answers the requests; this file only writes markup.
 //
 // Every host and guest string goes through escape(), every link is built here from checked values, and the pages
-// work without JavaScript: days, times, the zone and the clock are links and forms. /meet/assets/booker.js only
+// work without JavaScript: days, times, the zone and the clock are links and forms. booker.js only
 // switches to the browser's zone before times show, remembers the clock and loads days without a full reload.
 //
 // The look follows Rukoo's design skill (.agents/skills/rukoo-design): its colour tokens for both themes, hairline
@@ -250,7 +250,7 @@ export function documentHtml(ctx, { title, main, assistantLine = '', switchable 
 <meta name="referrer" content="same-origin">
 <title>${esc(title)}</title>
 <style>${CSS}</style>
-<script src="/meet/assets/booker.js"></script>
+<script src="${esc(ctx.script)}"></script>
 </head>
 <body>
 <main class="wrap">

@@ -5,21 +5,22 @@
 // address and the PEPPER secret, and a session token starts with that name, so every request routes straight to one
 // object and only that object knows whether the account or the session exists.
 //
-// Booking pages (/v1/booking for their owners, /meet for everyone else) live in owner.js and meet.js, with one
-// Booking object per handle.
+// Booking pages (/v1/booking for their owners; for everyone else the root of BOOKING_ORIGIN, or /meet without it)
+// live in owner.js and meet.js, with one Booking object per handle.
 
 import pkg from '../package.json' with { type: 'json' };
 import { hmac, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import {
   ACCOUNT_NAME,
   accountObject,
+  bookingRoot,
   checkConfig,
   config,
   limitRate,
   positive,
   registryObject
 } from './config.js';
-import { html, json, send } from './http.js';
+import { READ_CORS, html, json, redirect, send } from './http.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
 import { meet } from './meet.js';
@@ -65,8 +66,12 @@ async function handle(request, env) {
     return html(privacy(config(env, url), privacyLanguage(url, request.headers.get('accept-language'))), method);
   }
   if (path === '/v1/info' && method === 'GET') return json(200, info(env, url));
-  if (path === '/meet' || path.startsWith('/meet/')) return meet(request, env, url);
-  if (path !== '/v1' && !path.startsWith('/v1/')) throw notFound();
+  const account = path === '/v1' || path.startsWith('/v1/');
+  const root = bookingRoot(env);
+  if (path === '/meet' || path.startsWith('/meet/')) return root ? toRoot(request, root, url) : meet(request, env, url);
+  // At the root of BOOKING_ORIGIN every other path is a booking page's, /mcp, /booker.js or /llms.txt.
+  if (root === url.origin && !account) return meet(request, env, url);
+  if (!account) throw notFound();
 
   checkConfig(env);
 
@@ -328,4 +333,13 @@ function info(env, url) {
 
 function notFound() {
   return new HttpError(404, 'not_found', 'There is nothing here.');
+}
+
+// /meet addresses, with BOOKING_ORIGIN set: the same path at its root, the query kept. 301 for reads; 308 for the
+// rest, so a client sends its POST again there. Reads carry the CORS header, so a cross-site fetch can follow them.
+function toRoot(request, root, url) {
+  let rest = url.pathname.slice('/meet'.length);
+  if (rest === '/assets/booker.js') rest = '/booker.js';
+  const reading = request.method === 'GET' || request.method === 'HEAD';
+  return redirect(reading ? 301 : 308, `${root}${rest || '/'}${url.search}`, reading ? READ_CORS : {});
 }

@@ -1,4 +1,4 @@
-// Responses. Every answer is no-store and nosniff; booking pages (/meet) add their own policy on top
+// Responses. Every answer is no-store and nosniff; booking pages add their own policy on top
 // (PROTOCOL.md, Public routes).
 
 export function baseHeaders(headers = {}) {
@@ -33,7 +33,7 @@ export function html(body, method) {
 export const MEET_CSP =
   "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
-// What every /meet answer sends. same-origin: other websites never get a page's address, which can hold a manage key
+// What every booking page answer sends. same-origin: other websites never get a page's address, which can hold a manage key
 // or a guest's name and email, and the pages' own form posts still carry their real Origin, which no-referrer hides
 // (Fetch, "append a request Origin header"); browsers without Sec-Fetch-Site rely on that Origin to book.
 export const MEET_REFERRER = 'same-origin';

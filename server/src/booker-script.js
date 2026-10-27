@@ -1,5 +1,5 @@
-// GET /meet/assets/booker.js: the booking pages' only script, served from this server (script-src 'self'). The pages
-// work without it. With it:
+// GET /booker.js (/meet/assets/booker.js without BOOKING_ORIGIN): the booking pages' only script, served from this
+// server (script-src 'self'). The pages work without it. With it:
 //   - a page that showed the host's zone, or the locale's clock, opens again in the browser's zone and with the clock
 //     this browser picked before. It runs in <head>, so the times never show in the wrong zone first.
 //   - days and months load without a full reload; the new times are announced through the page's live region.

@@ -9,7 +9,7 @@
 import { agentData, agentSection, assistantLine } from './agent-text.js';
 import { DEFAULT_LOCALES, html, text } from './booking-text.js';
 import { randomBytes, toBase64url } from './bytes.js';
-import { clientNetwork, config, limitRate } from './config.js';
+import { bookerPath, bookingPrefix, clientNetwork, config, limitRate } from './config.js';
 import { NOINDEX, meetText, redirect } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -37,7 +37,7 @@ const LOCALE_TAG = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8}){0,6}$/;
 const FIELD_ERRORS = { name: 'error.name', email: 'error.email', notes: 'error.notes', via: 'error.via' };
 const REFUSED = { cross_site: 'error.crossSite', rate_limited: 'error.rateLimited', content_type: 'error.form', too_large: 'error.form', invalid: 'error.form' };
 
-// Whether a path under /meet/<handle> is one of the pages, whose errors are pages too.
+// Whether a path under a page's address is one of the pages, whose errors are pages too.
 export function isPage(method, rest) {
   if (method !== 'GET' && method !== 'HEAD' && method !== 'POST') return false;
   if (rest === '') return method !== 'POST';
@@ -45,7 +45,7 @@ export function isPage(method, rest) {
   return /^\/[^/]+$/.test(rest) && rest !== '/api' && rest !== '/llms.txt';
 }
 
-// GET|HEAD /meet/<handle>/<slug>, POST to the same, and the manage page.
+// GET|HEAD /<handle>/<slug>, POST to the same, and the manage page.
 export async function route(request, env, url, handle, rest) {
   const booking = rest.match(/^\/booking\/([^/]+)$/);
   if (booking) {
@@ -135,7 +135,9 @@ function context(request, env, url, handle, profile, source = url.searchParams, 
     f: pages.formatter(locale, zone, hour12),
     host: profile?.name ?? null,
     links: known ? links(env, url, handle) : null,
-    base: `/meet/${handle}`,
+    // The page's own path, for links and forms: /<handle> at the root of BOOKING_ORIGIN, else /<handle>.
+    base: `${bookingPrefix(env, url)}/${handle}`,
+    script: bookerPath(env, url),
     operator: config(env, url).operator,
     weekStart: weekStartOf(locale),
     languageLink: (l) => {
@@ -146,7 +148,7 @@ function context(request, env, url, handle, profile, source = url.searchParams, 
   };
 }
 
-// An HTML answer with the /meet headers, the llms.txt link and, for addresses with guest details or keys, noindex.
+// An HTML answer with the booking pages' headers, the llms.txt link and, for addresses with guest details or keys, noindex.
 function respond(ctx, request, status, body, { landing = false, noindex = false, headers = {} } = {}) {
   const extra = { vary: landing ? 'Accept, Accept-Language' : 'Accept-Language', ...headers };
   if (ctx.links) extra.link = `<${ctx.links.llmsTxt}>; rel="alternate"; type="text/markdown"`;
@@ -232,7 +234,7 @@ function privateQuery(q) {
 
 // ---- Landing and booker ----
 
-// GET /meet/<handle> as HTML. data: agentData() for the page, already loaded for the markdown check.
+// GET /<handle> as HTML. data: agentData() for the page, already loaded for the markdown check.
 export async function landingPage(request, env, url, handle, data) {
   const page = data.page;
   const profile = page.profile;
@@ -346,7 +348,7 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
   return respond(ctx, request, 200, pages.bookerHtml(ctx, v), { landing, noindex: Boolean(reschedule) || privateQuery(q) });
 }
 
-// GET /meet/<handle>/<slug>?slot=: the form for that time, filled in from the link, or the nearest open times when
+// GET /<handle>/<slug>?slot=: the form for that time, filled in from the link, or the nearest open times when
 // it is gone. With reschedule, the confirmation of the move instead.
 async function preparedPage(ctx, request, env, handle, { page, type, q, reschedule }) {
   const exclude = reschedule ? { id: reschedule.booking.id, key: reschedule.key } : null;
@@ -390,7 +392,7 @@ function refusal(ctx, request, env, { page, error, movedTo, rest, status }) {
 
 // ---- Booking with the form ----
 
-// POST /meet/<handle>/<slug>: books, then 303 to the manage page; or the form again with the error and the fields.
+// POST /<handle>/<slug>: books, then 303 to the manage page; or the form again with the error and the fields.
 async function bookPost(request, env, url, handle, slug) {
   const read = await readFormOr(request, env, url, handle);
   if (read.refused) return read.refused;
@@ -496,7 +498,7 @@ async function managePage(request, env, url, handle, id) {
   return respond(ctx, request, 200, manageView(ctx, found, key), { noindex: true });
 }
 
-// POST /meet/<handle>/booking/<id>: k, action (cancel or reschedule), and for a move start and tz. 303 back to the
+// POST /<handle>/booking/<id>: k, action (cancel or reschedule), and for a move start and tz. 303 back to the
 // manage page, or the page again with the error.
 async function managePost(request, env, url, handle, id) {
   const read = await readFormOr(request, env, url, handle);
