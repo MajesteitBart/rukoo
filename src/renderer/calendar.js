@@ -1,10 +1,11 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, $$, hhmm, avatar, toast, dialog, choiceDialog, confirmDialog, segmented, setSegmented, KEEP_OPEN } from './ui.js';
+import { api, esc, $, $$, hhmm, avatar, toast, dialog, choiceDialog, confirmDialog, segmented, setSegmented, showMenu, KEEP_OPEN } from './ui.js';
 
 // The calendar view: the calendars of every account together, as a week, a day or a list of what comes next.
 // Main fetches and caches the events (src/main/calendar); this module draws them and sends changes back.
-// Every account keeps its own colour, the one it has in the unified inbox.
+// Every calendar has its own colour: the one the user picked for it in the sidebar, else the one Google or the CalDAV
+// server gives it, else its account's, the one the account has in the unified inbox.
 
 const DAY = 86400000;
 // The grid: pixels per hour, and the least an event is drawn, so a short one still shows its title.
@@ -14,8 +15,19 @@ const UPCOMING_DAYS = 30;
 // A week narrower than this shows its day instead: seven columns would be too narrow to read.
 const NARROW = 560;
 const RESPONSES = ['accepted', 'tentative', 'declined'];
+// The colours a calendar can be given from the sidebar: the account colours of Settings.
+const COLORS = [
+  { value: '#2fd6c0', get label() { return t('settings.colors.turquoise'); } },
+  { value: '#4a7dff', get label() { return t('settings.colors.blue'); } },
+  { value: '#ff8a3d', get label() { return t('settings.colors.orange'); } },
+  { value: '#c56cf0', get label() { return t('settings.colors.purple'); } },
+  { value: '#f5c542', get label() { return t('settings.colors.yellow'); } },
+  { value: '#ff5d73', get label() { return t('settings.colors.red'); } },
+  { value: '#5ec2ff', get label() { return t('settings.colors.lightBlue'); } }
+];
 
-const prefs = { view: 'week', visible: {}, dismissed: {}, calendar: null, ...readPrefs() };
+// colors: the colour the user picked per calendar, by key(accountId, calendarId).
+const prefs = { view: 'week', visible: {}, dismissed: {}, colors: {}, calendar: null, ...readPrefs() };
 function readPrefs() {
   try {
     return JSON.parse(localStorage.getItem('rukoo.calendar') || '{}');
@@ -115,13 +127,15 @@ function whenText(e) {
 const key = (accountId, calendarId) => `${accountId}\n${calendarId}`;
 const accounts = () => (C.data && C.data.accounts) || [];
 const account = (id) => accounts().find((a) => a.id === id);
-const calendarOf = (e) => account(e.accountId)?.calendars.find((c) => c.id === e.calendarId) || null;
+const calendarIn = (accountId, calendarId) => account(accountId)?.calendars.find((c) => c.id === calendarId) || null;
+const calendarOf = (e) => calendarIn(e.accountId, e.calendarId);
 const titleOf = (e) => e.title || t('calendar.event.noTitle');
-// Account colours come from Rukoo's own palette; anything else falls back to the accent.
-const colorOf = (id) => {
-  const c = account(id)?.color || '';
-  return /^#[0-9a-f]{3,8}$/i.test(c) ? c : 'var(--accent)';
-};
+// Only hex colours reach the page.
+const hex = (c) => (typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c) ? c : null);
+// A calendar's own colour: the one Google or the CalDAV server gives it, else its account's, else the accent.
+const ownColor = (accountId, calendarId) => hex(calendarIn(accountId, calendarId)?.color) || hex(account(accountId)?.color) || 'var(--accent)';
+// The colour a calendar shows in: the one the user picked for it, else its own.
+const colorOf = (accountId, calendarId) => hex(prefs.colors[key(accountId, calendarId)]) || ownColor(accountId, calendarId);
 
 function isVisible(accountId, cal) {
   const k = key(accountId, cal.id);
@@ -238,7 +252,7 @@ export function sidebarHtml() {
         a.calendars
           .map((cal) => {
             const on = isVisible(a.id, cal);
-            return `<button class="nav-item cal-toggle" role="checkbox" aria-checked="${on}" data-cal-toggle="${esc(key(a.id, cal.id))}" title="${esc(cal.name)}"><span class="ic"><span class="cal-check ${on ? 'on' : ''}" style="--c:${colorOf(a.id)}">${icons.check}</span></span><span class="label">${esc(cal.name)}</span></button>`;
+            return `<button class="nav-item cal-toggle" role="checkbox" aria-checked="${on}" data-cal-toggle="${esc(key(a.id, cal.id))}" title="${esc(cal.name)}"><span class="ic"><span class="cal-check ${on ? 'on' : ''}" style="--c:${colorOf(a.id, cal.id)}">${icons.check}</span></span><span class="label">${esc(cal.name)}</span></button>`;
           })
           .join('')
       );
@@ -271,6 +285,47 @@ export function sidebarClick(btn) {
   }
   return false;
 }
+
+// The colour menu of a calendar in the sidebar: back to the calendar's own colour, or one of Rukoo's. at: where the
+// right-click was.
+function colorMenu(btn, at) {
+  const k = btn.dataset.calToggle;
+  const [accountId, calendarId] = k.split('\n');
+  const cal = calendarIn(accountId, calendarId);
+  if (!cal) return;
+  const picked = hex(prefs.colors[k]);
+  const pick = (color) => {
+    if (color) prefs.colors[k] = color;
+    else delete prefs.colors[k];
+    savePrefs();
+    render();
+    ctx.renderSidebar();
+    // The sidebar was drawn again; the keyboard goes back to the calendar it was on.
+    $(`.sidebar [data-cal-toggle="${CSS.escape(k)}"]`)?.focus();
+  };
+  const dot = (color) => `<span class="cal-dot" style="--c:${color}"></span>`;
+  showMenu(
+    btn,
+    [
+      { heading: t('calendar.color.heading', { name: cal.name }) },
+      { icon: dot(ownColor(accountId, calendarId)), label: t('calendar.color.default'), current: !picked, action: () => pick(null) },
+      { separator: true },
+      ...COLORS.map((c) => ({ icon: dot(c.value), label: c.label, current: picked === c.value, action: () => pick(c.value) }))
+    ],
+    { at }
+  );
+}
+
+// Right-click on a calendar in the sidebar, or the menu key while it has the focus, opens its colour menu.
+document.addEventListener('contextmenu', (ev) => {
+  const btn = ev.target.closest?.('.sidebar [data-cal-toggle]');
+  if (!btn) return;
+  ev.preventDefault();
+  // From the keyboard the event can come without a place on the row; the menu then opens below the row.
+  const r = btn.getBoundingClientRect();
+  const inside = ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom;
+  colorMenu(btn, inside ? { x: ev.clientX, y: ev.clientY } : { x: r.left + 8, y: r.bottom });
+});
 
 async function reconnect(accountId) {
   if (!ctx.S.data.googleAvailable) {
@@ -434,7 +489,7 @@ function gridHtml(view) {
   const chips = placed
     .map(({ e, from, to, row }) => {
       const cls = [stateClass(e), e.start < r.start ? 'cont-l' : '', e.end > r.end ? 'cont-r' : ''].join(' ');
-      return `<button class="cal-chip ${cls}" data-ev="${esc(e.id)}" style="grid-column:${from + 2} / span ${to - from + 1};grid-row:${row + 1};--c:${colorOf(e.accountId)}" aria-label="${esc(ariaLabel(e))}"><span class="t">${esc(e.allDay ? titleOf(e) : `${hhmm(e.start)} ${titleOf(e)}`)}</span></button>`;
+      return `<button class="cal-chip ${cls}" data-ev="${esc(e.id)}" style="grid-column:${from + 2} / span ${to - from + 1};grid-row:${row + 1};--c:${colorOf(e.accountId, e.calendarId)}" aria-label="${esc(ariaLabel(e))}"><span class="t">${esc(e.allDay ? titleOf(e) : `${hhmm(e.start)} ${titleOf(e)}`)}</span></button>`;
     })
     .join('');
   const cells = columns.map((d, i) => `<div class="cal-allday-cell" data-cal-allday="${d}" style="grid-column:${i + 2};grid-row:1 / span ${Math.max(rows, 1)}"></div>`).join('');
@@ -533,7 +588,7 @@ function eventHtml(s) {
   const left = (s.col / s.cols) * 100;
   const width = (s.span / s.cols) * 100;
   const time = short ? `<span class="w">${esc(hhmm(e.start))}</span>` : `<span class="w">${icons.clock}<span>${esc(`${hhmm(e.start)} – ${hhmm(e.end)}`)}</span></span>`;
-  return `<button class="cal-ev ${stateClass(e)} ${short ? 'short' : ''}" data-ev="${esc(e.id)}" style="top:${top}px;height:${height}px;left:calc(${left}% + 3px);width:calc(${width}% - 6px);--c:${colorOf(e.accountId)}" aria-label="${esc(ariaLabel(e))}">
+  return `<button class="cal-ev ${stateClass(e)} ${short ? 'short' : ''}" data-ev="${esc(e.id)}" style="top:${top}px;height:${height}px;left:calc(${left}% + 3px);width:calc(${width}% - 6px);--c:${colorOf(e.accountId, e.calendarId)}" aria-label="${esc(ariaLabel(e))}">
     <span class="t">${esc(titleOf(e))}</span>${time}${!short && e.location && height >= 59 ?`<span class="w"><span>${esc(e.location)}</span></span>` : ''}</button>`;
 }
 
@@ -607,7 +662,7 @@ function rowHtml(e, day, next) {
     e.meeting ? `<span class="m">${icons.video}<span>${esc(t('calendar.event.videoCall'))}</span></span>` : '',
     `<span class="m">${icons.calendar}<span>${esc(calendarOf(e)?.name || '')}</span></span>`
   ].join('');
-  return `<button class="cal-row ${stateClass(e)}" data-ev="${esc(e.id)}" style="--c:${colorOf(e.accountId)}" aria-label="${esc(ariaLabel(e))}">
+  return `<button class="cal-row ${stateClass(e)}" data-ev="${esc(e.id)}" style="--c:${colorOf(e.accountId, e.calendarId)}" aria-label="${esc(ariaLabel(e))}">
     <span class="cal-row-time"><span>${esc(time)}</span>${detail}</span><span class="cal-dot"></span>
     <span class="cal-row-main"><span class="cal-row-title">${esc(titleOf(e))}</span><span class="cal-row-sub">${meta}</span></span>
     ${e.response === 'needsAction' ? `<span class="cal-pill">${esc(t('calendar.event.invitation'))}</span>` : ''}${peopleHtml(e)}</button>`;
@@ -651,14 +706,15 @@ function popHtml(e) {
     rows.push(row('person', esc(t('calendar.guests.organizedBy', { name: e.organizer.name || e.organizer.address }))));
   }
   if (e.description) rows.push(row('notes', `<div class="cal-desc">${linkify(e.description)}</div>`));
-  rows.push(row('calendar', `<span class="cal-dot" style="--c:${colorOf(e.accountId)}"></span>${esc(cal ? cal.name : '')}<span class="cal-acc">${esc(acc ? acc.email : '')}</span>`));
+  const color = colorOf(e.accountId, e.calendarId);
+  rows.push(row('calendar', `<span class="cal-dot" style="--c:${color}"></span>${esc(cal ? cal.name : '')}<span class="cal-acc">${esc(acc ? acc.email : '')}</span>`));
   const rsvp = e.canRespond
     ? `<div class="cal-rsvp"><span>${esc(t('calendar.rsvp.question'))}</span><div class="filters" role="group" aria-label="${esc(t('calendar.rsvp.question'))}">${RESPONSES.map(
         (r) => `<button class="filter ${e.response === r ? 'active' : ''}" data-rsvp="${r}" aria-pressed="${e.response === r}">${esc(t(`calendar.rsvp.${r}`))}</button>`
       ).join('')}</div></div>`
     : '';
   return `<div class="cal-pop-bar">${actions}</div>
-    <div class="cal-pop-head"><span class="cal-swatch" style="--c:${colorOf(e.accountId)}"></span><div><h2 id="cal-pop-title" class="sel">${esc(titleOf(e))}</h2>
+    <div class="cal-pop-head"><span class="cal-swatch" style="--c:${color}"></span><div><h2 id="cal-pop-title" class="sel">${esc(titleOf(e))}</h2>
       <div class="cal-pop-when">${esc(whenText(e))}</div></div></div>
     ${rows.join('')}${rsvp}`;
 }
@@ -811,8 +867,16 @@ function formHtml(v, e) {
     groups.get(o.a.id).items.push(o);
   }
   const select = [...groups.values()]
-    .map((g) => `<optgroup label="${esc(g.a.email)}">${g.items.map((o) => `<option value="${esc(o.key)}" ${o.key === v.key ? 'selected' : ''}>${esc(o.cal.name)}</option>`).join('')}</optgroup>`)
+    .map(
+      (g) =>
+        `<optgroup label="${esc(g.a.email)}">${g.items
+          .map((o) => `<option value="${esc(o.key)}" data-color="${esc(colorOf(o.a.id, o.cal.id))}" ${o.key === v.key ? 'selected' : ''}>${esc(o.cal.name)}</option>`)
+          .join('')}</optgroup>`
+    )
     .join('');
+  // The chosen calendar's colour, as a dot in the field; bindForm follows a change.
+  const chosen = own.find((o) => o.a && o.cal && o.key === v.key) || own.find((o) => o.a && o.cal);
+  const pickColor = chosen ? colorOf(chosen.a.id, chosen.cal.id) : 'var(--accent)';
   const lastDay = v.allDay ? addDays(v.end, -1) : v.end;
   // The instants the fields started from; readForm keeps them for fields left as they were.
   return `<div class="form cal-form ${v.allDay ? 'all-day' : ''}" data-start="${Number(v.start)}" data-end="${Number(v.end)}">
@@ -822,7 +886,7 @@ function formHtml(v, e) {
       <label>${esc(t('calendar.dialog.ends'))}<span class="cal-dt"><input type="date" name="endDate" value="${dateValue(lastDay)}"/><input type="time" name="endTime" step="300" value="${timeValue(v.end)}"/></span></label>
     </div>
     <label class="inline"><input type="checkbox" name="allDay" ${v.allDay ? 'checked' : ''}/> ${esc(t('calendar.event.allDay'))}</label>
-    <label>${esc(t('calendar.dialog.calendar'))}<select name="calendar" ${e ? 'disabled' : ''}>${select}</select></label>
+    <label>${esc(t('calendar.dialog.calendar'))}<span class="cal-pick" style="--c:${pickColor}"><span class="cal-dot"></span><select name="calendar" ${e ? 'disabled' : ''}>${select}</select></span></label>
     <label>${esc(t('calendar.dialog.location'))}<input type="text" name="location" value="${esc(v.location || '')}"/></label>
     <label>${esc(t('calendar.dialog.description'))}<textarea name="description">${esc(v.description || '')}</textarea></label>
     ${e && e.seriesId ? `<p class="note">${esc(t('calendar.dialog.seriesNote'))}</p>` : ''}
@@ -866,6 +930,10 @@ function bindForm(body) {
   field('startTime').addEventListener('change', follow);
   field('endDate').addEventListener('change', remember);
   field('endTime').addEventListener('change', remember);
+  field('calendar').addEventListener('change', () => {
+    const option = field('calendar').selectedOptions[0];
+    if (option) f.querySelector('.cal-pick').style.setProperty('--c', option.dataset.color);
+  });
   field('allDay').addEventListener('change', () => {
     const allDay = field('allDay').checked;
     f.classList.toggle('all-day', allDay);

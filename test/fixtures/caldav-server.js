@@ -15,9 +15,10 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 // etagOnPut: answer a PUT with the new ETag, as most servers do; without it the client has to fetch it.
 function caldavServer({ user = 'me@example.com', password: initialPassword = 'secret', objects = {}, scheduling = false, etagOnPut = true, fail = null } = {}) {
   let password = initialPassword;
+  // Colours as servers write Apple's calendar-color: with an opacity, as Apple does, or without; the task list has none.
   const calendars = {
-    home: { name: 'Home', comps: ['VEVENT'], write: true },
-    shared: { name: 'Shared with me', comps: ['VEVENT'], write: false },
+    home: { name: 'Home', comps: ['VEVENT'], write: true, color: '#7B61FFFF' },
+    shared: { name: 'Shared with me', comps: ['VEVENT'], write: false, color: '#16A765' },
     tasks: { name: 'Tasks', comps: ['VTODO'], write: true }
   };
   const store = new Map();
@@ -65,8 +66,9 @@ function caldavServer({ user = 'me@example.com', password: initialPassword = 'se
               `${HOME}${id}/`,
               `<d:resourcetype><d:collection/><cal:calendar/></d:resourcetype><d:displayname>${esc(c.name)}</d:displayname>` +
                 `<cal:supported-calendar-component-set>${c.comps.map((n) => `<cal:comp name="${n}"/>`).join('')}</cal:supported-calendar-component-set>` +
-                `<d:current-user-privilege-set><d:privilege><d:read/></d:privilege>${c.write ? '<d:privilege><d:write/></d:privilege>' : ''}</d:current-user-privilege-set>`,
-              '<a:calendar-order xmlns:a="http://apple.com/ns/ical/"/>'
+                `<d:current-user-privilege-set><d:privilege><d:read/></d:privilege>${c.write ? '<d:privilege><d:write/></d:privilege>' : ''}</d:current-user-privilege-set>` +
+                (c.color ? `<a:calendar-color xmlns:a="http://apple.com/ns/ical/">${c.color}</a:calendar-color>` : ''),
+              `<a:calendar-order xmlns:a="http://apple.com/ns/ical/"/>${c.color ? '' : '<a:calendar-color xmlns:a="http://apple.com/ns/ical/"/>'}`
             )
           )
         ];

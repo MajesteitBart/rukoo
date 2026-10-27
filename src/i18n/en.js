@@ -1079,6 +1079,14 @@
     "message": "Calendars",
     "description": "Calendar sidebar: accessible name of the list of calendars, grouped by account, that can be shown or hidden. src/renderer/calendar.js (sidebarHtml)"
   },
+  "calendar.color.heading": {
+    "message": "Color of {name}",
+    "description": "Calendar sidebar: heading of the menu that opens when you right-click a calendar, where you choose the color its events show in. {name} is the calendar's name. src/renderer/calendar.js (colorMenu)"
+  },
+  "calendar.color.default": {
+    "message": "Default color",
+    "description": "Calendar sidebar, color menu of a calendar: goes back to the calendar's own color, the one it has in Google Calendar or on the CalDAV server, or its account's color when it has none. Shown with a dot in that color. src/renderer/calendar.js (colorMenu)"
+  },
   "calendar.nav.today": {
     "message": "Today",
     "description": "Calendar toolbar button that goes back to the current day or week. src/renderer/calendar.js (headHtml)"

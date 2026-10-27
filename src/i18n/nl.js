@@ -275,6 +275,8 @@
   "calendar.mode.calendar": "Agenda",
   "calendar.mode.calendarShortcut": "Agenda (Ctrl+2)",
   "calendar.sidebar.calendars": "Agenda's",
+  "calendar.color.heading": "Kleur van {name}",
+  "calendar.color.default": "Standaardkleur",
   "calendar.nav.today": "Vandaag",
   "calendar.nav.todayShortcut": "Vandaag (T)",
   "calendar.nav.prev.day": "Vorige dag (←)",

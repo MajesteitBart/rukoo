@@ -79,7 +79,8 @@ function person(p) {
 
 const RESPONSES = new Set(['needsAction', 'accepted', 'declined', 'tentative']);
 // Events Google made itself: a flight or reservation Gmail found, a contact's birthday. Google takes no new title,
-// place or description for them, so Rukoo's dialog can't change them; deleting them works.
+// place or description for them, so Rukoo's dialog can't change them; deleting them works, also when Google marks
+// them locked.
 // https://developers.google.com/workspace/calendar/api/guides/event-types
 const GOOGLE_MADE = new Set(['fromGmail', 'birthday']);
 
@@ -99,10 +100,9 @@ function toEvent(item, cal) {
   const own = !organizer || organizer.self;
   const video = item.hangoutLink || ((item.conferenceData && item.conferenceData.entryPoints) || []).find((p) => p && p.entryPointType === 'video')?.uri || null;
   // A calendar shared without private details can change everything except its private events.
-  const changeable = Boolean(
-    cal.writable && (own || item.guestsCanModify) && !item.locked && !item.privateCopy && !(cal.hidesPrivate && item.visibility === 'private')
-  );
+  const changeable = Boolean(cal.writable && (own || item.guestsCanModify) && !item.privateCopy && !(cal.hidesPrivate && item.visibility === 'private'));
   const eventType = typeof item.eventType === 'string' ? item.eventType : 'default';
+  const googleMade = GOOGLE_MADE.has(eventType);
   return {
     calendarId: cal.id,
     eventId: String(item.id),
@@ -124,8 +124,9 @@ function toEvent(item, cal) {
     status: item.status === 'tentative' ? 'tentative' : 'confirmed',
     busy: item.transparency !== 'transparent',
     response: me && !own ? me.response : null,
-    canEdit: changeable && !GOOGLE_MADE.has(eventType),
-    canDelete: changeable,
+    // locked: Google keeps the title, place and times as they are. Only an event Google made itself can still be deleted.
+    canEdit: changeable && !item.locked && !googleMade,
+    canDelete: changeable && (!item.locked || googleMade),
     canRespond: Boolean(me && !own),
     organizer,
     attendees,
@@ -209,7 +210,9 @@ class GoogleCalendar {
         hidesPrivate: c.accessRole === 'writerWithoutPrivateAccess',
         // Google leaves selected out for a calendar that is switched off in Google Calendar; its default is false.
         selected: c.selected === true,
-        timeZone: c.timeZone || null
+        timeZone: c.timeZone || null,
+        // The colour the calendar has in Google Calendar, always #rrggbb.
+        color: /^#[0-9a-f]{6}$/i.test(c.backgroundColor || '') ? c.backgroundColor.toLowerCase() : null
       }))
       .sort((a, b) => Number(b.primary) - Number(a.primary));
   }
