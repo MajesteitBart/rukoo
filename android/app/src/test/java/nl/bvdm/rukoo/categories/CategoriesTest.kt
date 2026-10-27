@@ -22,6 +22,7 @@ import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountType
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.AuthKind
+import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MessageSummary
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -95,7 +96,7 @@ class CategoriesTest {
     }
 
     private fun msg(uid: Int, from: Address, subject: String, date: Long, to: List<Address> = listOf(Address("", "me@work.example")), signals: MailSignals? = MailSignals(), messageId: String? = "<$uid@x>") =
-        MessageSummary(id = "acc1:INBOX:$uid", accountId = "acc1", folder = "INBOX", uid = uid.toLong(), messageId = messageId, from = from, to = to, subject = subject, date = date, signals = signals)
+        MessageSummary(id = "acc1:INBOX:$uid", accountId = "acc1", folder = "INBOX", role = FolderRole.INBOX, uid = uid.toLong(), messageId = messageId, from = from, to = to, subject = subject, date = date, signals = signals)
 
     private fun inbox() = listOf(
         msg(1, Address("Sanne de Vries", "sanne@studio.example"), "Can you sign this?", 3),
@@ -335,6 +336,71 @@ class CategoriesTest {
         // Desktop's single thread lets only the first request out; here three workers start at once, and the ones
         // already on their way finish. The other five stay queued.
         assertTrue("only the requests already on their way: ${gate.calls}", gate.calls <= 3)
+    }
+
+    @Test
+    fun `an answer that comes back after Jev was turned off is not stored`() = runBlocking {
+        val asked = CompletableDeferred<Unit>()
+        val answer = CompletableDeferred<Unit>()
+        val fake = FakeJev { _, _, _ ->
+            asked.complete(Unit)
+            answer.await()
+            JevAnswer("money", 0.9, "jev-test")
+        }
+        val s = setup(inbox(), fake)
+        val one = s.mail.inbox[0]
+        s.cats.setJev(on = true, key = "KEY")
+        s.cats.setEnabled(true)
+        val sorting = async { s.cats.sort() }
+        asked.await()
+        s.cats.setJev(on = false)
+        answer.complete(Unit)
+        sorting.await()
+        assertTrue("the late answer from Jev was dropped", s.stored(one)?.get("source")?.jsonPrimitive?.content != "jev")
+        s.cats.sort()
+        assertEquals("the next sort, without Jev, sorts it", "rules", s.stored(one)?.get("source")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `only inbox mail has a category`() {
+        val s = setup(inbox())
+        s.cats.setEnabled(true)
+        val sent = s.mail.inbox[0].copy(id = "acc1:Sent:1", folder = "Sent", role = FolderRole.SENT)
+        val archived = s.mail.inbox[1].copy(id = "acc1:Archive:2", folder = "Archive", role = FolderRole.ARCHIVE)
+        val inboxMail = s.mail.inbox[2].copy(role = FolderRole.INBOX)
+        val shown = s.cats.of(listOf(s.acc), listOf(sent, archived, inboxMail))
+        assertEquals("a mixed selection: only the inbox email has one", setOf(inboxMail.id), shown.keys)
+        assertNull(s.cats.of(s.acc, sent))
+    }
+
+    @Test
+    fun `categories turned on by another device sort this phone's inbox`() = runBlocking {
+        val srv = nl.bvdm.rukoo.account.FakeAccountServer().also { closers += { it.close() } }
+        fun device(name: String): AccountService {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+            return AccountService(tmp.newFolder(), PlainSecrets, srv.url, name, nl.bvdm.rukoo.account.OkHttpAccountHttp(okhttp3.OkHttpClient()), scope, devHosts = true, pushAfterMs = 60_000)
+                .also { closers += { it.close() } }
+        }
+        val desk = device("desk")
+        desk.signUp("on@example.com", "a long enough password")
+        val deskCats = Categories(desk, FakeMail(emptyList()), PlainSecrets, tmp.newFolder(), NoJev, EnglishPresets, CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }, sortAfterMs = 60_000)
+        closers += { deskCats.close() }
+        val phone = device("phone")
+        phone.signIn("on@example.com", "a long enough password")
+        phone.sync()
+        val mail = FakeMail(inbox())
+        val phoneCats = Categories(phone, mail, PlainSecrets, tmp.newFolder(), NoJev, EnglishPresets, CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }, sortAfterMs = 60_000)
+        closers += { phoneCats.close() }
+        assertFalse(phoneCats.state.value.enabled)
+        // The desk turns categories on; the phone learns of it with its next sync, and sorts without waiting.
+        deskCats.setEnabled(true)
+        desk.sync()
+        phone.sync()
+        withTimeout(10_000) {
+            while (phone.list("classification").size < 3) delay(20)
+        }
+        assertTrue(phoneCats.state.value.enabled)
+        assertEquals(3, phone.list("classification").size)
     }
 
     @Test

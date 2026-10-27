@@ -35,6 +35,7 @@ import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.core.SecretCipher
 import nl.bvdm.rukoo.mail.model.Account
+import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MessageSummary
 
 /** One inbox category as Settings and the tabs show it. A [preset] nobody renamed takes its texts from the translations. */
@@ -148,6 +149,9 @@ class Categories(
     @Volatile
     internal var jevBusyUntil = 0L
 
+    /** Whether categories were on when the records last changed, to tell when another device turns them on. */
+    private val enabledSeen = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** Goes up with every change to Jev's settings; what a request made under older settings answers is dropped. */
     @Volatile
     private var jevGeneration = 0
@@ -167,8 +171,16 @@ class Categories(
         local = runCatching { JsonFiles.read(file, LocalCategories.serializer(), LocalCategories()) }.getOrElse { LocalCategories() }
         redo += local.redo
         _state.value = computeState()
+        enabledSeen.set(settings().enabled)
         this.scope.launch {
-            account.records.collect { collections -> if (collections.any { it in COLLECTIONS }) changed() }
+            account.records.collect { collections ->
+                if (collections.none { it in COLLECTIONS }) return@collect
+                changed()
+                // Categories turned on, also by another device whose setting came down with a sync: the inbox gets
+                // sorted, as when the switch here is turned on.
+                val enabled = settings().enabled
+                if (enabled && !enabledSeen.getAndSet(true)) soon(0) else if (!enabled) enabledSeen.set(false)
+            }
         }
         this.scope.launch {
             account.status.collect { refresh() }
@@ -360,10 +372,10 @@ class Categories(
         return if (r.preset in order) Placed(r.preset, r.strength) else Placed(unsure, Strength.WEAK)
     }
 
-    /** An inbox email's category id, or null when categories are off. */
+    /** An inbox email's category id, or null when categories are off or it isn't in an inbox. */
     fun of(acc: Account, m: MessageSummary): String? = of(listOf(acc), listOf(m))[m.id]
 
-    /** The category of each of [messages] by id (inbox mail only), or nothing when categories are off. */
+    /** The category of each of [messages] by id, for the inbox mail among them; nothing when categories are off. */
     fun of(accounts: List<Account>, messages: List<MessageSummary>): Map<String, String> {
         val s = settings()
         if (!s.enabled) return emptyMap()
@@ -375,6 +387,8 @@ class Categories(
         val byId = accounts.associateBy { it.id }
         val out = HashMap<String, String>(messages.size * 2)
         for (m in messages) {
+            // Only inbox mail has a category, as desktop's publicMessage asks for it in the inbox only.
+            if (m.role != FolderRole.INBOX) continue
             val acc = byId[m.accountId] ?: continue
             val key = key(acc, m)
             val stored = listOf("override" to key, "sender" to lower(m.from.address), "classification" to key).firstNotNullOfOrNull { (collection, k) ->
@@ -545,6 +559,13 @@ class Categories(
                             val own = own(item.acc).map(::lower)
                             val toMe = item.m.to.any { lower(it.address) in own }
                             val res = jev.classify(key!!, item.m, list, toMe)
+                            // Settings changed while the answer was on its way (Jev or categories off, a new key): it
+                            // isn't stored, and the email waits for the sort that follows.
+                            if (!settings().enabled || jevGeneration != generation) {
+                                later(item.key)
+                                synchronized(queue) { cancelled = true }
+                                break
+                            }
                             val category = if (res.confidence >= JEV_CONFIDENT) res.category else unsure
                             val value = buildJsonObject {
                                 put("category", category)
