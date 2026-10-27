@@ -693,6 +693,7 @@ class Engine extends EventEmitter {
     if (acc.auth === 'oauth2' && !acc.aliasesFetchedAt) await this.fetchGmailAliases(id).catch(() => {});
     // An account removed during that wait must not get a new session; see removeAccount().
     if (!this.accounts.includes(acc)) return fresh;
+    let failed = null;
     try {
       // The session as it is after that wait: signing in again replaces it, and the old one takes no more commands.
       cache.folders = await this.session(acc).listFolders({ background: true });
@@ -704,21 +705,31 @@ class Engine extends EventEmitter {
         if (!targets.includes(p) && cache.folders.some((f) => f.path === p)) targets.push(p);
       }
       for (const p of targets) {
-        fresh.push(...(await this.syncFolderInto(acc, p, { background: true })));
+        try {
+          fresh.push(...(await this.syncFolderInto(acc, p, { background: true })));
+        } catch (err) {
+          // A folder that fails leaves the others to sync. Not once the engine closed or the account went: the next
+          // folder would open a new session for it.
+          if (this.closed || !this.accounts.includes(acc)) throw err;
+          failed = failed || err;
+        }
       }
       for (const p of Object.keys(cache.boxes)) {
         if (!cache.folders.some((f) => f.path === p)) delete cache.boxes[p];
       }
-      cache.lastSync = Date.now();
-      cache.error = null;
+      // The last sync stays the last one that got through every folder.
+      if (!failed) cache.lastSync = Date.now();
+      cache.error = failed ? friendlyError(failed) : null;
     } catch (err) {
       cache.error = friendlyError(err);
       this.changed(id);
       throw err;
     }
     this.changed(id);
+    // New mail in the folders that did sync is announced now: the next sync no longer sees it as new.
     if (fresh.length) this.emit('new-mail', fresh);
     this.prefetch(id);
+    if (failed) throw failed;
     return fresh;
   }
 

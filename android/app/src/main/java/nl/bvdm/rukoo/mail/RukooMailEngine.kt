@@ -488,6 +488,7 @@ class RukooMailEngine(
         // An account removed during that wait must not get a new session.
         acc = accountOrNull(id) ?: return emptyList()
         val fresh = mutableListOf<MessageSummary>()
+        var failed: Exception? = null
         try {
             val listed = session(acc).listFolders(background = true)
             mutate(id, persist = false) { it.copy(folders = listed) }
@@ -498,16 +499,33 @@ class RukooMailEngine(
             for (p in extraFolders + cache.boxes.keys) {
                 if (p !in targets && cache.folder(p) != null) targets += p
             }
-            for (p in targets) fresh += syncFolderInto(acc, p, background = true)
-            mutate(id) { c -> c.copy(boxes = c.boxes.filterKeys { k -> c.folder(k) != null }, lastSync = clock.now(), error = null) }
+            for (p in targets) {
+                try {
+                    fresh += syncFolderInto(acc, p, background = true)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // A folder that fails leaves the others to sync. Not once the engine closed or the account went:
+                    // the next folder would open a new session for it.
+                    if (closed || accountOrNull(id) == null) throw e
+                    AppLog.w(TAG, "folder sync failed", e)
+                    if (failed == null) failed = e
+                }
+            }
+            // The last sync stays the last one that got through every folder.
+            val error = failed?.let { friendly(it) }
+            val complete = failed == null
+            mutate(id) { c -> c.copy(boxes = c.boxes.filterKeys { k -> c.folder(k) != null }, lastSync = if (complete) clock.now() else c.lastSync, error = error) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             mutate(id) { it.copy(error = friendly(e)) }
             throw e
         }
+        // New mail in the folders that did sync is announced now: the next sync no longer sees it as new.
         if (fresh.isNotEmpty()) announce(fresh)
         scope.launch(engine) { prefetch(id) }
+        failed?.let { throw it }
         return fresh
     }
 

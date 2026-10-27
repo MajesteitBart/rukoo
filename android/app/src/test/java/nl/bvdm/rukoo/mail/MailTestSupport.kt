@@ -88,6 +88,15 @@ class FakeServer(val folders: List<FolderRecord>) {
 
     /** How long a flag change takes before it succeeds or fails, to overlap two of them. */
     var setFlagsDelayMs = 0L
+
+    /** Folders whose every sync throws, to keep one failing while the others work. */
+    val failingFolders = mutableMapOf<String, Exception>()
+
+    /** How long a folder sync takes, to close the engine while one runs. */
+    var syncDelayMs = 0L
+
+    /** The sessions made so far; like a real one, a closed session syncs no more. */
+    var sessionsMade = 0
     val sent = mutableListOf<ComposedMail>()
     val appended = mutableListOf<Pair<String, ByteArray>>()
 
@@ -98,6 +107,12 @@ class FakeServer(val folders: List<FolderRecord>) {
     fun box(path: String) = boxes[path] ?: throw IllegalStateException("no folder $path")
 
     fun session(): MailSession = object : MailSession {
+        private var closed = false
+
+        init {
+            sessionsMade++
+        }
+
         private fun maybeFail(op: String) {
             val (name, error) = failNext ?: return
             if (name != op) return
@@ -115,7 +130,10 @@ class FakeServer(val folders: List<FolderRecord>) {
         }
 
         override suspend fun syncFolder(path: String, limit: Int, known: Map<Long, CachedMessage>, uidValidity: String?, background: Boolean, signals: Boolean, gmailTabs: Boolean): FolderSync {
+            if (syncDelayMs > 0) kotlinx.coroutines.delay(syncDelayMs)
+            if (closed) throw IllegalStateException("this session is closed")
             maybeFail("syncFolder")
+            failingFolders[path]?.let { throw it }
             val box = box(path)
             val useKnown = if (uidValidity == box.uidValidity) known else emptyMap()
             val window = box.messages.takeLast(limit)
@@ -196,7 +214,9 @@ class FakeServer(val folders: List<FolderRecord>) {
 
         override fun savesSentCopy() = false
 
-        override suspend fun close() = Unit
+        override suspend fun close() {
+            closed = true
+        }
     }
 
     companion object {
