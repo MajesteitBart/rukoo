@@ -122,7 +122,8 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
     private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
         enqueue(
             object : Callback {
-                override fun onResponse(call: Call, response: Response) = cont.resume(response)
+                // A response that comes after the caller went away is closed, so its connection isn't held.
+                override fun onResponse(call: Call, response: Response) = cont.resume(response) { _, value, _ -> value.close() }
 
                 override fun onFailure(call: Call, e: IOException) {
                     if (!cont.isCancelled) cont.resumeWithException(e)
