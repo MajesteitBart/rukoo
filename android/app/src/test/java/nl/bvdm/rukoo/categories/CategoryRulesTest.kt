@@ -66,6 +66,17 @@ class CategoryRulesTest {
     }
 
     @Test
+    fun `when the rules find several categories, the one higher in the person's order wins`() {
+        val m = msg(Address("Shop", "hi@shop.example"), subject = "Your invoice", to = emptyList(), signals = MailSignals(campaign = true))
+        assertEquals("Money is above Promotions by default", "money", CategoryRules.presetFor(m).preset)
+        assertEquals("promotions", CategoryRules.presetFor(m, order = listOf("promotions", "money")).preset)
+        val alert = msg(Address("Bank", "noreply@bank.example"), subject = "Payment received", to = emptyList())
+        assertEquals("money", CategoryRules.presetFor(alert).preset)
+        assertEquals("updates", CategoryRules.presetFor(alert, order = listOf("needs-you", "updates", "money")).preset)
+        assertEquals(listOf("money", "updates"), CategoryRules.presetsFor(alert).map { it.preset })
+    }
+
+    @Test
     fun `the patterns read words as desktop's do`() {
         // \b is a boundary of ASCII word characters: "factuur" inside a longer word is no money word, and an accented
         // letter before it is no word character to JavaScript.
@@ -132,6 +143,23 @@ class CategoryRulesTest {
             assertEquals("updates", state["gmail_tab"]?.jsonPrimitive?.content)
         }
         assertEquals("https://api.typesafe.ai/v1/systemone", Jev.ENDPOINT)
+    }
+
+    @Test
+    fun `a Jev answer cut off halfway is a network error, not a wait forever`() = runBlocking {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                MockResponse().setResponseCode(200).setHeader("content-length", "500").setBody("{\"answers\":")
+                    .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY),
+            )
+            try {
+                Jev(OkHttpClient(), server.url("/").toString()).classify("K", MessageSummary(id = "a", accountId = "a", folder = "INBOX", uid = 1), categories.take(1), false)
+                fail("a cut-off answer")
+            } catch (e: JevError) {
+                assertEquals("network", e.code)
+            }
+        }
     }
 
     @Test

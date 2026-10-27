@@ -341,11 +341,14 @@ class Categories(
 
     data class Placed(val category: String, val strength: Strength)
 
-    /** The category the rules give an email, among the ones that exist. */
-    private fun byRules(acc: Account, m: MessageSummary, ids: Set<String>, unsure: String): Placed {
+    /**
+     * The category the rules give an email, among the ones that exist. [order] is the categories' ids in the person's
+     * order, which decides between several rule matches.
+     */
+    private fun byRules(acc: Account, m: MessageSummary, order: List<String>, unsure: String): Placed {
         val known = lower(m.from.address) in mail.writtenTo()
-        val r = CategoryRules.presetFor(m, own(acc), m.vip, known)
-        return if (r.preset in ids) Placed(r.preset, r.strength) else Placed(unsure, Strength.WEAK)
+        val r = CategoryRules.presetFor(m, own(acc), m.vip, known, order)
+        return if (r.preset in order) Placed(r.preset, r.strength) else Placed(unsure, Strength.WEAK)
     }
 
     /** An inbox email's category id, or null when categories are off. */
@@ -357,7 +360,8 @@ class Categories(
         if (!s.enabled) return emptyMap()
         val list = list()
         if (list.isEmpty()) return emptyMap()
-        val ids = list.map { it.id }.toSet()
+        val order = list.map { it.id }
+        val ids = order.toSet()
         val unsure = if (s.unsure in ids) s.unsure else list[0].id
         val byId = accounts.associateBy { it.id }
         val out = HashMap<String, String>(messages.size * 2)
@@ -367,7 +371,7 @@ class Categories(
             val stored = listOf("override" to key, "sender" to lower(m.from.address), "classification" to key).firstNotNullOfOrNull { (collection, k) ->
                 (account.get(collection, k) as? JsonObject).text("category")?.takeIf { it in ids }
             }
-            out[m.id] = stored ?: byRules(acc, m, ids, unsure).category
+            out[m.id] = stored ?: byRules(acc, m, order, unsure).category
         }
         return out
     }
@@ -489,8 +493,12 @@ class Categories(
         }
         val forJev = ArrayDeque<Item>()
         var sorted = 0
+        val order = list.map { it.id }
         for (item in unsorted(again)) {
-            val rule = byRules(item.acc, item.m, ids, unsure)
+            // Cached before Rukoo kept the mail-kind headers: the next sync brings them, and until then the rules would
+            // guess with less than they will have. The rules still show a category for it meanwhile.
+            if (item.m.signals == null) continue
+            val rule = byRules(item.acc, item.m, order, unsure)
             if (rule.strength == Strength.STRONG || !wanted) {
                 val value = buildJsonObject {
                     put("category", rule.category)

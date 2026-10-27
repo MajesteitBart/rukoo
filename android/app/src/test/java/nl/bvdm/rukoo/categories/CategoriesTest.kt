@@ -94,7 +94,7 @@ class CategoriesTest {
         override suspend fun classify(key: String, m: MessageSummary, categories: List<Category>, toMe: Boolean): JevAnswer = throw JevError("network")
     }
 
-    private fun msg(uid: Int, from: Address, subject: String, date: Long, to: List<Address> = listOf(Address("", "me@work.example")), signals: MailSignals? = null, messageId: String? = "<$uid@x>") =
+    private fun msg(uid: Int, from: Address, subject: String, date: Long, to: List<Address> = listOf(Address("", "me@work.example")), signals: MailSignals? = MailSignals(), messageId: String? = "<$uid@x>") =
         MessageSummary(id = "acc1:INBOX:$uid", accountId = "acc1", folder = "INBOX", uid = uid.toLong(), messageId = messageId, from = from, to = to, subject = subject, date = date, signals = signals)
 
     private fun inbox() = listOf(
@@ -127,6 +127,31 @@ class CategoriesTest {
         s.cats.setEnabled(false)
         s.cats.setEnabled(true)
         assertFalse(s.cats.state.value.categories.any { it.id == "money" })
+    }
+
+    @Test
+    fun `mail cached before its headers were fetched waits to be sorted`() = runBlocking {
+        val s = setup(inbox())
+        s.mail.inbox = s.mail.inbox.mapIndexed { i, m -> if (i == 0) m.copy(signals = null) else m }
+        val first = s.mail.inbox[0]
+        s.cats.setEnabled(true)
+        s.cats.sort()
+        assertNull(s.stored(first))
+        assertEquals("the rules show a category meanwhile", "needs-you", s.cats.of(s.acc, first))
+        s.mail.inbox = s.mail.inbox.mapIndexed { i, m -> if (i == 0) m.copy(signals = MailSignals(campaign = true)) else m }
+        s.cats.sort()
+        assertEquals("promotions", s.stored(first)?.get("category")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `the person's order of the categories decides between rule matches`() {
+        // Without signals yet, so no sort stores it and the rules decide each time.
+        val s = setup(listOf(msg(5, Address("Shop", "hi@shop.example"), "Your invoice", 5, to = emptyList(), signals = null).copy(gmailTab = "promotions")))
+        val m = s.mail.inbox[0]
+        s.cats.setEnabled(true)
+        assertEquals("Money is above Promotions by default", "money", s.cats.of(s.acc, m))
+        s.cats.reorder(listOf("promotions", "needs-you", "to-read", "money", "updates"))
+        assertEquals("promotions", s.cats.of(s.acc, m))
     }
 
     @Test
@@ -218,8 +243,8 @@ class CategoriesTest {
         val msgs = inbox().mapIndexed { i, m -> if (i == 1) m.copy(from = Address("Shop", "hello@shop.example")) else m } +
             msg(4, Address("Club", "board@club.example"), "Meeting notes", 0, signals = MailSignals(list = true))
         val s = setup(msgs, fake)
-        s.cats.setEnabled(true)
         s.cats.setJev(on = true, key = "SECRET")
+        s.cats.setEnabled(true)
         assertTrue(s.cats.state.value.jev.on)
         val local = java.io.File(s.dir, "categories.json").readText()
         assertTrue("the key is stored through the Keystore box", !local.contains("SECRET") && local.contains("plain:"))
@@ -244,8 +269,8 @@ class CategoriesTest {
         }
         val s = setup(inbox(), fake)
         val (one, _, three) = s.mail.inbox
-        s.cats.setEnabled(true)
         s.cats.setJev(on = true, key = "BAD")
+        s.cats.setEnabled(true)
         s.cats.sort()
         assertEquals("key", s.cats.state.value.jev.error)
         assertNull("the uncertain email waits for Jev", s.stored(one))
@@ -304,10 +329,11 @@ class CategoriesTest {
         val msgs = (0 until 8).map { i -> msg(10 + i, Address("Person Name", "person$i@studio.example"), "Note $i", i.toLong(), to = emptyList()).copy(cc = listOf(Address("", "me@work.example"))) }
         val s = setup(msgs, gate)
         cats = s.cats
-        s.cats.setEnabled(true)
         s.cats.setJev(on = true, key = "KEY")
+        s.cats.setEnabled(true)
         s.cats.sort()
-        // Three workers start at once; the first turns Jev off, and the two that were already on their way finish.
+        // Desktop's single thread lets only the first request out; here three workers start at once, and the ones
+        // already on their way finish. The other five stay queued.
         assertTrue("only the requests already on their way: ${gate.calls}", gate.calls <= 3)
     }
 
@@ -324,8 +350,8 @@ class CategoriesTest {
             JevAnswer("money", 0.9, "jev-test")
         }
         val s = setup(inbox(), fake)
-        s.cats.setEnabled(true)
         s.cats.setJev(on = true, key = "OLD")
+        s.cats.setEnabled(true)
         val sorting = async { s.cats.sort() }
         asked.await()
         s.cats.setJev(key = "NEW")
@@ -339,8 +365,8 @@ class CategoriesTest {
     fun `the sort after TypeSafe was busy survives other updates`() = runBlocking {
         val fake = FakeJev { _, _, _ -> throw JevError("busy") }
         val s = setup(inbox(), fake)
-        s.cats.setEnabled(true)
         s.cats.setJev(on = true, key = "KEY")
+        s.cats.setEnabled(true)
         s.cats.sort()
         assertEquals("busy", s.cats.state.value.jev.error)
         val retry = s.cats.retryTimer

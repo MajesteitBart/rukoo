@@ -68,28 +68,45 @@ object CategoryRules {
     }
 
     /**
-     * The preset a message fits, and how sure the rules are. [own]: the account's addresses; [vip]: whether the
-     * sender is a VIP; [known]: whether the sender is someone the person has written to.
+     * Every preset a message fits, each with how sure the rules are. [own]: the account's addresses; [vip]: whether
+     * the sender is a VIP; [known]: whether the sender is someone the person has written to. Never empty.
      */
-    fun presetFor(m: MessageSummary, own: List<String> = emptyList(), vip: Boolean = false, known: Boolean = false): RuleResult {
+    fun presetsFor(m: MessageSummary, own: List<String> = emptyList(), vip: Boolean = false, known: Boolean = false): List<RuleResult> {
         val s = m.signals ?: MailSignals()
         val tab = m.gmailTab
         val from = m.from
         val local = localPart(from.address)
         fun personal(strength: Strength) = RuleResult(if (toMe(m, own)) "needs-you" else "to-read", strength)
-        if (vip) return RuleResult("needs-you", Strength.STRONG)
-        if (s.campaign || tab == "promotions" || MARKETING.matches(local)) return RuleResult("promotions", Strength.STRONG)
-        if (MONEY.containsMatchIn(m.subject)) return RuleResult("money", Strength.WEAK)
-        if (isMachine(from) || s.auto) return RuleResult("updates", Strength.STRONG)
-        if (tab == "social" || tab == "updates" || tab == "forums") return RuleResult("updates", Strength.WEAK)
+        val out = ArrayList<RuleResult>()
+        if (vip) out += RuleResult("needs-you", Strength.STRONG)
+        if (s.campaign || tab == "promotions" || MARKETING.matches(local)) out += RuleResult("promotions", Strength.STRONG)
+        if (MONEY.containsMatchIn(m.subject)) out += RuleResult("money", Strength.WEAK)
+        if (isMachine(from) || s.auto) {
+            out += RuleResult("updates", Strength.STRONG)
+        } else if (tab == "social" || tab == "updates" || tab == "forums") {
+            out += RuleResult("updates", Strength.WEAK)
+        }
         // Mail with an unsubscribe link: a newsletter, unless it comes from someone you write to (a mailing list).
-        if (s.list) return if (known) personal(Strength.WEAK) else RuleResult("promotions", Strength.WEAK)
-        if (s.bulk) return RuleResult("updates", Strength.WEAK)
+        if (s.list) {
+            out += if (known) personal(Strength.WEAK) else RuleResult("promotions", Strength.WEAK)
+        } else if (s.bulk) {
+            out += RuleResult("updates", Strength.WEAK)
+        }
+        if (out.isNotEmpty()) return out
         // A person: someone you write to, a colleague, or a name that matches the address.
         val colleague = own.any { domainOf(it).lowercase() == domainOf(from.address).lowercase() }
-        if (known || colleague || looksLikePerson(from) || Sites.siteOf(from.address) == null) return personal(Strength.WEAK)
+        if (known || colleague || looksLikePerson(from) || Sites.siteOf(from.address) == null) return listOf(personal(Strength.WEAK))
         // Anything else from a company's own domain is usually a message from its systems.
-        return RuleResult("updates", Strength.WEAK)
+        return listOf(RuleResult("updates", Strength.WEAK))
+    }
+
+    /**
+     * The preset that wins when a message fits several: the one highest in [order], the person's own order of the
+     * categories (Settings), so "the one higher in the list wins" holds for the rules too.
+     */
+    fun presetFor(m: MessageSummary, own: List<String> = emptyList(), vip: Boolean = false, known: Boolean = false, order: List<String> = PRESETS): RuleResult {
+        fun rank(preset: String): Int = order.indexOf(preset).let { if (it < 0) order.size + PRESETS.indexOf(preset) else it }
+        return presetsFor(m, own, vip, known).sortedBy { rank(it.preset) }.first()
     }
 }
 
