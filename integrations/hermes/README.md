@@ -20,6 +20,7 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
 - **Which devices.** The bridge runs `tailscale status --json` and tries port 47800 on every online Windows, Linux, Mac and Android device, the Hermes machine itself included. It skips tagged devices, devices shared from another tailnet, and iPhones and iPads, where Rukoo doesn't run. `RUKOO_URL` adds addresses it should try as well. Android reports `localhost` as its host name, so the bridge names a phone by its MagicDNS name, the one the Tailscale app shows.
 - **Which key.** Every Rukoo stores the Hermes API key, because it needs the key to chat. The bridge gets the same key from Hermes' `.env` as `RUKOO_KEY`. Both make the MCP token from it, so there is no token to copy, and one setup works for every device.
 - **Proof first.** The bridge doesn't send the token to whatever answers on port 47800. It sends a random challenge, and Rukoo answers with a value only a holder of the same key can compute. That value also covers the address Rukoo took the connection on, so a device that passes the challenge on to a real Rukoo elsewhere gets a proof for the wrong address. Tailscale makes sure each address belongs to one device. The token goes only to devices that get it right.
+- **Which version.** Rukoo sends its bridge protocol along with the proof, in `X-Rukoo-Bridge-Protocol`. The number covers what the bridge and Rukoo have to agree on: the challenge, the proof, the token and `rukoo/hello`. It goes up only for a change the other side can't follow. When Rukoo's number differs from the bridge's, the bridge sends it no token and reports which of the two is older instead of a wrong key. Bridge version 5 (`serverInfo.version` `bridge-5`) is the first that reads it. A Rukoo from before the header (1.0.0 to 2.0.0) signs the way protocol 2 does.
 - **Which device gets a call.** The bridge asks every Rukoo it found whether it has the chat the call is about (`conversation_id`). That device gets the call. A call without a chat, from WhatsApp for instance, goes to the device you used last: the one with the shortest time since its last keyboard or mouse input.
 - **When it looks.** At start, and in the background once a minute while calls come in. When no known Rukoo answers, it looks again before giving up.
 
@@ -32,7 +33,11 @@ Phones on mobile data often reach the tailnet through a relay. The bridge waits 
 ## Setup
 
 1. **Turn it on in Rukoo,** on every device where you use it. Open Settings > Agents and, in the Hermes card, enter the API key and turn on "Let Clark use Rukoo" (the name follows your agent's name). The card shows the address Rukoo listens on, `http://<this PC's Tailscale IP>:47800/mcp`. Rukoo only accepts Clark's token on that address, and only local tokens on 127.0.0.1. Windows asks once whether Rukoo may accept connections; allow it for private networks.
-2. **Copy the bridge to the Hermes machine.**
+2. **Put the bridge on the Hermes machine.** Take it from the same release as your Rukoo, so the two speak the same bridge protocol. The block from "Copy Hermes setup" (step 3) starts with the command for your version, which downloads the single file from the release tag. You don't need a checkout of the repository:
+   ```sh
+   curl -fsSL -o ~/.hermes/rukoo_bridge.py https://raw.githubusercontent.com/MajesteitBart/rukoo/v<version>/integrations/hermes/rukoo_bridge.py
+   ```
+   From a checkout of the same version, copying the file works too:
    ```sh
    scp integrations/hermes/rukoo_bridge.py clarkbox:~/.hermes/rukoo_bridge.py
    ```
@@ -67,6 +72,10 @@ A new device needs only step 1.
 
 A new API server key locks out Rukoo and the bridge alike until both have it. Enter it in Rukoo on each device. On the Hermes machine, the bridge reads the key when it starts. The reconcile tick compares entry names only, so it won't restart the bridge for a changed key. Send `/reload-mcp` to Clark from WhatsApp or Telegram, or run `hermes gateway restart`.
 
+## Updating Rukoo
+
+Updating Rukoo doesn't update the bridge. Most releases leave the bridge protocol alone, and the bridge you have keeps working. A release that changes it raises the number, and the bridge then says that it is older than that Rukoo. Download the bridge again with the command from "Copy Hermes setup" and send `/reload-mcp`. One bridge speaks one protocol, so with Rukoo on several devices, update Rukoo on all of them.
+
 ## Timeouts and approvals
 
 - The bridge waits up to 115 seconds for a tool call, including the time it takes to find the device. `write_draft` waits for Rukoo's composer, which takes at most 20 seconds. Mail actions answer within 90 seconds. Everything else answers in well under a second.
@@ -80,11 +89,13 @@ A new API server key locks out Rukoo and the bridge alike until both have it. En
 |---|---|
 | "Rukoo Mail isn't open on any of the user's devices" | Open Rukoo. Check that the device is on the tailnet and shows up in the "Checked" list, and that "Let Clark use Rukoo" is on. A device that isn't listed is offline in Tailscale, tagged, shared from another tailnet, or not Windows, Linux, macOS or Android: add it with `RUKOO_URL`. On a phone, also check that Rukoo's tools are turned on in its settings. |
 | "Rukoo Mail isn't open on any of the user's devices", from a chat on a phone, with only computers under "Checked" | The bridge is older than `bridge-4` and doesn't look for phones; Rukoo's Settings > Phone tools on the phone says the bridge hasn't reached it. Copy `rukoo_bridge.py` to the Hermes machine again, then send `/reload-mcp` to Clark or run `hermes gateway restart`; Hermes keeps running the old bridge until then. |
-| "Rukoo Mail is open on ..., but doesn't have your current API server key" | Enter the API server key from `~/.hermes/.env` in Rukoo under Settings > Agents on that device. |
+| "Rukoo Mail is open on ..., but doesn't have your current API server key" | Enter the API server key from `~/.hermes/.env` in Rukoo under Settings > Agents on that device. A bridge older than `bridge-5` says this for a Rukoo of another bridge protocol as well: if the key is right, download the bridge again (see [Updating Rukoo](#updating-rukoo)). |
+| "Rukoo Mail is open on ..., but this Rukoo bridge is older than that Rukoo" | That Rukoo speaks a newer bridge protocol. Download the bridge again with the command from "Copy Hermes setup" in that Rukoo, then send `/reload-mcp` to Clark or run `hermes gateway restart`. |
+| "Rukoo Mail is open on ..., but that Rukoo is older than this bridge" | That Rukoo speaks an older bridge protocol. Install the latest Rukoo there. |
 | "Rukoo Mail is open on ..., but that version is too old for this bridge" | That device runs a Rukoo from before this bridge, which can't prove it has the key. Install the latest Rukoo there. |
 | "Rukoo Mail on ... refused the key" | The key changed in Rukoo while the bridge was using it. Same fix as above. |
 | "The Rukoo bridge has no key" | Add `RUKOO_KEY: ${API_SERVER_KEY}` under the entry's `env:` and check that `API_SERVER_KEY` is in `~/.hermes/.env`, then `/reload-mcp`. |
-| `hermes mcp test rukoo` lists no tools and the bridge logs "no tool list is cached yet" | Rukoo has never been reachable from this machine. Open it on one of your devices, then test again. |
+| `hermes mcp test rukoo` lists no tools and the error says "The Rukoo bridge has no tool list yet" | The bridge has never reached Rukoo from this machine. The rest of the message says why, in the words of one of the rows above. Fix that, then test again. |
 | The bridge logs "could not get the device list from Tailscale" | `tailscale` isn't on the PATH Hermes gives the bridge. Set `RUKOO_TAILSCALE` to its full path. |
 
 The bridge logs to stderr with the prefix `rukoo-bridge:`, so its lines end up in the gateway log. It logs a line like `Rukoo is open on laptop` whenever the set of devices changes.

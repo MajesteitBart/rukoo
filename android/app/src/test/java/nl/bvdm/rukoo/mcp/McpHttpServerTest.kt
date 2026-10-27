@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.mcp
 
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.net.InetAddress
 import java.net.Socket
@@ -135,6 +136,7 @@ class McpHttpServerTest {
         assertEquals(401, noToken.status)
         assertEquals("{\"error\":\"unauthorized\"}", noToken.body)
         assertNull(noToken.headers["x-rukoo-proof"])
+        assertNull(noToken.headers["x-rukoo-bridge-protocol"])
         assertEquals(401, request(headers = mapOf("Authorization" to "Bearer wrong")).status)
         assertEquals(401, request(headers = mapOf("Authorization" to token)).status)
         assertEquals(200, request(headers = mapOf("Authorization" to "bearer   $token  ")).status)
@@ -147,15 +149,31 @@ class McpHttpServerTest {
         assertEquals(401, r.status)
         assertEquals("{\"error\":\"unauthorized\"}", r.body)
         assertEquals(McpTokens.proof(token, "127.0.0.1:$port", challenge), r.headers["x-rukoo-proof"])
+        // With the protocol the proof follows, as desktop sends it, so the bridge can tell another version from another key.
+        assertEquals("2", r.headers["x-rukoo-bridge-protocol"])
         // Also with a wrong token present.
         assertEquals(r.headers["x-rukoo-proof"], request(headers = mapOf("X-Rukoo-Challenge" to challenge, "Authorization" to "Bearer nope")).headers["x-rukoo-proof"])
-        // A challenge out of form gets no proof.
-        assertNull(request(headers = mapOf("X-Rukoo-Challenge" to "short")).headers["x-rukoo-proof"])
+        // A challenge out of form gets no proof, and no protocol.
+        val short = request(headers = mapOf("X-Rukoo-Challenge" to "short"))
+        assertNull(short.headers["x-rukoo-proof"])
+        assertNull(short.headers["x-rukoo-bridge-protocol"])
         // No Hermes key, or phone tools off: the literal none, so the bridge knows this Rukoo has another key.
         secrets = AuthSecrets(toolsOn = true)
-        assertEquals("none", request(headers = mapOf("X-Rukoo-Challenge" to challenge)).headers["x-rukoo-proof"])
+        val keyless = request(headers = mapOf("X-Rukoo-Challenge" to challenge))
+        assertEquals("none", keyless.headers["x-rukoo-proof"])
+        assertEquals("2", keyless.headers["x-rukoo-bridge-protocol"])
         secrets = AuthSecrets(toolsOn = false, clarkKey = key)
         assertEquals("none", request(headers = mapOf("X-Rukoo-Challenge" to challenge)).headers["x-rukoo-proof"])
+    }
+
+    /** One bridge serves the phone and desktop, so all three name the same bridge protocol. */
+    @Test
+    fun bridgeProtocolMatchesDesktopAndTheBridge() {
+        val repo = listOf(File("../.."), File("..")).first { File(it, "src/main/agents/mcp.js").exists() }
+        val desktop = Regex("""const BRIDGE_PROTOCOL = (\d+);""").find(File(repo, "src/main/agents/mcp.js").readText())
+        val bridge = Regex("""(?m)^BRIDGE_PROTOCOL = (\d+)$""").find(File(repo, "integrations/hermes/rukoo_bridge.py").readText())
+        assertEquals(McpHttpServer.BRIDGE_PROTOCOL.toString(), desktop?.groupValues?.get(1))
+        assertEquals(McpHttpServer.BRIDGE_PROTOCOL.toString(), bridge?.groupValues?.get(1))
     }
 
     @Test

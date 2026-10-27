@@ -7,7 +7,7 @@ const path = require('path');
 const { tempDir } = require('./tmp');
 const http = require('http');
 const net = require('net');
-const { McpServer } = require('../src/main/agents/mcp');
+const { McpServer, BRIDGE_PROTOCOL } = require('../src/main/agents/mcp');
 const { AgentHub } = require('../src/main/agents/hub');
 const { Engine } = require('../src/main/engine');
 
@@ -174,12 +174,21 @@ test("the remote listener proves it has the key when asked, and tells the bridge
     assert.equal(asked.status, 401, 'a proof is no way in');
     assert.deepEqual(asked.json, { error: 'unauthorized' });
     assert.equal(asked.headers['x-rukoo-proof'], `proof-of-127.0.0.1:${port}-${challenge}`, 'for the address the socket took the connection on');
-    assert.equal((await ask(port, 'short')).headers['x-rukoo-proof'], undefined);
-    assert.equal((await ask(port, 'abcdefghijklmnop.%')).headers['x-rukoo-proof'], undefined);
-    assert.equal((await ask(port, 'x'.repeat(129))).headers['x-rukoo-proof'], undefined);
-    assert.equal((await ask(local, challenge)).headers['x-rukoo-proof'], undefined, 'only on the Tailscale listener');
+    // With the protocol the proof follows, so a bridge that can't match it can tell another version from another key.
+    assert.equal(BRIDGE_PROTOCOL, 2);
+    assert.equal(asked.headers['x-rukoo-bridge-protocol'], '2');
+    for (const odd of ['short', 'abcdefghijklmnop.%', 'x'.repeat(129)]) {
+      const refused = await ask(port, odd);
+      assert.equal(refused.headers['x-rukoo-proof'], undefined);
+      assert.equal(refused.headers['x-rukoo-bridge-protocol'], undefined, 'only with a proof');
+    }
+    const onLoopback = await ask(local, challenge);
+    assert.equal(onLoopback.headers['x-rukoo-proof'], undefined, 'only on the Tailscale listener');
+    assert.equal(onLoopback.headers['x-rukoo-bridge-protocol'], undefined);
     hub.proof = () => '';
-    assert.equal((await ask(port, challenge)).headers['x-rukoo-proof'], 'none', 'Rukoo without an API key says so');
+    const keyless = await ask(port, challenge);
+    assert.equal(keyless.headers['x-rukoo-proof'], 'none', 'Rukoo without an API key says so');
+    assert.equal(keyless.headers['x-rukoo-bridge-protocol'], '2');
 
     const hello = await request(port, { body: rpc(2, 'rukoo/hello', { conversation_id: 'c1' }), token: REMOTE });
     assert.equal(hello.status, 200);
@@ -221,6 +230,7 @@ test('a refused request is answered after its body is in, so a late body cannot 
     const answer = Buffer.concat(received).toString('utf8');
     assert.match(answer, /^HTTP\/1\.1 401 /);
     assert.match(answer, new RegExp(`x-rukoo-proof: proof-of-127\\.0\\.0\\.1:${port}-abcdefghijklmnop_-12`, 'i'));
+    assert.match(answer, /x-rukoo-bridge-protocol: 2\r\n/i);
   } finally {
     socket.destroy();
     await server.close();
