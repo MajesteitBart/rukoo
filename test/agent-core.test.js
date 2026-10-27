@@ -133,7 +133,9 @@ function fakeHub(env, extra = {}) {
   return { hub, events };
 }
 
-async function idle(hub, cid, ms = 5000) {
+// A turn of the fake agent takes well under a second, but 5 s ran out once on a busy Windows CI runner (#88). A
+// finished turn returns at once, so the larger budget costs only a test that fails anyway.
+async function idle(hub, cid, ms = 20000) {
   const end = Date.now() + ms;
   while (hub.turns.has(cid)) {
     if (Date.now() > end) throw new Error('turn did not finish');

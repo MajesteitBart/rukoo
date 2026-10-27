@@ -3,6 +3,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
 
 test('Google tile starts browser sign-in and reports a denied consent', async () => {
   const env = {
@@ -41,7 +42,7 @@ test('Google tile starts browser sign-in and reports a denied consent', async ()
     await win.click('[data-s="password-mode"]');
     await expect(win.locator('[name=password]')).toBeVisible();
   } finally {
-    await app.close();
+    await closeApp(app);
     removeDir(env.SEM_DATA_DIR);
   }
 });

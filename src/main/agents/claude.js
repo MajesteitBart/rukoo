@@ -124,6 +124,8 @@ class ClaudeAdapter {
     this.exeCache = null;
     this.versions = new Map();
     this.rateLimit = null;
+    // Set by dispose() when Rukoo quits: no claude process starts after that, since nothing would end it.
+    this.disposed = false;
   }
 
   settings() {
@@ -267,8 +269,9 @@ class ClaudeAdapter {
       // A process for this chat that is still shutting down would hold the session: let it go first.
       const old = this.exiting.get(cid);
       if (old) await Promise.race([old, new Promise((r) => setTimeout(r, STOP_WAIT))]);
-      // Stop can land during that wait; an abort that already fired never reaches a later listener.
-      if (turn.signal && turn.signal.aborted) return { status: 'stopped' };
+      // Stop can land during that wait; an abort that already fired never reaches a later listener. dispose() can land
+      // there too, or during the program lookup above: it has closed every session, and nothing would end a new one.
+      if (this.disposed || (turn.signal && turn.signal.aborted)) return { status: 'stopped' };
       session = this.spawn(turn, exe, s, key, fresh);
     }
     const outcome = await session.run(turn);
@@ -352,6 +355,7 @@ class ClaudeAdapter {
   }
 
   async dispose() {
+    this.disposed = true;
     await Promise.all([...this.sessions.values()].map((session) => this.closeSession(session, { now: true })));
   }
 }
