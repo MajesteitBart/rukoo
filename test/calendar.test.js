@@ -20,10 +20,11 @@ const API = 'https://www.googleapis.com/calendar/v3';
 // with an older etag in If-Match with 412.
 function fakeCalendar({ events = [], fail = null } = {}) {
   const calendars = [
-    { id: 'me@example.com', summary: 'me@example.com', primary: true, accessRole: 'owner', timeZone: 'Europe/Amsterdam', selected: true },
-    { id: 'nl#holiday@group.v.calendar.google.com', summary: 'Holidays', accessRole: 'reader', selected: false },
+    { id: 'me@example.com', summary: 'me@example.com', primary: true, accessRole: 'owner', timeZone: 'Europe/Amsterdam', selected: true, backgroundColor: '#9FE1E7' },
+    { id: 'nl#holiday@group.v.calendar.google.com', summary: 'Holidays', accessRole: 'reader', selected: false, backgroundColor: '#16a765' },
     { id: 'busy@example.com', summary: 'Free/busy only', accessRole: 'freeBusyReader' },
-    { id: 'team@example.com', summary: 'Team', accessRole: 'writerWithoutPrivateAccess' }
+    // Not a colour Rukoo takes.
+    { id: 'team@example.com', summary: 'Team', accessRole: 'writerWithoutPrivateAccess', backgroundColor: 'teal' }
   ];
   const store = events.map((e) => ({ calendarId: 'me@example.com', etag: '"1"', ...e }));
   const requests = [];
@@ -122,7 +123,12 @@ test('which accounts have a calendar: Google with the grant, Google without it, 
   const states = Object.fromEntries(view.accounts.map((a) => [a.id, a.state]));
   assert.deepEqual(states, { g1: 'ready', g2: 'reconnect', g3: 'reconnect', d1: 'ready' });
   // Accounts without the calendar never reach Google.
-  return settle(calendars).then(() => assert.ok(fake.requests.every((r) => r.auth === 'Bearer token-1')));
+  return settle(calendars).then(() => {
+    assert.ok(fake.requests.every((r) => r.auth === 'Bearer token-1'));
+    // The demo's calendars have no colour of their own: the calendar view gives them the account's.
+    const demo = calendars.view({ start: monday(), end: monday() + 7 * DAY }).accounts.find((a) => a.id === 'd1');
+    assert.deepEqual(demo.calendars.map((c) => c.color), [null, null, null]);
+  });
 });
 
 test('a view fetches its weeks once, with expanded recurring events, and later only the missing weeks', async () => {
@@ -144,11 +150,12 @@ test('a view fetches its weeks once, with expanded recurring events, and later o
 
   const second = calendars.view(week);
   assert.equal(second.accounts[0].loading, false);
-  // Team comes without selected, which Google means as switched off in Google Calendar.
-  assert.deepEqual(second.accounts[0].calendars.map((c) => [c.name, c.writable, c.selected]), [
-    ['me@example.com', true, true],
-    ['Holidays', false, false],
-    ['Team', true, false]
+  // Team comes without selected, which Google means as switched off in Google Calendar. Each calendar keeps the colour
+  // it has in Google Calendar; one Google gives in another form leaves the account's colour to the calendar view.
+  assert.deepEqual(second.accounts[0].calendars.map((c) => [c.name, c.writable, c.selected, c.color]), [
+    ['me@example.com', true, true, '#9fe1e7'],
+    ['Holidays', false, false, '#16a765'],
+    ['Team', true, false, null]
   ]);
   const titles = second.events.map((e) => e.title).sort();
   assert.deepEqual(titles, ['Offsite', 'Planning'], 'working locations are left out');
@@ -228,7 +235,15 @@ test('Google events: times, guests, answers and what the user may change', () =>
   for (const eventType of ['fromGmail', 'birthday']) {
     const made = toEvent({ id: eventType, eventType, ...mine }, cal);
     assert.deepEqual([made.eventType, made.canEdit, made.canDelete], [eventType, false, true]);
+    // Locked by Google, they still can't be edited, and still can be deleted.
+    const locked = toEvent({ id: `${eventType}-locked`, eventType, locked: true, ...mine }, cal);
+    assert.deepEqual([locked.canEdit, locked.canDelete], [false, true], `locked ${eventType}`);
+    // In a calendar the user may not change, they can't be deleted either.
+    assert.equal(toEvent({ id: `${eventType}-ro`, eventType, locked: true, ...mine }, { ...cal, writable: false }).canDelete, false);
   }
+  // A locked event of the user's own can be neither edited nor deleted.
+  const lockedOwn = toEvent({ id: 'lo', locked: true, ...mine }, cal);
+  assert.deepEqual([lockedOwn.canEdit, lockedOwn.canDelete], [false, false]);
   assert.deepEqual([own.eventType, toEvent({ id: 'v', etag: '"7"', ...mine }, cal).etag], ['default', '"7"']);
   // Rate limits are a pause, whichever name Google gives them.
   for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded']) assert.equal(apiError(403, { error: { errors: [{ reason }] } }).code, 'busy');
@@ -400,6 +415,22 @@ test('deleting a series that Google already deleted removes every occurrence', a
   assert.equal(del.path, '/calendars/me@example.com/events/daily');
   assert.equal(del.ifMatch, null, "Rukoo knows the occurrence's version, not the series'");
   assert.deepEqual(calendars.view(week).events, [], 'no occurrence stays on screen');
+});
+
+test("changing one occurrence of a Google series leaves the other occurrences' versions alone", async () => {
+  const m = monday();
+  const occurrence = (n) => ({ id: `daily_${n}`, recurringEventId: 'daily', summary: 'Daily', start: { dateTime: iso(at(m, n, 9)) }, end: { dateTime: iso(at(m, n, 9, 15)) }, organizer: { email: 'me@example.com', self: true } });
+  const fake = fakeCalendar({ events: [0, 1, 2].map(occurrence) });
+  const { calendars } = setup(fake);
+  const week = { start: m, end: m + 7 * DAY };
+  calendars.view(week);
+  await settle(calendars);
+  const [first] = calendars.view(week).events;
+  await calendars.update(first.id, { title: 'Daily, longer', allDay: false, start: first.start, end: first.end + 15 * 60000 }, { etag: first.etag });
+  // Google gives every occurrence its own version, and only the changed one has a new one.
+  const versions = calendars.view(week).events.map((e) => [e.eventId, e.etag]);
+  assert.deepEqual(versions, [['daily_0', fake.store[0].etag], ['daily_1', '"1"'], ['daily_2', '"1"']]);
+  assert.notEqual(fake.store[0].etag, '"1"');
 });
 
 test('answering an invitation patches only the guest list, for one event or the series', async () => {

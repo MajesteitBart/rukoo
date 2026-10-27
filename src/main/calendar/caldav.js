@@ -116,7 +116,13 @@ function hrefIn(r, ns, name, base) {
 const propfind = (props) =>
   `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:c="${CAL}" xmlns:a="${APPLE}"><d:prop>${props}</d:prop></d:propfind>`;
 const FIND_HOME = propfind('<d:current-user-principal/><c:calendar-home-set/>');
-const LIST = propfind('<d:resourcetype/><d:displayname/><c:supported-calendar-component-set/><d:current-user-privilege-set/><a:calendar-order/>');
+const LIST = propfind('<d:resourcetype/><d:displayname/><c:supported-calendar-component-set/><d:current-user-privilege-set/><a:calendar-order/><a:calendar-color/>');
+
+// Apple's calendar-color, which most CalDAV servers keep: #RRGGBB, or #RRGGBBAA with an opacity Rukoo leaves out.
+function calendarColor(text) {
+  const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(String(text || '').trim());
+  return m ? `#${m[1].toLowerCase()}` : null;
+}
 
 // ---------- times ----------
 
@@ -736,6 +742,7 @@ class CalDavCalendar {
           writable: !granted || granted.some((g) => ['all', 'write', 'write-content', 'bind'].includes(g)),
           selected: true,
           timeZone: null,
+          color: calendarColor(textOf(prop(r, APPLE, 'calendar-color'))),
           order: Number(textOf(prop(r, APPLE, 'calendar-order'))) || i + 1000
         };
       })
@@ -792,11 +799,22 @@ class CalDavCalendar {
     return { obj, etag: res.etag };
   }
 
-  // Writes a calendar object back, only over the version etag; returns its new version.
+  // Writes a calendar object back, only over the version etag. Returns its new version and the object that version
+  // holds. Most servers name the new version in their answer, and then it holds what Rukoo wrote. A server that
+  // doesn't is asked afterwards, and another change can come in between, so then it holds what the server sent back
+  // (read).
   async save(href, obj, etag) {
     const res = await this.request('PUT', href, { body: obj.vcal.toString(), type: ICS, etag });
     if (!res.ok) throw httpError(res.status, { write: true });
-    return res.etag || (await this.load(href)).etag;
+    return res.etag ? { etag: res.etag, obj, read: false } : { ...(await this.load(href)), read: true };
+  }
+
+  // What a write did to a calendar object, for the store to move the rest of a series along (restamp in index.js):
+  // the new version, the one it replaced, and, when Rukoo had to read the new version back, its occurrences between
+  // two times.
+  written(cal, href, replaced, saved) {
+    const ctx = { cal, href, etag: saved.etag, me: this.me() };
+    return { etag: saved.etag, replaced, occurrences: saved.read ? (start, end) => expand(saved.obj, ctx, start, end) : null };
   }
 
   async get(cal, eventId) {
@@ -830,7 +848,7 @@ class CalDavCalendar {
         throw calendarError('conflict', t('errors.calendar.readOnly'));
       }
       apply(master, made.obj.vcal, input);
-      const etag = await this.save(href, made.obj, made.etag);
+      const { etag } = await this.save(href, made.obj, made.etag);
       return pick(made.obj, { cal, href, etag, me: this.me() }, null);
     }
     if (!res.ok) throw httpError(res.status, { write: true });
@@ -840,7 +858,8 @@ class CalDavCalendar {
 
   // Changes one event; for a series, the occurrence that was opened. etag is the version the user changed, and a
   // newer one on the server makes this fail with 'changed'. An untouched description stays as the server has it,
-  // because Rukoo shows it as plain text.
+  // because Rukoo shows it as plain text. Returns the event as its new version has it, with what the write did
+  // (written) for the store.
   async update(cal, event, input, { etag = null } = {}) {
     const { href, rid } = splitId(event.eventId);
     const { obj, etag: current } = await this.load(href);
@@ -848,14 +867,15 @@ class CalDavCalendar {
     const comp = rid ? exceptionFor(obj, rid) : recurring(obj.master) ? null : obj.master;
     if (!comp) throw calendarError('not_found', t('errors.calendar.notFound'));
     apply(comp, obj.vcal, input, { description: input.description !== event.description });
-    const next = await this.save(href, obj, etag || current);
-    const e = pick(obj, { cal, href, etag: next, me: this.me() }, rid);
+    const saved = await this.save(href, obj, etag || current);
+    const e = pick(saved.obj, { cal, href, etag: saved.etag, me: this.me() }, rid);
     if (!e) throw calendarError('not_found', t('errors.calendar.notFound'));
-    return e;
+    return { ...e, written: this.written(cal, href, etag || current, saved) };
   }
 
   // An event, a whole series, or one occurrence, which the series then leaves out (EXDATE); each only on the version
-  // the user saw.
+  // the user saw. Leaving out one occurrence gives the series a new version; what that write did comes back (written),
+  // so the store can move the other occurrences along.
   async remove(cal, event, { series = false, etag = null } = {}) {
     const { href, rid } = splitId(event.eventId);
     if (!rid || (series && event.seriesId)) {
@@ -883,11 +903,12 @@ class CalDavCalendar {
       if (!res.ok) throw httpError(res.status, { write: true });
       return;
     }
-    await this.save(href, obj, etag || current);
+    return this.written(cal, href, etag || current, await this.save(href, obj, etag || current));
   }
 
   // An answer to an invitation: only the user's own PARTSTAT changes, in the occurrence or in the whole series. The
-  // server sends the organizer the reply (RFC 6638); events only offer this where the server says it does.
+  // server sends the organizer the reply (RFC 6638); events only offer this where the server says it does. Like
+  // remove, it returns what the write did.
   async respond(cal, event, response, { series = false } = {}) {
     const { href, rid } = splitId(event.eventId);
     const { obj, etag } = await this.load(href);
@@ -903,7 +924,7 @@ class CalDavCalendar {
       }
     }
     if (!found) throw calendarError('not_invited', t('errors.calendar.notInvited'));
-    await this.save(href, obj, etag);
+    return this.written(cal, href, etag, await this.save(href, obj, etag));
   }
 }
 

@@ -131,9 +131,11 @@ class Calendars extends EventEmitter {
   }
 
   // Google names the primary calendar after the address; the account's name reads better under that address.
-  publicCalendar(acc, { id, name, primary, writable, selected }) {
+  // color: the calendar's own colour from Google or the CalDAV server, or null where it has none (the demo, or a cache
+  // from before Rukoo kept it, until the next sync); the calendar view then uses the account's colour.
+  publicCalendar(acc, { id, name, primary, writable, selected, color }) {
     const own = primary && acc.name && name.toLowerCase() === String(acc.email).toLowerCase();
-    return { id, name: own ? acc.name : name, primary, writable, selected };
+    return { id, name: own ? acc.name : name, primary, writable, selected, color: /^#[0-9a-f]{6}$/i.test(color || '') ? color : null };
   }
 
   publicEvent(acc, e) {
@@ -449,9 +451,50 @@ class Calendars extends EventEmitter {
         // Deleted in the meantime: that is the news. Any other failure leaves the cache as it was.
         throw gone && gone.code === 'not_found' ? gone : err;
       }
+      // Only this occurrence gets the latest version. The others of a series that changed elsewhere keep the version
+      // they were read at: what they show may be out of date as well, so a change to them should say so too.
       this.store(acc, cache, latest, event);
       throw err;
     }
+  }
+
+  // A provider whose series is one object with one version (CalDAV) gives the whole object a new version when one
+  // occurrence changes, is left out or is answered. written, from the provider, holds that version, the one it
+  // replaced and, when the provider had to read the new version back, its occurrences. The occurrences cached at the
+  // replaced version move to the new one; otherwise the next change to one of them would count as made elsewhere. A
+  // version the server named in its answer holds what Rukoo wrote, so only their version changes. A version read back
+  // can also hold a change made elsewhere in between, so they take their content from it too, and one it doesn't have
+  // keeps its old version. Occurrences cached at an older version keep it, for the reason above. Google versions
+  // every occurrence on its own, so its other occurrences stay as they are. Returns the occurrences that took their
+  // content from the version read back, so a caller doesn't write its own idea of the change over them.
+  restamp(p, cache, event, written) {
+    const fresh = new Set();
+    const { etag, replaced, occurrences } = written || {};
+    if (!p.versionedSeries || !replaced || !etag || replaced === etag) return fresh;
+    const behind = cache.events.filter((e) => inScope(e, event, true) && e.etag === replaced);
+    if (!behind.length) return fresh;
+    if (!occurrences) {
+      for (const e of behind) e.etag = etag;
+      return fresh;
+    }
+    let latest;
+    try {
+      // A day either side also finds an occurrence without length.
+      latest = occurrences(Math.min(...behind.map((e) => e.start)) - DAY, Math.max(...behind.map((e) => e.end)) + DAY);
+    } catch (_) {
+      // Occurrences Rukoo can't work out, such as a series too long to step through, keep their old version.
+      return fresh;
+    }
+    const read = new Map(latest.map((e) => [e.eventId, e]));
+    cache.events = cache.events
+      .map((e) => {
+        if (!behind.includes(e) || !read.has(e.eventId)) return e;
+        const next = read.get(e.eventId);
+        fresh.add(next);
+        return next;
+      })
+      .sort((a, b) => a.start - b.start);
+    return fresh;
   }
 
   // One event from the cache, wherever it lies now; null when it is gone.
@@ -489,7 +532,8 @@ class Calendars extends EventEmitter {
     const { acc, p, cache, cal, event } = this.locate(id);
     if (!event.canEdit) throw calendarError('read_only', t('errors.calendar.readOnly'));
     const clean = this.clean(input);
-    const next = await this.change(acc, cache, event, () => this.unlessChanged(acc, p, cache, cal, event, etag, () => p.update(cal, event, clean, { notify, etag })));
+    const { written = null, ...next } = await this.change(acc, cache, event, () => this.unlessChanged(acc, p, cache, cal, event, etag, () => p.update(cal, event, clean, { notify, etag })));
+    this.restamp(p, cache, event, written);
     return this.store(acc, cache, next, event);
   }
 
@@ -497,17 +541,20 @@ class Calendars extends EventEmitter {
     const { acc, p, cache, cal, event } = this.locate(id);
     if (!event.canDelete) throw calendarError('read_only', t('errors.calendar.readOnly'));
     const job = () => p.remove(cal, event, { notify, series, etag });
+    let written = null;
     try {
       // A whole series goes without a version where Rukoo only knows the occurrence's (Google). A provider whose series
       // is one object with one version (CalDAV) checks it like any other change.
       const whole = Boolean(series && event.seriesId);
       const unversioned = whole && !p.versionedSeries;
-      await this.change(acc, cache, event, unversioned ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job, { series: whole }));
+      written = await this.change(acc, cache, event, unversioned ? job : () => this.unlessChanged(acc, p, cache, cal, event, etag, job, { series: whole }));
     } catch (err) {
       // Already gone, for instance after a first try whose answer got lost: the event or series is deleted, as asked.
       if (!err || err.code !== 'not_found') throw err;
     }
     cache.events = cache.events.filter((e) => !inScope(e, event, series));
+    // One occurrence left out: the rest of its series has a new version.
+    this.restamp(p, cache, event, written);
     this.persist(acc.id);
     this.emit('updated');
   }
@@ -516,9 +563,11 @@ class Calendars extends EventEmitter {
     const { acc, p, cache, cal, event } = this.locate(id);
     if (!RESPONSES.has(response)) throw calendarError('invalid', t('errors.calendar.invalidResponse'));
     if (!event.canRespond) throw calendarError('not_invited', t('errors.calendar.notInvited'));
-    await this.change(acc, cache, event, () => p.respond(cal, event, response, { series }));
+    const written = await this.change(acc, cache, event, () => p.respond(cal, event, response, { series }));
+    // An occurrence read back from the server shows the answer stored there, which can be one given elsewhere since.
+    const fresh = this.restamp(p, cache, event, written);
     for (const e of cache.events) {
-      if (!inScope(e, event, series) || !e.canRespond) continue;
+      if (!inScope(e, event, series) || !e.canRespond || fresh.has(e)) continue;
       e.response = response;
       for (const a of e.attendees || []) if (a.self) a.response = response;
     }
