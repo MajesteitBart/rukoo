@@ -36,11 +36,37 @@ export const PULL_LIMIT = 1000;
 const BODY_MAX = 64 * 1024;
 const PUSH_BODY_MAX = 12 * 1024 * 1024;
 
-export async function readJson(request, max = BODY_MAX) {
+// The body, read piece by piece and given up on as soon as it passes max. A body sent in chunks has no
+// Content-Length to check first, and reading all of it before checking would let anyone fill the Worker's memory.
+async function readBody(request, max) {
+  const tooLarge = () => new HttpError(413, 'too_large', 'The request body is too large.');
   const declared = Number(request.headers.get('content-length'));
-  if (declared > max) throw new HttpError(413, 'too_large', 'The request body is too large.');
-  const body = await request.arrayBuffer();
-  if (body.byteLength > max) throw new HttpError(413, 'too_large', 'The request body is too large.');
+  if (declared > max) throw tooLarge();
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return body;
+}
+
+export async function readJson(request, max = BODY_MAX) {
+  const body = await readBody(request, max);
   let value;
   try {
     value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));

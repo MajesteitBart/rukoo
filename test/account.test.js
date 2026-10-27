@@ -33,6 +33,17 @@ function device(t, srv, name = 'desk', dir = tmpDir(t)) {
   return acc;
 }
 
+// A device whose session ended on the server. A sync of its own may notice before the test asks (a change sets one
+// off two seconds later), so this checks where it ends up rather than which sync noticed.
+async function signedOut(device) {
+  await device.sync().then(
+    () => {},
+    (err) => assert.equal(err.code, 'signed_out')
+  );
+  assert.equal(device.status().signedIn, false);
+  assert.equal(device.status().error, 'signed_out');
+}
+
 test('the keys match the shared vectors', async () => {
   const salt = k.unb64u(vectors.salt, 16);
   assert.equal(k.normalizeEmail(vectors.email), vectors.normalizedEmail);
@@ -353,7 +364,7 @@ test('a changed password signs other devices out, and a typo does not sign this 
   await assert.rejects(desk.changePassword('wrong password!!', 'another long password'), { code: 'wrong_password' });
   assert.equal(desk.status().signedIn, true);
   await desk.changePassword(PASSWORD, 'another long password');
-  await assert.rejects(laptop.sync(), { code: 'signed_out' });
+  await signedOut(laptop);
   assert.equal(laptop.status().signedIn, false);
   assert.equal(laptop.status().error, 'signed_out');
 
@@ -379,7 +390,7 @@ test('the recovery key sets a new password and keeps the data', async (t) => {
   await phone.recover({ email: 'j@example.com', recoveryKey: recoveryKey.toLowerCase(), password: 'brand new password' });
   await phone.sync();
   assert.deepEqual(phone.get('sender', 'boss@example.com'), { category: 'needs-you' });
-  await assert.rejects(desk.sync(), { code: 'signed_out' }, 'recovery signs every device out');
+  await signedOut(desk);
 
   const { recoveryKey: next } = await phone.newRecoveryKey('brand new password');
   assert.notEqual(next, recoveryKey);
@@ -418,7 +429,7 @@ test('a device that was removed elsewhere finds itself signed out', async (t) =>
   await laptop.signIn({ email: 'l@example.com', password: PASSWORD });
   const { devices } = await desk.details();
   await desk.removeDevice(devices.find((d) => d.name === 'laptop').id);
-  await assert.rejects(laptop.sync(), { code: 'signed_out' });
+  await signedOut(laptop);
   assert.equal(laptop.status().signedIn, false);
 });
 

@@ -268,3 +268,22 @@ describe('rate limiting', () => {
     }
   });
 });
+
+describe('request bodies', () => {
+  it('stops reading a body sent in chunks once it passes the limit', async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(16 * 1024).fill(0x20);
+    const stream = new ReadableStream({
+      pull(controller) {
+        pulled += chunk.byteLength;
+        if (pulled > 1024 * 1024) controller.close();
+        else controller.enqueue(chunk);
+      }
+    });
+    const request = new Request('https://accounts.example/v1/prelogin', { method: 'POST', body: stream, duplex: 'half' });
+    const res = await worker.fetch(request, env, createExecutionContext());
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toBe('too_large');
+    expect(pulled).toBeLessThanOrEqual(64 * 1024 + 2 * chunk.byteLength);
+  });
+});
