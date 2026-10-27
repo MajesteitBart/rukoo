@@ -220,6 +220,15 @@ test("after the guide, the sidebar and a panel show what Jev is doing, and when 
   await expect(panel.locator('h3')).toHaveText('Your inbox is sorted', { timeout: 20000 });
   await expect(win.locator('.sort-status.done .t')).toHaveText(/^Sorted \d+ emails$/);
 
+  // Keys in the panel stay there: Delete on a decision leaves the open email alone.
+  const open = (await win.locator('.reader-subject').textContent()).trim();
+  const count = await win.locator('.list-scroll .item').count();
+  await panel.locator('.sa-item').first().focus();
+  await win.keyboard.press('Delete');
+  await win.waitForTimeout(500);
+  await expect(win.locator('.list-scroll .item')).toHaveCount(count);
+  await expect(win.locator('.reader-subject')).toHaveText(open);
+
   // An email in the list opens in Money.
   const subject = (await panel.locator('.sa-item .sa-subject').last().textContent()).trim();
   await panel.locator('.sa-item').last().click();

@@ -2445,7 +2445,7 @@ document.addEventListener('keydown', (e) => {
     return setMode(e.key === '1' ? 'mail' : 'calendar');
   }
   if (calendarMode()) {
-    if (!e.target.closest?.('.agentpane, .bui-menu') && calendar.onKey(e)) e.preventDefault();
+    if (!e.target.closest?.('.agentpane, .bui-menu, .sort-panel') && calendar.onKey(e)) e.preventDefault();
     return;
   }
   // The rest follows the chosen keyboard scheme (keymap.js). Writing, searching and syncing work while typing too,
@@ -2462,8 +2462,8 @@ document.addEventListener('keydown', (e) => {
     return action === 'compose' ? compose({ mode: 'new' }) : action === 'search' ? focusSearch() : syncNow();
   }
   // Keys in the chat panel stay there: Delete on one of its buttons must not delete the open email.
-  // Its menus (agent picker, history) live on the body, outside the panel.
-  if (e.target.closest?.('.agentpane, .bui-menu')) return;
+  // Its menus (agent picker, history) live on the body, outside the panel. The same goes for the sorting panel.
+  if (e.target.closest?.('.agentpane, .bui-menu, .sort-panel')) return;
   if (typing) return;
   if (ctrl && key === 'z' && !e.shiftKey) {
     if (runToastAction()) e.preventDefault();
