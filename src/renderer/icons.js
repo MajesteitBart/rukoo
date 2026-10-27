@@ -89,22 +89,14 @@ export const icons = {
   notes: p('<path d="M5 6.5h14M5 11h14M5 15.5h9"/>'),
   people: p('<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><path d="M15.5 5.6a3.3 3.3 0 0 1 0 5.8M17.5 14a6 6 0 0 1 3.5 5.5"/>'),
   repeat: p('<path d="m17 3.5 3 3-3 3"/><path d="M4 11.5V10a3.5 3.5 0 0 1 3.5-3.5H20"/><path d="m7 20.5-3-3 3-3"/><path d="M20 12.5V14a3.5 3.5 0 0 1-3.5 3.5H4"/>'),
-  // ---- cal:B1 icons ----
   // An event booked through the booking page: a calendar with a check.
   booking: p('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
-  // ---- /cal:B1 icons ----
-  // ---- cal:B2 icons ----
   // Duplicate an event: two sheets.
   copy: p('<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/>'),
   // A time zone, such as a booking guest's.
   globe: p('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.5 5.2 3.5 8.5s-1.2 6.1-3.5 8.5c-2.3-2.4-3.5-5.2-3.5-8.5s1.2-6.1 3.5-8.5z"/>'),
   // The conflict line: something overlaps.
   warning: p('<path d="M10.3 4.6 3.4 16.8a2 2 0 0 0 1.7 3h13.8a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 16.8h.01"/>'),
-  // ---- /cal:B2 icons ----
-  // ---- cal:B3 icons ----
-  // ---- /cal:B3 icons ----
-  // ---- cal:B4 icons ----
-  // ---- /cal:B4 icons ----
 };
 
 // Provider tiles on the setup screen.

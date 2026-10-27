@@ -268,7 +268,6 @@
   "agent.tools.running.generic.sendMessage": "Stuurt een bericht...",
   "agent.tools.running.generic.image": "Maakt een afbeelding...",
   "agent.tools.running.generic.vision": "Bekijkt een afbeelding...",
-  // ---- cal:B4 ----
   "agent.tools.list_events": "Bekeek je agenda",
   "agent.tools.find_free_time": "Zocht naar vrije tijd",
   "agent.tools.create_event": "Stelde een afspraak voor",
@@ -291,7 +290,6 @@
   "agent.approval.calendarCreate": "Aanmaken",
   "agent.calendar.created": "\"{title}\" staat in je agenda",
   "agent.calendar.failed": "Kon \"{title}\" niet in je agenda zetten",
-  // ---- /cal:B4 ----
   "calendar.title": "Agenda",
   "calendar.mode.label": "E-mail of agenda",
   "calendar.mode.mail": "E-mail",
@@ -381,7 +379,6 @@
   "calendar.dialog.noCalendar": "Kies een agenda.",
   "calendar.dialog.endBeforeStart": "De afspraak eindigt voordat hij begint.",
   "calendar.dialog.changedElsewhere": "Deze afspraak is elders gewijzigd terwijl je hem bewerkte. Het formulier toont nu de nieuwste versie met jouw wijzigingen; sla opnieuw op om ze te bewaren.",
-  // ---- cal:B1 ----
   "calendar.views.month": "Maand",
   "calendar.views.monthShortcut": "Maand (M)",
   "calendar.nav.prev.month": "Vorige maand (←)",
@@ -436,8 +433,6 @@
   "calendar.requests.ariaNamed": "Afspraakverzoek van {name}, {when}",
   "calendar.requests.booked": "Geboekt via je afsprakenpagina",
   "calendar.mode.calendarRequests": { "one": "Agenda, {count} afspraakverzoek", "other": "Agenda, {count} afspraakverzoeken" },
-  // ---- /cal:B1 ----
-  // ---- cal:B2 ----
   "calendar.event.duplicate": "Dupliceren",
   "calendar.dialog.more": "Meer",
   "calendar.quick.more": "Meer opties",
@@ -567,7 +562,6 @@
   "calendar.booking.declineEmailFrom": "Het bericht ook mailen vanaf {address}",
   "calendar.booking.requestElsewhere": "{device} handelt je boekingen af. Beantwoord het verzoek daar.",
   "calendar.booking.requestGone": "Dit verzoek is al beantwoord of verlopen.",
-  // ---- /cal:B2 ----
   "common.actions.add": "Toevoegen",
   "common.actions.archive": "Archiveren",
   "common.actions.back": "Terug",
@@ -695,7 +689,6 @@
   "errors.calendar.signIn": "Google weigerde de aanmelding. Koppel de agenda opnieuw.",
   "errors.calendar.tooMany": "Deze agenda heeft in deze periode meer afspraken dan Rukoo kan ophalen.",
   "errors.calendar.unreachable": "Google Agenda is niet bereikbaar. Controleer je internetverbinding.",
-  // ---- cal:A2 ----
   "errors.calendar.invalidRule": "Rukoo kan deze herhaling niet opslaan.",
   "errors.calendar.invalidZone": "Rukoo kent die tijdzone niet.",
   "errors.calendar.invalidGuests": "Een van de gasten heeft geen geldig e-mailadres.",
@@ -710,7 +703,6 @@
   "errors.calendar.noGuests": "Deze agenda verstuurt geen uitnodigingen, dus de afspraken kunnen geen gasten hebben.",
   "errors.calendar.splitFailed": "Rukoo kon deze en de volgende afspraken niet wijzigen en heeft de reeks gelaten zoals hij was. Probeer het opnieuw.",
   "errors.calendar.invalidFree": "Rukoo zoekt vrije tijd van 5 minuten tot 8 uur, over hoogstens 31 dagen.",
-  // ---- /cal:A2 ----
   "errors.caldav.signIn": "De agendaserver weigerde de gebruikersnaam of het wachtwoord. Controleer ze bij Serverinstellingen.",
   "errors.caldav.setupSignIn": "De agendaserver weigerde de gebruikersnaam of het wachtwoord. Controleer ze, of laat de agendaserver leeg om het account zonder agenda toe te voegen.",
   "errors.caldav.unreachable": "De agendaserver is niet bereikbaar. Controleer het adres en je internetverbinding.",
@@ -723,7 +715,6 @@
   "errors.caldav.invalidUrl": "Dat is geen webadres.",
   "errors.caldav.elsewhere": "De agendaserver stuurde Rukoo door naar {host}. Rukoo geeft je wachtwoord alleen aan de server die je hebt ingevuld; vul {host} in bij Serverinstellingen als je die vertrouwt.",
   "errors.caldav.reconfigured": "De agendaserver in Serverinstellingen is veranderd terwijl dit onderweg was. Probeer het opnieuw.",
-  // ---- cal:A3 ----
   "settings.server.invites": "Uitnodigingen aan gasten",
   "settings.server.invitesAuto": "Automatisch",
   "settings.server.invitesAutoProvider": "Automatisch: de server verstuurt ze",
@@ -731,7 +722,6 @@
   "settings.server.invitesProvider": "De server verstuurt ze",
   "settings.server.invitesNone": "De server verstuurt ze niet",
   "settings.server.invitesHelp": "Je kunt alleen gasten toevoegen als je agendaserver hun uitnodigingen mailt. Servers geven zelf aan of ze dat doen; kies hier als die van jou het mis heeft.",
-  // ---- /cal:A3 ----
   "errors.google.aliases": "Gmail gaf de aliassen niet terug ({status}).",
   "errors.google.aliasesAuth": "Alleen beschikbaar voor accounts met Google-aanmelding.",
   "errors.google.cancelled": "Aanmelden geannuleerd.",
@@ -1259,7 +1249,6 @@
   "settings.signature.tooLarge": "Deze handtekening is te groot. Gebruik kleinere afbeeldingen, of afbeeldingen van internet.",
   "settings.signature.usesGeneral": "Gebruikt de algemene handtekening",
   "settings.signature.useGeneral": "Algemene gebruiken",
-  // ---- cal:B3 ----
   "calendar.free.title": "Beschikbaarheid",
   "calendar.free.length": "Duur",
   "calendar.free.range": "Periode",
@@ -1518,7 +1507,6 @@
   "settings.booking.removeOverride": "{date} verwijderen",
   "settings.booking.privacyTitle": "Met je afsprakenpagina aan",
   "settings.booking.privacySee": "Je vrije en bezette tijden, je soorten afspraken en elke afspraak die binnenkomt. Gegevens van gasten worden versleuteld bewaard, zodat alleen jouw apparaten ze daarna kunnen lezen.",
-  // ---- /cal:B3 ----
   "settings.spam.add": "Spamadres toevoegen",
   "settings.spam.empty": "Geen spamadressen",
   "settings.sync.fifteenMinutes": "Elke 15 minuten",
@@ -1617,7 +1605,6 @@
   "account.errors.protocol": "Dit is geen Rukoo-accountserver, of hij heeft een nieuwere versie van Rukoo nodig.",
   "account.errors.signed_in": "Log eerst uit bij je Rukoo-account.",
   "account.errors.signed_out": "Je bent uitgelogd omdat je wachtwoord is gewijzigd of dit apparaat is verwijderd. Log opnieuw in.",
-  // ---- cal:A4 ----
   "account.errors.handle_taken": "Een ander account gebruikt dit adres. Kies een ander.",
   "account.errors.handle_reserved": "Dat adres is gereserveerd. Kies een ander.",
   "account.errors.handle_lost": "Het adres van je afsprakenpagina is nu van een ander account. Zet de pagina aan met een nieuw adres.",
@@ -1720,7 +1707,6 @@
   "reminders.join": "Klik om deel te nemen",
   "reminders.many": { "one": "{count} afspraak komt eraan", "other": "{count} afspraken komen eraan" },
   "reminders.more": { "one": "en nog {count}", "other": "en nog {count}" },
-  // ---- /cal:A4 ----
   "settings.groups.sync": "Synchroniseren",
   "settings.rukoo.title": "Rukoo-account",
   "settings.rukoo.rowSignedOut": "Houd je categorieën gelijk op al je apparaten",

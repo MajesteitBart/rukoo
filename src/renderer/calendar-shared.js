@@ -321,9 +321,6 @@ export function fromNow(ms) {
   return minutesAway < 60 ? rtf.format(minutesAway, 'minute') : rtf.format(Math.round(minutesAway / 60), 'hour');
 }
 
-// ---- cal:B2 shared ----
-// ---- /cal:B2 shared ----
-// ---- cal:B3 shared ----
 // Free time, for the availability panel (calendar-free.js) and the composer's free times (composer.js, which runs in
 // the compose window too, where there is no calendar view): the lengths and periods to choose from, and time zones.
 export const FREE_LENGTHS = [15, 30, 45, 60, 90];
@@ -372,4 +369,3 @@ export function zoneOptions(selected, extra = []) {
   const option = (z) => `<option value="${esc(z)}"${z === selected ? ' selected' : ''}>${esc(z === here ? t('calendar.free.zoneHere', { zone: z }) : z.replace(/_/g, ' '))}</option>`;
   return `${first.map(option).join('')}<option disabled>──────────</option>${rest.map(option).join('')}`;
 }
-// ---- /cal:B3 shared ----

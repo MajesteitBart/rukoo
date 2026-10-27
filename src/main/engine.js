@@ -51,16 +51,12 @@ const DEFAULT_SETTINGS = {
   // The formatted signature, already cleaned; '' for a plain-text one. signature then holds its text, which is what
   // earlier versions show. See signature.js.
   signatureHtml: '',
-  // ---- cal:B3 settings ----
   // The booking page's link under the signature, opt-in. bookingFooterText: the footer's own text with {url} where
   // the link goes, or null for the default text in the booking page's language. Accounts can override both.
   bookingFooter: false,
   bookingFooterText: null,
-  // ---- /cal:B3 settings ----
-  // ---- cal:A2 settings ----
   // Calendar choices and defaults; see normalizeCalendar(). Changed only through calendarSettings().
   calendar: calendarDefaults(),
-  // ---- /cal:A2 settings ----
   senderLogos: true,
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
@@ -77,18 +73,13 @@ function normalizeSettings(s) {
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
-  // ---- cal:A2 normalize ----
   s.calendar = normalizeCalendar(s.calendar);
-  // ---- /cal:A2 normalize ----
-  // ---- cal:B3 normalize ----
   // A footer text that can't carry the link ({url}), or is longer than 300 characters, falls back to the default.
   const footerText = (v) => (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}') ? v.trim() : null);
   s.bookingFooter = s.bookingFooter === true;
   s.bookingFooterText = footerText(s.bookingFooterText);
-  // ---- /cal:B3 normalize ----
 }
 
-// ---- cal:A2 helpers ----
 // The calendar settings with nothing chosen yet. A new object each time: settings objects share it by reference.
 function calendarDefaults() {
   return {
@@ -156,7 +147,6 @@ function normalizeCalendar(value, fallback = null) {
   if (typeof v.notifiedUpgrade === 'boolean') out.notifiedUpgrade = v.notifiedUpgrade;
   return out;
 }
-// ---- /cal:A2 helpers ----
 
 // A stored signature is cleaned again on loading, in case settings.json or accounts.json was edited by hand.
 function reclean(html) {
@@ -252,11 +242,9 @@ class Engine extends EventEmitter {
     const fresh = !fs.existsSync(this.file('settings.json'));
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.file('settings.json'), {}) };
     normalizeSettings(this.settings);
-    // ---- cal:A2 new profile ----
     // The notice that Rukoo now reminds you of events is for profiles from before it did. A new one has never seen
     // Rukoo without reminders; the first saved setting (adding an account saves one) keeps this.
     if (fresh) this.settings.calendar.notifiedUpgrade = true;
-    // ---- /cal:A2 new profile ----
     setLanguage(this.settings.language);
     // Once only, so a user who sets this signature again keeps it.
     if (!this.settings.signatureOptIn) {
@@ -484,15 +472,11 @@ class Engine extends EventEmitter {
       // null for both: the account uses the general signature.
       signature: acc.signature,
       signatureHtml: acc.signatureHtml || null,
-      // ---- cal:B3 account ----
       // The booking link under this account's signature: null follows the general setting, like the signature.
       bookingFooter: typeof acc.bookingFooter === 'boolean' ? acc.bookingFooter : null,
       bookingFooterText: typeof acc.bookingFooter === 'boolean' && typeof acc.bookingFooterText === 'string' ? acc.bookingFooterText : null,
-      // ---- /cal:B3 account ----
-      // ---- cal:A3 account ----
       // Whether the calendar server sends invitations, as set in Server settings; null: as its DAV header says.
       caldavInvites: acc.caldavInvites === 'provider' || acc.caldavInvites === 'none' ? acc.caldavInvites : null,
-      // ---- /cal:A3 account ----
       auth: acc.auth || (acc.type === 'demo' ? 'none' : 'password'),
       identities: this.identities(acc),
       defaultFrom: this.identity(acc).address,
@@ -626,7 +610,6 @@ class Engine extends EventEmitter {
       acc.signature = signature.signature;
       acc.signatureHtml = signature.signatureHtml || null;
     }
-    // ---- cal:B3 update account ----
     // The booking link under this account's signature. bookingFooter null goes back to the general setting, text and
     // all; a text without {url}, or over 300 characters, means the general text.
     if (patch.bookingFooter !== undefined) {
@@ -641,7 +624,6 @@ class Engine extends EventEmitter {
       if (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}')) acc.bookingFooterText = v.trim();
       else delete acc.bookingFooterText;
     }
-    // ---- /cal:B3 update account ----
     if (patch.color) acc.color = patch.color;
     if (patch.aliases) {
       // Validate the whole list before touching the account, so a typo cannot wipe existing aliases.
@@ -688,7 +670,6 @@ class Engine extends EventEmitter {
       }
       if (calendar && calendar.changed) this.emit('calendar-changed', acc);
     }
-    // ---- cal:A3 update account ----
     // Whether the calendar server sends invitations ('provider', 'none'; null: as its DAV header says). It decides
     // whether guests can be added there, so the calendars are read again with it.
     if (patch.caldavInvites !== undefined && acc.type === 'imap') {
@@ -699,7 +680,6 @@ class Engine extends EventEmitter {
         if (acc.caldav) this.emit('calendar-changed', acc);
       }
     }
-    // ---- /cal:A3 update account ----
     this.persistAccounts();
     this.emit('updated');
     return this.publicAccount(acc);
@@ -762,13 +742,11 @@ class Engine extends EventEmitter {
 
   // quiet: save without 'updated', for a change no list or count depends on (zoom), so the windows don't redraw.
   updateSettings(patch, { quiet = false } = {}) {
-    // ---- cal:A2 update settings ----
     // Calendar settings change only through calendarSettings(), which merges them per calendar.
     if (patch && Object.prototype.hasOwnProperty.call(patch, 'calendar')) {
       const { calendar, ...rest } = patch;
       patch = rest;
     }
-    // ---- /cal:A2 update settings ----
     if (patch.signature !== undefined || patch.signatureHtml !== undefined) patch = { ...patch, ...signatureFields(patch) };
     this.settings = { ...this.settings, ...patch };
     normalizeSettings(this.settings);
@@ -778,7 +756,6 @@ class Engine extends EventEmitter {
     return this.settings;
   }
 
-  // ---- cal:A2 calendar settings ----
   // A change to settings.calendar. visible, availability and colors merge per calendar, and a calendar set to null
   // goes back to its default; other fields replace. What doesn't fit keeps the value the user had: a working day that
   // would end before it starts keeps both ends, so a page that saves each field on its own doesn't lose the other.
@@ -806,7 +783,6 @@ class Engine extends EventEmitter {
     this.emit('updated');
     return this.settings.calendar;
   }
-  // ---- /cal:A2 calendar settings ----
 
   // ---------- sync ----------
 

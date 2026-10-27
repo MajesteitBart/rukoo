@@ -1051,7 +1051,6 @@
     "message": "Looking at an image...",
     "description": "Chat transcript tool chip while the agent's own tool runs: image analysis. Present tense; the done form is agent.tools.generic.vision."
   },
-  // ---- cal:B4 ----
   "agent.tools.list_events": {
     "message": "Checked your calendar",
     "description": "Chat transcript tool chip: the agent read the events in your calendar (list_events). src/renderer/agent/panel.js (toolProps)."
@@ -1140,7 +1139,6 @@
     "message": "Couldn't add \"{title}\" to your calendar",
     "description": "Chat transcript notice when Rukoo couldn't add an event you approved; the calendar's error is shown under it. title: the event's title."
   },
-  // ---- /cal:B4 ----
   "calendar.title": {
     "message": "Calendar",
     "description": "Calendar view: accessible name of the section that replaces the message list and reader. src/renderer/app.js (renderShell)"
@@ -1497,7 +1495,6 @@
     "message": "This event was changed elsewhere while you edited it. The form now shows the latest version with your changes; save again to keep them.",
     "description": "Event dialog notice after Save failed because the event changed in Google Calendar (or another app) after the dialog opened. The fields now hold the latest version with the user's own changes on top. src/renderer/calendar.js (eventDialog)"
   },
-  // ---- cal:B1 ----
   "calendar.views.month": {
     "message": "Month",
     "description": "Calendar toolbar switch: a month at a time, as a grid of weeks. src/renderer/calendar.js (viewSwitch)"
@@ -1714,8 +1711,6 @@
     "message": { "one": "Calendar, {count} booking request", "other": "Calendar, {count} booking requests" },
     "description": "Accessible name of the Calendar segment in the sidebar switch while booking requests wait for an answer; count is how many. src/renderer/app.js (renderModeSwitch)"
   },
-  // ---- /cal:B1 ----
-  // ---- cal:B2 ----
   "calendar.event.duplicate": {
     "message": "Duplicate",
     "description": "Tooltip of the event card button that opens the event dialog as a new event with the same fields. src/renderer/calendar-event.js (popHtml)"
@@ -2232,7 +2227,6 @@
     "message": "This request was answered or has lapsed.",
     "description": "Toast when a booking request's card is asked for but the request is no longer pending. src/renderer/calendar-event.js (openRequest)"
   },
-  // ---- /cal:B2 ----
   "common.actions.add": {
     "message": "Add",
     "description": "common > actions. src/renderer/app.js (messageMenu); src/renderer/settings.js (render)"
@@ -2741,7 +2735,6 @@
     "message": "Can't reach Google Calendar. Check your internet connection.",
     "description": "Calendar error when the request to Google fails or times out. src/main/calendar/google.js"
   },
-  // ---- cal:A2 ----
   "errors.calendar.invalidRule": {
     "message": "Rukoo can't save this repeat rule.",
     "description": "Calendar error when an event's repeat rule isn't one Rukoo writes: an unknown part, COUNT together with UNTIL, or BYSETPOS without days. src/main/calendar/index.js (clean)"
@@ -2798,7 +2791,6 @@
     "message": "Rukoo looks for free time of 5 minutes to 8 hours, over at most 31 days.",
     "description": "Free time error when the availability panel, the composer or an agent asks for a length or a period outside those limits. src/main/calendar/free.js"
   },
-  // ---- /cal:A2 ----
   "errors.caldav.signIn": {
     "message": "The calendar server turned down the username or password. Check them in Server settings.",
     "description": "Calendar error when the CalDAV server answers 401 to the account's username and password. Shown in the calendar notice and under the Server settings form. src/main/calendar/caldav.js"
@@ -2847,7 +2839,6 @@
     "message": "The calendar server in Server settings changed while this was on its way. Try again.",
     "description": "Calendar error when a request to the old CalDAV server was still running after the user entered another server in Server settings; Rukoo doesn't send the new password to the old server. src/main/calendar/index.js (provider)"
   },
-  // ---- cal:A3 ----
   "settings.server.invites": {
     "message": "Invitations to guests",
     "description": "Server settings form: label of the select, under the CalDAV address field, that says whether the calendar server emails invitations to the guests the user adds. Shown once a calendar server is set. src/renderer/settings.js (render)"
@@ -2876,7 +2867,6 @@
     "message": "You can only add guests when your calendar server emails their invitations. Servers say whether they do; choose here if yours gets it wrong.",
     "description": "Server settings form: help text under the invitations select. src/renderer/settings.js (render)"
   },
-  // ---- /cal:A3 ----
   "errors.google.aliases": {
     "message": "Gmail did not return aliases ({status}).",
     "description": "errors > google. src/main/engine.js"
@@ -4787,7 +4777,6 @@
     "message": "Use general signature",
     "description": "settings > signature. src/renderer/settings.js (openSettings)"
   },
-  // ---- cal:B3 ----
   "calendar.free.title": {
     "message": "Availability",
     "description": "Title of the calendar's availability side panel, which lists open time across the calendars that count toward availability; also the name of its toolbar button. src/renderer/calendar-free.js"
@@ -5820,7 +5809,6 @@
     "message": "Your open and busy times, your meeting types and each booking as it comes in. Guests' details are stored sealed, so only your devices can read them afterwards.",
     "description": "Settings > Rukoo account > What's stored and shared: what the server sees while the booking page is on. src/renderer/rukoo-account.js (privacyPage)"
   },
-  // ---- /cal:B3 ----
   "settings.spam.add": {
     "message": "Add spam address",
     "description": "settings > spam. src/renderer/settings.js (openSettings)"
@@ -6201,7 +6189,6 @@
     "message": "You were signed out because your password changed or this device was removed. Sign in again.",
     "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers signed_out or the input is refused. src/main/account/index.js (fail)."
   },
-  // ---- cal:A4 ----
   "account.errors.handle_taken": {
     "message": "Another account uses this address. Pick another one.",
     "description": "Rukoo account error from the booking routes: the booking page address (handle) belongs to another account. Settings > Booking page. src/main/account/index.js (fail)."
@@ -6610,7 +6597,6 @@
     "message": { "one": "and {count} more", "other": "and {count} more" },
     "description": "Last line of a combined desktop reminder when more events are due than it lists. count is how many more. src/main/calendar/reminder-runner.js."
   },
-  // ---- /cal:A4 ----
   "settings.groups.sync": {
     "message": "Sync",
     "description": "Settings overview: group title above the Rukoo account row. src/renderer/settings.js (render)."

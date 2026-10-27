@@ -3442,7 +3442,6 @@ body.compose-window {
   z-index: 50;
 }
 
-/* ---------- cal:B3 composer ---------- */
 /* The composer's free-times dialog: four choices in a grid, then a preview of what goes into the message, drawn as
    message text. */
 .free-times-grid {
@@ -3499,7 +3498,6 @@ body.compose-window {
   border-color: color-mix(in srgb, var(--text-3) 40%, transparent);
   border-top-color: var(--text-2);
 }
-/* ---------- /cal:B3 composer ---------- */
 
 /* ---------- chat panel ---------- */
 
@@ -4104,7 +4102,6 @@ body.compose-window {
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
-/* ---------- cal:B3 settings ---------- */
 /* Settings > Calendar: weekday toggles, the working hours' two time fields, and per calendar a colour swatch and the
    "counts toward availability" switch. */
 .calset-days {
@@ -4566,7 +4563,6 @@ body.compose-window {
     transition: none;
   }
 }
-/* ---------- /cal:B3 settings ---------- */
 
 /* ---------- calendar ---------- */
 
@@ -5397,8 +5393,6 @@ body.calendar-mode .titlebar-search {
   }
 }
 
-/* ---------- cal:B1 ---------- */
-
 /* The toolbar's title is a button that opens Go to date; search and the side panel sit before the view switch.
    Where the calendar is narrow (a small window, a high zoom) the controls go to a second row before the title
    gets shorter than about 260 px. */
@@ -6111,10 +6105,6 @@ button.cal-title:hover {
   }
 }
 
-/* ---------- /cal:B1 ---------- */
-
-/* ---------- cal:B2 ---------- */
-
 /* The quick popover for a new event and a booking request's card float beside the grid like the event card. */
 .cal-quick,
 .cal-reqcard {
@@ -6741,9 +6731,7 @@ button.cal-gchip-main:hover {
     transition: none;
   }
 }
-/* ---------- /cal:B2 ---------- */
 
-/* ---------- cal:B3 ---------- */
 /* The availability panel (calendar-free.js): its choices in a label column and a control column, then what was
    checked, the copy actions and the open time by day. */
 .free-panel {
@@ -7005,7 +6993,6 @@ button.cal-gchip-main:hover {
     transition: none;
   }
 }
-/* ---------- /cal:B3 ---------- */
 
 /* ---------- signature ---------- */
 

@@ -40,13 +40,9 @@ const { Categories } = require('./categories');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
-// ---- cal:A2 requires ----
 const { free: freeTime } = require('./calendar/free');
-// ---- /cal:A2 requires ----
-// ---- cal:A4 requires ----
 const { Booking } = require('./booking');
 const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner');
-// ---- /cal:A4 requires ----
 
 // Windows takes the taskbar icon and the handler for notification clicks from the Start menu shortcut with this ID,
 // and Electron writes such a shortcut the first time it shows a notification. A run from a checkout gets its own ID,
@@ -108,11 +104,9 @@ let hub = null;
 // Holds the agent events the chat panel must not miss until it listens; see agents/gate.js.
 let agentGate = null;
 // ---- /agents ----
-// ---- cal:A4 state ----
-// The booking service and the reminder runner. Null until cal:A4 construct makes them, so calendarFree can already ask.
+// The booking service and the reminder runner. Null until they are made after the categories, so calendarFree can already ask.
 let booking = null;
 let reminders = null;
-// ---- /cal:A4 state ----
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -231,7 +225,6 @@ function notify(messages) {
   }
 }
 
-// ---- cal:A4 notifications ----
 // Shown notifications stay referenced until they close, or Windows can drop their click handler with the object.
 const liveNotices = new Set();
 
@@ -270,7 +263,6 @@ function showBookingNotification({ title, body, open }) {
   }
   calendarNotice({ title, body, open });
 }
-// ---- /cal:A4 notifications ----
 
 function showWindow() {
   if (!win || win.isDestroyed()) {
@@ -425,10 +417,8 @@ function endSession() {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
-  // ---- cal:A4 session end ----
   if (reminders) reminders.stop();
   if (booking) booking.close();
-  // ---- /cal:A4 session end ----
   destroyTray();
   // ---- agents ----
   // dispose() saves the chats before its first await; see will-quit.
@@ -556,7 +546,6 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
-// ---- cal:A2 ipc helpers ----
 // The calendar calls' arguments, checked in calendar/ipc.js (which has its own tests).
 const {
   calendarRange,
@@ -569,14 +558,11 @@ const {
   calendarConflicts,
   calendarFreeOpts
 } = require('./calendar/ipc');
-// ---- /cal:A2 ipc helpers ----
 
 // Every renderer call goes through this table; nothing else is reachable from the UI.
 const api = {
-  // ---- cal:A4 state api ----
   // The booking page's address while it is on, and its language, for the footer and the composer (contracts f).
   state: () => ({ ...engine.state(), bookingUrl: booking ? booking.url() : null, bookingLocale: booking ? booking.locale() : null }),
-  // ---- /cal:A4 state api ----
   list: (opts) => engine.listMessages(opts),
   counts: (scope) => engine.counts(scope),
   contacts: () => engine.contacts(),
@@ -791,7 +777,6 @@ const api = {
     calendars.reconnected(accountId);
     return acc;
   },
-  // ---- cal:A2 ipc ----
   calendarView: (range) => calendars.view(calendarRange(range)),
   calendarSync: (accountId) => (accountId ? calendars.syncAccount(String(accountId)) : calendars.syncAll()).then(() => true),
   calendarEvent: (id) => calendars.event(calendarEventId(id)),
@@ -822,7 +807,6 @@ const api = {
     calendars.emit('updated');
     return settings;
   },
-  // ---- /cal:A2 ipc ----
   googleCancel: () => google.cancel(),
   fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),
   googleImportClient: async () => {
@@ -880,7 +864,6 @@ const api = {
     return categories.setJev({ on: typeof i.on === 'boolean' ? i.on : undefined, key: i.key === null ? null : accountText(i.key, 500) || undefined });
   },
   categoriesSortAgain: () => categories.sortAgain(),
-  // ---- cal:A4 ipc ----
   // The booking page (booking/index.js), which checks every field again.
   bookingState: (opts) => booking.load({ refresh: plainObject(opts).refresh === true }),
   bookingEnable: (input) => booking.enable(plainObject(input)),
@@ -898,7 +881,6 @@ const api = {
   bookingDetails: (id) => booking.details(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id) ? id : ''),
   bookingSync: () => booking.sync(),
   bookingTakeover: () => booking.takeover(),
-  // ---- /cal:A4 ipc ----
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
       title: t('settings.rukoo.export'),
@@ -1076,7 +1058,6 @@ const windowApi = {
   }
 };
 
-// ---- cal:A4 window codes ----
 // Error codes a window acts on, passed on with the message. 'auth': the mail server turned the sign-in down, so the
 // setup form keeps its server fields closed and, with appPasswordProvider, links to that provider's app password
 // page. Other codes stay here: Node's ENOSPC or a calendar's 'password' would otherwise reach the chat panel, which
@@ -1093,7 +1074,6 @@ function windowError(err) {
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
 }
-// ---- /cal:A4 window codes ----
 
 ipcMain.handle('mail:call', async (event, method, args) => {
   const own = Object.prototype.hasOwnProperty;
@@ -1210,11 +1190,9 @@ app.whenReady().then(() => {
     else refreshTray();
   });
   engine.on('new-mail', notify);
-  // ---- cal:A2 construct ----
   calendars = new Calendars({ engine });
   if (process.env.SEM_HIDDEN) global.__semCalendars = calendars;
   calendars.on('updated', () => send('calendar'));
-  // ---- /cal:A2 construct ----
   // A fork points the app at its own account server with package.json's rukoo.accountServer; tests and development
   // use RUKOO_ACCOUNT_SERVER.
   account = new AccountService({
@@ -1228,7 +1206,6 @@ app.whenReady().then(() => {
   categories = new Categories({ engine, account, secrets, dataDir: path.join(app.getPath('userData'), 'data') }).init();
   if (process.env.SEM_HIDDEN) global.__semCategories = categories;
   categories.on('changed', () => broadcast('categories', categories.state()));
-  // ---- cal:A4 construct ----
   booking = new Booking({ account, calendars, engine, secrets, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
   if (process.env.SEM_HIDDEN) global.__semBooking = booking;
   booking.on('state', (s) => broadcast('booking', s));
@@ -1237,7 +1214,6 @@ app.whenReady().then(() => {
   reminders = new ReminderRunner({ calendars, engine, dataDir: path.join(app.getPath('userData'), 'data'), notify: showReminders, powerMonitor });
   if (process.env.SEM_HIDDEN) global.__semReminders = reminders;
   reminders.start();
-  // ---- /cal:A4 construct ----
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({
@@ -1245,14 +1221,12 @@ app.whenReady().then(() => {
     dataDir: path.join(app.getPath('userData'), 'data'),
     secrets,
     deps: {
-      // ---- cal:B4 deps ----
       // The calendar tools: list_events and create_event use the store, find_free_time the same free time as the
       // availability panel, get_booking_link the booking page while it is on (link() and hours() are null when off).
       calendars,
       calendarFree: (opts) => freeTime(calendars, engine.settings, booking ? booking.hours() : null, opts),
       bookingHours: () => (booking ? booking.hours() : null),
       bookingLink: () => (booking ? booking.link() : null),
-      // ---- /cal:B4 deps ----
       unsubscribe: (id) => api.unsubscribe(id),
       // A mailto-only unsubscribe opens a filled-in compose window; the user sends it.
       openMailto: (url) => openUrl(url),
@@ -1302,10 +1276,8 @@ app.on('before-quit', () => {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
-  // ---- cal:A4 quit ----
   if (reminders) reminders.stop();
   if (booking) booking.close();
-  // ---- /cal:A4 quit ----
 });
 
 // Every window has closed, so the quit goes through.

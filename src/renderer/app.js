@@ -36,10 +36,8 @@ import { mountComposer } from './composer.js';
 import { openSettings, promptDialog } from './settings.js';
 import { openSetup } from './setup.js';
 import * as calendar from './calendar.js';
-// ---- cal:B3 imports ----
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
-// ---- /cal:B3 imports ----
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -630,7 +628,6 @@ function accountAvatar(acc) {
   return `<span class="avatar acc" style="--acc:${esc(acc.color || '#6f9cf2')}" aria-hidden="true">${esc((acc.name || acc.email).trim()[0] || '?').toUpperCase()}</span>`;
 }
 
-// ---- cal:B1 mode switch ----
 // Mail and Calendar at the top of the sidebar. The switch stays in place, so its thumb slides.
 function renderModeSwitch() {
   const box = $('.sidebar-mode');
@@ -662,7 +659,6 @@ function renderModeSwitch() {
   badge.textContent = count > 99 ? '99+' : String(count);
   seg.setAttribute('aria-label', t('calendar.mode.calendarRequests', { count }));
 }
-// ---- /cal:B1 mode switch ----
 
 function setMode(mode) {
   if (mode === prefs.mode || !['mail', 'calendar'].includes(mode)) return;
@@ -2487,7 +2483,6 @@ function drawBadge(count) {
 window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
-  // ---- cal:B1 events ----
   // A reminder or a booking notification was clicked: the calendar opens on that event or request, or on the day
   // when the notification names only its start.
   if (type === 'calendar-open' && payload && S.data && S.data.accounts.length) {
@@ -2496,13 +2491,10 @@ window.mail.on(async ({ type, payload }) => {
     else if (typeof payload.id === 'string') calendar.openEvent(payload.id, Number.isFinite(payload.start) ? payload.start : undefined);
     else if (Number.isFinite(payload.start)) calendar.openDay(payload.start);
   }
-  // ---- /cal:B1 events ----
-  // ---- cal:B3 events ----
   // The booking page's state: requests and booked events on the grid, its notices above it, the link for the composer.
   // Its notices come translated from main, so a language change asks for them again.
   if (type === 'booking') applyBooking(payload);
   if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
-  // ---- /cal:B3 events ----
   if (type === 'categories') {
     S.categories = payload;
     renderList();
@@ -2588,7 +2580,5 @@ export const ctx = {
 };
 
 calendar.init(ctx);
-// ---- cal:B3 init ----
 api('bookingState').then(applyBooking).catch(() => {});
-// ---- /cal:B3 init ----
 refresh().catch((err) => toast(err.message, 6000));
