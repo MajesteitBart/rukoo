@@ -4113,6 +4113,514 @@
   "setup.title": {
     "message": "Set up email",
     "description": "setup. src/renderer/setup.js (showGrid)"
+  },
+  "account.errors.invalid": {
+    "message": "The server didn't accept the request. Update Rukoo and try again.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers invalid or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.unauthorized": {
+    "message": "The email address, password or recovery key is wrong.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers unauthorized or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.wrong_password": {
+    "message": "That password is wrong.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers wrong_password or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.locked": {
+    "message": "Too many attempts. Try again in 15 minutes.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers locked or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.rate_limited": {
+    "message": "Too many requests from this network. Wait a minute and try again.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers rate_limited or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.exists": {
+    "message": "There is already an account with this email address. Sign in instead.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers exists or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.signups_closed": {
+    "message": "This server doesn't take new accounts.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers signups_closed or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.invite_required": {
+    "message": "This server needs a valid invite code.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers invite_required or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.quota": {
+    "message": "Your account has reached this server's limit.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers quota or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.too_large": {
+    "message": "Something is too large for this server to store.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers too_large or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.not_configured": {
+    "message": "This server isn't fully set up yet. Its operator needs to finish the setup.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers not_configured or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.network": {
+    "message": "Can't reach the server. Check your connection.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers network or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.server": {
+    "message": "The server ran into a problem. Try again later.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers server or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.invalid_email": {
+    "message": "Enter a valid email address.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers invalid_email or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.weak_password": {
+    "message": "Use a password of at least 12 characters.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers weak_password or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.recovery_key": {
+    "message": "That isn't a recovery key. A recovery key has 32 letters and digits in groups of four.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers recovery_key or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.weak_kdf": {
+    "message": "The server asked for weaker password protection than Rukoo allows, so Rukoo didn't send your password's key.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers weak_kdf or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.no_server": {
+    "message": "Enter the address of a Rukoo account server, starting with https://.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers no_server or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.protocol": {
+    "message": "This isn't a Rukoo account server, or it needs a newer version of Rukoo.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers protocol or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.signed_in": {
+    "message": "Sign out of your Rukoo account first.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers signed_in or the input is refused. src/main/account/index.js (fail)."
+  },
+  "account.errors.signed_out": {
+    "message": "You were signed out because your password changed or this device was removed. Sign in again.",
+    "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers signed_out or the input is refused. src/main/account/index.js (fail)."
+  },
+  "settings.groups.sync": {
+    "message": "Sync",
+    "description": "Settings overview: group title above the Rukoo account row. src/renderer/settings.js (render)."
+  },
+  "settings.rukoo.title": {
+    "message": "Rukoo account",
+    "description": "Settings > Rukoo account: page title and the row on the Settings overview. src/renderer/settings.js."
+  },
+  "settings.rukoo.rowSignedOut": {
+    "message": "Keep your categories the same on all your devices",
+    "description": "Settings > Rukoo account: description of the Rukoo account row on the Settings overview while signed out. src/renderer/settings.js."
+  },
+  "settings.rukoo.rowSignedIn": {
+    "message": "Signed in as {email}",
+    "description": "Settings > Rukoo account: description of the Rukoo account row while signed in. {email}: the account email address. src/renderer/settings.js."
+  },
+  "settings.rukoo.intro": {
+    "message": "A Rukoo account keeps Rukoo's own data the same on your phone and computers: your inbox categories, the category each email got and your corrections. Rukoo encrypts it on this device before it leaves, and only your devices have the key. Your mail and your mail passwords never go to the account.",
+    "description": "Settings > Rukoo account: explanation at the top of the page while signed out. src/renderer/settings.js."
+  },
+  "settings.rukoo.server": {
+    "message": "Server",
+    "description": "Settings > Rukoo account: row title for the account server the app uses. src/renderer/settings.js."
+  },
+  "settings.rukoo.serverNone": {
+    "message": "No server set",
+    "description": "Settings > Rukoo account: value of the Server row when no server address is configured. src/renderer/settings.js."
+  },
+  "settings.rukoo.serverRunBy": {
+    "message": "Run by {operator}",
+    "description": "Settings > Rukoo account: Server row description. {operator}: the name of whoever runs the server. src/renderer/settings.js."
+  },
+  "settings.rukoo.serverUnreachable": {
+    "message": "Can't reach this server right now",
+    "description": "Settings > Rukoo account: Server row description when the server info could not be fetched. src/renderer/settings.js."
+  },
+  "settings.rukoo.serverPrompt": {
+    "message": "Account server address",
+    "description": "Settings > Rukoo account: title of the dialog to enter another account server address. src/renderer/settings.js."
+  },
+  "settings.rukoo.serverSaved": {
+    "message": "Account server changed",
+    "description": "Settings > Rukoo account: toast after changing the account server. src/renderer/settings.js."
+  },
+  "settings.rukoo.where.eu": {
+    "message": "Data stored in the EU",
+    "description": "Settings > Rukoo account: where the server keeps account data: European Union jurisdiction. src/renderer/settings.js."
+  },
+  "settings.rukoo.where.us": {
+    "message": "Data stored in the United States",
+    "description": "Settings > Rukoo account: where the server keeps account data: US jurisdiction. src/renderer/settings.js."
+  },
+  "settings.rukoo.where.fedramp": {
+    "message": "Data stored in FedRAMP data centers in the United States",
+    "description": "Settings > Rukoo account: where the server keeps account data: FedRAMP jurisdiction. src/renderer/settings.js."
+  },
+  "settings.rukoo.where.any": {
+    "message": "Data stored wherever Cloudflare places it",
+    "description": "Settings > Rukoo account: where the server keeps account data when no jurisdiction is set. src/renderer/settings.js."
+  },
+  "settings.rukoo.signUp": {
+    "message": "Create an account",
+    "description": "Settings > Rukoo account: row and page title to sign up. src/renderer/settings.js."
+  },
+  "settings.rukoo.signIn": {
+    "message": "Sign in",
+    "description": "Settings > Rukoo account: row, page title and button to sign in. src/renderer/settings.js."
+  },
+  "settings.rukoo.forgot": {
+    "message": "Forgot your password?",
+    "description": "Settings > Rukoo account: row that opens the recovery-key form. src/renderer/settings.js."
+  },
+  "settings.rukoo.privacy": {
+    "message": "What's stored and shared",
+    "description": "Settings > Rukoo account: row and page title of the data and privacy page. src/renderer/settings.js."
+  },
+  "settings.rukoo.privacyHelp": {
+    "message": "Where your account's data lives and who can see what",
+    "description": "Settings > Rukoo account: description of the data and privacy row. src/renderer/settings.js."
+  },
+  "settings.rukoo.passwordHelp": {
+    "message": "At least 12 characters. Nobody can reset it for you, so choose one you'll remember or keep it in a password manager.",
+    "description": "Settings > Rukoo account: help under the password field on the sign-up and recovery forms. src/renderer/settings.js."
+  },
+  "settings.rukoo.repeat": {
+    "message": "Repeat password",
+    "description": "Settings > Rukoo account: label of the second password field on the sign-up and recovery forms. src/renderer/settings.js."
+  },
+  "settings.rukoo.mismatch": {
+    "message": "The passwords don't match.",
+    "description": "Settings > Rukoo account: form error when both password fields differ. src/renderer/settings.js."
+  },
+  "settings.rukoo.invite": {
+    "message": "Invite code",
+    "description": "Settings > Rukoo account: label of the invite code field on the sign-up form, shown when the server is invite-only. src/renderer/settings.js."
+  },
+  "settings.rukoo.understand": {
+    "message": "I understand that if I forget my password, only my recovery key gets me back in.",
+    "description": "Settings > Rukoo account: checkbox on the sign-up form. src/renderer/settings.js."
+  },
+  "settings.rukoo.needUnderstand": {
+    "message": "Tick the box to confirm.",
+    "description": "Settings > Rukoo account: form error when the sign-up checkbox is not ticked. src/renderer/settings.js."
+  },
+  "settings.rukoo.create": {
+    "message": "Create account",
+    "description": "Settings > Rukoo account: submit button of the sign-up form. src/renderer/settings.js."
+  },
+  "settings.rukoo.working": {
+    "message": "Working…",
+    "description": "Settings > Rukoo account: submit button text while the password is hashed and the server answers. src/renderer/settings.js."
+  },
+  "settings.rukoo.recoveryKeyField": {
+    "message": "Recovery key",
+    "description": "Settings > Rukoo account: label of the recovery key field on the forgot-password form. src/renderer/settings.js."
+  },
+  "settings.rukoo.newPassword": {
+    "message": "New password",
+    "description": "Settings > Rukoo account: label of the new password field. src/renderer/settings.js."
+  },
+  "settings.rukoo.recoverHelp": {
+    "message": "Enter the recovery key you saved when you made the account, and choose a new password. Your other devices sign out and need the new password.",
+    "description": "Settings > Rukoo account: explanation on the forgot-password form. src/renderer/settings.js."
+  },
+  "settings.rukoo.recoverSubmit": {
+    "message": "Set new password",
+    "description": "Settings > Rukoo account: submit button of the forgot-password form. src/renderer/settings.js."
+  },
+  "settings.rukoo.closed": {
+    "message": "This server doesn't take new accounts. Sign in with an existing account, or choose another server.",
+    "description": "Settings > Rukoo account: note on the sign-up page when the server has sign-ups closed. src/renderer/settings.js."
+  },
+  "settings.rukoo.keyTitle": {
+    "message": "Save your recovery key",
+    "description": "Settings > Rukoo account: title of the dialog that shows the recovery key once. src/renderer/settings.js."
+  },
+  "settings.rukoo.keyHelp": {
+    "message": "If you forget your password, this key is the only way back into your account. Rukoo shows it only now. Keep it somewhere safe, such as a password manager.",
+    "description": "Settings > Rukoo account: explanation in the recovery key dialog. src/renderer/settings.js."
+  },
+  "settings.rukoo.copy": {
+    "message": "Copy",
+    "description": "Settings > Rukoo account: button in the recovery key dialog that copies the key. src/renderer/settings.js."
+  },
+  "settings.rukoo.copied": {
+    "message": "Recovery key copied",
+    "description": "Settings > Rukoo account: toast after copying the recovery key. src/renderer/settings.js."
+  },
+  "settings.rukoo.keySaved": {
+    "message": "I saved it",
+    "description": "Settings > Rukoo account: button that closes the recovery key dialog. src/renderer/settings.js."
+  },
+  "settings.rukoo.welcome": {
+    "message": "Account created. This computer now syncs.",
+    "description": "Settings > Rukoo account: toast after signing up. src/renderer/settings.js."
+  },
+  "settings.rukoo.signedIn": {
+    "message": "Signed in. This computer now syncs.",
+    "description": "Settings > Rukoo account: toast after signing in or recovering. src/renderer/settings.js."
+  },
+  "settings.rukoo.account": {
+    "message": "Account",
+    "description": "Settings > Rukoo account: group title above the signed-in account row. src/renderer/settings.js."
+  },
+  "settings.rukoo.neverSynced": {
+    "message": "Not synced yet",
+    "description": "Settings > Rukoo account: sync status before the first sync. src/renderer/settings.js."
+  },
+  "settings.rukoo.syncing": {
+    "message": "Syncing…",
+    "description": "Settings > Rukoo account: sync status while syncing. src/renderer/settings.js."
+  },
+  "settings.rukoo.syncNow": {
+    "message": "Sync now",
+    "description": "Settings > Rukoo account: row that syncs right away. src/renderer/settings.js."
+  },
+  "settings.rukoo.synced": {
+    "message": "Synced",
+    "description": "Settings > Rukoo account: toast after a manual sync. src/renderer/settings.js."
+  },
+  "settings.rukoo.pending": {
+    "message": {"one": "{count} change waiting to sync", "other": "{count} changes waiting to sync"},
+    "description": "Settings > Rukoo account: sync status when local changes have not reached the server yet. {count}: number of changes. src/renderer/settings.js."
+  },
+  "settings.rukoo.devices": {
+    "message": "Devices",
+    "description": "Settings > Rukoo account: group title above the list of signed-in devices. src/renderer/settings.js."
+  },
+  "settings.rukoo.thisDevice": {
+    "message": "This device",
+    "description": "Settings > Rukoo account: description of the device row for this computer. src/renderer/settings.js."
+  },
+  "settings.rukoo.lastSeen": {
+    "message": "Last seen on {date}",
+    "description": "Settings > Rukoo account: description of another device row. {date}: when it last connected. src/renderer/settings.js."
+  },
+  "settings.rukoo.devicesUnavailable": {
+    "message": "Can't load your devices right now.",
+    "description": "Settings > Rukoo account: shown instead of the device list when the server could not be reached. src/renderer/settings.js."
+  },
+  "settings.rukoo.removeDevice": {
+    "message": "Sign out {name}?",
+    "description": "Settings > Rukoo account: title of the dialog to sign another device out. {name}: device name. src/renderer/settings.js."
+  },
+  "settings.rukoo.removeDeviceHelp": {
+    "message": "{name} stops syncing with this account. It keeps its own copy.",
+    "description": "Settings > Rukoo account: text of the dialog to sign another device out. src/renderer/settings.js."
+  },
+  "settings.rukoo.removeDeviceAction": {
+    "message": "Sign out",
+    "description": "Settings > Rukoo account: confirm button of the dialog to sign another device out. src/renderer/settings.js."
+  },
+  "settings.rukoo.deviceRemoved": {
+    "message": "Device signed out",
+    "description": "Settings > Rukoo account: toast after signing another device out. src/renderer/settings.js."
+  },
+  "settings.rukoo.platform.win32": {
+    "message": "Windows",
+    "description": "Settings > Rukoo account: platform name in a device row. src/renderer/settings.js."
+  },
+  "settings.rukoo.platform.darwin": {
+    "message": "macOS",
+    "description": "Settings > Rukoo account: platform name in a device row. src/renderer/settings.js."
+  },
+  "settings.rukoo.platform.linux": {
+    "message": "Linux",
+    "description": "Settings > Rukoo account: platform name in a device row. src/renderer/settings.js."
+  },
+  "settings.rukoo.platform.android": {
+    "message": "Android",
+    "description": "Settings > Rukoo account: platform name in a device row. src/renderer/settings.js."
+  },
+  "settings.rukoo.security": {
+    "message": "Security",
+    "description": "Settings > Rukoo account: group title above password and recovery key rows. src/renderer/settings.js."
+  },
+  "settings.rukoo.changePassword": {
+    "message": "Change password",
+    "description": "Settings > Rukoo account: row and dialog title to change the password. src/renderer/settings.js."
+  },
+  "settings.rukoo.changePasswordHelp": {
+    "message": "Your other devices sign out and need the new password.",
+    "description": "Settings > Rukoo account: description of the change password row. src/renderer/settings.js."
+  },
+  "settings.rukoo.currentPassword": {
+    "message": "Current password",
+    "description": "Settings > Rukoo account: label of the current password field. src/renderer/settings.js."
+  },
+  "settings.rukoo.passwordChanged": {
+    "message": "Password changed",
+    "description": "Settings > Rukoo account: toast after changing the password. src/renderer/settings.js."
+  },
+  "settings.rukoo.newKey": {
+    "message": "New recovery key",
+    "description": "Settings > Rukoo account: row that makes a new recovery key. src/renderer/settings.js."
+  },
+  "settings.rukoo.newKeyHelp": {
+    "message": "Your current recovery key stops working.",
+    "description": "Settings > Rukoo account: description of the new recovery key row. src/renderer/settings.js."
+  },
+  "settings.rukoo.enterPassword": {
+    "message": "Enter your password",
+    "description": "Settings > Rukoo account: title of the dialog that asks for the password before a sensitive action. src/renderer/settings.js."
+  },
+  "settings.rukoo.continue": {
+    "message": "Continue",
+    "description": "Settings > Rukoo account: confirm button of the password dialog. src/renderer/settings.js."
+  },
+  "settings.rukoo.yourData": {
+    "message": "Your data",
+    "description": "Settings > Rukoo account: group title above the privacy and export rows. src/renderer/settings.js."
+  },
+  "settings.rukoo.export": {
+    "message": "Export my data",
+    "description": "Settings > Rukoo account: row and save dialog title to export the account data. src/renderer/settings.js."
+  },
+  "settings.rukoo.exportHelp": {
+    "message": "Save everything in your account as a readable JSON file",
+    "description": "Settings > Rukoo account: description of the export row. src/renderer/settings.js."
+  },
+  "settings.rukoo.exported": {
+    "message": "Data exported",
+    "description": "Settings > Rukoo account: toast after saving the export. src/renderer/settings.js."
+  },
+  "settings.rukoo.signOut": {
+    "message": "Sign out",
+    "description": "Settings > Rukoo account: row that signs this computer out. src/renderer/settings.js."
+  },
+  "settings.rukoo.signOutHelp": {
+    "message": "This computer stops syncing and keeps its own copy of your categories.",
+    "description": "Settings > Rukoo account: description of the sign out row. src/renderer/settings.js."
+  },
+  "settings.rukoo.signedOut": {
+    "message": "Signed out",
+    "description": "Settings > Rukoo account: toast after signing out. src/renderer/settings.js."
+  },
+  "settings.rukoo.delete": {
+    "message": "Delete account",
+    "description": "Settings > Rukoo account: row and dialog title to delete the account. src/renderer/settings.js."
+  },
+  "settings.rukoo.deleteHelp": {
+    "message": "Deletes your account and everything in it from the server. Your devices keep their own copies and stop syncing. This cannot be undone.",
+    "description": "Settings > Rukoo account: description of the delete row and text of its confirmation. src/renderer/settings.js."
+  },
+  "settings.rukoo.deleted": {
+    "message": "Account deleted",
+    "description": "Settings > Rukoo account: toast after deleting the account. src/renderer/settings.js."
+  },
+  "settings.rukoo.stored": {
+    "message": "Stored in your account",
+    "description": "Settings > Rukoo account: privacy page: group title above the counts of stored records while signed in. src/renderer/settings.js."
+  },
+  "settings.rukoo.storedLocal": {
+    "message": "Stored on this computer",
+    "description": "Settings > Rukoo account: privacy page: group title above the counts while signed out. src/renderer/settings.js."
+  },
+  "settings.rukoo.storedHelp": {
+    "message": "Encrypted on your device before it leaves. Only your devices have the key.",
+    "description": "Settings > Rukoo account: privacy page: note under the stored counts. src/renderer/settings.js."
+  },
+  "settings.rukoo.count.category": {
+    "message": {"one": "{count} category", "other": "{count} categories"},
+    "description": "Settings > Rukoo account: privacy page: number of inbox categories stored. src/renderer/settings.js."
+  },
+  "settings.rukoo.count.classification": {
+    "message": {"one": "{count} sorted email", "other": "{count} sorted emails"},
+    "description": "Settings > Rukoo account: privacy page: number of emails with a stored category. src/renderer/settings.js."
+  },
+  "settings.rukoo.count.correction": {
+    "message": {"one": "{count} correction", "other": "{count} corrections"},
+    "description": "Settings > Rukoo account: privacy page: number of corrections the user made. src/renderer/settings.js."
+  },
+  "settings.rukoo.serverUsage": {
+    "message": "{size} on the server, encrypted",
+    "description": "Settings > Rukoo account: privacy page: how much the account uses on the server. {size}: for example 12 KB. src/renderer/settings.js."
+  },
+  "settings.rukoo.canSee": {
+    "message": "What the server can see",
+    "description": "Settings > Rukoo account: privacy page: group title. src/renderer/settings.js."
+  },
+  "settings.rukoo.see.email": {
+    "message": "Your email address",
+    "description": "Settings > Rukoo account: privacy page: item the server can see. src/renderer/settings.js."
+  },
+  "settings.rukoo.see.devices": {
+    "message": "Your devices' names and when they last connected",
+    "description": "Settings > Rukoo account: privacy page: item the server can see. src/renderer/settings.js."
+  },
+  "settings.rukoo.see.records": {
+    "message": "How many records you have, how large they are and when they change",
+    "description": "Settings > Rukoo account: privacy page: item the server can see. src/renderer/settings.js."
+  },
+  "settings.rukoo.see.ip": {
+    "message": "Your IP address, in the hosting provider's logs",
+    "description": "Settings > Rukoo account: privacy page: item the server can see. src/renderer/settings.js."
+  },
+  "settings.rukoo.cantSee": {
+    "message": "What it can't see",
+    "description": "Settings > Rukoo account: privacy page: group title. src/renderer/settings.js."
+  },
+  "settings.rukoo.cantSeeHelp": {
+    "message": "Your categories, your corrections, which email went where, and anything in your mail.",
+    "description": "Settings > Rukoo account: privacy page: what stays unreadable to the server. src/renderer/settings.js."
+  },
+  "settings.rukoo.services": {
+    "message": "Who handles your data",
+    "description": "Settings > Rukoo account: privacy page: group title above the list of parties. src/renderer/settings.js."
+  },
+  "settings.rukoo.operatorHelp": {
+    "message": "Runs the server. Gets your email address, your device names and your encrypted records.",
+    "description": "Settings > Rukoo account: privacy page: what the server operator handles. src/renderer/settings.js."
+  },
+  "settings.rukoo.hostHelp": {
+    "message": "Hosts the server, from {country}. {where}. Handles what the server sees, plus IP addresses in its logs.",
+    "description": "Settings > Rukoo account: privacy page: what the hosting company handles. {country}: country name. {where}: a sentence like \"Data stored in the EU\". src/renderer/settings.js."
+  },
+  "settings.rukoo.usLaw": {
+    "message": "As a US company it falls under US law, also for data stored in the EU.",
+    "description": "Settings > Rukoo account: privacy page: note when the hosting company is based in the United States. src/renderer/settings.js."
+  },
+  "settings.rukoo.country.US": {
+    "message": "the United States",
+    "description": "Settings > Rukoo account: privacy page: country name used in hostHelp. src/renderer/settings.js."
+  },
+  "settings.rukoo.mailProviders": {
+    "message": "Your mail providers",
+    "description": "Settings > Rukoo account: privacy page: party title. src/renderer/settings.js."
+  },
+  "settings.rukoo.mailProvidersHelp": {
+    "message": "Keep your mail as always. Nothing from your Rukoo account goes to them.",
+    "description": "Settings > Rukoo account: privacy page: what mail providers handle. src/renderer/settings.js."
+  },
+  "settings.rukoo.nobodyElse": {
+    "message": "Nobody else",
+    "description": "Settings > Rukoo account: privacy page: party title. src/renderer/settings.js."
+  },
+  "settings.rukoo.nobodyElseHelp": {
+    "message": "Rukoo uses no analytics, advertising or tracking services.",
+    "description": "Settings > Rukoo account: privacy page: there are no other parties. src/renderer/settings.js."
+  },
+  "settings.rukoo.policy": {
+    "message": "Privacy policy",
+    "description": "Settings > Rukoo account: privacy page: row that opens the server operator's privacy policy. src/renderer/settings.js."
+  },
+  "settings.rukoo.policyHelp": {
+    "message": "{operator}'s privacy policy",
+    "description": "Settings > Rukoo account: privacy page: description of the privacy policy row. {operator}: who runs the server. src/renderer/settings.js."
+  },
+  "settings.rukoo.protocol": {
+    "message": "How the encryption works",
+    "description": "Settings > Rukoo account: privacy page: row that opens Rukoo's account protocol on GitHub. src/renderer/settings.js."
+  },
+  "settings.rukoo.protocolHelp": {
+    "message": "Rukoo's account protocol on GitHub",
+    "description": "Settings > Rukoo account: privacy page: description of the protocol row. src/renderer/settings.js."
+  },
+  "settings.rukoo.selfHost": {
+    "message": "Run your own server",
+    "description": "Settings > Rukoo account: privacy page: row that opens the self-hosting guide. src/renderer/settings.js."
+  },
+  "settings.rukoo.selfHostHelp": {
+    "message": "Rukoo is open source. The guide shows how to host your own account server.",
+    "description": "Settings > Rukoo account: privacy page: description of the self-hosting row. src/renderer/settings.js."
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

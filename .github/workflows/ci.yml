@@ -101,6 +101,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The Rukoo account server in server/: its tests run against the real Worker in workerd, and the bundle must build.
+  server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/rukoo-account"
+
   android:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

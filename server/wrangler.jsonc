@@ -1,0 +1,91 @@
+// Cloudflare settings for the Rukoo account server. README.md explains each step of deploying your own copy.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rukoo-account",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-20",
+
+  // One Durable Object per account, each with its own SQLite database.
+  // REGISTRY: one object for the whole server that counts the accounts, for MAX_ACCOUNTS.
+  "durable_objects": {
+    "bindings": [
+      { "name": "ACCOUNTS", "class_name": "Account" },
+      { "name": "REGISTRY", "class_name": "Registry" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Account"] },
+    { "tag": "v2", "new_sqlite_classes": ["Registry"] }
+  ],
+
+  "vars": {
+    // Who runs this server, shown by GET /v1/info, in the app before sign-up, and on the page at /.
+    "OPERATOR_NAME": "",
+    "OPERATOR_URL": "",
+    "OPERATOR_CONTACT": "",
+    "PRIVACY_URL": "",
+    // Where accounts are stored: "eu", "us", "fedramp" or "" for anywhere. Choose before the first sign-up and never
+    // change it afterwards: every account would seem to vanish, because objects are found per jurisdiction.
+    "JURISDICTION": "eu",
+    // "open", "invite" (codes from the INVITE_CODES secret) or "closed".
+    "SIGNUPS": "invite",
+    // How many accounts each invite code may make; 0 for any number.
+    "INVITE_USES": 1,
+    // Per account: live records, and their total size in bytes.
+    "MAX_RECORDS": 250000,
+    "MAX_BYTES": 104857600,
+    // The most accounts this server holds; 0 for no cap. With open sign-ups this bounds what strangers can store:
+    // at most MAX_ACCOUNTS times MAX_BYTES.
+    "MAX_ACCOUNTS": 1000
+  },
+
+  // Limits prelogin, signup, login and recovery to 30 requests a minute per client address in each Cloudflare
+  // location. namespace_id is any number of your choosing that no other rate limiter in your account uses. Remove
+  // this block to turn the limit off; the account lock after ten wrong passwords still applies.
+  // PUSH_LIMITER does the same for writing records, at 120 pushes a minute, which a device that syncs never reaches.
+  "ratelimits": [
+    { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
+    { "name": "PUSH_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+  ],
+
+  // Keeps the server's own error messages in Workers Logs but not a log line per request, which would hold every
+  // request's address and metadata.
+  "observability": {
+    "enabled": true,
+    "logs": { "invocation_logs": false }
+  },
+
+  // The server Rukoo itself uses, run by its maintainer: npm run deploy -- --env bvdm. A fork deploys the settings
+  // above with its own vars instead. Bindings and vars don't carry over into an environment, so they're repeated.
+  "env": {
+    "bvdm": {
+      "name": "rukoo-account",
+      "routes": [{ "pattern": "rukoo-account.bvdm.ai", "custom_domain": true }],
+      "durable_objects": {
+        "bindings": [
+          { "name": "ACCOUNTS", "class_name": "Account" },
+          { "name": "REGISTRY", "class_name": "Registry" }
+        ]
+      },
+      "vars": {
+        "OPERATOR_NAME": "Bart van der Meeren",
+        "OPERATOR_URL": "https://bvdm.ai",
+        "OPERATOR_CONTACT": "https://bvdm.ai/nl/contact",
+        "PRIVACY_URL": "",
+        "JURISDICTION": "eu",
+        // Invite codes until sign-ups check the address (#121): with open sign-ups, invented addresses could fill
+        // MAX_ACCOUNTS and keep everyone else out.
+        "SIGNUPS": "invite",
+        "INVITE_USES": 1,
+        "MAX_RECORDS": 250000,
+        // 1,000 accounts of at most 32 MiB keep the worst case at 32 GB.
+        "MAX_BYTES": 33554432,
+        "MAX_ACCOUNTS": 1000
+      },
+      "ratelimits": [
+        { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
+        { "name": "PUSH_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+      ]
+    }
+  }
+}

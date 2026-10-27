@@ -1,0 +1,39 @@
+{
+  "note": "Fixed inputs and outputs for server/PROTOCOL.md, checked against argon2-cffi and Python's cryptography package. Rukoo for desktop and for Android must both derive these keys, open wrappedKey and recordData, and make recordId. Sealing with wrapNonce and recordNonce gives these bytes only when the record's JSON is written as {c,k,v,t} without spaces.",
+  "password": "correct horse battery staple ✓",
+  "email": "  Bart@Example.COM ",
+  "normalizedEmail": "bart@example.com",
+  "salt": "AAECAwQFBgcICQoLDA0ODw",
+  "kdf": {
+    "alg": "argon2id",
+    "m": 65536,
+    "t": 3,
+    "p": 1
+  },
+  "server": "https://rukoo-account.example",
+  "masterKey": "4Z_MRwBSc1mb_Q4fl0OrtW4mPrFltvzqznQplum2mT4",
+  "authKey": "2kBp74JLCByfBki4kLKxP0xlAKIdDVlMdbV8y-94ZRM",
+  "wrapKey": "53OyQuSCStrN1YEg0xPoyDRktRY7Vg-R2VGhmS5ZLcc",
+  "authVerifier": "Xk44oC8Q9tTTYBnKTgQQcgPLEaV7-0sMVc_QfwJfLdc",
+  "dataKey": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+  "wrapNonce": "oKGio6Slpqeoqaqr",
+  "wrappedKey": "AaChoqOkpaanqKmqq2hLTdx-PNvlpN2ezbKnRMXp66q8VYgdP8Ccn4XMFxjWORPYzXrf7Bp3CkaFzjgLgw",
+  "recoveryKeyBytes": "ABEiM0RVZneImaq7zN3u_wEjRWc",
+  "recoveryKey": "008J-4CT4-ANK7-F24S-NAXW-SQFE-ZW0J-6HB7",
+  "recoveryAuth": "k6Uv4IRiz9a02PJc65Ytzb9yzg5Nf-MG3SyZfbL4y3o",
+  "recoveryWrap": "Fk1etlKBOEosc8Db-A_izidBBDky2Zz1gUNuOYd15Cg",
+  "recordKey": "4hp8he9oLFHIqVQppWcHNpMbkUyHyU2M-QnXOcSNJtE",
+  "indexKey": "nx9lbB3PoJnPCWFOlMB9Xyg28SX-D4r-pgRc0V0c9kQ",
+  "record": {
+    "c": "category",
+    "k": "needs-you",
+    "v": {
+      "name": "Needs you",
+      "order": 0
+    },
+    "t": 1793000000000
+  },
+  "recordNonce": "sLGys7S1tre4ubq7",
+  "recordId": "TwjIpokFQK9T7GeubCav5dVCiw42C3Q_-pVntm-e5Do",
+  "recordData": "AbCxsrO0tba3uLm6u1gS8KjeUxuKuqjTuco4e-mOV931vgONNPSA4P40k6wxF5mSZdI4JuyVFUAL4swS1USP65mLwQWSfcilC6EjoboHFE4fsHyRbeWLfLwIuN2w7hX5Zltb31TdxYdGEKQMm7StPIsJ"
+}
