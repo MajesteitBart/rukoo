@@ -260,6 +260,53 @@ test('a deletion made while signed out goes up at the next sign-in', async (t) =
   assert.equal(laptop.get('category', 'promotions'), undefined);
 });
 
+test('a sync still running for an account this device left changes nothing in the next one', async (t) => {
+  const srv = await server(t);
+  const a = device(t, srv, 'a-helper');
+  await a.signUp({ email: 'first@example.com', password: PASSWORD });
+  for (let i = 0; i < 5; i++) a.put('sender', `a${i}@example.com`, { category: 'updates' });
+  await a.sync();
+  const b = device(t, srv, 'b-helper');
+  await b.signUp({ email: 'second@example.com', password: PASSWORD });
+  b.put('sender', 'b0@example.com', { category: 'money' });
+  await b.sync();
+
+  // The desk's first pull for the first account waits until the desk is in the second account.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let holding = true;
+  const { request } = require('../src/main/account/client');
+  const desk = new AccountService({
+    dataDir: tmpDir(t),
+    secrets,
+    defaultServer: srv.url,
+    deviceName: 'desk',
+    request: async (...args) => {
+      if (holding && args[2].startsWith('/v1/records?')) {
+        holding = false;
+        await held;
+      }
+      return request(...args);
+    }
+  }).init();
+  t.after(() => desk.close());
+  await desk.signIn({ email: 'first@example.com', password: PASSWORD });
+  const old = desk.syncing.promise;
+  await desk.signOut();
+  await desk.signIn({ email: 'second@example.com', password: PASSWORD });
+  await desk.sync();
+  release();
+  await old.catch(() => {});
+  assert.deepEqual(desk.get('sender', 'b0@example.com'), { category: 'money' });
+
+  b.put('sender', 'b1@example.com', { category: 'to-read' });
+  await b.sync();
+  await desk.sync();
+  assert.deepEqual(desk.get('sender', 'b1@example.com'), { category: 'to-read' }, 'the old answer moved no cursor');
+  assert.equal(desk.get('sender', 'a0@example.com'), undefined);
+  assert.equal(desk.status().signedIn, true);
+});
+
 test('signing in with a wrong password fails without signing in', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);

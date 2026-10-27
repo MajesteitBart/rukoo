@@ -138,16 +138,20 @@ class AccountService extends EventEmitter {
 
   // ---- talking to the server ----
 
-  async call(method, route, body, { auth = false, server = this.server } = {}) {
+  // session: the one a signed-in call is made for. Its answer may come after this device signed out or into
+  // another account; a 401 then says nothing about the session there is now.
+  async call(method, route, body, { auth = false, server = this.server, session = this.session } = {}) {
     if (!server) throw fail('no_server');
     try {
-      return await this.http(server, method, route, { body, token: auth ? this.session && this.session.token : undefined });
+      return await this.http(server, method, route, { body, token: auth ? session && session.token : undefined });
     } catch (err) {
       // The session ended elsewhere: this device was removed or the password changed on another one.
       if (auth && err instanceof AccountError && err.status === 401) {
-        this.state.error = 'signed_out';
-        this.forget();
-        this.changedStatus();
+        if (session && this.session === session) {
+          this.state.error = 'signed_out';
+          this.forget();
+          this.changedStatus();
+        }
         throw fail('signed_out', 401);
       }
       throw translated(err);
@@ -480,39 +484,47 @@ class AccountService extends EventEmitter {
 
   // ---- sync ----
 
+  // A sync belongs to the session it started in. When this device signs out or into another account meanwhile, what
+  // the server still answers for the old one is dropped, and the new session gets a sync of its own.
   sync() {
     if (!this.signedIn) return Promise.resolve(this.status());
-    if (this.syncing) return this.syncing;
-    this.syncing = (async () => {
+    const session = this.session;
+    if (this.syncing && this.syncing.session === session) return this.syncing.promise;
+    const current = () => this.session === session;
+    const promise = (async () => {
       this.changedStatus();
       try {
-        for (let round = 0; round < SYNC_ROUNDS; round++) {
-          await this.pull();
-          const refused = await this.push();
+        for (let round = 0; round < SYNC_ROUNDS && current(); round++) {
+          await this.pull(session);
+          const refused = await this.push(session);
           if (!refused && ![...this.entries.values()].some((e) => e.dirty)) break;
         }
-        this.state.lastSync = this.now();
-        this.state.error = null;
+        if (current()) {
+          this.state.lastSync = this.now();
+          this.state.error = null;
+        }
       } catch (err) {
-        if (this.signedIn) this.state.error = err instanceof AccountError ? err.code : 'server';
+        if (current()) this.state.error = err instanceof AccountError ? err.code : 'server';
         throw translated(err);
       } finally {
-        this.syncing = null;
-        if (this.signedIn) this.saveState();
+        if (this.syncing && this.syncing.promise === promise) this.syncing = null;
+        if (current()) this.saveState();
         this.saveEntries(true);
         this.changedStatus();
       }
       return this.status();
     })();
-    return this.syncing;
+    this.syncing = { session, promise };
+    return promise;
   }
 
-  async pull() {
+  async pull(session = this.session) {
     const touched = new Set();
     for (;;) {
-      if (!this.signedIn) return;
+      if (!session || this.session !== session) return;
       const since = Number(this.state.cursor) || 0;
-      const res = await this.call('GET', `/v1/records?since=${since}&limit=${PULL_LIMIT}`, undefined, { auth: true });
+      const res = await this.call('GET', `/v1/records?since=${since}&limit=${PULL_LIMIT}`, undefined, { auth: true, session });
+      if (this.session !== session) return;
       const records = Array.isArray(res && res.records) ? res.records : [];
       for (const r of records) {
         const c = this.applyRemote(r);
@@ -555,18 +567,19 @@ class AccountService extends EventEmitter {
   }
 
   // Sends this device's changes; true when the server kept another device's record for some of them.
-  async push() {
+  async push(session = this.session) {
     let refused = false;
     for (;;) {
-      if (!this.signedIn) return refused;
+      if (!session || this.session !== session) return refused;
       const batch = [...this.entries.values()].filter((e) => e.dirty).slice(0, PUSH_BATCH);
       if (!batch.length) return refused;
       const records = batch.map((e) => {
-        const out = keys.sealRecord(this.session.keys, e.deleted ? { ...e, v: null, d: true } : e);
+        const out = keys.sealRecord(session.keys, e.deleted ? { ...e, v: null, d: true } : e);
         if (e.ifAbsent && !e.deleted) out.ifAbsent = true;
         return out;
       });
-      const res = await this.call('POST', '/v1/records', { records }, { auth: true });
+      const res = await this.call('POST', '/v1/records', { records }, { auth: true, session });
+      if (this.session !== session) return refused;
       const results = new Map((Array.isArray(res && res.results) ? res.results : []).map((r) => [r.id, r]));
       for (const e of batch) {
         const r = results.get(e.id);
