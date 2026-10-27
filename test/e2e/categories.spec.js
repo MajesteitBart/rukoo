@@ -59,7 +59,11 @@ test('turning categories on gives the inbox tabs, and each tab shows its mail', 
   await expect(promotions.filter({ hasText: 'Forward Future' })).toHaveCount(1);
   await expect(promotions.filter({ hasText: 'Sanne de Vries' })).toHaveCount(0);
 
+  // A selection stays with its tab: switching tabs clears it, so no action reaches emails out of sight.
+  await win.locator('.list-scroll .item', { hasText: 'Forward Future' }).click({ modifiers: ['Control'] });
+  await expect(win.locator('.list-tools.selecting')).toBeVisible();
   await win.locator('.ctab', { hasText: 'To read' }).click();
+  await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
   await expect(win.locator('.list-scroll .empty')).toContainText('Nothing in To read');
   await win.locator('.ctab', { hasText: 'All' }).click();
   await expect(win.locator('.list-scroll .item').filter({ hasText: 'Sanne de Vries' })).toHaveCount(1);

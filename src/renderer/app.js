@@ -1187,6 +1187,8 @@ function bindList() {
       return renderList();
     }
     if (btn && btn.dataset.category !== undefined) {
+      // A selection doesn't carry over to another tab, where its emails aren't shown to act on.
+      clearChecks();
       S.category = btn.dataset.category || null;
       return renderList();
     }

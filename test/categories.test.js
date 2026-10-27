@@ -372,6 +372,36 @@ test('the sort after TypeSafe was busy survives other updates', async (t) => {
   assert.ok(cats.retryTimer);
 });
 
+test('sorting again finishes the emails Jev was too busy for, once it answers', async (t) => {
+  let busy = true;
+  let calls = 0;
+  const fake = {
+    MODEL: 'jev-test',
+    classify: async () => {
+      calls++;
+      if (busy) throw Object.assign(new Error('busy'), { code: 'busy' });
+      return { category: 'money', confidence: 0.9, model: 'jev-test' };
+    }
+  };
+  const msgs = inbox();
+  const { cats, acc, account } = setup(t, msgs, { jevImpl: fake });
+  const stored = (uid) => account.get('classification', cats.key(acc, msgs.find((m) => m.uid === uid)));
+  cats.setEnabled(true);
+  await cats.sort();
+  assert.equal(stored(1).source, 'rules', 'sorted by the rules before Jev was on');
+  cats.setJev({ key: 'KEY', on: true });
+  await cats.sortAgain();
+  assert.equal(cats.state().jev.error, 'busy');
+  assert.equal(stored(1).source, 'rules', 'the older category stays meanwhile');
+  busy = false;
+  cats.jevBusyUntil = 0;
+  const before = calls;
+  await cats.sort();
+  assert.ok(calls > before, 'the retry goes to Jev');
+  assert.equal(stored(1).source, 'jev');
+  assert.equal(cats.redo.size, 0);
+});
+
 test('categories can be added, renamed, reordered and deleted, within limits', (t) => {
   const { cats } = setup(t, inbox());
   cats.setEnabled(true);

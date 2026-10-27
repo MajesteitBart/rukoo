@@ -49,6 +49,9 @@ class Categories extends EventEmitter {
     this.jevBusyUntil = 0;
     // Goes up with every change to Jev's settings; what a request made under older settings answers is dropped.
     this.jevGeneration = 0;
+    // Emails "Sort the inbox again" still has to sort, by key, because Jev was busy or stopped before it got to them.
+    // Their older category stays until then.
+    this.redo = new Set();
   }
 
   file() {
@@ -281,7 +284,7 @@ class Categories extends EventEmitter {
         for (const m of box.messages) {
           const key = this.key(acc, m);
           if (this.account.get('override', key) !== undefined) continue;
-          if (!again && this.account.get('classification', key) !== undefined) continue;
+          if (!again && !this.redo.has(key) && this.account.get('classification', key) !== undefined) continue;
           out.push({ acc, m, key });
         }
       }
@@ -326,7 +329,16 @@ class Categories extends EventEmitter {
     const wanted = this.jevWanted();
     const key = this.jevKey();
     const generation = this.jevGeneration;
-    const store = (k, value) => (again ? this.account.put('classification', k, value) : this.account.put('classification', k, value, { ifAbsent: true }));
+    // Sorting again replaces what an email had; otherwise the first stored category stays (first write wins).
+    const replace = (k) => again || this.redo.has(k);
+    const store = (k, value) => {
+      const done = replace(k) ? this.account.put('classification', k, value) : this.account.put('classification', k, value, { ifAbsent: true });
+      this.redo.delete(k);
+      return done;
+    };
+    const later = (k) => {
+      if (replace(k)) this.redo.add(k);
+    };
     const forJev = [];
     let sorted = 0;
     for (const item of this.unsorted({ again })) {
@@ -334,6 +346,7 @@ class Categories extends EventEmitter {
       if (rule.strength === 'strong' || !wanted) {
         if (store(item.key, { category: rule.category, source: 'rules', at: Date.now() }) !== false) sorted++;
       } else if (key) forJev.push(item);
+      else later(item.key);
     }
     let stop = null;
     // Turning Jev or categories off, or a new key, stops what is still queued: nothing more goes to TypeSafe.
@@ -352,12 +365,14 @@ class Categories extends EventEmitter {
           const category = res.confidence >= JEV_CONFIDENT ? res.category : unsure;
           if (store(k, { category, source: 'jev', confidence: res.confidence, model: res.model, at: Date.now() }) !== false) sorted++;
         } catch (err) {
+          later(k);
           stop = err;
         }
       }
     };
     const asked = forJev.length;
     await Promise.all(Array.from({ length: JEV_AT_ONCE }, next));
+    for (const item of forJev) later(item.key);
     if (this.jevGeneration === generation) {
       if (stop) this.jevFailed(stop);
       // Jev answered again after being busy or out of reach. A refused key only clears with a new key (setJev).
