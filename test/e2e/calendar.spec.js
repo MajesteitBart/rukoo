@@ -157,7 +157,8 @@ test('hides a calendar, switches views and moves through the weeks by keyboard',
 
   const title = win.locator('.cal-title');
   const thisWeek = await win.locator('.cal-dayhead').first().getAttribute('data-cal-day');
-  await win.locator('.cal-title').click();
+  // The keyboard leaves the sidebar: a click on the empty corner above the hours (the title opens Go to date).
+  await win.locator('.cal-days .cal-gutter').click();
   await win.keyboard.press('ArrowRight');
   await expect(win.locator('.cal-dayhead').first()).not.toHaveAttribute('data-cal-day', thisWeek);
   await expect(event('KL1691 Amsterdam to Lisbon')).toBeVisible();
@@ -226,7 +227,7 @@ test('renaming an event in the hour the clocks go back keeps its time', async ()
     const first = Number(document.querySelector('.cal-dayhead').dataset.calDay);
     return Math.floor((target - first) / (7 * 86400000));
   }, back);
-  await win.locator('.cal-title').click();
+  await win.locator('.cal-days .cal-gutter').click();
   for (let i = 0; i < weeks; i++) await win.keyboard.press('j');
   await event('Night shift').click({ timeout: 15000 });
   await card().locator('[data-pop="edit"]').click();
@@ -397,7 +398,7 @@ test('a Google calendar shows beside the demo calendar in its own colour, and ch
 
   // A change made in Google Calendar shows after the next sync.
   await app.evaluate(() => (global.__google.store[0].summary = 'Board meeting (moved room)'));
-  await win.locator('.cal-title').click();
+  await win.locator('.cal-days .cal-gutter').click();
   await win.keyboard.press('F5');
   await expect(event('Board meeting (moved room)')).toBeVisible({ timeout: 10000 });
 
@@ -487,12 +488,13 @@ test('a Google account without calendar access offers to connect it instead of a
     engine.caches.set('g-test', { folders: [], boxes: {}, lastSync: null });
     engine.emit('updated');
   });
-  const notice = win.locator('.cal-notice');
+  // The account's own notice; the one-time notice about reminders may show beside it.
+  const notice = win.locator('.cal-notice', { hasText: 'someone@gmail.com' });
   await expect(notice).toContainText('Show the calendar of someone@gmail.com', { timeout: 10000 });
   await expect(notice.locator('[data-cal-reconnect="g-test"]')).toHaveText('Connect calendar');
   await expect(win.locator('.sidebar [data-cal-reconnect="g-test"]')).toBeVisible();
   await expect(win.locator('.cal-notice.error')).toHaveCount(0);
   await notice.locator('[data-cal-dismiss]').click();
-  await expect(win.locator('.cal-notice')).toHaveCount(0);
+  await expect(notice).toHaveCount(0);
   await expect(win.locator('.sidebar [data-cal-reconnect="g-test"]')).toBeVisible();
 });

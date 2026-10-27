@@ -637,9 +637,28 @@ function renderModeSwitch() {
     { value: 'calendar', label: t('calendar.mode.calendar'), title: t('calendar.mode.calendarShortcut'), icon: 'calendar' }
   ];
   const el = box.querySelector('.segmented');
-  if (el && el.dataset.language === S.data.settings.language) return setSegmented(el, prefs.mode);
-  box.innerHTML = segmented({ name: 'mode', label: t('calendar.mode.label'), value: prefs.mode, options });
-  box.querySelector('.segmented').dataset.language = S.data.settings.language;
+  if (el && el.dataset.language === S.data.settings.language) setSegmented(el, prefs.mode);
+  else {
+    box.innerHTML = segmented({ name: 'mode', label: t('calendar.mode.label'), value: prefs.mode, options });
+    box.querySelector('.segmented').dataset.language = S.data.settings.language;
+  }
+  // Booking requests that wait for an answer: a count on the Calendar segment, also while the mailbox shows.
+  const count = calendar.requestCount();
+  const seg = box.querySelector('[data-mode="calendar"]');
+  let badge = seg.querySelector('.seg-badge');
+  if (!count) {
+    badge?.remove();
+    seg.removeAttribute('aria-label');
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'seg-badge';
+    badge.setAttribute('aria-hidden', 'true');
+    seg.appendChild(badge);
+  }
+  badge.textContent = count > 99 ? '99+' : String(count);
+  seg.setAttribute('aria-label', t('calendar.mode.calendarRequests', { count }));
 }
 // ---- /cal:B1 mode switch ----
 
@@ -2467,6 +2486,12 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
   // ---- cal:B1 events ----
+  // A reminder or a booking notification was clicked: the calendar opens on that event or request.
+  if (type === 'calendar-open' && payload && S.data && S.data.accounts.length) {
+    setMode('calendar');
+    if (typeof payload.request === 'string') calendar.openRequest(payload.request);
+    else if (typeof payload.id === 'string') calendar.openEvent(payload.id, Number.isFinite(payload.start) ? payload.start : undefined);
+  }
   // ---- /cal:B1 events ----
   // ---- cal:B3 events ----
   // ---- /cal:B3 events ----

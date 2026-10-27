@@ -90,6 +90,8 @@ export const icons = {
   people: p('<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><path d="M15.5 5.6a3.3 3.3 0 0 1 0 5.8M17.5 14a6 6 0 0 1 3.5 5.5"/>'),
   repeat: p('<path d="m17 3.5 3 3-3 3"/><path d="M4 11.5V10a3.5 3.5 0 0 1 3.5-3.5H20"/><path d="m7 20.5-3-3 3-3"/><path d="M20 12.5V14a3.5 3.5 0 0 1-3.5 3.5H4"/>'),
   // ---- cal:B1 icons ----
+  // An event booked through the booking page: a calendar with a check.
+  booking: p('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
   // ---- /cal:B1 icons ----
   // ---- cal:B2 icons ----
   // ---- /cal:B2 icons ----

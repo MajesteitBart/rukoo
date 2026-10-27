@@ -22,7 +22,7 @@ import {
   account,
   calendarOf,
   titleOf,
-  colorOf,
+  eventColor,
   byId,
   shownView,
   range
@@ -70,14 +70,14 @@ function popHtml(e) {
     rows.push(row('person', esc(t('calendar.guests.organizedBy', { name: e.organizer.name || e.organizer.address }))));
   }
   if (e.description) rows.push(row('notes', `<div class="cal-desc">${linkify(e.description)}</div>`));
-  rows.push(row('calendar', `<span class="cal-dot" style="--c:${colorOf(e.accountId)}"></span>${esc(cal ? cal.name : '')}<span class="cal-acc">${esc(acc ? acc.email : '')}</span>`));
+  rows.push(row('calendar', `<span class="cal-dot" style="--c:${eventColor(e)}"></span>${esc(cal ? cal.name : '')}<span class="cal-acc">${esc(acc ? acc.email : '')}</span>`));
   const rsvp = e.canRespond
     ? `<div class="cal-rsvp"><span>${esc(t('calendar.rsvp.question'))}</span><div class="filters" role="group" aria-label="${esc(t('calendar.rsvp.question'))}">${RESPONSES.map(
         (r) => `<button class="filter ${e.response === r ? 'active' : ''}" data-rsvp="${r}" aria-pressed="${e.response === r}">${esc(t(`calendar.rsvp.${r}`))}</button>`
       ).join('')}</div></div>`
     : '';
   return `<div class="cal-pop-bar">${actions}</div>
-    <div class="cal-pop-head"><span class="cal-swatch" style="--c:${colorOf(e.accountId)}"></span><div><h2 id="cal-pop-title" class="sel">${esc(titleOf(e))}</h2>
+    <div class="cal-pop-head"><span class="cal-swatch" style="--c:${eventColor(e)}"></span><div><h2 id="cal-pop-title" class="sel">${esc(titleOf(e))}</h2>
       <div class="cal-pop-when">${esc(whenText(e))}</div></div></div>
     ${rows.join('')}${rsvp}`;
 }
@@ -192,7 +192,9 @@ export function newEvent(preset = {}) {
     start = showsToday ? Math.ceil(now / 1800000) * 1800000 : parseLocal(dateValue(view === 'week' ? weekStart(C.date) : C.date), '09:00');
   }
   const allDay = Boolean(preset.allDay);
-  return eventDialog(null, { allDay, start, end: allDay ? addDays(start, 1) : start + 3600000 });
+  // A drag on the grid says where the event ends too.
+  const end = Number.isFinite(preset.end) && preset.end > start ? preset.end : allDay ? addDays(start, 1) : start + 3600000;
+  return eventDialog(null, { allDay, start, end });
 }
 
 export function fromEvent(e) {
