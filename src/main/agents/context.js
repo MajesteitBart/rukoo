@@ -267,12 +267,13 @@ function turnText({ conversation, text, firstTurn, notes = [], message = null, o
 }
 
 const KINDS = { text: 'text file', pdf: 'PDF', image: 'image', file: 'file' };
-// Why the PDF reader (pdfread.js) got no text.
+// Why the PDF reader (pdfread.js) got no text. busy: a PDF of the user's message that waited too long for a reader.
 const PDF_FAILED = {
   timeout: 'reading it took longer than Rukoo allows',
   memory: 'reading it needed more memory than Rukoo allows',
   error: 'its reader stopped with an error',
-  stopped: 'the reading was stopped'
+  stopped: 'the reading was stopped',
+  busy: 'too many PDFs were waiting to be read; read_chat_file can try again'
 };
 // What is said after a file's text. truncated: more of the text than went along (read_chat_file gives it).
 // partial: the PDF reader stopped at its limits, so no tool gives the rest; only the file has it.
