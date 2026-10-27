@@ -159,13 +159,14 @@ class CategoriesTest {
     @Test
     fun `a correction wins over a sender rule, which wins over the stored and the ruled category`() {
         val s = setup(inbox())
-        s.cats.setEnabled(true)
         val a = s.mail.inbox[0]
         val key = s.cats.key(s.acc, a)
+        // Stored before categories are on, so the sort turning them on starts finds it there (first write wins).
         s.account.put("classification", key, buildJsonObject {
             put("category", "money")
             put("source", "jev")
         }, ifAbsent = true)
+        s.cats.setEnabled(true)
         assertEquals("money", s.cats.of(s.acc, a))
         s.account.put("sender", "sanne@studio.example", buildJsonObject { put("category", "to-read") })
         assertEquals("to-read", s.cats.of(s.acc, a))
@@ -217,7 +218,9 @@ class CategoriesTest {
     fun `sorting stores the rules result once, first write wins`() = runBlocking {
         val s = setup(inbox())
         s.cats.setEnabled(true)
-        assertEquals(3, s.cats.sort())
+        // Turning categories on starts a sort; this one follows it, or comes after it.
+        s.cats.sort()
+        assertEquals(3, s.account.list("classification").size)
         val a = s.mail.inbox[0]
         assertEquals("needs-you", s.stored(a)?.get("category")?.jsonPrimitive?.content)
         assertEquals("rules", s.stored(a)?.get("source")?.jsonPrimitive?.content)
@@ -229,11 +232,14 @@ class CategoriesTest {
     }
 
     @Test
-    fun `the people you wrote to count as people`() {
+    fun `the people you wrote to count as people`() = runBlocking {
         val sent = listOf(MessageSummary(id = "acc1:Sent:1", accountId = "acc1", folder = "Sent", uid = 1, to = listOf(Address("", "Board@Club.example"))))
         val club = msg(4, Address("Club", "board@club.example"), "Meeting notes", 0, signals = MailSignals(list = true))
         val s = setup(inbox() + club, sent = sent)
         s.cats.setEnabled(true)
+        s.cats.sort()
+        // The rules decide here, not what that sort stored.
+        s.account.remove("classification", s.cats.key(s.acc, club))
         assertEquals("a mailing list from someone you write to", "needs-you", s.cats.of(s.acc, club))
         s.mail.sent = emptyList()
         assertEquals("promotions", s.cats.of(s.acc, club))
@@ -483,7 +489,7 @@ class CategoriesTest {
         s.cats.sort()
         assertTrue("the retry goes to Jev", fake.calls.size > before)
         assertEquals("jev", s.stored(one)?.get("source")?.jsonPrimitive?.content)
-        assertEquals(0, s.cats.redo.size)
+        assertTrue(s.cats.redoKeys().isEmpty())
     }
 
     @Test
@@ -499,7 +505,7 @@ class CategoriesTest {
         s.cats.sort()
         s.cats.setJev(on = true, key = "KEY")
         s.cats.sortAgain()
-        val left = s.cats.redo.toSet()
+        val left = s.cats.redoKeys()
         assertTrue(left.isNotEmpty())
         s.cats.close()
         // The app starts again: new Categories on the same files, with TypeSafe answering.
@@ -507,10 +513,10 @@ class CategoriesTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         val again = Categories(s.account, s.mail, PlainSecrets, s.dir, fake, EnglishPresets, scope, sortAfterMs = 60_000)
         closers += { again.close() }
-        assertEquals(left, again.redo.toSet())
+        assertEquals(left, again.redoKeys())
         again.sort()
         assertEquals("jev", s.stored(one)?.get("source")?.jsonPrimitive?.content)
-        assertTrue(again.redo.isEmpty())
+        assertTrue(again.redoKeys().isEmpty())
         assertFalse("the finished re-sort is gone from the file too", java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
     }
 
@@ -527,17 +533,18 @@ class CategoriesTest {
         s.cats.sort()
         s.cats.setJev(on = true, key = "KEY")
         s.cats.sortAgain()
-        assertTrue(s.cats.redo.isNotEmpty())
+        assertTrue(s.cats.redoKeys().isNotEmpty())
         s.cats.close()
         // The app starts again with its cache already loaded; the mail doesn't change.
         busy = false
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         val again = Categories(s.account, s.mail, PlainSecrets, s.dir, fake, EnglishPresets, scope, sortAfterMs = 20)
         closers += { again.close() }
+        // Done once Jev's answer is stored and the email has left the re-sort's list, which happens right after.
         withTimeout(10_000) {
-            while (s.stored(one)?.get("source")?.jsonPrimitive?.content != "jev") delay(20)
+            while (s.stored(one)?.get("source")?.jsonPrimitive?.content != "jev" || again.redoKeys().isNotEmpty()) delay(20)
         }
-        assertTrue(again.redo.isEmpty())
+        assertTrue(again.redoKeys().isEmpty())
     }
 
     @Test

@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -287,6 +288,8 @@ class Categories(
     }
 
     fun setEnabled(on: Boolean): CategoriesState {
+        // Turned on here: the sort below is the one; the records it writes don't start another.
+        enabledSeen.set(on)
         if (on) seed()
         putSettings(enabled = on)
         changed()
@@ -438,14 +441,21 @@ class Categories(
 
     // ---- sorting ----
 
+    /**
+     * A sort in [delayMs], or at once. At once means now: the sort starts, or the running one takes it as a follow-up,
+     * before this returns, so it is in line before anything asked for after it (desktop's setTimeout(0) fires after the
+     * code that follows, which a coroutine on another thread can't promise).
+     */
     fun soon(delayMs: Long = sortAfterMs) {
         synchronized(lock) {
             timer?.cancel()
-            timer = scope.launch {
+            timer = null
+            if (delayMs > 0) timer = scope.launch {
                 delay(delayMs)
-                runCatching { sort() }.onFailure { if (it is CancellationException) throw it else AppLog.w(TAG, "sorting failed", it) }
+                startSort(false)
             }
         }
+        if (delayMs <= 0) startSort(false)
     }
 
     private class Item(val acc: Account, val m: MessageSummary, val key: String)
@@ -482,27 +492,45 @@ class Categories(
      * A sort asked for while one runs follows it, sorting again if any of those asks did, so nothing asked for is lost:
      * "Sort the inbox again" during an ordinary sort, or the sort a new Jev key starts. The result covers both.
      */
-    suspend fun sort(again: Boolean = false): Int {
-        if (!settings().enabled) return 0
+    suspend fun sort(again: Boolean = false): Int = startSort(again)?.await() ?: 0
+
+    /**
+     * Starts a sort, or asks the running one to follow up with another; returns the job that covers it, or null while
+     * categories are off. A follow-up sorts again when any of the asks for it did.
+     */
+    private fun startSort(again: Boolean): Deferred<Int>? {
+        if (!settings().enabled) return null
         val job = synchronized(lock) {
             sorting?.also { followUp = followUp == true || again } ?: scope.async(start = CoroutineStart.LAZY) {
                 var total = 0
                 var ask: Boolean? = again
                 while (ask != null) {
-                    synchronized(lock) { followUp = null }
                     if (!settings().enabled) break
                     total += run(ask)
-                    // Finishing and taking a follow-up are one step, so an ask that comes now isn't left behind.
-                    ask = synchronized(lock) { followUp.also { if (it == null) sorting = null } }
+                    // Taking the follow-up, or finishing, is one step, so an ask that comes now isn't left behind.
+                    ask = synchronized(lock) {
+                        followUp.also {
+                            followUp = null
+                            if (it == null) sorting = null
+                        }
+                    }
                 }
                 total
             }.also { made ->
                 sorting = made
-                made.invokeOnCompletion { synchronized(lock) { if (sorting === made) sorting = null } }
+                made.invokeOnCompletion { e ->
+                    synchronized(lock) {
+                        if (sorting === made) {
+                            sorting = null
+                            followUp = null
+                        }
+                    }
+                    if (e != null && e !is CancellationException) AppLog.w(TAG, "sorting failed", e)
+                }
             }
         }
         job.start()
-        return job.await()
+        return job
     }
 
     suspend fun sortAgain(): Int = sort(again = true)
@@ -677,12 +705,17 @@ class Categories(
     /** Whether Jev sorts mail on this phone, which the privacy page names. */
     val jevOn: Boolean get() = state.value.jev.on
 
+    /** Stops everything this started: timers, a running sort, and listening to the account and the mail. */
     fun close() {
         synchronized(lock) {
             timer?.cancel()
             retryTimer?.cancel()
         }
+        scope.cancel()
     }
+
+    /** The emails a re-sort still has to do, as they are now. */
+    internal fun redoKeys(): Set<String> = synchronized(lock) { redo.toSet() }
 
     companion object {
         const val MAX_CATEGORIES = 12
