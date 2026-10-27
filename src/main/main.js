@@ -44,6 +44,8 @@ const { PanelGate } = require('./agents/gate');
 const { free: freeTime } = require('./calendar/free');
 // ---- /cal:A2 requires ----
 // ---- cal:A4 requires ----
+const { Booking } = require('./booking');
+const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner');
 // ---- /cal:A4 requires ----
 
 // Windows takes the taskbar icon and the handler for notification clicks from the Start menu shortcut with this ID,
@@ -230,6 +232,44 @@ function notify(messages) {
 }
 
 // ---- cal:A4 notifications ----
+// Shown notifications stay referenced until they close, or Windows can drop their click handler with the object.
+const liveNotices = new Set();
+
+// A desktop notification whose click brings the main window forward on the calendar, at the event or request.
+// Test mode records them instead of showing them, so a test run never puts toasts on the screen.
+function calendarNotice({ title, body, open }) {
+  if (process.env.SEM_HIDDEN) {
+    (global.__semNotices ||= []).push({ title, body, open });
+    return;
+  }
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title: String(title).slice(0, 200), body: String(body).slice(0, 400), icon: nativeImage.createFromPath(ICON), silent: false });
+  liveNotices.add(n);
+  const drop = () => liveNotices.delete(n);
+  n.on('click', () => {
+    drop();
+    showWindow();
+    if (open) send('calendar-open', open);
+  });
+  n.on('close', drop);
+  n.on('failed', drop);
+  n.show();
+}
+
+// Calendar reminders: always a desktop notification, also while Rukoo is focused (design 2.8).
+function showReminders(list) {
+  if (list.length) calendarNotice(reminderNotice(list));
+}
+
+// Booking news (design 1.2): a toast while the main window is focused, a desktop notification otherwise. open:
+// { id, start } for an event, { request } for a request, { start } for the day a cancelled booking was on.
+function showBookingNotification({ title, body, open }) {
+  if (win && !win.isDestroyed() && win.isFocused() && !process.env.SEM_HIDDEN) {
+    send('toast', String(body).slice(0, 200));
+    return;
+  }
+  calendarNotice({ title, body, open });
+}
 // ---- /cal:A4 notifications ----
 
 function showWindow() {
@@ -386,6 +426,8 @@ function endSession() {
   if (account) account.close();
   if (categories) categories.close();
   // ---- cal:A4 session end ----
+  if (reminders) reminders.stop();
+  if (booking) booking.close();
   // ---- /cal:A4 session end ----
   destroyTray();
   // ---- agents ----
@@ -532,7 +574,8 @@ const {
 // Every renderer call goes through this table; nothing else is reachable from the UI.
 const api = {
   // ---- cal:A4 state api ----
-  state: () => engine.state(),
+  // The booking page's address while it is on, and its language, for the footer and the composer (contracts f).
+  state: () => ({ ...engine.state(), bookingUrl: booking ? booking.url() : null, bookingLocale: booking ? booking.locale() : null }),
   // ---- /cal:A4 state api ----
   list: (opts) => engine.listMessages(opts),
   counts: (scope) => engine.counts(scope),
@@ -838,6 +881,23 @@ const api = {
   },
   categoriesSortAgain: () => categories.sortAgain(),
   // ---- cal:A4 ipc ----
+  // The booking page (booking/index.js), which checks every field again.
+  bookingState: (opts) => booking.load({ refresh: plainObject(opts).refresh === true }),
+  bookingEnable: (input) => booking.enable(plainObject(input)),
+  bookingSave: (patch) => booking.save(plainObject(patch)),
+  bookingDisable: () => booking.disable(),
+  bookingCheckHandle: (handle) => booking.checkHandle(accountText(handle, 64)),
+  // accept, decline and cancel name a booking; keep and dismiss a notice.
+  bookingAction: (id, action, opts) => {
+    const kind = accountText(action, 20);
+    const pattern = kind === 'keep' || kind === 'dismiss' ? /^[A-Za-z0-9_:.@-]{1,120}$/ : /^[A-Za-z0-9_-]{22}$/;
+    const o = plainObject(opts);
+    const options = { message: typeof o.message === 'string' ? o.message.slice(0, 2000) : undefined, email: o.email === true, notify: o.notify !== false };
+    return booking.action(typeof id === 'string' && pattern.test(id) ? id : '', kind, options);
+  },
+  bookingDetails: (id) => booking.details(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id) ? id : ''),
+  bookingSync: () => booking.sync(),
+  bookingTakeover: () => booking.takeover(),
   // ---- /cal:A4 ipc ----
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
@@ -1024,7 +1084,11 @@ const windowApi = {
 const WINDOW_CODES = new Set(['auth']);
 
 // What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
+// Booking errors (booking/rules.js bookingError) pass their code, and for a refused field its name (contracts f).
 function windowError(err) {
+  if (err && err.booking === true && typeof err.code === 'string') {
+    return typeof err.field === 'string' ? { code: err.code.slice(0, 40), field: err.field.slice(0, 200) } : { code: err.code.slice(0, 40) };
+  }
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
@@ -1165,6 +1229,14 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semCategories = categories;
   categories.on('changed', () => broadcast('categories', categories.state()));
   // ---- cal:A4 construct ----
+  booking = new Booking({ account, calendars, engine, secrets, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
+  if (process.env.SEM_HIDDEN) global.__semBooking = booking;
+  booking.on('state', (s) => broadcast('booking', s));
+  // Deleting the Rukoo account turns the booking page off first, and stops when that fails (decision 22).
+  account.beforeDelete = () => booking.disableForDelete();
+  reminders = new ReminderRunner({ calendars, engine, dataDir: path.join(app.getPath('userData'), 'data'), notify: showReminders, powerMonitor });
+  if (process.env.SEM_HIDDEN) global.__semReminders = reminders;
+  reminders.start();
   // ---- /cal:A4 construct ----
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
@@ -1174,6 +1246,12 @@ app.whenReady().then(() => {
     secrets,
     deps: {
       // ---- cal:B4 deps ----
+      // The calendar tools: list_events and create_event use the store, find_free_time the same free time as the
+      // availability panel, get_booking_link the booking page while it is on (link() and hours() are null when off).
+      calendars,
+      calendarFree: (opts) => freeTime(calendars, engine.settings, booking ? booking.hours() : null, opts),
+      bookingHours: () => (booking ? booking.hours() : null),
+      bookingLink: () => (booking ? booking.link() : null),
       // ---- /cal:B4 deps ----
       unsubscribe: (id) => api.unsubscribe(id),
       // A mailto-only unsubscribe opens a filled-in compose window; the user sends it.
@@ -1225,6 +1303,8 @@ app.on('before-quit', () => {
   if (account) account.close();
   if (categories) categories.close();
   // ---- cal:A4 quit ----
+  if (reminders) reminders.stop();
+  if (booking) booking.close();
   // ---- /cal:A4 quit ----
 });
 

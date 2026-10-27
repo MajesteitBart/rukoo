@@ -52,6 +52,10 @@ const DEFAULT_SETTINGS = {
   // earlier versions show. See signature.js.
   signatureHtml: '',
   // ---- cal:B3 settings ----
+  // The booking page's link under the signature, opt-in. bookingFooterText: the footer's own text with {url} where
+  // the link goes, or null for the default text in the booking page's language. Accounts can override both.
+  bookingFooter: false,
+  bookingFooterText: null,
   // ---- /cal:B3 settings ----
   // ---- cal:A2 settings ----
   // Calendar choices and defaults; see normalizeCalendar(). Changed only through calendarSettings().
@@ -77,6 +81,10 @@ function normalizeSettings(s) {
   s.calendar = normalizeCalendar(s.calendar);
   // ---- /cal:A2 normalize ----
   // ---- cal:B3 normalize ----
+  // A footer text that can't carry the link ({url}), or is longer than 300 characters, falls back to the default.
+  const footerText = (v) => (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}') ? v.trim() : null);
+  s.bookingFooter = s.bookingFooter === true;
+  s.bookingFooterText = footerText(s.bookingFooterText);
   // ---- /cal:B3 normalize ----
 }
 
@@ -471,6 +479,9 @@ class Engine extends EventEmitter {
       signature: acc.signature,
       signatureHtml: acc.signatureHtml || null,
       // ---- cal:B3 account ----
+      // The booking link under this account's signature: null follows the general setting, like the signature.
+      bookingFooter: typeof acc.bookingFooter === 'boolean' ? acc.bookingFooter : null,
+      bookingFooterText: typeof acc.bookingFooter === 'boolean' && typeof acc.bookingFooterText === 'string' ? acc.bookingFooterText : null,
       // ---- /cal:B3 account ----
       // ---- cal:A3 account ----
       // Whether the calendar server sends invitations, as set in Server settings; null: as its DAV header says.
@@ -610,6 +621,20 @@ class Engine extends EventEmitter {
       acc.signatureHtml = signature.signatureHtml || null;
     }
     // ---- cal:B3 update account ----
+    // The booking link under this account's signature. bookingFooter null goes back to the general setting, text and
+    // all; a text without {url}, or over 300 characters, means the general text.
+    if (patch.bookingFooter !== undefined) {
+      if (typeof patch.bookingFooter === 'boolean') acc.bookingFooter = patch.bookingFooter;
+      else {
+        delete acc.bookingFooter;
+        delete acc.bookingFooterText;
+      }
+    }
+    if (patch.bookingFooterText !== undefined && typeof acc.bookingFooter === 'boolean') {
+      const v = patch.bookingFooterText;
+      if (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}')) acc.bookingFooterText = v.trim();
+      else delete acc.bookingFooterText;
+    }
     // ---- /cal:B3 update account ----
     if (patch.color) acc.color = patch.color;
     if (patch.aliases) {

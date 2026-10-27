@@ -8,12 +8,24 @@ const https = require('https');
 const TIMEOUT = 20000;
 const MAX_BYTES = 32 * 1024 * 1024;
 
+// details: what an error answer says besides its code and message, for the booking routes: the refused field, the
+// booking as it is now (stale_version), other times (slot_taken).
 class AccountError extends Error {
-  constructor(code, status = 0, message = '') {
+  constructor(code, status = 0, message = '', details = null) {
     super(message || code);
     this.code = code;
     this.status = status;
+    this.details = details;
   }
+}
+
+function errorDetails(json) {
+  if (!json || typeof json !== 'object') return null;
+  const out = {};
+  if (typeof json.field === 'string') out.field = json.field.slice(0, 200);
+  if (json.booking && typeof json.booking === 'object' && !Array.isArray(json.booking)) out.booking = json.booking;
+  if (Array.isArray(json.alternatives)) out.alternatives = json.alternatives.filter(Number.isSafeInteger).slice(0, 3);
+  return Object.keys(out).length ? out : null;
 }
 
 // The server's base URL without a trailing slash, or null when it isn't one Rukoo may talk to.
@@ -68,7 +80,7 @@ function request(server, method, path, { body, token, meter } = {}) {
           json = null;
         }
         if (res.statusCode >= 200 && res.statusCode < 300) return resolve(json);
-        reject(new AccountError((json && json.error) || 'server', res.statusCode, json && json.message));
+        reject(new AccountError((json && json.error) || 'server', res.statusCode, json && json.message, errorDetails(json)));
       });
       res.on('error', (err) => reject(new AccountError('network', 0, err.message)));
     });
