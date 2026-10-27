@@ -112,6 +112,8 @@ fun SheetRow(
     checked: Boolean = false,
     danger: Boolean = false,
     enabled: Boolean = true,
+    /** Something other than an icon in front, such as a category's color dot. */
+    leading: (@Composable () -> Unit)? = null,
 ) {
     val c = Rk.colors
     val content = if (danger) c.danger else c.text
@@ -126,6 +128,7 @@ fun SheetRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) RkIcon(icon, null, size = 18.dp, tint = if (danger) c.danger else c.text2)
+        leading?.invoke()
         Column(Modifier.weight(1f)) {
             Text(
                 label,

@@ -73,8 +73,14 @@ object SettingsRoutes {
 
     /** One shortcut by its command; the bare prefix is a new one. */
     const val SHORTCUT = "shortcut:"
+    const val RUKOO = "rukoo"
+    const val RUKOO_SIGNUP = "rukoo-signup"
+    const val RUKOO_SIGNIN = "rukoo-signin"
+    const val RUKOO_RECOVER = "rukoo-recover"
+    const val RUKOO_PRIVACY = "rukoo-privacy"
+    const val CATEGORIES = "categories"
 
-    val sections = listOf(ACCOUNTS, AGENTS, PHONE, NOTIFICATIONS, APPEARANCE, LANGUAGE, ABOUT)
+    val sections = listOf(ACCOUNTS, RUKOO, AGENTS, PHONE, NOTIFICATIONS, APPEARANCE, LANGUAGE, CATEGORIES, ABOUT)
 }
 
 /** Moves between Settings pages; [reset] makes a section the only page (a tap in the two-pane list). */
@@ -184,6 +190,12 @@ private fun PageContent(app: AppViewModel, model: SetupModel, nav: SettingsNav, 
         page == SettingsRoutes.APPEARANCE -> AppearancePage(app)
         page == SettingsRoutes.LANGUAGE -> LanguagePage(app)
         page == SettingsRoutes.ABOUT -> AboutPage()
+        page == SettingsRoutes.RUKOO -> RukooAccountPage(app, nav)
+        page == SettingsRoutes.RUKOO_SIGNUP -> RukooFormPage(app, nav, RukooAccountModel.Form.SIGN_UP)
+        page == SettingsRoutes.RUKOO_SIGNIN -> RukooFormPage(app, nav, RukooAccountModel.Form.SIGN_IN)
+        page == SettingsRoutes.RUKOO_RECOVER -> RukooFormPage(app, nav, RukooAccountModel.Form.RECOVER)
+        page == SettingsRoutes.RUKOO_PRIVACY -> RukooPrivacyPage(app)
+        page == SettingsRoutes.CATEGORIES -> CategoriesPage(app)
         page == SettingsRoutes.ADD_ACCOUNT -> AddAccountPage(app, model, nav)
         page == SettingsRoutes.GOOGLE -> SettingsPageBody {
             GoogleSetup(
@@ -244,6 +256,12 @@ private fun routeTitle(route: String): String = when {
     route.startsWith(SettingsRoutes.IMAP) -> stringResource(R.string.settings_setup_sign_in_title, providerLabel(MailProviders.preset(route.removePrefix(SettingsRoutes.IMAP))))
     route == SettingsRoutes.PAIR -> stringResource(R.string.settings_pair_title)
     route == SettingsRoutes.IMPORT -> stringResource(R.string.settings_import_title)
+    route == SettingsRoutes.RUKOO -> stringResource(R.string.settings_rukoo_title)
+    route == SettingsRoutes.RUKOO_SIGNUP -> stringResource(R.string.settings_rukoo_sign_up)
+    route == SettingsRoutes.RUKOO_SIGNIN -> stringResource(R.string.settings_rukoo_sign_in)
+    route == SettingsRoutes.RUKOO_RECOVER -> stringResource(R.string.settings_rukoo_forgot)
+    route == SettingsRoutes.RUKOO_PRIVACY -> stringResource(R.string.settings_rukoo_privacy)
+    route == SettingsRoutes.CATEGORIES -> stringResource(R.string.settings_categories_title)
     else -> stringResource(R.string.settings_title_short)
 }
 
@@ -282,6 +300,14 @@ private fun SettingsHome(app: AppViewModel, selected: String?, chevrons: Boolean
         SettingsCard {
             HomeRow(SettingsRoutes.ACCOUNTS, stringResource(R.string.settings_groups_accounts), accountsSummary, RukooIcons.People, selected, chevrons, onOpen)
         }
+        s.account?.let { account ->
+            val status by account.status.collectAsStateWithLifecycle()
+            // Desktop's Sync group: the Rukoo account.
+            SectionTitle(stringResource(R.string.settings_groups_sync))
+            SettingsCard {
+                HomeRow(SettingsRoutes.RUKOO, stringResource(R.string.settings_rukoo_title), rukooAccountSummary(status), PanelIcons.Shield, selected, chevrons, onOpen)
+            }
+        }
         Spacer(Modifier.height(16.dp))
         SettingsCard {
             HomeRow(SettingsRoutes.AGENTS, stringResource(R.string.settings_agents_title), agentsSummary, RukooIcons.Sparkle, selected, chevrons, onOpen)
@@ -292,6 +318,18 @@ private fun SettingsHome(app: AppViewModel, selected: String?, chevrons: Boolean
             HomeRow(SettingsRoutes.NOTIFICATIONS, stringResource(R.string.settings_general_notifications), notifySummary, RukooIcons.Bell, selected, chevrons, onOpen)
             HomeRow(SettingsRoutes.APPEARANCE, stringResource(R.string.settings_appearance_title), themeLabel(settings.theme), PanelIcons.Sliders, selected, chevrons, onOpen)
             HomeRow(SettingsRoutes.LANGUAGE, stringResource(R.string.settings_general_language), languageLabel(settings.language), PanelIcons.Globe, selected, chevrons, onOpen)
+            s.categories?.let { cats ->
+                val state by cats.state.collectAsStateWithLifecycle()
+                HomeRow(
+                    SettingsRoutes.CATEGORIES,
+                    stringResource(R.string.settings_general_categories),
+                    stringResource(if (state.enabled) R.string.settings_general_categories_on else R.string.settings_general_categories_off),
+                    RukooIcons.Inbox,
+                    selected,
+                    chevrons,
+                    onOpen,
+                )
+            }
         }
         Spacer(Modifier.height(16.dp))
         SettingsCard {

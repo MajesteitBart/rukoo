@@ -20,8 +20,13 @@ const MIN_PASSWORD = 12;
 const SYNC_EVERY = 5 * 60 * 1000;
 const PUSH_AFTER = 2000;
 const SAVE_AFTER = 1000;
+const SAVE_RETRY = 30000;
 const PULL_LIMIT = 1000;
 const PUSH_BATCH = 500;
+// The most one pull takes: an account's records and tombstones a page of 1000 at a time, or 256 MiB of sealed records
+// (as base64url text), well over what an account may hold (server/PROTOCOL.md).
+const PULL_PAGES = 500;
+const PULL_DATA = 256 * 1024 * 1024;
 // The most a record may take on the server, once sealed (server/PROTOCOL.md).
 const RECORD_BYTES = 16384;
 // Collections whose records are decided once, by the first device to write one (server/PROTOCOL.md, Collections).
@@ -84,6 +89,7 @@ class AccountService extends EventEmitter {
     this.session = null;
     this.syncing = null;
     this.timers = { push: null, save: null, every: null };
+    this.durableCursor = 0;
   }
 
   file(name) {
@@ -96,6 +102,8 @@ class AccountService extends EventEmitter {
     for (const e of Array.isArray(saved.entries) ? saved.entries : []) {
       if (e && typeof e.c === 'string' && typeof e.k === 'string') this.entries.set(entryKey(e.c, e.k), e);
     }
+    // The cursor as of the records last written to disk: the state on disk never goes past it.
+    this.durableCursor = Number(this.state.cursor) || 0;
     if (this.state.email && this.state.token && this.state.dataKey) {
       try {
         this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64') });
@@ -406,7 +414,6 @@ class AccountService extends EventEmitter {
     }
     this.open({ token, dataKey });
     this.saveState();
-    this.saveEntries(true);
     this.changedStatus();
     this.sync().catch(() => {});
   }
@@ -425,7 +432,6 @@ class AccountService extends EventEmitter {
     const { server, info, error } = this.state;
     this.state = { server, info, error };
     this.saveState();
-    this.saveEntries(true);
   }
 
   // ---- records ----
@@ -521,7 +527,7 @@ class AccountService extends EventEmitter {
       } finally {
         if (this.syncing && this.syncing.promise === promise) this.syncing = null;
         if (current()) this.saveState();
-        this.saveEntries(true);
+        else this.saveEntries(true);
         this.changedStatus();
       }
       return this.status();
@@ -532,9 +538,24 @@ class AccountService extends EventEmitter {
 
   async pull(session = this.session) {
     const touched = new Set();
+    // The cursor moves past each page as it is taken, so a later page that fails doesn't bring this one back: what it
+    // changed is announced either way.
+    try {
+      await this.pullPages(session, touched);
+    } finally {
+      if (touched.size) this.changedRecords([...touched]);
+    }
+  }
+
+  async pullPages(session, touched) {
     let restarted = false;
+    let pages = 0;
+    let data = 0;
     for (;;) {
       if (!session || this.session !== session) return;
+      // A server that keeps answering more can't keep this device busy: what is left comes with the next sync.
+      if (pages >= PULL_PAGES || data >= PULL_DATA) return;
+      pages += 1;
       const since = Number(this.state.cursor) || 0;
       const res = await this.call('GET', `/v1/records?since=${since}&limit=${PULL_LIMIT}`, undefined, { auth: true, session });
       if (this.session !== session) return;
@@ -550,6 +571,7 @@ class AccountService extends EventEmitter {
       }
       // A page comes after since, in order, and not past the server's newest change; anything else is refused whole,
       // so a false sequence number can't move the cursor past records this device hasn't seen.
+      if (records.length > PULL_LIMIT) throw fail('server');
       let last = since;
       for (const r of records) {
         const seq = Number(r && r.seq);
@@ -557,13 +579,13 @@ class AccountService extends EventEmitter {
         last = seq;
       }
       for (const r of records) {
+        if (typeof r.data === 'string') data += r.data.length;
         const c = this.applyRemote(r);
         if (c) touched.add(c);
         if (Number(r.seq) > this.state.cursor) this.state.cursor = Number(r.seq);
       }
       if (!res || !res.more || !records.length) break;
     }
-    if (touched.size) this.changedRecords([...touched]);
   }
 
   // Takes one record from the server; returns its collection when this device's data changed.
@@ -618,7 +640,9 @@ class AccountService extends EventEmitter {
       }
       const res = await this.call('POST', '/v1/records', { records }, { auth: true, session });
       if (this.session !== session) return refused;
-      const results = new Map((Array.isArray(res && res.results) ? res.results : []).map((r) => [r.id, r]));
+      const results = new Map((Array.isArray(res && res.results) ? res.results : []).map((r) => [r && r.id, r]));
+      // A server that leaves a record out of its answer would get it again, forever.
+      if (batch.some((e) => !results.has(e.id))) throw fail('server');
       for (const e of batch) {
         const r = results.get(e.id);
         // Changed again while this was on its way: it goes up with the next batch.
@@ -640,23 +664,49 @@ class AccountService extends EventEmitter {
 
   // ---- persistence and events ----
 
+  // The records go first: a cursor on disk past records that aren't would have them skipped for good after a restart.
   saveState() {
-    writeJson(this.file('account.json'), this.state);
+    this.saveEntries(true);
+    // When the records couldn't be written (a full disk), the cursor on disk stays where they last were.
+    const state = this.state.cursor === undefined ? this.state : { ...this.state, cursor: Math.min(Number(this.state.cursor) || 0, this.durableCursor) };
+    writeJson(this.file('account.json'), state);
   }
 
+  // Now (false when that failed), or a second after the last change.
   saveEntries(now = false) {
     clearTimeout(this.timers.save);
-    const write = () => writeJson(this.file('account-records.json'), { entries: [...this.entries.values()] });
-    if (now) return write();
-    this.timers.save = setTimeout(write, SAVE_AFTER);
+    this.timers.save = null;
+    if (now) return this.writeEntries();
+    this.timers.save = setTimeout(() => this.writeEntries(), SAVE_AFTER);
     if (this.timers.save.unref) this.timers.save.unref();
+    return true;
+  }
+
+  // False when the disk refused the records; they are tried again a little later then.
+  writeEntries() {
+    this.timers.save = null;
+    const cursor = Number(this.state.cursor) || 0;
+    try {
+      writeJson(this.file('account-records.json'), { entries: [...this.entries.values()] });
+      this.durableCursor = cursor;
+      return true;
+    } catch (_) {
+      this.timers.save = setTimeout(() => this.writeEntries(), SAVE_RETRY);
+      if (this.timers.save.unref) this.timers.save.unref();
+      return false;
+    }
+  }
+
+  // Writes the records that wait for their save now; false when they couldn't be written.
+  flush() {
+    return this.timers.save ? this.saveEntries(true) : true;
   }
 
   // Writes what waits and stops the timers, for quitting.
   close() {
     clearInterval(this.timers.every);
     clearTimeout(this.timers.push);
-    if (this.timers.save) this.saveEntries(true);
+    this.flush();
   }
 
   changedStatus() {
@@ -668,4 +718,4 @@ class AccountService extends EventEmitter {
   }
 }
 
-module.exports = { AccountService, MIN_PASSWORD };
+module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES };

@@ -11,6 +11,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.categories.Categories
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.model.Folder
 import nl.bvdm.rukoo.mail.model.FolderRole
@@ -95,6 +96,8 @@ class MailUi(
     private val scope: CoroutineScope,
     private val host: MailUiHost,
     val toasts: RkToastState = RkToastState(),
+    /** Inbox categories, for Move to category; null where there are none (tests, the preview engine). */
+    val categories: Categories? = null,
 ) {
     /** Set by the root from the current resources, so texts follow the language. */
     var strings: UiStrings = object : UiStrings {
@@ -357,6 +360,57 @@ class MailUi(
                 )
                 failure != null -> toasts.showError(failure!!)
             }
+        }
+    }
+
+    /** Messages waiting for a category from the category sheet, and the category they all share, if they do. */
+    var categorizing: Pair<List<MessageSummary>, String?>? by mutableStateOf(null)
+        private set
+
+    /** The inbox category of each of [list] by id; empty while categories are off. */
+    fun categoriesOf(list: List<MessageSummary>): Map<String, String> = categories?.of(mail.accounts.value, list).orEmpty()
+
+    /** Move to category (desktop's moveToCategory): only inbox mail has a category; the sheet preselects a shared one. */
+    fun pickCategory(input: List<MessageSummary>) {
+        val of = categoriesOf(input)
+        val list = input.distinctBy { it.id }.filter { it.id in of }
+        if (list.isEmpty()) return
+        val current = list.map { of[it.id] }.distinct().singleOrNull()
+        categorizing = list to current
+    }
+
+    fun closeCategoryPicker() {
+        categorizing = null
+    }
+
+    /**
+     * Puts the picked emails in category [id]. Nothing changes on the mail server; the toast offers to do the same for
+     * their senders' later mail.
+     */
+    fun moveToCategory(id: String) {
+        val cats = categories ?: return
+        val list = categorizing?.first ?: return
+        categorizing = null
+        try {
+            cats.move(list, id)
+        } catch (e: Exception) {
+            return toasts.showError(strings.get(R.string.settings_error_generic))
+        }
+        val name = cats.state.value.categories.firstOrNull { it.id == id }?.name.orEmpty()
+        val senders = list.map { it.from.address.lowercase() }.filter { it.isNotEmpty() }.toSet()
+        toasts.showToast(strings.get(R.string.mailbox_categories_moved, name), strings.get(R.string.mailbox_categories_always)) {
+            try {
+                cats.move(list, id, sender = true)
+            } catch (e: Exception) {
+                return@showToast toasts.showError(strings.get(R.string.settings_error_generic))
+            }
+            toasts.showToast(
+                if (senders.size == 1) {
+                    strings.get(R.string.mailbox_categories_always_done, ListModel.person(list[0].from), name)
+                } else {
+                    strings.get(R.string.mailbox_categories_always_done_many, senders.size, name)
+                },
+            )
         }
     }
 

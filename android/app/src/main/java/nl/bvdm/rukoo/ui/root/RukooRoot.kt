@@ -57,6 +57,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -75,6 +76,7 @@ import nl.bvdm.rukoo.ui.mail.FolderDrawerContent
 import nl.bvdm.rukoo.ui.mail.FolderSheet
 import nl.bvdm.rukoo.ui.mail.MailDialog
 import nl.bvdm.rukoo.ui.mail.MailListPane
+import nl.bvdm.rukoo.ui.mail.CategorySheet
 import nl.bvdm.rukoo.ui.mail.MoveSheet
 import nl.bvdm.rukoo.ui.mail.ResourceStrings
 import nl.bvdm.rukoo.ui.onboarding.OnboardingScreen
@@ -134,6 +136,9 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val resources = context.resources
     SideEffect { app.mailUi.strings = ResourceStrings(resources) }
+    // The presets' names follow the language until someone renames them.
+    val locales = LocalConfiguration.current.locales
+    LaunchedEffect(locales) { app.services.categories?.refresh() }
     LaunchedEffect(app) {
         app.effects.collect { effect ->
             when (effect) {
@@ -226,6 +231,7 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
             if (nav.drawerOpen && !twoPane && !setup) FolderSheet(app, onDismiss = app::closeDrawer)
             if (nav.chatListOpen) ChatListSheet(app, onDismiss = app::closeChatList)
             MoveSheet(app.mailUi)
+            CategorySheet(app.mailUi)
             app.mailUi.dialog?.let { MailDialog(it) }
         }
     }

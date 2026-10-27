@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Rukoo account: Settings > Rukoo account and its pages. Wording from the desktop catalog (src/i18n/en.js,
+     account.errors.* and settings.rukoo.*), with "this computer" said as "this phone". -->
+<resources>
+    <!-- account.errors.* -->
+    <string name="account_errors_invalid">The server didn\'t accept the request. Update Rukoo and try again.</string>
+    <string name="account_errors_unauthorized">The email address, password or recovery key is wrong.</string>
+    <string name="account_errors_wrong_password">That password is wrong.</string>
+    <string name="account_errors_locked">Too many attempts. Try again in 15 minutes.</string>
+    <string name="account_errors_rate_limited">Too many requests from this network. Wait a minute and try again.</string>
+    <string name="account_errors_exists">There is already an account with this email address. Sign in instead.</string>
+    <string name="account_errors_signups_closed">This server doesn\'t take new accounts.</string>
+    <string name="account_errors_invite_required">This server needs a valid invite code.</string>
+    <string name="account_errors_quota">Your account has reached this server\'s limit.</string>
+    <string name="account_errors_too_large">Something is too large for this server to store.</string>
+    <string name="account_errors_not_configured">This server isn\'t fully set up yet. Its operator needs to finish the setup.</string>
+    <string name="account_errors_network">Can\'t reach the server. Check your connection.</string>
+    <string name="account_errors_server">The server ran into a problem. Try again later.</string>
+    <string name="account_errors_invalid_email">Enter a valid email address.</string>
+    <string name="account_errors_weak_password">Use a password of at least 12 characters.</string>
+    <string name="account_errors_recovery_key">That isn\'t a recovery key. A recovery key has 32 letters and digits in groups of four.</string>
+    <string name="account_errors_weak_kdf">The server asked for weaker password protection than Rukoo allows, so Rukoo didn\'t send your password\'s key.</string>
+    <string name="account_errors_heavy_kdf">This phone can\'t spare the memory for the password protection this server asks for, so Rukoo stopped.</string>
+    <string name="account_errors_no_server">Enter the address of a Rukoo account server, starting with https://.</string>
+    <string name="account_errors_protocol">This isn\'t a Rukoo account server, or it needs a newer version of Rukoo.</string>
+    <string name="account_errors_signed_in">Sign out of your Rukoo account first.</string>
+    <string name="account_errors_signed_out">You were signed out because your password changed or this device was removed. Sign in again.</string>
+
+    <!-- Settings overview -->
+    <string name="settings_groups_sync">Sync</string>
+    <string name="settings_rukoo_title">Rukoo account</string>
+    <string name="settings_rukoo_row_signed_out">Keep your categories the same on all your devices</string>
+    <string name="settings_rukoo_row_signed_in">Signed in as %1$s</string>
+
+    <!-- Signed out -->
+    <string name="settings_rukoo_intro">A Rukoo account keeps Rukoo\'s own data the same on your phone and computers: your inbox categories, the category each email got and your corrections. Rukoo encrypts it on this device before it leaves, and only your devices have the key. Your mail and your mail passwords never go to the account.</string>
+    <string name="settings_rukoo_server">Server</string>
+    <string name="settings_rukoo_server_none">No server set</string>
+    <string name="settings_rukoo_server_run_by">Run by %1$s</string>
+    <string name="settings_rukoo_server_unreachable">Can\'t reach this server right now</string>
+    <string name="settings_rukoo_server_prompt">Account server address</string>
+    <string name="settings_rukoo_server_saved">Account server changed</string>
+    <string name="settings_rukoo_where_eu">Data stored in the EU</string>
+    <string name="settings_rukoo_where_us">Data stored in the United States</string>
+    <string name="settings_rukoo_where_fedramp">Data stored in FedRAMP data centers in the United States</string>
+    <string name="settings_rukoo_where_any">Data stored wherever Cloudflare places it</string>
+    <string name="settings_rukoo_sign_up">Create an account</string>
+    <string name="settings_rukoo_sign_in">Sign in</string>
+    <string name="settings_rukoo_forgot">Forgot your password?</string>
+    <string name="settings_rukoo_privacy">What\'s stored and shared</string>
+    <string name="settings_rukoo_privacy_help">Where your account\'s data lives and who can see what</string>
+
+    <!-- Forms -->
+    <string name="settings_rukoo_password_help">At least 12 characters. Nobody can reset it for you, so choose one you\'ll remember or keep it in a password manager.</string>
+    <string name="settings_rukoo_repeat">Repeat password</string>
+    <string name="settings_rukoo_mismatch">The passwords don\'t match.</string>
+    <string name="settings_rukoo_invite">Invite code</string>
+    <string name="settings_rukoo_understand">I understand that if I forget my password, only my recovery key gets me back in.</string>
+    <string name="settings_rukoo_need_understand">Tick the box to confirm.</string>
+    <string name="settings_rukoo_create">Create account</string>
+    <string name="settings_rukoo_working">Working…</string>
+    <string name="settings_rukoo_recovery_key_field">Recovery key</string>
+    <string name="settings_rukoo_new_password">New password</string>
+    <string name="settings_rukoo_recover_help">Enter the recovery key you saved when you made the account, and choose a new password. Your other devices sign out and need the new password.</string>
+    <string name="settings_rukoo_recover_submit">Set new password</string>
+    <string name="settings_rukoo_closed">This server doesn\'t take new accounts. Sign in with an existing account, or choose another server.</string>
+
+    <!-- The recovery key, shown once -->
+    <string name="settings_rukoo_key_title">Save your recovery key</string>
+    <string name="settings_rukoo_key_help">If you forget your password, this key is the only way back into your account. Rukoo shows it only now. Keep it somewhere safe, such as a password manager.</string>
+    <string name="settings_rukoo_copy">Copy</string>
+    <string name="settings_rukoo_copied">Recovery key copied</string>
+    <string name="settings_rukoo_key_saved">I saved it</string>
+    <string name="settings_rukoo_welcome">Account created. This phone now syncs.</string>
+    <string name="settings_rukoo_signed_in">Signed in. This phone now syncs.</string>
+
+    <!-- Signed in -->
+    <string name="settings_rukoo_account">Account</string>
+    <string name="settings_rukoo_never_synced">Not synced yet</string>
+    <string name="settings_rukoo_syncing">Syncing…</string>
+    <string name="settings_rukoo_sync_now">Sync now</string>
+    <string name="settings_rukoo_synced">Synced</string>
+    <plurals name="settings_rukoo_pending">
+        <item quantity="one">%1$d change waiting to sync</item>
+        <item quantity="other">%1$d changes waiting to sync</item>
+    </plurals>
+    <string name="settings_rukoo_devices">Devices</string>
+    <string name="settings_rukoo_this_device">This device</string>
+    <string name="settings_rukoo_last_seen">Last seen on %1$s</string>
+    <string name="settings_rukoo_devices_unavailable">Can\'t load your devices right now.</string>
+    <string name="settings_rukoo_remove_device">Sign out %1$s?</string>
+    <string name="settings_rukoo_remove_device_help">%1$s stops syncing with this account. It keeps its own copy.</string>
+    <string name="settings_rukoo_remove_device_action">Sign out</string>
+    <string name="settings_rukoo_device_removed">Device signed out</string>
+    <string name="settings_rukoo_platform_win32">Windows</string>
+    <string name="settings_rukoo_platform_darwin">macOS</string>
+    <string name="settings_rukoo_platform_linux">Linux</string>
+    <string name="settings_rukoo_platform_android">Android</string>
+    <string name="settings_rukoo_security">Security</string>
+    <string name="settings_rukoo_change_password">Change password</string>
+    <string name="settings_rukoo_change_password_help">Your other devices sign out and need the new password.</string>
+    <string name="settings_rukoo_current_password">Current password</string>
+    <string name="settings_rukoo_password_changed">Password changed</string>
+    <string name="settings_rukoo_new_key">New recovery key</string>
+    <string name="settings_rukoo_new_key_help">Your current recovery key stops working.</string>
+    <string name="settings_rukoo_enter_password">Enter your password</string>
+    <string name="settings_rukoo_continue">Continue</string>
+    <string name="settings_rukoo_your_data">Your data</string>
+    <string name="settings_rukoo_export">Export my data</string>
+    <string name="settings_rukoo_export_help">Save everything in your account as a readable JSON file</string>
+    <string name="settings_rukoo_exported">Data exported</string>
+    <string name="settings_rukoo_sign_out">Sign out</string>
+    <string name="settings_rukoo_sign_out_help">This phone stops syncing and keeps its own copy of your categories.</string>
+    <string name="settings_rukoo_signed_out">Signed out</string>
+    <string name="settings_rukoo_delete">Delete account</string>
+    <string name="settings_rukoo_delete_help">Deletes your account and everything in it from the server. Your devices keep their own copies and stop syncing. This cannot be undone.</string>
+    <string name="settings_rukoo_deleted">Account deleted</string>
+
+    <!-- What's stored and shared -->
+    <string name="settings_rukoo_stored">Stored in your account</string>
+    <string name="settings_rukoo_stored_local">Stored on this phone</string>
+    <string name="settings_rukoo_stored_help">Encrypted on your device before it leaves. Only your devices have the key.</string>
+    <plurals name="settings_rukoo_count_category">
+        <item quantity="one">%1$d category</item>
+        <item quantity="other">%1$d categories</item>
+    </plurals>
+    <plurals name="settings_rukoo_count_classification">
+        <item quantity="one">%1$d sorted email</item>
+        <item quantity="other">%1$d sorted emails</item>
+    </plurals>
+    <plurals name="settings_rukoo_count_correction">
+        <item quantity="one">%1$d correction</item>
+        <item quantity="other">%1$d corrections</item>
+    </plurals>
+    <string name="settings_rukoo_server_usage">%1$s on the server, encrypted</string>
+    <string name="settings_rukoo_can_see">What the server can see</string>
+    <string name="settings_rukoo_see_email">Your email address</string>
+    <string name="settings_rukoo_see_devices">Your devices\' names and when they last connected</string>
+    <string name="settings_rukoo_see_records">How many records you have, how large they are and when they change</string>
+    <string name="settings_rukoo_see_ip">Your IP address, in the hosting provider\'s logs</string>
+    <string name="settings_rukoo_cant_see">What it can\'t see</string>
+    <string name="settings_rukoo_cant_see_help">Your categories, your corrections, which email went where, and anything in your mail.</string>
+    <string name="settings_rukoo_services">Who handles your data</string>
+    <string name="settings_rukoo_operator_help">Runs the server. Gets your email address, your device names and your encrypted records.</string>
+    <string name="settings_rukoo_host_help">Hosts the server, from %1$s. %2$s. Handles what the server sees, plus IP addresses in its logs.</string>
+    <string name="settings_rukoo_us_law">As a US company it falls under US law, also for data stored in the EU.</string>
+    <string name="settings_rukoo_country_us">the United States</string>
+    <string name="settings_rukoo_typesafe">TypeSafe, Inc.</string>
+    <string name="settings_rukoo_typesafe_help">Sorts your inbox with Jev, because you turned it on on this phone. Gets the sender, subject and first 1,000 characters of each new inbox email, in the United States. Its own terms apply to what it keeps.</string>
+    <string name="settings_rukoo_mail_providers">Your mail providers</string>
+    <string name="settings_rukoo_mail_providers_help">Keep your mail as always. Nothing from your Rukoo account goes to them.</string>
+    <string name="settings_rukoo_nobody_else">Nobody else</string>
+    <string name="settings_rukoo_nobody_else_help">Rukoo uses no analytics, advertising or tracking services.</string>
+    <string name="settings_rukoo_policy">Privacy policy</string>
+    <string name="settings_rukoo_policy_help">%1$s\'s privacy policy</string>
+    <string name="settings_rukoo_protocol">How the encryption works</string>
+    <string name="settings_rukoo_protocol_help">Rukoo\'s account protocol on GitHub</string>
+    <string name="settings_rukoo_self_host">Run your own server</string>
+    <string name="settings_rukoo_self_host_help">Rukoo is open source. The guide shows how to host your own account server.</string>
+    <!-- The phone's own: the file Export my data suggests, and a save that failed. -->
+    <string name="settings_rukoo_export_file" translatable="false">rukoo-account.json</string>
+    <string name="settings_rukoo_export_failed">Couldn\'t save the file.</string>
+</resources>

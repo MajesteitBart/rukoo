@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Het Rukoo-account. Formulering uit src/i18n/nl.js, met "deze computer" als "deze telefoon". -->
+<resources>
+    <string name="account_errors_invalid">De server nam het verzoek niet aan. Werk Rukoo bij en probeer het opnieuw.</string>
+    <string name="account_errors_unauthorized">Het e-mailadres, het wachtwoord of de herstelsleutel klopt niet.</string>
+    <string name="account_errors_wrong_password">Dat wachtwoord klopt niet.</string>
+    <string name="account_errors_locked">Te veel pogingen. Probeer het over 15 minuten opnieuw.</string>
+    <string name="account_errors_rate_limited">Te veel verzoeken vanaf dit netwerk. Wacht een minuut en probeer het opnieuw.</string>
+    <string name="account_errors_exists">Er is al een account met dit e-mailadres. Log in.</string>
+    <string name="account_errors_signups_closed">Deze server neemt geen nieuwe accounts aan.</string>
+    <string name="account_errors_invite_required">Deze server vraagt om een geldige uitnodigingscode.</string>
+    <string name="account_errors_quota">Je account heeft de limiet van deze server bereikt.</string>
+    <string name="account_errors_too_large">Iets is te groot om op deze server op te slaan.</string>
+    <string name="account_errors_not_configured">Deze server is nog niet helemaal ingericht. De beheerder moet de installatie afmaken.</string>
+    <string name="account_errors_network">Kan de server niet bereiken. Controleer je verbinding.</string>
+    <string name="account_errors_server">Er ging iets mis op de server. Probeer het later opnieuw.</string>
+    <string name="account_errors_invalid_email">Vul een geldig e-mailadres in.</string>
+    <string name="account_errors_weak_password">Gebruik een wachtwoord van minstens 12 tekens.</string>
+    <string name="account_errors_recovery_key">Dat is geen herstelsleutel. Een herstelsleutel heeft 32 letters en cijfers in groepjes van vier.</string>
+    <string name="account_errors_weak_kdf">De server vroeg om zwakkere wachtwoordbeveiliging dan Rukoo toestaat. Daarom heeft Rukoo de sleutel van je wachtwoord niet verstuurd.</string>
+    <string name="account_errors_heavy_kdf">Deze telefoon heeft niet genoeg geheugen vrij voor de wachtwoordbeveiliging die deze server vraagt. Daarom is Rukoo gestopt.</string>
+    <string name="account_errors_no_server">Vul het adres van een Rukoo-accountserver in, beginnend met https://.</string>
+    <string name="account_errors_protocol">Dit is geen Rukoo-accountserver, of hij heeft een nieuwere versie van Rukoo nodig.</string>
+    <string name="account_errors_signed_in">Log eerst uit bij je Rukoo-account.</string>
+    <string name="account_errors_signed_out">Je bent uitgelogd omdat je wachtwoord is gewijzigd of dit apparaat is verwijderd. Log opnieuw in.</string>
+
+    <string name="settings_groups_sync">Synchroniseren</string>
+    <string name="settings_rukoo_title">Rukoo-account</string>
+    <string name="settings_rukoo_row_signed_out">Houd je categorieën gelijk op al je apparaten</string>
+    <string name="settings_rukoo_row_signed_in">Ingelogd als %1$s</string>
+
+    <string name="settings_rukoo_intro">Een Rukoo-account houdt de eigen gegevens van Rukoo gelijk op je telefoon en computers: je inboxcategorieën, de categorie van elke e-mail en je correcties. Rukoo versleutelt ze op dit apparaat voordat ze vertrekken, en alleen jouw apparaten hebben de sleutel. Je e-mail en je e-mailwachtwoorden gaan nooit naar het account.</string>
+    <string name="settings_rukoo_server">Server</string>
+    <string name="settings_rukoo_server_none">Geen server ingesteld</string>
+    <string name="settings_rukoo_server_run_by">Beheerd door %1$s</string>
+    <string name="settings_rukoo_server_unreachable">Deze server is nu niet bereikbaar</string>
+    <string name="settings_rukoo_server_prompt">Adres van de accountserver</string>
+    <string name="settings_rukoo_server_saved">Accountserver gewijzigd</string>
+    <string name="settings_rukoo_where_eu">Gegevens opgeslagen in de EU</string>
+    <string name="settings_rukoo_where_us">Gegevens opgeslagen in de Verenigde Staten</string>
+    <string name="settings_rukoo_where_fedramp">Gegevens opgeslagen in FedRAMP-datacenters in de Verenigde Staten</string>
+    <string name="settings_rukoo_where_any">Gegevens opgeslagen waar Cloudflare ze neerzet</string>
+    <string name="settings_rukoo_sign_up">Account maken</string>
+    <string name="settings_rukoo_sign_in">Inloggen</string>
+    <string name="settings_rukoo_forgot">Wachtwoord vergeten?</string>
+    <string name="settings_rukoo_privacy">Wat er wordt opgeslagen en gedeeld</string>
+    <string name="settings_rukoo_privacy_help">Waar de gegevens van je account staan en wie wat kan zien</string>
+
+    <string name="settings_rukoo_password_help">Minstens 12 tekens. Niemand kan het voor je resetten, dus kies er een die je onthoudt of bewaar het in een wachtwoordbeheerder.</string>
+    <string name="settings_rukoo_repeat">Herhaal wachtwoord</string>
+    <string name="settings_rukoo_mismatch">De wachtwoorden zijn niet gelijk.</string>
+    <string name="settings_rukoo_invite">Uitnodigingscode</string>
+    <string name="settings_rukoo_understand">Ik begrijp dat alleen mijn herstelsleutel me terug in mijn account brengt als ik mijn wachtwoord vergeet.</string>
+    <string name="settings_rukoo_need_understand">Vink het vakje aan om te bevestigen.</string>
+    <string name="settings_rukoo_create">Account maken</string>
+    <string name="settings_rukoo_working">Bezig…</string>
+    <string name="settings_rukoo_recovery_key_field">Herstelsleutel</string>
+    <string name="settings_rukoo_new_password">Nieuw wachtwoord</string>
+    <string name="settings_rukoo_recover_help">Vul de herstelsleutel in die je bewaarde toen je het account maakte, en kies een nieuw wachtwoord. Je andere apparaten worden uitgelogd en hebben het nieuwe wachtwoord nodig.</string>
+    <string name="settings_rukoo_recover_submit">Nieuw wachtwoord instellen</string>
+    <string name="settings_rukoo_closed">Deze server neemt geen nieuwe accounts aan. Log in met een bestaand account of kies een andere server.</string>
+
+    <string name="settings_rukoo_key_title">Bewaar je herstelsleutel</string>
+    <string name="settings_rukoo_key_help">Als je je wachtwoord vergeet, is deze sleutel de enige manier om weer in je account te komen. Rukoo toont hem alleen nu. Bewaar hem op een veilige plek, zoals een wachtwoordbeheerder.</string>
+    <string name="settings_rukoo_copy">Kopiëren</string>
+    <string name="settings_rukoo_copied">Herstelsleutel gekopieerd</string>
+    <string name="settings_rukoo_key_saved">Ik heb hem bewaard</string>
+    <string name="settings_rukoo_welcome">Account gemaakt. Deze telefoon synchroniseert nu.</string>
+    <string name="settings_rukoo_signed_in">Ingelogd. Deze telefoon synchroniseert nu.</string>
+
+    <string name="settings_rukoo_account">Account</string>
+    <string name="settings_rukoo_never_synced">Nog niet gesynchroniseerd</string>
+    <string name="settings_rukoo_syncing">Synchroniseren…</string>
+    <string name="settings_rukoo_sync_now">Nu synchroniseren</string>
+    <string name="settings_rukoo_synced">Gesynchroniseerd</string>
+    <plurals name="settings_rukoo_pending">
+        <item quantity="one">%1$d wijziging wacht op synchronisatie</item>
+        <item quantity="other">%1$d wijzigingen wachten op synchronisatie</item>
+    </plurals>
+    <string name="settings_rukoo_devices">Apparaten</string>
+    <string name="settings_rukoo_this_device">Dit apparaat</string>
+    <string name="settings_rukoo_last_seen">Laatst gezien op %1$s</string>
+    <string name="settings_rukoo_devices_unavailable">Je apparaten kunnen nu niet worden geladen.</string>
+    <string name="settings_rukoo_remove_device">%1$s uitloggen?</string>
+    <string name="settings_rukoo_remove_device_help">%1$s stopt met synchroniseren met dit account. Het houdt zijn eigen kopie.</string>
+    <string name="settings_rukoo_remove_device_action">Uitloggen</string>
+    <string name="settings_rukoo_device_removed">Apparaat uitgelogd</string>
+    <string name="settings_rukoo_platform_win32">Windows</string>
+    <string name="settings_rukoo_platform_darwin">macOS</string>
+    <string name="settings_rukoo_platform_linux">Linux</string>
+    <string name="settings_rukoo_platform_android">Android</string>
+    <string name="settings_rukoo_security">Beveiliging</string>
+    <string name="settings_rukoo_change_password">Wachtwoord wijzigen</string>
+    <string name="settings_rukoo_change_password_help">Je andere apparaten worden uitgelogd en hebben het nieuwe wachtwoord nodig.</string>
+    <string name="settings_rukoo_current_password">Huidig wachtwoord</string>
+    <string name="settings_rukoo_password_changed">Wachtwoord gewijzigd</string>
+    <string name="settings_rukoo_new_key">Nieuwe herstelsleutel</string>
+    <string name="settings_rukoo_new_key_help">Je huidige herstelsleutel werkt dan niet meer.</string>
+    <string name="settings_rukoo_enter_password">Vul je wachtwoord in</string>
+    <string name="settings_rukoo_continue">Doorgaan</string>
+    <string name="settings_rukoo_your_data">Je gegevens</string>
+    <string name="settings_rukoo_export">Mijn gegevens exporteren</string>
+    <string name="settings_rukoo_export_help">Sla alles in je account op als leesbaar JSON-bestand</string>
+    <string name="settings_rukoo_exported">Gegevens geëxporteerd</string>
+    <string name="settings_rukoo_sign_out">Uitloggen</string>
+    <string name="settings_rukoo_sign_out_help">Deze telefoon stopt met synchroniseren en houdt een eigen kopie van je categorieën.</string>
+    <string name="settings_rukoo_signed_out">Uitgelogd</string>
+    <string name="settings_rukoo_delete">Account verwijderen</string>
+    <string name="settings_rukoo_delete_help">Verwijdert je account en alles erin van de server. Je apparaten houden hun eigen kopie en stoppen met synchroniseren. Dit kan niet ongedaan worden gemaakt.</string>
+    <string name="settings_rukoo_deleted">Account verwijderd</string>
+
+    <string name="settings_rukoo_stored">Opgeslagen in je account</string>
+    <string name="settings_rukoo_stored_local">Opgeslagen op deze telefoon</string>
+    <string name="settings_rukoo_stored_help">Versleuteld op je apparaat voordat het vertrekt. Alleen jouw apparaten hebben de sleutel.</string>
+    <plurals name="settings_rukoo_count_category">
+        <item quantity="one">%1$d categorie</item>
+        <item quantity="other">%1$d categorieën</item>
+    </plurals>
+    <plurals name="settings_rukoo_count_classification">
+        <item quantity="one">%1$d gesorteerde e-mail</item>
+        <item quantity="other">%1$d gesorteerde e-mails</item>
+    </plurals>
+    <plurals name="settings_rukoo_count_correction">
+        <item quantity="one">%1$d correctie</item>
+        <item quantity="other">%1$d correcties</item>
+    </plurals>
+    <string name="settings_rukoo_server_usage">%1$s op de server, versleuteld</string>
+    <string name="settings_rukoo_can_see">Wat de server kan zien</string>
+    <string name="settings_rukoo_see_email">Je e-mailadres</string>
+    <string name="settings_rukoo_see_devices">De namen van je apparaten en wanneer ze voor het laatst verbonden waren</string>
+    <string name="settings_rukoo_see_records">Hoeveel records je hebt, hoe groot ze zijn en wanneer ze veranderen</string>
+    <string name="settings_rukoo_see_ip">Je IP-adres, in de logs van de hostingprovider</string>
+    <string name="settings_rukoo_cant_see">Wat de server niet kan zien</string>
+    <string name="settings_rukoo_cant_see_help">Je categorieën, je correcties, welke e-mail waar terechtkwam, en alles in je e-mail.</string>
+    <string name="settings_rukoo_services">Wie je gegevens verwerkt</string>
+    <string name="settings_rukoo_operator_help">Beheert de server. Krijgt je e-mailadres, de namen van je apparaten en je versleutelde records.</string>
+    <string name="settings_rukoo_host_help">Host de server, vanuit %1$s. %2$s. Verwerkt wat de server ziet, plus IP-adressen in zijn logs.</string>
+    <string name="settings_rukoo_us_law">Als Amerikaans bedrijf valt het onder Amerikaans recht, ook voor gegevens die in de EU staan.</string>
+    <string name="settings_rukoo_country_us">de Verenigde Staten</string>
+    <string name="settings_rukoo_typesafe">TypeSafe, Inc.</string>
+    <string name="settings_rukoo_typesafe_help">Sorteert je inbox met Jev, omdat je dat op deze telefoon hebt aangezet. Krijgt de afzender, het onderwerp en de eerste 1.000 tekens van elke nieuwe e-mail in je inbox, in de Verenigde Staten. Voor wat het bewaart, gelden zijn eigen voorwaarden.</string>
+    <string name="settings_rukoo_mail_providers">Je e-mailproviders</string>
+    <string name="settings_rukoo_mail_providers_help">Bewaren je e-mail zoals altijd. Niets uit je Rukoo-account gaat naar hen.</string>
+    <string name="settings_rukoo_nobody_else">Niemand anders</string>
+    <string name="settings_rukoo_nobody_else_help">Rukoo gebruikt geen analyse-, advertentie- of trackingdiensten.</string>
+    <string name="settings_rukoo_policy">Privacybeleid</string>
+    <string name="settings_rukoo_policy_help">Het privacybeleid van %1$s</string>
+    <string name="settings_rukoo_protocol">Hoe de versleuteling werkt</string>
+    <string name="settings_rukoo_protocol_help">Het accountprotocol van Rukoo op GitHub</string>
+    <string name="settings_rukoo_self_host">Je eigen server draaien</string>
+    <string name="settings_rukoo_self_host_help">Rukoo is open source. De handleiding laat zien hoe je je eigen accountserver host.</string>
+    <string name="settings_rukoo_export_failed">Het bestand kon niet worden opgeslagen.</string>
+</resources>

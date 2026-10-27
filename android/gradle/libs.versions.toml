@@ -17,6 +17,7 @@ autolink = "0.11.0"
 angus-mail = "2.0.5"
 angus-activation = "2.0.3"
 jsoup = "1.21.2"
+bouncycastle = "1.86"
 junit = "4.13.2"
 
 [libraries]
@@ -49,6 +50,7 @@ autolink = { module = "org.nibor.autolink:autolink", version.ref = "autolink" }
 angus-mail = { module = "org.eclipse.angus:angus-mail", version.ref = "angus-mail" }
 angus-activation = { module = "org.eclipse.angus:angus-activation", version.ref = "angus-activation" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
+bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]

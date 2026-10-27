@@ -31,7 +31,7 @@ All key derivation happens on the device.
 
 `HKDF(ikm, info)` is HKDF-SHA256 (RFC 5869) with an empty salt, which gives the same keys as a salt of 32 zero bytes, and 32 bytes of output. `info` is the label's UTF-8 bytes.
 
-The `kdf` parameters are `{ "alg": "argon2id", "m": 65536, "t": 3, "p": 1 }` for new accounts: 64 MiB of memory (`m` in KiB), 3 passes, 1 lane. A device refuses parameters weaker than `m` 19456 or `t` 2 when signing in, so a server can't talk it into a cheaper hash of the password.
+The `kdf` parameters are `{ "alg": "argon2id", "m": 65536, "t": 3, "p": 1 }` for new accounts: 64 MiB of memory (`m` in KiB), 3 passes, 1 lane. A device refuses parameters weaker than `m` 19456 or `t` 2 when signing in, so a server can't talk it into a cheaper hash of the password. It also refuses more than `m` 1048576, `t` 10 or `p` 4, and a phone refuses what it can't spare: the Android app runs at most 256 MiB, never more than half of its memory, and `m` × `t` of at most 1048576.
 
 The recovery key is written in Crockford base32 (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), 32 characters in eight groups of four: `7K2M-9QXD-…`. When it is read back, letters are uppercased, `O` reads as `0`, `I` and `L` as `1`, and dashes and spaces are ignored.
 
@@ -182,7 +182,7 @@ Records changed after `since`, oldest first, at most `limit` (default and maximu
 
 `seq` is the newest change on the server. Keep asking with the last record's `seq` while `more` is true.
 
-A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`.
+A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`. One pull takes at most 500 pages or 256 MiB of `data`, and a page with more records than the device asked for is refused; what is left comes with the next sync, so a server can't keep a device busy.
 
 ### `POST /v1/records`
 

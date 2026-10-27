@@ -523,7 +523,9 @@ class RukooMailEngine(
         val prev = cache.boxes[path]
         val known = prev?.messages?.associateBy { it.uid }.orEmpty()
         val limit = if (info?.role == FolderRole.INBOX) Limits.INBOX else Limits.DEFAULT
-        val res = session(acc).syncFolder(path, limit, known, prev?.uidValidity, background)
+        val inbox = info?.role == FolderRole.INBOX
+        // What inbox categories sort by (categories/): the headers that say what kind of mail it is, and Gmail's tab.
+        val res = session(acc).syncFolder(path, limit, known, prev?.uidValidity, background, signals = inbox, gmailTabs = inbox && acc.provider == "google")
         val sameValidity = prev != null && prev.uidValidity == res.uidValidity
         mutate(acc.id, persist = false) { c ->
             c.copy(boxes = c.boxes + (path to CachedBox(res.uidValidity, res.exists, clock.now(), CacheOps.applyPending(acc.id, path, res.messages, pending))))

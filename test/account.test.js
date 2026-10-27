@@ -7,8 +7,8 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const k = require('../src/main/account/crypto');
-const { AccountService } = require('../src/main/account');
-const { serverUrl } = require('../src/main/account/client');
+const { AccountService, PULL_PAGES } = require('../src/main/account');
+const { AccountError, serverUrl } = require('../src/main/account/client');
 const { startAccountServer } = require('./fixtures/account-server');
 const vectors = require('./fixtures/account-vectors.json');
 
@@ -115,6 +115,26 @@ test('weak or odd key derivation settings are refused', () => {
   assert.throws(() => k.checkKdf({ alg: 'scrypt', m: 65536, t: 3, p: 1 }));
   assert.throws(() => k.checkKdf({ alg: 'argon2id', m: 65536, t: 3, p: 9 }));
   assert.deepEqual(k.checkKdf({ alg: 'argon2id', m: 65536, t: 3, p: 1, extra: true }), k.DEFAULT_KDF);
+});
+
+test('each request has a connection of its own, so a server that drops an idle one can\'t fail it', async (t) => {
+  const http = require('http');
+  const { request } = require('../src/main/account/client');
+  const served = new WeakSet();
+  // A server that drops a connection as soon as it is used a second time, like one whose idle timeout runs out just
+  // as the next request arrives.
+  const server = http.createServer((req, res) => {
+    if (served.has(req.socket)) return req.socket.destroy();
+    served.add(req.socket);
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+  assert.deepEqual(await request(url, 'GET', '/v1/info'), { ok: true });
+  assert.deepEqual(await request(url, 'GET', '/v1/info'), { ok: true });
 });
 
 test('only https servers, or http on this computer', () => {
@@ -637,6 +657,137 @@ test('many records go up and come down in pages', async (t) => {
   await laptop.sync();
   assert.equal(laptop.list('classification').length, 620);
   assert.equal(laptop.status().counts.classification, 620);
+});
+
+test('records taken before a later page failed are announced', async (t) => {
+  const srv = await server(t, { limit: 2 });
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'pages@example.com', password: PASSWORD });
+  const laptop = device(t, srv, 'laptop');
+  await laptop.signIn({ email: 'pages@example.com', password: PASSWORD });
+  await laptop.sync();
+  for (let i = 1; i <= 5; i++) desk.put('category', `c${i}`, { name: `C${i}` });
+  await desk.sync();
+
+  // The first page (two records) comes down, the second fails.
+  const http = laptop.http;
+  let pages = 0;
+  laptop.http = (server, method, route, opts) => {
+    if (method === 'GET' && route.startsWith('/v1/records') && ++pages === 2) return Promise.reject(new AccountError('network'));
+    return http(server, method, route, opts);
+  };
+  const announced = [];
+  laptop.on('records', (e) => announced.push(...e.collections));
+  await assert.rejects(laptop.sync(), { code: 'network' });
+  assert.equal(laptop.list('category').length, 2);
+  assert.deepEqual(announced, ['category'], 'the records taken are announced');
+  laptop.http = http;
+  await laptop.sync();
+  assert.equal(laptop.list('category').length, 5);
+});
+
+test("a server that always has more can't keep a pull going", async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await desk.signUp({ email: 'endless@example.com', password: PASSWORD });
+  await desk.sync();
+  // A page of one more tombstone each time, forever; then more records than asked for.
+  const http = desk.http;
+  let pages = 0;
+  let size = 1;
+  desk.http = (server, method, route, opts) => {
+    if (method !== 'GET' || !route.startsWith('/v1/records')) return http(server, method, route, opts);
+    const since = Number(new URL(route, 'http://x').searchParams.get('since'));
+    pages += 1;
+    const records = Array.from({ length: size }, (_, i) => ({ id: `x${pages}-${i}`, seq: since + 1 + i, data: null }));
+    // Not quite forever, so that a device without a limit fails the test rather than hang it.
+    return Promise.resolve({ records, seq: 1e9, more: pages < 2 * PULL_PAGES });
+  };
+  await desk.pull();
+  assert.equal(pages, PULL_PAGES);
+  size = 1001;
+  await assert.rejects(desk.pull(), { code: 'server' });
+});
+
+test('the cursor on disk never runs ahead of the records on disk', async (t) => {
+  const srv = await server(t, { limit: 2 });
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'disk@example.com', password: PASSWORD });
+  const dir = tmpDir(t);
+  const laptop = device(t, srv, 'laptop', dir);
+  await laptop.signIn({ email: 'disk@example.com', password: PASSWORD });
+  await laptop.sync();
+  for (let i = 1; i <= 5; i++) desk.put('category', `c${i}`, { name: `C${i}` });
+  await desk.sync();
+
+  // The second page never comes: the app quits while it waits.
+  const http = laptop.http;
+  let pages = 0;
+  let second;
+  const waiting = new Promise((r) => (second = r));
+  laptop.http = (server, method, route, opts) => {
+    if (method === 'GET' && route.startsWith('/v1/records') && ++pages === 2) {
+      second();
+      return new Promise(() => {});
+    }
+    return http(server, method, route, opts);
+  };
+  laptop.sync().catch(() => {});
+  await waiting;
+  // The first page is taken; something saves the account meanwhile (the account page asks who runs the server).
+  await laptop.serverInfo();
+  // The app starts again, offline, so what it shows is what was on disk.
+  const fresh = new AccountService({ dataDir: dir, secrets, defaultServer: srv.url, deviceName: 'fresh', platform: 'linux' });
+  fresh.http = () => Promise.reject(new AccountError('network'));
+  fresh.init();
+  t.after(() => fresh.close());
+  assert.ok(fresh.state.cursor > 0, 'the cursor moved');
+  assert.equal(fresh.list('category').length, 2, 'the records it moved past are on disk too');
+});
+
+test("a server that leaves records out of its answer doesn't get them again forever", async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await desk.signUp({ email: 'acks@example.com', password: PASSWORD });
+  await desk.sync();
+  const http = desk.http;
+  let posts = 0;
+  desk.http = (server, method, route, opts) => {
+    // Not quite forever, so that a device without the check fails the test rather than hang it.
+    if (method === 'POST' && route === '/v1/records' && ++posts <= 20) return Promise.resolve({ results: [], seq: 0 });
+    return http(server, method, route, opts);
+  };
+  desk.put('category', 'money', { name: 'Money' });
+  await assert.rejects(desk.sync(), { code: 'server' });
+  assert.equal(posts, 1);
+});
+
+test('records the disk refuses keep the cursor on disk behind them', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'full@example.com', password: PASSWORD });
+  const dir = tmpDir(t);
+  const laptop = device(t, srv, 'laptop', dir);
+  await laptop.signIn({ email: 'full@example.com', password: PASSWORD });
+  await laptop.sync();
+  const before = laptop.state.cursor;
+  for (let i = 1; i <= 3; i++) desk.put('category', `c${i}`, { name: `C${i}` });
+  await desk.sync();
+
+  // The disk refuses the records from now on: a directory where their file goes stands in for a full disk.
+  const records = path.join(dir, 'account-records.json');
+  fs.rmSync(records, { force: true });
+  fs.mkdirSync(path.join(records, 'x'), { recursive: true });
+  await laptop.sync();
+  assert.ok(laptop.state.cursor > before, 'the pull moved the cursor in memory');
+  const onDisk = () => JSON.parse(fs.readFileSync(path.join(dir, 'account.json'), 'utf8')).cursor;
+  assert.equal(onDisk(), before, 'but not on disk');
+
+  // Once the disk takes them again, the next save catches up.
+  fs.rmSync(records, { recursive: true, force: true });
+  await laptop.sync();
+  assert.equal(onDisk(), laptop.state.cursor);
+  assert.equal(JSON.parse(fs.readFileSync(records, 'utf8')).entries.filter((e) => e.c === 'category').length, 3);
 });
 
 test('the export holds every record, readable', async (t) => {

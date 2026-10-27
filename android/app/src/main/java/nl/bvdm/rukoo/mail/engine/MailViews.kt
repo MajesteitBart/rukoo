@@ -48,6 +48,8 @@ object MailViews {
         answered = m.answered,
         hasAttachments = m.hasAttachments,
         vip = isVip(prefs, m.from),
+        signals = m.signals,
+        gmailTab = m.gmailTab,
     )
 
     /** A view's test on (folder, message), and whether it is the archive view (for All Mail dedup). */

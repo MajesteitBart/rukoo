@@ -10,6 +10,7 @@ The app's code is in [`android/`](../android). It is a native Kotlin and Jetpack
 - The agent chat next to the email, with every desktop quick action and your own shortcuts, `/` skills, `$` agent skills, model and effort menus, files, photos and emails attached to a message, plans, sources, drafts written into the composer, and approval cards for anything other people will see.
 - Rukoo's twelve MCP tools served by the phone, so an agent can read the phone's mail, write into its composer and ask for approval on its screen.
 - Pairing with Rukoo on your computer, which brings over your accounts and agent settings once and lets the phone use the computer's Claude Code and Codex.
+- A [Rukoo account](account.md), end-to-end encrypted, which keeps Rukoo's own data the same on the phone and your computers, and [inbox categories](categories.md): tabs above the inbox, sorted on the phone.
 - English and Dutch, light and dark.
 
 ## Install
@@ -84,10 +85,27 @@ The mail goes out as HTML in the same structure desktop's composer writes (a `<d
 
 Mail syncs when the app opens, every few minutes while it is open (Settings > Accounts, five minutes by default), and every 15 minutes in the background, which is the shortest interval Android allows. New mail gives one notification per account. An agent's reply, a waiting approval and a draft an agent wrote while you were elsewhere give a notification that opens the chat.
 
+## Rukoo account
+
+Settings > Rukoo account is the desktop's page on the phone, described in [Rukoo account](account.md): the server with who runs it and where it keeps data, Create an account, Sign in and Forgot your password?, and once signed in Sync now, the devices (choose one to sign it out), Change password, New recovery key, What's stored and shared, Export my data, Sign out and Delete account. The recovery key shows once, in a dialog with Copy; it is copied as sensitive, so Android leaves it out of the clipboard preview. Export my data saves the JSON file where you choose, through Android's file picker.
+
+The phone signs in to the same account as the computer and syncs the same records. It is the phone that encrypts them: the password goes through Argon2id on the phone (Bouncy Castle), and the session and the account's data key are kept encrypted with the Android Keystore, like the mail passwords. The records live on the phone first, so categories work without an account and without a connection. The phone syncs when Rukoo comes to the front, every five minutes while it is open, two seconds after a change, after each mail sync (also the background one every 15 minutes) and on Sync now.
+
+The server is `https://rukoo-account.bvdm.ai` unless you choose another while signed out. A fork sets its own default with `ACCOUNT_SERVER` in `android/app/build.gradle.kts`. Release builds talk to account servers over https only; debug builds also take plain http to the phone itself and to the emulator's host, `http://10.0.2.2:<port>`, so an emulator can use `wrangler dev` on the computer. An account belongs to its server's address, so an account made through `10.0.2.2` doesn't open through `127.0.0.1`.
+
+## Inbox categories
+
+Settings > Inbox categories turns [inbox categories](categories.md) on. The inbox then gets a row of tabs on both screens, All and then each category with its color and unread count; a tab shows only its mail, and switching tabs clears a selection. The tabs show in the inbox only, and not while you search. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
+
+The settings page has the desktop's parts: the categories with up and down, editing a name, description and color, adding up to twelve and deleting; When Rukoo isn't sure; Sort with Jev and the TypeSafe API key, which stays on this phone, encrypted like the mail passwords; Sort the inbox again; and the senders with a rule.
+
+The phone sorts like the desktop. During each inbox sync it fetches a few headers of new mail (List-Id, List-Unsubscribe, Precedence, Auto-Submitted, Feedback-ID, X-Campaign and X-Mailer), and for Gmail accounts it asks Gmail which tab each message is in (`X-GM-RAW "category:…"`). The first device to sort an email stores the result in the account, so the phone and the computer show the same.
+
 ## Security
 
 - The phone's MCP server only answers connections that arrive on its own Tailscale address, after the same checks as desktop: no `Origin`, the right `Host`, a valid token and size limits. A bridge that probes the phone first proves it has the same Hermes key, as with the desktop.
-- Passwords, refresh tokens, the Hermes key, the OpenClaw token and the computer pairing tokens are encrypted with a key in the Android Keystore. App backups are off.
+- Passwords, refresh tokens, the Hermes key, the OpenClaw token, the computer pairing tokens, the Rukoo account's session and data key, and the TypeSafe key are encrypted with a key in the Android Keystore. App backups are off.
+- The Rukoo account's records are encrypted on the phone before they go to the server; the server never gets the password or the key ([server/PROTOCOL.md](../server/PROTOCOL.md)).
 - The computer accepts phone requests only on its Tailscale address and only while its Phone switch is on. Pairing codes work once, for five minutes, and burn after five wrong tries. A paired phone can only point the computer's tool calls back at its own address.
 - Email reaches agents inside `<unsafe_content>`, as on desktop. The reader runs without JavaScript and without file access.
 - Files you attach to a chat stay in the app's private storage. Their names and text reach agents inside `<unsafe_content>`, like email. Another app gets a file only when you tap it in the chat, and then only that file, read-only.
@@ -122,6 +140,13 @@ Debug builds add things for testing that release builds leave out:
 - The "Test agent", a scripted agent like desktop's `SEM_AGENT_FAKE=1`, which uses the real tools.
 - A loopback listener for the MCP server, and Settings > Phone tools > For testing > "Address for agents", so an emulator behind `adb forward` can play a phone on the tailnet.
 - `adb shell am broadcast -n nl.bvdm.rukoo.debug/nl.bvdm.rukoo.mail.sync.DebugSyncReceiver` runs a background sync.
+- The Rukoo account may use a server over plain http on the phone or the emulator's host: Settings > Rukoo account > Server, `http://10.0.2.2:8790` for `npx wrangler dev --port 8790` in `server/`.
+
+The account's tests against a real server skip unless `RUKOO_ACCOUNT_TEST_SERVER` is set, for example to `http://127.0.0.1:8790` with `wrangler dev` running. With `RUKOO_ACCOUNT_TEST_NODE` set to a Node.js binary as well, one of them runs desktop Rukoo's account code in Node next to the phone's, so both read each other's records; desktop's dependencies must be installed (or on `NODE_PATH`).
+
+```sh
+RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:8790 RUKOO_ACCOUNT_TEST_NODE=$(which node) ./gradlew testDebugUnitTest --tests 'nl.bvdm.rukoo.account.*'
+```
 
 On an emulator, `adb shell wm size 1080x2520` gives the cover screen's size and `adb shell wm size 1968x2184` with density 420 the inner screen's.
 
@@ -131,7 +156,9 @@ Code map, under `android/app/src/main/java/nl/bvdm/rukoo/`:
 |---|---|
 | `mail/` | The mail engine: IMAP and SMTP sessions, the cache, sync, MIME, the reader's HTML, replies and signatures, Google sign-in, the demo account |
 | `agents/` | Conversations, turns and approvals (`Hub.kt`), the turn text and `<unsafe_content>` rules, quick actions and skills; `agents/adapters/` has Hermes, OpenClaw, the computer host and the test agent |
+| `account/` | The Rukoo account: the keys and sealing of `server/PROTOCOL.md` (`AccountKeys.kt`), the server's HTTP API, and the local-first records and their sync (`AccountService.kt`), a port of desktop's `src/main/account/` |
+| `categories/` | Inbox categories: the mail signals, the rules, Jev, and which category each inbox email is in (`Categories.kt`), a port of desktop's `src/main/categories/` |
 | `mcp/` | The phone's MCP server, its tokens and proof, and the twelve tools |
 | `desktop/` | Pairing with a computer, the import and the client of the computer's `/phone/v1` routes |
-| `ui/` | Compose screens: `root/` (layout and navigation), `mail/`, `reader/`, `composer/`, `agent/`, `settings/`, `onboarding/`, and the theme, icons and components ported from the desktop |
+| `ui/` | Compose screens: `root/` (layout and navigation), `mail/` (with the category tabs), `reader/`, `composer/`, `agent/`, `settings/` (with the Rukoo account's pages and Inbox categories), `onboarding/`, and the theme, icons and components ported from the desktop |
 | `core/` | Storage, the Keystore box, Tailnet checks and the `<unsafe_content>` helpers |

@@ -73,7 +73,11 @@ class Categories extends EventEmitter {
   // What stays on this computer: Jev's settings, and the emails a re-sort still has to do (redo), so a restart
   // doesn't forget them.
   saveLocal() {
-    this.local.redo = [...this.redo];
+    // The account's records go to disk first: a re-sort list without an email whose new category is still only in
+    // memory would forget that email for good if the app quit right then. When they can't be written, the emails on
+    // the list on disk stay on it.
+    const written = this.account.flush();
+    this.local.redo = written ? [...this.redo] : [...new Set([...(this.local.redo || []), ...this.redo])];
     fs.mkdirSync(this.dataDir, { recursive: true });
     fs.writeFileSync(this.file(), JSON.stringify(this.local));
   }
@@ -376,6 +380,13 @@ class Categories extends EventEmitter {
         if (store(item.key, { category: rule.category, source: 'rules', at: Date.now() }) !== false) sorted++;
       } else if (key) forJev.push(item);
       else later(item.key);
+    }
+    // A re-sort's emails are on file as still to do before Jev is asked, so one the app quits during goes on after a
+    // restart. Each leaves the list once its answer is stored.
+    const pending = forJev.filter((item) => replace(item.key));
+    if (pending.length) {
+      for (const item of pending) this.redo.add(item.key);
+      this.saveLocal();
     }
     let stop = null;
     // Turning Jev or categories off, or a new key, stops what is still queued: nothing more goes to TypeSafe.

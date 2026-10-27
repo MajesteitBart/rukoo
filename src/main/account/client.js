@@ -41,7 +41,10 @@ function request(server, method, path, { body, token } = {}) {
   }
   if (token) headers.authorization = `Bearer ${token}`;
   return new Promise((resolve, reject) => {
-    const req = lib.request(url, { method, headers, timeout: TIMEOUT }, (res) => {
+    // A connection of its own for each request. Kept-alive connections race with a server that closes them when idle:
+    // a request sent on one just as the server lets go of it fails, and Argon2 between two requests takes about as
+    // long as a server's idle timeout on a slow computer. A sync makes only a few requests.
+    const req = lib.request(url, { method, headers, timeout: TIMEOUT, agent: false }, (res) => {
       const chunks = [];
       let size = 0;
       res.on('data', (chunk) => {

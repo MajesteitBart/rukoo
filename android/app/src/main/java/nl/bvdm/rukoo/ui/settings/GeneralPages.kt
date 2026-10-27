@@ -209,6 +209,7 @@ private val LICENSES = listOf(
     License("commonmark-java", "BSD 2-Clause", "https://github.com/commonmark/commonmark-java"),
     License("autolink-java", "MIT", "https://github.com/robinst/autolink-java"),
     License("OkHttp", "Apache 2.0", "https://square.github.io/okhttp/"),
+    License("Bouncy Castle", "MIT", "https://www.bouncycastle.org/about/license/"),
     License("AndroidX, Jetpack Compose, Kotlin", "Apache 2.0", "https://developer.android.com/jetpack/androidx"),
 )
 

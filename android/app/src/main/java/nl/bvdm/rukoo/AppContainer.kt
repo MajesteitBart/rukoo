@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import nl.bvdm.rukoo.account.AccountBackground
+import nl.bvdm.rukoo.account.AccountService
+import nl.bvdm.rukoo.account.OkHttpAccountHttp
 import nl.bvdm.rukoo.agents.AdapterDeps
 import nl.bvdm.rukoo.agents.AgentHub
 import nl.bvdm.rukoo.agents.AgentNotifier
@@ -27,6 +30,10 @@ import nl.bvdm.rukoo.agents.RukooSkills
 import nl.bvdm.rukoo.agents.adapters.DefaultAdapterFactory
 import nl.bvdm.rukoo.agents.adapters.FakeTools
 import nl.bvdm.rukoo.agents.preview.PreviewAgentHub
+import nl.bvdm.rukoo.categories.Categories
+import nl.bvdm.rukoo.categories.EngineCategoryMail
+import nl.bvdm.rukoo.categories.Jev
+import nl.bvdm.rukoo.categories.ResourceCategoryTexts
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretBox
 import nl.bvdm.rukoo.desktop.DesktopDevice
@@ -59,6 +66,12 @@ interface AppServices {
 
     /** Drafts kept on this phone ("Save draft"); fakes get a shared in-memory store. */
     val drafts: DraftStore get() = DraftStore.InMemory
+
+    /** The Rukoo account (account/); null in fakes, which then show no account. */
+    val account: AccountService? get() = null
+
+    /** Inbox categories (categories/); null in fakes, which then show no categories. */
+    val categories: Categories? get() = null
 }
 
 /**
@@ -142,10 +155,43 @@ class AppContainer(context: Context) : AppServices {
 
     override val desktop: DesktopLink by lazy { HttpDesktopLink(agentSettings, http, { DesktopDevice.info(appContext) }, clock) }
 
+    /**
+     * The Rukoo account, with its records in files/account. Debug builds may also use a server over plain http on
+     * this phone or the emulator's host (10.0.2.2), for `wrangler dev`.
+     */
+    override val account: AccountService by lazy {
+        AccountService(
+            dir = File(appContext.filesDir, "account"),
+            secrets = SecretBox,
+            defaultServer = BuildConfig.ACCOUNT_SERVER,
+            deviceName = DesktopDevice.info(appContext).name,
+            http = OkHttpAccountHttp(http),
+            scope = appScope,
+            devHosts = BuildConfig.DEBUG,
+        )
+    }
+
+    override val categories: Categories by lazy {
+        Categories(
+            account = account,
+            mail = EngineCategoryMail(mail, appScope),
+            secrets = SecretBox,
+            dir = File(appContext.filesDir, "account"),
+            jev = Jev(http),
+            texts = ResourceCategoryTexts(appContext),
+            scope = appScope,
+        )
+    }
+
     /** OAuth returns that arrive as `rukoo-oauth:` deep links; the sign-in flow collects them. */
     val oauthReturns = MutableSharedFlow<Uri>(extraBufferCapacity = 1)
 
     init {
+        // The account and the categories load their files off the main thread, and the account syncs on its schedule.
+        if (!BuildConfig.USE_PREVIEW_MAIL) {
+            appScope.launch(Dispatchers.IO) { categories }
+            AccountBackground(appScope, { account }, { mail }).start()
+        }
         // The language the user picks in Rukoo; LocaleManager keeps it, so only changes are applied.
         appScope.launch {
             settings.flow.map { it.language }.distinctUntilChanged().drop(1).collect { Locales.apply(appContext, it) }

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Inboxcategorieën. Formulering uit src/i18n/nl.js, met "deze computer" als "deze telefoon". -->
+<resources>
+    <string name="categories_presets_needs_you_name">Actie nodig</string>
+    <string name="categories_presets_needs_you_description">Mail van mensen die iets van je vraagt: antwoorden, beslissen, goedkeuren, tekenen, betalen of komen.</string>
+    <string name="categories_presets_to_read_name">Lezen</string>
+    <string name="categories_presets_to_read_description">Mail van mensen of organisaties die het lezen waard is maar niets van je vraagt: nieuws van collega\'s, gesprekken waarin je in de cc staat, persoonlijke updates.</string>
+    <string name="categories_presets_money_name">Geldzaken</string>
+    <string name="categories_presets_money_description">Facturen, betaalverzoeken, bonnetjes, orderbevestigingen, mail van de bank en de belastingdienst, abonnementen en terugbetalingen.</string>
+    <string name="categories_presets_updates_name">Updates</string>
+    <string name="categories_presets_updates_description">Automatische meldingen: bezorging, account- en beveiligingsmeldingen, reacties en vermeldingen in apps, sociale netwerken en forums.</string>
+    <string name="categories_presets_promotions_name">Reclame</string>
+    <string name="categories_presets_promotions_description">Nieuwsbrieven, marketing, aanbiedingen en kortingen, en evenementen of webinars die iemand verkoopt.</string>
+    <string name="categories_errors_too_many">Je kunt maximaal %1$d categorieën hebben.</string>
+    <string name="categories_errors_need_name">Geef de categorie een naam.</string>
+    <string name="categories_errors_last">Houd minstens één categorie. Zet categorieën uit om te stoppen met sorteren.</string>
+
+    <string name="mailbox_categories_label">Inboxcategorieën</string>
+    <string name="mailbox_categories_all">Alles</string>
+    <string name="mailbox_categories_move">Naar categorie</string>
+    <string name="mailbox_categories_pick">Naar categorie</string>
+    <string name="mailbox_categories_moved">Verplaatst naar %1$s</string>
+    <string name="mailbox_categories_always">Ook toekomstige mail</string>
+    <string name="mailbox_categories_always_done">Mail van %1$s gaat voortaan naar %2$s</string>
+    <string name="mailbox_categories_always_done_many">Mail van deze %1$d afzenders gaat voortaan naar %2$s</string>
+    <string name="mailbox_categories_empty">Niets in %1$s</string>
+    <plurals name="mailbox_categories_unread_count">
+        <item quantity="one">%1$d ongelezen</item>
+        <item quantity="other">%1$d ongelezen</item>
+    </plurals>
+
+    <string name="settings_general_categories">Inboxcategorieën</string>
+    <string name="settings_general_categories_on">Aan</string>
+    <string name="settings_general_categories_off">Uit</string>
+    <string name="settings_categories_title">Inboxcategorieën</string>
+    <string name="settings_categories_on">De inbox in categorieën sorteren</string>
+    <string name="settings_categories_on_help">De inbox krijgt tabbladen, zoals Actie nodig en Reclame. Er verplaatst of verandert niets op je mailserver, en andere mailapps zien je inbox zoals altijd.</string>
+    <string name="settings_categories_list">Categorieën</string>
+    <string name="settings_categories_list_help">Elke e-mail komt in één categorie. Als er meer passen, wint de bovenste.</string>
+    <string name="settings_categories_add">Categorie toevoegen</string>
+    <string name="settings_categories_up">Omhoog</string>
+    <string name="settings_categories_down">Omlaag</string>
+    <string name="settings_categories_unsure">Als Rukoo het niet zeker weet</string>
+    <string name="settings_categories_edit_title">Categorie bewerken</string>
+    <string name="settings_categories_new_title">Nieuwe categorie</string>
+    <string name="settings_categories_name">Naam</string>
+    <string name="settings_categories_description">Wat hier hoort</string>
+    <string name="settings_categories_description_help">Rukoo, en Jev als die aan staat, lezen dit om te bepalen welke mail hier komt. Noem de soorten mail en afzenders.</string>
+    <string name="settings_categories_color">Kleur</string>
+    <string name="settings_categories_restore">Tekst van Rukoo gebruiken</string>
+    <string name="settings_categories_delete_title">%1$s verwijderen?</string>
+    <string name="settings_categories_delete_help">De mail ervan gaat naar de andere categorieën. Afzenderregels ervoor werken niet meer.</string>
+    <string name="settings_categories_sorting">Sorteren</string>
+    <string name="settings_categories_rules">Rukoo sorteert op de afzender en de headers van de mail, en bij Gmail-accounts op de eigen tabbladen van Gmail. Je kunt elke e-mail verplaatsen en kiezen om dat voortaan ook voor de afzender te doen.</string>
+    <string name="settings_categories_jev">Sorteren met Jev</string>
+    <string name="settings_categories_jev_help">Jev, een beslismodel van TypeSafe, leest elke nieuwe e-mail en kiest een categorie op basis van je beschrijvingen. Heeft je eigen API-sleutel van TypeSafe nodig.</string>
+    <string name="settings_categories_jev_shares">Met Jev aan stuurt deze telefoon de afzender, het onderwerp en de eerste 1.000 tekens van elke nieuwe e-mail in je inbox, met de namen en beschrijvingen van je categorieën, naar TypeSafe, Inc. in de Verenigde Staten. Voor wat TypeSafe bewaart, gelden zijn eigen voorwaarden. Verder verlaat niets deze telefoon.</string>
+    <string name="settings_categories_key">API-sleutel van TypeSafe</string>
+    <string name="settings_categories_key_set">Ingesteld op deze telefoon</string>
+    <string name="settings_categories_key_missing">Niet ingesteld</string>
+    <string name="settings_categories_key_prompt">API-sleutel van TypeSafe</string>
+    <string name="settings_categories_key_remove">Sleutel verwijderen</string>
+    <string name="settings_categories_need_key">Voeg eerst je API-sleutel van TypeSafe toe.</string>
+    <string name="settings_categories_jev_error_key">TypeSafe accepteerde de API-sleutel niet. Controleer hem of zet Jev uit.</string>
+    <string name="settings_categories_jev_error_busy">TypeSafe heeft het druk. Rukoo probeert het over een paar minuten opnieuw en sorteert intussen op regels.</string>
+    <string name="settings_categories_jev_error_network">Kan TypeSafe niet bereiken. Rukoo probeert het over een paar minuten opnieuw en sorteert intussen op regels.</string>
+    <string name="settings_categories_again">De inbox opnieuw sorteren</string>
+    <string name="settings_categories_again_help">Vanaf het begin, behalve de e-mails die je zelf hebt verplaatst</string>
+    <plurals name="settings_categories_again_done">
+        <item quantity="one">%1$d e-mail gesorteerd</item>
+        <item quantity="other">%1$d e-mails gesorteerd</item>
+    </plurals>
+    <string name="settings_categories_senders">Afzenders met een regel</string>
+    <string name="settings_categories_sender_help">Gaat naar %1$s. Kies om de regel te verwijderen.</string>
+    <string name="settings_categories_sender_remove">Regel voor %1$s verwijderen?</string>
+    <string name="settings_categories_sender_remove_help">Nieuwe mail van deze afzender wordt weer gesorteerd zoals andere mail.</string>
+    <string name="settings_categories_sync">Je categorieën, de categorie van elke e-mail en je correcties staan in je Rukoo-account, dus je andere apparaten tonen hetzelfde.</string>
+    <string name="settings_categories_sync_local">Dit blijft op deze telefoon. Log in bij een Rukoo-account om dezelfde categorieën op je andere apparaten te zien.</string>
+</resources>

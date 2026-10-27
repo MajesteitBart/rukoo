@@ -29,6 +29,9 @@ android {
         // agent tracks turn these off (debug builds can keep the preview for screenshots).
         buildConfigField("boolean", "USE_PREVIEW_MAIL", "false")
         buildConfigField("boolean", "USE_PREVIEW_AGENTS", "false")
+        // The Rukoo account server the app uses until someone picks another in Settings (docs/account.md). A fork
+        // points its builds at its own server here.
+        buildConfigField("String", "ACCOUNT_SERVER", "\"https://rukoo-account.bvdm.ai\"")
     }
 
     signingConfigs {
@@ -146,6 +149,8 @@ dependencies {
     implementation(libs.angus.mail)
     implementation(libs.angus.activation)
     implementation(libs.jsoup)
+    // Argon2id for the Rukoo account's password key (account/AccountKeys.kt).
+    implementation(libs.bouncycastle.prov)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

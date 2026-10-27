@@ -48,8 +48,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.categories.CategoriesState
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageSummary
@@ -113,7 +117,23 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
     val loaded by flow.collectAsStateWithLifecycle(initialValue = null)
     val all = loaded.orEmpty()
     val filter = if (nav.searching) ListFilter.ALL else nav.filter
-    val messages = remember(all, filter) { ListModel.applyFilter(all, filter) }
+
+    // Inbox categories show as tabs in the inbox, while categories are on and nothing is searched (app.js
+    // categoriesOn). Each email's category is worked out off the main thread whenever the list, the categories or
+    // any record changes.
+    val categories = app.services.categories
+    val noCategories = remember { MutableStateFlow(CategoriesState()) }
+    val catState by (categories?.state ?: noCategories).collectAsStateWithLifecycle()
+    val noVersion = remember { MutableStateFlow(0L) }
+    val recordsVersion by (app.services.account?.version ?: noVersion).collectAsStateWithLifecycle()
+    val tabsOn = categories != null && catState.enabled && catState.categories.isNotEmpty() && nav.view.kind == ViewKind.INBOX && !nav.searching
+    val categoryOf by produceState(emptyMap<String, String>(), all, catState, recordsVersion, tabsOn, accounts) {
+        value = if (tabsOn && categories != null) withContext(Dispatchers.Default) { categories.of(accounts, all) } else emptyMap()
+    }
+    val tab = nav.category?.takeIf { id -> tabsOn && catState.categories.any { it.id == id } }
+    // The list in the category tab on screen; the quick filters and their counts work on it.
+    val inTab = remember(all, tab, categoryOf) { if (tab != null) all.filter { categoryOf[it.id] == tab } else all }
+    val messages = remember(inTab, filter) { ListModel.applyFilter(inTab, filter) }
     val byDate = settings.sort == SortOrder.DATE_DESC || settings.sort == SortOrder.DATE_ASC
     val now = remember(all) { System.currentTimeMillis() }
     val rows = remember(messages, byDate, searching, nav.openStacks, nav.openMessageId, nav.checked, dates, now) {
@@ -152,6 +172,14 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
                 nav.searching -> SearchBar(app, nav.query, nav.view, folders)
                 else -> ListHeader(app, nav.view, all, accounts.map { it.id to it.email }, folders)
             }
+            if (tabsOn) {
+                CategoryTabs(
+                    categories = catState.categories,
+                    selected = tab,
+                    unread = { id -> all.count { it.unread && (id == null || categoryOf[it.id] == id) } },
+                    onSelect = app::setCategory,
+                )
+            }
             if (!selecting) {
                 if (nav.searching) {
                     QuickFilterRow(
@@ -177,9 +205,9 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
                     QuickFilterRow(
                         filters = listOf(
                             QuickFilter(ListFilter.ALL.name, stringResource(R.string.mailbox_filters_all)),
-                            QuickFilter(ListFilter.UNREAD.name, stringResource(R.string.mailbox_filters_unread), ListModel.filterCount(all, ListFilter.UNREAD)),
-                            QuickFilter(ListFilter.STARRED.name, stringResource(R.string.mailbox_filters_starred), ListModel.filterCount(all, ListFilter.STARRED)),
-                            QuickFilter(ListFilter.ATTACHMENTS.name, stringResource(R.string.mailbox_filters_attachments), ListModel.filterCount(all, ListFilter.ATTACHMENTS)),
+                            QuickFilter(ListFilter.UNREAD.name, stringResource(R.string.mailbox_filters_unread), ListModel.filterCount(inTab, ListFilter.UNREAD)),
+                            QuickFilter(ListFilter.STARRED.name, stringResource(R.string.mailbox_filters_starred), ListModel.filterCount(inTab, ListFilter.STARRED)),
+                            QuickFilter(ListFilter.ATTACHMENTS.name, stringResource(R.string.mailbox_filters_attachments), ListModel.filterCount(inTab, ListFilter.ATTACHMENTS)),
                         ),
                         selectedKey = nav.filter.name,
                         onSelect = { key -> app.setFilter(ListFilter.valueOf(key)) },
@@ -217,7 +245,16 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
             ) {
                 when {
                     loaded == null -> Box(Modifier.fillMaxSize())
-                    rows.isEmpty() && drafts.isEmpty() -> EmptyList(app, searching, nav.searchAll, filter, sync.syncing, sync.errors, accounts.associate { it.id to it.email })
+                    rows.isEmpty() && drafts.isEmpty() -> EmptyList(
+                        app,
+                        searching,
+                        nav.searchAll,
+                        filter,
+                        sync.syncing,
+                        sync.errors,
+                        accounts.associate { it.id to it.email },
+                        emptyTab = tab?.let { id -> catState.categories.firstOrNull { it.id == id }?.name },
+                    )
                     else -> MessageList(app, rows, drafts, listState, dates, now, settings.density == Density.COMPACT, selecting, checked, nav.openMessageId, multi, labels, showFolder, folders, settings.swipeActions)
                 }
             }
@@ -471,6 +508,8 @@ private fun SelectionBar(app: AppViewModel, picked: List<MessageSummary>, visibl
     if (more) {
         val canArchive = picked.any { app.services.mail.archiveFolder(it.accountId) != null && it.role != FolderRole.ARCHIVE && it.role != FolderRole.ALL }
         val starred = picked.isNotEmpty() && picked.all { it.starred }
+        // Move to category, for inbox mail while categories are on (desktop shows it when one has a category).
+        val inCategories = remember(picked) { ui.categoriesOf(picked).isNotEmpty() }
         RkBottomSheet(onDismissRequest = { more = false }, title = pluralStringResource(R.plurals.mailbox_selection_summary, picked.size, picked.size)) {
             SheetRow(stringResource(if (starred) R.string.mailbox_actions_unstar else R.string.mailbox_actions_add_star), icon = if (starred) RukooIcons.StarFilled else RukooIcons.Star, onClick = {
                 ui.setStarred(picked, !starred)
@@ -484,6 +523,12 @@ private fun SelectionBar(app: AppViewModel, picked: List<MessageSummary>, visibl
                 dismiss()
                 ui.pickFolder(picked)
             })
+            if (inCategories) {
+                SheetRow(stringResource(R.string.mailbox_categories_move), icon = RukooIcons.Inbox, onClick = {
+                    dismiss()
+                    ui.pickCategory(picked)
+                })
+            }
             if (canArchive) {
                 SheetRow(stringResource(R.string.common_actions_archive), icon = RukooIcons.Archive, onClick = {
                     dismiss()
@@ -508,6 +553,8 @@ private fun EmptyList(
     syncing: Boolean,
     errors: Map<String, String>,
     emails: Map<String, String>,
+    /** The category tab on screen, when it is the one that is empty. */
+    emptyTab: String? = null,
 ) {
     val c = Rk.colors
     androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize()) {
@@ -522,6 +569,7 @@ private fun EmptyList(
                         )
                         if (!searchAll) RkButton(stringResource(R.string.mailbox_empty_search_all_action), { app.setSearchAll(true) }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL)
                     }
+                    filter == ListFilter.ALL && emptyTab != null -> EmptyState(stringResource(R.string.mailbox_categories_empty, emptyTab))
                     filter != ListFilter.ALL -> EmptyState(
                         stringResource(R.string.mailbox_empty_filter),
                         actionLabel = stringResource(R.string.mailbox_empty_show_all),

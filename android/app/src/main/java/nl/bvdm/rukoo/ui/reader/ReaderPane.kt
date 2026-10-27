@@ -246,6 +246,13 @@ private fun Reader(app: AppViewModel, id: String) {
                     dismiss()
                     app.addToChat(listOf(id))
                 })
+                // Inbox mail while categories are on, as desktop's messageMenu offers it.
+                if (remember(m) { ui.categoriesOf(listOf(m)).isNotEmpty() }) {
+                    SheetRow(stringResource(R.string.mailbox_categories_move), icon = RukooIcons.Inbox, onClick = {
+                        dismiss()
+                        ui.pickCategory(listOf(m))
+                    })
+                }
             } else {
                 // A draft has no bottom bar, so its Previous and Next stay here.
                 val prev = app.neighbour(id, -1)

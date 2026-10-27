@@ -70,10 +70,9 @@ To use another server, open Settings → Rukoo account while signed out, choose 
 - The data key encrypts every record with AES-256-GCM. A record's name on the server is an HMAC, so the server can't tell which category or email a record is about.
 - The recovery key wraps the same data key, which is why it can set a new password without losing data.
 
-On desktop the code is in `src/main/account/`, and the settings pages are in `src/renderer/rukoo-account.js`. `test/fixtures/account-vectors.json` holds fixed inputs and outputs that every Rukoo app must reproduce.
+On desktop the code is in `src/main/account/`, and the settings pages are in `src/renderer/rukoo-account.js`. Rukoo for Android has the same in `android/app/src/main/java/nl/bvdm/rukoo/account/` and `ui/settings/RukooAccountPages.kt` ([Rukoo for Android](android.md#rukoo-account)). `test/fixtures/account-vectors.json` holds fixed inputs and outputs that every Rukoo app must reproduce.
 
 ## Limits
 
-- Rukoo for Android doesn't have the account yet.
 - A device uses one server. Moving an account to another server means signing up there again. An account also belongs to the address of its server, so an operator who moves the server to a new address has to keep the old one working.
 - Signing in on another device needs your password; there is no sign-in by QR code yet.

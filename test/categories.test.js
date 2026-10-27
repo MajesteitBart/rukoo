@@ -137,6 +137,25 @@ test('a Jev answer cut off halfway is a network error, not a wait forever', asyn
   await assert.rejects(jev.classify('K', {}, [{ id: 'a', name: 'A' }], { request }), { code: 'network' });
 });
 
+test('a Jev answer larger than 1 MiB is not read into memory', async (t) => {
+  const http = require('http');
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.on('error', () => {});
+    // A valid answer, padded to 2 MiB.
+    res.end(`{"answers":{"category":{"choice":"a","confidence":0.9}}}${' '.repeat(2 * jev.MAX_ANSWER)}`);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const { port } = server.address();
+  const request = (url, opts, cb) => http.request(`http://127.0.0.1:${port}/`, opts, cb);
+  await assert.rejects(jev.classify('K', {}, [{ id: 'a', name: 'A' }], { request }), { code: 'server' });
+});
+
 test('Jev errors say what went wrong', async () => {
   const failing = (status) => (url, opts, cb) => {
     const req = new EventEmitter();
@@ -486,6 +505,82 @@ test('a re-sort Jev was too busy for is finished after a restart', async (t) => 
   await again.sort();
   assert.equal(stored(1).source, 'jev');
   assert.equal(again.redo.size, 0);
+});
+
+test('a re-sort the app quits during goes on after a restart', async (t) => {
+  let category = 'promotions';
+  let hold = false;
+  let asked;
+  const waiting = new Promise((r) => (asked = r));
+  const fake = {
+    MODEL: 'jev-test',
+    classify: async () => {
+      if (hold) {
+        asked();
+        await new Promise(() => {});
+      }
+      return { category, confidence: 0.9, model: 'jev-test' };
+    }
+  };
+  const msgs = inbox();
+  const { cats, acc, account, engine } = setup(t, msgs, { jevImpl: fake });
+  const stored = (uid) => account.get('classification', cats.key(acc, msgs.find((m) => m.uid === uid)));
+  // Jev first: turning categories on sorts at once.
+  cats.setJev({ key: 'KEY', on: true });
+  cats.setEnabled(true);
+  await cats.sort();
+  assert.equal(stored(1).category, 'promotions');
+
+  // "Sort again", and the app quits while Jev is answering: only what is on file is left.
+  hold = true;
+  cats.sortAgain();
+  await waiting;
+  const onFile = JSON.parse(fs.readFileSync(cats.file(), 'utf8'));
+  assert.ok(onFile.redo.includes(cats.key(acc, msgs[0])), 'the emails waiting for Jev are on file');
+
+  hold = false;
+  category = 'money';
+  const again = new Categories({ engine, account, secrets, dataDir: cats.dataDir, jev: fake }).init();
+  t.after(() => again.close());
+  await again.sort();
+  assert.equal(stored(1).category, 'money', 'the re-sort replaced the old answer');
+  assert.equal(again.redo.size, 0);
+});
+
+test("a finished re-sort's answers are on disk before the list that says it's done", async (t) => {
+  let category = 'promotions';
+  const fake = { MODEL: 'jev-test', classify: async () => ({ category, confidence: 0.9, model: 'jev-test' }) };
+  const msgs = inbox();
+  const { cats, acc } = setup(t, msgs, { jevImpl: fake });
+  // Jev first: turning categories on sorts at once.
+  cats.setJev({ key: 'KEY', on: true });
+  cats.setEnabled(true);
+  await cats.sort();
+  category = 'money';
+  await cats.sortAgain();
+  assert.deepEqual(JSON.parse(fs.readFileSync(cats.file(), 'utf8')).redo, []);
+  // The app quits now, within the account's second before it saves: a new account service reads what is on disk.
+  const account = new AccountService({ dataDir: cats.dataDir, secrets, defaultServer: '', deviceName: 'desk' }).init();
+  t.after(() => account.close());
+  assert.equal(account.get('classification', cats.key(acc, msgs[0])).category, 'money');
+});
+
+test('a re-sort whose answers the disk refuses stays on the list on disk', async (t) => {
+  let category = 'promotions';
+  const fake = { MODEL: 'jev-test', classify: async () => ({ category, confidence: 0.9, model: 'jev-test' }) };
+  const msgs = inbox();
+  const { cats, acc } = setup(t, msgs, { jevImpl: fake });
+  // Jev first: turning categories on sorts at once.
+  cats.setJev({ key: 'KEY', on: true });
+  cats.setEnabled(true);
+  await cats.sort();
+  // The disk refuses the account's records from now on: a directory where their file goes stands in for a full disk.
+  const records = path.join(cats.dataDir, 'account-records.json');
+  fs.rmSync(records, { force: true });
+  fs.mkdirSync(path.join(records, 'x'), { recursive: true });
+  category = 'money';
+  await cats.sortAgain();
+  assert.ok(JSON.parse(fs.readFileSync(cats.file(), 'utf8')).redo.includes(cats.key(acc, msgs[0])), 'the email stays on the list on disk');
 });
 
 test('a very long Message-ID is kept as its hash', (t) => {
