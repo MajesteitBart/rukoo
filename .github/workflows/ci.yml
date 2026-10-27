@@ -89,6 +89,26 @@ jobs:
       - name: Build ad-hoc signed macOS test packages
         if: runner.os == 'macOS'
         run: npm run dist -- --${{ matrix.arch }} --publish never --config.mac.identity=- --config.mac.notarize=false
+      # macOS shows this text when it asks whether Rukoo may use the local network. Without it, the question uses
+      # Apple's generic text about discovering devices (#89). The English text is in Info.plist, from
+      # build.mac.extendInfo; the Dutch one is build/mac/nl.lproj/InfoPlist.strings, copied by build.mac.extraResources.
+      - name: Check the local network description in the macOS app
+        if: runner.os == 'macOS'
+        run: |
+          plists=(dist/mac*/"Rukoo Mail.app"/Contents/Info.plist)
+          if [ ! -f "${plists[0]}" ]; then
+            echo "::error::No Rukoo Mail.app in dist/"
+            exit 1
+          fi
+          for plist in "${plists[@]}"; do
+            for file in "$plist" "$(dirname "$plist")/Resources/nl.lproj/InfoPlist.strings"; do
+              if ! text=$(plutil -extract NSLocalNetworkUsageDescription raw -o - "$file") || [ -z "$text" ]; then
+                echo "::error file=package.json::$file has no NSLocalNetworkUsageDescription"
+                exit 1
+              fi
+              echo "$file: $text"
+            done
+          done
       - name: Test packaged macOS desktop interactions
         if: runner.os == 'macOS'
         env:

@@ -1,0 +1,4 @@
+/* Dutch texts for the questions macOS asks on Rukoo Mail's behalf. The English texts are the same keys under
+   build.mac.extendInfo in package.json; change both together. build.mac.extraResources copies this file into
+   Contents/Resources/nl.lproj of the app. */
+"NSLocalNetworkUsageDescription" = "Rukoo Mail gebruikt het lokale netwerk alleen voor wat je zelf instelt: een mail- of agendaserver op je eigen netwerk, of toegang op afstand voor agents, waarmee Rukoo verbinding maakt met een agent of je telefoon op een ander apparaat. Gebruik je geen van beide, dan werkt Rukoo zonder deze toegang.";

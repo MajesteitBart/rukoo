@@ -9,7 +9,8 @@ const { t } = require('../i18n');
 const DOT = { red: 0xd6, green: 0x33, blue: 0x6c };
 
 // Paints the dot into the bottom-right corner of a square bitmap in nativeImage's format on Windows: BGRA with
-// premultiplied alpha. A transparent ring keeps it apart from the pigeon. Returns a new buffer.
+// premultiplied alpha. The macOS menu bar icon assumes the same order. A transparent ring keeps the dot apart from
+// the pigeon. Returns a new buffer.
 function withDot(bitmap, size) {
   const out = Buffer.from(bitmap);
   const radius = size * 0.22;
@@ -37,6 +38,36 @@ function tooltip(unread) {
   return unread > 0 ? t('native.tray.tooltip', { count: unread }) : 'Rukoo Mail';
 }
 
+// The icon's representations: a scale factor and a size in pixels for each. Windows draws tray icons at 16 px at
+// 100% scaling, and an image of exactly that size stays sharp. The macOS menu bar wants an 18 pt icon, as tall as
+// the system icons next to it, with a 2x copy for Retina screens; one bitmap of 32 px would show at 32 pt.
+function traySizes(platform, scaleFactor) {
+  if (platform === 'darwin') return [{ scaleFactor: 1, size: 18 }, { scaleFactor: 2, size: 36 }];
+  return [{ scaleFactor: 1, size: Math.round(16 * scaleFactor) }];
+}
+
+// The plain icon and the one with the dot.
+function trayImages(icon, platform, scaleFactor) {
+  const sizes = traySizes(platform, scaleFactor);
+  // nativeImage reads from inside app.asar, like the notification icon does.
+  const source = nativeImage.createFromPath(icon);
+  if (platform !== 'darwin') {
+    // Windows and Linux keep the resized image itself. Asked for a higher scale factor, it resizes the source
+    // again, which Linux's tray does on HiDPI screens; a bitmap added as a representation can't do that.
+    const [{ size }] = sizes;
+    const plain = source.resize({ width: size, height: size, quality: 'best' });
+    return { plain, dot: nativeImage.createFromBitmap(withDot(plain.toBitmap(), size), { width: size, height: size }) };
+  }
+  const plain = nativeImage.createEmpty();
+  const dot = nativeImage.createEmpty();
+  for (const { scaleFactor: scale, size } of sizes) {
+    const bitmap = source.resize({ width: size, height: size, quality: 'best' }).toBitmap();
+    plain.addRepresentation({ scaleFactor: scale, width: size, height: size, buffer: bitmap });
+    dot.addRepresentation({ scaleFactor: scale, width: size, height: size, buffer: withDot(bitmap, size) });
+  }
+  return { plain, dot };
+}
+
 // Test mode (SEM_HIDDEN) puts no icon in the notification area; tests click this one through global.__semTray.
 class TestTray extends EventEmitter {
   setImage(image) {
@@ -54,11 +85,10 @@ class TestTray extends EventEmitter {
 }
 
 class TrayIcon {
-  // actions: { open, compose, sync, quit }. size: the icon in pixels, the size Windows draws it at.
-  constructor({ icon, size, actions, test = false }) {
-    // nativeImage reads from inside app.asar, like the notification icon does.
-    const plain = nativeImage.createFromPath(icon).resize({ width: size, height: size, quality: 'best' });
-    this.images = { plain, dot: nativeImage.createFromBitmap(withDot(plain.toBitmap(), size), { width: size, height: size }) };
+  // actions: { open, compose, sync, quit }. platform and scaleFactor (the primary display's) pick the sizes.
+  constructor({ icon, platform, scaleFactor, actions, test = false }) {
+    this.images = trayImages(icon, platform, scaleFactor);
+    const { plain } = this.images;
     this.actions = actions;
     this.unread = 0;
     this.dot = false;
@@ -95,4 +125,4 @@ class TrayIcon {
   }
 }
 
-module.exports = { TrayIcon, withDot, tooltip };
+module.exports = { TrayIcon, withDot, tooltip, traySizes, trayImages };
