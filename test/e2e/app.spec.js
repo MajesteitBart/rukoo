@@ -1077,6 +1077,53 @@ test('a reopened reply keeps the earlier mail behind the pill, and still sends i
   await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Shall we have a call on Thursday');
 });
 
+test('a folder that fails to sync leaves the folders after it current, and the new mail is announced', async () => {
+  await app.evaluate(async ({ Notification, BrowserWindow }) => {
+    // Notifications are recorded instead of shown, as for a window in the background.
+    BrowserWindow.getAllWindows()[0].isFocused = () => false;
+    global.__shown = [];
+    Notification.prototype.show = function () {
+      global.__shown.push(this);
+    };
+    const engine = global.__semEngine;
+    const s = engine.session(engine.accounts[0]);
+    const raw = (subject) =>
+      ['From: Sanne de Vries <sanne@example.com>', 'To: demo@example.com', `Subject: ${subject}`, `Date: ${new Date().toUTCString()}`, '', 'Hallo'].join('\r\n');
+    // New mail in the inbox, which syncs before Verzonden, and in Archief, which syncs after it.
+    await s.append('INBOX', raw('Nieuw in het postvak'));
+    await s.append('Archive', raw('Nieuw in het archief'));
+    // The server refuses Verzonden, as imapflow reports a folder it cannot open.
+    global.__syncFolder = s.syncFolder;
+    s.syncFolder = function (folder, options) {
+      if (folder === 'Sent') return Promise.reject(Object.assign(new Error('Command failed'), { responseText: 'Sent is temporarily unavailable' }));
+      return global.__syncFolder.call(this, folder, options);
+    };
+  });
+  const cached = (view, subject) =>
+    app.evaluate((_, [view, subject]) => global.__semEngine.listMessages({ view }).some((m) => m.subject === subject), [view, subject]);
+  const announced = () => app.evaluate(() => global.__shown.map((n) => n.body.split('\n')[0]));
+
+  await win.click('.sync-status');
+  await expect(win.locator('.sync-status')).toHaveText('Synchronisatie mislukt');
+  await expect(win.locator('.sync-status')).toHaveAttribute('title', 'demo@example.com: Sent is temporarily unavailable');
+  await expect(item('Nieuw in het postvak')).toBeVisible();
+  await expect.poll(announced).toEqual(['Nieuw in het postvak']);
+  // Archief synced in the same run, not when it was opened.
+  expect(await cached('archive', 'Nieuw in het archief')).toBe(true);
+  await win.click('[data-view="archive"]');
+  await expect(item('Nieuw in het archief')).toBeVisible();
+
+  // Once the server opens Verzonden again, the next sync clears the error and announces nothing twice.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.session(engine.accounts[0]).syncFolder = global.__syncFolder;
+  });
+  await win.click('.sync-status');
+  await expect(win.locator('#toast')).toContainText('Gesynchroniseerd');
+  await expect(win.locator('.sync-status')).toHaveText('Zojuist bijgewerkt');
+  expect(await announced()).toEqual(['Nieuw in het postvak']);
+});
+
 // ---------- regressions from the critique review ----------
 
 test('a reply that is still loading cannot replace a new message', async () => {

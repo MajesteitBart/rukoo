@@ -161,6 +161,49 @@ class EngineTest {
     }
 
     @Test
+    fun `a folder that fails to sync leaves the others current, and the account shows the error`() = runBlocking {
+        val server = server()
+        val engine = engine(server)
+        val acc = added(engine)
+        val synced = withTimeout(5_000) { engine.sync.first { acc.id in it.lastSync } }.lastSync.getValue(acc.id)
+        server.add("INBOX", ServerMessage(4, "Fresh"))
+        server.add("Archive", ServerMessage(40, "Filed"))
+        // Sent is the second folder a sync goes through; Drafts, Trash and Archive come after it.
+        server.failingFolders["Sent"] = IllegalStateException("NO Sent is unavailable")
+        try {
+            engine.refresh(acc.id)
+            fail()
+        } catch (e: MailException) {
+            assertEquals("NO Sent is unavailable", e.message)
+        }
+        assertTrue(engine.inbox().any { it.subject == "Fresh" })
+        assertEquals(listOf("Filed"), engine.listMessages(MailView.folder(acc.id, "Archive")).map { it.subject })
+        assertEquals(listOf("Fresh"), newMail.single().map { it.subject })
+        val failed = withTimeout(5_000) { engine.sync.first { it.errors[acc.id] != null } }
+        assertEquals("NO Sent is unavailable", failed.errors[acc.id])
+        assertEquals("not a sync that got through every folder", synced, failed.lastSync[acc.id])
+
+        server.failingFolders.clear()
+        engine.refresh(acc.id)
+        val fixed = withTimeout(5_000) { engine.sync.first { acc.id !in it.errors } }
+        assertTrue(fixed.lastSync.getValue(acc.id) >= synced)
+    }
+
+    @Test
+    fun `a sync that fails because the engine closed opens no new session for the next folder`() = runBlocking {
+        val server = server()
+        val engine = engine(server)
+        val acc = added(engine)
+        assertEquals(1, server.sessionsMade)
+        server.syncDelayMs = 200
+        val run = async { runCatching { engine.refresh(acc.id) } }
+        withTimeout(5_000) { engine.sync.first { acc.id in it.running } }
+        engine.close()
+        assertTrue(run.await().isFailure)
+        assertEquals(1, server.sessionsMade)
+    }
+
+    @Test
     fun `a refused flag change is reverted`() = runBlocking {
         val server = server()
         val engine = engine(server)

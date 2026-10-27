@@ -261,6 +261,53 @@ test('an account removed while its sync waits gets no new session', async () => 
   }
 });
 
+test('a folder that fails to sync leaves the others current, and the account shows the error', async () => {
+  const { engine, acc } = await freshEngine();
+  const before = engine.state().accounts[0].lastSync;
+  const events = [];
+  engine.on('new-mail', (list) => events.push(...list));
+  const s = engine.session(acc);
+  await s.append('INBOX', Buffer.from('From: a@example.com\r\nSubject: New!\r\n\r\nhi'));
+  const syncFolder = s.syncFolder.bind(s);
+  const synced = [];
+  s.syncFolder = async (folder, options) => {
+    if (folder === 'Sent') throw new Error('NO Sent is unavailable');
+    synced.push(folder);
+    return syncFolder(folder, options);
+  };
+  await assert.rejects(engine.syncAccount(acc.id), /Sent is unavailable/);
+  assert.deepEqual(synced, ['INBOX', 'Drafts', 'Trash', 'Junk', 'Archive']);
+  assert.deepEqual(events.map((m) => m.subject), ['New!']);
+  let state = engine.state().accounts[0];
+  assert.equal(state.error, 'NO Sent is unavailable');
+  assert.equal(state.lastSync, before, 'not a sync that got through every folder');
+
+  s.syncFolder = syncFolder;
+  await engine.syncAccount(acc.id);
+  state = engine.state().accounts[0];
+  assert.equal(state.error, null);
+  assert.ok(state.lastSync >= before);
+  await engine.close();
+});
+
+test('a sync that fails because the engine closed opens no new session for the next folder', async () => {
+  const { engine, acc } = await freshEngine();
+  let resume;
+  const sync = engine.syncFolderInto.bind(engine);
+  // The first folder fails once the engine has closed, as a closed session does.
+  engine.syncFolderInto = async () => {
+    engine.syncFolderInto = sync;
+    await new Promise((resolve) => (resume = resolve));
+    throw new Error('this session is closed');
+  };
+  const syncing = engine.syncAccount(acc.id);
+  await until(() => resume);
+  await engine.close();
+  resume();
+  await assert.rejects(syncing, /closed/);
+  assert.equal(engine.sessions.size, 0);
+});
+
 test('a send that outlives a change of account settings saves its Sent copy through the new session', async () => {
   const { engine, acc } = await freshEngine();
   const old = engine.session(acc);
