@@ -70,7 +70,7 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | Collection | Key | Value | Writes |
 |---|---|---|---|
 | `category` | the category's id | `{ name, description, color, order, kind, fallback }` | last write wins |
-| `classification` | account email + `"\n"` + the email's Message-ID, or `"h:"` + SHA-256 hex of sender, date and subject when it has none | `{ category, source, confidence, model, at }` | first write wins (`ifAbsent`) |
+| `classification` | account email + `"\n"` + the email's Message-ID; `"m:"` + its SHA-256 hex when it is longer than 256 characters; or `"h:"` + SHA-256 hex of sender, date and subject when it has none | `{ category, source, confidence, model, at }` | first write wins (`ifAbsent`) |
 | `override` | the same key as `classification` | `{ category, at }` | last write wins |
 | `sender` | a lowercased sender address | `{ category, at }` | last write wins |
 | `setting` | a setting's name, such as `categories` | that setting's value, such as `{ enabled, unsure, seeded }` | last write wins |
@@ -190,7 +190,7 @@ A device checks each page: every record's `seq` comes after `since`, in rising o
 { "records": [{ "id": "…", "data": "…", "ifAbsent": true }] }
 ```
 
-At most 500 records per request (`413 too_large` above that), each `data` at most 16 KiB once decoded. `data` null deletes the record. With `ifAbsent` the record is stored only when the server has no live record under that id. A push is stored whole or not at all.
+At most 500 records per request (`413 too_large` above that), each `data` at most 16 KiB once decoded. A device keeps a record that would be larger to itself rather than send it, since it would fail the whole push. `data` null deletes the record. With `ifAbsent` the record is stored only when the server has no live record under that id. A push is stored whole or not at all.
 
 Every stored write gets the next `seq`, also a delete. A tombstone stays so devices that pull later learn of the delete. Deleting what is already deleted, or was never stored, changes nothing: the result says `stored` true with the current `seq`, and no row is made. A push that would take the account past `limits.records` live records, `limits.bytes`, or `limits.records` tombstones gets `413 quota`, unless it makes an account that is already over a limit smaller.
 

@@ -488,6 +488,14 @@ test('a re-sort Jev was too busy for is finished after a restart', async (t) => 
   assert.equal(again.redo.size, 0);
 });
 
+test('a very long Message-ID is kept as its hash', (t) => {
+  const { cats, acc } = setup(t, inbox());
+  const long = `<${'x'.repeat(20000)}@evil.example>`;
+  const key = cats.key(acc, { messageId: long });
+  assert.match(key, /^me@work\.example\nm:[0-9a-f]{64}$/);
+  assert.equal(cats.key(acc, { messageId: '<short@x>' }), 'me@work.example\n<short@x>');
+});
+
 test('sorting again while a sort runs follows it instead of getting lost', async (t) => {
   let release;
   let first = true;

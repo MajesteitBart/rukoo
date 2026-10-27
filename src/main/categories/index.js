@@ -16,6 +16,7 @@ const { PRESETS, PRESET_COLORS, presetFor } = require('./rules');
 const jevApi = require('./jev');
 
 const SETTING = 'categories';
+const MESSAGE_ID_MAX = 256;
 const MAX_CATEGORIES = 12;
 const SORT_AFTER = 1500;
 const JEV_AT_ONCE = 3;
@@ -201,8 +202,15 @@ class Categories extends EventEmitter {
   // ---- which category an email is in ----
 
   // The key an email's records are stored under: the account's address and the email's Message-ID.
+  // A Message-ID is the sender's to choose, also its length: a very long one is kept as its hash, so no email can
+  // make a record too large to sync.
   key(acc, m) {
-    const id = m.messageId || `h:${crypto.createHash('sha256').update(`${lower(m.from && m.from.address)}\n${m.date}\n${m.subject || ''}`).digest('hex')}`;
+    const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
+    const id = !m.messageId
+      ? `h:${sha(`${lower(m.from && m.from.address)}\n${m.date}\n${m.subject || ''}`)}`
+      : m.messageId.length > MESSAGE_ID_MAX
+        ? `m:${sha(m.messageId)}`
+        : m.messageId;
     return `${lower(acc.email)}\n${id}`;
   }
 

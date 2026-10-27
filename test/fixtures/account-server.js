@@ -116,6 +116,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       return [200, { records: all.slice(0, max), seq: acc.seq, more: all.length > max }];
     },
     'POST /v1/records': ({ acc, body }) => {
+      // Like the real server: one record over 16 KiB fails the whole push.
+      if (body.records.some((r) => r.data && Buffer.from(r.data, 'base64url').length > 16384)) return [413, { error: 'too_large' }];
       const results = body.records.map((r) => {
         const had = acc.records.get(r.id);
         if (r.ifAbsent && had && had.data) return { id: r.id, seq: had.seq, stored: false };
