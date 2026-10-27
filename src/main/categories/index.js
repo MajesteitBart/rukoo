@@ -377,6 +377,13 @@ class Categories extends EventEmitter {
       } else if (key) forJev.push(item);
       else later(item.key);
     }
+    // A re-sort's emails are on file as still to do before Jev is asked, so one the app quits during goes on after a
+    // restart. Each leaves the list once its answer is stored.
+    const pending = forJev.filter((item) => replace(item.key));
+    if (pending.length) {
+      for (const item of pending) this.redo.add(item.key);
+      this.saveLocal();
+    }
     let stop = null;
     // Turning Jev or categories off, or a new key, stops what is still queued: nothing more goes to TypeSafe.
     let cancelled = false;

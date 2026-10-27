@@ -9,6 +9,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
@@ -518,6 +519,43 @@ class CategoriesTest {
         assertEquals("jev", s.stored(one)?.get("source")?.jsonPrimitive?.content)
         assertTrue(again.redoKeys().isEmpty())
         assertFalse("the finished re-sort is gone from the file too", java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
+    }
+
+    @Test
+    fun `a re-sort the app is stopped during goes on after a restart`() = runBlocking {
+        var category = "promotions"
+        var hold = false
+        val asked = CompletableDeferred<Unit>()
+        val fake = FakeJev { _, _, _ ->
+            if (hold) {
+                asked.complete(Unit)
+                CompletableDeferred<Unit>().await()
+            }
+            JevAnswer(category, 0.9, "jev-test")
+        }
+        val s = setup(inbox(), fake)
+        val one = s.mail.inbox[0]
+        s.cats.setEnabled(true)
+        s.cats.setJev(on = true, key = "KEY")
+        s.cats.sort()
+        assertEquals("promotions", s.stored(one)?.get("category")?.jsonPrimitive?.content)
+
+        // "Sort again", and Android stops the app while Jev is answering: only what is on file is left.
+        hold = true
+        val running = launch(Dispatchers.Default) { runCatching { s.cats.sortAgain() } }
+        withTimeout(10_000) { asked.await() }
+        assertTrue("the emails waiting for Jev are on file", java.io.File(s.dir, "categories.json").readText().contains("<1@x>"))
+        running.cancel()
+        s.cats.close()
+
+        hold = false
+        category = "money"
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val again = Categories(s.account, s.mail, PlainSecrets, s.dir, fake, EnglishPresets, scope, sortAfterMs = 60_000)
+        closers += { again.close() }
+        again.sort()
+        assertEquals("the re-sort replaced the old answer", "money", s.stored(one)?.get("category")?.jsonPrimitive?.content)
+        assertTrue(again.redoKeys().isEmpty())
     }
 
     @Test

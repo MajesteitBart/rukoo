@@ -507,6 +507,45 @@ test('a re-sort Jev was too busy for is finished after a restart', async (t) => 
   assert.equal(again.redo.size, 0);
 });
 
+test('a re-sort the app quits during goes on after a restart', async (t) => {
+  let category = 'promotions';
+  let hold = false;
+  let asked;
+  const waiting = new Promise((r) => (asked = r));
+  const fake = {
+    MODEL: 'jev-test',
+    classify: async () => {
+      if (hold) {
+        asked();
+        await new Promise(() => {});
+      }
+      return { category, confidence: 0.9, model: 'jev-test' };
+    }
+  };
+  const msgs = inbox();
+  const { cats, acc, account, engine } = setup(t, msgs, { jevImpl: fake });
+  const stored = (uid) => account.get('classification', cats.key(acc, msgs.find((m) => m.uid === uid)));
+  cats.setEnabled(true);
+  cats.setJev({ key: 'KEY', on: true });
+  await cats.sort();
+  assert.equal(stored(1).category, 'promotions');
+
+  // "Sort again", and the app quits while Jev is answering: only what is on file is left.
+  hold = true;
+  cats.sortAgain();
+  await waiting;
+  const onFile = JSON.parse(fs.readFileSync(cats.file(), 'utf8'));
+  assert.ok(onFile.redo.includes(cats.key(acc, msgs[0])), 'the emails waiting for Jev are on file');
+
+  hold = false;
+  category = 'money';
+  const again = new Categories({ engine, account, secrets, dataDir: cats.dataDir, jev: fake }).init();
+  t.after(() => again.close());
+  await again.sort();
+  assert.equal(stored(1).category, 'money', 'the re-sort replaced the old answer');
+  assert.equal(again.redo.size, 0);
+});
+
 test('a very long Message-ID is kept as its hash', (t) => {
   const { cats, acc } = setup(t, inbox());
   const long = `<${'x'.repeat(20000)}@evil.example>`;

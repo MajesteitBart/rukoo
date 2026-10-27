@@ -575,6 +575,15 @@ class Categories(
                 later(item.key)
             }
         }
+        // A re-sort's emails are on file as still to do before Jev is asked, so one Android stops the app for midway
+        // goes on after a restart. Each leaves the list once its answer is stored.
+        synchronized(lock) {
+            val pending = forJev.filter { replace(it.key) }
+            if (pending.isNotEmpty()) {
+                pending.forEach { redo += it.key }
+                saveLocal()
+            }
+        }
         var stop: Throwable? = null
         // Turning Jev or categories off, or a new key, stops what is still queued: nothing more goes to TypeSafe.
         var cancelled = false
