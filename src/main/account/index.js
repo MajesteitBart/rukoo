@@ -23,10 +23,13 @@ const SAVE_AFTER = 1000;
 const SAVE_RETRY = 30000;
 const PULL_LIMIT = 1000;
 const PUSH_BATCH = 500;
-// The most one pull takes: an account's records and tombstones a page of 1000 at a time, or 256 MiB of sealed records
-// (as base64url text), well over what an account may hold (server/PROTOCOL.md).
+// When one pull stops asking for more: after 500 pages of 1000 records and tombstones, or once 256 MiB of answers counted
+// whole, with the fields Rukoo ignores, have come in. The meter is checked between pages, so the page that crosses it is
+// the last. A full account is about 170 MiB of them (server/PROTOCOL.md).
 const PULL_PAGES = 500;
 const PULL_DATA = 256 * 1024 * 1024;
+// A record id is an HMAC-SHA256 in base64url (server/PROTOCOL.md, Records).
+const RECORD_ID = /^[A-Za-z0-9_-]{43}$/;
 // The most a record may take on the server, once sealed (server/PROTOCOL.md).
 const RECORD_BYTES = 16384;
 // Collections whose records are decided once, by the first device to write one (server/PROTOCOL.md, Collections).
@@ -149,11 +152,12 @@ class AccountService extends EventEmitter {
   // ---- talking to the server ----
 
   // session: the one a signed-in call is made for. Its answer may come after this device signed out or into
-  // another account; a 401 then says nothing about the session there is now.
-  async call(method, route, body, { auth = false, server = this.server, session = this.session } = {}) {
+  // another account; a 401 then says nothing about the session there is now. meter: { bytes } the answer's size is
+  // added to.
+  async call(method, route, body, { auth = false, server = this.server, session = this.session, meter } = {}) {
     if (!server) throw fail('no_server');
     try {
-      return await this.http(server, method, route, { body, token: auth ? session && session.token : undefined });
+      return await this.http(server, method, route, { body, token: auth ? session && session.token : undefined, meter });
     } catch (err) {
       // The session ended elsewhere: this device was removed or the password changed on another one.
       if (auth && err instanceof AccountError && err.status === 401) {
@@ -550,14 +554,15 @@ class AccountService extends EventEmitter {
   async pullPages(session, touched) {
     let restarted = false;
     let pages = 0;
-    let data = 0;
+    const meter = { bytes: 0 };
     for (;;) {
       if (!session || this.session !== session) return;
-      // A server that keeps answering more can't keep this device busy: what is left comes with the next sync.
-      if (pages >= PULL_PAGES || data >= PULL_DATA) return;
+      // A server that keeps answering more can't keep this device busy: what is left comes with the next sync. Every
+      // byte of an answer counts, so padding a page with fields Rukoo ignores doesn't get past the limit.
+      if (pages >= PULL_PAGES || meter.bytes >= PULL_DATA) return;
       pages += 1;
       const since = Number(this.state.cursor) || 0;
-      const res = await this.call('GET', `/v1/records?since=${since}&limit=${PULL_LIMIT}`, undefined, { auth: true, session });
+      const res = await this.call('GET', `/v1/records?since=${since}&limit=${PULL_LIMIT}`, undefined, { auth: true, session, meter });
       if (this.session !== session) return;
       const records = Array.isArray(res && res.records) ? res.records : [];
       const top = Number(res && res.seq);
@@ -570,16 +575,17 @@ class AccountService extends EventEmitter {
         continue;
       }
       // A page comes after since, in order, and not past the server's newest change; anything else is refused whole,
-      // so a false sequence number can't move the cursor past records this device hasn't seen.
+      // so a false sequence number can't move the cursor past records this device hasn't seen. So is a page with an id
+      // no device could have made, such as a long tombstone id padding the answer.
       if (records.length > PULL_LIMIT) throw fail('server');
       let last = since;
       for (const r of records) {
         const seq = Number(r && r.seq);
         if (!Number.isSafeInteger(seq) || seq <= last || (Number.isSafeInteger(top) && seq > top)) throw fail('server');
+        if (typeof r.id !== 'string' || !RECORD_ID.test(r.id)) throw fail('server');
         last = seq;
       }
       for (const r of records) {
-        if (typeof r.data === 'string') data += r.data.length;
         const c = this.applyRemote(r);
         if (c) touched.add(c);
         if (Number(r.seq) > this.state.cursor) this.state.cursor = Number(r.seq);
@@ -718,4 +724,4 @@ class AccountService extends EventEmitter {
   }
 }
 
-module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES };
+module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES, PULL_DATA };

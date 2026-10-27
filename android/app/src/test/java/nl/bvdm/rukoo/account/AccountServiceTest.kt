@@ -3,6 +3,8 @@ package nl.bvdm.rukoo.account
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,9 +14,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -22,6 +26,10 @@ import kotlinx.serialization.json.putJsonArray
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.SecretCipher
 import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -44,6 +52,10 @@ object PlainSecrets : SecretCipher {
 fun cat(name: String): JsonObject = buildJsonObject { put("name", name) }
 
 fun rule(category: String): JsonObject = buildJsonObject { put("category", category) }
+
+/** An id shaped like the ones devices make (43 characters of base64url), for records a test server makes up. */
+private fun recordId(text: String): String =
+    java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray()))
 
 /**
  * The account service against a server in memory: the cases of desktop's test/account.test.js, so both apps keep
@@ -330,12 +342,12 @@ class AccountServiceTest {
         val held = CompletableDeferred<Unit>()
         var holding = true
         val real = OkHttpAccountHttp(okhttp)
-        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token ->
+        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token, meter ->
             if (holding && path.startsWith("/v1/records?")) {
                 holding = false
                 held.await()
             }
-            real.request(server, method, path, body, token)
+            real.request(server, method, path, body, token, meter)
         })
         desk.signIn("first@example.com", PASSWORD)
         val old = desk.running()!!
@@ -363,12 +375,12 @@ class AccountServiceTest {
         val hold = java.util.concurrent.atomic.AtomicBoolean(false)
         val waiting = CompletableDeferred<Unit>()
         val real = OkHttpAccountHttp(okhttp)
-        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token ->
+        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token, meter ->
             if (path == "/v1/logout" && hold.getAndSet(false)) {
                 waiting.complete(Unit)
                 held.await()
             }
-            real.request(server, method, path, body, token)
+            real.request(server, method, path, body, token, meter)
         })
         desk.signIn("slow@example.com", PASSWORD)
         desk.sync()
@@ -457,8 +469,8 @@ class AccountServiceTest {
         // One answer claims a change far ahead of the server's.
         val lie = java.util.concurrent.atomic.AtomicBoolean(true)
         val real = OkHttpAccountHttp(okhttp)
-        val laptop = device(srv, "laptop", http = AccountHttp { server, method, path, body, token ->
-            val res = real.request(server, method, path, body, token)
+        val laptop = device(srv, "laptop", http = AccountHttp { server, method, path, body, token, meter ->
+            val res = real.request(server, method, path, body, token, meter)
             if (path.startsWith("/v1/records?") && lie.getAndSet(false)) {
                 val o = res as JsonObject
                 buildJsonObject {
@@ -487,8 +499,8 @@ class AccountServiceTest {
     fun `a page out of order is refused whole and moves nothing`() = runBlocking {
         val srv = server()
         val real = OkHttpAccountHttp(okhttp)
-        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token ->
-            val res = real.request(server, method, path, body, token)
+        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token, meter ->
+            val res = real.request(server, method, path, body, token, meter)
             val records = (res as? JsonObject)?.get("records") as? kotlinx.serialization.json.JsonArray
             if (path.startsWith("/v1/records?") && !records.isNullOrEmpty()) {
                 JsonObject(res + mapOf("records" to kotlinx.serialization.json.JsonArray(records.reversed()), "seq" to kotlinx.serialization.json.JsonPrimitive(1)))
@@ -724,9 +736,9 @@ class AccountServiceTest {
         val failPage = AtomicInteger()
         val pages = AtomicInteger()
         val base = OkHttpAccountHttp(okhttp)
-        val flaky = AccountHttp { server, method, path, body, token ->
+        val flaky = AccountHttp { server, method, path, body, token, meter ->
             if (method == "GET" && path.startsWith("/v1/records") && pages.incrementAndGet() == failPage.get()) throw AccountError("network")
-            base.request(server, method, path, body, token)
+            base.request(server, method, path, body, token, meter)
         }
         val laptop = device(srv, "laptop", http = flaky)
         laptop.signIn("pages@example.com", PASSWORD)
@@ -753,15 +765,15 @@ class AccountServiceTest {
         // 0: the real server; 1: a page of one more tombstone each time, forever; 2: more records than asked for.
         val mode = AtomicInteger()
         val base = OkHttpAccountHttp(okhttp)
-        val http = AccountHttp { server, method, path, body, token ->
-            if (mode.get() == 0 || method != "GET" || !path.startsWith("/v1/records")) return@AccountHttp base.request(server, method, path, body, token)
+        val http = AccountHttp { server, method, path, body, token, meter ->
+            if (mode.get() == 0 || method != "GET" || !path.startsWith("/v1/records")) return@AccountHttp base.request(server, method, path, body, token, meter)
             val since = path.substringAfter("since=").substringBefore('&').toLong()
             val n = pages.incrementAndGet()
             buildJsonObject {
                 putJsonArray("records") {
                     repeat(if (mode.get() == 1) 1 else 1001) { i ->
                         addJsonObject {
-                            put("id", "x$n-$i")
+                            put("id", recordId("$n-$i"))
                             put("seq", since + 1 + i)
                             put("data", JsonNull)
                         }
@@ -783,6 +795,155 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a server that pads its answers can't get past the bytes one pull may take`() = runBlocking {
+        val srv = server()
+        // Each page is one tombstone and 4 MiB of a field Rukoo ignores, from a server of its own, so every byte goes
+        // through the real client. The data the old limit counted stays empty.
+        val pad = "x".repeat(4 * 1024 * 1024)
+        val pages = AtomicInteger()
+        val sent = AtomicLong()
+        val last = AtomicLong()
+        val padded = MockWebServer()
+        padded.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val since = request.requestUrl!!.queryParameter("since")!!.toLong()
+                val n = pages.incrementAndGet()
+                val body = buildJsonObject {
+                    putJsonArray("records") {
+                        addJsonObject {
+                            put("id", recordId("$n"))
+                            put("seq", since + 1)
+                            put("data", JsonNull)
+                        }
+                    }
+                    put("seq", 1_000_000_000L)
+                    put("more", n < 2 * AccountService.PULL_PAGES)
+                    put("pad", pad)
+                }.toString()
+                last.set(body.toByteArray().size.toLong())
+                sent.addAndGet(last.get())
+                return MockResponse().setHeader("Content-Type", "application/json").setBody(body)
+            }
+        }
+        padded.start()
+        try {
+            val paddedUrl = "http://127.0.0.1:${padded.port}"
+            val on = AtomicBoolean(false)
+            val base = OkHttpAccountHttp(okhttp)
+            val http = AccountHttp { server, method, path, body, token, meter ->
+                val records = on.get() && method == "GET" && path.startsWith("/v1/records")
+                base.request(if (records) paddedUrl else server, method, path, body, token, meter)
+            }
+            val desk = device(srv, http = http)
+            desk.signUp("padded@example.com", PASSWORD)
+            desk.sync()
+            on.set(true)
+            desk.pull()
+            assertTrue("stopped by bytes, not pages (${pages.get()} pages)", pages.get() < AccountService.PULL_PAGES)
+            assertTrue("the pull ends with the first page past the limit", sent.get() >= AccountService.PULL_DATA && sent.get() - last.get() < AccountService.PULL_DATA)
+            assertEquals("the pages taken still count; the rest waits for the next sync", pages.get().toLong(), desk.cursor())
+        } finally {
+            padded.shutdown()
+        }
+    }
+
+    @Test
+    fun `a server that hides padding in compressed answers can't get past the bytes one pull may take`() = runBlocking {
+        val srv = server()
+        // Each page is a few bytes of JSON in gzip, behind 4 MiB of padding in the gzip header's file name: tiny once
+        // unpacked, 4 MiB to download. The server sends it compressed whatever the phone asks for.
+        val pages = AtomicInteger()
+        val asked = java.util.concurrent.CopyOnWriteArrayList<String?>()
+        val padded = MockWebServer()
+        padded.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                asked += request.getHeader("Accept-Encoding")
+                val since = request.requestUrl!!.queryParameter("since")!!.toLong()
+                val n = pages.incrementAndGet()
+                val json = buildJsonObject {
+                    putJsonArray("records") {
+                        addJsonObject {
+                            put("id", recordId("$n"))
+                            put("seq", since + 1)
+                            put("data", JsonNull)
+                        }
+                    }
+                    put("seq", 1_000_000_000L)
+                    put("more", n < 2 * AccountService.PULL_PAGES)
+                }.toString()
+                val gzip = java.io.ByteArrayOutputStream().also { out -> java.util.zip.GZIPOutputStream(out).use { it.write(json.toByteArray()) } }.toByteArray()
+                // FNAME: a file name follows the 10-byte header, up to a zero byte.
+                val head = gzip.copyOfRange(0, 10).also { it[3] = (it[3].toInt() or 0x08).toByte() }
+                val body = head + ByteArray(4 * 1024 * 1024) { 'x'.code.toByte() } + byteArrayOf(0) + gzip.copyOfRange(10, gzip.size)
+                return MockResponse().setHeader("Content-Type", "application/json").setHeader("Content-Encoding", "gzip").setBody(okio.Buffer().write(body))
+            }
+        }
+        padded.start()
+        try {
+            val paddedUrl = "http://127.0.0.1:${padded.port}"
+            val on = AtomicBoolean(false)
+            val base = OkHttpAccountHttp(okhttp)
+            val http = AccountHttp { server, method, path, body, token, meter ->
+                val records = on.get() && method == "GET" && path.startsWith("/v1/records")
+                base.request(if (records) paddedUrl else server, method, path, body, token, meter)
+            }
+            val desk = device(srv, http = http)
+            desk.signUp("gzip@example.com", PASSWORD)
+            desk.sync()
+            val before = desk.cursor()
+            on.set(true)
+            val error = runCatching { desk.pull() }.exceptionOrNull()
+            assertEquals("the first compressed answer ends the pull", 1, pages.get())
+            assertEquals("server", (error as? AccountError)?.code)
+            assertEquals("the phone asks for answers as they are", listOf<String?>("identity"), asked.toList())
+            assertEquals("and moves nothing", before, desk.cursor())
+        } finally {
+            padded.shutdown()
+        }
+    }
+
+    @Test
+    fun `a page with a record id no device could have made is refused whole and moves nothing`() = runBlocking {
+        val srv = server()
+        val helper = device(srv, "helper")
+        helper.signUp("ids@example.com", PASSWORD)
+        helper.put("sender", "a@example.com", rule("money"))
+        helper.sync()
+        // After the real record, a tombstone with an odd id, while the server lies.
+        val lying = AtomicBoolean(true)
+        val bad = AtomicReference<JsonElement>()
+        val real = OkHttpAccountHttp(okhttp)
+        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token, meter ->
+            val res = real.request(server, method, path, body, token, meter)
+            if (!lying.get() || !path.startsWith("/v1/records?")) return@AccountHttp res
+            val o = res as JsonObject
+            val top = (o["seq"] as JsonPrimitive).content.toLong() + 1
+            val odd = buildJsonObject {
+                put("id", bad.get())
+                put("seq", top)
+                put("data", JsonNull)
+            }
+            JsonObject(o + mapOf("records" to JsonArray((o["records"] as JsonArray) + odd), "seq" to JsonPrimitive(top)))
+        })
+        // Too long (as padding would be), too short, a character outside base64url, padded base64, and not a string.
+        val odd = listOf(
+            JsonPrimitive("A".repeat(44)), JsonPrimitive("A".repeat(1_000_000)), JsonPrimitive("A".repeat(42)), JsonPrimitive("A".repeat(42) + "+"),
+            JsonPrimitive("A".repeat(41) + "=="), JsonPrimitive(42), JsonNull, JsonArray(listOf(JsonPrimitive("A".repeat(43)))),
+        )
+        bad.set(odd.first())
+        desk.signIn("ids@example.com", PASSWORD)
+        for (id in odd) {
+            bad.set(id)
+            rejects("server") { desk.sync() }
+            assertEquals(0L, desk.cursor())
+            assertNull(desk.value("sender", "a@example.com"))
+        }
+        lying.set(false)
+        desk.sync()
+        assertEquals(rule("money"), desk.value("sender", "a@example.com"))
+    }
+
+    @Test
     fun `the cursor on disk never runs ahead of the records on disk`() = runBlocking {
         val srv = server(limit = 2)
         val desk = device(srv, "desk")
@@ -791,13 +952,13 @@ class AccountServiceTest {
         val trap = AtomicBoolean(false)
         val second = CompletableDeferred<Unit>()
         val base = OkHttpAccountHttp(okhttp)
-        val http = AccountHttp { server, method, path, body, token ->
+        val http = AccountHttp { server, method, path, body, token, meter ->
             if (trap.get() && method == "GET" && path.startsWith("/v1/records") && pages.incrementAndGet() == 2) {
                 // The second page never comes: Android stops the app while it waits.
                 second.complete(Unit)
                 CompletableDeferred<Unit>().await()
             }
-            base.request(server, method, path, body, token)
+            base.request(server, method, path, body, token, meter)
         }
         val dir = tmp.newFolder()
         val laptop = device(srv, "laptop", dir = dir, http = http)
@@ -813,7 +974,7 @@ class AccountServiceTest {
         laptop.serverInfo()
         stuck.cancel()
         // The app starts again, offline, so what it shows is what was on disk.
-        val fresh = device(srv, "fresh", dir = dir, http = AccountHttp { _, _, _, _, _ -> throw AccountError("network") })
+        val fresh = device(srv, "fresh", dir = dir, http = AccountHttp { _, _, _, _, _, _ -> throw AccountError("network") })
         assertTrue("the cursor moved", fresh.cursor() > 0)
         assertEquals("the records it moved past are on disk too", 2, fresh.list("category").size)
     }
@@ -824,7 +985,7 @@ class AccountServiceTest {
         val posts = AtomicInteger()
         val empty = AtomicBoolean(false)
         val base = OkHttpAccountHttp(okhttp)
-        val http = AccountHttp { server, method, path, body, token ->
+        val http = AccountHttp { server, method, path, body, token, meter ->
             // Not quite forever, so that a phone without the check fails the test rather than hang it.
             if (empty.get() && method == "POST" && path == "/v1/records" && posts.incrementAndGet() <= 20) {
                 return@AccountHttp buildJsonObject {
@@ -832,7 +993,7 @@ class AccountServiceTest {
                     put("seq", 0)
                 }
             }
-            base.request(server, method, path, body, token)
+            base.request(server, method, path, body, token, meter)
         }
         val desk = device(srv, http = http)
         desk.signUp("acks@example.com", PASSWORD)
@@ -862,7 +1023,7 @@ class AccountServiceTest {
         File(records, "x").mkdirs()
         laptop.sync()
         assertTrue("the pull moved the cursor in memory", laptop.cursor() > before)
-        val offline = AccountHttp { _, _, _, _, _ -> throw AccountError("network") }
+        val offline = AccountHttp { _, _, _, _, _, _ -> throw AccountError("network") }
         assertEquals("but not on disk", before, device(srv, "fresh", dir = dir, http = offline).cursor())
 
         // Once the disk takes them again, the next save catches up.

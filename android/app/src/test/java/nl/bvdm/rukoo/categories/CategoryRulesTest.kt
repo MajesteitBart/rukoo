@@ -1,9 +1,16 @@
 package nl.bvdm.rukoo.categories
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import nl.bvdm.rukoo.core.RukooJson
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.MessageSummary
@@ -143,6 +150,32 @@ class CategoryRulesTest {
             assertEquals("updates", state["gmail_tab"]?.jsonPrimitive?.content)
         }
         assertEquals("https://api.typesafe.ai/v1/systemone", Jev.ENDPOINT)
+    }
+
+    @Test
+    fun `Jev's model name is kept only when it looks like one, since every classification stores it`() {
+        fun model(m: JsonElement?): String = Jev.answer(
+            buildJsonObject {
+                if (m != null) put("model", m)
+                putJsonObject("answers") {
+                    putJsonObject("category") {
+                        put("choice", "a")
+                        put("confidence", 0.9)
+                    }
+                }
+            },
+            mapOf("a" to "a"),
+        ).model
+        assertEquals("jev-1.14.0", model(JsonPrimitive("jev-1.14.0")))
+        assertEquals("jev-latest", model(JsonPrimitive("jev-latest")))
+        assertEquals("j".repeat(40), model(JsonPrimitive("j".repeat(40))))
+        // Most of a megabyte, one character too long, other characters, empty, not a string, missing.
+        val odd = listOf(
+            JsonPrimitive("j".repeat(900_000)), JsonPrimitive("j".repeat(41)), JsonPrimitive("Jev-1.13.0"), JsonPrimitive("jev 1.13"),
+            JsonPrimitive("jev_1.13"), JsonPrimitive("jev/1.13"), JsonPrimitive("jev-1.13\n"), JsonPrimitive(""), JsonPrimitive(42),
+            JsonArray(listOf(JsonPrimitive("jev"))), JsonNull, null,
+        )
+        for (m in odd) assertEquals("model ${m.toString().take(40)}", Jev.MODEL, model(m))
     }
 
     @Test
