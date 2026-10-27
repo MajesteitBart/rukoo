@@ -63,7 +63,18 @@ const RAIL_W = 60;
 // The chat panel docks beside the reader in wide windows and slides over it in narrower ones.
 const AGENT_MIN = 320;
 const AGENT_MAX = 560;
-const AGENT_DOCK = 1240;
+// The breakpoints in styles.css, asked the way the CSS asks them. At a fractional zoom the window can be 1239.4 CSS px
+// wide: the CSS docks the panel there, while window.innerWidth, a whole number, says 1239 (#47).
+const OVERLAY_QUERY = matchMedia('(max-width: 1239px)');
+const NARROW_QUERY = matchMedia('(max-width: 860px)');
+
+// The window's width in whole CSS px, rounded down, for the sums that leave the reader its 420 px. window.innerWidth
+// can round up (1252.8 px gives 1253), which would take a fraction of a pixel from the reader. A media query sees the
+// exact width and, unlike measuring an element, costs no layout while the window is being resized.
+function viewWidth() {
+  const w = window.innerWidth;
+  return matchMedia(`(min-width: ${w}px)`).matches ? w : w - 1;
+}
 
 export const S = {
   data: null,
@@ -204,7 +215,7 @@ async function refreshOnce() {
 function autoOpen() {
   if (!S.autoOpen) return;
   S.autoOpen = false;
-  if (S.composer || S.selectedId || S.checked.size || S.query.trim() || window.innerWidth <= 860) return;
+  if (S.composer || S.selectedId || S.checked.size || S.query.trim() || NARROW_QUERY.matches) return;
   // The newest message, whatever order the list is sorted in; a stack it is folded into opens with it.
   const newest = rows().reduce((a, b) => (!a || b.date > a.date ? b : a), null);
   if (newest) openMessage(newest.id, { auto: true });
@@ -301,14 +312,14 @@ function cursor() {
 // ---------- shell ----------
 
 function agentDocked() {
-  return Boolean(prefs.agentOpen) && window.innerWidth >= AGENT_DOCK;
+  return Boolean(prefs.agentOpen) && !OVERLAY_QUERY.matches;
 }
 
 // Docked, the panel gives way so the list keeps its minimum and the reader its 420 px (4 px: the workspace's
 // two borders and the two dividers). The chosen width comes back when the window is wider again.
 function agentWidth() {
   let max = AGENT_MAX;
-  if (agentDocked()) max = Math.min(max, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - LIST_MIN - 420 - 4);
+  if (agentDocked()) max = Math.min(max, viewWidth() - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - LIST_MIN - 420 - 4);
   return Math.round(Math.max(AGENT_MIN, Math.min(max, Number(prefs.agentWidth) || 380)));
 }
 
@@ -316,8 +327,9 @@ function agentWidth() {
 // The rail button can bring them back for as long as the chat is open; below 1440 px a docked chat
 // needs the room, so the rail stays.
 function sidebarCollapsed() {
-  if (window.innerWidth < 1100) return true;
-  if (prefs.agentOpen) return !prefs.sidebarWithAgent || (agentDocked() && window.innerWidth < 1440);
+  const width = viewWidth();
+  if (width < 1100) return true;
+  if (prefs.agentOpen) return !prefs.sidebarWithAgent || (agentDocked() && width < 1440);
   return prefs.sidebarCollapsed;
 }
 
@@ -325,7 +337,7 @@ function listWidth() {
   // The docked chat plus its handle and the workspace's right edge. The 2 px after it: the workspace's left
   // edge and the divider between the list and the reader.
   const agent = agentDocked() ? agentWidth() + 2 : 0;
-  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, window.innerWidth - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - agent - 2 - 420));
+  const max = Math.max(LIST_MIN, Math.min(LIST_MAX, viewWidth() - (sidebarCollapsed() ? RAIL_W : SIDEBAR_W) - agent - 2 - 420));
   return Math.round(Math.max(LIST_MIN, Math.min(max, prefs.listWidth)));
 }
 
@@ -2508,7 +2520,7 @@ export const ctx = {
   revealAgent: () => setAgentOpen(true),
   closeAgent: () => setAgentOpen(false),
   agentOpen: () => Boolean(prefs.agentOpen),
-  agentOverlay: () => Boolean(prefs.agentOpen) && window.innerWidth < AGENT_DOCK,
+  agentOverlay: () => Boolean(prefs.agentOpen) && OVERLAY_QUERY.matches,
   agentNews: (tone) => setAgentNews(tone),
   // For settings that change how mail is drawn: the open mail and the editor's quote.
   redrawMail: () => {

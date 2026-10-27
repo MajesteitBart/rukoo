@@ -786,6 +786,81 @@ test('a wide chat panel gives way, so the reader keeps its 420 px', async () => 
   await expect.poll(async () => (await size()).reader).toBeGreaterThanOrEqual(419);
 });
 
+// #47: at 125% and 175% the window can be a fraction of a pixel over 1239 CSS px, while window.innerWidth says 1239. The
+// CSS docks the panel there (it slides over the reader up to max-width: 1239px), so the layout code has to count it as
+// docked too: the reader keeps its 420 px and Escape leaves the panel open. The 860 px breakpoint agrees as well.
+test('at 125% and 175% zoom the layout code docks the chat panel where the CSS does, so the reader keeps its 420 px', async () => {
+  await openChat('Call on Thursday');
+  const toggle = win.locator('.titlebar [data-agent-toggle]');
+  // The display's own scale, at 100%.
+  const scale = await win.evaluate(() => devicePixelRatio);
+  const layout = () =>
+    win.evaluate(() => {
+      const width = (s) => document.querySelector(s).getBoundingClientRect().width;
+      return { css: width('html'), position: getComputedStyle(document.querySelector('.agentpane')).position, reader: width('.reader') };
+    });
+  const zoomTo = async (zoom) => {
+    await win.evaluate((z) => window.mail.call('setZoom', z), zoom);
+    await expect.poll(() => win.evaluate(() => devicePixelRatio)).toBeCloseTo((scale * zoom) / 100);
+  };
+  // Makes the page `dips` wide. Window frames differ per platform (on Windows a frameless window's content size
+  // includes its borders), so this measures the page and moves the window's edge by what is missing.
+  const fit = (zoom, dips) =>
+    expect
+      .poll(
+        async () => {
+          const now = Math.round(((await layout()).css * zoom) / 100);
+          if (now !== dips) {
+            await app.evaluate(({ BrowserWindow }, off) => {
+              const w = BrowserWindow.getAllWindows()[0];
+              const [width, height] = w.getSize();
+              w.setSize(width + off, height);
+            }, dips - now);
+          }
+          return now;
+        },
+        { intervals: [250] }
+      )
+      .toBe(dips);
+
+  for (const [zoom, dips] of [
+    [125, 1549],
+    [175, 2169]
+  ]) {
+    await zoomTo(zoom);
+    // 1239.2 and 1239.43 CSS px: docked, beside a reader of at least 420 px.
+    await fit(zoom, dips);
+    const docked = await layout();
+    expect(docked.css).toBeGreaterThan(1239);
+    expect(docked.css).toBeLessThan(1240);
+    expect(docked.position).toBe('static');
+    expect(docked.reader).toBeGreaterThanOrEqual(420);
+    await input().focus();
+    await win.keyboard.press('Escape');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(pane()).toBeVisible();
+    // 1238.4 and 1238.86 CSS px: it slides over the reader, and Escape closes it there.
+    await fit(zoom, dips - 1);
+    const overlay = await layout();
+    expect(overlay.css).toBeLessThan(1239);
+    expect(overlay.position).toBe('absolute');
+    await input().focus();
+    await win.keyboard.press('Escape');
+    await expect(pane()).toBeHidden();
+    await win.keyboard.press('Control+j');
+    await expect(pane()).toBeVisible();
+  }
+
+  // 860.57 CSS px, where window.innerWidth says 860: the CSS shows the list and the reader side by side, so another
+  // folder opens its newest email as in any wide window.
+  await fit(175, 1506);
+  const twoPanes = await layout();
+  expect(twoPanes.css).toBeGreaterThan(860);
+  expect(twoPanes.css).toBeLessThan(861);
+  await win.click('[data-view="sent"]');
+  await expect(win.locator('.reader-subject')).toBeVisible();
+});
+
 test('a PDF is read in a utility process: one that never finishes or takes ever more memory is ended there, the app keeps working, and quitting leaves no reader behind', async () => {
   const reader = path.join(__dirname, '..', 'fixtures', 'hostile-reader.js');
   const readers = () => app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().filter((m) => m.name === 'Rukoo PDF reader').map((m) => m.pid));
@@ -944,6 +1019,63 @@ test('the bell counts chats with news from off screen; its list follows them liv
   await expect(win.locator('.agentpane .ap-empty')).toBeVisible();
   await expect(bell()).toHaveAttribute('aria-label', 'Recent chats, 1 new');
   expect(await app.evaluate((_e, cid) => global.__semAgents.get(cid).unread, cid)).toBe('reply');
+});
+
+// #79: the closed panel still holds chat A, whose answer is unread. "Show" on another chat's approval toast must open that
+// chat without telling main that A was on screen for a moment, which would mark A's answer read.
+test('Show on an approval toast opens that chat and leaves the unread answer in the chat the closed panel held unread', async () => {
+  const bell = () => win.locator('.agentpane [data-ap="history"]');
+  const toggle = () => win.locator('.titlebar [data-agent-toggle]');
+  const unread = (cid) => app.evaluate((_e, cid) => global.__semAgents.get(cid).unread, cid);
+  const done = (cid) => expect.poll(() => app.evaluate((_e, cid) => global.__semAgents.turns.has(cid), cid)).toBe(false);
+  // C: a chat about the parcel email, done for now.
+  await openChat('Your parcel is on its way');
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked: "Hello there"', { timeout: 10000 });
+  const c = await conversationId();
+  await done(c);
+  // A: the chat about the email on screen when the panel closes.
+  await item('Call on Thursday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-empty')).toBeVisible();
+  await say('Summarize this');
+  await expect(transcript()).toContainText('You asked: "Summarize this"', { timeout: 10000 });
+  const a = await conversationId();
+  expect(a).not.toBe(c);
+  await done(a);
+  await win.click('.agentpane [data-ap="close"]');
+  await expect(pane()).toBeHidden();
+
+  // A answers while the panel is closed: news on the title bar button.
+  await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'And now?' }), a);
+  await expect.poll(() => unread(a), { timeout: 10000 }).toBe('reply');
+  await expect(toggle()).toHaveAttribute('data-news', 'unread');
+  // C's agent asks for approval; a toast says so.
+  await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'Add the proposal task; ask for approval first' }), c);
+  const toast = win.locator('#toast');
+  await expect(toast).toContainText('An agent is waiting for your approval', { timeout: 10000 });
+  await toast.locator('button', { hasText: 'Show' }).click();
+
+  // The panel opens on C, its approval card included; the email on screen stays.
+  await expect(pane()).toBeVisible();
+  await expect(transcript()).toContainText('You asked: "Hello there"');
+  await expect(transcript().locator('.bui-approval')).toContainText('Waiting for you');
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  expect(await app.evaluate(() => global.__semAgents.watching)).toBe(c);
+  // A's answer is still news: in main, on the bell and, with the panel closed again, on the title bar button.
+  expect(await unread(a)).toBe('reply');
+  await expect(bell()).toHaveAttribute('aria-label', 'Recent chats, 1 new');
+  await expect(bell()).toHaveAttribute('data-tone', 'unread');
+  await win.click('.agentpane [data-ap="close"]');
+  await expect(pane()).toBeHidden();
+  await expect(toggle()).toHaveClass(/has-news/);
+  expect(await unread(a)).toBe('reply');
+
+  // A chat that cannot be loaded still opens the panel, and the toast says why: here main refuses the id.
+  await app.evaluate(() => global.__semAgents.emitEvent({ kind: 'reveal', conversationId: 'x'.repeat(201) }));
+  await expect(pane()).toBeVisible();
+  await expect(toast).toHaveText('invalid');
+  await expect(transcript()).toContainText('You asked: "Hello there"');
 });
 
 test('the open chat list goes by the last message: a chat moves up as soon as its agent writes, before its turn ends', async () => {
