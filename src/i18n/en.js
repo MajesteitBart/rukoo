@@ -4621,6 +4621,282 @@
   "settings.rukoo.selfHostHelp": {
     "message": "Rukoo is open source. The guide shows how to host your own account server.",
     "description": "Settings > Rukoo account: privacy page: description of the self-hosting row. src/renderer/settings.js."
+  },
+  "categories.presets.needs-you.name": {
+    "message": "Needs you",
+    "description": "Inbox categories: the name of Rukoo's own \"Needs you\" category until the person renames it. A tab above the inbox and a row in Settings. src/main/categories/index.js (list)."
+  },
+  "categories.presets.needs-you.description": {
+    "message": "Mail from people that asks you to do something: reply, decide, approve, sign, pay or show up.",
+    "description": "Inbox categories: what belongs in the \"Needs you\" category. Shown in Settings and read by Jev, the model that sorts mail, so it must describe the mail clearly. src/main/categories/index.js (list)."
+  },
+  "categories.presets.to-read.name": {
+    "message": "To read",
+    "description": "Inbox categories: the name of Rukoo's own \"To read\" category until the person renames it. A tab above the inbox and a row in Settings. src/main/categories/index.js (list)."
+  },
+  "categories.presets.to-read.description": {
+    "message": "Mail from people or organisations worth reading that needs nothing from you: news from colleagues, threads you are copied on, personal updates.",
+    "description": "Inbox categories: what belongs in the \"To read\" category. Shown in Settings and read by Jev, the model that sorts mail, so it must describe the mail clearly. src/main/categories/index.js (list)."
+  },
+  "categories.presets.money.name": {
+    "message": "Money",
+    "description": "Inbox categories: the name of Rukoo's own \"Money\" category until the person renames it. A tab above the inbox and a row in Settings. src/main/categories/index.js (list)."
+  },
+  "categories.presets.money.description": {
+    "message": "Invoices, payment requests, receipts, order confirmations, bank and tax mail, subscriptions and refunds.",
+    "description": "Inbox categories: what belongs in the \"Money\" category. Shown in Settings and read by Jev, the model that sorts mail, so it must describe the mail clearly. src/main/categories/index.js (list)."
+  },
+  "categories.presets.updates.name": {
+    "message": "Updates",
+    "description": "Inbox categories: the name of Rukoo's own \"Updates\" category until the person renames it. A tab above the inbox and a row in Settings. src/main/categories/index.js (list)."
+  },
+  "categories.presets.updates.description": {
+    "message": "Automatic notifications: deliveries, account and security alerts, comments and mentions in apps, social networks and forums.",
+    "description": "Inbox categories: what belongs in the \"Updates\" category. Shown in Settings and read by Jev, the model that sorts mail, so it must describe the mail clearly. src/main/categories/index.js (list)."
+  },
+  "categories.presets.promotions.name": {
+    "message": "Promotions",
+    "description": "Inbox categories: the name of Rukoo's own \"Promotions\" category until the person renames it. A tab above the inbox and a row in Settings. src/main/categories/index.js (list)."
+  },
+  "categories.presets.promotions.description": {
+    "message": "Newsletters, marketing, offers and discounts, and events or webinars someone is selling.",
+    "description": "Inbox categories: what belongs in the \"Promotions\" category. Shown in Settings and read by Jev, the model that sorts mail, so it must describe the mail clearly. src/main/categories/index.js (list)."
+  },
+  "categories.errors.tooMany": {
+    "message": "You can have up to {count} categories.",
+    "description": "Inbox categories: error when adding a category past the limit. {count}: the limit. src/main/categories/index.js (saveCategory)."
+  },
+  "categories.errors.needName": {
+    "message": "Give the category a name.",
+    "description": "Inbox categories: error when saving a new category without a name. src/main/categories/index.js (saveCategory)."
+  },
+  "categories.errors.last": {
+    "message": "Keep at least one category. To stop sorting, turn categories off.",
+    "description": "Inbox categories: error when deleting the last category. src/main/categories/index.js (removeCategory)."
+  },
+  "mailbox.categories.label": {
+    "message": "Inbox categories",
+    "description": "Inbox categories in the main window: accessible name of the row of category tabs above the inbox. src/renderer/app.js."
+  },
+  "mailbox.categories.all": {
+    "message": "All",
+    "description": "Inbox categories in the main window: first category tab: the whole inbox. src/renderer/app.js."
+  },
+  "mailbox.categories.move": {
+    "message": "Move to category",
+    "description": "Inbox categories in the main window: message menu item that moves the email to another inbox category. src/renderer/app.js."
+  },
+  "mailbox.categories.pick": {
+    "message": "Move to category",
+    "description": "Inbox categories in the main window: title of the dialog that lists the categories to move emails to. src/renderer/app.js."
+  },
+  "mailbox.categories.moved": {
+    "message": "Moved to {name}",
+    "description": "Inbox categories in the main window: toast after moving emails to a category. {name}: the category. src/renderer/app.js."
+  },
+  "mailbox.categories.always": {
+    "message": "Also future mail",
+    "description": "Inbox categories in the main window: button in the toast after a move that also moves every later email from the same sender. src/renderer/app.js."
+  },
+  "mailbox.categories.alwaysDone": {
+    "message": "Mail from {sender} goes to {name} from now on",
+    "description": "Inbox categories in the main window: toast after choosing Also future mail for one sender. {sender}: the sender; {name}: the category. src/renderer/app.js."
+  },
+  "mailbox.categories.alwaysDoneMany": {
+    "message": "Mail from these {count} senders goes to {name} from now on",
+    "description": "Inbox categories in the main window: toast after choosing Also future mail for emails from several senders. {count}: number of senders; {name}: the category. src/renderer/app.js."
+  },
+  "mailbox.categories.empty": {
+    "message": "Nothing in {name}",
+    "description": "Inbox categories in the main window: empty inbox list when a category tab has no mail. {name}: the category. src/renderer/app.js."
+  },
+  "mailbox.categories.unreadCount": {
+    "message": {"one": "{count} unread", "other": "{count} unread"},
+    "description": "Inbox categories in the main window: accessible name of the unread count on a category tab. src/renderer/app.js."
+  },
+  "settings.general.categories": {
+    "message": "Inbox categories",
+    "description": "Settings > General: row that opens the inbox categories page. src/renderer/settings.js (render)."
+  },
+  "settings.general.categoriesOn": {
+    "message": "On",
+    "description": "Settings > General: value of the Inbox categories row when categories are on. src/renderer/settings.js (render)."
+  },
+  "settings.general.categoriesOff": {
+    "message": "Off",
+    "description": "Settings > General: value of the Inbox categories row when categories are off. src/renderer/settings.js (render)."
+  },
+  "settings.categories.title": {
+    "message": "Inbox categories",
+    "description": "Settings > Inbox categories: page title. src/renderer/categories-settings.js."
+  },
+  "settings.categories.on": {
+    "message": "Sort the inbox into categories",
+    "description": "Settings > Inbox categories: switch that turns categories on. src/renderer/categories-settings.js."
+  },
+  "settings.categories.onHelp": {
+    "message": "The inbox gets tabs, like Needs you and Promotions. Nothing moves or changes on your mail server, and other mail apps see your inbox as before.",
+    "description": "Settings > Inbox categories: help under the switch. src/renderer/categories-settings.js."
+  },
+  "settings.categories.list": {
+    "message": "Categories",
+    "description": "Settings > Inbox categories: group title above the list of categories. src/renderer/categories-settings.js."
+  },
+  "settings.categories.listHelp": {
+    "message": "Each email goes to one category. When several fit, the one higher in the list wins.",
+    "description": "Settings > Inbox categories: note under the list of categories. src/renderer/categories-settings.js."
+  },
+  "settings.categories.add": {
+    "message": "Add a category",
+    "description": "Settings > Inbox categories: row that adds a category. src/renderer/categories-settings.js."
+  },
+  "settings.categories.up": {
+    "message": "Move up",
+    "description": "Settings > Inbox categories: button that moves a category up the list. src/renderer/categories-settings.js."
+  },
+  "settings.categories.down": {
+    "message": "Move down",
+    "description": "Settings > Inbox categories: button that moves a category down the list. src/renderer/categories-settings.js."
+  },
+  "settings.categories.unsure": {
+    "message": "When Rukoo isn't sure",
+    "description": "Settings > Inbox categories: row: the category that gets mail Rukoo can't place. src/renderer/categories-settings.js."
+  },
+  "settings.categories.editTitle": {
+    "message": "Edit category",
+    "description": "Settings > Inbox categories: title of the dialog that edits a category. src/renderer/categories-settings.js."
+  },
+  "settings.categories.newTitle": {
+    "message": "New category",
+    "description": "Settings > Inbox categories: title of the dialog that adds a category. src/renderer/categories-settings.js."
+  },
+  "settings.categories.name": {
+    "message": "Name",
+    "description": "Settings > Inbox categories: label of the name field in the category dialog. src/renderer/categories-settings.js."
+  },
+  "settings.categories.description": {
+    "message": "What belongs here",
+    "description": "Settings > Inbox categories: label of the description field in the category dialog. src/renderer/categories-settings.js."
+  },
+  "settings.categories.descriptionHelp": {
+    "message": "Rukoo, and Jev when it is on, read this to decide which mail goes here. Name the kinds of mail and senders.",
+    "description": "Settings > Inbox categories: help under the description field. src/renderer/categories-settings.js."
+  },
+  "settings.categories.color": {
+    "message": "Color",
+    "description": "Settings > Inbox categories: label of the color choice in the category dialog. src/renderer/categories-settings.js."
+  },
+  "settings.categories.restore": {
+    "message": "Use Rukoo's text",
+    "description": "Settings > Inbox categories: button in the dialog that puts back the original name and description of one of Rukoo's own categories. src/renderer/categories-settings.js."
+  },
+  "settings.categories.deleteTitle": {
+    "message": "Delete {name}?",
+    "description": "Settings > Inbox categories: title of the confirmation before deleting a category. {name}: the category. src/renderer/categories-settings.js."
+  },
+  "settings.categories.deleteHelp": {
+    "message": "Its mail goes to the other categories. Sender rules for it stop working.",
+    "description": "Settings > Inbox categories: text of the confirmation before deleting a category. src/renderer/categories-settings.js."
+  },
+  "settings.categories.sorting": {
+    "message": "Sorting",
+    "description": "Settings > Inbox categories: group title above the sorting options. src/renderer/categories-settings.js."
+  },
+  "settings.categories.rules": {
+    "message": "Rukoo sorts by the sender and the mail's headers, and by Gmail's own tabs for Gmail accounts. You can move any email, and choose to do the same for its sender from then on.",
+    "description": "Settings > Inbox categories: explanation of how sorting works without Jev. src/renderer/categories-settings.js."
+  },
+  "settings.categories.jev": {
+    "message": "Sort with Jev",
+    "description": "Settings > Inbox categories: switch that turns on sorting with Jev, TypeSafe's decision model. src/renderer/categories-settings.js."
+  },
+  "settings.categories.jevHelp": {
+    "message": "Jev, a decision model by TypeSafe, reads each new email and picks a category from your descriptions. Needs your own TypeSafe API key.",
+    "description": "Settings > Inbox categories: help under the Jev switch. src/renderer/categories-settings.js."
+  },
+  "settings.categories.jevShares": {
+    "message": "With Jev on, this computer sends the sender, the subject and the first 1,000 characters of each new inbox email, with your category names and descriptions, to TypeSafe, Inc. in the United States. TypeSafe's own terms apply to what it keeps. Nothing else leaves this computer.",
+    "description": "Settings > Inbox categories: what turning Jev on shares, shown under the Jev rows. src/renderer/categories-settings.js."
+  },
+  "settings.categories.key": {
+    "message": "TypeSafe API key",
+    "description": "Settings > Inbox categories: row that sets the TypeSafe API key. src/renderer/categories-settings.js."
+  },
+  "settings.categories.keySet": {
+    "message": "Set on this computer",
+    "description": "Settings > Inbox categories: value of the API key row when a key is stored. src/renderer/categories-settings.js."
+  },
+  "settings.categories.keyMissing": {
+    "message": "Not set",
+    "description": "Settings > Inbox categories: value of the API key row without a key. src/renderer/categories-settings.js."
+  },
+  "settings.categories.keyPrompt": {
+    "message": "TypeSafe API key",
+    "description": "Settings > Inbox categories: title of the dialog to enter the API key. src/renderer/categories-settings.js."
+  },
+  "settings.categories.keyRemove": {
+    "message": "Remove key",
+    "description": "Settings > Inbox categories: button in the API key dialog that removes the stored key. src/renderer/categories-settings.js."
+  },
+  "settings.categories.needKey": {
+    "message": "Add your TypeSafe API key first.",
+    "description": "Settings > Inbox categories: toast when turning Jev on without a key. src/renderer/categories-settings.js."
+  },
+  "settings.categories.jevError.key": {
+    "message": "TypeSafe didn't accept the API key. Check it, or turn Jev off.",
+    "description": "Settings > Inbox categories: error under the Jev switch when the key is refused. src/renderer/categories-settings.js."
+  },
+  "settings.categories.jevError.busy": {
+    "message": "TypeSafe is busy. Rukoo tries again in a few minutes and sorts by rules meanwhile.",
+    "description": "Settings > Inbox categories: error under the Jev switch when TypeSafe is busy. src/renderer/categories-settings.js."
+  },
+  "settings.categories.jevError.network": {
+    "message": "Can't reach TypeSafe. Rukoo tries again in a few minutes and sorts by rules meanwhile.",
+    "description": "Settings > Inbox categories: error under the Jev switch when TypeSafe can't be reached. src/renderer/categories-settings.js."
+  },
+  "settings.categories.again": {
+    "message": "Sort the inbox again",
+    "description": "Settings > Inbox categories: row that sorts the whole inbox again. src/renderer/categories-settings.js."
+  },
+  "settings.categories.againHelp": {
+    "message": "From the start, apart from the emails you moved yourself",
+    "description": "Settings > Inbox categories: description of the sort again row. src/renderer/categories-settings.js."
+  },
+  "settings.categories.againDone": {
+    "message": {"one": "Sorted {count} email", "other": "Sorted {count} emails"},
+    "description": "Settings > Inbox categories: toast after sorting again. {count}: emails sorted. src/renderer/categories-settings.js."
+  },
+  "settings.categories.senders": {
+    "message": "Senders with a rule",
+    "description": "Settings > Inbox categories: group title above the list of sender rules. src/renderer/categories-settings.js."
+  },
+  "settings.categories.senderHelp": {
+    "message": "Goes to {name}. Choose to remove the rule.",
+    "description": "Settings > Inbox categories: description of a sender rule row. {name}: the category. src/renderer/categories-settings.js."
+  },
+  "settings.categories.senderRemove": {
+    "message": "Remove the rule for {sender}?",
+    "description": "Settings > Inbox categories: title of the confirmation before removing a sender rule. src/renderer/categories-settings.js."
+  },
+  "settings.categories.senderRemoveHelp": {
+    "message": "New mail from this sender is sorted like any other mail again.",
+    "description": "Settings > Inbox categories: text of the confirmation before removing a sender rule. src/renderer/categories-settings.js."
+  },
+  "settings.categories.sync": {
+    "message": "Your categories, the category each email got and your corrections are in your Rukoo account, so your other devices show the same.",
+    "description": "Settings > Inbox categories: note when signed in to a Rukoo account. src/renderer/categories-settings.js."
+  },
+  "settings.categories.syncLocal": {
+    "message": "These stay on this computer. Sign in to a Rukoo account to see the same categories on your other devices.",
+    "description": "Settings > Inbox categories: note when not signed in to a Rukoo account. src/renderer/categories-settings.js."
+  },
+  "settings.rukoo.typesafe": {
+    "message": "TypeSafe, Inc.",
+    "description": "Settings > Rukoo account > What's stored and shared: name of the party that sorts mail with Jev. src/renderer/rukoo-account.js (privacyPage)."
+  },
+  "settings.rukoo.typesafeHelp": {
+    "message": "Sorts your inbox with Jev, because you turned it on on this computer. Gets the sender, subject and first 1,000 characters of each new inbox email, in the United States. Its own terms apply to what it keeps.",
+    "description": "Settings > Rukoo account > What's stored and shared: what TypeSafe handles when Jev is on. src/renderer/rukoo-account.js (privacyPage)."
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

@@ -65,6 +65,15 @@ jobs:
             # An isolated, unlocked Secret Service lets Electron encrypt test credentials.
             # This password protects only the disposable CI keyring, never a user keyring.
             printf %s rukoo-ci-keyring | gnome-keyring-daemon --unlock --daemonize --components=secrets >/dev/null
+            # The daemon takes its name on the session bus a moment after it returns. Asking the Secret Service
+            # before that makes D-Bus start a second, locked daemon, which prompts and never answers.
+            for attempt in $(seq 1 50); do
+              if dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+                org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q "boolean true"; then
+                break
+              fi
+              sleep 0.2
+            done
             printf %s ready | timeout 15s secret-tool store --label="Rukoo CI readiness" application rukoo-ci
             test "$(timeout 15s secret-tool lookup application rukoo-ci)" = ready
             secret-tool clear application rukoo-ci

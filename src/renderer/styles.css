@@ -1141,6 +1141,72 @@ body:has(.page) .titlebar-actions {
   padding: 2px 10px 6px 14px;
   border-bottom: 1px solid var(--border);
 }
+/* Inbox categories: tabs above the list, underlined in the category's color. */
+.category-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.category-tabs[hidden] {
+  display: none;
+}
+.category-tabs::-webkit-scrollbar {
+  display: none;
+}
+.ctab {
+  height: 34px;
+  padding: 0 9px;
+  margin-bottom: -1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  border-bottom: 2px solid transparent;
+}
+.ctab:hover {
+  color: var(--text);
+}
+.ctab.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--cat, var(--text));
+}
+.ctab .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cat);
+}
+.ctab .n {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+/* In a narrow list the dots go and the row fades out at the edge, where it scrolls on. */
+@container list (max-width: 480px) {
+  .ctab {
+    padding: 0 6px;
+    gap: 5px;
+  }
+  .ctab .dot {
+    display: none;
+  }
+  .category-tabs {
+    mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+  }
+}
 /* Borderless tabs: the active one is filled, the others are text. */
 .filters {
   display: flex;
@@ -2423,6 +2489,65 @@ body:has(.page) .titlebar-actions {
 .settings-group-title:empty {
   padding-top: 8px;
 }
+/* Settings > Inbox categories: a category row is a button to edit it plus buttons to move it. */
+.row.cat-row {
+  gap: 4px;
+  padding-right: 10px;
+}
+.cat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 2px 0;
+}
+.cat-main .text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cat-main .title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+.cat-main .desc {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+.cat-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--cat);
+}
+.cat-colors {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.cat-colors [role='radiogroup'] {
+  display: flex;
+  gap: 6px;
+}
+.cat-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--cat);
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.cat-swatch[aria-checked='true'] {
+  border-color: var(--panel);
+  box-shadow: 0 0 0 2px var(--cat);
+}
 /* Settings > Rukoo account: a paragraph between the cards, and the recovery key shown once. */
 .settings-text {
   color: var(--text-2);
@@ -2431,6 +2556,9 @@ body:has(.page) .titlebar-actions {
   padding: 16px 4px 2px;
   text-wrap: pretty;
   user-select: text;
+}
+.settings-group-title + .settings-text {
+  padding-top: 0;
 }
 .recovery-key {
   margin: 14px 0 12px;

@@ -22,6 +22,8 @@ const PUSH_AFTER = 2000;
 const SAVE_AFTER = 1000;
 const PULL_LIMIT = 1000;
 const PUSH_BATCH = 500;
+// The most a record may take on the server, once sealed (server/PROTOCOL.md).
+const RECORD_BYTES = 16384;
 // Collections whose records are decided once, by the first device to write one (server/PROTOCOL.md, Collections).
 const FIRST_WRITE_WINS = new Set(['classification']);
 // Which of two versions of a record wins: the later change, and on a tie the larger value, so every device picks the
@@ -593,13 +595,27 @@ class AccountService extends EventEmitter {
     let refused = false;
     for (;;) {
       if (!session || this.session !== session) return refused;
-      const batch = [...this.entries.values()].filter((e) => e.dirty).slice(0, PUSH_BATCH);
-      if (!batch.length) return refused;
-      const records = batch.map((e) => {
+      const dirty = [...this.entries.values()].filter((e) => e.dirty).slice(0, PUSH_BATCH);
+      if (!dirty.length) return refused;
+      // A record too large for the server stays on this device: sent along, it would fail the whole batch every time.
+      const batch = [];
+      const records = [];
+      for (const e of dirty) {
         const out = keys.sealRecord(session.keys, e.deleted ? { ...e, v: null, d: true } : e);
+        if (Buffer.byteLength(out.data, 'base64url') > RECORD_BYTES) {
+          delete e.dirty;
+          delete e.ifAbsent;
+          e.tooLarge = true;
+          continue;
+        }
         if (e.ifAbsent && !e.deleted) out.ifAbsent = true;
-        return out;
-      });
+        batch.push(e);
+        records.push(out);
+      }
+      if (!records.length) {
+        this.saveEntries();
+        continue;
+      }
       const res = await this.call('POST', '/v1/records', { records }, { auth: true, session });
       if (this.session !== session) return refused;
       const results = new Map((Array.isArray(res && res.results) ? res.results : []).map((r) => [r.id, r]));

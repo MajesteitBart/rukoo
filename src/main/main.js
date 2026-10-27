@@ -36,6 +36,7 @@ const { windowChrome, MailtoQueue, MacMailClient, macMenu } = require('./desktop
 const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
+const { Categories } = require('./categories');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
@@ -86,6 +87,7 @@ let engine = null;
 let calendars = null;
 let google = null;
 let account = null;
+let categories = null;
 let syncTimer = null;
 let newSinceFocus = 0;
 let tray = null;
@@ -369,6 +371,7 @@ function endSession() {
   engine.flush();
   if (calendars) calendars.flush();
   if (account) account.close();
+  if (categories) categories.close();
   destroyTray();
   // ---- agents ----
   // dispose() saves the chats before its first await; see will-quit.
@@ -790,6 +793,26 @@ const api = {
   accountNewRecoveryKey: (password) => account.newRecoveryKey(accountText(password, 1000)),
   accountDelete: (password) => account.deleteAccount(accountText(password, 1000)),
   accountSync: () => account.sync(),
+  // Inbox categories (categories/index.js).
+  categoriesState: () => categories.state(),
+  categoriesSetEnabled: (on) => categories.setEnabled(on === true),
+  categoriesSetUnsure: (id) => categories.setUnsure(accountText(id, 100)),
+  categoriesSave: (input) => {
+    const i = plainObject(input);
+    const optional = (v, max) => (v === null ? null : typeof v === 'string' ? v.slice(0, max) : undefined);
+    return categories.saveCategory({ id: accountText(i.id, 100) || null, name: optional(i.name, 100), description: optional(i.description, 1000), color: accountText(i.color, 20) || undefined });
+  },
+  categoriesRemove: (id) => categories.removeCategory(accountText(id, 100)),
+  categoriesReorder: (ids) => categories.reorder((Array.isArray(ids) ? ids : []).slice(0, 50).map((id) => accountText(id, 100))),
+  categoriesMove: (ids, category, opts) =>
+    // Every selected email: a unified inbox can show several hundred per account.
+    categories.move((Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000)), accountText(category, 100), { sender: plainObject(opts).sender === true }),
+  categoriesForgetSender: (address) => categories.forgetSender(accountText(address, 320)),
+  categoriesSetJev: (input) => {
+    const i = plainObject(input);
+    return categories.setJev({ on: typeof i.on === 'boolean' ? i.on : undefined, key: i.key === null ? null : accountText(i.key, 500) || undefined });
+  },
+  categoriesSortAgain: () => categories.sortAgain(),
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
       title: t('settings.rukoo.export'),
@@ -1095,6 +1118,9 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semAccount = account;
   account.on('status', (status) => broadcast('account', status));
   account.sync().catch(() => {});
+  categories = new Categories({ engine, account, secrets, dataDir: path.join(app.getPath('userData'), 'data') }).init();
+  if (process.env.SEM_HIDDEN) global.__semCategories = categories;
+  categories.on('changed', () => broadcast('categories', categories.state()));
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({
@@ -1150,6 +1176,7 @@ app.on('before-quit', () => {
   if (engine) engine.flush();
   if (calendars) calendars.flush();
   if (account) account.close();
+  if (categories) categories.close();
 });
 
 // Every window has closed, so the quit goes through.

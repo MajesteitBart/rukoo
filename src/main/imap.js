@@ -6,6 +6,7 @@ const { ImapFlow } = require('imapflow');
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const util = require('./mailutil');
+const { SIGNAL_HEADERS, mailSignals } = require('./categories/signals');
 
 const PREVIEW_BYTES = 4096;
 // What a cached message needs from the server besides its flags. These never change for a uid, so a sync fetches
@@ -251,7 +252,9 @@ class ImapAccount {
     });
   }
 
-  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false } = {}) {
+  // signals: also what kind of mail each message is (categories/signals.js); gmailTabs: also the Gmail tab each
+  // message is in. Both are for the inbox and its categories.
+  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false, signals = false, gmailTabs = false } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path, { readOnly: true });
       try {
@@ -305,6 +308,40 @@ class ImapAccount {
           }
         }
 
+        // A few header lines, for new messages and for ones cached before Rukoo kept them.
+        const kinds = new Map();
+        if (signals) {
+          const need = rows.filter((r) => details.has(r.uid) || !(known.get(r.uid) || {}).signals).map((r) => r.uid);
+          if (need.length) {
+            for await (const m of client.fetch(need.join(','), { uid: true, headers: SIGNAL_HEADERS }, { uid: true })) {
+              kinds.set(m.uid, mailSignals(m.headers));
+            }
+          }
+        }
+        // Gmail doesn't show its tabs as folders, but its own search finds them (X-GM-RAW). Asked again on every sync,
+        // since a message can move to another tab. What none of them holds is in Primary.
+        let tabs = null;
+        if (gmailTabs && rows.length && client.capabilities && client.capabilities.has('X-GM-EXT-1')) {
+          tabs = new Map();
+          const from = Math.min(...rows.map((r) => r.uid));
+          try {
+            for (const tab of ['promotions', 'social', 'updates', 'forums']) {
+              const uids = await client.search({ uid: `${from}:*`, gmraw: `category:${tab}` }, { uid: true });
+              for (const uid of uids || []) tabs.set(uid, tab);
+            }
+          } catch (_) {
+            tabs = null;
+          }
+        }
+        const extra = (uid, prior) => {
+          const out = {};
+          const kind = kinds.get(uid) || (prior && prior.signals);
+          if (kind) out.signals = kind;
+          if (tabs) out.gmailTab = tabs.get(uid) || 'primary';
+          else if (prior && prior.gmailTab) out.gmailTab = prior.gmailTab;
+          return out;
+        };
+
         for (const row of rows) {
           const flags = row.flags || new Set();
           const state = { unread: !flags.has('\\Seen'), starred: flags.has('\\Flagged'), answered: flags.has('\\Answered') };
@@ -313,7 +350,7 @@ class ImapAccount {
           if (!m) {
             // Gone between the two fetches (moved or deleted meanwhile): the next sync no longer lists it.
             if (!cached(row.uid)) continue;
-            result.messages.push({ uid: row.uid, ...Object.fromEntries(STORED.map((k) => [k, prior[k]])), ...state });
+            result.messages.push({ uid: row.uid, ...Object.fromEntries(STORED.map((k) => [k, prior[k]])), ...state, ...extra(row.uid, prior) });
             continue;
           }
           const env = m.envelope || {};
@@ -330,7 +367,8 @@ class ImapAccount {
             preview: previews.has(m.uid) ? previews.get(m.uid) : prior ? prior.preview || '' : '',
             ...state,
             hasAttachments: util.hasAttachments(m.bodyStructure),
-            size: m.size || 0
+            size: m.size || 0,
+            ...extra(m.uid, prior)
           });
         }
         return result;

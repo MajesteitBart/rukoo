@@ -485,6 +485,22 @@ test('a page out of order is refused whole and moves nothing', async (t) => {
   assert.equal(desk.get('sender', 'a@example.com'), undefined);
 });
 
+test('a record too large for the server stays here and doesn\'t hold up the rest', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'big@example.com', password: PASSWORD });
+  desk.put('sender', 'huge@example.com', { note: 'x'.repeat(20000) });
+  desk.put('sender', 'fine@example.com', { category: 'money' });
+  await desk.sync();
+  assert.equal(desk.status().pending, 0);
+  assert.deepEqual(desk.get('sender', 'huge@example.com'), { note: 'x'.repeat(20000) }, 'kept on this device');
+  const laptop = device(t, srv, 'laptop');
+  await laptop.signIn({ email: 'big@example.com', password: PASSWORD });
+  await laptop.sync();
+  assert.deepEqual(laptop.get('sender', 'fine@example.com'), { category: 'money' });
+  assert.equal(laptop.get('sender', 'huge@example.com'), undefined);
+});
+
 test('signing in with a wrong password fails without signing in', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);

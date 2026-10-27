@@ -16,6 +16,7 @@ import {
 import { signatureHtml, accountSignatureHtml, usesGeneralSignature } from './composer.js';
 import { editSignature, signaturePreview } from './signature.js';
 import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
+import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
 
 const THEMES = [
   { value: 'system', get label() { return t('settings.theme.system'); } },
@@ -223,6 +224,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     // Zoom keys and the wheel work with Settings open; only the zoom row changes.
     if (type === 'zoom') showZoom(payload);
     if (type === 'account') account.onStatus(payload);
+    if (type === 'categories') categoriesPage.onState(payload);
   });
 
   const close = () => {
@@ -260,7 +262,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     </button>`;
 
   // The Rukoo account's pages (rukoo-account.js).
-  const account = accountPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
+  // Inbox categories (categories-settings.js); the account's privacy page says when Jev is on.
+  const categoriesPage = categoryPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
+  const account = accountPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog, jevOn: () => categoriesPage.jevOn() });
 
   // A signature row: the signature as it will be sent, or None.
   const signatureRow = (html, action) =>
@@ -871,14 +875,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const view = stack[stack.length - 1];
     let title = t('settings.title');
     let body = '';
-    if (view === 'main' || view === 'agents' || view === 'shortcuts') {
-      agentState = await loadAgents();
-      if (stack[stack.length - 1] !== view) return;
-    }
-    if (view === 'main' || ACCOUNT_VIEWS.includes(view)) {
-      await account.prepare(view);
-      if (stack[stack.length - 1] !== view) return;
-    }
+    // What a page needs from main, asked for at once so a redraw takes one round trip, not three.
+    const [agents] = await Promise.all([
+      view === 'main' || view === 'agents' || view === 'shortcuts' ? loadAgents() : agentState,
+      view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
+      view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null
+    ]);
+    if (stack[stack.length - 1] !== view) return;
+    if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
 
     if (view === 'main') {
       const accounts = state.accounts
@@ -908,6 +912,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         <div class="card">
           ${row({ title: t('settings.general.language'), desc: t('settings.general.languageHelp'), value: languages.find((language) => language.code === s.language)?.name || 'English', action: 'language' })}
           ${row({ title: t('settings.general.folders'), desc: t('settings.general.foldersHelp'), action: 'folders' })}
+          ${categoriesPage.rowHtml()}
           ${row({ title: t('settings.general.density'), value: labelOf(DENSITY, s.density), action: 'density' })}
           ${row({ title: t('settings.general.theme'), value: labelOf(THEMES, s.theme), action: 'theme' })}
           ${zoomRow(s.zoomLevel)}
@@ -1038,6 +1043,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     }
 
     if (ACCOUNT_VIEWS.includes(view)) ({ title, body } = account.view(view));
+    if (CATEGORY_VIEWS.includes(view)) ({ title, body } = categoriesPage.view(view));
 
     page.innerHTML = `
       <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
@@ -1091,6 +1097,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     };
     if (a === 'back') return back();
     if (a.startsWith('rukoo') && (await account.click(a))) return;
+    if ((a === 'categories' || a.startsWith('cat-')) && (await categoriesPage.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'mailto-use') {
