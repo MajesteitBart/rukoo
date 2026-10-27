@@ -79,11 +79,11 @@ class RukooAccountModel(services: AppServices) : ViewModel() {
      * After a page is shown: what needs the server, once per visit, not on every redraw (desktop's fill). Forms get
      * the server's info only, for invite-only and closed servers.
      */
-    fun fill(page: String) {
+    fun fill(page: String, force: Boolean = false) {
         val acc = account ?: return
         val now = System.currentTimeMillis()
         val last = filled
-        if (last != null && last.first == page && now - last.second < FILL_AGAIN_AFTER) return
+        if (!force && last != null && last.first == page && now - last.second < FILL_AGAIN_AFTER) return
         filled = page to now
         viewModelScope.launch {
             if (acc.server.isNotEmpty()) {
@@ -109,8 +109,11 @@ class RukooAccountModel(services: AppServices) : ViewModel() {
         }
     }
 
+    /** After an action, what the page shows comes again from the server: a removed device leaves the list at once. */
     private fun refill() {
+        val page = filled?.first
         filled = null
+        if (page != null) fill(page, force = true)
     }
 
     fun clearFormError() = _ui.update { it.copy(formError = null) }
