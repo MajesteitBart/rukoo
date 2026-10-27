@@ -443,6 +443,66 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `a false sequence number from the server makes the device start over, not skip records`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        desk.signUp("seq@example.com", PASSWORD)
+        desk.put("sender", "a@example.com", rule("money"))
+        desk.sync()
+        // One answer claims a change far ahead of the server's.
+        val lie = java.util.concurrent.atomic.AtomicBoolean(true)
+        val real = OkHttpAccountHttp(okhttp)
+        val laptop = device(srv, "laptop", http = AccountHttp { server, method, path, body, token ->
+            val res = real.request(server, method, path, body, token)
+            if (path.startsWith("/v1/records?") && lie.getAndSet(false)) {
+                val o = res as JsonObject
+                buildJsonObject {
+                    put("records", kotlinx.serialization.json.JsonArray((o["records"] as kotlinx.serialization.json.JsonArray) + buildJsonObject {
+                        put("id", "x".repeat(43))
+                        put("seq", 999999)
+                        put("data", kotlinx.serialization.json.JsonNull)
+                    }))
+                    put("seq", 999999)
+                    put("more", false)
+                }
+            } else {
+                res
+            }
+        })
+        laptop.signIn("seq@example.com", PASSWORD)
+        laptop.sync()
+        desk.put("sender", "b@example.com", rule("updates"))
+        desk.sync()
+        laptop.sync()
+        assertEquals("nothing was skipped", rule("updates"), laptop.value("sender", "b@example.com"))
+        assertTrue(laptop.cursor() < 999999)
+    }
+
+    @Test
+    fun `a page out of order is refused whole and moves nothing`() = runBlocking {
+        val srv = server()
+        val real = OkHttpAccountHttp(okhttp)
+        val desk = device(srv, "desk", http = AccountHttp { server, method, path, body, token ->
+            val res = real.request(server, method, path, body, token)
+            val records = (res as? JsonObject)?.get("records") as? kotlinx.serialization.json.JsonArray
+            if (path.startsWith("/v1/records?") && !records.isNullOrEmpty()) {
+                JsonObject(res + mapOf("records" to kotlinx.serialization.json.JsonArray(records.reversed()), "seq" to kotlinx.serialization.json.JsonPrimitive(1)))
+            } else {
+                res
+            }
+        })
+        val helper = device(srv, "helper")
+        helper.signUp("order@example.com", PASSWORD)
+        helper.put("sender", "a@example.com", rule("money"))
+        helper.put("sender", "b@example.com", rule("money"))
+        helper.sync()
+        desk.signIn("order@example.com", PASSWORD)
+        rejects("server") { desk.sync() }
+        assertEquals(0L, desk.cursor())
+        assertNull(desk.value("sender", "a@example.com"))
+    }
+
+    @Test
     fun `signing in with a wrong password fails without signing in`() = runBlocking {
         val srv = server()
         val desk = device(srv)

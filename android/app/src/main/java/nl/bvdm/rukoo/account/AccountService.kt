@@ -652,6 +652,7 @@ class AccountService(
 
     suspend fun pull(session: Session? = synchronized(lock) { this.session }) {
         val touched = HashSet<String>()
+        var restarted = false
         var more = true
         while (more) {
             if (session == null || !synchronized(lock) { this.session === session }) return
@@ -660,11 +661,28 @@ class AccountService(
             more = synchronized(lock) {
                 if (this.session !== session) return
                 val records = (res?.get("records") as? JsonArray).orEmpty()
+                val top = safeInteger(res?.get("seq"))
+                // The server's newest change is older than where this phone got to: it lost data, or an earlier answer
+                // was false. Start again from the beginning, once; records already here are taken again without harm.
+                if (top != null && top < since) {
+                    if (restarted) throw fail("server")
+                    restarted = true
+                    state = state.copy(cursor = 0)
+                    return@synchronized true
+                }
+                // A page comes after since, in order, and not past the server's newest change; anything else is refused
+                // whole, so a false sequence number can't move the cursor past records this phone hasn't seen.
+                var last = since
+                for (r in records) {
+                    val seq = safeInteger((r as? JsonObject)?.get("seq"))
+                    if (seq == null || seq <= last || (top != null && seq > top)) throw fail("server")
+                    last = seq
+                }
                 var cursor = state.cursor
                 for (r in records) {
-                    val o = r as? JsonObject ?: continue
+                    val o = r as JsonObject
                     val id = (o["id"] as? JsonPrimitive)?.content ?: continue
-                    val seq = (o["seq"] as? JsonPrimitive)?.content?.toDoubleOrNull()?.toLong() ?: 0L
+                    val seq = safeInteger(o["seq"]) ?: continue
                     val data = (o["data"] as? JsonPrimitive)?.takeIf { it.isString }?.content
                     applyRemote(session, id, seq, data)?.let { touched += it }
                     if (seq > cursor) cursor = seq
@@ -675,6 +693,9 @@ class AccountService(
         }
         if (touched.isNotEmpty()) changedRecords(touched)
     }
+
+    /** Where the next pull starts, for tests. */
+    internal fun cursor(): Long = synchronized(lock) { state.cursor }
 
     /** Takes one record from the server; returns its collection when this phone's data changed. Under the lock. */
     private fun applyRemote(session: Session, id: String, seq: Long, data: String?): String? {
@@ -803,6 +824,12 @@ class AccountService(
         // JavaScript's \s, which takes in Unicode spaces too.
         private const val SPACE = "\\t\\n\\u000B\\f\\r \\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF"
         private val EMAIL = Regex("^[^@$SPACE]+@[^@$SPACE]+\\.[^@$SPACE]+$")
+
+        /** Number(v) when it is a safe integer, as JavaScript's Number.isSafeInteger takes it; else null. */
+        private fun safeInteger(v: JsonElement?): Long? {
+            val d = (v as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.trim()?.toDoubleOrNull() ?: return null
+            return if (d % 1.0 == 0.0 && kotlin.math.abs(d) <= 9007199254740991.0) d.toLong() else null
+        }
 
         fun validEmail(email: String): Boolean = EMAIL.matches(email) && email.length <= 320
 
