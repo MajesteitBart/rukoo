@@ -51,6 +51,7 @@ import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.RkButton
 import nl.bvdm.rukoo.ui.components.RkButtonKind
 import nl.bvdm.rukoo.ui.components.RkIconButton
+import nl.bvdm.rukoo.ui.components.RkLinkButton
 import nl.bvdm.rukoo.ui.components.RkTextField
 import nl.bvdm.rukoo.ui.components.SectionTitle
 import nl.bvdm.rukoo.ui.components.SettingsCard
@@ -373,12 +374,13 @@ private fun CategoryDialog(
             }
             error?.let { ErrorLine(categoryErrorText(it)) }
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (category != null && canDelete) RkButton(stringResource(R.string.common_actions_delete), { confirmDelete = true }, kind = RkButtonKind.GHOST)
+                // Delete and Use Rukoo's text on the left, as desktop's dialog has them; Delete in red.
+                if (category != null && canDelete) RkLinkButton(stringResource(R.string.common_actions_delete), { confirmDelete = true }, color = c.danger)
                 if (category?.preset != null && (category.customName || category.customDescription)) {
-                    RkButton(stringResource(R.string.settings_categories_restore), {
+                    RkLinkButton(stringResource(R.string.settings_categories_restore), {
                         onRestore()
                         onDismiss()
-                    }, kind = RkButtonKind.GHOST)
+                    })
                 }
                 Spacer(Modifier.weight(1f))
                 RkButton(stringResource(R.string.common_actions_cancel), onDismiss, kind = RkButtonKind.SECONDARY)
@@ -428,7 +430,7 @@ private fun KeyDialog(hasKey: Boolean, onDismiss: () -> Unit, onRemove: () -> Un
         RkTextField(value = key, onValueChange = { key = it }, password = true, mono = true, keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
         if (hasKey) {
             Row(Modifier.fillMaxWidth()) {
-                RkButton(stringResource(R.string.settings_categories_key_remove), onRemove, kind = RkButtonKind.GHOST)
+                RkLinkButton(stringResource(R.string.settings_categories_key_remove), onRemove, color = Rk.colors.danger)
             }
         }
     }
