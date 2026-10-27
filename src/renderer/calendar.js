@@ -281,6 +281,11 @@ export async function openEvent(id, start) {
   openPop(e, anchor || $('.calendar .cal-title'), { focus: true });
 }
 
+// Shows a day, from a notification about a day rather than one event: as a pick in the mini month.
+export function openDay(start) {
+  if (Number.isFinite(start)) pickDay(start);
+}
+
 // Opens a booking request's card next to its block on the grid (calendar-event.js draws the card).
 export async function openRequest(bookingId) {
   const req = pendingRequests().find((r) => r.id === bookingId);

@@ -418,7 +418,8 @@ function toEvent(comp, { cal, href, etag, me, rid = null, seriesId = null, locke
   const changeable = Boolean(cal.writable && own && !locked && (local || invites === 'provider' || !guests.length));
   const location = String(comp.getFirstPropertyValue('location') || '').trim();
   const description = plainDescription(comp.getFirstPropertyValue('description'));
-  const zone = tzid || (!allDay && utcTime(startTime) ? 'UTC' : null);
+  // A TZID is the sender's text: only a zone the PC knows by name, or UTC, reaches the store (Zone | null).
+  const zone = zoneOrNull(tzid) || (!allDay && utcTime(startTime) ? 'UTC' : null);
   const kind = String(comp.getFirstPropertyValue('class') || '').toUpperCase();
   const booking = String(comp.getFirstPropertyValue(BOOKING) || '').trim();
   return {
@@ -440,7 +441,7 @@ function toEvent(comp, { cal, href, etag, me, rid = null, seriesId = null, locke
     startDate,
     endDate,
     timeZone: zone,
-    endTimeZone: endTzid || zone,
+    endTimeZone: zoneOrNull(endTzid) || zone,
     status: String(comp.getFirstPropertyValue('status') || '').toUpperCase() === 'TENTATIVE' ? 'tentative' : 'confirmed',
     busy: String(comp.getFirstPropertyValue('transp') || '').toUpperCase() !== 'TRANSPARENT',
     visibility: CLASSES[kind] || 'default',
@@ -604,7 +605,7 @@ function seriesInfo(obj) {
     allDay,
     startDate: allDay ? dateText(ev.startDate) : null,
     endDate: allDay ? dateText(ev.endDate) : null,
-    timeZone: tzid || (!allDay && utcTime(ev.startDate) ? 'UTC' : null)
+    timeZone: zoneOrNull(tzid) || (!allDay && utcTime(ev.startDate) ? 'UTC' : null)
   };
 }
 

@@ -2488,11 +2488,13 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
   // ---- cal:B1 events ----
-  // A reminder or a booking notification was clicked: the calendar opens on that event or request.
+  // A reminder or a booking notification was clicked: the calendar opens on that event or request, or on the day
+  // when the notification names only its start.
   if (type === 'calendar-open' && payload && S.data && S.data.accounts.length) {
     setMode('calendar');
     if (typeof payload.request === 'string') calendar.openRequest(payload.request);
     else if (typeof payload.id === 'string') calendar.openEvent(payload.id, Number.isFinite(payload.start) ? payload.start : undefined);
+    else if (Number.isFinite(payload.start)) calendar.openDay(payload.start);
   }
   // ---- /cal:B1 events ----
   // ---- cal:B3 events ----

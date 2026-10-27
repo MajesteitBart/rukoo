@@ -2,6 +2,7 @@
 // time main works out, shown by day and on the grid, copied as text; and the week, working hours and calendars set in
 // Settings, kept across a reload and followed by the grid.
 const { test, expect, _electron: electron } = require('@playwright/test');
+const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
@@ -10,13 +11,17 @@ let app;
 let win;
 let dataDir;
 
-test.beforeEach(async () => {
-  dataDir = tempDir('rukoo-free-e2e-');
+async function launch() {
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
+}
+
+test.beforeEach(async () => {
+  dataDir = tempDir('rukoo-free-e2e-');
+  await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
@@ -142,8 +147,16 @@ test('accounts that could not be read are named, all-day events show under their
 });
 
 test('Settings → Calendar opens from the reminders notice, and its choices persist and change the grid', async () => {
+  // The one-time notice shows on a profile from before reminders: Rukoo again on settings without its flag.
+  await closeApp(app);
+  const file = path.join(dataDir, 'data', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete settings.calendar.notifiedUpgrade;
+  fs.writeFileSync(file, JSON.stringify(settings));
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
   await openCalendar();
-  // The one-time notice's Open settings leads to this page, not a blank one.
+  // Its Open settings leads to this page, not a blank one.
   await win.locator('.cal-notice', { hasText: 'Rukoo now reminds you' }).locator('button', { hasText: 'Open settings' }).click();
   await expect(settingsPage().locator('h1')).toHaveText('Calendar');
   await expect(settingsPage().locator('.calset-cal')).toHaveCount(3);

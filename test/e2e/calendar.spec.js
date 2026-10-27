@@ -124,6 +124,8 @@ test('creates, edits and deletes an event', async () => {
 
   // A one-day all-day event turned into a timed one becomes nine to ten instead of ending where it starts.
   await win.locator('.cal-allday-cell').first().click();
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="allDay"]')).toBeChecked();
   await win.fill('.cal-form [name="title"]', 'Workshop prep');
   await win.uncheck('.cal-form [name="allDay"]');
@@ -139,6 +141,8 @@ test('creates, edits and deletes an event', async () => {
   const col = win.locator('.cal-col').nth(2);
   const box = await col.boundingBox();
   await win.mouse.click(box.x + 20, box.y + 6 * 56 + 30);
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="startTime"]')).toHaveValue('06:30');
   await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('07:30');
   await win.keyboard.press('Escape');
@@ -287,6 +291,9 @@ test("a card opened at a multi-day event's later day stays with that day while t
   await win.keyboard.press('u');
   const rows = win.locator('.cal-row', { hasText: 'Holiday in Lisbon' });
   await expect(rows).toHaveCount(3);
+  // In the middle of the list, whatever the demo has on the days before: near the window's bottom a card moves up
+  // to fit, and would sit beside neither row.
+  await rows.nth(1).evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await rows.nth(1).click();
   await expect(card()).toBeVisible();
   await win.locator('.cal-scroll').evaluate((el) => (el.scrollTop += 1));

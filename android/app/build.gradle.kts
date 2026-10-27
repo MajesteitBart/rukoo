@@ -31,7 +31,7 @@ android {
         buildConfigField("boolean", "USE_PREVIEW_AGENTS", "false")
         // The Rukoo account server the app uses until someone picks another in Settings (docs/account.md). A fork
         // points its builds at its own server here.
-        buildConfigField("String", "ACCOUNT_SERVER", "\"https://rukoo-account.bvdm.ai\"")
+        buildConfigField("String", "ACCOUNT_SERVER", "\"https://rukoo.io\"")
     }
 
     signingConfigs {

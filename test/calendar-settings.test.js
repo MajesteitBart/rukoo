@@ -31,7 +31,8 @@ function engine(settings) {
 }
 
 test('a new profile has the calendar defaults, and an old or hand-edited one gets them where it is wrong', () => {
-  assert.deepEqual(engine().engine.settings.calendar, DEFAULTS);
+  // A new profile has nothing to upgrade from, so the notice about reminders counts as seen.
+  assert.deepEqual(engine().engine.settings.calendar, { ...DEFAULTS, notifiedUpgrade: true });
   const { engine: e } = engine({
     language: 'en',
     calendar: {
@@ -65,6 +66,23 @@ test('a new profile has the calendar defaults, and an old or hand-edited one get
   // A map keeps at most 500 calendars.
   const many = Object.fromEntries(Array.from({ length: 600 }, (_, i) => [`a\n${i}`, true]));
   assert.equal(Object.keys(engine({ calendar: { visible: many } }).engine.settings.calendar.visible).length, 500);
+});
+
+test('a new profile never gets the notice about reminders; a profile from before them gets it until it is dismissed', () => {
+  // New: nothing saved yet. The first saved setting keeps the flag.
+  const { engine: fresh, dataDir } = engine();
+  assert.equal(fresh.settings.calendar.notifiedUpgrade, true);
+  assert.equal(DEFAULT_SETTINGS.calendar.notifiedUpgrade, false, 'the defaults stay as they are');
+  fresh.updateSettings({ theme: 'dark' });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8')).calendar.notifiedUpgrade, true);
+  assert.equal(new Engine({ dataDir }).init().settings.calendar.notifiedUpgrade, true);
+  // From before reminders: settings without calendar settings, or without the flag in them.
+  assert.equal(engine({ language: 'en' }).engine.settings.calendar.notifiedUpgrade, false);
+  const { engine: old, dataDir: oldDir } = engine({ language: 'en', calendar: { notify: true } });
+  assert.equal(old.settings.calendar.notifiedUpgrade, false);
+  // Dismissed, it stays so after a restart.
+  old.calendarSettings({ notifiedUpgrade: true });
+  assert.equal(new Engine({ dataDir: oldDir }).init().settings.calendar.notifiedUpgrade, true);
 });
 
 test('calendarSettings merges calendars one by one, takes them back with null, saves, and tells the calendar services first', () => {

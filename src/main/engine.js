@@ -249,8 +249,14 @@ class Engine extends EventEmitter {
   init() {
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.accounts = readJson(this.file('accounts.json'), []);
+    const fresh = !fs.existsSync(this.file('settings.json'));
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.file('settings.json'), {}) };
     normalizeSettings(this.settings);
+    // ---- cal:A2 new profile ----
+    // The notice that Rukoo now reminds you of events is for profiles from before it did. A new one has never seen
+    // Rukoo without reminders; the first saved setting (adding an account saves one) keeps this.
+    if (fresh) this.settings.calendar.notifiedUpgrade = true;
+    // ---- /cal:A2 new profile ----
     setLanguage(this.settings.language);
     // Once only, so a user who sets this signature again keeps it.
     if (!this.settings.signatureOptIn) {

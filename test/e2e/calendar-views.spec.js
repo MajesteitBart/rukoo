@@ -1,6 +1,7 @@
 // The calendar's views and grid in the real app, on the demo account: the month, the mini month, Go to date,
 // dragging events, the calendar menu, search, and what other parts of the app show on the grid.
 const { test, expect, _electron: electron } = require('@playwright/test');
+const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
@@ -9,13 +10,17 @@ let app;
 let win;
 let dataDir;
 
-test.beforeEach(async () => {
-  dataDir = tempDir('sem-e2e-calviews-');
+async function launch() {
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
+}
+
+test.beforeEach(async () => {
+  dataDir = tempDir('sem-e2e-calviews-');
+  await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
@@ -30,6 +35,18 @@ const event = (title) => win.locator('.calendar [data-ev]', { hasText: title }).
 const card = () => win.locator('.cal-pop');
 const toast = () => win.locator('#toast');
 const remindersNotice = () => win.locator('.cal-notice', { hasText: 'Rukoo now reminds you of events' });
+
+// Rukoo again on the same profile, as a version from before reminders left it: settings without the notice's flag.
+async function restartAsUpgrade() {
+  await closeApp(app);
+  const file = path.join(dataDir, 'data', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete settings.calendar.notifiedUpgrade;
+  fs.writeFileSync(file, JSON.stringify(settings));
+  await launch();
+  // It opens where it was left: the mailbox or the calendar.
+  await expect(win.locator('.item, .calendar [data-ev]').first()).toBeVisible({ timeout: 15000 });
+}
 
 // The calendar in week view. The one-time notice about reminders goes first, so every test has the same room.
 async function openCalendar({ keepNotice = false } = {}) {
@@ -90,10 +107,47 @@ async function settledBox(locator) {
   throw new Error('The element kept moving');
 }
 
+// Saves the grid as window.__grid once the window stopped loading the view: no calendar syncing, and the same grid
+// for a while. Loads from startup and its syncs can land after the first events show, and each draws a new grid.
+async function saveQuietGrid(ms = 800) {
+  await expect(win.locator('.cal-busy')).toBeHidden();
+  await win.evaluate(
+    (ms) =>
+      new Promise((resolve) => {
+        const calendar = document.querySelector('.calendar');
+        let grid = calendar.querySelector('.cal-grid');
+        let timer = null;
+        const wait = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            observer.disconnect();
+            window.__grid = grid;
+            resolve();
+          }, ms);
+        };
+        const observer = new MutationObserver(() => {
+          const now = calendar.querySelector('.cal-grid');
+          if (now === grid) return;
+          grid = now;
+          wait();
+        });
+        observer.observe(calendar, { childList: true, subtree: true });
+        wait();
+      }),
+    ms
+  );
+}
+
 // The grid from 07:00, whatever time it is, so the demo's events are on screen.
 const scrollGrid = (hour) => win.locator('.cal-scroll').evaluate((el, top) => (el.scrollTop = top), hour * 56);
 
-test('the one-time notice about reminders goes for good once dismissed', async () => {
+test('the notice about reminders: never on a new profile; once on one from before them, for good once dismissed', async () => {
+  // A new profile has always had reminders.
+  await openCalendar({ keepNotice: true });
+  await expect(win.locator('.calendar .cal-notice')).toHaveCount(0);
+  expect((await calendarState()).notifiedUpgrade).toBe(true);
+
+  await restartAsUpgrade();
   await openCalendar({ keepNotice: true });
   await expect(remindersNotice()).toBeVisible();
   await expect(remindersNotice()).toContainText('Change this in Settings → Calendar.');
@@ -249,6 +303,8 @@ test('dragging on empty grid opens a new event with the dragged times', async ()
       await expect(win.locator('.cal-ghost')).toContainText('06:00 – 07:30');
     }
   });
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="startTime"]')).toHaveValue('06:00');
   await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('07:30');
   await expect(win.locator('.cal-form [name="startDate"]')).toHaveValue(await dateText(day));
@@ -339,6 +395,8 @@ test('Escape during a drag puts the event back and the release does nothing', as
   const col = win.locator('.cal-col').nth(0);
   const box = await settledBox(col);
   await win.mouse.click(box.x + 20, box.y + 8 * 56 + 10);
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="startTime"]')).toHaveValue('08:00');
   await win.keyboard.press('Escape');
 });
@@ -428,11 +486,11 @@ test('nothing redraws the grid during a drag; what came in meanwhile shows after
   await openCalendar();
   await scrollGrid(7);
   const lunch = event('Lunch with Sanne');
-  const from = center(await settledBox(lunch));
-  await win.evaluate(() => (window.__grid = document.querySelector('.cal-grid')));
   const accountId = await demoAccount();
   const monday = await columnOf(event('Roadmap review'));
   const start = await timeOn(monday, 15);
+  const from = center(await settledBox(lunch));
+  await saveQuietGrid();
   await drag(from, { x: from.x, y: from.y + 56 }, {
     before: async () => {
       // A change from elsewhere arrives while the pointer is down.
@@ -653,6 +711,8 @@ test('in the month an event moves by whole days, and a drag over empty days make
   const third = await settledBox(cells.nth(2));
   const startDay = Number(await cells.nth(0).getAttribute('data-cal-mday'));
   await drag({ x: first.x + first.width / 2, y: first.y + first.height - 8 }, { x: third.x + third.width / 2, y: third.y + third.height - 8 });
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="allDay"]')).toBeChecked();
   await expect(win.locator('.cal-form [name="startDate"]')).toHaveValue(await dateText(startDay));
   await expect(win.locator('.cal-form [name="endDate"]')).toHaveValue(await dateText(await shiftDays(startDay, 2)));
@@ -661,6 +721,8 @@ test('in the month an event moves by whole days, and a drag over empty days make
 
   // A double click on an empty day makes a one-day event.
   await win.mouse.dblclick(third.x + third.width / 2, third.y + third.height - 8);
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="allDay"]')).toBeChecked();
   await expect(win.locator('.cal-form [name="startDate"]')).toHaveValue(await dateText(await shiftDays(startDay, 2)));
   await expect(win.locator('.cal-form [name="endDate"]')).toHaveValue(await dateText(await shiftDays(startDay, 2)));
@@ -697,6 +759,8 @@ test("in the week's all-day row a chip moves by whole days, and a drag over empt
   const a = await settledBox(win.locator(`.cal-allday [data-cal-allday="${monday}"]`));
   const b = await settledBox(win.locator(`.cal-allday [data-cal-allday="${tuesday}"]`));
   await drag({ x: a.x + a.width / 2, y: a.y + a.height - 4 }, { x: b.x + b.width / 2, y: b.y + b.height - 4 });
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="allDay"]')).toBeChecked();
   await expect(win.locator('.cal-form [name="startDate"]')).toHaveValue(await dateText(monday));
   await expect(win.locator('.cal-form [name="endDate"]')).toHaveValue(await dateText(tuesday));
@@ -965,6 +1029,31 @@ test('a side panel, open time on the grid, booking requests and calendar-open fr
   await expect(card().locator('h2')).toHaveText('KL1691 Amsterdam to Lisbon');
   const flightDay = await win.evaluate((ms) => new Date(ms).setHours(0, 0, 0, 0), flight.start);
   await expect(win.locator(`.cal-mnum[data-cal-day="${flightDay}"], .cal-dayhead[data-cal-day="${flightDay}"]`)).toHaveCount(1);
+});
+
+test('calendar-open with only a start opens the calendar on that day', async () => {
+  await openCalendar();
+  const open = (start) => app.evaluate(({ BrowserWindow }, start) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'calendar-open', payload: { start } }), start);
+
+  // From the mailbox, a day months away: the week view goes to that week, with no card open.
+  await win.keyboard.press('Control+1');
+  await expect(win.locator('.calendar')).toBeHidden();
+  const june = await win.evaluate(() => new Date(2027, 5, 16).getTime());
+  await open(await timeOn(june, 10, 30));
+  await expect(win.locator('.calendar')).toBeVisible();
+  await expect(win.locator('[data-cal-view="week"]')).toHaveAttribute('aria-selected', 'true');
+  await expect(win.locator(`.cal-dayhead[data-cal-day="${june}"]`)).toBeVisible();
+  await expect(win.locator('.cal-title')).toHaveText('June 2027');
+  await expect(card()).toHaveCount(0);
+
+  // The Upcoming list has no day to show: the day view takes over.
+  await win.keyboard.press('u');
+  await expect(win.locator('[data-cal-view="upcoming"]')).toHaveAttribute('aria-selected', 'true');
+  const august = await win.evaluate(() => new Date(2027, 7, 3).getTime());
+  await open(await timeOn(august, 9));
+  await expect(win.locator('[data-cal-view="day"]')).toHaveAttribute('aria-selected', 'true');
+  await expect(win.locator('.cal-dayhead')).toHaveCount(1);
+  await expect(win.locator('.cal-dayhead')).toHaveAttribute('data-cal-day', String(august));
 });
 
 test('Sync now also fetches the booking page while it is on, and notices from elsewhere run their own actions', async () => {

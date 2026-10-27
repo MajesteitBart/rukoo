@@ -4,7 +4,7 @@
   "description": "Rukoo Mail: an email client for Windows, macOS and Linux, built with Electron",
   "main": "src/main/main.js",
   "rukoo": {
-    "accountServer": "https://rukoo-account.bvdm.ai"
+    "accountServer": "https://rukoo.io"
   },
   "scripts": {
     "start": "node scripts/start.js",

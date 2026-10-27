@@ -486,8 +486,15 @@ class AccountService(
                 lastSync = null,
                 error = null,
             )
+            val acct = bookingAcct(email)
             for (e in entries.values) {
                 e.seq = null
+                // Another Rukoo account's booking page stays with that account: kept here, never sent to this one.
+                if (e.c in PER_ACCOUNT && acctOfKey(e.c, e.k) != acct) {
+                    e.dirty = false
+                    e.ifAbsent = false
+                    continue
+                }
                 e.dirty = true
                 // A first write, unless it is a deletion: that settles by its time, like any other.
                 if (e.c in FIRST_WRITE_WINS && !e.deleted) {
@@ -508,6 +515,9 @@ class AccountService(
         session = null
         pushJob?.cancel()
         ids.clear()
+        // A booking page's private key leaves with the session; signing in again brings it back from the account.
+        // Dropped here only, not deleted: a deletion would go up at the next sign-in.
+        if (entries.values.removeAll { it.c == "bookingkey" }) saveEntries()
         for (e in entries.values) {
             e.id = null
             e.seq = null
@@ -589,16 +599,22 @@ class AccountService(
         }
     }
 
-    /** Everything this phone keeps, readable: what "Export my data" saves. */
+    /**
+     * Everything this phone keeps, readable: what "Export my data" saves. Not a booking page's key pair: its private
+     * key opens guests' details, and an export is a file anyone may come across. Booking records only of the account
+     * signed in now: another Rukoo account's (someone else on a shared phone) hold its guests' names and notes.
+     */
     fun exportData(): JsonObject = synchronized(lock) {
         val signedIn = session != null
+        val acct = state.email?.takeIf { signedIn }?.let(::bookingAcct)
         buildJsonObject {
             put("exportedAt", iso(clock.now()))
             put("server", if (signedIn) JsonPrimitive(state.server ?: defaultServer) else JsonNull)
             put("email", if (signedIn) JsonPrimitive(state.email) else JsonNull)
             putJsonArray("records") {
                 for (e in entries.values) {
-                    if (e.deleted) continue
+                    if (e.deleted || e.c == "bookingkey") continue
+                    if (e.c in PER_ACCOUNT && (acct == null || acctOfKey(e.c, e.k) != acct)) continue
                     addJsonObject {
                         put("collection", e.c)
                         put("key", e.k)
@@ -905,6 +921,19 @@ class AccountService(
 
         // Collections whose records are decided once, by the first device to write one (server/PROTOCOL.md, Collections).
         private val FIRST_WRITE_WINS = setOf("classification")
+
+        // Collections whose keys name the Rukoo account they belong to (<acct>): a booking page's records, which desktop
+        // writes and this phone receives with the rest of the account.
+        private val PER_ACCOUNT = setOf("booking", "bookingkey")
+        private val ACCT_IN_KEY = Regex("^[a-z]+:([A-Za-z0-9_-]{16})(?::|$)")
+
+        /** `<acct>`: the first 16 characters of base64url(SHA-256) of the trimmed, lowercased Rukoo account email. */
+        fun bookingAcct(email: String): String =
+            AccountKeys.b64u(java.security.MessageDigest.getInstance("SHA-256").digest(AccountKeys.normalizeEmail(email).toByteArray(Charsets.UTF_8))).take(16)
+
+        /** The `<acct>` a booking record's key names: bookingkey/<acct>, booking/settings:<acct>, booking/map:<acct>:<id>. */
+        internal fun acctOfKey(c: String, k: String): String? = if (c == "bookingkey") k else ACCT_IN_KEY.find(k)?.groupValues?.get(1)
+
         private const val TAG = "Account"
 
         // JavaScript's \s, which takes in Unicode spaces too.

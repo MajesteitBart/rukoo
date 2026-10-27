@@ -1048,6 +1048,45 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `the export leaves out the booking key and another account's booking records, and the next account never gets them`() = runBlocking {
+        val srv = server()
+        val phone = device(srv)
+        phone.signUp("one@example.com", PASSWORD)
+        val one = AccountService.bookingAcct("one@example.com")
+        assertEquals(16, one.length)
+        // What desktop's booking service writes, as it comes down with the rest of the account.
+        phone.put("bookingkey", one, buildJsonObject { put("current", "private") })
+        phone.put("booking", "settings:$one", buildJsonObject { put("url", "https://rukoo.io/one") })
+        phone.put("booking", "map:$one:abc", buildJsonObject { put("eventId", "e1") })
+        phone.put("category", "money", cat("Money"))
+        phone.sync()
+        fun exported() = (phone.exportData()["records"] as JsonArray).map { r ->
+            val o = r as JsonObject
+            (o["collection"] as JsonPrimitive).content to (o["key"] as JsonPrimitive).content
+        }.toSet()
+        assertEquals(setOf("booking" to "settings:$one", "booking" to "map:$one:abc", "category" to "money"), exported())
+
+        // Signed out: the key leaves with the session; the booking records stay here, but out of the export.
+        phone.signOut()
+        assertNull(phone.value("bookingkey", one))
+        assertNotNull(phone.value("booking", "settings:$one"))
+        assertEquals(setOf("category" to "money"), exported())
+
+        // Another account on the same phone: only the category goes up, and its export has no booking records.
+        phone.signUp("two@example.com", PASSWORD)
+        phone.sync()
+        assertEquals(1, srv.accounts.getValue("two@example.com").records.values.count { it.data != null })
+        assertEquals(setOf("category" to "money"), exported())
+
+        // The first account again: its key comes back from the account.
+        phone.signOut()
+        phone.signIn("one@example.com", PASSWORD)
+        phone.sync()
+        assertEquals(buildJsonObject { put("current", "private") }, phone.value("bookingkey", one))
+        assertEquals(setOf("booking" to "settings:$one", "booking" to "map:$one:abc", "category" to "money"), exported())
+    }
+
+    @Test
     fun `without a server the account says so`() = runBlocking {
         val desk = device(null)
         rejects("no_server") { desk.signUp("o@example.com", PASSWORD) }
