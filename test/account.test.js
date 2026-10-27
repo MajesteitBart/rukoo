@@ -389,6 +389,25 @@ test('a classification deleted while signed out stays deleted when signing in', 
   assert.equal(helper.get('classification', key), undefined, 'the deletion reached the other device');
 });
 
+test('a classification made again after its deletion went round stays', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'again@example.com', password: PASSWORD });
+  const laptop = device(t, srv, 'laptop');
+  await laptop.signIn({ email: 'again@example.com', password: PASSWORD });
+  const key = 'again@example.com\n<m@x>';
+  desk.put('classification', key, { category: 'money' }, { ifAbsent: true });
+  await desk.sync();
+  desk.remove('classification', key);
+  await desk.sync();
+  assert.equal(desk.put('classification', key, { category: 'updates' }, { ifAbsent: true }), true);
+  await desk.sync();
+  assert.deepEqual(desk.get('classification', key), { category: 'updates' });
+  assert.equal(desk.status().pending, 0);
+  await laptop.sync();
+  assert.deepEqual(laptop.get('classification', key), { category: 'updates' });
+});
+
 test('signing in with a wrong password fails without signing in', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);

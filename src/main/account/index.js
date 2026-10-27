@@ -446,7 +446,9 @@ class AccountService extends EventEmitter {
     const was = this.entries.get(key);
     if (ifAbsent && was && !was.deleted) return false;
     const e = { c, k, v, t: Math.max(this.now(), was ? was.t + 1 : 0), dirty: true };
-    if (ifAbsent) e.ifAbsent = e.first = true;
+    // A first write, unless it takes the place of a deletion this device knows of: the server keeps that deletion as
+    // a record, so a first write would bounce off it. This one settles by its time instead.
+    if (ifAbsent && !(was && was.deleted)) e.ifAbsent = e.first = true;
     this.track(key, e);
     this.changedRecords([c]);
     return true;
