@@ -9,8 +9,10 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import nl.bvdm.rukoo.agents.model.AttachedEmail
 import nl.bvdm.rukoo.agents.model.Conversation
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.MessageRef
@@ -174,6 +176,73 @@ class HubFilesTest {
             data["text"]!!.jsonPrimitive.content,
         )
         assertEquals(f.id, data["file_id"]!!.jsonPrimitive.content)
+    }
+
+    private fun HubKit.tools() = McpTools(ToolDeps(mail, hub, screen, composer, { AgentSettings() }))
+
+    private suspend fun McpTools.read(tool: String, cid: String, args: String): JsonObject =
+        callTool(ToolIdentity("clark"), tool, Json.parseToJsonElement("""{"conversation_id":"$cid",$args}""").jsonObject, JsonObject(emptyMap()))
+
+    private fun JsonObject.error(): String? = if (this["isError"]?.jsonPrimitive?.content == "true") this["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content else null
+
+    @Test
+    fun anAttachedEmailThatMovesStillReadsWithItsIdAndARecapNamesWhereItIsNow() = runTest {
+        val k = kit()
+        // The chat is about the invoice; Sanne's call, with its PDF, goes along.
+        val c = k.hub.create("clark", MessageRef(invoice))
+        k.hub.send(c.id, SendRequest("Compare these", emails = listOf(callId)))
+        advanceUntilIdle()
+        val user = { k.hub.get(c.id)!!.items.filterIsInstance<Item.User>().first() }
+        // The message keeps what finds the email again: its Message-ID and account.
+        assertEquals(AttachedEmail(callId, "Call on Thursday", user().emails!!.single().from, "<demo-13@example.com>", "demo"), user().emails!!.single())
+
+        val moved = k.mail.move(listOf(callId), "Travel").moved.single().newId!!
+        val tools = k.tools()
+        val read = tools.read("read_message", c.id, """"message_id":"$callId"""")
+        assertNull(read.error(), read.error())
+        assertEquals(moved, read["structuredContent"]!!.jsonObject["id"]!!.jsonPrimitive.content)
+        val att = tools.read("read_attachment", c.id, """"message_id":"$callId","index":0""")
+        assertNull(att.error(), att.error())
+        assertEquals(moved, att["structuredContent"]!!.jsonObject["message_id"]!!.jsonPrimitive.content)
+        // The chat keeps the id the agent has; another chat never had that id.
+        assertEquals(callId, user().emails!!.single().id)
+        val other = k.hub.create("clark", null)
+        assertTrue(tools.read("read_message", other.id, """"message_id":"$callId"""").error()!!.contains("Ids change when mail moves"))
+
+        // A new session gets the recap with the id the email has now. That turn fails on the way, so the next one
+        // carries the recap again, after the email moved on.
+        var fresh = ""
+        k.clark.script = { t ->
+            fresh = t.startOver()
+            TurnResult.error("offline")
+        }
+        k.hub.send(c.id, SendRequest("Again"))
+        advanceUntilIdle()
+        assertTrue(fresh, fresh.contains("User: Compare these [attached: the email \"Call on Thursday\" (id $moved)]"))
+        assertFalse(fresh, fresh.contains(callId))
+        assertEquals(moved, user().emails!!.single().id)
+        val later = k.mail.move(listOf(moved), "Invoices").moved.single().newId!!
+        k.clark.script = { TurnResult.DONE }
+        k.hub.send(c.id, SendRequest("And now?"))
+        advanceUntilIdle()
+        val recap = k.clark.turns.last().input
+        assertTrue(recap, recap.contains("[attached: the email \"Call on Thursday\" (id $later)]"))
+        assertEquals(later, user().emails!!.single().id)
+    }
+
+    @Test
+    fun anEmailThatMovesBetweenSendAndTheTurnGoesWithItsNewId() = runTest {
+        val k = kit()
+        val c = k.hub.create("clark", MessageRef(invoice))
+        k.hub.send(c.id, SendRequest("Compare", emails = listOf(callId)))
+        // The turn hasn't run yet when the email moves.
+        val moved = k.mail.move(listOf(callId), "Travel").moved.single().newId!!
+        advanceUntilIdle()
+        val turn = k.clark.turns.single()
+        assertEquals(listOf(moved), turn.emails)
+        assertTrue(turn.input, turn.input.contains("- id $moved: <unsafe_content source=\"email subject\">Call on Thursday</unsafe_content>"))
+        assertFalse(turn.input.contains(callId))
+        assertEquals(moved, (k.hub.get(c.id)!!.items.first { it is Item.User } as Item.User).emails!!.single().id)
     }
 
     @Test

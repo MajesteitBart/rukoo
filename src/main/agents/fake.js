@@ -95,6 +95,7 @@ class FakeAdapter {
     const env = process.env.SEM_AGENT_FAKE_SCALE ? Number(process.env.SEM_AGENT_FAKE_SCALE) : NaN;
     this.scale = Number.isFinite(scale) ? scale : Number.isFinite(env) ? env : 1;
     // What each turn handed the agent, newest last, so tests can check the exact text and the chat's model and effort.
+    // After a lost session, input is what the new session got (startOver()).
     this.received = [];
   }
 
@@ -113,7 +114,7 @@ class FakeAdapter {
   async dispose() {}
 
   async runTurn(turn) {
-    this.received.push({
+    const record = {
       conversationId: turn.conversation.id,
       input: turn.input,
       text: turn.text,
@@ -124,9 +125,10 @@ class FakeAdapter {
       effort: turn.effort || null,
       files: turn.files || [],
       emails: turn.emails || []
-    });
+    };
+    this.received.push(record);
     if (this.received.length > 20) this.received.shift();
-    const run = new FakeRun(this, turn);
+    const run = new FakeRun(this, turn, record);
     try {
       return (await run.play()) || { status: 'done' };
     } catch (err) {
@@ -137,10 +139,11 @@ class FakeAdapter {
 }
 
 class FakeRun {
-  constructor(adapter, turn) {
+  constructor(adapter, turn, record) {
     this.adapter = adapter;
     this.hub = adapter.hub;
     this.turn = turn;
+    this.record = record;
     this.cid = turn.conversation.id;
     this.toolCount = 0;
   }
@@ -221,6 +224,7 @@ class FakeRun {
     if (own.length) return this.say(`Started ${own.map((n) => `$${n}`).join(' and ')}.`);
     if ((this.turn.files || []).length || (this.turn.emails || []).length) return this.attachments();
     if (/\blost session\b/.test(lower)) return this.lostSession();
+    if (/\bread them again\b/.test(lower)) return this.readAgain();
     if (/\bwhich model\b/.test(lower)) return this.say(`Model: ${this.turn.model || 'default'}. Effort: ${this.turn.effort || 'default'}.`);
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
     if (/\bmarkdown\b/.test(lower)) return this.markdown();
@@ -358,6 +362,19 @@ class FakeRun {
     return this.say(lines.join('\n'));
   }
 
+  // "read them again": the emails attached to earlier messages, read again by the ids the chat gave the agent, as a
+  // real agent does later in a chat. The answer says which folder each one is in now.
+  async readAgain() {
+    const ids = this.turn.conversation.items.flatMap((i) => (i.type === 'user' && Array.isArray(i.emails) ? i.emails.map((e) => e.id) : []));
+    if (!ids.length) return this.say('No email was attached to this chat.');
+    const lines = [];
+    for (const id of new Set(ids)) {
+      const res = await this.tool('read_message', { message_id: id });
+      lines.push(res.error ? `I could not read an email: ${res.error}` : `The email "${untag(res.subject)}" is in ${res.folder} now.`);
+    }
+    return this.say(lines.join('\n'));
+  }
+
   async summary() {
     await this.think('Reading the email.', 300);
     return this.say('- Sanne asks for a call on Thursday at 10:00.\n- She attached Proposal-v3.pdf.\n- Joris is in cc.\n\nIt needs a short reply from you, today.');
@@ -394,6 +411,7 @@ class FakeRun {
     this.turn.emit({ type: 'notice', tone: 'info', code: 'new-session', text: `${this.hub.agentName(this.adapter.id)} started a new session` });
     const input = typeof this.turn.startOver === 'function' ? await this.turn.startOver() : this.turn.input;
     this.check();
+    this.record.input = input;
     const got = [];
     if (String(input).includes('<unsafe_content source="email"')) got.push('the email');
     if (String(input).includes('<unsafe_content source="earlier chat">')) got.push('a recap of our chat');

@@ -52,6 +52,8 @@ The paperclip before the email chip opens a file dialog. You can also drop files
 
 Your next message takes the chips along, also a quick action or a skill. A message can be just attachments, without text. The chips show above your message in the chat. A message takes up to 10 files and 10 emails.
 
+An email you attached can move after you send it, for example when you archive it. Your message keeps the email's Message-ID and account, so Rukoo finds it again, as it does the chat's own email. The id the agent got still works with `read_message` and `read_attachment`, and a recap after a lost session names the id the email has now.
+
 Rukoo refuses programs and scripts, the same file types it never opens from an email (`.exe`, `.js`, `.ps1`, `.lnk` and the like), and files over 10 MB. A short notice says which file and why. A folder is refused too: add the files in it.
 
 ### What each agent gets

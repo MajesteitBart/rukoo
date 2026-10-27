@@ -175,7 +175,8 @@ class Hub(
         val userItem: String,
         val model: String?,
         val effort: String?,
-        val emails: List<AttachedEmail>,
+        /** The emails the user attached, with the ids they have now (refreshEmails()). */
+        var emails: List<AttachedEmail>,
         /** The files the user attached to this message, in the chat's folder. */
         val files: List<ChatFile> = emptyList(),
     ) {
@@ -1170,7 +1171,9 @@ class Hub(
     }
 
     // Emails the user added to a message, by Rukoo id. Only an email Rukoo has counts, and its subject and
-    // sender come from Rukoo's cache. The chat's own email and ones it was continued from are there already.
+    // sender come from Rukoo's cache. The chat's own email and ones it was continued from are there already. Each
+    // keeps its Message-ID and account, as the chat's own email does: an id changes when the email moves, and with
+    // those Rukoo finds it again (refreshEmails(), McpTools readableId()).
     private suspend fun attachEmails(c: Conversation, ids: List<String>): List<AttachedEmail> {
         if (ids.size > MAX_EMAILS) throw AgentException(ErrorCodes.INVALID, "at most $MAX_EMAILS emails per message")
         val out = mutableListOf<AttachedEmail>()
@@ -1188,7 +1191,11 @@ class Hub(
             if (seen.any { same(it, m.messageId) } || same(c.message?.messageId, m.messageId)) continue
             if (c.continued.any { it.id == id || same(it.messageId, m.messageId) }) continue
             m.messageId?.let { seen += it }
-            out += AttachedEmail(id, m.subject.take(300), Address(m.from.name.take(200), m.from.address.take(320)))
+            out += AttachedEmail(
+                id, m.subject.take(300), Address(m.from.name.take(200), m.from.address.take(320)),
+                messageId = m.messageId?.takeIf { it.isNotEmpty() }?.take(1000),
+                accountId = accountOfId(id) ?: m.accountId.takeIf { it.isNotEmpty() },
+            )
         }
         // Named as JSON, so the UI drops exactly those and keeps the rest.
         if (gone.isNotEmpty()) throw AgentException("email-missing", JsonArray(gone.map { JsonPrimitive(it) }).toString())
@@ -1228,6 +1235,12 @@ class Hub(
             // The attached files from the chat's folder, with the start of their text.
             if (turn.files.isNotEmpty()) {
                 turn.attached = withContext(io) { files.forTurn(cid, turn.files) }
+                if (stoppedEarly(turn)) return
+            }
+            // An email the user attached can have moved since Send, and one attached to an earlier message since
+            // then: the agent gets the ids they have now.
+            if (turn.emails.isNotEmpty() || recap) {
+                refreshEmails(cid, turn, earlier = recap)
                 if (stoppedEarly(turn)) return
             }
             val named = mentionedSkills(agent, text, action)
@@ -1419,6 +1432,31 @@ class Hub(
         return if (at < 0) c.items.toList() else c.items.subList(0, at).toList()
     }
 
+    // Attached emails where they are now (hub.js refreshEmails()), found like the chat's own (locate()): each one
+    // that moved gets its new id, in [turn] and in the user's message. This turn's own, and with [earlier] the ones
+    // of the messages before it, for a new session's recap. One without a Message-ID, or one that is gone, keeps its
+    // id. One at a time: finding a moved email can open its folder.
+    private suspend fun refreshEmails(cid: String, turn: Turn, earlier: Boolean) {
+        val (messages, emails) = locked {
+            val c = convs[cid] ?: return@locked null
+            val before = if (earlier) earlierLocked(c, turn).filterIsInstance<Item.User>() else emptyList()
+            (before.map { it.id }.toSet() + turn.userItem) to (turn.emails + before.flatMap { it.emails.orEmpty() })
+        } ?: return
+        val moved = HashMap<String, String>()
+        val checked = HashSet<String>()
+        for (e in emails) {
+            if (e.messageId.isNullOrEmpty() || !checked.add(e.id)) continue
+            val live = locate(e.id, e.messageId, e.accountId) ?: continue
+            if (live != e.id) moved[e.id] = live
+        }
+        if (moved.isEmpty()) return
+        fun List<AttachedEmail>.now() = map { e -> moved[e.id]?.let { e.copy(id = it) } ?: e }
+        turn.emails = turn.emails.now()
+        locked {
+            editLocked(cid) { c -> c.copy(items = c.items.map { if (it is Item.User && it.id in messages && it.emails != null) it.copy(emails = it.emails.now()) else it }) }
+        }
+    }
+
     // The agent lost the chat's session; before the adapter sends anything, input becomes a first turn with the
     // chat's email and a recap. A turn that has the email already stays as it is. Never throws.
     private suspend fun startOver(turn: Turn, handle: Handle): String {
@@ -1436,6 +1474,8 @@ class Hub(
         }
         // The new session hasn't had a newer email either, even if the old one did.
         val newer = turn.newer.ifEmpty { if (locked { convs[turn.cid]?.continued?.isNotEmpty() == true }) loadNewer(turn.cid, again = true) else emptyList() }
+        // The recap names the emails of earlier messages by the ids they have now.
+        refreshEmails(turn.cid, turn, earlier = true)
         if (turn.closed || turn.aborted) return handle.input
         turn.newer = newer
         val open = openLine(turn.cid, newer)
