@@ -77,7 +77,7 @@ test('two devices share records, conflicts settle, and the account goes away', {
 
   const details = await desk.details();
   assert.deepEqual(details.devices.map((d) => d.name).sort(), ['desk', 'laptop']);
-  assert.equal(details.usage.records, 1202, 'a sender rule and 1201 classifications; the deleted category is a tombstone');
+  assert.equal(details.usage.records, 1203, 'a sender rule, 1201 classifications and the deleted category, which goes up as a sealed deletion');
 
   // A wrong password on a signed-in call is a typo, not an ended session.
   await assert.rejects(desk.changePassword('not the password!', 'another long password'), { code: 'wrong_password' });

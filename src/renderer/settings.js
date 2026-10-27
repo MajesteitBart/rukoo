@@ -875,18 +875,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const view = stack[stack.length - 1];
     let title = t('settings.title');
     let body = '';
-    if (view === 'main' || view === 'agents' || view === 'shortcuts') {
-      agentState = await loadAgents();
-      if (stack[stack.length - 1] !== view) return;
-    }
-    if (view === 'main' || ACCOUNT_VIEWS.includes(view)) {
-      await account.prepare(view);
-      if (stack[stack.length - 1] !== view) return;
-    }
-    if (view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view)) {
-      await categoriesPage.prepare();
-      if (stack[stack.length - 1] !== view) return;
-    }
+    // What a page needs from main, asked for at once so a redraw takes one round trip, not three.
+    const [agents] = await Promise.all([
+      view === 'main' || view === 'agents' || view === 'shortcuts' ? loadAgents() : agentState,
+      view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
+      view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null
+    ]);
+    if (stack[stack.length - 1] !== view) return;
+    if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
 
     if (view === 'main') {
       const accounts = state.accounts

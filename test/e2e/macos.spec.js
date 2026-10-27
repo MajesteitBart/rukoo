@@ -65,7 +65,10 @@ test('native Mac layout, localized Command hints and zoom work in both windows',
     await expect.poll(() => editor.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--mac-titlebar-inset')))).toBeCloseTo(86 / (zoom / 100));
     await expect.poll(() => win.locator('[data-mailto-help]').textContent()).toContain('macOS');
     await win.waitForTimeout(300);
-    await win.locator('[data-mailto]').scrollIntoViewIfNeeded();
+    // Settings draws again after the change above; scroll the row of the page that is there in the end.
+    await expect(async () => {
+      await win.locator('[data-mailto]').scrollIntoViewIfNeeded({ timeout: 2000 });
+    }).toPass();
     await capture(win, `settings-${theme}-${language}-${zoom}.png`);
     expect(await editor.evaluate(() => {
       const footer = document.querySelector('.composer-bar').getBoundingClientRect();
