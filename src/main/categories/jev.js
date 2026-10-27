@@ -70,6 +70,12 @@ function post(key, body, request = https.request) {
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
+        // An answer cut off halfway ends without 'end'; without these the request would wait forever, and every
+        // later sort behind it.
+        res.on('error', () => reject(new JevError('network')));
+        res.on('close', () => {
+          if (!res.complete) reject(new JevError('network'));
+        });
         res.on('end', () => {
           let json = null;
           try {

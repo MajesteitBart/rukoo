@@ -100,6 +100,21 @@ test('Jev gets one choice question with the categories as options', async () => 
   assert.equal(body.state.gmail_tab, 'updates');
 });
 
+test('a Jev answer cut off halfway is a network error, not a wait forever', async (t) => {
+  const http = require('http');
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json', 'content-length': '500' });
+    res.write('{"answers":');
+    setTimeout(() => res.socket.destroy(), 20);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const { port } = server.address();
+  const request = (url, opts, cb) => http.request(`http://127.0.0.1:${port}/`, opts, cb);
+  await assert.rejects(jev.classify('K', {}, [{ id: 'a', name: 'A' }], { request }), { code: 'network' });
+});
+
 test('Jev errors say what went wrong', async () => {
   const failing = (status) => (url, opts, cb) => {
     const req = new EventEmitter();
