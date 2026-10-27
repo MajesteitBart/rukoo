@@ -163,6 +163,21 @@ class CategoryRulesTest {
     }
 
     @Test
+    fun `a Jev answer larger than 1 MiB isn't read into memory`() = runBlocking {
+        MockWebServer().use { server ->
+            server.start()
+            val padding = " ".repeat((Jev.MAX_ANSWER + 1).toInt())
+            server.enqueue(MockResponse().setResponseCode(200).setBody("""{"model":"jev-1.13.0","answers":{"category":{"choice":"needs_you","confidence":0.9}}}$padding"""))
+            try {
+                Jev(OkHttpClient(), server.url("/").toString()).classify("K", MessageSummary(id = "a", accountId = "a", folder = "INBOX", uid = 1), categories.take(1), false)
+                fail("an answer that is too large")
+            } catch (e: JevError) {
+                assertEquals("server", e.code)
+            }
+        }
+    }
+
+    @Test
     fun `Jev errors say what went wrong`() = runBlocking {
         for ((status, code) in listOf(401 to "key", 403 to "key", 429 to "busy", 529 to "busy", 500 to "server")) {
             MockWebServer().use { server ->

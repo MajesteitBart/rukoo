@@ -68,7 +68,15 @@ class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi 
         }
         val json = response.use { res ->
             val text = try {
-                res.body?.string().orEmpty()
+                val source = res.body?.source()
+                if (source == null) {
+                    ""
+                } else {
+                    // An answer takes a few hundred bytes; a larger one isn't read into memory.
+                    source.request(MAX_ANSWER + 1)
+                    if (source.buffer.size > MAX_ANSWER) throw JevError("server", res.code)
+                    source.buffer.readUtf8()
+                }
             } catch (e: IOException) {
                 throw JevError("network")
             }
@@ -111,6 +119,9 @@ class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi 
         /** How much of an email's text goes along. */
         const val TEXT_CHARS = 1000
         private const val TIMEOUT_S = 20L
+
+        /** The most of an answer that is read. */
+        const val MAX_ANSWER = 1024L * 1024
         private val JSON = "application/json".toMediaType()
         private val MARKS = Regex("[\\u0300-\\u036f]")
         private val NOT_WORD = Regex("[^a-z0-9]+")

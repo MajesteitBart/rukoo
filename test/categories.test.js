@@ -137,6 +137,25 @@ test('a Jev answer cut off halfway is a network error, not a wait forever', asyn
   await assert.rejects(jev.classify('K', {}, [{ id: 'a', name: 'A' }], { request }), { code: 'network' });
 });
 
+test('a Jev answer larger than 1 MiB is not read into memory', async (t) => {
+  const http = require('http');
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.on('error', () => {});
+    // A valid answer, padded to 2 MiB.
+    res.end(`{"answers":{"category":{"choice":"a","confidence":0.9}}}${' '.repeat(2 * jev.MAX_ANSWER)}`);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const { port } = server.address();
+  const request = (url, opts, cb) => http.request(`http://127.0.0.1:${port}/`, opts, cb);
+  await assert.rejects(jev.classify('K', {}, [{ id: 'a', name: 'A' }], { request }), { code: 'server' });
+});
+
 test('Jev errors say what went wrong', async () => {
   const failing = (status) => (url, opts, cb) => {
     const req = new EventEmitter();

@@ -532,6 +532,16 @@ class AccountService extends EventEmitter {
 
   async pull(session = this.session) {
     const touched = new Set();
+    // The cursor moves past each page as it is taken, so a later page that fails doesn't bring this one back: what it
+    // changed is announced either way.
+    try {
+      await this.pullPages(session, touched);
+    } finally {
+      if (touched.size) this.changedRecords([...touched]);
+    }
+  }
+
+  async pullPages(session, touched) {
     let restarted = false;
     for (;;) {
       if (!session || this.session !== session) return;
@@ -563,7 +573,6 @@ class AccountService extends EventEmitter {
       }
       if (!res || !res.more || !records.length) break;
     }
-    if (touched.size) this.changedRecords([...touched]);
   }
 
   // Takes one record from the server; returns its collection when this device's data changed.

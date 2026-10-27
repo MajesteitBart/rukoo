@@ -660,6 +660,16 @@ class AccountService(
 
     suspend fun pull(session: Session? = synchronized(lock) { this.session }) {
         val touched = HashSet<String>()
+        // The cursor moves past each page as it is taken, so a later page that fails doesn't bring this one back:
+        // what it changed is announced either way.
+        try {
+            pullPages(session, touched)
+        } finally {
+            if (touched.isNotEmpty()) changedRecords(touched)
+        }
+    }
+
+    private suspend fun pullPages(session: Session?, touched: MutableSet<String>) {
         var restarted = false
         var more = true
         while (more) {
@@ -699,7 +709,6 @@ class AccountService(
                 (res?.get("more") as? JsonPrimitive)?.booleanOrNull == true && records.isNotEmpty()
             }
         }
-        if (touched.isNotEmpty()) changedRecords(touched)
     }
 
     /** Where the next pull starts, for tests. */

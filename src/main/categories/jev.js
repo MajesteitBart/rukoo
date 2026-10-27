@@ -10,6 +10,8 @@ const MODEL = 'jev-1.13.0';
 const TIMEOUT = 20000;
 // How much of an email's text goes along.
 const TEXT_CHARS = 1000;
+// The most of an answer that is read; one takes a few hundred bytes.
+const MAX_ANSWER = 1024 * 1024;
 
 class JevError extends Error {
   constructor(code, status = 0) {
@@ -69,7 +71,14 @@ function post(key, body, request = https.request) {
       },
       (res) => {
         const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        let size = 0;
+        res.on('data', (c) => {
+          size += c.length;
+          if (size > MAX_ANSWER) {
+            reject(new JevError('server', res.statusCode));
+            req.destroy();
+          } else chunks.push(c);
+        });
         // An answer cut off halfway ends without 'end'; without these the request would wait forever, and every
         // later sort behind it.
         res.on('error', () => reject(new JevError('network')));
@@ -123,4 +132,4 @@ async function classify(key, m, categories, { toMe = false, request } = {}) {
   return { category: chosen[0], confidence: Number(answer.confidence) || 0, model: String(res.model || MODEL) };
 }
 
-module.exports = { MODEL, TEXT_CHARS, JevError, classify, optionNames, emailState };
+module.exports = { MODEL, TEXT_CHARS, MAX_ANSWER, JevError, classify, optionNames, emailState };

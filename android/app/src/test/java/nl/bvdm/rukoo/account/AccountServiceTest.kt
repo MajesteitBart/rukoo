@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.account
 
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -709,6 +710,36 @@ class AccountServiceTest {
         laptop.sync()
         assertEquals(620, laptop.list("classification").size)
         assertEquals(620, laptop.status().counts["classification"])
+    }
+
+    @Test
+    fun `records taken before a later page failed are announced`() = runBlocking {
+        val srv = server(limit = 2)
+        val desk = device(srv, "desk")
+        desk.signUp("pages@example.com", PASSWORD)
+        val failPage = AtomicInteger()
+        val pages = AtomicInteger()
+        val base = OkHttpAccountHttp(okhttp)
+        val flaky = AccountHttp { server, method, path, body, token ->
+            if (method == "GET" && path.startsWith("/v1/records") && pages.incrementAndGet() == failPage.get()) throw AccountError("network")
+            base.request(server, method, path, body, token)
+        }
+        val laptop = device(srv, "laptop", http = flaky)
+        laptop.signIn("pages@example.com", PASSWORD)
+        laptop.sync()
+        for (i in 1..5) desk.put("category", "c$i", cat("C$i"))
+        desk.sync()
+
+        // The first page (two records) comes down, the second fails.
+        pages.set(0)
+        failPage.set(2)
+        val before = laptop.version.value
+        rejects("network") { laptop.sync() }
+        assertEquals(2, laptop.list("category").size)
+        assertTrue("the records taken are announced", laptop.version.value > before)
+        failPage.set(0)
+        laptop.sync()
+        assertEquals(5, laptop.list("category").size)
     }
 
     @Test

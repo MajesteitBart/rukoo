@@ -8,7 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const k = require('../src/main/account/crypto');
 const { AccountService } = require('../src/main/account');
-const { serverUrl } = require('../src/main/account/client');
+const { AccountError, serverUrl } = require('../src/main/account/client');
 const { startAccountServer } = require('./fixtures/account-server');
 const vectors = require('./fixtures/account-vectors.json');
 
@@ -657,6 +657,33 @@ test('many records go up and come down in pages', async (t) => {
   await laptop.sync();
   assert.equal(laptop.list('classification').length, 620);
   assert.equal(laptop.status().counts.classification, 620);
+});
+
+test('records taken before a later page failed are announced', async (t) => {
+  const srv = await server(t, { limit: 2 });
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'pages@example.com', password: PASSWORD });
+  const laptop = device(t, srv, 'laptop');
+  await laptop.signIn({ email: 'pages@example.com', password: PASSWORD });
+  await laptop.sync();
+  for (let i = 1; i <= 5; i++) desk.put('category', `c${i}`, { name: `C${i}` });
+  await desk.sync();
+
+  // The first page (two records) comes down, the second fails.
+  const http = laptop.http;
+  let pages = 0;
+  laptop.http = (server, method, route, opts) => {
+    if (method === 'GET' && route.startsWith('/v1/records') && ++pages === 2) return Promise.reject(new AccountError('network'));
+    return http(server, method, route, opts);
+  };
+  const announced = [];
+  laptop.on('records', (e) => announced.push(...e.collections));
+  await assert.rejects(laptop.sync(), { code: 'network' });
+  assert.equal(laptop.list('category').length, 2);
+  assert.deepEqual(announced, ['category'], 'the records taken are announced');
+  laptop.http = http;
+  await laptop.sync();
+  assert.equal(laptop.list('category').length, 5);
 });
 
 test('the export holds every record, readable', async (t) => {
