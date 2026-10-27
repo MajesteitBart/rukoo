@@ -408,6 +408,24 @@ test('a classification made again after its deletion went round stays', async (t
   assert.deepEqual(laptop.get('classification', key), { category: 'updates' });
 });
 
+test('a tombstone from the server erases nothing, since it proves nothing', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv, 'desk');
+  await desk.signUp({ email: 'tomb2@example.com', password: PASSWORD });
+  desk.put('sender', 'keep@example.com', { category: 'money' });
+  await desk.sync();
+  const laptop = device(t, srv, 'laptop');
+  await laptop.signIn({ email: 'tomb2@example.com', password: PASSWORD });
+  await laptop.sync();
+  // The server swaps the record for a tombstone of its own.
+  const stored = srv.accounts.get('tomb2@example.com');
+  const id = [...stored.records.keys()][0];
+  stored.seq += 1;
+  stored.records.set(id, { seq: stored.seq, data: null });
+  await laptop.sync();
+  assert.deepEqual(laptop.get('sender', 'keep@example.com'), { category: 'money' });
+});
+
 test('signing in with a wrong password fails without signing in', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv);

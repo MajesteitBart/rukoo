@@ -57,7 +57,7 @@ Everything the account syncs is a record: a value in a collection under a key.
 - `c` is the collection, `k` the record's key in it, `v` any JSON value and `t` when the device changed it. A deleted record has `v` null and `d` true.
 - The record's id is `base64url(HMAC-SHA256(indexKey, c + "\n" + k))`, 43 characters. The server can match a record to its id, but not learn the collection or the key.
 - The record's `data` is `seal(recordKey, JSON of the record, "rukoo/v1/record:" + id)`. Binding the id into the tag stops the server from swapping the contents of two records.
-- A device deletes a record by writing it again with `d` true, sealed like any other. The deletion then carries its time and settles against changes on other devices like any write. The server also knows deletion without contents (`data` null, a tombstone); a device that receives one drops the record unless it has its own change waiting to go up.
+- A device deletes a record by writing it again with `d` true, sealed like any other. The deletion then carries its time and settles against changes on other devices like any write. The server also knows deletion without contents (`data` null, a tombstone), but devices don't act on one: nothing in it proves a device of the account wrote it, so a server could use it to erase records. Only a sealed deletion deletes.
 
 A device that opens a record checks that its `c` and `k` give the id it arrived under, and drops it otherwise.
 

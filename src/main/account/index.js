@@ -548,15 +548,9 @@ class AccountService extends EventEmitter {
 
   // Takes one record from the server; returns its collection when this device's data changed.
   applyRemote({ id, seq, data }) {
-    const key = this.ids.get(id);
-    const local = key ? this.entries.get(key) : null;
-    // A tombstone the server keeps for data null. Rukoo deletes with d: true instead, but takes these too.
-    if (data === null || data === undefined) {
-      if (!local || local.dirty) return null;
-      this.entries.delete(key);
-      this.ids.delete(id);
-      return local.c;
-    }
+    // A tombstone (data null) proves nothing about who wrote it, so a server could use one to erase records here.
+    // Devices delete with sealed d: true records, which do prove it; tombstones are left alone.
+    if (data === null || data === undefined) return null;
     const rec = keys.openRecord(this.session.keys, id, data);
     if (!rec) return null;
     const k = entryKey(rec.c, rec.k);
