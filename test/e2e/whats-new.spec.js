@@ -50,6 +50,8 @@ test('the guide explains categories first, sorts only at the end, and shows once
   await win.click('[data-s="demo"]');
   await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.0", { timeout: 15000 });
   await expect(win.locator('.nav-item.nav-sub')).toHaveCount(0);
+  // The first step also names the calendar and the booking page, which ship in the same release.
+  await expect(guide().locator('.wn-feature b')).toHaveText(['Inbox categories', 'The same on every device', 'Smarter sorting, if you want it', 'Calendar and booking page']);
 
   await next();
   await expect(guide().locator('h2')).toHaveText('Choose your categories');

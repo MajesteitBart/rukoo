@@ -1896,6 +1896,8 @@
   "whatsNew.welcome.syncText": "Een gratis Rukoo-account houdt je categorieën en correcties gelijk op je computers en telefoon. Het is end-to-end versleuteld.",
   "whatsNew.welcome.jevTitle": "Slimmer sorteren, als je wilt",
   "whatsNew.welcome.jevText": "Met je eigen TypeSafe-sleutel sorteert Jev de e-mail waar de regels van Rukoo niet zeker over zijn.",
+  "whatsNew.welcome.calendarTitle": "Agenda en afsprakenpagina",
+  "whatsNew.welcome.calendarText": "Een maandweergave, herhalende afspraken en herinneringen. Op je afsprakenpagina kiezen mensen en hun AI-assistent een moment met je.",
   "whatsNew.notNow": "Niet nu",
   "whatsNew.start": "Instellen",
   "whatsNew.next": "Volgende",

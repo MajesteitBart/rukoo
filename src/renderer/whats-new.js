@@ -1,6 +1,7 @@
 // "What's new in Rukoo 2.0": one guided window that explains inbox categories, then sets them up in order: the
 // categories, an account to sync them, Jev if wanted, and only then the first sort. Everyone sees it once on the
-// first start of 2.0 (main's whatsNewState); Settings > What's new opens it again.
+// first start of 2.0 (main's whatsNewState); Settings > What's new opens it again. The first step also names the
+// calendar's additions and the booking page, which need no setting up here.
 import { t } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast } from './ui.js';
@@ -112,7 +113,8 @@ async function run() {
               ${[
                 ['tabs', 'categories'],
                 ['devices', 'sync'],
-                ['sparkle', 'jev']
+                ['sparkle', 'jev'],
+                ['calendar', 'calendar']
               ]
                 .map(([ic, k]) => `<div class="wn-feature"><span class="wn-ic">${icons[ic]}</span><div><b>${esc(t(`whatsNew.welcome.${k}Title`))}</b><p>${esc(t(`whatsNew.welcome.${k}Text`))}</p></div></div>`)
                 .join('')}

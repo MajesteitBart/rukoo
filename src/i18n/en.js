@@ -7353,6 +7353,14 @@
     "message": "With your own TypeSafe key, Jev sorts the mail Rukoo's rules aren't sure about.",
     "description": "\"What's new in Rukoo 2.0\" guide: text of the third feature. src/renderer/whats-new.js."
   },
+  "whatsNew.welcome.calendarTitle": {
+    "message": "Calendar and booking page",
+    "description": "\"What's new in Rukoo 2.0\" guide: fourth feature on the first step, the calendar's additions and the booking page. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.calendarText": {
+    "message": "A month view, repeating events and reminders. On your booking page, people and their AI assistants pick a time with you.",
+    "description": "\"What's new in Rukoo 2.0\" guide: text of the fourth feature, about the calendar and the booking page (Settings → Booking page). src/renderer/whats-new.js."
+  },
   "whatsNew.notNow": {
     "message": "Not now",
     "description": "\"What's new in Rukoo 2.0\" guide: button that closes the guide on the first step. src/renderer/whats-new.js."

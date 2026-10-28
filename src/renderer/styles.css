@@ -7082,7 +7082,8 @@ button.cal-gchip-main:hover {
 .wn {
   position: relative;
   width: min(600px, calc(100vw - 40px));
-  height: min(700px, calc(100vh - 40px));
+  /* Tall enough for the first step's four features without scrolling in the default window. */
+  height: min(760px, calc(100vh - 40px));
   display: flex;
   flex-direction: column;
   background: var(--raised);
