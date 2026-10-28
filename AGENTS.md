@@ -45,7 +45,7 @@ Choose the checks that correspond to the change:
 - **Mail operations:** check `engine.js`, the real IMAP implementation, the demo implementation, and renderer callers. For moves and deletion, check the undo path as well as the initial action.
 - **Composer:** exercise both the inline editor and separate compose window. Check draft saving and reopening when changing editor state or persistence.
 - **Agent chat:** check shared hub/tool behavior, affected Hermes/Claude Code/Codex adapters, and the renderer's streamed and completed states. A fake-agent test does not verify a live provider connection.
-- **Calendar:** check the main-process service, Google and demo adapters, and week/day/upcoming views when affected. For event changes, consider account selection, time zones, recurring occurrences and invitation responses. See the current limits in the README.
+- **Calendar:** check the main-process service, Google and demo adapters, and week/day/upcoming views when affected. For event changes, consider account selection, time zones, recurring occurrences and invitation responses. See the current limits in [docs/calendar.md](docs/calendar.md#limits).
 - **Shared UI:** check dark and light themes, English and Dutch, narrow windows, and relevant zoom levels. Settings shared between windows must work in each affected window.
 - **Translations:** update English and Dutch together. Follow [src/i18n/AGENTS.md](src/i18n/AGENTS.md), including registration and both HTML entry points when adding a language.
 - **Persistent state:** verify reopening or restarting where the change promises persistence. An updated control on screen is not proof that its setting, draft or conversation was saved.
@@ -119,7 +119,7 @@ Before declaring UI-impacting work complete:
 
 ## Versioning and releases
 
-Rukoo uses Semantic Versioning: a reviewed PR bumps the version with `npm version <version> --no-git-tag-version`, a draft GitHub release titled `v<version> - Added …` or `v<version> - Fixed …` carries the notes, and only when the maintainer explicitly asks for a release do you tag the merged commit and run the release workflow, which builds the Windows executables and publishes that draft (steps in [README.md](README.md#releases)).
+Rukoo uses Semantic Versioning: a reviewed PR bumps the version with `npm version <version> --no-git-tag-version`, a draft GitHub release titled `v<version> - Added …` or `v<version> - Fixed …` carries the notes, and only when the maintainer explicitly asks for a release do you tag the merged commit and run the release workflow, which builds the Windows executables and publishes that draft (steps in [docs/development.md](docs/development.md#releases)).
 
 ## Plans and work artifacts
 

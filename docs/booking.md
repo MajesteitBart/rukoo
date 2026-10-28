@@ -14,6 +14,8 @@ The page runs on the server of your [Rukoo account](account.md). The server offe
 
 Open Settings → Booking page. Signed out, the page explains what it needs and offers Create account and Sign in; you come back to the setup afterwards. A server without booking pages says so.
 
+![Settings → Booking page, before you have a Rukoo account](screenshots/light/20-settings-booking.png)
+
 The setup is one screen:
 
 | Field | What it is | Filled in with |
