@@ -51,6 +51,12 @@ const DEFAULT_SETTINGS = {
   // The formatted signature, already cleaned; '' for a plain-text one. signature then holds its text, which is what
   // earlier versions show. See signature.js.
   signatureHtml: '',
+  // The booking page's link under the signature, opt-in. bookingFooterText: the footer's own text with {url} where
+  // the link goes, or null for the default text in the booking page's language. Accounts can override both.
+  bookingFooter: false,
+  bookingFooterText: null,
+  // Calendar choices and defaults; see normalizeCalendar(). Changed only through calendarSettings().
+  calendar: calendarDefaults(),
   senderLogos: true,
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
@@ -88,6 +94,79 @@ function normalizeSettings(s) {
   s.keymap = KEYMAPS.includes(s.keymap) ? s.keymap : DEFAULT_SETTINGS.keymap;
   s.checkUpdates = s.checkUpdates !== false;
   s.whatsNewSeen = typeof s.whatsNewSeen === 'string' ? s.whatsNewSeen : '';
+  s.calendar = normalizeCalendar(s.calendar);
+  // A footer text that can't carry the link ({url}), or is longer than 300 characters, falls back to the default.
+  const footerText = (v) => (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}') ? v.trim() : null);
+  s.bookingFooter = s.bookingFooter === true;
+  s.bookingFooterText = footerText(s.bookingFooterText);
+}
+
+// The calendar settings with nothing chosen yet. A new object each time: settings objects share it by reference.
+function calendarDefaults() {
+  return {
+    // Per calendar ("accountId\ncalendarId"): the eye toggle (missing: the provider's own "shown"), counted toward
+    // availability (missing: the account's primary and the user's own calendars) and a colour.
+    visible: {},
+    availability: {},
+    colors: {},
+    // null: the locale's first day; 0 Sunday, 1 Monday, 6 Saturday.
+    weekStart: null,
+    weekends: true,
+    workDays: [1, 2, 3, 4, 5],
+    workStart: '09:00',
+    workEnd: '17:00',
+    // Minutes.
+    duration: 60,
+    // Minutes before timed events whose reminders aren't known; null for none.
+    reminder: 10,
+    notify: true,
+    notifiedUpgrade: false
+  };
+}
+
+const CALENDAR_MAPS = ['visible', 'availability', 'colors'];
+const CALENDAR_KEYS = 500;
+const CALENDAR_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/;
+
+// What each per-calendar map may hold.
+const CALENDAR_VALUES = {
+  visible: (x) => typeof x === 'boolean',
+  availability: (x) => typeof x === 'boolean',
+  colors: (x) => typeof x === 'string' && /^#[0-9a-f]{6}$/i.test(x)
+};
+
+// A complete calendar settings object: what is missing or wrong gets its default, and the maps keep only valid
+// entries (booleans, '#rrggbb' colours), at most 500 each. fallback, a complete object itself, replaces the defaults:
+// a change keeps what the user had where it doesn't fit. Never changes its arguments.
+function normalizeCalendar(value, fallback = null) {
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = { ...calendarDefaults(), ...(fallback || {}) };
+  out.workDays = [...out.workDays];
+  const map = (m, ok) => {
+    const kept = {};
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return kept;
+    for (const [k, x] of Object.entries(m)) {
+      if (Object.keys(kept).length >= CALENDAR_KEYS) break;
+      if (k && k.length <= 2000 && ok(x)) kept[k] = x;
+    }
+    return kept;
+  };
+  for (const name of CALENDAR_MAPS) out[name] = map(v[name], CALENDAR_VALUES[name]);
+  if ([null, 0, 1, 6].includes(v.weekStart)) out.weekStart = v.weekStart;
+  if (typeof v.weekends === 'boolean') out.weekends = v.weekends;
+  if (Array.isArray(v.workDays) && v.workDays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) out.workDays = [...new Set(v.workDays)].sort((a, b) => a - b);
+  // Both ends together, so a pair that doesn't make a range falls back as a pair.
+  const workStart = CALENDAR_TIME.test(v.workStart) && v.workStart !== '24:00' ? v.workStart : out.workStart;
+  const workEnd = CALENDAR_TIME.test(v.workEnd) ? v.workEnd : out.workEnd;
+  if (workEnd > workStart) {
+    out.workStart = workStart;
+    out.workEnd = workEnd;
+  }
+  if (Number.isInteger(v.duration) && v.duration >= 15 && v.duration <= 480 && v.duration % 5 === 0) out.duration = v.duration;
+  if (v.reminder === null || (Number.isInteger(v.reminder) && v.reminder >= 0 && v.reminder <= 10080)) out.reminder = v.reminder;
+  if (typeof v.notify === 'boolean') out.notify = v.notify;
+  if (typeof v.notifiedUpgrade === 'boolean') out.notifiedUpgrade = v.notifiedUpgrade;
+  return out;
 }
 
 // A stored signature is cleaned again on loading, in case settings.json or accounts.json was edited by hand.
@@ -181,8 +260,12 @@ class Engine extends EventEmitter {
   init() {
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.accounts = readJson(this.file('accounts.json'), []);
+    const fresh = !fs.existsSync(this.file('settings.json'));
     this.settings = { ...DEFAULT_SETTINGS, ...readJson(this.file('settings.json'), {}) };
     normalizeSettings(this.settings);
+    // The notice that Rukoo now reminds you of events is for profiles from before it did. A new one has never seen
+    // Rukoo without reminders; the first saved setting (adding an account saves one) keeps this.
+    if (fresh) this.settings.calendar.notifiedUpgrade = true;
     setLanguage(this.settings.language);
     // Once only, so a user who sets this signature again keeps it.
     if (!this.settings.signatureOptIn) {
@@ -410,6 +493,11 @@ class Engine extends EventEmitter {
       // null for both: the account uses the general signature.
       signature: acc.signature,
       signatureHtml: acc.signatureHtml || null,
+      // The booking link under this account's signature: null follows the general setting, like the signature.
+      bookingFooter: typeof acc.bookingFooter === 'boolean' ? acc.bookingFooter : null,
+      bookingFooterText: typeof acc.bookingFooter === 'boolean' && typeof acc.bookingFooterText === 'string' ? acc.bookingFooterText : null,
+      // Whether the calendar server sends invitations, as set in Server settings; null: as its DAV header says.
+      caldavInvites: acc.caldavInvites === 'provider' || acc.caldavInvites === 'none' ? acc.caldavInvites : null,
       auth: acc.auth || (acc.type === 'demo' ? 'none' : 'password'),
       identities: this.identities(acc),
       defaultFrom: this.identity(acc).address,
@@ -543,6 +631,20 @@ class Engine extends EventEmitter {
       acc.signature = signature.signature;
       acc.signatureHtml = signature.signatureHtml || null;
     }
+    // The booking link under this account's signature. bookingFooter null goes back to the general setting, text and
+    // all; a text without {url}, or over 300 characters, means the general text.
+    if (patch.bookingFooter !== undefined) {
+      if (typeof patch.bookingFooter === 'boolean') acc.bookingFooter = patch.bookingFooter;
+      else {
+        delete acc.bookingFooter;
+        delete acc.bookingFooterText;
+      }
+    }
+    if (patch.bookingFooterText !== undefined && typeof acc.bookingFooter === 'boolean') {
+      const v = patch.bookingFooterText;
+      if (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}')) acc.bookingFooterText = v.trim();
+      else delete acc.bookingFooterText;
+    }
     if (patch.color) acc.color = patch.color;
     if (patch.aliases) {
       // Validate the whole list before touching the account, so a typo cannot wipe existing aliases.
@@ -588,6 +690,16 @@ class Engine extends EventEmitter {
         if (old) old.close();
       }
       if (calendar && calendar.changed) this.emit('calendar-changed', acc);
+    }
+    // Whether the calendar server sends invitations ('provider', 'none'; null: as its DAV header says). It decides
+    // whether guests can be added there, so the calendars are read again with it.
+    if (patch.caldavInvites !== undefined && acc.type === 'imap') {
+      const invites = patch.caldavInvites === 'provider' || patch.caldavInvites === 'none' ? patch.caldavInvites : null;
+      if ((acc.caldavInvites || null) !== invites) {
+        if (invites) acc.caldavInvites = invites;
+        else delete acc.caldavInvites;
+        if (acc.caldav) this.emit('calendar-changed', acc);
+      }
     }
     this.persistAccounts();
     this.emit('updated');
@@ -651,6 +763,11 @@ class Engine extends EventEmitter {
 
   // quiet: save without 'updated', for a change no list or count depends on (zoom), so the windows don't redraw.
   updateSettings(patch, { quiet = false } = {}) {
+    // Calendar settings change only through calendarSettings(), which merges them per calendar.
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'calendar')) {
+      const { calendar, ...rest } = patch;
+      patch = rest;
+    }
     if (patch.signature !== undefined || patch.signatureHtml !== undefined) patch = { ...patch, ...signatureFields(patch) };
     this.settings = { ...this.settings, ...patch };
     normalizeSettings(this.settings);
@@ -658,6 +775,34 @@ class Engine extends EventEmitter {
     this.persistSettings();
     if (!quiet) this.emit('updated');
     return this.settings;
+  }
+
+  // A change to settings.calendar. visible, availability and colors merge per calendar, and a calendar set to null
+  // goes back to its default; other fields replace. What doesn't fit keeps the value the user had: a working day that
+  // would end before it starts keeps both ends, so a page that saves each field on its own doesn't lose the other.
+  // The result is normalized and saved, and 'calendar-settings' tells the calendar services before 'updated' tells the
+  // windows.
+  calendarSettings(patch) {
+    const p = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
+    const current = this.settings.calendar;
+    const next = { ...current };
+    for (const [key, value] of Object.entries(p)) {
+      if (CALENDAR_MAPS.includes(key)) {
+        const merged = { ...current[key] };
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          for (const [k, x] of Object.entries(value)) {
+            if (x === null) delete merged[k];
+            else if (CALENDAR_VALUES[key](x)) merged[k] = x;
+          }
+        }
+        next[key] = merged;
+      } else if (Object.prototype.hasOwnProperty.call(current, key)) next[key] = value;
+    }
+    this.settings = { ...this.settings, calendar: normalizeCalendar(next, current) };
+    this.persistSettings();
+    this.emit('calendar-settings', this.settings.calendar);
+    this.emit('updated');
+    return this.settings.calendar;
   }
 
   // ---------- sync ----------

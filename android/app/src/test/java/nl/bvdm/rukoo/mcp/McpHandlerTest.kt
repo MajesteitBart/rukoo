@@ -64,7 +64,7 @@ class McpHandlerTest {
         assertEquals("""{"tools":{"listChanged":false}}""", r["capabilities"].toString())
         assertEquals("""{"name":"rukoo","title":"Rukoo Mail","version":"0.1.0"}""", r["serverInfo"].toString())
         assertEquals(McpHandler.INSTRUCTIONS, r["instructions"]!!.jsonPrimitive.content)
-        assertEquals(756, McpHandler.INSTRUCTIONS.length)
+        assertEquals(869, McpHandler.INSTRUCTIONS.length)
         assertEquals("2025-06-18", result("""{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}""")["protocolVersion"]!!.jsonPrimitive.content)
         assertEquals("2025-06-18", result("""{"jsonrpc":"2.0","id":3,"method":"initialize"}""")["protocolVersion"]!!.jsonPrimitive.content)
     }
@@ -86,7 +86,7 @@ class McpHandlerTest {
     @Test
     fun answersPingListAndUnknownMethods() {
         assertEquals("{}", result("""{"jsonrpc":"2.0","id":1,"method":"ping"}""").toString())
-        assertEquals(12, result("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["tools"]!!.jsonArray.size)
+        assertEquals(16, result("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["tools"]!!.jsonArray.size)
         assertEquals(
             """{"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"Method not found: server/discover"}}""",
             send("""{"jsonrpc":"2.0","id":4,"method":"server/discover"}""").toString(),

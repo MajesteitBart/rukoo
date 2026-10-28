@@ -33,7 +33,13 @@ const RECORD_ID = /^[A-Za-z0-9_-]{43}$/;
 // The most a record may take on the server, once sealed (server/PROTOCOL.md).
 const RECORD_BYTES = 16384;
 // Collections whose records are decided once, by the first device to write one (server/PROTOCOL.md, Collections).
-const FIRST_WRITE_WINS = new Set(['classification']);
+// A booking page's key pair is one of them, so two devices that make one at the same time end up with the same.
+const FIRST_WRITE_WINS = new Set(['classification', 'bookingkey']);
+// Collections whose keys name the Rukoo account they belong to (<acct>); see bookingAcct().
+const PER_ACCOUNT = new Set(['booking', 'bookingkey']);
+// Addresses Rukoo used as its default server before. A device signed in at one keeps it (pin()) while the session
+// lasts; once it ends, the device goes back to the default (forget()).
+const FORMER_SERVERS = ['https://rukoo-account.bvdm.ai'];
 // Which of two versions of a record wins: the later change, and on a tie the larger value, so every device picks the
 // same one whatever order they arrive in.
 const gone = (x) => (x.d || x.deleted ? 1 : 0);
@@ -43,7 +49,10 @@ const SYNC_ROUNDS = 3;
 const ERRORS = new Set([
   'invalid', 'unauthorized', 'locked', 'rate_limited', 'exists', 'signups_closed', 'invite_required', 'quota', 'too_large',
   'not_configured', 'network', 'server', 'invalid_email', 'weak_password', 'recovery_key', 'weak_kdf', 'no_server', 'protocol',
-  'signed_in', 'signed_out', 'wrong_password'
+  'signed_in', 'signed_out', 'wrong_password',
+  // The booking routes (server/PROTOCOL.md, Owner errors).
+  'handle_taken', 'handle_reserved', 'handle_lost', 'handle_changes', 'has_bookings', 'other_device', 'not_found', 'slot_taken',
+  'stale_version', 'not_active'
 ]);
 
 function readJson(file, fallback) {
@@ -62,18 +71,29 @@ function writeJson(file, data) {
 }
 
 // An error with a message for the person and a code for the code. Server codes Rukoo doesn't know read as 'server'.
-function fail(code, status = 0) {
+function fail(code, status = 0, details = null) {
   const known = ERRORS.has(code) ? code : 'server';
-  return new AccountError(known, status, t(`account.errors.${known}`));
+  return new AccountError(known, status, t(`account.errors.${known}`), details);
 }
 
 function translated(err) {
-  if (err instanceof AccountError) return fail(err.code, err.status);
+  if (err instanceof AccountError) return fail(err.code, err.status, err.details);
   return err;
 }
 
 const entryKey = (c, k) => `${c}\n${k}`;
 const validEmail = (email) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) && email.length <= 320;
+
+// <acct>: the first 16 characters of base64url(SHA-256) of the trimmed, lowercased Rukoo account email. Booking
+// records carry it in their keys, so a device signed in to another account never uses them (server/PROTOCOL.md).
+const bookingAcct = (email) => crypto.createHash('sha256').update(keys.normalizeEmail(email), 'utf8').digest('base64url').slice(0, 16);
+
+// The <acct> a booking record's key names: bookingkey/<acct>, booking/settings:<acct>, booking/map:<acct>:<id>.
+function acctOfKey(c, k) {
+  if (c === 'bookingkey') return k;
+  const m = /^[a-z]+:([A-Za-z0-9_-]{16})(?::|$)/.exec(k);
+  return m ? m[1] : null;
+}
 
 class AccountService extends EventEmitter {
   // request and now can be replaced in tests.
@@ -93,6 +113,9 @@ class AccountService extends EventEmitter {
     this.syncing = null;
     this.timers = { push: null, save: null, every: null };
     this.durableCursor = 0;
+    // Runs before the account is deleted on the server and stops the deletion when it throws: the booking service
+    // turns the booking page off first (main.js).
+    this.beforeDelete = null;
   }
 
   file(name) {
@@ -108,6 +131,7 @@ class AccountService extends EventEmitter {
     // The cursor as of the records last written to disk: the state on disk never goes past it.
     this.durableCursor = Number(this.state.cursor) || 0;
     if (this.state.email && this.state.token && this.state.dataKey) {
+      this.pin();
       try {
         this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64') });
       } catch (_) {
@@ -121,6 +145,17 @@ class AccountService extends EventEmitter {
 
   get server() {
     return this.state.server || this.defaultServer;
+  }
+
+  // A session belongs to the address it signed in at, because the password proofs include it (server/PROTOCOL.md,
+  // Keys). A device that signed in at the default keeps that address when a newer Rukoo has another default. Sessions
+  // from before sessionServer was kept have the server info fetched at sign-in, which is for the same address.
+  pin() {
+    if (this.state.server) return;
+    const at = serverUrl(this.state.sessionServer || (this.state.info && this.state.info.server));
+    if (!at || at === this.defaultServer) return;
+    this.state.server = at;
+    this.saveState();
   }
 
   get signedIn() {
@@ -191,6 +226,7 @@ class AccountService extends EventEmitter {
     if (url && !server) throw fail('no_server');
     this.state.server = server && server !== this.defaultServer ? server : null;
     this.state.info = null;
+    delete this.state.formerServer;
     this.saveState();
     this.changedStatus();
     return this.status();
@@ -263,6 +299,25 @@ class AccountService extends EventEmitter {
     if (!validEmail(address)) throw fail('invalid_email');
     if (typeof password !== 'string' || !password) throw fail('unauthorized');
     this.checkStorage();
+    const former = this.state.server ? null : this.state.formerServer;
+    try {
+      return await this.login(address, password);
+    } catch (err) {
+      // This device went back to the default from a former one (forget()). An account made there signs in only
+      // there, as the password proofs include the address: try it once, and keep it when it works.
+      if (!former || !err || err.code !== 'unauthorized') throw err;
+      this.state.server = former;
+      try {
+        return await this.login(address, password);
+      } catch (_) {
+        this.state.server = null;
+        this.saveState();
+        throw err;
+      }
+    }
+  }
+
+  async login(address, password) {
     await this.serverInfo();
     const { authKey, wrapKey } = await this.authFor(address, password);
     const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() });
@@ -377,13 +432,51 @@ class AccountService extends EventEmitter {
     if (!this.signedIn) throw fail('signed_out');
     const session = this.session;
     const { authKey } = await this.authFor(this.state.email, password);
-    await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey) }, { auth: true, session });
+    if (typeof this.beforeDelete === 'function') {
+      // The server checks the password only in the last call, and what beforeDelete removes (the booking page and
+      // its bookings) doesn't come back: a mistyped password has to stop before it.
+      await this.checkPassword(authKey);
+      await this.beforeDelete();
+    }
+    // The key to take the booking page's handle back with an account made again here: the server keeps the handle
+    // for it, not for whoever signs up next with this email (sign-ups don't prove the address).
+    const handleKey = keys.b64u(crypto.randomBytes(32));
+    const email = this.state.email;
+    await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey), handleKey }, { auth: true, session });
     if (this.session === session) {
       this.state.error = null;
       this.forget();
+      this.state.handleKey = { email, key: handleKey };
+      this.saveState();
       this.changedStatus();
     }
     return this.status();
+  }
+
+  // The handleKey this device kept when it deleted the account with this email, for the booking page's publish.
+  handleKeyFor(email) {
+    const k = this.state.handleKey;
+    return k && email && k.email === keys.normalizeEmail(email) && typeof k.key === 'string' ? k.key : null;
+  }
+
+  dropHandleKey() {
+    if (!this.state.handleKey) return;
+    delete this.state.handleKey;
+    this.saveState();
+  }
+
+  // Whether authKey is this account's password, without changing anything there: a sign-in of its own (the route
+  // that answers a wrong password with 401), whose session ends at once. A wrong one throws wrong_password, as
+  // DELETE /v1/account would; it counts toward the same lock as any sign-in.
+  async checkPassword(authKey) {
+    let res;
+    try {
+      res = await this.call('POST', '/v1/login', { email: this.state.email, authKey: keys.b64u(authKey), device: this.device() });
+    } catch (err) {
+      if (err && err.code === 'unauthorized') throw fail('wrong_password', 403);
+      throw err;
+    }
+    if (res && typeof res.token === 'string') await this.call('POST', '/v1/logout', undefined, { auth: true, session: { token: res.token } }).catch(() => {});
   }
 
   open({ token, dataKey }) {
@@ -404,14 +497,23 @@ class AccountService extends EventEmitter {
     this.state = {
       ...this.state,
       email,
+      sessionServer: this.server,
       token: this.secrets.encrypt(token),
       dataKey: this.secrets.encrypt(dataKey.toString('base64')),
       cursor: 0,
       lastSync: null,
       error: null
     };
+    delete this.state.formerServer;
+    const acct = bookingAcct(email);
     for (const e of this.entries.values()) {
       delete e.seq;
+      // Another Rukoo account's booking page stays with that account: kept here, never sent to this one.
+      if (PER_ACCOUNT.has(e.c) && acctOfKey(e.c, e.k) !== acct) {
+        delete e.dirty;
+        delete e.ifAbsent;
+        continue;
+      }
       e.dirty = true;
       // A first write, unless it is a deletion: that settles by its time, like any other.
       if (FIRST_WRITE_WINS.has(e.c) && !e.deleted) e.ifAbsent = e.first = true;
@@ -428,13 +530,24 @@ class AccountService extends EventEmitter {
     clearTimeout(this.timers.push);
     this.ids.clear();
     for (const [key, e] of this.entries) {
+      // A booking page's private key leaves with the session; signing in again brings it back from the account.
+      // Dropped here only, not deleted: a deletion would go up at the next sign-in.
+      if (e.c === 'bookingkey') {
+        this.entries.delete(key);
+        continue;
+      }
       delete e.id;
       delete e.seq;
       delete e.dirty;
       delete e.ifAbsent;
     }
-    const { server, info, error } = this.state;
-    this.state = { server, info, error };
+    // A device pinned to a former default goes back to the default: signed out here, deleted, or ended elsewhere, as
+    // when another device deleted the account to make it again at the default.
+    // signIn() tries the former address once more, for an account still there (formerServer).
+    const former = FORMER_SERVERS.includes(this.state.server);
+    const { server, info, error, handleKey } = this.state;
+    const kept = handleKey ? { handleKey } : {};
+    this.state = former ? { server: null, info: null, error, formerServer: server, ...kept } : { server, info, error, ...(this.state.formerServer ? { formerServer: this.state.formerServer } : {}), ...kept };
     this.saveState();
   }
 
@@ -449,6 +562,26 @@ class AccountService extends EventEmitter {
     const out = [];
     for (const e of this.entries.values()) if (e.c === c && !e.deleted) out.push({ k: e.k, v: e.v, t: e.t });
     return out;
+  }
+
+  // Where a record stands with the server: seq once the server has stored or sent this version, dirty while it still
+  // has to go up. Null for a record this device doesn't have.
+  recordState(c, k) {
+    const e = this.entries.get(entryKey(c, k));
+    if (!e || e.deleted) return null;
+    return { seq: Number.isSafeInteger(e.seq) ? e.seq : null, dirty: Boolean(e.dirty) };
+  }
+
+  // The signed-in account's <acct>, or null.
+  get acct() {
+    return this.signedIn && this.state.email ? bookingAcct(this.state.email) : null;
+  }
+
+  // A call to the booking routes (server/PROTOCOL.md, Booking pages) with this session. Their errors carry the
+  // server's details (the refused field, the booking as it is now).
+  async bookingCall(method, route, body) {
+    if (!this.signedIn) throw fail('signed_out');
+    return this.call(method, route, body, { auth: true });
   }
 
   // Returns false when ifAbsent and the record already exists. An ifAbsent record is a first write: when another
@@ -491,10 +624,13 @@ class AccountService extends EventEmitter {
     }
   }
 
-  // Everything this device keeps, readable: what "Export my data" saves.
+  // Everything this device keeps, readable: what "Export my data" saves. Not a booking page's key pair: its private
+  // key opens guests' details, and an export is a file anyone may come across. Booking records only of the account
+  // signed in now: another Rukoo account's (someone else on a shared computer) hold its guests' names and notes.
   exportData() {
+    const acct = this.acct;
     const records = [...this.entries.values()]
-      .filter((e) => !e.deleted)
+      .filter((e) => !e.deleted && e.c !== 'bookingkey' && (!PER_ACCOUNT.has(e.c) || (acct && acctOfKey(e.c, e.k) === acct)))
       .map((e) => ({ collection: e.c, key: e.k, value: e.v, changed: new Date(e.t).toISOString() }));
     return {
       exportedAt: new Date(this.now()).toISOString(),
@@ -724,4 +860,4 @@ class AccountService extends EventEmitter {
   }
 }
 
-module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES, PULL_DATA };
+module.exports = { AccountService, MIN_PASSWORD, PULL_PAGES, PULL_DATA, bookingAcct };

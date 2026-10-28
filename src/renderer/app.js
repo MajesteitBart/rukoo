@@ -39,6 +39,8 @@ import { openWhatsNew } from './whats-new.js';
 import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
 import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
 import * as calendar from './calendar.js';
+// The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
+import { applyBooking } from './calendar-free.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -647,9 +649,28 @@ function renderModeSwitch() {
     { value: 'calendar', label: t('calendar.mode.calendar'), title: t('calendar.mode.calendarShortcut'), icon: 'calendar' }
   ];
   const el = box.querySelector('.segmented');
-  if (el && el.dataset.language === S.data.settings.language) return setSegmented(el, prefs.mode);
-  box.innerHTML = segmented({ name: 'mode', label: t('calendar.mode.label'), value: prefs.mode, options });
-  box.querySelector('.segmented').dataset.language = S.data.settings.language;
+  if (el && el.dataset.language === S.data.settings.language) setSegmented(el, prefs.mode);
+  else {
+    box.innerHTML = segmented({ name: 'mode', label: t('calendar.mode.label'), value: prefs.mode, options });
+    box.querySelector('.segmented').dataset.language = S.data.settings.language;
+  }
+  // Booking requests that wait for an answer: a count on the Calendar segment, also while the mailbox shows.
+  const count = calendar.requestCount();
+  const seg = box.querySelector('[data-mode="calendar"]');
+  let badge = seg.querySelector('.seg-badge');
+  if (!count) {
+    badge?.remove();
+    seg.removeAttribute('aria-label');
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'seg-badge';
+    badge.setAttribute('aria-hidden', 'true');
+    seg.appendChild(badge);
+  }
+  badge.textContent = count > 99 ? '99+' : String(count);
+  seg.setAttribute('aria-label', t('calendar.mode.calendarRequests', { count }));
 }
 
 function setMode(mode) {
@@ -2570,6 +2591,18 @@ function drawBadge(count) {
 window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
+  // A reminder or a booking notification was clicked: the calendar opens on that event or request, or on the day
+  // when the notification names only its start.
+  if (type === 'calendar-open' && payload && S.data && S.data.accounts.length) {
+    setMode('calendar');
+    if (typeof payload.request === 'string') calendar.openRequest(payload.request);
+    else if (typeof payload.id === 'string') calendar.openEvent(payload.id, Number.isFinite(payload.start) ? payload.start : undefined);
+    else if (Number.isFinite(payload.start)) calendar.openDay(payload.start);
+  }
+  // The booking page's state: requests and booked events on the grid, its notices above it, the link for the composer.
+  // Its notices come translated from main, so a language change asks for them again.
+  if (type === 'booking') applyBooking(payload);
+  if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
   if (type === 'categories') {
     S.categories = payload;
     setCategories(payload);
@@ -2690,4 +2723,5 @@ export const ctx = {
 };
 
 calendar.init(ctx);
+api('bookingState').then(applyBooking).catch(() => {});
 refresh().catch((err) => toast(err.message, 6000));

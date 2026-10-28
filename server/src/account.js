@@ -20,6 +20,18 @@ const SEEN_INTERVAL = 60 * 60 * 1000;
 const MAX_SESSIONS = 100;
 // A pull stops early once it holds this much data and says there is more, so one page stays a size a phone can take.
 const PAGE_BYTES = 4 * 1024 * 1024;
+// An account can change its booking page's handle at most this often (PROTOCOL.md, Handles and meeting types).
+export const HANDLE_CHANGES = 3;
+export const HANDLE_WINDOW = 30 * 24 * 60 * 60 * 1000;
+
+// The booking page's handle, for accounts that ever had one. changes is a JSON list of when it was changed.
+const BOOKING_TABLE = `
+  CREATE TABLE IF NOT EXISTS booking (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    handle TEXT,
+    changes TEXT NOT NULL DEFAULT '[]'
+  );
+`;
 
 const SCHEMA = `
   CREATE TABLE account (
@@ -59,6 +71,7 @@ const SCHEMA = `
     bytes INTEGER NOT NULL,
     tombstones INTEGER NOT NULL DEFAULT 0
   );
+  ${BOOKING_TABLE}
 `;
 
 class QuotaExceeded extends Error {}
@@ -85,9 +98,9 @@ export class Account extends DurableObject {
     this.sql = ctx.storage.sql;
     // Tables are made at sign-up, not here: prelogin and failed sign-ins reach objects for addresses without an
     // account, and those objects should stay empty so they leave nothing behind.
-    this.exists =
+    this.present =
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
-    if (this.exists) this.migrate();
+    if (this.present) this.migrate();
   }
 
   // Brings an account made by an older version of the server up to the current tables. Each step checks for itself
@@ -101,10 +114,60 @@ export class Account extends DurableObject {
         this.sql.exec('UPDATE meta SET tombstones = (SELECT COUNT(*) FROM records WHERE data IS NULL) WHERE id = 1');
       });
     }
+    // Booking pages came later; accounts from before have no handle yet.
+    this.sql.exec(BOOKING_TABLE);
+  }
+
+  // Whether this object holds an account. A Booking object asks once a day, so a page whose account was deleted
+  // doesn't outlive it by more than a day. Asking leaves an empty object empty.
+  async exists() {
+    return this.present;
+  }
+
+  // Who is asking, for the booking page routes: the account's routing name (the token's first part, which is how the
+  // Worker found this object), its handle, the caller's session id, how many handle changes the last 30 days used,
+  // and the names of its sessions, for showing which device handles bookings. 401 only for a dead session.
+  async bookingAuth(token) {
+    return this.#signedIn(token, (session, now) => {
+      const row = this.#booking();
+      const devices = {};
+      for (const d of this.sql.exec('SELECT id, name FROM sessions')) devices[d.id] = d.name;
+      return {
+        status: 200,
+        body: null,
+        name: token.slice(0, token.indexOf('.')),
+        handle: row.handle,
+        deviceId: session.id,
+        changes: recentChanges(row.changes, now).length,
+        devices
+      };
+    });
+  }
+
+  // Sets the account's one handle. Taking a first handle, or giving it up (null), isn't a change; replacing one is,
+  // and the fourth within 30 days is refused.
+  async bookingSetHandle(token, handle) {
+    return this.#signedIn(token, (session, now) => {
+      const row = this.#booking();
+      const changes = recentChanges(row.changes, now);
+      if (handle === row.handle) return reply(200, { handle, changes: changes.length });
+      if (row.handle && handle) {
+        if (changes.length >= HANDLE_CHANGES) {
+          return failure(409, 'handle_changes', 'This account changed its handle 3 times in the last 30 days.');
+        }
+        changes.push(now);
+      }
+      this.sql.exec(
+        'INSERT INTO booking (id, handle, changes) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET handle = excluded.handle, changes = excluded.changes',
+        handle,
+        JSON.stringify(changes)
+      );
+      return reply(200, { handle, changes: changes.length });
+    });
   }
 
   async prelogin() {
-    if (!this.exists) return reply(200, null);
+    if (!this.present) return reply(200, null);
     const { kdf, salt } = this.#account();
     return reply(200, { kdf: JSON.parse(kdf), salt: toBase64url(new Uint8Array(salt)) });
   }
@@ -114,7 +177,7 @@ export class Account extends DurableObject {
     const recoveryVerifier = await sha256(input.recoveryAuth);
     const token = newToken(name);
     const tokenHash = await sha256(utf8(token));
-    if (this.exists) return failure(409, 'exists', 'This address already has an account.');
+    if (this.present) return failure(409, 'exists', 'This address already has an account.');
     const now = Date.now();
     let sessionId;
     this.ctx.storage.transactionSync(() => {
@@ -134,7 +197,7 @@ export class Account extends DurableObject {
       this.sql.exec('INSERT INTO meta (id, seq, records, bytes, tombstones) VALUES (1, 0, 0, 0, 0)');
       sessionId = this.#addSession(tokenHash, input.device, now);
     });
-    this.exists = true;
+    this.present = true;
     return reply(201, { token, account: this.#info(sessionId, limits) });
   }
 
@@ -142,7 +205,7 @@ export class Account extends DurableObject {
     const hash = await sha256(input.authKey);
     const token = newToken(name);
     const tokenHash = await sha256(utf8(token));
-    if (!this.exists) return failure(401, 'unauthorized', 'The email address or password is wrong.');
+    if (!this.present) return failure(401, 'unauthorized', 'The email address or password is wrong.');
     const now = Date.now();
     const check = this.#check('authVerifier', hash, now);
     if (check === 'locked') return locked(this.#account().lockedUntil, now);
@@ -211,7 +274,7 @@ export class Account extends DurableObject {
 
   async recoverStart(input) {
     const hash = await sha256(input.recoveryAuth);
-    if (!this.exists) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
+    if (!this.present) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const now = Date.now();
     const check = this.#check('recoveryVerifier', hash, now);
     if (check === 'locked') return locked(this.#account().lockedUntil, now);
@@ -225,7 +288,7 @@ export class Account extends DurableObject {
     const authVerifier = await sha256(input.authKey);
     const token = newToken(name);
     const tokenHash = await sha256(utf8(token));
-    if (!this.exists) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
+    if (!this.present) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const now = Date.now();
     const check = this.#check('recoveryVerifier', hash, now);
     if (check === 'locked') return locked(this.#account().lockedUntil, now);
@@ -248,11 +311,13 @@ export class Account extends DurableObject {
     const hash = await sha256(input.authKey);
     // The account is gone from the moment the password checks out, before anything is awaited: a second delete
     // arriving meanwhile finds no account (401) instead of deleting it again, so the Worker gives its place under
-    // MAX_ACCOUNTS back once.
+    // MAX_ACCOUNTS back once. The booking handle is read in the same stretch and handed to the Worker, which wipes
+    // the page afterwards (send() leaves the extra property out of the answer).
     const result = await this.#signedIn(token, (session, now) =>
       this.#withPassword(hash, now, () => {
-        this.exists = false;
-        return reply(204);
+        const { handle } = this.#booking();
+        this.present = false;
+        return { ...reply(204), handle };
       })
     );
     if (result.status !== 204) return result;
@@ -260,7 +325,7 @@ export class Account extends DurableObject {
       // deleteAll removes the whole SQLite database, so the object is as empty as one that never had an account.
       await this.ctx.storage.deleteAll();
     } catch (err) {
-      this.exists =
+      this.present =
         this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
       throw err;
     }
@@ -370,7 +435,7 @@ export class Account extends DurableObject {
   // at a match, so the time taken says nothing about which tokens exist.
   async #signedIn(token, fn) {
     const hash = await sha256(utf8(token));
-    if (!this.exists) return UNAUTHORIZED;
+    if (!this.present) return UNAUTHORIZED;
     let session = null;
     for (const row of this.sql.exec('SELECT id, tokenHash, lastSeenAt FROM sessions')) {
       if (sameBytes(new Uint8Array(row.tokenHash), hash)) session = row;
@@ -444,6 +509,10 @@ export class Account extends DurableObject {
     return this.sql.exec('SELECT seq, records, bytes, tombstones FROM meta WHERE id = 1').one();
   }
 
+  #booking() {
+    return this.sql.exec('SELECT handle, changes FROM booking WHERE id = 1').toArray()[0] ?? { handle: null, changes: '[]' };
+  }
+
   // What GET /v1/account returns, which sign-up, sign-in and recovery return too.
   #info(currentId, limits) {
     const account = this.#account();
@@ -466,4 +535,15 @@ export class Account extends DurableObject {
 // A token names its account, so the Worker can route it without a table of sessions; the random part is the secret.
 function newToken(name) {
   return `${name}.${toBase64url(randomBytes(32))}`;
+}
+
+// The handle changes within the last 30 days.
+function recentChanges(json, now) {
+  let list = [];
+  try {
+    list = JSON.parse(json);
+  } catch {
+    list = [];
+  }
+  return Array.isArray(list) ? list.filter((t) => Number.isFinite(t) && now - t < HANDLE_WINDOW) : [];
 }

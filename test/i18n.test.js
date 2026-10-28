@@ -68,8 +68,10 @@ test('all source translation references and persistent DOM labels exist in the E
     for (const filename of fs.readdirSync(path.join(__dirname, '../src', directory), { recursive: true })) {
       if (!/\.(js|html)$/.test(filename)) continue;
       const source = fs.readFileSync(path.join(__dirname, '../src', directory, filename), 'utf8');
-      for (const match of source.matchAll(/\bt\(['"]([^'"]+)['"]|data-i18n(?:-[\w-]+)?="([\w.]+)"/g)) {
-        const key = match[1] || match[2];
+      // t('key'), translate(language, 'key') with one level of calls in the language, and data-i18n attributes.
+      const references = /\bt\(['"]([^'"]+)['"]|\btranslate\((?:[^,()\n]|\([^()\n]*\))+,\s*['"]([^'"]+)['"]|data-i18n(?:-[\w-]+)?="([\w.]+)"/g;
+      for (const match of source.matchAll(references)) {
+        const key = match[1] || match[2] || match[3];
         assert.ok(en[key], `Unknown key ${key} in ${directory}/${filename}`);
       }
     }
@@ -104,6 +106,26 @@ test('interpolation keeps user text literal and plural rules handle zero, one, a
   assert.equal(i18n.t('settings.aliases.count', { count: 3 }), '3 aliassen');
 });
 
+test('translate gives one language whatever the interface shows, with its plural rules and the English fallback', () => {
+  assert.equal(i18n.translate('nl', 'mailbox.folders.inbox'), 'Postvak IN');
+  assert.equal(i18n.getLanguage(), 'en');
+  assert.equal(i18n.t('mailbox.folders.inbox'), 'Inbox');
+  i18n.setLanguage('nl');
+  assert.equal(i18n.translate('en', 'mailbox.folders.inbox'), 'Inbox');
+  assert.equal(i18n.translate('en', 'native.notifications.newCount', { count: 1 }), '1 new email');
+  assert.equal(i18n.translate('nl', 'settings.aliases.count', { count: 3 }), '3 aliassen');
+  assert.equal(i18n.translate('unsupported', 'mailbox.folders.inbox'), 'Inbox');
+  assert.equal(i18n.translate(null, 'setup.account.added', { email: '{count}' }), '{count} has been added');
+  const saved = nl['mailbox.folders.inbox'];
+  delete nl['mailbox.folders.inbox'];
+  try {
+    assert.equal(i18n.translate('nl', 'mailbox.folders.inbox'), 'Inbox');
+  } finally {
+    nl['mailbox.folders.inbox'] = saved;
+  }
+  assert.throws(() => i18n.translate('nl', 'missing.key'), /Unknown translation key/);
+});
+
 test('the same catalogs load in the sandboxed renderer and update document language', () => {
   const document = { documentElement: {} };
   const context = vm.createContext({ document, Intl });
@@ -113,6 +135,7 @@ test('the same catalogs load in the sandboxed renderer and update document langu
   assert.equal(context.RukooI18n.t('composer.actions.send'), 'Send');
   context.RukooI18n.setLanguage('nl');
   assert.equal(context.RukooI18n.t('composer.actions.send'), 'Verzenden');
+  assert.equal(context.RukooI18n.translate('en', 'composer.actions.send'), 'Send');
   assert.equal(document.documentElement.lang, 'nl');
   assert.equal(document.documentElement.dir, 'ltr');
 });

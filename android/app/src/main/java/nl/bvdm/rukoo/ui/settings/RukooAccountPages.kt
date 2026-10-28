@@ -97,7 +97,7 @@ fun accountErrorRes(code: String?): Int = when (AccountError.known(code)) {
     else -> R.string.account_errors_server
 }
 
-/** The server by its address: `rukoo-account.bvdm.ai`, or `10.0.2.2:8790`. */
+/** The server by its address: `rukoo.io`, or `10.0.2.2:8790`. */
 fun hostOf(url: String): String = runCatching { java.net.URI(url).let { u -> u.host?.let { h -> if (u.port > 0) "$h:${u.port}" else h } } }.getOrNull() ?: url
 
 @Composable

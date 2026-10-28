@@ -105,9 +105,9 @@ test('a CalDAV server in Server settings brings the account calendar: read, crea
   await expect(event('Team offsite')).toBeVisible();
   // Each calendar shows in the colour the server gives it (calendar-color), not in the account's.
   const colour = (locator) => locator.evaluate((el) => el.style.getPropertyValue('--c'));
-  expect(await colour(event('Stand-up'))).toBe('#7b61ff');
-  expect(await colour(event('Team offsite'))).toBe('#16a765');
-  expect(await colour(win.locator('.sidebar .cal-toggle', { hasText: 'Home' }).locator('.cal-check'))).toBe('#7b61ff');
+  expect(await colour(event('Stand-up'))).toBe('#2952a3');
+  expect(await colour(event('Team offsite'))).toBe('#e6c800');
+  expect(await colour(win.locator('.sidebar .cal-toggle', { hasText: 'Home' }).locator('.cal-check'))).toBe('#2952a3');
 
   // An invitation: answered on the server, which tells the organizer.
   await event('Design review').click();
@@ -163,6 +163,8 @@ test('two occurrences of a series changed one after the other both save, without
     await expect(win.locator('.cal-form .note')).toBeVisible();
     await win.fill('.cal-form [name="title"]', title);
     await win.click('.dialog .buttons button.primary');
+    // Save asks which events of the series change: only this one.
+    await win.locator('.dialog .radio-row', { hasText: 'This event' }).click();
     // Saved: the dialog closes, without saying the event changed elsewhere.
     await expect(win.locator('.dialog')).toHaveCount(0);
     await expect(event(title)).toBeVisible();

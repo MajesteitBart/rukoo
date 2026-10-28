@@ -40,9 +40,12 @@ const { Categories } = require('./categories');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker } = require('./updates');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
-const WHATS_NEW = '2.0.0';
+const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
+const { free: freeTime } = require('./calendar/free');
+const { Booking } = require('./booking');
+const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner');
 
 // Windows takes the taskbar icon and the handler for notification clicks from the Start menu shortcut with this ID,
 // and Electron writes such a shortcut the first time it shows a notification. A run from a checkout gets its own ID,
@@ -105,6 +108,9 @@ let hub = null;
 // Holds the agent events the chat panel must not miss until it listens; see agents/gate.js.
 let agentGate = null;
 // ---- /agents ----
+// The booking service and the reminder runner. Null until they are made after the categories, so calendarFree can already ask.
+let booking = null;
+let reminders = null;
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -221,6 +227,45 @@ function notify(messages) {
   if (messages.length > list.length) {
     new Notification({ title: 'Rukoo Mail', body: t('native.notifications.newCount', { count: messages.length }) }).show();
   }
+}
+
+// Shown notifications stay referenced until they close, or Windows can drop their click handler with the object.
+const liveNotices = new Set();
+
+// A desktop notification whose click brings the main window forward on the calendar, at the event or request.
+// Test mode records them instead of showing them, so a test run never puts toasts on the screen.
+function calendarNotice({ title, body, open }) {
+  if (process.env.SEM_HIDDEN) {
+    (global.__semNotices ||= []).push({ title, body, open });
+    return;
+  }
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title: String(title).slice(0, 200), body: String(body).slice(0, 400), icon: nativeImage.createFromPath(ICON), silent: false });
+  liveNotices.add(n);
+  const drop = () => liveNotices.delete(n);
+  n.on('click', () => {
+    drop();
+    showWindow();
+    if (open) send('calendar-open', open);
+  });
+  n.on('close', drop);
+  n.on('failed', drop);
+  n.show();
+}
+
+// Calendar reminders: always a desktop notification, also while Rukoo is focused (design 2.8).
+function showReminders(list) {
+  if (list.length) calendarNotice(reminderNotice(list));
+}
+
+// Booking news (design 1.2): a toast while the main window is focused, a desktop notification otherwise. open:
+// { id, start } for an event, { request } for a request, { start } for the day a cancelled booking was on.
+function showBookingNotification({ title, body, open }) {
+  if (win && !win.isDestroyed() && win.isFocused() && !process.env.SEM_HIDDEN) {
+    send('toast', String(body).slice(0, 200));
+    return;
+  }
+  calendarNotice({ title, body, open });
 }
 
 function showWindow() {
@@ -376,6 +421,8 @@ function endSession() {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
+  if (reminders) reminders.stop();
+  if (booking) booking.close();
   if (updates) updates.stop();
   destroyTray();
   // ---- agents ----
@@ -504,41 +551,23 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
-function calendarRange(range) {
-  const { start, end } = plainObject(range);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 400 * 86400000) throw new Error('invalid');
-  return { start, end };
-}
-function calendarInput(input) {
-  const i = plainObject(input);
-  const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
-  return {
-    accountId: text(i.accountId, 200),
-    calendarId: text(i.calendarId, 1000),
-    title: text(i.title, 1000),
-    location: text(i.location, 1000),
-    description: text(i.description, 20000),
-    allDay: i.allDay === true,
-    start: Number(i.start),
-    end: Number(i.end),
-    startDate: text(i.startDate, 10),
-    endDate: text(i.endDate, 10),
-    id: text(i.id, 1024)
-  };
-}
-function calendarEventId(id) {
-  if (typeof id !== 'string' || !id || id.length > 3000) throw new Error('invalid');
-  return id;
-}
-// The version of the event the user saw; Google's etags are short quoted strings.
-function calendarEtag(opts) {
-  const etag = plainObject(opts).etag;
-  return typeof etag === 'string' && etag && etag.length <= 200 ? etag : null;
-}
+// The calendar calls' arguments, checked in calendar/ipc.js (which has its own tests).
+const {
+  calendarRange,
+  calendarInput,
+  calendarScope,
+  calendarEtag,
+  calendarSeriesEtag,
+  calendarEventId,
+  calendarCalendarId,
+  calendarConflicts,
+  calendarFreeOpts
+} = require('./calendar/ipc');
 
 // Every renderer call goes through this table; nothing else is reachable from the UI.
 const api = {
-  state: () => engine.state(),
+  // The booking page's address while it is on, and its language, for the footer and the composer (contracts f).
+  state: () => ({ ...engine.state(), bookingUrl: booking ? booking.url() : null, bookingLocale: booking ? booking.locale() : null }),
   list: (opts) => engine.listMessages(opts),
   counts: (scope) => engine.counts(scope),
   contacts: () => engine.contacts(),
@@ -776,11 +805,33 @@ const api = {
   calendarView: (range) => calendars.view(calendarRange(range)),
   calendarSync: (accountId) => (accountId ? calendars.syncAccount(String(accountId)) : calendars.syncAll()).then(() => true),
   calendarEvent: (id) => calendars.event(calendarEventId(id)),
-  calendarCreate: (input) => calendars.create(calendarInput(input)),
-  calendarUpdate: (id, input, opts) => calendars.update(calendarEventId(id), calendarInput(input), { notify: plainObject(opts).notify === true, etag: calendarEtag(opts) }),
+  // A booking id or uid never comes from a window: only the booking service makes booking events.
+  calendarCreate: (input, opts) => calendars.create(calendarInput(input), { notify: plainObject(opts).notify === true }),
+  calendarUpdate: (id, input, opts) =>
+    calendars.update(calendarEventId(id), calendarInput(input), { notify: plainObject(opts).notify === true, etag: calendarEtag(opts), scope: calendarScope(opts), seriesEtag: calendarSeriesEtag(opts) }),
   calendarDelete: (id, opts) =>
-    calendars.remove(calendarEventId(id), { notify: plainObject(opts).notify === true, series: plainObject(opts).series === true, etag: calendarEtag(opts) }),
+    calendars.remove(calendarEventId(id), {
+      notify: plainObject(opts).notify === true,
+      series: plainObject(opts).series === true,
+      scope: plainObject(opts).scope === undefined ? undefined : calendarScope(opts),
+      etag: calendarEtag(opts),
+      seriesEtag: calendarSeriesEtag(opts)
+    }),
   calendarRespond: (id, response, opts) => calendars.respond(calendarEventId(id), String(response), { series: plainObject(opts).series === true }),
+  calendarSeries: (id) => calendars.series(calendarEventId(id)),
+  calendarMove: (id, calendarId, opts) => calendars.move(calendarEventId(id), calendarCalendarId(calendarId), { notify: plainObject(opts).notify === true }),
+  calendarSearch: (query) => calendars.search(typeof query === 'string' && query.length <= 200 ? query : ''),
+  calendarFree: (opts) => freeTime(calendars, engine.settings, booking ? booking.hours() : null, calendarFreeOpts(opts)),
+  // Settings pages and the booking setup may open before the calendar view ever did: accounts whose calendars were
+  // never read get them first, without the view's fetch.
+  calendarList: () => calendars.loadCalendars().then(() => calendars.list()),
+  calendarConflicts: (opts) => calendars.conflicts(calendarConflicts(opts)),
+  calendarSettings: (patch) => {
+    const settings = engine.calendarSettings(plainObject(patch));
+    // Colours and shown calendars are drawn by the calendar view.
+    calendars.emit('updated');
+    return settings;
+  },
   googleCancel: () => google.cancel(),
   fetchGmailAliases: (accountId) => engine.fetchGmailAliases(accountId),
   googleImportClient: async () => {
@@ -844,6 +895,23 @@ const api = {
     return categories.setJev({ on: typeof i.on === 'boolean' ? i.on : undefined, key: i.key === null ? null : accountText(i.key, 500) || undefined });
   },
   categoriesSortAgain: () => categories.sortAgain(),
+  // The booking page (booking/index.js), which checks every field again.
+  bookingState: (opts) => booking.load({ refresh: plainObject(opts).refresh === true }),
+  bookingEnable: (input) => booking.enable(plainObject(input)),
+  bookingSave: (patch) => booking.save(plainObject(patch)),
+  bookingDisable: () => booking.disable(),
+  bookingCheckHandle: (handle) => booking.checkHandle(accountText(handle, 64)),
+  // accept, decline and cancel name a booking; keep and dismiss a notice.
+  bookingAction: (id, action, opts) => {
+    const kind = accountText(action, 20);
+    const pattern = kind === 'keep' || kind === 'dismiss' ? /^[A-Za-z0-9_:.@-]{1,120}$/ : /^[A-Za-z0-9_-]{22}$/;
+    const o = plainObject(opts);
+    const options = { message: typeof o.message === 'string' ? o.message.slice(0, 2000) : undefined, email: o.email === true, notify: o.notify !== false };
+    return booking.action(typeof id === 'string' && pattern.test(id) ? id : '', kind, options);
+  },
+  bookingDetails: (id) => booking.details(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id) ? id : ''),
+  bookingSync: () => booking.sync(),
+  bookingTakeover: () => booking.takeover(),
   categoriesActivity: () => categories.activity(),
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
@@ -1029,7 +1097,11 @@ const windowApi = {
 const WINDOW_CODES = new Set(['auth']);
 
 // What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
+// Booking errors (booking/rules.js bookingError) pass their code, and for a refused field its name (contracts f).
 function windowError(err) {
+  if (err && err.booking === true && typeof err.code === 'string') {
+    return typeof err.field === 'string' ? { code: err.code.slice(0, 40), field: err.field.slice(0, 200) } : { code: err.code.slice(0, 40) };
+  }
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
@@ -1167,6 +1239,14 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semCategories = categories;
   categories.on('changed', () => broadcast('categories', categories.state()));
   categories.on('progress', (activity) => broadcast('categories-progress', activity));
+  booking = new Booking({ account, calendars, engine, secrets, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
+  if (process.env.SEM_HIDDEN) global.__semBooking = booking;
+  booking.on('state', (s) => broadcast('booking', s));
+  // Deleting the Rukoo account turns the booking page off first, and stops when that fails (decision 22).
+  account.beforeDelete = () => booking.disableForDelete();
+  reminders = new ReminderRunner({ calendars, engine, dataDir: path.join(app.getPath('userData'), 'data'), notify: showReminders, powerMonitor });
+  if (process.env.SEM_HIDDEN) global.__semReminders = reminders;
+  reminders.start();
   // New releases on GitHub (package.json's rukoo.releases). Tests and development profiles (SEM_HIDDEN, SEM_DATA_DIR)
   // don't ask GitHub; a test points it at its own server with RUKOO_RELEASES_URL.
   updates = new UpdateChecker({
@@ -1184,6 +1264,12 @@ app.whenReady().then(() => {
     dataDir: path.join(app.getPath('userData'), 'data'),
     secrets,
     deps: {
+      // The calendar tools: list_events and create_event use the store, find_free_time the same free time as the
+      // availability panel, get_booking_link the booking page while it is on (link() and hours() are null when off).
+      calendars,
+      calendarFree: (opts) => freeTime(calendars, engine.settings, booking ? booking.hours() : null, opts),
+      bookingHours: () => (booking ? booking.hours() : null),
+      bookingLink: () => (booking ? booking.link() : null),
       unsubscribe: (id) => api.unsubscribe(id),
       // A mailto-only unsubscribe opens a filled-in compose window; the user sends it.
       openMailto: (url) => openUrl(url),
@@ -1233,6 +1319,8 @@ app.on('before-quit', () => {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
+  if (reminders) reminders.stop();
+  if (booking) booking.close();
 });
 
 // Every window has closed, so the quit goes through.

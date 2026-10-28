@@ -8,9 +8,10 @@ import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.agents.RukooSkills
 
 /**
- * Rukoo's twelve MCP tools as desktop lists them (tools.js:43-293): names, titles, descriptions, input schemas
+ * Rukoo's sixteen MCP tools as desktop lists them (tools.js TOOLS): names, titles, descriptions, input schemas
  * and annotations are identical, because Clark's bridge caches one tool list for every device it finds.
- * Only the behavior behind them adapts to the phone.
+ * Only the behavior behind them adapts to the phone: the calendar tools answer that the phone has no calendar
+ * yet, except get_booking_link (McpTools).
  */
 data class ToolSpec(
     val name: String,
@@ -293,6 +294,122 @@ object ToolList {
                     maxLength(500)
                 },
             ),
+            READ,
+        ),
+        ToolSpec(
+            "list_events",
+            "List calendar events",
+            "Returns the events in the user's calendars between start and end (at most 92 days apart), by start time, from every account Rukoo has a calendar for. Times are ISO 8601 in the user's time zone (time_zone in get_context); all-day events have dates, and their end is the day after the last day. Each event names its account and calendar, whether it shows as busy, the user's response and whether it came through the user's booking page. Use find_free_time for open time.",
+            schema(
+                "start" to str {
+                    description("An ISO 8601 date or date-time, e.g. \"2026-11-02\" or \"2026-11-02T09:00:00+01:00\". Without an offset it is in the user's time zone.")
+                    maxLength(64)
+                },
+                "end" to str {
+                    description("Like start. A date alone is the start of that day.")
+                    maxLength(64)
+                },
+                "account" to str(untag = true) {
+                    description("Account id or email address, from get_context. Default: every account.")
+                    maxLength(320)
+                },
+                "calendar" to str(untag = true) {
+                    description("Calendar id or name, as list_events gives them. Default: the calendars the user shows in Rukoo.")
+                    maxLength(500)
+                },
+                "query" to str(untag = true) {
+                    description("Words that must all appear in the title, place, description or guests.")
+                    maxLength(200)
+                },
+                "limit" to integer {
+                    minimum(1)
+                    maximum(200)
+                    description("Maximum events (default 50).")
+                },
+                required = listOf("start", "end"),
+            ),
+            READ,
+        ),
+        ToolSpec(
+            "find_free_time",
+            "Find free time",
+            "Returns the open windows of at least duration_minutes between start and end (at most 31 days apart) across the calendars that count toward the user's availability, within the hours asked for, plus the same windows as one line of text per day. Accounts Rukoo could not read are in failed: their busy time is missing, so tell the user.",
+            schema(
+                "start" to str {
+                    description("An ISO 8601 date or date-time, e.g. \"2026-11-02\" or \"2026-11-02T09:00:00+01:00\". Without an offset it is in time_zone.")
+                    maxLength(64)
+                },
+                "end" to str {
+                    description("Like start. A date alone is the start of that day.")
+                    maxLength(64)
+                },
+                "duration_minutes" to integer {
+                    minimum(5)
+                    maximum(480)
+                    description("How long each window must be at least, in minutes.")
+                },
+                "hours" to str {
+                    enumOf(listOf("working", "booking", "any"))
+                    description("Which hours count: the user's working hours (default), the hours of their booking page, or any time.")
+                },
+                "time_zone" to str {
+                    description("IANA time zone of start and end and of the result, e.g. \"Europe/Amsterdam\". Default: the user's.")
+                    maxLength(64)
+                },
+                required = listOf("start", "end", "duration_minutes"),
+            ),
+            READ,
+        ),
+        ToolSpec(
+            "create_event",
+            "Add an event to the calendar",
+            "Asks Rukoo to add an event to one of the user's calendars. Rukoo shows the user a card first; you get status waiting_for_user, and the outcome with your next message. Guests get an invitation from the calendar's account. Only calendars that send invitations take guests: Google calendars, and CalDAV calendars whose server sends them. A date alone in start makes an all-day event.",
+            schema(
+                "title" to str(untag = true, whole = true) {
+                    description("The title, e.g. \"Call with Sanne\".")
+                    maxLength(300)
+                },
+                "start" to str {
+                    description("An ISO 8601 date-time, e.g. \"2026-11-03T14:00:00+01:00\", or a date for an all-day event. Without an offset it is in time_zone.")
+                    maxLength(64)
+                },
+                "end" to str {
+                    description("Like start. Default: the user's default event length after start; for an all-day event the next day, as end is the day after the last day.")
+                    maxLength(64)
+                },
+                "all_day" to bool { description("An all-day event. Default: true when start is a date alone.") },
+                "time_zone" to str {
+                    description("IANA time zone of the event, e.g. \"Europe/Amsterdam\". Default: the user's.")
+                    maxLength(64)
+                },
+                "account" to str(untag = true) {
+                    description("Account id or email address whose calendar gets the event. Default: the default account.")
+                    maxLength(320)
+                },
+                "calendar" to str(untag = true) {
+                    description("Calendar id or name. Default: the account's main calendar.")
+                    maxLength(500)
+                },
+                "location" to str(untag = true, whole = true) { maxLength(500) },
+                "description" to str(untag = true, whole = true) {
+                    description("Notes on the event. Guests see them.")
+                    maxLength(5000)
+                },
+                "guests" to array {
+                    description("People to invite.")
+                    items(person())
+                    maxItems(50)
+                },
+                "google_meet" to bool { description("Add a Google Meet link. Only Google calendars that allow Meet.") },
+                required = listOf("title", "start"),
+            ),
+            WRITE,
+        ),
+        ToolSpec(
+            "get_booking_link",
+            "Get the booking link",
+            "Returns the link to the user's booking page, where other people or their assistants pick a time from the user's open times, with a link per meeting type. on says whether the page is turned on. Share the links as they are.",
+            schema(),
             READ,
         ),
     )

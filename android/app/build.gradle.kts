@@ -23,15 +23,15 @@ android {
         applicationId = "nl.bvdm.rukoo"
         minSdk = 31
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         // The in-memory preview mail engine and agent hub stand in until the real ones land; the mail and
         // agent tracks turn these off (debug builds can keep the preview for screenshots).
         buildConfigField("boolean", "USE_PREVIEW_MAIL", "false")
         buildConfigField("boolean", "USE_PREVIEW_AGENTS", "false")
         // The Rukoo account server the app uses until someone picks another in Settings (docs/account.md). A fork
         // points its builds at its own server here.
-        buildConfigField("String", "ACCOUNT_SERVER", "\"https://rukoo-account.bvdm.ai\"")
+        buildConfigField("String", "ACCOUNT_SERVER", "\"https://rukoo.io\"")
     }
 
     signingConfigs {

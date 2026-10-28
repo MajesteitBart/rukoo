@@ -52,7 +52,7 @@ data class StoredInfo(val server: String, val data: ServerInfo, val at: Long = 0
 
 /**
  * account.json: the server, its info, and the session while signed in. [token] and [dataKey] are encrypted with the
- * Keystore box, like mail passwords; the rest isn't secret.
+ * Keystore box, like mail passwords; the rest isn't secret. [sessionServer] is the address the session signed in at.
  */
 @Serializable
 data class AccountState(
@@ -60,6 +60,7 @@ data class AccountState(
     val info: StoredInfo? = null,
     val error: String? = null,
     val email: String? = null,
+    val sessionServer: String? = null,
     val token: String? = null,
     val dataKey: String? = null,
     val cursor: Long = 0,

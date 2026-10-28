@@ -80,6 +80,8 @@ class ToolDeps(
     val mailWaitMs: Long = 90_000,
     /** How long write_draft waits for the email it answers, as desktop gives its composer (20 s). */
     val draftWaitMs: Long = 20_000,
+    /** The Rukoo account's booking settings record, for get_booking_link (BookingLink.settings), or null. */
+    val bookingSettings: () -> JsonObject? = { null },
 )
 
 /** One tool call: who, the CLI's `_meta`, and the chat it belongs to (set once a tool makes one). */
@@ -99,9 +101,9 @@ internal suspend fun ensureConversation(d: ToolDeps, lookup: MailLookup, call: T
 }
 
 /**
- * Rukoo's tools on the phone (desktop tools.js): the same twelve tools, with the same arguments, validation,
- * tagging, results and error texts. Only the behavior adapts: the composer and screen are the phone's, and every
- * caller is remote, so nothing gets a local path.
+ * Rukoo's tools on the phone (desktop tools.js): the same sixteen tools, with the same arguments, validation,
+ * tagging, results and error texts. Only the behavior adapts: the composer and screen are the phone's, every
+ * caller is remote, so nothing gets a local path, and the phone has no calendar yet (BookingLink).
  */
 class McpTools(private val d: ToolDeps) : McpBackend {
     private val lookup = MailLookup(d.mail)
@@ -180,6 +182,9 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         "propose_action" -> ToolOut.Data(proposeAction(args, call))
         "mail_action" -> ToolOut.Data(mailActions.request(args, call))
         "read_skill" -> ToolOut.Data(readSkill(args))
+        // No calendar on the phone yet. Their arguments were checked as on a computer, so a wrong call still says what's wrong.
+        "list_events", "find_free_time", "create_event" -> throw ToolError(BookingLink.NO_CALENDAR)
+        "get_booking_link" -> ToolOut.Data(BookingLink.answer(d.bookingSettings()))
         else -> throw ToolError("Unknown tool \"$name\".")
     }
 

@@ -14,6 +14,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -690,6 +691,147 @@ class AccountServiceTest {
         assertEquals("its records stay", cat("Updates"), again.value("category", "updates"))
     }
 
+    /**
+     * A Rukoo whose default server is [defaultServer], as one release or the next would have it. Rukoo's former and
+     * current default both reach [srv], as the real server answers on both.
+     */
+    private fun release(srv: FakeAccountServer, defaultServer: String, dir: File, name: String = "desk"): AccountService {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val real = OkHttpAccountHttp(okhttp)
+        val http = AccountHttp { server, method, path, body, token, meter ->
+            real.request(if (server == OLD_DEFAULT || server == NEW_DEFAULT) srv.url else server, method, path, body, token, meter)
+        }
+        return AccountService(dir, PlainSecrets, defaultServer, name, http, scope, devHosts = true, platform = "linux").also { devices += it }
+    }
+
+    private fun stateOnDisk(dir: File) = Json.parseToJsonElement(File(dir, "account.json").readText()) as JsonObject
+
+    @Test
+    fun `a phone signed in at the old default keeps that address when the default moves, until it signs out`() = runBlocking {
+        val srv = server()
+        val dir = tmp.newFolder()
+        val before = release(srv, OLD_DEFAULT, dir)
+        before.signUp("pin@example.com", PASSWORD)
+        before.put("category", "updates", cat("Updates"))
+        before.sync()
+        before.close()
+        assertNull("the default is not stored", stateOnDisk(dir)["server"]?.takeIf { it != JsonNull })
+        // As an older Rukoo wrote it, without the session's address: the server info fetched at sign-in names it.
+        val older = stateOnDisk(dir).toMutableMap()
+        older.remove("sessionServer")
+        assertEquals(OLD_DEFAULT, ((older["info"] as JsonObject)["server"] as JsonPrimitive).content)
+        File(dir, "account.json").writeText(JsonObject(older).toString())
+
+        // The update: the same session, still at the address its password proofs were made for.
+        val after = release(srv, NEW_DEFAULT, dir)
+        assertTrue(after.status().signedIn)
+        assertEquals(OLD_DEFAULT, after.status().server)
+        assertEquals(NEW_DEFAULT, after.status().defaultServer)
+        assertEquals(JsonPrimitive(OLD_DEFAULT), stateOnDisk(dir)["server"])
+        assertEquals("Test operator", after.status().info?.operator?.name)
+        after.put("category", "promotions", cat("Promotions"))
+        after.sync()
+        assertEquals(2, srv.accounts.getValue("pin@example.com").records.size)
+        after.changePassword(PASSWORD, "another long password")
+        assertTrue(after.newRecoveryKey("another long password").isNotEmpty())
+        // A phone at the new default can't sign in to it: the proof is made for the other address.
+        val fresh = release(srv, NEW_DEFAULT, tmp.newFolder(), "laptop")
+        rejects("unauthorized") { fresh.signIn("pin@example.com", "another long password") }
+        after.close()
+
+        // Restarts keep it, now from the stored address.
+        val again = release(srv, NEW_DEFAULT, dir)
+        assertEquals(OLD_DEFAULT, again.status().server)
+        again.signOut()
+        assertFalse(again.status().signedIn)
+        assertEquals("signed out, it uses the default", NEW_DEFAULT, again.status().server)
+        assertNull(stateOnDisk(dir)["server"]?.takeIf { it != JsonNull })
+        assertNull(again.status().info)
+        assertEquals(cat("Promotions"), again.value("category", "promotions"))
+        // The account itself is still at the old address, where it can be signed in to by hand.
+        rejects("unauthorized") { again.signIn("pin@example.com", "another long password") }
+        again.setServer(OLD_DEFAULT)
+        again.signIn("pin@example.com", "another long password")
+        assertTrue(again.status().signedIn)
+    }
+
+    @Test
+    fun `deleting the account on a pinned phone moves it to the default, where the account can be made again`() = runBlocking {
+        val srv = server()
+        val dir = tmp.newFolder()
+        val before = release(srv, OLD_DEFAULT, dir)
+        before.signUp("move@example.com", PASSWORD)
+        before.close()
+
+        val after = release(srv, NEW_DEFAULT, dir)
+        assertEquals(OLD_DEFAULT, after.status().server)
+        after.deleteAccount(PASSWORD)
+        assertEquals(NEW_DEFAULT, after.status().server)
+        assertNull(stateOnDisk(dir)["server"]?.takeIf { it != JsonNull })
+        after.signUp("move@example.com", PASSWORD)
+        assertEquals(NEW_DEFAULT, after.status().server)
+        after.close()
+
+        // Signed in at the default of the day: nothing to pin.
+        val again = release(srv, NEW_DEFAULT, dir)
+        assertTrue(again.status().signedIn)
+        assertNull(stateOnDisk(dir)["server"]?.takeIf { it != JsonNull })
+        assertTrue(again.changePassword(PASSWORD, "another long password"))
+    }
+
+    @Test
+    fun `a pinned address that was never a default stays, and a former default ends with the session, also one ended elsewhere`() = runBlocking {
+        val srv = server()
+        // A fork whose default moved: its old address isn't one of Rukoo's, so signing out keeps it.
+        val dir = tmp.newFolder()
+        val first = device(srv, "desk", dir)
+        first.signUp("fork@example.com", PASSWORD)
+        first.close()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val other = srv.url.replace("127.0.0.1", "localhost")
+        val moved = AccountService(dir, PlainSecrets, other, "desk", OkHttpAccountHttp(okhttp), scope, devHosts = true, platform = "linux").also { devices += it }
+        assertEquals(srv.url, moved.status().server)
+        moved.signOut()
+        assertEquals(srv.url, moved.status().server)
+        moved.signIn("fork@example.com", PASSWORD)
+
+        // The way to move: one device deletes the account and makes it again at the default. The phone, pinned as
+        // well, finds its session ended and goes to the default too, where the account is now.
+        val deskDir = tmp.newFolder()
+        val phoneDir = tmp.newFolder()
+        val desk = release(srv, OLD_DEFAULT, deskDir, "desk")
+        desk.signUp("moved@example.com", PASSWORD)
+        desk.close()
+        val phone = release(srv, OLD_DEFAULT, phoneDir, "phone")
+        phone.signIn("moved@example.com", PASSWORD)
+        phone.close()
+        val newDesk = release(srv, NEW_DEFAULT, deskDir, "desk")
+        val newPhone = release(srv, NEW_DEFAULT, phoneDir, "phone")
+        assertEquals(OLD_DEFAULT, newDesk.status().server)
+        assertEquals(OLD_DEFAULT, newPhone.status().server)
+        newDesk.deleteAccount(PASSWORD)
+        newDesk.signUp("moved@example.com", PASSWORD)
+        signedOut(newPhone)
+        assertEquals(NEW_DEFAULT, newPhone.status().server)
+        assertNull(stateOnDisk(phoneDir)["server"]?.takeIf { it != JsonNull })
+        newPhone.signIn("moved@example.com", PASSWORD)
+        assertTrue(newPhone.status().signedIn)
+    }
+
+    @Test
+    fun `a phone signed out at the old default follows the new one`() = runBlocking {
+        val srv = server()
+        val dir = tmp.newFolder()
+        val before = release(srv, OLD_DEFAULT, dir)
+        before.serverInfo()
+        before.close()
+        val after = release(srv, NEW_DEFAULT, dir)
+        assertEquals(NEW_DEFAULT, after.status().server)
+        assertNull("the old address's info isn't shown for the new one", after.status().info)
+        after.signUp("new@example.com", PASSWORD)
+        assertEquals(NEW_DEFAULT, after.status().server)
+    }
+
     @Test
     fun `a device that was removed elsewhere finds itself signed out`() = runBlocking {
         val srv = server()
@@ -1048,6 +1190,45 @@ class AccountServiceTest {
     }
 
     @Test
+    fun `the export leaves out the booking key and another account's booking records, and the next account never gets them`() = runBlocking {
+        val srv = server()
+        val phone = device(srv)
+        phone.signUp("one@example.com", PASSWORD)
+        val one = AccountService.bookingAcct("one@example.com")
+        assertEquals(16, one.length)
+        // What desktop's booking service writes, as it comes down with the rest of the account.
+        phone.put("bookingkey", one, buildJsonObject { put("current", "private") })
+        phone.put("booking", "settings:$one", buildJsonObject { put("url", "https://rukoo.io/one") })
+        phone.put("booking", "map:$one:abc", buildJsonObject { put("eventId", "e1") })
+        phone.put("category", "money", cat("Money"))
+        phone.sync()
+        fun exported() = (phone.exportData()["records"] as JsonArray).map { r ->
+            val o = r as JsonObject
+            (o["collection"] as JsonPrimitive).content to (o["key"] as JsonPrimitive).content
+        }.toSet()
+        assertEquals(setOf("booking" to "settings:$one", "booking" to "map:$one:abc", "category" to "money"), exported())
+
+        // Signed out: the key leaves with the session; the booking records stay here, but out of the export.
+        phone.signOut()
+        assertNull(phone.value("bookingkey", one))
+        assertNotNull(phone.value("booking", "settings:$one"))
+        assertEquals(setOf("category" to "money"), exported())
+
+        // Another account on the same phone: only the category goes up, and its export has no booking records.
+        phone.signUp("two@example.com", PASSWORD)
+        phone.sync()
+        assertEquals(1, srv.accounts.getValue("two@example.com").records.values.count { it.data != null })
+        assertEquals(setOf("category" to "money"), exported())
+
+        // The first account again: its key comes back from the account.
+        phone.signOut()
+        phone.signIn("one@example.com", PASSWORD)
+        phone.sync()
+        assertEquals(buildJsonObject { put("current", "private") }, phone.value("bookingkey", one))
+        assertEquals(setOf("booking" to "settings:$one", "booking" to "map:$one:abc", "category" to "money"), exported())
+    }
+
+    @Test
     fun `without a server the account says so`() = runBlocking {
         val desk = device(null)
         rejects("no_server") { desk.signUp("o@example.com", PASSWORD) }
@@ -1107,5 +1288,9 @@ class AccountServiceTest {
 
     private companion object {
         const val PASSWORD = "a long enough password"
+
+        // Rukoo's former default address and today's.
+        const val OLD_DEFAULT = "https://rukoo-account.bvdm.ai"
+        const val NEW_DEFAULT = "https://rukoo.io"
     }
 }

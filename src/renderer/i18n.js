@@ -1,4 +1,4 @@
-export const { languages, normalizeLanguage, getLanguage, getLocale, setLanguage } = globalThis.RukooI18n;
+export const { languages, normalizeLanguage, getLanguage, getLocale, setLanguage, translate } = globalThis.RukooI18n;
 
 // Only application shortcut labels pass through this helper, never user content.
 export function shortcutLabel(label) {

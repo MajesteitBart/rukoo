@@ -1104,6 +1104,10 @@
 .bui-approval__text {
   white-space: pre-wrap;
 }
+/* An event to add: its times line up digit by digit. */
+.bui-approval[data-kind='calendar'] .bui-approval__fields {
+  font-variant-numeric: tabular-nums;
+}
 /* A command, path or file content: its label above, the value in a box across the card. */
 .bui-approval__k.is-code,
 .bui-approval__v.is-code {

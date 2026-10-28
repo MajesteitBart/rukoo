@@ -361,6 +361,10 @@ object AgentText {
         "read_attachment" to R.string.agentui_tools_read_attachment,
         "read_chat_file" to R.string.agentui_tools_read_chat_file,
         "read_skill" to R.string.agentui_tools_read_skill,
+        "list_events" to R.string.agentui_tools_list_events,
+        "find_free_time" to R.string.agentui_tools_find_free_time,
+        "create_event" to R.string.agentui_tools_create_event,
+        "get_booking_link" to R.string.agentui_tools_get_booking_link,
     )
 
     private val RUKOO_RUNNING = mapOf(
@@ -376,6 +380,10 @@ object AgentText {
         "read_attachment" to R.string.agentui_tools_running_read_attachment,
         "read_chat_file" to R.string.agentui_tools_running_read_chat_file,
         "read_skill" to R.string.agentui_tools_running_read_skill,
+        "list_events" to R.string.agentui_tools_running_list_events,
+        "find_free_time" to R.string.agentui_tools_running_find_free_time,
+        "create_event" to R.string.agentui_tools_running_create_event,
+        "get_booking_link" to R.string.agentui_tools_running_get_booking_link,
     )
 
     private val GENERIC_DONE = mapOf(

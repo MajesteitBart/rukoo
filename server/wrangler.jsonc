@@ -4,18 +4,23 @@
   "name": "rukoo-account",
   "main": "src/index.js",
   "compatibility_date": "2026-10-20",
+  // The booking pages' font files (src/fonts.js), bundled as binary data.
+  "rules": [{ "type": "Data", "globs": ["**/*.woff2"] }],
 
   // One Durable Object per account, each with its own SQLite database.
   // REGISTRY: one object for the whole server that counts the accounts, for MAX_ACCOUNTS.
+  // BOOKINGS: one object per booking page handle, holding what the page published and its bookings.
   "durable_objects": {
     "bindings": [
       { "name": "ACCOUNTS", "class_name": "Account" },
-      { "name": "REGISTRY", "class_name": "Registry" }
+      { "name": "REGISTRY", "class_name": "Registry" },
+      { "name": "BOOKINGS", "class_name": "Booking" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Account"] },
-    { "tag": "v2", "new_sqlite_classes": ["Registry"] }
+    { "tag": "v2", "new_sqlite_classes": ["Registry"] },
+    { "tag": "v3", "new_sqlite_classes": ["Booking"] }
   ],
 
   "vars": {
@@ -36,16 +41,31 @@
     "MAX_BYTES": 104857600,
     // The most accounts this server holds; 0 for no cap. With open sign-ups this bounds what strangers can store:
     // at most MAX_ACCOUNTS times MAX_BYTES.
-    "MAX_ACCOUNTS": 1000
+    "MAX_ACCOUNTS": 1000,
+    // Booking pages: hours after the last publish when every meeting type needs the host's confirmation, and days
+    // after which a page offers no times at all.
+    "BOOKING_STALE_HOURS": 24,
+    "BOOKING_DARK_DAYS": 7,
+    // An address booking pages live at the root of, such as "https://meet.example/<handle>", routed to this Worker as
+    // well; /meet on any other address redirects there. "" keeps them under /meet on the address each request came in
+    // on.
+    "BOOKING_ORIGIN": "",
+    // Addresses booking pages used to live at, comma-separated origins: MCP takes their /meet/<handle> links as the
+    // same pages.
+    "BOOKING_ALIASES": "",
+    // Handles taken down by the operator, comma-separated: they answer 404 and can't be claimed.
+    "BLOCKED_HANDLES": ""
   },
 
   // Limits prelogin, signup, login and recovery to 30 requests a minute per client address in each Cloudflare
   // location. namespace_id is any number of your choosing that no other rate limiter in your account uses. Remove
   // this block to turn the limit off; the account lock after ten wrong passwords still applies.
   // PUSH_LIMITER does the same for writing records, at 120 pushes a minute, which a device that syncs never reaches.
+  // BOOKING_LIMITER limits every public write on booking pages (bookings, cancellations, reschedules) to 20 a minute.
   "ratelimits": [
     { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
-    { "name": "PUSH_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+    { "name": "PUSH_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } },
+    { "name": "BOOKING_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
   ],
 
   // Keeps the server's own error messages in Workers Logs but not a log line per request, which would hold every
@@ -57,6 +77,8 @@
 
   // The server Rukoo itself uses, run by its maintainer: npm run deploy -- --env bvdm. A fork deploys the settings
   // above with its own vars instead. Bindings and vars don't carry over into an environment, so they're repeated.
+  // rukoo.io reaches this Worker through the rukoo-site Worker's ACCOUNT service binding (README.md); the custom
+  // domain below stays for devices that still sync with it and for old /meet links, which redirect to rukoo.io.
   "env": {
     "bvdm": {
       "name": "rukoo-account",
@@ -64,7 +86,8 @@
       "durable_objects": {
         "bindings": [
           { "name": "ACCOUNTS", "class_name": "Account" },
-          { "name": "REGISTRY", "class_name": "Registry" }
+          { "name": "REGISTRY", "class_name": "Registry" },
+          { "name": "BOOKINGS", "class_name": "Booking" }
         ]
       },
       "vars": {
@@ -80,11 +103,19 @@
         "MAX_RECORDS": 250000,
         // 1,000 accounts of at most 32 MiB keep the worst case at 32 GB.
         "MAX_BYTES": 33554432,
-        "MAX_ACCOUNTS": 1000
+        "MAX_ACCOUNTS": 1000,
+        "BOOKING_STALE_HOURS": 24,
+        "BOOKING_DARK_DAYS": 7,
+        // Booking pages, /mcp and /llms.txt live at the root of rukoo.io, next to the website.
+        "BOOKING_ORIGIN": "https://rukoo.io",
+        // Where the pages lived before rukoo.io; its /meet links redirect, and MCP takes them as the same pages.
+        "BOOKING_ALIASES": "https://rukoo-account.bvdm.ai",
+        "BLOCKED_HANDLES": ""
       },
       "ratelimits": [
         { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
-        { "name": "PUSH_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+        { "name": "PUSH_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } },
+        { "name": "BOOKING_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
       ]
     }
   }

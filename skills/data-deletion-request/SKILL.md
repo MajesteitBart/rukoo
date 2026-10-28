@@ -73,6 +73,6 @@ You can't send mail, so never say the request was sent. Tell the user the draft 
 
 ## 5. Offer a follow-up and archiving
 
-Offer a reminder for when the answer is due: call `show_plan` with one task, status `proposed`, titled like "Check the answer from" and the company, with `due` one month from today. If you can add tasks or calendar events elsewhere, offer that too; doing it needs `propose_action` first.
+Offer a reminder for when the answer is due: call `show_plan` with one task, status `proposed`, titled like "Check the answer from" and the company, with `due` one month from today. An event in the user's own calendar on that day goes through `create_event`, which asks the user itself. If you can add tasks or events in other systems, offer that too; doing it needs `propose_action` first.
 
 Offer to archive the sender's mail once the user has sent the request. When they say yes, find it with `search_mail` (`from` the sender's address) and call `mail_action` with `archive` and those ids.

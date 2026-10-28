@@ -345,6 +345,10 @@
     <string name="agentui_tools_show_plan">Made a plan</string>
     <string name="agentui_tools_show_sources">Gathered sources</string>
     <string name="agentui_tools_write_draft">Wrote the draft</string>
+    <string name="agentui_tools_list_events">Checked your calendar</string>
+    <string name="agentui_tools_find_free_time">Looked for free time</string>
+    <string name="agentui_tools_create_event">Proposed an event</string>
+    <string name="agentui_tools_get_booking_link">Got your booking link</string>
     <string name="agentui_tools_unknown">Used a tool</string>
     <string name="agentui_tools_running_get_context">Looking at your screen...</string>
     <string name="agentui_tools_running_get_draft">Checking the draft...</string>
@@ -358,6 +362,10 @@
     <string name="agentui_tools_running_show_plan">Making a plan...</string>
     <string name="agentui_tools_running_show_sources">Gathering sources...</string>
     <string name="agentui_tools_running_write_draft">Writing the draft...</string>
+    <string name="agentui_tools_running_list_events">Checking your calendar...</string>
+    <string name="agentui_tools_running_find_free_time">Looking for free time...</string>
+    <string name="agentui_tools_running_create_event">Proposing an event...</string>
+    <string name="agentui_tools_running_get_booking_link">Getting your booking link...</string>
     <string name="agentui_tools_running_unknown">Using a tool...</string>
 
     <!-- phone wording: what TalkBack says about a row that opens and closes -->

@@ -21,17 +21,21 @@
     }
     return changed;
   }
-  function message(catalog, key, params) {
+  function message(catalog, key, params, locale) {
     const entry = catalog?.[key];
     const value = entry && Object.hasOwn(entry, 'message') ? entry.message : entry;
     if (value && typeof value === 'object') {
-      const category = new Intl.PluralRules(getLocale()).select(Number(params.count));
+      const category = new Intl.PluralRules(locale).select(Number(params.count));
       return value[category] ?? value.other;
     }
     return value;
   }
-  function t(key, params = {}) {
-    const text = message(catalogs[language], key, params) ?? message(catalogs.en, key, params);
+  // Text in one language whatever the interface shows, for what other people read in theirs, such as the events and
+  // the email footer of a booking page. An unknown language and a missing key fall back to English, as in t().
+  function translate(code, key, params = {}) {
+    const lang = normalizeLanguage(code);
+    const locale = languages.find((item) => item.code === lang).locale;
+    const text = message(catalogs[lang], key, params, locale) ?? message(catalogs.en, key, params, locale);
     if (text === undefined) throw new Error(`Unknown translation key: ${key}`);
     // Interpolation is one pass: placeholder-like text in user input stays literal.
     return text.replace(/\{(\w+)\}/g, (placeholder, name) => {
@@ -39,7 +43,8 @@
       return String(params[name]);
     });
   }
-  const api = { languages, normalizeLanguage, getLanguage, getLocale, setLanguage, t };
+  const t = (key, params = {}) => translate(language, key, params);
+  const api = { languages, normalizeLanguage, getLanguage, getLocale, setLanguage, t, translate };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.RukooI18n = api;
 })(globalThis);

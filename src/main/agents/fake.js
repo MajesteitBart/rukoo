@@ -228,6 +228,7 @@ class FakeRun {
     if (/\bwhich model\b/.test(lower)) return this.say(`Model: ${this.turn.model || 'default'}. Effort: ${this.turn.effort || 'default'}.`);
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
     if (/\bmarkdown\b/.test(lower)) return this.markdown();
+    if (/\bschedule\b/.test(lower)) return this.schedule();
     if (/\bapproval\b/.test(lower)) return this.approval();
     if (/\berror\b/.test(lower)) return this.error();
     if (/reply/.test(lower)) return this.reply();
@@ -403,6 +404,28 @@ class FakeRun {
   async markdown() {
     await this.think('Putting the plan in order.', 200);
     return this.say(MARKDOWN_REPLY);
+  }
+
+  // "schedule": the first free half hour in the next two weeks, and a call there through create_event, the way an
+  // agent books a meeting it was asked for. Rukoo shows the card; the outcome comes with the next message.
+  async schedule() {
+    const day = (offset) => {
+      const d = new Date();
+      d.setDate(d.getDate() + offset);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+    const found = await this.tool('find_free_time', { start: day(1), end: day(15), duration_minutes: 30 });
+    if (found.error) return this.say(`I could not check your calendar: ${found.error}`);
+    const slot = (found.windows || [])[0];
+    if (!slot) return this.say('Your calendar has no free half hour in the next two weeks.');
+    const res = await this.tool('create_event', {
+      title: 'Call with Sanne',
+      start: slot.start,
+      end: new Date(Date.parse(slot.start) + 30 * 60000).toISOString(),
+      location: 'Phone'
+    });
+    if (res.error) return this.say(`That did not work: ${res.error}`);
+    return this.say(`You have time on ${found.lines[0] || slot.start}. I picked the first half hour; Rukoo asks you before it adds the call.`);
   }
 
   // "lost session": the agent no longer has the chat's session, like Claude Code after it deleted an old

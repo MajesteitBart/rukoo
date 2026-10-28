@@ -129,6 +129,8 @@ test('creates, edits and deletes an event', async () => {
 
   // A one-day all-day event turned into a timed one becomes nine to ten instead of ending where it starts.
   await win.locator('.cal-allday-cell').first().click();
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="allDay"]')).toBeChecked();
   await win.fill('.cal-form [name="title"]', 'Workshop prep');
   await win.uncheck('.cal-form [name="allDay"]');
@@ -144,6 +146,8 @@ test('creates, edits and deletes an event', async () => {
   const col = win.locator('.cal-col').nth(2);
   const box = await col.boundingBox();
   await win.mouse.click(box.x + 20, box.y + 6 * 56 + 30);
+  // A click or drag on the grid opens the quick popover (calendar-event.js); More options opens the dialog with its times.
+  await win.locator('.cal-quick [data-quick="more"]').click();
   await expect(win.locator('.cal-form [name="startTime"]')).toHaveValue('06:30');
   await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('07:30');
   await win.keyboard.press('Escape');
@@ -162,7 +166,8 @@ test('hides a calendar, switches views and moves through the weeks by keyboard',
 
   const title = win.locator('.cal-title');
   const thisWeek = await win.locator('.cal-dayhead').first().getAttribute('data-cal-day');
-  await win.locator('.cal-title').click();
+  // The keyboard leaves the sidebar: a click on the empty corner above the hours (the title opens Go to date).
+  await win.locator('.cal-days .cal-gutter').click();
   await win.keyboard.press('ArrowRight');
   await expect(win.locator('.cal-dayhead').first()).not.toHaveAttribute('data-cal-day', thisWeek);
   await expect(event('KL1691 Amsterdam to Lisbon')).toBeVisible();
@@ -204,10 +209,13 @@ test('a calendar gets another colour from its menu in the sidebar, everywhere it
   expect(await check('Work')).toBe('#2fd6c0');
   expect(await colour('Roadmap review')).toBe('#2fd6c0');
 
+  // Without a pick, Default color has nothing to undo; its dot shows the colour it goes back to.
+  const fallback = () => menu().locator('button', { hasText: 'Default color' });
   await toggle('Work').click({ button: 'right' });
-  await expect(menu().locator('.menu-heading')).toHaveText('Color of Work');
-  await expect(menu().locator('button.current')).toHaveText('Default color');
-  await menu().locator('button', { hasText: 'Purple' }).click();
+  await expect(fallback()).toBeDisabled();
+  expect(await varOf(fallback().locator('.mi .cal-dot'))).toBe('#2fd6c0');
+  await expect(menu().locator('[aria-checked="true"][data-color="#2fd6c0"]')).toBeFocused();
+  await menu().locator('.cal-swatch-btn[aria-label="Purple"]').click();
   await expect(menu()).toHaveCount(0);
   // Work's events, its box in the sidebar, its events' cards and the new-event dialog take the colour. The other
   // calendars keep theirs, and the calendar stays shown.
@@ -236,12 +244,15 @@ test('a calendar gets another colour from its menu in the sidebar, everywhere it
   expect(await colour('Roadmap review')).toBe('#c56cf0');
   expect(await check('Work')).toBe('#c56cf0');
 
-  // From the keyboard, the menu key opens the same menu on the calendar that has the focus, at its first item: back
-  // to the default colour. The focus returns to the calendar.
+  // From the keyboard, the menu key opens the same menu on the calendar that has the focus, at its colour. Default
+  // color, just above the last item, goes back to the account's colour, and the focus returns to the calendar.
   await toggle('Work').focus();
   await win.keyboard.press('Shift+F10');
-  await expect(menu().locator('button.current')).toHaveText('Purple');
-  await expect(menu().locator('button').first()).toBeFocused();
+  await expect(menu().locator('[aria-checked="true"][data-color="#c56cf0"]')).toBeFocused();
+  expect(await varOf(fallback().locator('.mi .cal-dot'))).toBe('#2fd6c0');
+  await win.keyboard.press('End');
+  await win.keyboard.press('ArrowUp');
+  await expect(fallback()).toBeFocused();
   await win.keyboard.press('Enter');
   await expect.poll(() => colour('Roadmap review')).toBe('#2fd6c0');
   expect(await check('Work')).toBe('#2fd6c0');
@@ -287,7 +298,7 @@ test('renaming an event in the hour the clocks go back keeps its time', async ()
     const first = Number(document.querySelector('.cal-dayhead').dataset.calDay);
     return Math.floor((target - first) / (7 * 86400000));
   }, back);
-  await win.locator('.cal-title').click();
+  await win.locator('.cal-days .cal-gutter').click();
   for (let i = 0; i < weeks; i++) await win.keyboard.press('j');
   await event('Night shift').click({ timeout: 15000 });
   await card().locator('[data-pop="edit"]').click();
@@ -347,6 +358,9 @@ test("a card opened at a multi-day event's later day stays with that day while t
   await win.keyboard.press('u');
   const rows = win.locator('.cal-row', { hasText: 'Holiday in Lisbon' });
   await expect(rows).toHaveCount(3);
+  // In the middle of the list, whatever the demo has on the days before: near the window's bottom a card moves up
+  // to fit, and would sit beside neither row.
+  await rows.nth(1).evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await rows.nth(1).click();
   await expect(card()).toBeVisible();
   await win.locator('.cal-scroll').evaluate((el) => (el.scrollTop += 1));
@@ -466,7 +480,7 @@ test('a Google calendar shows beside the demo calendar in its own colour, and ch
 
   // A change made in Google Calendar shows after the next sync.
   await app.evaluate(() => (global.__google.store[0].summary = 'Board meeting (moved room)'));
-  await win.locator('.cal-title').click();
+  await win.locator('.cal-days .cal-gutter').click();
   await win.keyboard.press('F5');
   await expect(event('Board meeting (moved room)')).toBeVisible({ timeout: 10000 });
 
@@ -556,12 +570,13 @@ test('a Google account without calendar access offers to connect it instead of a
     engine.caches.set('g-test', { folders: [], boxes: {}, lastSync: null });
     engine.emit('updated');
   });
-  const notice = win.locator('.cal-notice');
+  // The account's own notice; the one-time notice about reminders may show beside it.
+  const notice = win.locator('.cal-notice', { hasText: 'someone@gmail.com' });
   await expect(notice).toContainText('Show the calendar of someone@gmail.com', { timeout: 10000 });
   await expect(notice.locator('[data-cal-reconnect="g-test"]')).toHaveText('Connect calendar');
   await expect(win.locator('.sidebar [data-cal-reconnect="g-test"]')).toBeVisible();
   await expect(win.locator('.cal-notice.error')).toHaveCount(0);
   await notice.locator('[data-cal-dismiss]').click();
-  await expect(win.locator('.cal-notice')).toHaveCount(0);
+  await expect(notice).toHaveCount(0);
   await expect(win.locator('.sidebar [data-cal-reconnect="g-test"]')).toBeVisible();
 });

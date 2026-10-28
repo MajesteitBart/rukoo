@@ -1,10 +1,11 @@
-import { t, localize } from './i18n.js';
+import { t, localize, translate, getLanguage } from './i18n.js';
 // The message editor. It runs inline in the main window's reading pane, or on its own in a
 // compose window (compose.js). Either way it saves drafts as you write.
 import { icons } from './icons.js';
-import { api, esc, $, toast, dialog, confirmDialog, showMenu, person, formatAddress, quoteDate, fileSize, hhmm, isLight } from './ui.js';
+import { api, esc, $, toast, dialog, confirmDialog, showMenu, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN } from './ui.js';
 import { fillFrame } from './mailframe.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
+import { FREE_LENGTHS, FREE_RANGES, pcZone, freeRange, zoneOptions, duration } from './calendar-shared.js';
 
 const EMAIL_RE = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
 // Autosave this long after the last change.
@@ -104,6 +105,51 @@ export function accountSignatureHtml(acc, settings) {
   return usesGeneralSignature(acc) ? signatureHtml(settings.signature, settings.signatureHtml) : signatureHtml(acc.signature, acc.signatureHtml);
 }
 
+// The booking page's address as main reports it, when it is safe to put in a mail: https, or http on this computer
+// for a local development server. Anything else (a javascript: link from a hostile server) is left out.
+export function safeBookingUrl(url) {
+  if (typeof url !== 'string' || url.length > 300 || /[\s"'<>]/.test(url)) return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname))) return url;
+  } catch (_) {
+    // Not an address.
+  }
+  return null;
+}
+
+// Text with {url} where the link goes, as HTML: the text escaped, the link's text the address itself, so the mail's
+// plain-text part (which drops link targets) still carries it.
+function withLink(text, url) {
+  const link = `<a href="${esc(url)}">${esc(url)}</a>`;
+  return String(text).split('{url}').map(esc).join(link);
+}
+
+// The booking link under the signature (contracts f): on in the account, or in the general settings when the account
+// follows them (null), and only while the booking page is on. Its text is the account's, else the general one, else
+// the default in the booking page's language. data: main's state, with bookingUrl and bookingLocale.
+export function bookingFooterHtml(acc, data) {
+  const url = safeBookingUrl(data && data.bookingUrl);
+  if (!url) return '';
+  const s = (data && data.settings) || {};
+  const own = Boolean(acc) && typeof acc.bookingFooter === 'boolean';
+  if (!(own ? acc.bookingFooter : s.bookingFooter === true)) return '';
+  const fits = (v) => typeof v === 'string' && v.includes('{url}');
+  const custom = own && fits(acc.bookingFooterText) ? acc.bookingFooterText : fits(s.bookingFooterText) ? s.bookingFooterText : null;
+  // The default text's {url} stays for withLink(): translate() fills in each placeholder once, so it comes out as written.
+  const text = custom || translate(data.bookingLocale || getLanguage(), 'composer.booking.footerDefault', { url: '{url}' });
+  return `<div>${withLink(text, url)}</div>`;
+}
+
+// What goes in the .signature div of a new message: the signature, then the booking link. The div holds the footer
+// also without a signature, so drafts and agents find it (cleanDraftHtml keeps only that class).
+export function signatureBlockHtml(acc, data) {
+  const signature = accountSignatureHtml(acc, data.settings);
+  const footer = bookingFooterHtml(acc, data);
+  if (!footer) return signature;
+  return signature ? `${signature}${footer.replace('<div>', '<div style="margin-top:12px">')}` : footer;
+}
+
 // Cc, Bcc and a rich body can be seeded too (by an agent); they come on top of what the mode filled in.
 function initialState(data, opts, m) {
   const s = modeState(data, opts, m);
@@ -153,8 +199,8 @@ function modeState(data, opts, m) {
     dirty: false,
     savedAt: null
   };
-  // Stored signatures are cleaned by the main process (signature.js there).
-  const signature = accountSignatureHtml(acc, data.settings);
+  // Stored signatures are cleaned by the main process (signature.js there); the booking link comes after it.
+  const signature = signatureBlockHtml(acc, data);
   const sigHtml = signature ? `<div><br></div><div class="signature">${signature}</div>` : '';
   const body = opts.html != null ? sanitizeAgentHtml(opts.html) || '<div><br></div>' : `<div>${esc(opts.body || '').replace(/\n/g, '<br>') || '<br>'}</div>`;
   s.bodyHtml = `${body}${sigHtml}`;
@@ -338,6 +384,7 @@ function template(data, st, inline) {
     <div class="composer-bar">
       <button class="icon-btn" data-c="attach" data-i18n-title="composer.attachments.pick" title="${esc(t('composer.attachments.pick'))}">${icons.clip}</button>
       <button class="icon-btn" data-c="image" data-i18n-title="composer.attachments.image" title="${esc(t('composer.attachments.image'))}">${icons.image}</button>
+      <button class="icon-btn" data-c="calendar" data-i18n-title="composer.booking.button" title="${esc(t('composer.booking.button'))}" aria-haspopup="menu">${icons.calendar}</button>
       <button class="icon-btn" data-c="format" data-i18n-title="composer.format.label" title="${esc(t('composer.format.label'))}" aria-pressed="false">${icons.textFormat}</button>
       <button class="icon-btn" data-c="discard" data-i18n-title="composer.actions.discard" title="${esc(t('composer.actions.discard'))}">${icons.trash}</button>
       <button class="icon-btn" data-c="more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>
@@ -689,6 +736,158 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     changed();
   }
 
+  // ----- from the calendar -----
+
+  // At the caret when it is in the text, else above the signature (and the empty line before it), else at the end.
+  function insertHtml(range, html) {
+    if (range) {
+      restoreRange(range);
+      document.execCommand('insertHTML', false, html);
+    } else {
+      const tpl = document.createElement('template');
+      tpl.innerHTML = html;
+      editor.insertBefore(tpl.content, signatureStart() || null);
+    }
+    changed();
+  }
+
+  // The calendar button: the booking link while the booking page is on, and free times. The compose window's copy
+  // of main's state is from when it opened, so the link is asked for again.
+  async function calendarMenu(b) {
+    const range = editorRange();
+    const fresh = await api('state').catch(() => data);
+    const url = safeBookingUrl(fresh && fresh.bookingUrl);
+    showMenu(
+      b,
+      [
+        url ? { icon: 'link', get label() { return t('composer.booking.insertLink'); }, action: () => insertHtml(range, `<a href="${esc(url)}">${esc(url)}</a>`) } : null,
+        { icon: 'clock', get label() { return t('composer.booking.insertTimes'); }, action: () => freeTimes(range, fresh || data) }
+      ],
+      { above: true }
+    );
+  }
+
+  // The free-times dialog: length, period, hours and zone, with the lines main formats (calendarFree) as a preview,
+  // and what the preview shows goes into the text. With the booking link, the times follow the booking page's hours
+  // and the chosen meeting type's length, notice and horizon. Buffers and daily limits only count on the page itself,
+  // so the page can offer fewer times than the list.
+  async function freeTimes(range, state) {
+    const booking = await api('bookingState').catch(() => null);
+    const url = booking && booking.status === 'on' ? safeBookingUrl(booking.url) : null;
+    const types = url && booking.settings && Array.isArray(booking.settings.types) ? booking.settings.types.filter((x) => !x.hidden) : [];
+    const calendar = state && state.settings && state.settings.calendar;
+    const f = { length: 30, range: 'week', hours: url ? 'booking' : 'working', zone: pcZone(), link: Boolean(url), type: types[0] ? types[0].slug : null, result: null, seq: 0 };
+    const MAX_LINES = 5;
+    const typeOf = () => types.find((x) => x.slug === f.type) || types[0] || null;
+    const linked = () => Boolean(f.link && url);
+    // The footer under the signature has the link already: the times still follow the page, without a second link.
+    const inFooter = () => Boolean(url) && [...editor.querySelectorAll(':scope > .signature a[href]')].some((a) => a.getAttribute('href') === url);
+    const options = () => ({
+      length: linked() && typeOf() ? typeOf().duration : f.length,
+      hours: linked() ? 'booking' : f.hours
+    });
+    const html = () => {
+      const r = f.result;
+      if (!r || !r.lines.length) return '';
+      const lines = r.lines.slice(0, MAX_LINES);
+      const link = linked() && !inFooter() ? `<div>${withLink(t('composer.booking.linkLine', { url: '{url}' }), url)}</div>` : '';
+      return `<div>${esc(t('composer.booking.intro'))}</div><ul>${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><div>${esc(t('composer.booking.zoneLine', { zone: r.timeZone }))}</div>${link}<div><br></div>`;
+    };
+    const picked = await dialog({
+      title: t('composer.booking.timesTitle'),
+      wide: true,
+      buttons: [
+        { get label() { return t('common.actions.cancel'); }, value: null },
+        { get label() { return t('composer.booking.insert'); }, primary: true, value: () => html() || KEEP_OPEN }
+      ],
+      render(body) {
+        const rangeLabel = { week: t('calendar.free.rangeThisWeek'), next: t('calendar.free.rangeNextWeek'), days14: t('calendar.free.range14') };
+        const draw = () => {
+          const lengthField =
+            linked() && types.length
+              ? `<label>${esc(t('composer.booking.type'))}<select name="type">${types
+                  .map((x) => `<option value="${esc(x.slug)}"${x.slug === (typeOf() || {}).slug ? ' selected' : ''}>${esc(`${x.title} · ${duration(x.duration * 60000)}`)}</option>`)
+                  .join('')}</select></label>`
+              : `<label>${esc(t('calendar.free.length'))}<select name="length">${FREE_LENGTHS.map((n) => `<option value="${n}"${n === f.length ? ' selected' : ''}>${esc(duration(n * 60000))}</option>`).join('')}</select></label>`;
+          const hours = [url ? ['booking', t('calendar.free.hoursBooking')] : null, ['working', t('calendar.free.hoursWorking')], ['any', t('calendar.free.hoursAny')]].filter(Boolean);
+          const hourValue = options().hours;
+          body.innerHTML = `<div class="form free-times-form" style="padding:0">
+            <div class="free-times-grid">
+              ${lengthField}
+              <label>${esc(t('calendar.free.range'))}<select name="range">${FREE_RANGES.map((r) => `<option value="${r}"${r === f.range ? ' selected' : ''}>${esc(rangeLabel[r])}</option>`).join('')}</select></label>
+              <label>${esc(t('calendar.free.hours'))}<select name="hours" ${linked() ? 'disabled' : ''}>${hours.map(([v, label]) => `<option value="${v}"${v === hourValue ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
+              <label>${esc(t('calendar.free.zone'))}<select name="zone">${zoneOptions(f.zone, booking && booking.settings && booking.settings.timeZone ? [booking.settings.timeZone] : [])}</select></label>
+            </div>
+            ${url ? `<label class="inline"><input type="checkbox" name="link" ${f.link ? 'checked' : ''}/> ${esc(t('composer.booking.withLink'))}</label><span class="field-help">${esc(t('composer.booking.withLinkHelp'))}${inFooter() ? ` ${esc(t('composer.booking.linkInFooter'))}` : ''}</span>` : ''}
+            <div class="free-preview-label" id="free-preview-label">${esc(t('composer.booking.preview'))}</div>
+            <div class="free-preview" aria-labelledby="free-preview-label" aria-live="polite"></div>
+          </div>`;
+          showPreview();
+        };
+        const insertButton = () => body.closest('.dialog').querySelector('.buttons button:last-child');
+        const showPreview = () => {
+          const box = body.querySelector('.free-preview');
+          if (!box) return;
+          const content = html();
+          if (!f.result) box.innerHTML = `<p class="free-preview-note"><span class="spinner"></span>${esc(t('calendar.free.loading'))}</p>`;
+          else if (f.result.error) box.innerHTML = `<p class="free-preview-note error">${esc(f.result.error)}</p>`;
+          else if (!content) box.innerHTML = `<p class="free-preview-note">${esc(t('composer.booking.none'))}</p>`;
+          else {
+            // The same markup that goes into the text, parsed inert; failed accounts are said under it.
+            const tpl = document.createElement('template');
+            tpl.innerHTML = content;
+            box.replaceChildren(tpl.content);
+          }
+          for (const failed of (f.result && f.result.failed) || []) box.insertAdjacentHTML('beforeend', `<p class="free-preview-note warn">${esc(t('calendar.free.failed', { email: failed.email }))}</p>`);
+          const button = insertButton();
+          if (button) button.disabled = !content;
+        };
+        const load = async () => {
+          const seq = ++f.seq;
+          f.result = null;
+          showPreview();
+          const r = freeRange(f.range, calendar);
+          const o = options();
+          // With the link, the type's notice and how far ahead it can be booked cut the period, as on the page. The
+          // first time after the notice starts on a quarter hour.
+          const type = linked() ? typeOf() : null;
+          const now = Date.now();
+          const start = type ? Math.max(r.start, Math.ceil((now + (Number(type.minNotice) || 0) * 60000) / 900000) * 900000) : r.start;
+          const end = type ? Math.min(r.end, now + (Number(type.horizon) || 30) * 86400000) : r.end;
+          let result;
+          try {
+            result = end > start ? await api('calendarFree', { start, end, length: o.length, hours: o.hours, timeZone: f.zone }) : { lines: [], failed: [], windows: [], timeZone: f.zone };
+          } catch (err) {
+            result = { error: err.message, lines: [], failed: [] };
+          }
+          if (seq !== f.seq || !body.isConnected) return;
+          f.result = result;
+          showPreview();
+        };
+        body.addEventListener('change', (e) => {
+          const el = e.target;
+          if (el.name === 'length') f.length = Number(el.value);
+          if (el.name === 'type') f.type = el.value;
+          if (el.name === 'range') f.range = el.value;
+          if (el.name === 'hours') f.hours = el.value;
+          if (el.name === 'zone') f.zone = el.value;
+          if (el.name === 'link') {
+            f.link = el.checked;
+            draw();
+            body.querySelector('[name="link"]')?.focus();
+          }
+          load();
+        });
+        draw();
+        load();
+        // The dialog focuses its first text field; this one starts on the first choice instead.
+        setTimeout(() => body.querySelector('select')?.focus(), 0);
+      }
+    });
+    if (picked) insertHtml(range, picked);
+    else restoreRange(range);
+  }
+
   // ----- formatting -----
 
   const formatRow = $('.format-row', page);
@@ -791,6 +990,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         changed();
         return;
       }
+      case 'calendar':
+        return calendarMenu(b);
       case 'cc':
       case 'bcc': {
         const key = b.dataset.c;

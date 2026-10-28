@@ -17,6 +17,8 @@ import { signatureHtml, accountSignatureHtml, usesGeneralSignature } from './com
 import { editSignature, signaturePreview } from './signature.js';
 import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
 import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
+import { calendarSettingsPages, CALENDAR_VIEWS } from './calendar-settings.js';
+import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
 import { SCHEMES, ACTIONS as KEY_ACTIONS, bindings, display, keyLabel } from './keymap.js';
 
 // Settings > Keyboard shortcuts: the schemes by the name of their app (keymap.js).
@@ -240,6 +242,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (type === 'zoom') showZoom(payload);
     if (type === 'account') account.onStatus(payload);
     if (type === 'categories') categoriesPage.onState(payload);
+    // The booking page's state from main: the page and the overview follow it, forms keep what is typed.
+    if (type === 'booking') bookingPage.onState(payload);
     if (type === 'categories-progress') categoriesPage.onActivity(payload);
   });
 
@@ -284,6 +288,27 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   // Inbox categories (categories-settings.js); the account's privacy page says when Jev is on.
   const categoriesPage = categoryPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
   const account = accountPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog, jevOn: () => categoriesPage.jevOn() });
+  // Settings > Calendar (calendar-settings.js) and Settings > Booking page (booking-settings.js), which also draws the
+  // booking link rows beside the signature rows.
+  const calendarPage = calendarSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
+  const bookingPage = bookingPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
+  // A redraw of the screen already showing keeps its scroll position on the pages with calendar and booking rows: the
+  // booking page changes while it is open, and a switch near the bottom shouldn't send the page back to the top.
+  // Another page, or the booking page's setup becoming the page, starts at the top.
+  const scrollKept = { key: null, top: 0 };
+  function keepScroll(view) {
+    const scroller = page.querySelector('.page-scroll');
+    const kept = view === 'main' || view === 'account' || CALENDAR_VIEWS.includes(view) || BOOKING_VIEWS.includes(view);
+    const key = !kept || !scroller ? null : BOOKING_VIEWS.includes(view) ? bookingPage.screen() : `${view}:${params.id || ''}`;
+    if (key && key === scrollKept.key && scrollKept.top > 0) {
+      const top = scrollKept.top;
+      scroller.scrollTop = top;
+      // Rows that fill in just after the redraw can still make the page long enough.
+      if (scroller.scrollTop < top) requestAnimationFrame(() => scroller.isConnected && (scroller.scrollTop = top));
+    } else scrollKept.top = 0;
+    scrollKept.key = key;
+    if (key) scroller.addEventListener('scroll', () => scrollKept.key === key && (scrollKept.top = scroller.scrollTop), { passive: true });
+  }
 
   // A signature row: the signature as it will be sent, or None.
   const signatureRow = (html, action) =>
@@ -899,7 +924,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || view === 'agents' || view === 'shortcuts' ? loadAgents() : agentState,
       view === 'main' ? api('updatesState').catch(() => updates) : updates,
       view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
-      view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null
+      view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
+      view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
+      view === 'main' || view === 'account' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -929,6 +956,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           </div>`;
         })
         .join('');
+      // The booking link goes beside the signature; Calendar and the booking page get a group after General.
+      const footerRow = bookingPage.footerRow(s);
+      const calendarGroup = `
+        <div class="settings-group-title" data-i18n="settings.groups.calendar">${esc(t('settings.groups.calendar'))}</div>
+        <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}</div>`;
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
@@ -954,9 +986,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
           ${mailtoRow()}
           ${signatureRow(signatureHtml(s.signature, s.signatureHtml), 'signature')}
+          ${footerRow}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
+        ${calendarGroup}
         <div class="settings-group-title" data-i18n="settings.groups.sync">${esc(t('settings.groups.sync'))}</div>
         <div class="card">${account.rowHtml()}</div>
         <div class="settings-group-title" data-i18n="settings.groups.agents">${esc(t('settings.groups.agents'))}</div>
@@ -982,12 +1016,15 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const defaultRow = a.isDefault
         ? `<div class="row static" data-default-account><div class="text"><div class="title">${esc(t('settings.account.isDefault'))}</div><div class="desc">${esc(t('settings.account.makeDefaultHelp'))}</div></div></div>`
         : row({ title: t('settings.account.makeDefault'), desc: t('settings.account.makeDefaultHelp'), action: 'acc-default' });
+      // The booking link under this account's signature, after its signature row.
+      const accountFooterRow = bookingPage.accountFooterRow(a, s);
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.account">${esc(t('settings.groups.account'))}</div>
         <div class="card">
           ${defaultRow}
           ${row({ title: t('settings.account.name'), value: esc(a.name || ''), action: 'acc-name' })}
           ${usesGeneralSignature(a) ? generalSignatureRow(signatureHtml(s.signature, s.signatureHtml)) : signatureRow(accountSignatureHtml(a, s), 'acc-signature')}
+          ${accountFooterRow}
           ${row({ title: t('settings.account.color'), value: labelOf(COLORS, a.color), action: 'acc-color' })}
           ${row({ title: t('settings.account.from'), value: esc(a.defaultFrom), action: 'acc-from' })}
           ${row({ title: t('settings.account.identities'), desc: a.identities.length > 1 ? t('settings.aliases.count', { count: a.identities.length - 1 }) : t('settings.account.noAliases'), action: 'acc-aliases' })}
@@ -1003,6 +1040,34 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const a = state.accounts.find((x) => x.id === params.id);
       if (!a) return back();
       title = t('settings.account.server');
+      // Who emails the invitations when the user adds guests on this calendar server. Guests can only be added where
+      // the server does; servers say so in their DAV header, and some get it wrong. Shown once a server is set.
+      const invites = a.caldavInvites || '';
+      const invitesHtml =
+        a.auth !== 'oauth2' && a.caldav
+          ? `<label data-i18n="settings.server.invites">${esc(t('settings.server.invites'))}<select name="caldavInvites">${[
+              ['', 'settings.server.invitesAuto'],
+              ['provider', 'settings.server.invitesProvider'],
+              ['none', 'settings.server.invitesNone']
+            ]
+              .map(([value, key]) => `<option value="${value}" data-i18n="${key}"${value === invites ? ' selected' : ''}>${esc(t(key))}</option>`)
+              .join('')}</select>
+          <span class="field-help" data-i18n="settings.server.invitesHelp">${esc(t('settings.server.invitesHelp'))}</span></label>`
+          : '';
+      // What the server itself says, from the calendars Rukoo read last, goes with the first option.
+      if (invitesHtml && !invites) {
+        api('calendarList')
+          .then((list) => {
+            const acc = (list || []).find((x) => x.id === a.id);
+            const said = acc && acc.calendars.length ? acc.calendars[0].invites : null;
+            const option = page.querySelector('select[name="caldavInvites"] option[value=""]');
+            if (!option || !said) return;
+            const key = said === 'provider' ? 'settings.server.invitesAutoProvider' : 'settings.server.invitesAutoNone';
+            option.dataset.i18n = key;
+            option.textContent = t(key);
+          })
+          .catch(() => {});
+      }
       body = `<div class="card"><form class="form" data-form="server">
         <label data-i18n="setup.fields.username">${esc(t('setup.fields.username'))}<input type="text" name="user" value="${esc(a.imap.user || a.email)}"/></label>
         ${a.auth === 'oauth2' ? '' : `<label data-i18n="setup.fields.password">${esc(t('setup.fields.password'))}<input type="password" name="password" data-i18n-placeholder="settings.server.passwordHint" placeholder="${esc(t('settings.server.passwordHint'))}"/></label>`}
@@ -1018,6 +1083,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
             : `<label data-i18n="settings.server.caldav">${esc(t('settings.server.caldav'))}<input type="text" name="caldavUrl" value="${esc(a.caldav ? a.caldav.url : '')}" spellcheck="false" data-i18n-placeholder="settings.server.caldavPlaceholder" placeholder="${esc(t('settings.server.caldavPlaceholder'))}"/>
           <span class="field-help" data-i18n="settings.server.caldavHelp">${esc(t('settings.server.caldavHelp'))}</span></label>`
         }
+        ${invitesHtml}
         <div class="error" data-error></div>
         <div><button class="btn" type="submit" data-i18n="common.actions.save">${esc(t('common.actions.save'))}</button></div>
       </form></div>`;
@@ -1111,6 +1177,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
 
     if (ACCOUNT_VIEWS.includes(view)) ({ title, body } = account.view(view));
     if (CATEGORY_VIEWS.includes(view)) ({ title, body } = categoriesPage.view(view));
+    if (CALENDAR_VIEWS.includes(view)) ({ title, body } = calendarPage.view(view));
+    if (BOOKING_VIEWS.includes(view)) ({ title, body } = bookingPage.view(view));
 
     // A redraw, such as the one after each update from main, keeps the keyboard on the control with the same action.
     const focused = page.contains(document.activeElement) ? document.activeElement.dataset.a : null;
@@ -1122,12 +1190,16 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
     if (view === 'main') showMailto();
     if (view === 'main' || ACCOUNT_VIEWS.includes(view)) account.fill(view);
+    calendarPage.fill(view, page);
+    bookingPage.fill(view, page);
+    keepScroll(view);
   }
 
   page.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
     if (String(form.dataset.form || '').startsWith('rukoo')) return account.submit(form);
+    if (String(form.dataset.form || '').startsWith('booking')) return bookingPage.submit(form);
     const f = new FormData(form);
     const err = form.querySelector('[data-error]');
     const btn = form.querySelector('button[type=submit]');
@@ -1145,6 +1217,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const same = (next, was) => Boolean(was) && next.host === was.host && next.port === Number(was.port) && next.secure === Boolean(was.secure) && next.user === (was.user || acc.email);
       const patch = password || !acc || !same(imap, acc.imap) || !same(smtp, acc.smtp) ? { imap, smtp, password } : {};
       if (f.has('caldavUrl')) patch.caldav = { url: f.get('caldavUrl').trim() };
+      if (f.has('caldavInvites')) patch.caldavInvites = f.get('caldavInvites') || null;
       await api('updateAccount', params.id, patch);
       toast(t('settings.server.saved'));
       back();
@@ -1168,6 +1241,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a === 'back') return back();
     if (a.startsWith('rukoo') && (await account.click(a))) return;
     if ((a === 'categories' || a.startsWith('cat-')) && (await categoriesPage.click(a))) return;
+    if (a.startsWith('calset-') && (await calendarPage.click(a))) return;
+    if (a.startsWith('booking-') && (await bookingPage.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'mailto-use') {

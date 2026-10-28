@@ -29,7 +29,11 @@ const RUKOO_TOOLS = {
   mail_action: 'approval',
   read_attachment: 'file',
   read_chat_file: 'file',
-  read_skill: 'file'
+  read_skill: 'file',
+  list_events: 'calendar',
+  find_free_time: 'calendar',
+  create_event: 'calendar',
+  get_booking_link: 'link'
 };
 const CHOICES = new Set(['allow', 'deny', 'once', 'session', 'always', 'approve', 'decline', 'accept', 'acceptForSession', 'cancel']);
 // Main and the adapters label approval buttons in English. Those standard labels are matched back to
@@ -66,7 +70,7 @@ const untag = (v) => (typeof v === 'string' ? v.replace(UNSAFE_TAG, '') : v);
 const rukooTool = (name) => String(name || '').replace(/^(mcp__rukoo__|mcp_rukoo_|rukoo[._:])/i, '');
 // These tools put their own card in the transcript (the draft, the plan, the sources, the approval),
 // so once they succeed a chip saying the same thing is noise. Running and failed calls keep theirs.
-const CARD_TOOLS = new Set(['write_draft', 'show_plan', 'show_sources', 'propose_action', 'mail_action']);
+const CARD_TOOLS = new Set(['write_draft', 'show_plan', 'show_sources', 'propose_action', 'mail_action', 'create_event']);
 const cardToolDone = (item) => {
   const tool = rukooTool(item.name);
   return item.status === 'done' && CARD_TOOLS.has(tool) && (item.rukoo || tool !== item.name);
@@ -1300,6 +1304,10 @@ export function mountAgentPanel(ctx) {
   // exactly as the agent sent it; only a proposal loses the tags main keeps for the agent (see untag).
   function localizeApproval(item) {
     const name = agentName(AGENTS.includes(item.source) ? item.source : P.conv ? P.conv.agent : currentAgent());
+    if (item.kind === 'calendar' && item.calendar && typeof item.calendar === 'object') {
+      const card = localizeEvent(item, name);
+      if (card) return card;
+    }
     const tool = item.tool && typeof item.tool === 'object' ? item.tool : null;
     // A runtime approval shows a tool's input, which runs exactly as written, tags and all.
     const shown = item.kind === 'proposal' ? untag : (v) => v;
@@ -1331,8 +1339,66 @@ export function mountAgentPanel(ctx) {
     };
   }
 
+  // An event an agent asked to add (create_event). Main keeps the card in English for the agent's notes; this one
+  // says it in the interface language from what Rukoo will make (item.calendar), which is what approving makes.
+  // Without the times it needs, the card stays main's.
+  function localizeEvent(item, name) {
+    const spec = item.calendar;
+    const when = eventWhen(spec);
+    if (!when) return null;
+    const field = (label, value) => ({ label, value: String(value ?? '') });
+    const guests = Array.isArray(spec.guests) ? spec.guests : [];
+    const fields = [
+      field(t('agent.approval.calendarFieldTitle'), spec.title),
+      field(t('agent.approval.calendarFieldWhen'), when),
+      field(t('agent.approval.calendarFieldCalendar'), spec.account ? `${spec.calendar} (${spec.account})` : spec.calendar)
+    ];
+    if (guests.length) fields.push(field(t('agent.approval.calendarFieldGuests'), guests.map((g) => (g.name ? `${g.name} <${g.address}>` : g.address)).join(', ')));
+    // A product name, the same in every language.
+    if (spec.meet) fields.push(field(t('agent.approval.calendarFieldVideo'), 'Google Meet'));
+    if (spec.location) fields.push(field(t('agent.approval.calendarFieldLocation'), spec.location));
+    if (spec.description) fields.push(field(t('agent.approval.calendarFieldDescription'), spec.description));
+    return {
+      ...item,
+      // Once answered, the card shrinks to its title, which then names the event.
+      title: item.status && item.status !== 'pending' ? t('agent.approval.calendarDecided', { title: String(spec.title || '') }) : t('agent.approval.calendarTitle', { name }),
+      detail: guests.length && spec.account ? t('agent.approval.calendarInvites', { address: spec.account }) : '',
+      fields,
+      choices: (item.choices || []).map((c) => {
+        if (c.id === 'approve') return { ...c, label: t('agent.approval.calendarCreate') };
+        if (c.id === 'decline') return { ...c, label: t('agent.choices.cancel') };
+        return c;
+      })
+    };
+  }
+
+  // When the event takes place, in the interface language. On the event's own clock, with its zone after it, when
+  // the agent named another time zone than this computer's. An all-day event's end date is the day after it ends.
+  function eventWhen(spec) {
+    const day = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' };
+    try {
+      if (spec.allDay) {
+        const f = new Intl.DateTimeFormat(getLocale(), { ...day, timeZone: 'UTC' });
+        const first = Date.parse(`${spec.startDate}T00:00:00Z`);
+        const last = Date.parse(`${spec.endDate}T00:00:00Z`) - 86400000;
+        if (!Number.isFinite(first) || !Number.isFinite(last)) return '';
+        return t('agent.approval.calendarAllDay', { days: last > first ? f.formatRange(first, last) : f.format(first) });
+      }
+      if (!Number.isFinite(spec.start) || !Number.isFinite(spec.end)) return '';
+      const zone = spec.timeZone && spec.timeZone !== Intl.DateTimeFormat().resolvedOptions().timeZone ? spec.timeZone : undefined;
+      const text = new Intl.DateTimeFormat(getLocale(), { ...day, hour: '2-digit', minute: '2-digit', timeZone: zone }).formatRange(spec.start, spec.end);
+      return zone ? `${text} (${zone})` : text;
+    } catch {
+      return '';
+    }
+  }
+
   // Notices from main are English; errors and mail results carry a code or counts we can translate.
   function localizeNotice(item) {
+    const cal = item.calendar;
+    if (cal && typeof cal.title === 'string' && (cal.action === 'created' || cal.action === 'failed')) {
+      return { ...item, text: cal.action === 'created' ? t('agent.calendar.created', { title: cal.title }) : t('agent.calendar.failed', { title: cal.title }) };
+    }
     if (item.code && hasKey(`agent.notices.${item.code}`)) {
       const params = item.code === 'kept-approval' || item.code === 'approval-too-long' ? { title: String((item.params && item.params.title) || '') } : {};
       return { ...item, text: t(`agent.notices.${item.code}`, { name: agentName(P.conv ? P.conv.agent : currentAgent()), ...params }) };

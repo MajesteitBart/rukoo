@@ -405,8 +405,12 @@ class AgentHub extends EventEmitter {
     for (const [cid, running] of this.mailRunning) {
       const c = this.conversations.get(cid);
       if (!c) continue;
-      for (const { label } of running) {
-        c.notes.push(`Rukoo closed while ${context.unsafeInline(label || 'a mail action', 'mail action')} was still running, so its outcome is not known. Check the mail before you act on it again.`);
+      for (const { label, kind } of running) {
+        c.notes.push(
+          kind === 'calendar'
+            ? `Rukoo closed while ${context.unsafeInline(label || 'an event', 'calendar')} was still being added, so its outcome is not known. Check the calendar with list_events before you ask again.`
+            : `Rukoo closed while ${context.unsafeInline(label || 'a mail action', 'mail action')} was still running, so its outcome is not known. Check the mail before you act on it again.`
+        );
       }
     }
     clearTimeout(this.deltaTimer);
@@ -1797,7 +1801,7 @@ class AgentHub extends EventEmitter {
 
   // ---------- approvals ----------
 
-  requestApproval(cid, { title, detail = '', fields = [], choices = [], source = 'rukoo', kind = 'runtime', key = null, mail = null, tool = null } = {}) {
+  requestApproval(cid, { title, detail = '', fields = [], choices = [], source = 'rukoo', kind = 'runtime', key = null, mail = null, calendar = null, tool = null } = {}) {
     const c = this.mustGet(cid);
     const { card, refusal } = approvalCard({ title, detail, fields, choices, tool });
     const item = this.addItem(c, {
@@ -1809,7 +1813,8 @@ class AgentHub extends EventEmitter {
       ...(refusal ? { declinedBy: 'rukoo' } : {}),
       source,
       kind,
-      ...(mail ? { mail } : {})
+      ...(mail ? { mail } : {}),
+      ...(calendar ? { calendar } : {})
     });
     const turn = kind === 'runtime' ? this.turns.get(cid) : null;
     if (turn) {
@@ -1820,7 +1825,7 @@ class AgentHub extends EventEmitter {
       const shownTitle = context.untag(item.title);
       this.addItem(c, { type: 'notice', text: `Declined without asking: ${shownTitle}. Its input is too long to show here in full.`, tone: 'info', code: 'approval-too-long', params: { title: shownTitle }, undo: null });
       // A runtime request gets the denial as its answer; a proposal or mail action is told with the next message.
-      if (kind !== 'runtime') c.notes.push(`Rukoo declined ${kind === 'mail' ? context.unsafeInline(item.title, 'mail action') : `"${oneLine(item.title)}"`} without asking the user: its input was too long to show in full. Ask again with shorter input.`);
+      if (kind !== 'runtime') c.notes.push(`Rukoo declined ${kind === 'mail' ? context.unsafeInline(item.title, 'mail action') : kind === 'calendar' ? context.unsafeInline(item.title, 'calendar') : `"${oneLine(item.title)}"`} without asking the user: its input was too long to show in full. Ask again with shorter input.`);
       const declined = Promise.resolve(refusal.id);
       declined.itemId = item.id;
       return declined;
@@ -1873,19 +1878,22 @@ class AgentHub extends EventEmitter {
     if (item.kind === 'mail') {
       this.settleMail(c, () => this.onMailDecision(c, item, !denied), item.title);
     }
+    if (item.kind === 'calendar') {
+      this.settleMail(c, () => this.onCalendarDecision(c, item, !denied), item.title, 'calendar');
+    }
     return item;
   }
 
   // Mail work whose outcome goes into the notes of the agent's next message: a decision on a mail action, or an
   // action that ran without asking and outlasted its tool call. One chain per conversation, in order; runTurn()
-  // waits until the chain is done.
+  // waits until the chain is done. An event the user approved goes on the same chain (kind 'calendar').
   // label names the work for a note when Rukoo quits before it is done (see dispose()).
-  settleMail(c, work, label = '') {
+  settleMail(c, work, label = '', kind = 'mail') {
     const before = this.mailSettling.get(c.id);
     // Nothing queued: start at once, so a decision's own note is there when decide() returns.
     const started = before ? before.then(work) : new Promise((resolve) => resolve(work()));
     const running = this.mailRunning.get(c.id) || new Set();
-    const entry = { label };
+    const entry = { label, kind };
     running.add(entry);
     this.mailRunning.set(c.id, running);
     const op = started
@@ -1935,6 +1943,23 @@ class AgentHub extends EventEmitter {
     }
     const result = await tools.executeMail(this, c, item.mail || {});
     c.notes.push(`The user approved: ${context.unsafeInline(item.title, 'mail action')}. Rukoo: ${context.unsafeInline(result.text, 'mail result')}.`);
+    this.touch(c);
+  }
+
+  // The card's title holds the agent's title, which it may have taken from an email or an event: tagged.
+  async onCalendarDecision(c, item, approved) {
+    const title = context.unsafeInline(item.title, 'calendar');
+    if (!approved) {
+      c.notes.push(`The user declined: ${title}. Rukoo did not add the event.`);
+      this.touch(c);
+      return;
+    }
+    const result = await tools.executeCalendar(this, c, item.calendar || {});
+    c.notes.push(
+      result.ok
+        ? `The user approved: ${title}. Rukoo: ${context.unsafeInline(result.text, 'calendar result')}.`
+        : `The user approved: ${title}, but Rukoo could not add it: ${context.unsafeInline(result.text, 'calendar result')}. Tell the user.`
+    );
     this.touch(c);
   }
 
@@ -2481,7 +2506,11 @@ const RUKOO_LABELS = {
   mail_action: 'Proposed a mail action',
   read_attachment: 'Read an attachment',
   read_chat_file: 'Read an attached file',
-  read_skill: 'Read a skill'
+  read_skill: 'Read a skill',
+  list_events: 'Checked the calendar',
+  find_free_time: 'Looked for free time',
+  create_event: 'Proposed an event',
+  get_booking_link: 'Got the booking link'
 };
 const COMMANDS = /^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$/i;
 const BUILTINS = [

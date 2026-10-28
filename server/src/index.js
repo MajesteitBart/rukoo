@@ -4,31 +4,50 @@
 // There is no table of accounts or sessions anywhere. An account's object is found by a name derived from its email
 // address and the PEPPER secret, and a session token starts with that name, so every request routes straight to one
 // object and only that object knows whether the account or the session exists.
+//
+// Booking pages (/v1/booking for their owners; for everyone else the root of BOOKING_ORIGIN, or /meet without it)
+// live in owner.js and meet.js, with one Booking object per handle.
 
 import pkg from '../package.json' with { type: 'json' };
 import { hmac, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
+import {
+  ACCOUNT_NAME,
+  accountObject,
+  bookingRoot,
+  checkConfig,
+  config,
+  limitRate,
+  positive,
+  registryObject
+} from './config.js';
+import { READ_CORS, html, json, redirect, send } from './http.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
+import { meet } from './meet.js';
+import * as owner from './owner.js';
 import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
 
 export { Account } from './account.js';
+export { Booking } from './booking.js';
 export { Registry } from './registry.js';
 
-const JURISDICTIONS = ['eu', 'us', 'fedramp'];
-const SIGNUP_MODES = ['open', 'invite', 'closed'];
-// A shorter pepper is easier to guess, and with it the account name of any address.
-const PEPPER_MIN = 16;
-const NAME = /^[A-Za-z0-9_-]{43}$/;
 const TOKEN = /^Bearer ([A-Za-z0-9_-]{43})\.[A-Za-z0-9_-]{43}$/i;
 const DEVICE_PATH = /^\/v1\/devices\/([^/]+)$/;
+const HANDLE_PATH = /^\/v1\/booking\/handles\/([^/]+)$/;
+const BOOKING_PATH = /^\/v1\/booking\/bookings\/([^/]+)$/;
+
+// The optional parts of the protocol this server offers (PROTOCOL.md, GET /v1/info).
+export const FEATURES = ['booking'];
 
 export default {
   async fetch(request, env) {
     try {
       return await handle(request, env);
     } catch (err) {
-      if (err instanceof HttpError) return json(err.status, { error: err.code, message: err.message }, err.headers);
+      if (err instanceof HttpError) {
+        return json(err.status, { error: err.code, message: err.message, ...err.extra }, err.headers);
+      }
       // Only the error itself is logged: never a body, a token or an address.
       console.error('Request failed:', err?.stack || err);
       return json(500, { error: 'server', message: 'Something went wrong on the server.' });
@@ -47,10 +66,14 @@ async function handle(request, env) {
     return html(privacy(config(env, url), privacyLanguage(url, request.headers.get('accept-language'))), method);
   }
   if (path === '/v1/info' && method === 'GET') return json(200, info(env, url));
-  if (path !== '/v1' && !path.startsWith('/v1/')) throw notFound();
+  const account = path === '/v1' || path.startsWith('/v1/');
+  const root = bookingRoot(env);
+  if (path === '/meet' || path.startsWith('/meet/')) return root ? toRoot(request, root, url) : meet(request, env, url);
+  // At the root of BOOKING_ORIGIN every other path is a booking page's, /mcp, /booker.js, /llms.txt or a font.
+  if (root === url.origin && !account) return meet(request, env, url);
+  if (!account) throw notFound();
 
-  const problem = configProblem(env);
-  if (problem) throw new HttpError(500, 'not_configured', problem);
+  checkConfig(env);
 
   const route = `${method} ${path}`;
   switch (route) {
@@ -82,6 +105,14 @@ async function handle(request, env) {
       return pull(request, env, url);
     case 'POST /v1/records':
       return push(request, env);
+    case 'GET /v1/booking':
+      return owner.getBooking(request, env, url);
+    case 'PUT /v1/booking':
+      return owner.putBooking(request, env, url);
+    case 'DELETE /v1/booking':
+      return owner.deleteBooking(request, env);
+    case 'GET /v1/booking/bookings':
+      return owner.listBookings(request, env, url);
   }
   const device = path.match(DEVICE_PATH);
   if (device && method === 'DELETE') {
@@ -89,11 +120,15 @@ async function handle(request, env) {
     if (!/^[A-Za-z0-9_-]{22}$/.test(device[1])) throw invalid('That is not a device id.');
     return send(await stub.revoke(token, device[1]));
   }
+  const handleCheck = path.match(HANDLE_PATH);
+  if (handleCheck && method === 'GET') return owner.checkHandle(request, env, handleCheck[1]);
+  const action = path.match(BOOKING_PATH);
+  if (action && method === 'POST') return owner.bookingAction(request, env, action[1]);
   throw notFound();
 }
 
 async function prelogin(request, env) {
-  await limitRate(request, env);
+  await limitRate(request, env.RATE_LIMITER);
   const body = await input.readJson(request);
   const email = input.email(body.email);
   const name = await accountName(env, email);
@@ -106,9 +141,9 @@ async function prelogin(request, env) {
 }
 
 async function signup(request, env) {
-  await limitRate(request, env);
+  await limitRate(request, env.RATE_LIMITER);
   const body = await input.readJson(request);
-  const mode = signups(env);
+  const mode = config(env, new URL(request.url)).signups;
   if (mode === 'closed') throw new HttpError(403, 'signups_closed', 'This server does not take new accounts.');
   const invite = mode === 'invite' ? await validInvite(env, body.invite) : null;
   if (mode === 'invite' && !invite) {
@@ -130,7 +165,7 @@ async function signup(request, env) {
   };
   const name = await accountName(env, fields.email);
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
-  const registry = registryStub(env);
+  const registry = registryObject(env);
   if (registry) {
     const place = await registry.reserve(maxAccounts(env), invite, inviteUses(env));
     if (place === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
@@ -146,7 +181,7 @@ async function signup(request, env) {
 }
 
 async function login(request, env) {
-  await limitRate(request, env);
+  await limitRate(request, env.RATE_LIMITER);
   const body = await input.readJson(request);
   const email = input.email(body.email);
   const fields = { authKey: input.key(body.authKey, 'authKey', 32), device: input.device(body.device) };
@@ -155,7 +190,7 @@ async function login(request, env) {
 }
 
 async function recoverStart(request, env) {
-  await limitRate(request, env);
+  await limitRate(request, env.RATE_LIMITER);
   const body = await input.readJson(request);
   const email = input.email(body.email);
   const fields = { recoveryAuth: input.key(body.recoveryAuth, 'recoveryAuth', 32) };
@@ -163,7 +198,7 @@ async function recoverStart(request, env) {
 }
 
 async function recoverFinish(request, env) {
-  await limitRate(request, env);
+  await limitRate(request, env.RATE_LIMITER);
   const body = await input.readJson(request);
   const email = input.email(body.email);
   const fields = {
@@ -202,12 +237,19 @@ async function replaceRecovery(request, env) {
   return send(await stub.replaceRecovery(token, fields));
 }
 
+// The account's booking page goes with it: the object hands back the handle it had, and the page is wiped after.
+// handleKey (optional): the deleting device's key to take the handle back with an account made again later; sign-ups
+// don't prove the address, so the email alone doesn't (PROTOCOL.md, Handles).
 async function deleteAccount(request, env) {
   const { stub, token } = session(request, env);
   const body = await input.readJson(request);
+  const handleKey = body.handleKey === undefined || body.handleKey === null ? null : input.key(body.handleKey, 'handleKey', 32);
   const result = await stub.deleteAccount(token, { authKey: input.key(body.authKey, 'authKey', 32) });
-  const registry = registryStub(env);
-  if (registry && result.status === 204) await registry.release();
+  if (result.status === 204) {
+    const registry = registryObject(env);
+    if (registry) await registry.release();
+    await owner.wipeAfterDelete(env, token, result.handle, handleKey ? toBase64url(await sha256(handleKey)) : null);
+  }
   return send(result);
 }
 
@@ -219,7 +261,7 @@ async function pull(request, env, url) {
 
 async function push(request, env) {
   const { stub, token } = session(request, env);
-  await limitRate(request, env, env.PUSH_LIMITER);
+  await limitRate(request, env.PUSH_LIMITER);
   const body = await input.readPushJson(request);
   return send(await stub.push(token, input.records(body.records), limits(env)));
 }
@@ -236,47 +278,14 @@ async function accountName(env, email) {
   return toBase64url(await hmac(env.PEPPER, `account\n${email}`));
 }
 
-// The server-wide account count, when the REGISTRY binding exists.
-function registryStub(env) {
-  if (!env.REGISTRY) return null;
-  const where = jurisdiction(env);
-  const namespace = where ? env.REGISTRY.jurisdiction(where) : env.REGISTRY;
-  return namespace.get(namespace.idFromName('registry'));
-}
-
 function maxAccounts(env) {
   const n = Number(env.MAX_ACCOUNTS);
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
 
 function stub(env, name) {
-  if (!NAME.test(name)) throw new HttpError(401, 'unauthorized', 'Sign in first.');
-  const where = jurisdiction(env);
-  const namespace = where ? env.ACCOUNTS.jurisdiction(where) : env.ACCOUNTS;
-  return namespace.get(namespace.idFromName(name));
-}
-
-// Limits sign-in, sign-up and recovery attempts per client address when the RATE_LIMITER binding exists, and pushes
-// when PUSH_LIMITER does. IPv6 clients usually have a whole /64 to pick addresses from, so they are counted by that.
-async function limitRate(request, env, limiter = env.RATE_LIMITER) {
-  if (!limiter) return;
-  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-  const { success } = await limiter.limit({ key: ip.includes(':') ? ipv6Prefix(ip) : ip });
-  if (!success)
-    throw new HttpError(429, 'rate_limited', 'Too many requests. Try again in a minute.', { 'retry-after': '60' });
-}
-
-function ipv6Prefix(ip) {
-  const [head, tail = ''] = ip.toLowerCase().split('::');
-  const left = head ? head.split(':') : [];
-  const right = tail ? tail.split(':') : [];
-  const groups = ip.includes('::')
-    ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right]
-    : left;
-  return `${groups
-    .slice(0, 4)
-    .map((g) => g.replace(/^0+(?=.)/, ''))
-    .join(':')}::/64`;
+  if (!ACCOUNT_NAME.test(name)) throw new HttpError(401, 'unauthorized', 'Sign in first.');
+  return accountObject(env, name);
 }
 
 // Every listed code works. Each is compared through its hash, so the comparison takes the same time whatever the
@@ -303,64 +312,12 @@ function inviteUses(env) {
   return Number.isSafeInteger(n) && n >= 0 ? n : 1;
 }
 
-function configProblem(env) {
-  if (typeof env.PEPPER !== 'string' || env.PEPPER.length < PEPPER_MIN) {
-    return `This server has no PEPPER secret. Set a random one of at least ${PEPPER_MIN} characters with: npx wrangler secret put PEPPER`;
-  }
-  const where = String(env.JURISDICTION ?? '')
-    .trim()
-    .toLowerCase();
-  if (where && !JURISDICTIONS.includes(where)) {
-    return 'The JURISDICTION variable must be eu, us, fedramp or empty. Fix it in wrangler.jsonc and deploy again.';
-  }
-  return null;
-}
-
-function jurisdiction(env) {
-  const where = String(env.JURISDICTION ?? '')
-    .trim()
-    .toLowerCase();
-  return JURISDICTIONS.includes(where) ? where : null;
-}
-
-// Missing means invite, the default in wrangler.jsonc. Anything unrecognized means closed, so a typo never opens a
-// server that was meant to be private.
-function signups(env) {
-  if (env.SIGNUPS === undefined) return 'invite';
-  const mode = String(env.SIGNUPS).trim().toLowerCase();
-  return SIGNUP_MODES.includes(mode) ? mode : 'closed';
-}
-
 function limits(env) {
   return {
     records: positive(env.MAX_RECORDS, 250000),
     bytes: positive(env.MAX_BYTES, 104857600),
     recordBytes: input.RECORD_BYTES,
     batch: input.BATCH
-  };
-}
-
-function positive(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
-}
-
-function text(value) {
-  const s = typeof value === 'string' ? value.trim() : '';
-  return s || null;
-}
-
-// Without a PRIVACY_URL of its own, the server points to the statement it serves itself (privacy.js).
-function config(env, url) {
-  return {
-    operator: {
-      name: text(env.OPERATOR_NAME),
-      url: text(env.OPERATOR_URL),
-      contact: text(env.OPERATOR_CONTACT),
-      privacy: text(env.PRIVACY_URL) || `${url.origin}/privacy`
-    },
-    jurisdiction: jurisdiction(env),
-    signups: signups(env)
   };
 }
 
@@ -372,7 +329,8 @@ function info(env, url) {
     operator,
     hosting: { provider: 'Cloudflare', company: 'Cloudflare, Inc.', country: 'US', jurisdiction: where },
     signups: mode,
-    limits: limits(env)
+    limits: limits(env),
+    features: FEATURES
   };
 }
 
@@ -380,28 +338,11 @@ function notFound() {
   return new HttpError(404, 'not_found', 'There is nothing here.');
 }
 
-function send({ status, body, headers }) {
-  return status === 204 ? new Response(null, { status, headers: baseHeaders(headers) }) : json(status, body, headers);
-}
-
-function json(status, body, headers = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: baseHeaders({ 'content-type': 'application/json; charset=utf-8', ...headers })
-  });
-}
-
-function html(body, method) {
-  return new Response(method === 'HEAD' ? null : body, {
-    headers: baseHeaders({
-      'content-type': 'text/html; charset=utf-8',
-      // The page has no scripts, frames or forms, and its only style is inline.
-      'content-security-policy':
-        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-    })
-  });
-}
-
-function baseHeaders(headers = {}) {
-  return { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers };
+// /meet addresses, with BOOKING_ORIGIN set: the same path at its root, the query kept. 301 for reads; 308 for the
+// rest, so a client sends its POST again there. Reads carry the CORS header, so a cross-site fetch can follow them.
+function toRoot(request, root, url) {
+  let rest = url.pathname.slice('/meet'.length);
+  if (rest === '/assets/booker.js') rest = '/booker.js';
+  const reading = request.method === 'GET' || request.method === 'HEAD';
+  return redirect(reading ? 301 : 308, `${root}${rest || '/'}${url.search}`, reading ? READ_CORS : {});
 }
