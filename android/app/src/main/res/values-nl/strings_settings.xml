@@ -262,7 +262,7 @@
     <string name="settings_general_dark_emails">E-mails donker weergeven</string>
     <string name="settings_general_dark_emails_help">Pas de kleuren van HTML-e-mails aan in de donkere stand.</string>
     <string name="settings_general_swipe">Veegacties</string>
-    <string name="settings_general_swipe_help">Veeg naar rechts om als (on)gelezen te markeren en naar links om te wissen.</string>
+    <string name="settings_general_swipe_help">Veeg een e-mail in de lijst naar rechts of links.</string>
 
     <string name="settings_general_language">Taal</string>
     <string name="settings_general_language_help">Kies de taal voor de hele app.</string>
@@ -283,4 +283,13 @@
     <string name="onboarding_add_help">Google, Outlook, Yahoo of een ander mailaccount</string>
     <string name="onboarding_demo">Het demo-account proberen</string>
     <string name="onboarding_pair_title">Verbinden met je computer</string>
+    <string name="settings_swipe_right">Naar rechts vegen</string>
+    <string name="settings_swipe_left">Naar links vegen</string>
+    <string name="settings_actions_none">Niets</string>
+    <string name="settings_actions_read">Markeren als gelezen of ongelezen</string>
+    <string name="settings_actions_archive">Archiveren</string>
+    <string name="settings_actions_delete">Verwijderen</string>
+    <string name="settings_actions_star">Ster</string>
+    <string name="settings_actions_move">Naar map verplaatsen</string>
+    <string name="settings_actions_category">Naar categorie</string>
 </resources>

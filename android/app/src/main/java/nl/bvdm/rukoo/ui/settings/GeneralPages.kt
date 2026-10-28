@@ -34,6 +34,7 @@ import nl.bvdm.rukoo.BuildConfig
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.settings.Density
 import nl.bvdm.rukoo.settings.Language
+import nl.bvdm.rukoo.settings.SwipeAction
 import nl.bvdm.rukoo.settings.ThemeMode
 import nl.bvdm.rukoo.ui.components.SectionTitle
 import nl.bvdm.rukoo.ui.components.SettingsCard
@@ -142,10 +143,24 @@ fun AppearancePage(app: AppViewModel) {
                 checked = settings.swipeActions,
                 onCheckedChange = { on -> scope.launch { s.settings.update { it.copy(swipeActions = on) } } },
             )
+            if (settings.swipeActions) {
+                SettingsRow(title = stringResource(R.string.settings_swipe_right), value = swipeLabel(settings.swipeRight), onClick = { sheet = "swipeRight" })
+                SettingsRow(title = stringResource(R.string.settings_swipe_left), value = swipeLabel(settings.swipeLeft), onClick = { sheet = "swipeLeft" })
+            }
         }
     }
 
     when (sheet) {
+        "swipeRight", "swipeLeft" -> {
+            val right = sheet == "swipeRight"
+            ChoiceSheet(
+                title = stringResource(if (right) R.string.settings_swipe_right else R.string.settings_swipe_left),
+                choices = SwipeAction.entries.map { Choice(it, swipeLabel(it)) },
+                selected = if (right) settings.swipeRight else settings.swipeLeft,
+                onSelect = { a -> scope.launch { s.settings.update { if (right) it.copy(swipeRight = a) else it.copy(swipeLeft = a) } } },
+                onDismiss = { sheet = null },
+            )
+        }
         "theme" -> ChoiceSheet(
             title = stringResource(R.string.settings_general_theme),
             choices = listOf(ThemeMode.DARK, ThemeMode.LIGHT, ThemeMode.SYSTEM).map { Choice(it, themeLabel(it)) },
@@ -247,3 +262,17 @@ fun AboutPage() {
 }
 
 private fun folderSize(dir: File?): Long = dir?.walkBottomUp()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+
+/** The name of a swipe action, as in desktop's Settings > Swipe and quick actions. */
+@Composable
+private fun swipeLabel(a: SwipeAction): String = stringResource(
+    when (a) {
+        SwipeAction.NONE -> R.string.settings_actions_none
+        SwipeAction.READ -> R.string.settings_actions_read
+        SwipeAction.ARCHIVE -> R.string.settings_actions_archive
+        SwipeAction.DELETE -> R.string.settings_actions_delete
+        SwipeAction.STAR -> R.string.settings_actions_star
+        SwipeAction.MOVE -> R.string.settings_actions_move
+        SwipeAction.CATEGORY -> R.string.settings_actions_category
+    },
+)

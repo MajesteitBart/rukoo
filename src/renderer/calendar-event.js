@@ -1515,6 +1515,10 @@ function moreSummary(v) {
 function formHtml(v, e) {
   const own = e ? (e.canMove ? moveTargets(e) : [{ a: account(e.accountId), cal: calendarOf(e), key: key(e.accountId, e.calendarId) }]) : writable();
   const fixedCalendar = e && !e.canMove;
+  // The chosen calendar's colour, as a dot in the field: the select shows the first calendar when v.key names none of
+  // them. bindForm follows a change.
+  const shown = own.find((o) => o.a && o.cal && o.key === v.key) || own.find((o) => o.a && o.cal);
+  const pickColor = shown ? calendarColor(shown.a.id, shown.cal) : 'var(--accent)';
   const lastDay = v.allDay ? addDays(v.end, -1) : v.end;
   const mode = guestMode(v, e);
   const meetShown = meetAllowed(v.key) || hasMeet(e);
@@ -1530,7 +1534,7 @@ function formHtml(v, e) {
     </div>
     <div class="cal-when-foot"><label class="inline"><input type="checkbox" name="allDay" ${v.allDay ? 'checked' : ''}/> ${esc(t('calendar.event.allDay'))}</label><span class="cal-zone-note" data-zone-note>${esc(zoneNote(v))}</span></div>
     <div class="cal-conflict" data-conflict role="status" aria-live="polite" hidden></div>
-    <label>${esc(t('calendar.dialog.calendar'))}<select name="calendar" ${fixedCalendar ? 'disabled' : ''}>${calendarOptions(own, v.key)}</select></label>
+    <label>${esc(t('calendar.dialog.calendar'))}<span class="cal-pick" style="--c:${pickColor}"><span class="cal-dot"></span><select name="calendar" ${fixedCalendar ? 'disabled' : ''}>${calendarOptions(own, v.key)}</select></span></label>
     <p class="field-help" data-move-note hidden></p>
     <div class="cal-efield" data-guests ${mode ? '' : 'hidden'}><span class="cal-elabel">${esc(t('calendar.guests.label'))}</span><div data-guest-host>${mode ? guestsHtml(v, mode) : ''}</div></div>
     ${
@@ -1675,6 +1679,8 @@ function bindForm(body, v, e, { opened, seriesInfo }) {
   for (const n of ['title', 'location', 'description']) field(n).addEventListener('input', () => (v[n] = field(n).value));
   field('calendar').addEventListener('change', () => {
     v.key = field('calendar').value;
+    const picked = calendarAt(v.key);
+    f.querySelector('.cal-pick').style.setProperty('--c', picked.a && picked.cal ? calendarColor(picked.a.id, picked.cal) : 'var(--accent)');
     if (!v.remindersTouched && !editing) v.reminders = startReminders(v.key);
     if (!meetAllowed(v.key) && !hasMeet(editing)) v.meet = false;
     const meet = f.querySelector('[data-meet]');

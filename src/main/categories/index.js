@@ -14,6 +14,7 @@ const { EventEmitter } = require('events');
 const { t } = require('../../i18n');
 const { PRESETS, PRESET_COLORS, presetFor } = require('./rules');
 const jevApi = require('./jev');
+const { encodeId } = require('../engine');
 
 const SETTING = 'categories';
 const MESSAGE_ID_MAX = 256;
@@ -22,6 +23,10 @@ const SORT_AFTER = 1500;
 const JEV_AT_ONCE = 3;
 // Below this, Jev's choice is a guess, and the email goes to the category for when Rukoo isn't sure.
 const JEV_CONFIDENT = 0.5;
+// Jev's last decisions, for the sidebar's "what Jev is doing".
+const RECENT = 12;
+// While Jev works through a long list, the inbox catches up this often, so emails move as they are sorted.
+const LIVE_EVERY = 2000;
 const COLORS = ['#ff5d73', '#4a7dff', '#2fd6c0', '#f5c542', '#c56cf0', '#ff8a3d', '#5ec2ff', '#7a808e'];
 
 function readJson(file, fallback) {
@@ -53,6 +58,13 @@ class Categories extends EventEmitter {
     // Emails "Sort the inbox again" still has to sort, by key, because Jev was busy or stopped before it got to them.
     // Their older category stays until then.
     this.redo = new Set();
+    // What the sorting is doing, for the sidebar (activity()). user: someone asked for this sort, so its end is
+    // news: turning categories on, a new Jev key, "Sort the inbox again".
+    this.progress = { running: false, user: false, again: false, total: 0, done: 0, asked: 0, answered: 0, sorted: 0, waiting: 0, startedAt: 0, finishedAt: 0 };
+    this.recent = [];
+    this.progressTimer = null;
+    this.liveTimer = null;
+    this.soonUser = false;
   }
 
   file() {
@@ -118,6 +130,20 @@ class Categories extends EventEmitter {
       .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
   }
 
+  // Prototype for the guide: the categories as they are, or the presets they would start with, without writing them.
+  preview() {
+    if (this.settings().seeded) return this.list();
+    return PRESETS.map((id, order) => ({
+      id,
+      preset: id,
+      name: t(`categories.presets.${id}.name`),
+      description: t(`categories.presets.${id}.description`),
+      custom: { name: false, description: false },
+      color: PRESET_COLORS[id],
+      order
+    }));
+  }
+
   // The five presets, the first time categories are turned on.
   seed() {
     if (this.settings().seeded) return;
@@ -150,7 +176,7 @@ class Categories extends EventEmitter {
     if (on) this.seed();
     this.putSettings({ enabled: Boolean(on) });
     this.changed();
-    if (on) this.soon(0);
+    if (on) this.soon(0, { user: true });
     return this.state();
   }
 
@@ -283,13 +309,19 @@ class Categories extends EventEmitter {
 
   // ---- sorting ----
 
-  soon(delay = SORT_AFTER) {
+  // A sort in a moment. Every mail update moves it, but a sort someone asked for stays one.
+  soon(delay = SORT_AFTER, { user = false } = {}) {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.sort().catch(() => {}), delay);
+    this.soonUser = this.soonUser || user;
+    this.timer = setTimeout(() => {
+      const asked = this.soonUser;
+      this.soonUser = false;
+      this.sort({ user: asked }).catch(() => {});
+    }, delay);
     if (this.timer.unref) this.timer.unref();
   }
 
-  // Inbox emails nobody has sorted yet, newest first: [{ acc, m, key }].
+  // Inbox emails nobody has sorted yet, newest first: [{ id, acc, m, key }].
   unsorted({ again = false } = {}) {
     const out = [];
     for (const acc of this.engine.accounts) {
@@ -302,7 +334,7 @@ class Categories extends EventEmitter {
           const key = this.key(acc, m);
           if (this.account.get('override', key) !== undefined) continue;
           if (!again && !this.redo.has(key) && this.account.get('classification', key) !== undefined) continue;
-          out.push({ acc, m, key });
+          out.push({ id: encodeId(acc.id, f.path, m.uid), acc, m, key });
         }
       }
     }
@@ -330,18 +362,18 @@ class Categories extends EventEmitter {
   // Sorts what isn't sorted yet. again: sorts every inbox email again, apart from the ones people moved themselves.
   // A sort asked for while one runs follows it, sorting again if any of those asks did, so nothing asked for is lost:
   // "Sort the inbox again" during an ordinary sort, or the sort a new Jev key starts. The promise covers both.
-  sort({ again = false } = {}) {
+  sort({ again = false, user = false } = {}) {
     if (!this.settings().enabled) return Promise.resolve(0);
     if (this.sorting) {
-      this.followUp = { again: Boolean(this.followUp && this.followUp.again) || again };
+      this.followUp = { again: Boolean(this.followUp && this.followUp.again) || again, user: Boolean(this.followUp && this.followUp.user) || user };
       return this.sorting;
     }
     this.sorting = (async () => {
       let total = 0;
-      for (let ask = { again }; ask; ask = this.followUp) {
+      for (let ask = { again, user }; ask; ask = this.followUp) {
         this.followUp = null;
         if (!this.settings().enabled) break;
-        total += await this.run(ask.again);
+        total += await this.run(ask.again, ask.user);
       }
       return total;
     })().finally(() => {
@@ -350,7 +382,7 @@ class Categories extends EventEmitter {
     return this.sorting;
   }
 
-  async run(again) {
+  async run(again, user = false) {
     const list = this.list();
     if (!list.length) return 0;
     const ids = new Set(list.map((c) => c.id));
@@ -371,15 +403,30 @@ class Categories extends EventEmitter {
     };
     const forJev = [];
     let sorted = 0;
+    let byRules = 0;
+    let waiting = 0;
     for (const item of this.unsorted({ again })) {
       // Cached before Rukoo kept the mail-kind headers: the next sync brings them, and until then the rules would
       // guess with less than they will have. The rules still show a category for it meanwhile.
       if (!item.m.signals) continue;
       const rule = this.byRules(item.acc, item.m, ids, unsure);
       if (rule.strength === 'strong' || !wanted) {
+        byRules++;
         if (store(item.key, { category: rule.category, source: 'rules', at: Date.now() }) !== false) sorted++;
       } else if (key) forJev.push(item);
-      else later(item.key);
+      else {
+        waiting++;
+        later(item.key);
+      }
+    }
+    const p = this.progress;
+    // A sort nobody asked for with nothing to do isn't news; one that waits for Jev only updates how many wait.
+    if (user || byRules + forJev.length) {
+      Object.assign(p, { running: true, user, again, total: byRules + forJev.length, done: byRules, asked: forJev.length, answered: 0, sorted, waiting, startedAt: Date.now(), finishedAt: 0 });
+      this.progressChanged(true);
+    } else if (p.waiting !== waiting) {
+      p.waiting = waiting;
+      this.progressChanged(true);
     }
     // A re-sort's emails are on file as still to do before Jev is asked, so one the app quits during goes on after a
     // restart. Each leaves the list once its answer is stored.
@@ -397,7 +444,7 @@ class Categories extends EventEmitter {
           cancelled = true;
           break;
         }
-        const { acc, m, key: k } = forJev.shift();
+        const { id, acc, m, key: k } = forJev.shift();
         try {
           const own = this.own(acc).map(lower);
           const toMe = (m.to || []).some((a) => own.includes(lower(a.address)));
@@ -409,8 +456,19 @@ class Categories extends EventEmitter {
             cancelled = true;
             break;
           }
-          const category = res.confidence >= JEV_CONFIDENT ? res.category : unsure;
-          if (store(k, { category, source: 'jev', confidence: res.confidence, model: res.model, at: Date.now() }) !== false) sorted++;
+          const sure = res.confidence >= JEV_CONFIDENT;
+          const category = sure ? res.category : unsure;
+          if (store(k, { category, source: 'jev', confidence: res.confidence, model: res.model, at: Date.now() }) !== false) {
+            sorted++;
+            this.live();
+          }
+          p.answered++;
+          p.done++;
+          p.sorted = sorted;
+          // An email sorted again shows once, with its newest decision.
+          const decision = { id, subject: m.subject || '', from: (m.from && (m.from.name || m.from.address)) || '', category, chose: res.category, confidence: res.confidence, sure, at: Date.now() };
+          this.recent = [decision, ...this.recent.filter((r) => r.id !== id)].slice(0, RECENT);
+          this.progressChanged();
         } catch (err) {
           later(k);
           stop = err;
@@ -420,6 +478,9 @@ class Categories extends EventEmitter {
     const asked = forJev.length;
     await Promise.all(Array.from({ length: JEV_AT_ONCE }, next));
     for (const item of forJev) later(item.key);
+    clearTimeout(this.liveTimer);
+    this.liveTimer = null;
+    if (p.running) Object.assign(p, { running: false, sorted, waiting: this.jevWanted() ? waiting + (p.asked - p.answered) : 0, finishedAt: Date.now() });
     if (this.jevGeneration === generation) {
       if (stop) this.jevFailed(stop);
       // Jev answered again after being busy or out of reach. A refused key only clears with a new key (setJev).
@@ -429,7 +490,48 @@ class Categories extends EventEmitter {
     if (wanted && !key && Date.now() < this.jevBusyUntil && !this.retryTimer) this.retryAfter(this.jevBusyUntil - Date.now() + 1000);
     if (this.redo.size || (this.local.redo && this.local.redo.length)) this.saveLocal();
     if (sorted) this.changed();
+    this.progressChanged(true);
     return sorted;
+  }
+
+  // While Jev sorts, what it stored shows every few seconds instead of only at the end.
+  live() {
+    if (this.liveTimer) return;
+    this.liveTimer = setTimeout(() => {
+      this.liveTimer = null;
+      this.changed();
+    }, LIVE_EVERY);
+    if (this.liveTimer.unref) this.liveTimer.unref();
+  }
+
+  // What the sorting is doing, for the sidebar: the progress of the last sort, how many emails wait for Jev and
+  // why, and Jev's last decisions.
+  activity() {
+    const j = this.local.jev || {};
+    const jev = this.jevWanted();
+    return {
+      ...this.progress,
+      jev,
+      error: jev ? j.error || null : null,
+      retryAt: jev && this.jevBusyUntil > Date.now() ? this.jevBusyUntil : 0,
+      recent: this.recent.slice()
+    };
+  }
+
+  // Tells the window, at most a few times a second while Jev answers; now: straight away.
+  progressChanged(now = false) {
+    if (now) {
+      clearTimeout(this.progressTimer);
+      this.progressTimer = null;
+      this.emit('progress', this.activity());
+      return;
+    }
+    if (this.progressTimer) return;
+    this.progressTimer = setTimeout(() => {
+      this.progressTimer = null;
+      this.emit('progress', this.activity());
+    }, 150);
+    if (this.progressTimer.unref) this.progressTimer.unref();
   }
 
   // A wrong key waits for a new one; TypeSafe being busy or out of reach waits a few minutes. The rules keep showing
@@ -457,6 +559,7 @@ class Categories extends EventEmitter {
     this.local.jev = { ...(this.local.jev || {}), error: code };
     this.saveLocal();
     this.emit('changed');
+    this.progressChanged(true);
   }
 
   // Jev on this computer: on, off, or a new key. The key stays here, encrypted like mail passwords.
@@ -473,17 +576,22 @@ class Categories extends EventEmitter {
     this.retryTimer = null;
     this.saveLocal();
     this.emit('changed');
-    if (j.on) this.soon(0);
+    // Jev off, or a new key: what was waiting for Jev is the next sort's to count.
+    if (!j.on) this.progress.waiting = 0;
+    this.progressChanged(true);
+    if (j.on) this.soon(0, { user: true });
     return this.state();
   }
 
   sortAgain() {
-    return this.sort({ again: true });
+    return this.sort({ again: true, user: true });
   }
 
   close() {
     clearTimeout(this.timer);
     clearTimeout(this.retryTimer);
+    clearTimeout(this.progressTimer);
+    clearTimeout(this.liveTimer);
   }
 }
 

@@ -81,6 +81,10 @@ data class RukooColors(
     val toastActionPressed: Color get() = Color(0x14FFFFFF)
     val swipeRead: Color get() = Color(0xFF2F6FE0)
     val swipeDelete: Color get() = Color(0xFFD9474B)
+    val swipeArchive: Color get() = Color(0xFF1F9D5C)
+    val swipeStar: Color get() = Color(0xFFD99A00)
+    val swipeMove: Color get() = Color(0xFF7A5AF5)
+    val swipeCategory: Color get() = Color(0xFF0E9AA7)
     val onSwipe: Color get() = Color.White
     val scrim: Color get() = Color(0x730A0C12)
     val knob: Color get() = Color.White

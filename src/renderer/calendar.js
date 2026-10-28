@@ -36,6 +36,7 @@ import {
   titleOf,
   calendarColor,
   eventColor,
+  ownColor,
   isVisible,
   countsForAvailability,
   eventInput,
@@ -525,7 +526,8 @@ function calendarMenu(k, anchor, at = null) {
     [
       { heading: cal.name },
       { separator: true },
-      { label: t('calendar.colors.default'), disabled: !picked, action: () => saveCalendarSettings({ colors: { [k]: null } }, k) },
+      // With a dot in the colour it goes back to.
+      { icon: `<span class="cal-dot" style="--c:${ownColor(accountId, cal)}"></span>`, label: t('calendar.colors.default'), disabled: !picked, action: () => saveCalendarSettings({ colors: { [k]: null } }, k) },
       { separator: true },
       {
         label: t('calendar.sidebar.availability'),
@@ -2031,8 +2033,10 @@ function bind() {
     const row = ev.target.closest('[data-cal-toggle]');
     if (!row || !$('.shell.calendar-mode')) return;
     ev.preventDefault();
-    const fromKeyboard = ev.clientX === 0 && ev.clientY === 0;
-    calendarMenu(row.dataset.calToggle, row, fromKeyboard ? null : { x: ev.clientX, y: ev.clientY });
+    // From the keyboard the event can come without a place on the row; the menu then opens below the row.
+    const r = row.getBoundingClientRect();
+    const onRow = ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom;
+    calendarMenu(row.dataset.calToggle, row, onRow ? { x: ev.clientX, y: ev.clientY } : null);
   });
 }
 

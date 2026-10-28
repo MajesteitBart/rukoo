@@ -68,6 +68,41 @@ data class CategoriesState(
     val limit: Int = Categories.MAX_CATEGORIES,
 )
 
+/** One of Jev's decisions, for "what Jev is doing": where the email went, and what Jev chose and how sure it was. */
+data class SortDecision(
+    val id: String,
+    val accountId: String,
+    val subject: String,
+    val from: String,
+    val category: String,
+    val chose: String,
+    val confidence: Double,
+    val sure: Boolean,
+    val at: Long,
+)
+
+/**
+ * What the sorting is doing, for the drawer (desktop's activity()): the progress of the last sort, how many emails wait
+ * for Jev and why, and Jev's last decisions. [user]: someone asked for this sort, so its end is news.
+ */
+data class SortActivity(
+    val running: Boolean = false,
+    val user: Boolean = false,
+    val again: Boolean = false,
+    val total: Int = 0,
+    val done: Int = 0,
+    val asked: Int = 0,
+    val answered: Int = 0,
+    val sorted: Int = 0,
+    val waiting: Int = 0,
+    val startedAt: Long = 0,
+    val finishedAt: Long = 0,
+    val jev: Boolean = false,
+    val error: String? = null,
+    val retryAt: Long = 0,
+    val recent: List<SortDecision> = emptyList(),
+)
+
 /** A change Rukoo refuses: `invalid`, `too_many`, `need_name` or `last`; the UI says it in words. */
 class CategoryException(val code: String) : Exception(code)
 
@@ -143,8 +178,14 @@ class Categories(
     internal var retryTimer: Job? = null
     private var sorting: Deferred<Int>? = null
 
-    /** A sort asked for while one runs: null for none, true when any of them asked to sort again. Under [lock]. */
-    private var followUp: Boolean? = null
+    /** A sort asked for: again replaces what emails had; user means someone asked for it, so its end is news. */
+    private data class Ask(val again: Boolean, val user: Boolean)
+
+    /** A sort asked for while one runs: null for none; it sorts again, or is someone's, when any of the asks was. Under [lock]. */
+    private var followUp: Ask? = null
+
+    /** The timer's sort is one someone asked for, however often mail updates move it. Under [lock]. */
+    private var soonUser = false
     private val sortLock = Mutex()
 
     @Volatile
@@ -165,6 +206,12 @@ class Categories(
 
     private val _state = MutableStateFlow(CategoriesState())
     val state: StateFlow<CategoriesState> = _state.asStateFlow()
+
+    // What the sorting is doing; changed under progressLock, which is never taken while holding lock.
+    private val progressLock = Any()
+    private var progress = SortActivity()
+    private val _activity = MutableStateFlow(SortActivity())
+    val activity: StateFlow<SortActivity> = _activity.asStateFlow()
 
     private val file get() = File(dir, "categories.json")
 
@@ -298,7 +345,7 @@ class Categories(
         if (on) seed()
         putSettings(enabled = on)
         changed()
-        if (on) soon(0)
+        if (on) soon(0, user = true)
         return state.value
     }
 
@@ -451,16 +498,22 @@ class Categories(
      * before this returns, so it is in line before anything asked for after it (desktop's setTimeout(0) fires after the
      * code that follows, which a coroutine on another thread can't promise).
      */
-    fun soon(delayMs: Long = sortAfterMs) {
-        synchronized(lock) {
+    fun soon(delayMs: Long = sortAfterMs, user: Boolean = false) {
+        val now = synchronized(lock) {
             timer?.cancel()
             timer = null
-            if (delayMs > 0) timer = scope.launch {
-                delay(delayMs)
-                startSort(false)
+            soonUser = soonUser || user
+            if (delayMs > 0) {
+                timer = scope.launch {
+                    delay(delayMs)
+                    startSort(false, synchronized(lock) { soonUser.also { soonUser = false } })
+                }
+                null
+            } else {
+                soonUser.also { soonUser = false }
             }
         }
-        if (delayMs <= 0) startSort(false)
+        if (now != null) startSort(false, now)
     }
 
     private class Item(val acc: Account, val m: MessageSummary, val key: String)
@@ -497,21 +550,21 @@ class Categories(
      * A sort asked for while one runs follows it, sorting again if any of those asks did, so nothing asked for is lost:
      * "Sort the inbox again" during an ordinary sort, or the sort a new Jev key starts. The result covers both.
      */
-    suspend fun sort(again: Boolean = false): Int = startSort(again)?.await() ?: 0
+    suspend fun sort(again: Boolean = false, user: Boolean = false): Int = startSort(again, user)?.await() ?: 0
 
     /**
      * Starts a sort, or asks the running one to follow up with another; returns the job that covers it, or null while
      * categories are off. A follow-up sorts again when any of the asks for it did.
      */
-    private fun startSort(again: Boolean): Deferred<Int>? {
+    private fun startSort(again: Boolean, user: Boolean = false): Deferred<Int>? {
         if (!settings().enabled) return null
         val job = synchronized(lock) {
-            sorting?.also { followUp = followUp == true || again } ?: scope.async(start = CoroutineStart.LAZY) {
+            sorting?.also { followUp = Ask(followUp?.again == true || again, followUp?.user == true || user) } ?: scope.async(start = CoroutineStart.LAZY) {
                 var total = 0
-                var ask: Boolean? = again
+                var ask: Ask? = Ask(again, user)
                 while (ask != null) {
                     if (!settings().enabled) break
-                    total += run(ask)
+                    total += run(ask.again, ask.user)
                     // Taking the follow-up, or finishing, is one step, so an ask that comes now isn't left behind.
                     ask = synchronized(lock) {
                         followUp.also {
@@ -538,9 +591,26 @@ class Categories(
         return job
     }
 
-    suspend fun sortAgain(): Int = sort(again = true)
+    suspend fun sortAgain(): Int = sort(again = true, user = true)
 
-    private suspend fun run(again: Boolean): Int = sortLock.withLock {
+    private fun progress(change: (SortActivity) -> SortActivity) {
+        synchronized(progressLock) {
+            progress = change(progress)
+            publishActivity()
+        }
+    }
+
+    /** Tells the drawer what the sorting is doing, with why Jev waits and until when. */
+    private fun publishActivity() {
+        synchronized(progressLock) {
+            val j = synchronized(lock) { local.jev }
+            val jev = jevWanted()
+            val busyUntil = jevBusyUntil
+            _activity.value = progress.copy(jev = jev, error = if (jev) j?.error else null, retryAt = if (jev && busyUntil > clock.now()) busyUntil else 0)
+        }
+    }
+
+    private suspend fun run(again: Boolean, user: Boolean = false): Int = sortLock.withLock {
         val list = list()
         if (list.isEmpty()) return 0
         val ids = list.map { it.id }.toSet()
@@ -561,6 +631,8 @@ class Categories(
         }
         val forJev = ArrayDeque<Item>()
         var sorted = 0
+        var byRules = 0
+        var waiting = 0
         val order = list.map { it.id }
         for (item in unsorted(again)) {
             // Cached before Rukoo kept the mail-kind headers: the next sync brings them, and until then the rules would
@@ -573,12 +645,23 @@ class Categories(
                     put("source", "rules")
                     put("at", clock.now())
                 }
+                byRules++
                 if (store(item.key, value)) sorted++
             } else if (key != null) {
                 forJev += item
             } else {
+                waiting++
                 later(item.key)
             }
+        }
+        // A sort nobody asked for with nothing to do isn't news; one that waits for Jev only updates how many wait.
+        val counted = sorted
+        if (user || byRules + forJev.size > 0) {
+            progress {
+                it.copy(running = true, user = user, again = again, total = byRules + forJev.size, done = byRules, asked = forJev.size, answered = 0, sorted = counted, waiting = waiting, startedAt = clock.now(), finishedAt = 0)
+            }
+        } else if (synchronized(progressLock) { progress.waiting } != waiting) {
+            progress { it.copy(waiting = waiting) }
         }
         // A re-sort's emails are on file as still to do before Jev is asked, so one Android stops the app for midway
         // goes on after a restart. Each leaves the list once its answer is stored.
@@ -620,7 +703,8 @@ class Categories(
                                 synchronized(queue) { cancelled = true }
                                 break
                             }
-                            val category = if (res.confidence >= JEV_CONFIDENT) res.category else unsure
+                            val sure = res.confidence >= JEV_CONFIDENT
+                            val category = if (sure) res.category else unsure
                             val value = buildJsonObject {
                                 put("category", category)
                                 put("source", "jev")
@@ -628,7 +712,20 @@ class Categories(
                                 put("model", res.model)
                                 put("at", clock.now())
                             }
-                            if (store(item.key, value)) synchronized(queue) { sorted++ }
+                            val total = if (store(item.key, value)) synchronized(queue) { ++sorted } else synchronized(queue) { sorted }
+                            val decision = SortDecision(
+                                id = item.m.id,
+                                accountId = item.acc.id,
+                                subject = item.m.subject,
+                                from = item.m.from.name.ifEmpty { item.m.from.address },
+                                category = category,
+                                chose = res.category,
+                                confidence = res.confidence,
+                                sure = sure,
+                                at = clock.now(),
+                            )
+                            // An email sorted again shows once, with its newest decision.
+                            progress { p -> p.copy(answered = p.answered + 1, done = p.done + 1, sorted = total, recent = (listOf(decision) + p.recent.filter { it.id != decision.id }).take(RECENT)) }
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Throwable) {
@@ -640,6 +737,8 @@ class Categories(
             }
         }
         for (item in forJev) later(item.key)
+        val stillWanted = jevWanted()
+        progress { if (it.running) it.copy(running = false, sorted = sorted, waiting = if (stillWanted) waiting + (it.asked - it.answered) else 0, finishedAt = clock.now()) else it }
         if (jevGeneration == generation) {
             val failure = stop
             val error = synchronized(lock) { local.jev?.error }
@@ -656,6 +755,7 @@ class Categories(
         // A re-sort that left work, or finished what was left, is kept for after a restart.
         synchronized(lock) { if (redo.isNotEmpty() || local.redo.isNotEmpty()) saveLocal() }
         if (sorted > 0) changed()
+        publishActivity()
         sorted
     }
 
@@ -693,6 +793,7 @@ class Categories(
             saveLocal()
         }
         changed()
+        publishActivity()
     }
 
     /** Jev on this phone: on, off, a new key, or ([removeKey]) none. The key stays here, encrypted like mail passwords. */
@@ -712,7 +813,9 @@ class Categories(
             j
         }
         changed()
-        if (j.on) soon(0)
+        // Jev off: nothing waits for it any more; a new key: the next sort counts what does.
+        if (!j.on) progress { it.copy(waiting = 0) } else publishActivity()
+        if (j.on) soon(0, user = true)
         return state.value
     }
 
@@ -737,6 +840,9 @@ class Categories(
         const val SORT_AFTER = 1500L
         private const val SETTING = "categories"
         private const val JEV_AT_ONCE = 3
+
+        /** Jev's last decisions the drawer shows. */
+        private const val RECENT = 12
 
         // Below this, Jev's choice is a guess, and the email goes to the category for when Rukoo isn't sure.
         const val JEV_CONFIDENT = 0.5

@@ -58,6 +58,8 @@ data class ExportedSettings(
     val hiddenViews: List<String> = emptyList(),
     val darkEmails: Boolean? = null,
     val swipeActions: Boolean? = null,
+    val swipeRight: String? = null,
+    val swipeLeft: String? = null,
     val notifications: Boolean? = null,
     val sort: String? = null,
     val density: String? = null,

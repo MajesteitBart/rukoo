@@ -15,6 +15,22 @@ enum class Language(val tag: String?) {
 /** Message list density, desktop's `standard` and `compact`. */
 enum class Density { STANDARD, COMPACT }
 
+/** What a swipe on a list row does; [wire] is desktop's value in settings.json (swipeRight, swipeLeft). */
+enum class SwipeAction(val wire: String) {
+    NONE("none"),
+    READ("read"),
+    ARCHIVE("archive"),
+    DELETE("delete"),
+    STAR("star"),
+    MOVE("move"),
+    CATEGORY("category"),
+    ;
+
+    companion object {
+        fun of(wire: String?): SwipeAction? = entries.firstOrNull { it.wire == wire }
+    }
+}
+
 /**
  * App-wide preferences, kept in DataStore by [SettingsStore]. Agent connections and their secrets
  * are not here: they live in agents/AgentSettings (agents.json, encrypted secrets).
@@ -24,8 +40,10 @@ data class AppSettings(
     val language: Language = Language.SYSTEM,
     /** Show emails with a dark background in the dark theme, as desktop's `darkEmails` (default on). */
     val darkEmails: Boolean = true,
-    /** Swipe a row right to toggle read, left to delete. */
+    /** Swipe rows at all; what each direction does is [swipeRight] and [swipeLeft], as on desktop. */
     val swipeActions: Boolean = true,
+    val swipeRight: SwipeAction = SwipeAction.READ,
+    val swipeLeft: SwipeAction = SwipeAction.DELETE,
     /** Notifications for new mail. */
     val notifyMail: Boolean = true,
     /** Notifications for agent replies, drafts and approvals while the chat isn't on screen. */

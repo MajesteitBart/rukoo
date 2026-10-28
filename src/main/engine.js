@@ -62,8 +62,23 @@ const DEFAULT_SETTINGS = {
   zoomLevel: 100,
   // Closing the main window hides it and Rukoo keeps running in the tray; minimizing can do the same. See main.js.
   closeToTray: process.platform === 'win32',
-  minimizeToTray: false
+  minimizeToTray: false,
+  // What a swipe on a list row does, to the right and to the left (touch and pen). See SWIPE_ACTIONS.
+  swipeRight: 'read',
+  swipeLeft: 'delete',
+  // The buttons on a list row under the mouse, in order. See QUICK_ACTIONS.
+  quickActions: ['archive', 'read', 'delete'],
+  // Whose keyboard shortcuts the main window uses. See src/renderer/keymap.js.
+  keymap: 'rukoo',
+  // Ask GitHub for new releases now and then. See updates.js.
+  checkUpdates: true,
+  // The version whose "What's new" guide was last shown.
+  whatsNewSeen: ''
 };
+
+const SWIPE_ACTIONS = ['none', 'read', 'archive', 'delete', 'star', 'move', 'category'];
+const QUICK_ACTIONS = ['archive', 'read', 'delete', 'star', 'move', 'category'];
+const KEYMAPS = ['rukoo', 'gmail', 'outlook', 'apple', 'thunderbird'];
 
 // Values a hand-edited or older settings.json may get wrong. The tray switches are booleans with their default
 // for anything else.
@@ -73,6 +88,12 @@ function normalizeSettings(s) {
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
+  s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
+  s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;
+  s.quickActions = Array.isArray(s.quickActions) ? [...new Set(s.quickActions.filter((a) => QUICK_ACTIONS.includes(a)))].slice(0, 4) : DEFAULT_SETTINGS.quickActions;
+  s.keymap = KEYMAPS.includes(s.keymap) ? s.keymap : DEFAULT_SETTINGS.keymap;
+  s.checkUpdates = s.checkUpdates !== false;
+  s.whatsNewSeen = typeof s.whatsNewSeen === 'string' ? s.whatsNewSeen : '';
   s.calendar = normalizeCalendar(s.calendar);
   // A footer text that can't carry the link ({url}), or is longer than 300 characters, falls back to the default.
   const footerText = (v) => (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}') ? v.trim() : null);

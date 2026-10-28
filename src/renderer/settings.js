@@ -19,6 +19,13 @@ import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
 import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
 import { calendarSettingsPages, CALENDAR_VIEWS } from './calendar-settings.js';
 import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
+import { SCHEMES, ACTIONS as KEY_ACTIONS, bindings, display, keyLabel } from './keymap.js';
+
+// Settings > Keyboard shortcuts: the schemes by the name of their app (keymap.js).
+const SCHEME_NAMES = { rukoo: 'Rukoo', gmail: 'Gmail', outlook: 'Outlook', apple: 'Apple Mail', thunderbird: 'Thunderbird' };
+// Settings > Swipe and quick actions; engine.js checks the same lists.
+const SWIPE = ['none', 'read', 'archive', 'delete', 'star', 'move', 'category'];
+const QUICK = ['archive', 'read', 'delete', 'star', 'move', 'category'];
 
 const THEMES = [
   { value: 'system', get label() { return t('settings.theme.system'); } },
@@ -206,6 +213,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   document.getElementById('overlays').appendChild(page);
   const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : start === 'shortcuts' ? ['main', 'agents', 'shortcuts'] : ['main', start];
   let params = id ? { id } : {};
+  // What the update check found (main's updates.js), for the Check now row.
+  let updates = null;
+  const updatesValue = () =>
+    updates && updates.available
+      ? t('settings.updates.available', { version: updates.available.version })
+      : updates && updates.checkedAt
+        ? t('settings.updates.upToDate')
+        : '';
   // While the pairing code shows: what the dialog does with the phone events from main (paired, expired, burned).
   let pairWatch = null;
 
@@ -229,6 +244,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (type === 'categories') categoriesPage.onState(payload);
     // The booking page's state from main: the page and the overview follow it, forms keep what is typed.
     if (type === 'booking') bookingPage.onState(payload);
+    if (type === 'categories-progress') categoriesPage.onActivity(payload);
   });
 
   const close = () => {
@@ -904,8 +920,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     let title = t('settings.title');
     let body = '';
     // What a page needs from main, asked for at once so a redraw takes one round trip, not three.
-    const [agents] = await Promise.all([
+    const [agents, updatesState] = await Promise.all([
       view === 'main' || view === 'agents' || view === 'shortcuts' ? loadAgents() : agentState,
+      view === 'main' ? api('updatesState').catch(() => updates) : updates,
       view === 'main' || ACCOUNT_VIEWS.includes(view) ? account.prepare(view) : null,
       view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
       view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
@@ -913,6 +930,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
+    updates = updatesState;
 
     if (view === 'main') {
       const accounts = state.accounts
@@ -957,7 +975,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.theme'), value: labelOf(THEMES, s.theme), action: 'theme' })}
           ${zoomRow(s.zoomLevel)}
           ${row({ title: t('settings.general.darkEmails'), desc: t('settings.general.darkEmailsHelp'), action: 'toggle:darkEmails', toggle: s.darkEmails })}
-          ${row({ title: t('settings.general.swipe'), desc: t('settings.general.swipeHelp'), action: 'toggle:swipeActions', toggle: s.swipeActions })}
+          ${row({ title: t('settings.swipe.title'), desc: t('settings.swipe.rowHelp'), action: 'swipe' })}
+          ${row({ title: t('settings.keyboard.title'), desc: t('settings.keyboard.rowHelp'), value: esc(SCHEME_NAMES[s.keymap] || SCHEME_NAMES.rukoo), action: 'keyboard' })}
           ${row({ title: t('settings.general.fit'), desc: t('settings.general.fitHelp'), action: 'toggle:fitContent', toggle: s.fitContent })}
           ${row({ title: t('settings.general.logos'), desc: t('settings.general.logosHelp'), action: 'toggle:senderLogos', toggle: s.senderLogos !== false })}
           ${row({ title: t('settings.general.notifications'), desc: t('settings.general.notificationsHelp'), action: 'toggle:notifications', toggle: s.notifications })}
@@ -981,7 +1000,12 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           action: 'agents'
         })}</div>
         <div class="settings-group-title" data-i18n="settings.groups.about">${esc(t('settings.groups.about'))}</div>
-        <div class="card">${row({ title: t('settings.about.title'), desc: t('settings.about.help'), action: 'about' })}</div>`;
+        <div class="card">
+          ${row({ title: t('whatsNew.settingsRow'), desc: t('whatsNew.settingsHelp'), action: 'whats-new' })}
+          ${row({ title: t('settings.updates.title'), desc: t('settings.updates.help'), action: 'toggle:checkUpdates', toggle: s.checkUpdates !== false })}
+          ${row({ title: t('settings.updates.checkNow'), value: esc(updatesValue()), action: 'updates-check' })}
+          ${row({ title: t('settings.about.title'), desc: t('settings.about.help'), action: 'about' })}
+        </div>`;
     }
 
     if (view === 'account') {
@@ -1115,6 +1139,37 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       body = agentState ? agentsHtml() : `<p class="empty">${esc(t('settings.agents.unavailable'))}</p>`;
     }
 
+    if (view === 'keyboard') {
+      title = t('settings.keyboard.title');
+      const scheme = s.keymap || 'rukoo';
+      const sample = (id) => ['archive', 'reply', 'star'].map((a) => `${t(`settings.keyboard.actions.${a}`)}: ${keyLabel(a, id)}`).join(' · ');
+      const keys = (a) => bindings(a, scheme).map((b) => `<kbd>${esc(display(b))}</kbd>`).join('<span class="kbd-or"></span>');
+      body = `
+        <p class="settings-text">${esc(t('settings.keyboard.intro'))}</p>
+        <div class="card">${SCHEMES.map((id) =>
+          row({ title: esc(SCHEME_NAMES[id]), desc: esc(sample(id)), action: `keymap:${id}`, lead: `<span class="radio ${id === scheme ? 'on' : ''}" aria-hidden="true"></span>` })
+        ).join('')}</div>
+        <div class="settings-group-title">${esc(t('settings.keyboard.list', { scheme: SCHEME_NAMES[scheme] }))}</div>
+        <div class="card">${KEY_ACTIONS.filter((a) => bindings(a, scheme).length)
+          .map((a) => `<div class="row static"><div class="text"><div class="title">${esc(t(`settings.keyboard.actions.${a}`))}</div></div><span class="keys">${keys(a)}</span></div>`)
+          .join('')}</div>
+        <p class="settings-text">${esc(t('settings.keyboard.fixed'))}</p>`;
+    }
+
+    if (view === 'swipe') {
+      title = t('settings.swipe.title');
+      const quick = s.quickActions || [];
+      body = `
+        <div class="card">
+          ${row({ title: t('settings.swipe.touch'), desc: t('settings.swipe.touchHelp'), action: 'toggle:swipeActions', toggle: s.swipeActions })}
+          ${s.swipeActions ? row({ title: t('settings.swipe.right'), value: esc(t(`settings.actions.${s.swipeRight}`)), action: 'swipe-right' }) : ''}
+          ${s.swipeActions ? row({ title: t('settings.swipe.left'), value: esc(t(`settings.actions.${s.swipeLeft}`)), action: 'swipe-left' }) : ''}
+        </div>
+        <div class="settings-group-title">${esc(t('settings.swipe.quick'))}</div>
+        <div class="card">${QUICK.map((id) => row({ title: esc(t(`settings.actions.${id}`)), action: `quick:${id}`, toggle: quick.includes(id) })).join('')}</div>
+        <p class="settings-text">${esc(t('settings.swipe.quickHelp'))}</p>`;
+    }
+
     if (view === 'shortcuts') {
       title = t('settings.shortcuts.title');
       body = agentState ? shortcutsHtml() : `<p class="empty">${esc(t('settings.agents.unavailable'))}</p>`;
@@ -1232,6 +1287,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       if (key === 'fitContent' || key === 'darkEmails') ctx.redrawMail();
       return;
     }
+    if (a.startsWith('keymap:')) return set({ keymap: a.slice(7) });
+    if (a.startsWith('quick:')) {
+      const id = a.slice(6);
+      const quick = s.quickActions || [];
+      if (quick.includes(id)) return set({ quickActions: quick.filter((x) => x !== id) });
+      if (quick.length >= 4) return toast(t('settings.swipe.quickMax'));
+      return set({ quickActions: QUICK.filter((x) => x === id || quick.includes(x)) });
+    }
     if (a.startsWith('hide:')) {
       const id = a.slice(5);
       const hidden = new Set(s.hiddenViews || []);
@@ -1289,7 +1352,29 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       case 'folders':
       case 'spam':
       case 'vips':
+      case 'keyboard':
+      case 'swipe':
         return go(a);
+      case 'swipe-right':
+      case 'swipe-left': {
+        const key = a === 'swipe-right' ? 'swipeRight' : 'swipeLeft';
+        const v = await choiceDialog(t(`settings.swipe.${a === 'swipe-right' ? 'right' : 'left'}`), SWIPE.map((id) => ({ value: id, label: t(`settings.actions.${id}`) })), s[key]);
+        if (v) set({ [key]: v });
+        return;
+      }
+      case 'whats-new':
+        return ctx.openWhatsNew().then(() => render());
+      case 'updates-check': {
+        const state = await api('updatesCheck').catch(() => null);
+        updates = state;
+        await render();
+        // A failed check says so, also when an earlier one found something.
+        if (!state || state.failed) toast(t('settings.updates.failed'));
+        else if (state.available) toast(t('settings.updates.available', { version: state.available.version }));
+        else if (state.checkedAt) toast(t('settings.updates.upToDate'));
+        else toast(t('settings.updates.failed'));
+        return;
+      }
       case 'density': {
         const v = await choiceDialog(t('settings.general.density'), DENSITY, s.density);
         if (v) set({ density: v });
