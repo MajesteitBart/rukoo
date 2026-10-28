@@ -56,7 +56,7 @@ Cloudflare is a company in the United States. The server in this repository keep
 
 ## The server Rukoo uses
 
-Rukoo uses `https://rukoo.io` unless you choose another server. Bart van der Meeren, Rukoo's maintainer, runs it on Cloudflare with the data kept in the EU. The same address serves Rukoo's website and the booking pages. For now, making an account there needs an invite code from the maintainer. It holds up to 1,000 accounts of 32 MiB each. Its privacy statement is at [rukoo.io/privacy](https://rukoo.io/privacy).
+Rukoo uses `https://rukoo.io` unless you choose another server. Bart van der Meeren, Rukoo's maintainer, runs it on Cloudflare with the data kept in the EU. The same address serves Rukoo's website; booking pages are at `meet.rukoo.io`. For now, making an account there needs an invite code from the maintainer. It holds up to 1,000 accounts of 32 MiB each. Its privacy statement is at [rukoo.io/privacy](https://rukoo.io/privacy).
 
 Earlier versions of Rukoo used `https://rukoo-account.bvdm.ai`, which reaches the same server. An account belongs to the address it was made at, because the proof of your password includes the server's address. So a device signed in at the old address keeps using it after an update, until you sign out or delete the account. Then it uses rukoo.io. The same happens when another device ends its session, for example by deleting the account or changing the password. When you sign in again on that device, Rukoo tries the old address too, and stays there when your account still is.
 

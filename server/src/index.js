@@ -13,6 +13,7 @@ import { hmac, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import {
   ACCOUNT_NAME,
   accountObject,
+  bookingFormerRoots,
   bookingRoot,
   checkConfig,
   config,
@@ -71,6 +72,15 @@ async function handle(request, env) {
   if (path === '/meet' || path.startsWith('/meet/')) return root ? toRoot(request, root, url) : meet(request, env, url);
   // At the root of BOOKING_ORIGIN every other path is a booking page's, /mcp, /booker.js, /llms.txt or a font.
   if (root === url.origin && !account) return meet(request, env, url);
+  // Where the pages lived before: links shared from there keep working. Reads go to the same path under the new
+  // address. Posts, keyed reads and the guest's manage page are answered here, with the new address in their answers.
+  // A form's post and the manage page it leads to stay on the form's own origin (form-action 'self' covers the whole
+  // navigation), and clients drop the Authorization header on a redirect to another origin. That page loads the
+  // script and fonts from here too, under its own CSP.
+  if (root && !account && bookingFormerRoots(env).has(url.origin)) {
+    const here = !reading || request.headers.has('authorization') || MANAGE_PATH.test(path) || PAGE_ASSET.test(path);
+    return here ? meet(request, env, url) : toRoot(request, root, url, path);
+  }
   if (!account) throw notFound();
 
   checkConfig(env);
@@ -338,11 +348,15 @@ function notFound() {
   return new HttpError(404, 'not_found', 'There is nothing here.');
 }
 
-// /meet addresses, with BOOKING_ORIGIN set: the same path at its root, the query kept. 301 for reads; 308 for the
-// rest, so a client sends its POST again there. Reads carry the CORS header, so a cross-site fetch can follow them.
-function toRoot(request, root, url) {
-  let rest = url.pathname.slice('/meet'.length);
-  if (rest === '/assets/booker.js') rest = '/booker.js';
+// /meet addresses, with BOOKING_ORIGIN set, and reads on a former root: the same path at its root, the query kept. 301 for reads; 308 for the rest, so a client sends its POST again there. Reads carry the CORS header, so a
+// cross-site fetch can follow them. rest: the path under the pages, /meet taken off.
+// A guest's manage page or calendar file, /<handle>/booking/<id>[.ics].
+const MANAGE_PATH = /^\/[^/]+\/booking\/[^/]+$/;
+// The pages' own script and fonts at the root.
+const PAGE_ASSET = /^\/(?:booker\.js|assets\/fonts\/[^/]+)$/;
+
+function toRoot(request, root, url, rest = url.pathname.slice('/meet'.length)) {
+  if (url.pathname === '/meet/assets/booker.js') rest = '/booker.js';
   const reading = request.method === 'GET' || request.method === 'HEAD';
   return redirect(reading ? 301 : 308, `${root}${rest || '/'}${url.search}`, reading ? READ_CORS : {});
 }

@@ -344,6 +344,94 @@ describe('booking pages at the root of BOOKING_ORIGIN', () => {
   });
 });
 
+describe('a former root of the pages, in BOOKING_FORMER_ROOTS', () => {
+  // As rukoo.io, where the pages lived before meet.rukoo.io.
+  const WAS = 'https://was.example';
+  const MOVED = { BOOKING_ORIGIN: BOOKING, BOOKING_FORMER_ROOTS: ` ${WAS}/ , not an address, ${BOOKING}` };
+  const was = (method, path, options = {}) => call(method, path, { vars: MOVED, origin: WAS, ...options });
+  const now = (method, path, options = {}) => call(method, path, { vars: MOVED, origin: BOOKING, ...options });
+
+  it('redirects reads to the same path under BOOKING_ORIGIN', async () => {
+    const handle = 'bart-example';
+    const cases = [
+      ['GET', `/${handle}?lang=nl&tz=Europe/Amsterdam`, `${BOOKING}/${handle}?lang=nl&tz=Europe/Amsterdam`],
+      ['HEAD', `/${handle}/30min?slot=2026-11-03T09:00Z`, `${BOOKING}/${handle}/30min?slot=2026-11-03T09:00Z`],
+      ['GET', `/${handle}/llms.txt?type=30min`, `${BOOKING}/${handle}/llms.txt?type=30min`],
+      ['GET', `/${handle}/api/slots?type=30min`, `${BOOKING}/${handle}/api/slots?type=30min`],
+      ['GET', '/mcp', `${BOOKING}/mcp`],
+      ['GET', '/llms.txt', `${BOOKING}/llms.txt`],
+      ['GET', `/meet/${handle}`, `${BOOKING}/${handle}`],
+      ['GET', '/meet/assets/booker.js', `${BOOKING}/booker.js`]
+    ];
+    for (const [method, path, location] of cases) {
+      const res = await was(method, path);
+      expect(res.status, `${method} ${path}`).toBe(301);
+      expect(res.headers.get('location'), `${method} ${path}`).toBe(location);
+      expect(res.headers.get('access-control-allow-origin'), `${method} ${path}`).toBe('*');
+    }
+    // The pages' script and fonts stay, for a manage page answered there.
+    expect((await was('GET', '/booker.js')).text).toBe(BOOKER_JS);
+    expect((await was('GET', '/assets/fonts/inter-latin-opsz-normal.woff2')).headers.get('content-type')).toBe('font/woff2');
+    // The account API, / and /privacy stay, as on any address.
+    expect((await was('GET', '/v1/info')).body.features).toEqual(['booking']);
+    expect((await was('GET', '/')).status).toBe(200);
+    expect((await was('GET', '/privacy')).status).toBe(200);
+    expect((await was('POST', '/v1/login', { body: {} })).status).not.toBe(301);
+    // Without the setting the old address is just another address of the server.
+    expect((await call('GET', `/${handle}`, { vars: VARS, origin: WAS })).status).toBe(404);
+  });
+
+  it('still answers posts, MCP and keyed reads there, with the new addresses in the answers', async () => {
+    const { handle } = await host(signup);
+    // A form on a page opened before the move posts to its own address: a browser won't carry it to another origin.
+    const form = await now('GET', `/${handle}/30min?slot=${slotOf(slotAhead(4))}`);
+    const idem = decode(form.text.match(/name="idem" value="([^"]*)"/)[1]);
+    const fields = { start: slotOf(slotAhead(4)), tz: 'Europe/Amsterdam', idem, name: 'Jane Doe', email: 'jane-moved@example.com' };
+    const body = new URLSearchParams(fields).toString();
+    const posted = await was('POST', `/${handle}/30min`, { body, contentType: FORM, headers: { origin: WAS, 'sec-fetch-site': 'same-origin' } });
+    expect(posted.status).toBe(303);
+    const location = posted.headers.get('location');
+    expect(location).toMatch(new RegExp(`^/${handle}/booking/[A-Za-z0-9_-]{22}\\?k=`));
+    // The browser goes on to the manage page under the form's form-action 'self', so it is answered there too.
+    const manage = await was('GET', location);
+    expect(manage.status).toBe(200);
+    expect(manage.text).toContain('<p class="pill ok">Booked</p>');
+    expect(manage.headers.get('link')).toBe(`<${BOOKING}/${handle}/llms.txt>; rel="alternate"; type="text/markdown"`);
+    const cancelFields = Object.fromEntries([...manage.text.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [m[1], decode(m[2])]));
+    expect(cancelFields.action).toBe('cancel');
+    const gone = await was('POST', location.split('?')[0], { body: new URLSearchParams(cancelFields).toString(), contentType: FORM, headers: { origin: WAS, 'sec-fetch-site': 'same-origin' } });
+    expect(gone.status).toBe(303);
+    expect((await was('GET', gone.headers.get('location'))).text).toContain('<p class="pill gone">Cancelled</p>');
+    expect((await now('GET', location)).status).toBe(200);
+    // The new address takes posts from its own pages only; a page at the old one posts there.
+    const across = await now('POST', `/${handle}/30min`, { body, contentType: FORM, headers: { origin: WAS, 'sec-fetch-site': 'same-site' } });
+    expect(across.status).toBe(403);
+
+    // A client with a manage key keeps its Authorization header, which a redirect to another origin would drop.
+    const made = await now('POST', `/${handle}/api/bookings`, { body: { type: '30min', start: iso(slotAhead(6)), ...guest() } });
+    expect(made.status).toBe(201);
+    const id = made.body.booking.id;
+    const read = await was('GET', `/${handle}/api/bookings/${id}`, { token: made.body.key });
+    expect(read.status).toBe(200);
+    expect(read.body.manage_url.startsWith(`${BOOKING}/${handle}/booking/${id}?k=`)).toBe(true);
+    expect((await was('GET', `/${handle}/api/bookings/${id}`)).status).toBe(301);
+    const cancelled = await was('POST', `/${handle}/api/bookings/${id}/cancel`, { token: made.body.key, body: {} });
+    expect(cancelled.status).toBe(200);
+
+    // MCP there, and links to the old address anywhere, name the same pages, which now live at the new one.
+    const rpc = (at, link, name = 'find_available_times') =>
+      at('POST', '/mcp', { body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { link } } } });
+    for (const link of [`${WAS}/${handle}/30min`, `${WAS}/${handle}`, `${WAS}/meet/${handle}`]) {
+      const times = await rpc(now, link);
+      expect(times.body.result.isError, link).toBe(false);
+      expect(times.body.result.structuredContent.type).toBe('30min');
+    }
+    const types = await rpc(was, `${WAS}/${handle}`, 'get_meeting_types');
+    expect(types.status).toBe(200);
+    expect(types.body.result.structuredContent.links.page).toBe(`${BOOKING}/${handle}`);
+  });
+});
+
 describe('/meet with BOOKING_ORIGIN set', () => {
   it('redirects to the root of BOOKING_ORIGIN: 301 for reads, 308 for the rest, with the query', async () => {
     const handle = 'bart-example';
@@ -375,12 +463,16 @@ describe('/meet with BOOKING_ORIGIN set', () => {
 
   it('keeps the /meet layout when BOOKING_ORIGIN is empty or broken', async () => {
     const { handle } = await host(signup);
-    for (const vars of [{ BOOKING_ORIGIN: '' }, { BOOKING_ORIGIN: 'not an address' }, { BOOKING_ORIGIN: 'ftp://booking.example' }]) {
+    // A former root means nothing without a BOOKING_ORIGIN to move to, so a rollback that empties it keeps /meet working.
+    const was = { BOOKING_FORMER_ROOTS: 'https://accounts.example' };
+    for (const vars of [{ BOOKING_ORIGIN: '', ...was }, { BOOKING_ORIGIN: 'not an address', ...was }, { BOOKING_ORIGIN: 'ftp://booking.example' }]) {
       const res = await call('GET', `/meet/${handle}`, { vars });
       expect(res.status, vars.BOOKING_ORIGIN).toBe(200);
       expect(res.text).toContain('<script src="/meet/assets/booker.js"></script>');
       expect(res.text).toContain("src:url('/meet/assets/fonts/inter-latin-opsz-normal.woff2')");
       expect(res.headers.get('link')).toBe(`<https://accounts.example/meet/${handle}/llms.txt>; rel="alternate"; type="text/markdown"`);
+      expect((await call('GET', '/meet/assets/booker.js', { vars })).status).toBe(200);
+      expect((await call('OPTIONS', `/meet/${handle}/api`, { vars })).status).toBe(204);
       expect((await call('GET', `/${handle}`, { vars })).status).toBe(404);
     }
   });

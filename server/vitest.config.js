@@ -22,6 +22,7 @@ export default defineConfig({
           PRIVACY_URL: '',
           BOOKING_ORIGIN: '',
           BOOKING_ALIASES: '',
+          BOOKING_FORMER_ROOTS: '',
           BLOCKED_HANDLES: ''
         }
       }

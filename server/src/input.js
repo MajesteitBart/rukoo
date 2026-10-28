@@ -187,8 +187,9 @@ function whole(text, fallback, name) {
 
 export const HANDLE = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,31}$/;
 export const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
-// The server's own paths, words people would take for Rukoo's, and the website's paths at the root of BOOKING_ORIGIN
-// (rukoo.io serves its site and booking pages side by side), with room for the site to grow.
+// The server's own paths, words people would take for Rukoo's, and the website's paths, with room for the site to
+// grow: BOOKING_ORIGIN may be the website's own address, as rukoo.io was before the pages moved to meet.rukoo.io, and a
+// former root still redirects every path that isn't the website's.
 export const RESERVED_HANDLES = new Set(
   [
     'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking',

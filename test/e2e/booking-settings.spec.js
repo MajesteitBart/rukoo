@@ -137,7 +137,7 @@ test('signed out, the page leads to a new account and back to the setup, which c
 test('a handle the server refuses is said on the setup screen, which keeps what was typed', async () => {
   await call('accountSignUp', { email: 'host@example.com', password: PASSWORD, invite: '' });
   server.fail = ({ route }) => (route === 'PUT /v1/booking' ? [409, { error: 'handle_taken', message: 'taken' }] : null);
-  // A server whose pages live at the root of their own address, as rukoo.io's do.
+  // A server whose pages live at the root of their own address, as meet.rukoo.io's do.
   server.bookingOrigin = 'https://book.example';
   await openBookingPage();
   const setup = page().locator('form[data-form="booking-setup"]');

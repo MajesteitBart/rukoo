@@ -1,6 +1,6 @@
 # Booking page
 
-A booking page is a link, such as `https://rukoo.io/sanne`, where other people pick a time with you. Their AI assistants can use it too: the page has a section written for them, and there is a JSON API and an MCP endpoint. Each booking becomes an event in your calendar, and your calendar sends the guest the invitation.
+A booking page is a link, such as `https://meet.rukoo.io/sanne`, where other people pick a time with you. Their AI assistants can use it too: the page links to a guide written for them, and there is a JSON API and an MCP endpoint. Each booking becomes an event in your calendar, and your calendar sends the guest the invitation.
 
 The page runs on the server of your [Rukoo account](account.md). The server offers your open times and takes bookings, also while your computer is off. It never talks to your mail or calendar provider. Rukoo on one of your computers publishes your open times, picks up the bookings and adds them to your calendar.
 
@@ -33,7 +33,7 @@ You can change the link up to 3 times in 30 days, but not while it has bookings 
 
 ## Meeting types
 
-A page has up to 10 meeting types. Each has its own link, `https://rukoo.io/<handle>/<name in the link>`.
+A page has up to 10 meeting types. Each has its own link, `https://meet.rukoo.io/<handle>/<name in the link>`.
 
 | Field | Default | Choices |
 |---|---|---|
@@ -157,23 +157,23 @@ Deleting your Rukoo account checks your password, then turns the booking page of
 
 ## For guests and their assistants
 
-A booking page is at `https://rukoo.io/<handle>`, and each meeting type at `https://rukoo.io/<handle>/<type>`. The page shows the host, their introduction, the meeting types and the next open times. Pick a day and a time, then fill in your name, email and an optional note. The page is in English and Dutch, shows times in your time zone with a choice of 12 or 24 hours, and works without JavaScript. The page you get after booking shows the time in your zone and the host's, an `.ics` file, Cancel and Pick another time. Keep its address: it carries the key to your booking. The invitation comes from the host's calendar.
+A booking page is at `https://meet.rukoo.io/<handle>`, and each meeting type at `https://meet.rukoo.io/<handle>/<type>`. The page shows the host, their introduction, the meeting types and the next open times. Pick a day and a time, then fill in your name, email and an optional note. The page is in English and Dutch, shows times in your time zone with a choice of 12 or 24 hours, and works without JavaScript. The page you get after booking shows the time in your zone and the host's, an `.ics` file, Cancel and Pick another time. Keep its address: it carries the key to your booking. The invitation comes from the host's calendar.
 
 Assistants have four ways in, all English:
 
-- `https://rukoo.io/<handle>/llms.txt` is a guide with the rules, the meeting types, the open times of the next 7 days and how to book. The page links to it as "For AI assistants" in its footer and in its `<head>`, and asking for the page with `Accept: text/markdown` returns it. `https://rukoo.io/llms.txt` explains booking pages in general.
-- A prepared link opens the form filled in, for example `https://rukoo.io/sanne/30min?slot=2026-11-03T09:00Z&name=Jane%20Doe&email=jane%40example.com&via=Calendar%20helper`. `slot` is the start in UTC. The user checks the details and presses Book; opening the link books nothing.
+- `https://meet.rukoo.io/<handle>/llms.txt` is a guide with the rules, the meeting types, the open times of the next 7 days and how to book. The page links to it as "For AI assistants" in its footer and in its `<head>`, and asking for the page with `Accept: text/markdown` returns it. `https://meet.rukoo.io/llms.txt` explains booking pages in general.
+- A prepared link opens the form filled in, for example `https://meet.rukoo.io/sanne/30min?slot=2026-11-03T09:00Z&name=Jane%20Doe&email=jane%40example.com&via=Calendar%20helper`. `slot` is the start in UTC. The user checks the details and presses Book; opening the link books nothing.
 - The JSON API: `GET /<handle>/api` lists the types, `GET /<handle>/api/slots` the open times, and `POST /<handle>/api/bookings` books one. Every answer has a `message` written for the assistant to pass on.
-- `https://rukoo.io/mcp` is one MCP endpoint for every page, over plain HTTP POST without sign-in. Its tools are `get_meeting_types`, `find_available_times`, `book_meeting`, `get_booking`, `cancel_booking` and `reschedule_booking`; each takes `link`, the page's address or its handle.
+- `https://meet.rukoo.io/mcp` is one MCP endpoint for every page, over plain HTTP POST without sign-in. Its tools are `get_meeting_types`, `find_available_times`, `book_meeting`, `get_booking`, `cancel_booking` and `reschedule_booking`; each takes `link`, the page's address or its handle.
 
 An example with the JSON API:
 
 ```sh
 # Open times for the next two weeks, written in the guest's zone
-curl 'https://rukoo.io/sanne/api/slots?type=30min&time_zone=Europe/London'
+curl 'https://meet.rukoo.io/sanne/api/slots?type=30min&time_zone=Europe/London'
 
 # Book one of them: start must be a start the slots answer listed
-curl https://rukoo.io/sanne/api/bookings \
+curl https://meet.rukoo.io/sanne/api/bookings \
   -H 'content-type: application/json' \
   -H 'Idempotency-Key: 9f1c2b7e-41d0-4a8b-b6e5-3c2a7d90e1f4' \
   -d '{"type":"30min","start":"2026-11-03T09:00:00Z","name":"Jane Doe","email":"jane@example.com","time_zone":"Europe/London","via":"Calendar helper"}'
@@ -182,8 +182,8 @@ curl https://rukoo.io/sanne/api/bookings \
 The booking's answer has `manage_url` and `key`, the only way to change or cancel it later; the assistant should keep them and show its user the `privacy_url`. Through MCP, the open times of one type:
 
 ```sh
-curl https://rukoo.io/mcp -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_available_times","arguments":{"link":"https://rukoo.io/sanne/30min"}}}'
+curl https://meet.rukoo.io/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_available_times","arguments":{"link":"https://meet.rukoo.io/sanne/30min"}}}'
 ```
 
 [server/PROTOCOL.md](../server/PROTOCOL.md#booking-pages) has every route, field and error.
@@ -195,7 +195,7 @@ The account server in [`server/`](../server) serves booking pages too; its `/v1/
 - Without it, the default for a server of your own, the pages live under `/meet` on the server's own address, such as `https://accounts.example/meet/<handle>`, with the MCP endpoint at `/meet/mcp`.
 - With it set to an address that reaches the same Worker, such as `https://meet.example`, the pages live at the root of that address: `https://meet.example/<handle>`, with MCP at `https://meet.example/mcp` and a general guide at `https://meet.example/llms.txt`. `/meet/…` on the server's other addresses forwards there.
 
-rukoo.io is set up the second way, with the website in front. A separate Worker from the rukoo-site repository serves the site's files on rukoo.io and hands every request that matches no file, unchanged, to the account Worker through a service binding. The site's paths always win, which is why names such as `assets`, `download` and `docs` can't be handles. The old address of the default server, `rukoo-account.bvdm.ai`, still answers, and its `/meet/…` links forward to rukoo.io. [server/README.md](../server/README.md) explains the deployment.
+The default server is set up the second way, with its pages at `meet.rukoo.io`. rukoo.io itself is the website, and the account API is there too, at `https://rukoo.io/v1/…`. The pages lived at the root of rukoo.io at first, and links from then still work: every rukoo.io address that isn't the website's or the account API's forwards to the same path on meet.rukoo.io. Names the website uses, such as `assets`, `download` and `docs`, stay reserved as handles. The old address of the default server, `rukoo-account.bvdm.ai`, still answers, and its `/meet/…` links forward to meet.rukoo.io. [server/README.md](../server/README.md) explains the deployment.
 
 ## Limits
 
