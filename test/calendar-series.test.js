@@ -419,6 +419,28 @@ test('deleting this and following whose cut Google made without the answer arriv
   assert.deepEqual(clock(), earlier);
 });
 
+test("deleting this and following whose cut may have been made, when Google can't be asked again, lets the cached stretch go", async () => {
+  let down = false;
+  const { calendars, fake, on, clock } = await open([master()], {
+    lose: (r) => {
+      if (isCut({ method: r.method, path: decodeURIComponent(r.url.pathname.replace('/calendar/v3', '')) })) down = true;
+      return down;
+    }
+  });
+  const updated = [];
+  calendars.on('updated', () => updated.push(true));
+  const opened = on('2026-11-02');
+  await assert.rejects(calendars.remove(opened.id, { scope: 'following', etag: opened.etag }), (err) => err.code === 'unsure' && err.partial === true);
+  assert.ok(updated.length > 0, 'the view is told to look again');
+  // Back online, the next view fetches the stretch again and shows the series as Google has it: cut at the split.
+  down = false;
+  const reads = requests(fake, 'GET').length;
+  clock();
+  await settle(calendars);
+  assert.ok(requests(fake, 'GET').length > reads, 'the stretch is fetched again');
+  assert.deepEqual(clock(), earlier);
+});
+
 test('deleting this and following ends the series before it, and at the first occurrence deletes it', async () => {
   const { calendars, fake, on, clock, changes } = await open([master(), exception('2026-11-09', { summary: 'Sync (moved)', ...slot('2026-11-10', '10:00', '10:30') })]);
   const opened = on('2026-11-02');

@@ -1180,8 +1180,20 @@ class Calendars extends EventEmitter {
         if (which === 'one') return this.unlessChanged(acc, p, cache, cal, event, etag, () => p.remove(cal, event, { ...opts, seriesEtag: null }));
         const version = await this.seriesVersion(p, cal, event, etag, seriesEtag);
         const job = () => p.remove(cal, event, { ...opts, seriesEtag: version });
-        // A provider whose series is one object with one version checks it like any other change.
-        const done = await (p.versionedSeries ? this.unlessChanged(acc, p, cache, cal, event, version, job, { series: true }) : job());
+        let done;
+        try {
+          // A provider whose series is one object with one version checks it like any other change.
+          done = await (p.versionedSeries ? this.unlessChanged(acc, p, cache, cal, event, version, job, { series: true }) : job());
+        } catch (err) {
+          // The deletion may half have happened: show the series as the calendar has it now, or, when it can't be
+          // read, let the cached stretch go so the next view fetches it whole.
+          if (err && err.code === 'unsure') {
+            await this.refetch(acc, p, cache, [cal.id]);
+            this.memos.delete(acc.id);
+            this.emit('updated');
+          }
+          throw err;
+        }
         await this.refetch(acc, p, cache, [cal.id]);
         return done;
       });

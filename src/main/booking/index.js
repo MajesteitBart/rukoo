@@ -241,12 +241,17 @@ class Booking extends EventEmitter {
   }
 
   // One job at a time: a publish, a poll and an action never run over each other. Each job belongs to the session it
-  // started in; when that session ends while the job waits, the job stops and gets the state there is now.
+  // was asked for in; when that session ends while the job waits in the queue or runs, the job stops and gets the
+  // state there is now.
   exclusive(job) {
+    const context = { session: this.account.session, acct: this.acct };
     const run = this.queue.then(async () => {
       this.running += 1;
       try {
-        return await this.jobs.run({ session: this.account.session, acct: this.acct }, job);
+        return await this.jobs.run(context, () => {
+          this.live();
+          return job();
+        });
       } catch (err) {
         if (isStale(err)) return this.state();
         throw err;

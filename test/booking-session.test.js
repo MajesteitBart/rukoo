@@ -153,6 +153,25 @@ test('turning the page on while another account signs in publishes nothing and w
   assert.equal(srv.accounts.get('two@example.com').records.size, 0);
 });
 
+test('an action asked for while another job held the queue stops when another account signed in before it started', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv);
+  // A slow job holds the queue; the first account asks to turn its page on behind it.
+  const hold = slow(desk.calendars, 'availabilitySet');
+  const first = desk.booking.enable({ ...ENABLE, name: 'First account' });
+  await hold.started;
+  const queued = desk.booking.enable({ ...ENABLE, handle: 'bart-private', name: 'Account one private name' });
+  await switchTo(desk, 'two@example.com');
+  hold.release();
+  const [a, b] = await Promise.all([first, queued]);
+
+  for (const state of [a, b]) assert.deepEqual([state.email, state.status, state.settings], ['two@example.com', 'off', null]);
+  await assertNothingFor(desk, { shownBefore: 0 });
+  assert.equal(desk.calls.filter((c) => c.method === 'PUT').length, 0, 'neither page was published');
+  assert.equal(srv.pages.size, 0);
+  assert.equal(srv.accounts.get('two@example.com').records.size, 0);
+});
+
 test("a host cancellation from reconciliation that answers after another account signed in stops there", async (t) => {
   const srv = await server(t);
   const desk = await computer(t, srv);
