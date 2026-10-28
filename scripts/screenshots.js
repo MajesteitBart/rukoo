@@ -10,11 +10,13 @@ async function capture(theme, out) {
   fs.mkdirSync(out, { recursive: true });
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sem-shot-'));
   fs.mkdirSync(path.join(dataDir, 'data'));
-  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'en', theme }));
+  // A settings file makes this an existing profile, so the calendar would show its one-time notice about reminders.
+  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'en', theme, calendar: { notifiedUpgrade: true } }));
   // The chat screenshots use the scripted test agents, under the name of a Hermes agent.
   fs.writeFileSync(path.join(dataDir, 'data', 'agents.json'), JSON.stringify({ version: 1, clark: { name: 'Clark' } }));
   const env = (({ ELECTRON_RUN_AS_NODE, ...rest }) => ({ ...rest, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_LOGOS: '1', SEM_AGENT_FAKE: '1' }))(process.env);
-  const app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..'), env });
+  // At 150%, whatever the display's scaling, so the images stay sharp and the same size from any PC.
+  const app = await electron.launch({ args: ['.', '--force-device-scale-factor=1.5'], cwd: path.join(__dirname, '..'), env });
   try {
     const win = await app.firstWindow();
     const logs = [];
@@ -99,22 +101,74 @@ async function capture(theme, out) {
     await win.click('.agentpane [data-ap="close"]');
     await win.waitForTimeout(300);
 
-    // The calendar: the demo account's week, then the card of the invitation that waits for an answer.
-    const invitation = win.locator('.calendar [data-ev]', { hasText: 'Quarterly planning' }).first();
+    // The calendar: the demo account's week beside the small month, then the card of the invitation that waits for
+    // an answer.
+    const calEvent = (title) => win.locator('.calendar [data-ev]', { hasText: title }).first();
+    const invitation = calEvent('Quarterly planning');
     await win.click('[data-mode="calendar"]');
     await expect(invitation).toBeVisible({ timeout: 10000 });
+    await expect(win.locator('.sidebar .cal-mini [data-mini-day]').first()).toBeVisible();
     await shot('13-calendar.png');
     await invitation.click();
     await win.waitForSelector('.cal-pop');
     await shot('14-calendar-event.png', 400);
     await win.keyboard.press('Escape');
+    await expect(win.locator('.cal-pop')).toHaveCount(0);
+
+    await win.click('[data-cal-view="month"]');
+    await expect(win.locator('[data-cal-view="month"]')).toHaveAttribute('aria-selected', 'true');
+    await expect(calEvent('Roadmap review')).toBeVisible();
+    await shot('15-calendar-month.png');
+    await win.click('[data-cal-view="week"]');
+    await expect(invitation).toBeVisible();
+
+    // A click on the grid: 15:00 on Wednesday, the day of the lunch with Sanne, which the demo week leaves open there.
+    const day = await calEvent('Lunch with Sanne').evaluate((el) => el.closest('[data-cal-col]').dataset.calCol);
+    const column = await win.locator(`.cal-col[data-cal-col="${day}"]`).boundingBox();
+    await win.mouse.click(column.x + column.width / 2, column.y + 15.2 * 56);
+    await expect(win.locator('.cal-quick:not(.measuring)')).toBeVisible();
+    await win.keyboard.type('Coffee with Joris');
+    await shot('16-calendar-quick.png', 400);
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.cal-quick')).toHaveCount(0);
+
+    // The full dialog of the weekly piano lesson, with More open on its repeat and reminder.
+    await calEvent('Piano lesson').click();
+    await win.click('.cal-pop [data-pop="edit"]');
+    await win.waitForSelector('.dialog .cal-form');
+    await win.click('.cal-form [data-extras]');
+    await expect(win.locator('.cal-form .cal-extras-body')).not.toHaveAttribute('inert', '');
+    await shot('17-calendar-dialog.png');
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.dialog')).toHaveCount(0);
+
+    // The open time over the next 14 days, so a run late in the week still finds working hours ahead.
+    const panel = win.locator('.calendar .cal-panel');
+    await win.click('[data-cal-panel="free"]');
+    await expect(panel.locator('h2')).toHaveText('Availability');
+    await panel.locator('[data-free="range"]').selectOption('days14');
+    await expect(panel.locator('.free-slot').first()).toBeVisible({ timeout: 10000 });
+    await expect(panel.locator('.free-days')).not.toHaveClass(/busy/);
+    await shot('18-calendar-availability.png');
+    await win.click('[data-cal-panel="free"]');
     await win.click('[data-mode="mail"]');
     await win.waitForTimeout(300);
 
+    const settings = win.locator('.page.settings');
     await win.click('[data-action="settings"]');
     await win.waitForSelector('.settings .card');
     await expect(win.locator('.settings h1')).toHaveText('Email settings');
     await shot('10-settings.png', 400);
+    await settings.locator('[data-a="calset-open"]').click();
+    await expect(settings.locator('h1')).toHaveText('Calendar');
+    await expect(settings.locator('.calset-cal')).toHaveCount(3);
+    await shot('19-settings-calendar.png', 400);
+    await settings.locator('[data-a="back"]').click();
+    // Signed out: this profile has no Rukoo account.
+    await settings.locator('[data-a="booking-open"]').click();
+    await expect(settings.locator('h1')).toHaveText('Booking page');
+    await expect(settings.locator('.settings-text').first()).toContainText('It runs on your Rukoo account');
+    await shot('20-settings-booking.png', 400);
     console.log(`${theme}: ${logs.join('\n') || 'no console output'}`);
     if (logs.some((message) => message.startsWith('pageerror:'))) throw new Error(logs.join('\n'));
   } finally {
