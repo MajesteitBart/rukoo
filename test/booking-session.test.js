@@ -172,6 +172,25 @@ test('an action asked for while another job held the queue stops when another ac
   assert.equal(srv.accounts.get('two@example.com').records.size, 0);
 });
 
+test('an account deletion that waited in the queue while its session ended stops before the account goes', async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv);
+  await desk.booking.enable(ENABLE);
+  await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe', email: 'jane@example.com' } });
+  // A booking being processed holds the queue; the deletion waits behind it while the session is replaced.
+  const create = slow(desk.calendars, 'create');
+  const job = desk.booking.sync();
+  await create.started;
+  const deletion = desk.booking.disableForDelete();
+  await desk.account.signOut();
+  await desk.account.signIn({ email: 'one@example.com', password: PASSWORD });
+  create.release();
+  await job;
+  await assert.rejects(deletion, (err) => err.code === 'deleteFirst');
+  assert.equal(desk.calls.filter((c) => c.method === 'DELETE' && c.route === '/v1/booking').length, 0, 'the page was not deleted');
+  assert.ok(srv.pages.get('bart'), 'the page is still there');
+});
+
 test("a host cancellation from reconciliation that answers after another account signed in stops there", async (t) => {
   const srv = await server(t);
   const desk = await computer(t, srv);

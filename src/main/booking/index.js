@@ -881,6 +881,9 @@ class Booking extends EventEmitter {
       this.forgetBookings();
       return true;
     });
+    // A session that ended while the call waited in the queue gets a state back from exclusive(), not an answer: the
+    // page wasn't deleted, so neither may the account be.
+    if (typeof deleted !== 'boolean') throw rules.bookingError('deleteFirst');
     if (deleted) this.changed();
   }
 
