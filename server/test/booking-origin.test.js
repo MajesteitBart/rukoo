@@ -33,15 +33,15 @@ function pageLinks(html) {
   return [...html.matchAll(/\b(?:href|action|src)="([^"]*)"/g)].map((m) => decode(m[1]));
 }
 
-// Each link on the page is the page's own (relative or on BOOKING), the MCP endpoint, the privacy statement or the
-// script; none goes through /meet.
+// Each link on the page is the page's own (relative or on BOOKING), the MCP endpoint, the privacy statement, the
+// script or a font; none goes through /meet.
 function expectRootLinks(html, handle) {
   const found = pageLinks(html);
   expect(found.length).toBeGreaterThan(3);
   for (const link of found) {
     expect(link).not.toContain('/meet');
     const path = link.startsWith(`${BOOKING}/`) ? link.slice(BOOKING.length) : link;
-    expect(path, link).toMatch(new RegExp(`^/(?:${handle}(?:[/?#.]|$)|privacy(?:[?#]|$)|booker\\.js$|mcp$)`));
+    expect(path, link).toMatch(new RegExp(`^/(?:${handle}(?:[/?#.]|$)|privacy(?:[?#]|$)|booker\\.js$|mcp$|assets/fonts/inter-[a-z-]+\\.woff2$)`));
   }
 }
 
@@ -219,6 +219,23 @@ describe('booking pages at the root of BOOKING_ORIGIN', () => {
     expect(res.text).toBe(BOOKER_JS);
   });
 
+  it('serves the fonts at /assets/fonts/, where the website has the same files', async () => {
+    const res = await at('GET', '/assets/fonts/inter-latin-opsz-normal.woff2');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('font/woff2');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect((await at('HEAD', '/assets/fonts/inter-latin-ext-opsz-normal.woff2')).status).toBe(200);
+    for (const path of ['/assets/fonts/nothing.woff2', '/assets/fonts/', '/assets/fonts/constructor', '/assets/fonts/inter-latin-opsz-normal.woff2/x']) {
+      expect((await at('GET', path)).status, path).toBe(404);
+    }
+    expect((await at('POST', '/assets/fonts/inter-latin-opsz-normal.woff2', { body: {} })).status).not.toBe(200);
+    const page = await at('GET', '/nobody-has-this');
+    expect(page.text).toContain('<link rel="preload" href="/assets/fonts/inter-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>');
+    expect(page.text).toContain("src:url('/assets/fonts/inter-latin-ext-opsz-normal.woff2') format('woff2')");
+    expect(page.headers.get('content-security-policy')).toContain("font-src 'self'");
+  });
+
   it('answers MCP at /mcp, with links on the root layout', async () => {
     const { handle } = await host(signup);
     const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } });
@@ -340,6 +357,7 @@ describe('/meet with BOOKING_ORIGIN set', () => {
       ['POST', '/meet/mcp', 308, `${BOOKING}/mcp`],
       ['GET', '/meet/mcp', 301, `${BOOKING}/mcp`],
       ['GET', '/meet/assets/booker.js', 301, `${BOOKING}/booker.js`],
+      ['GET', '/meet/assets/fonts/inter-latin-opsz-normal.woff2', 301, `${BOOKING}/assets/fonts/inter-latin-opsz-normal.woff2`],
       ['GET', '/meet', 301, `${BOOKING}/`],
       ['GET', '/meet/', 301, `${BOOKING}/`]
     ];
@@ -361,6 +379,7 @@ describe('/meet with BOOKING_ORIGIN set', () => {
       const res = await call('GET', `/meet/${handle}`, { vars });
       expect(res.status, vars.BOOKING_ORIGIN).toBe(200);
       expect(res.text).toContain('<script src="/meet/assets/booker.js"></script>');
+      expect(res.text).toContain("src:url('/meet/assets/fonts/inter-latin-opsz-normal.woff2')");
       expect(res.headers.get('link')).toBe(`<https://accounts.example/meet/${handle}/llms.txt>; rel="alternate"; type="text/markdown"`);
       expect((await call('GET', `/${handle}`, { vars })).status).toBe(404);
     }

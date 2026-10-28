@@ -5,8 +5,9 @@
 import { agentData, llmsTxt, siteLlmsTxt, wantsMarkdown } from './agent-text.js';
 import * as api from './api.js';
 import { BOOKER_JS } from './booker-script.js';
-import { bookerPath, bookingOrigins, bookingPrefix, checkConfig, clientNetwork, limitRate } from './config.js';
-import { NOINDEX, READ_CORS, meetEmpty, meetJson, meetText, redirect } from './http.js';
+import { bookerPath, bookingOrigins, bookingPrefix, checkConfig, clientNetwork, fontDir, limitRate } from './config.js';
+import { FONT_FILES } from './fonts.js';
+import { NOINDEX, READ_CORS, meetEmpty, meetFont, meetJson, meetText, redirect } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
 import { mcp } from './mcp.js';
@@ -33,13 +34,17 @@ async function route(request, env, url) {
   checkConfig(env);
   const prefix = bookingPrefix(env, url);
   const path = url.pathname;
-  // The path after the prefix: /<handle>…, /mcp, and at the root /booker.js and /llms.txt.
+  // The path after the prefix: /<handle>…, /mcp, /assets/fonts/…, and at the root /booker.js and /llms.txt.
   const sub = path.slice(prefix.length);
   const method = request.method;
   const reading = method === 'GET' || method === 'HEAD';
   if (sub === '/mcp') return mcp(request, env, url);
   if (path === bookerPath(env, url) && reading) {
     return meetText(200, BOOKER_JS, 'text/javascript; charset=utf-8', {}, method);
+  }
+  const fonts = fontDir(env, url);
+  if (reading && path.startsWith(fonts) && Object.hasOwn(FONT_FILES, path.slice(fonts.length))) {
+    return meetFont(FONT_FILES[path.slice(fonts.length)], method);
   }
   if (!prefix && sub === '/llms.txt' && reading) {
     return meetText(200, siteLlmsTxt(env, url), 'text/markdown; charset=utf-8', READ_CORS, method);
@@ -169,8 +174,9 @@ async function change(request, env, url, handle, id, action) {
     : api.postReschedule(env, url, handle, id, key, body);
 }
 
+// GET /<handle>/llms.txt, or ?type=<slug> for one type's guide, hidden types included.
 async function llms(request, env, url, handle) {
-  const data = await agentData(env, url, handle);
+  const data = await agentData(env, url, handle, { slug: url.searchParams.get('type') });
   if (data.moved) return moved(env, url, data.moved, '/llms.txt');
   return meetText(200, llmsTxt(data), 'text/markdown; charset=utf-8', READ_CORS, request.method);
 }

@@ -30,6 +30,8 @@ export function links(env, url, handle) {
     base,
     page,
     llmsTxt: `${page}/llms.txt`,
+    // One type's guide, hidden types included: for a type's own pages, which may be hidden from the page-wide one.
+    llmsFor: (slug) => `${page}/llms.txt?type=${encodeURIComponent(slug)}`,
     api: `${page}/api`,
     slots: `${page}/api/slots`,
     bookings: `${page}/api/bookings`,

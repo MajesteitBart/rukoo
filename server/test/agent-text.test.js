@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MEET_CSP } from '../src/http.js';
-import { agentSection, llmsTxt, mdEscape, wantsMarkdown } from '../src/agent-text.js';
+import { llmsTxt, mdEscape, wantsMarkdown } from '../src/agent-text.js';
 import { call, signup } from './helpers.js';
 import { host, meetingType, page, publish } from './booking-helpers.js';
 
@@ -100,32 +100,21 @@ describe('GET /meet/<handle>', () => {
     expect(head.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
   });
 
-  it('starts the page with a line for assistants and has their section in main, as plain visible text', async () => {
+  it('links the page to its llms.txt for assistants, and has no text of its own for them', async () => {
     const { handle } = await host(signup);
     const res = await call('GET', `/meet/${handle}`);
     const base = `https://accounts.example/meet/${handle}`;
     expect(res.headers.get('link')).toBe(`<${base}/llms.txt>; rel="alternate"; type="text/markdown"`);
     expect(res.headers.get('x-robots-tag')).toBe(null);
+    expect(res.text).toContain(`<link rel="alternate" type="text/markdown" href="${base}/llms.txt" title="For AI assistants">`);
+    // A plain, visible link in the footer, for readers that drop the head.
+    const footer = res.text.slice(res.text.indexOf('<footer'), res.text.indexOf('</footer>'));
+    expect(footer).toMatch(new RegExp(`<a href="${base}/llms\\.txt"><svg [^>]*>.*?</svg>For AI assistants</a>`));
+    // The open times, prepared links and API examples live in llms.txt only.
     const main = res.text.slice(res.text.indexOf('<main'), res.text.indexOf('</main>'));
-    const line = main.indexOf('AI assistant? Booking instructions are below and at');
-    expect(line).toBeGreaterThan(-1);
-    expect(line).toBeLessThan(main.indexOf('<h1>'));
-    expect(main).toContain(`<a href="${base}/llms.txt">${base}/llms.txt</a>`);
-    const section = sectionOf(res.text);
-    expect(main).toContain(section);
-    expect(section).toContain(`<a href="${base}/30min?slot=`);
-    expect(section).toContain(`<a href="${base}/api/slots?type=30min">`);
-    expect(section).toContain('opening it books nothing');
-    // Readers that drop forms, <details>, hidden and aria-hidden content still get all of it.
-    expect(section).not.toMatch(/<script|<details|<form|hidden|aria-hidden/i);
+    expect(main).not.toMatch(/assistant|api\/|llms|mcp/i);
   });
 });
-
-// The "For AI assistants" section of a page, up to its own closing tag.
-function sectionOf(html) {
-  const start = html.indexOf('<section id="for-ai-assistants"');
-  return start < 0 ? '' : html.slice(start, html.indexOf('</section>', start) + '</section>'.length);
-}
 
 // A page without the one script it loads itself, so a test can look for scripts that came from somewhere else.
 function withoutOwnScript(html) {
@@ -195,13 +184,6 @@ describe('host text in agent text', () => {
       expect(md).toContain("Needs the host's approval: a booking stays pending until they confirm.");
       expect(md).toContain("The host's own calendar sends the invitation");
       if (hostile === BREAKOUT) expect(md).not.toContain(hostile);
-
-      const html = (await call('GET', `/meet/${handle}`)).text;
-      const section = sectionOf(html);
-      const quoted = JSON.stringify(hostile).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-      expect(section).toContain(`with the host, ${quoted}, for the person`);
-      expect(section.split(quoted).length - 1).toBe(1);
-      expect(section).toContain('Text the host wrote on this page, their name included');
     }
   });
 
@@ -238,15 +220,6 @@ describe('the renderers on their own', () => {
       prepare: (s, t) => `https://meet.example/meet/bart/${s}?slot=${new Date(t).toISOString().slice(0, 16)}Z`
     }
   };
-
-  it('writes the agent section Phase 2 puts on the page', () => {
-    const html = agentSection(data);
-    expect(html).toContain('<h2>For AI assistants</h2>');
-    expect(html).toContain('as of 27 Oct 2026, 14:05 UTC');
-    expect(html).toContain('Times are in Europe/Amsterdam (UTC+01:00)');
-    expect(html).toContain('<li>Tue 3 Nov 2026, 10:00–10:30 (09:00 UTC) → <a href="https://meet.example/meet/bart/30min?slot=2026-11-03T09:00Z">');
-    expect(html).toContain('&quot;start&quot;:&quot;2026-11-03T09:00:00Z&quot;');
-  });
 
   it('says when a type needs approval', () => {
     expect(llmsTxt(data)).toContain("Needs the host's approval: a booking stays pending until they confirm.");

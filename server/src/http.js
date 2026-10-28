@@ -1,5 +1,5 @@
-// Responses. Every answer is no-store and nosniff; booking pages add their own policy on top
-// (PROTOCOL.md, Public routes).
+// Responses. Every answer is nosniff, and no-store except the booking pages' font files; booking pages add their own
+// policy on top (PROTOCOL.md, Public routes).
 
 export function baseHeaders(headers = {}) {
   return { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers };
@@ -31,7 +31,7 @@ export function html(body, method) {
 // ---- Booking pages ----
 
 export const MEET_CSP =
-  "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+  "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 // What every booking page answer sends. same-origin: other websites never get a page's address, which can hold a manage key
 // or a guest's name and email, and the pages' own form posts still carry their real Origin, which no-referrer hides
@@ -58,6 +58,13 @@ export function meetText(status, body, contentType, headers = {}, method = 'GET'
   return new Response(method === 'HEAD' ? null : body, {
     status,
     headers: meetHeaders({ 'content-type': contentType, ...headers })
+  });
+}
+
+// A font file (fonts.js). Unlike everything else it may be cached: the files never change under the same name.
+export function meetFont(body, method) {
+  return new Response(method === 'HEAD' ? null : body, {
+    headers: baseHeaders({ 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' })
   });
 }
 

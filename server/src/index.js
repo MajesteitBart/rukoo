@@ -69,7 +69,7 @@ async function handle(request, env) {
   const account = path === '/v1' || path.startsWith('/v1/');
   const root = bookingRoot(env);
   if (path === '/meet' || path.startsWith('/meet/')) return root ? toRoot(request, root, url) : meet(request, env, url);
-  // At the root of BOOKING_ORIGIN every other path is a booking page's, /mcp, /booker.js or /llms.txt.
+  // At the root of BOOKING_ORIGIN every other path is a booking page's, /mcp, /booker.js, /llms.txt or a font.
   if (root === url.origin && !account) return meet(request, env, url);
   if (!account) throw notFound();
 

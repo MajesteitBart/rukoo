@@ -36,12 +36,14 @@ function expectMeetHeaders(res) {
   expect(res.headers.get('cache-control')).toBe('no-store');
 }
 
-function expectPage(res, handle, { status = 200, noindex = false } = {}) {
+// type: the slug on a type's own pages, which point to that type's guide.
+function expectPage(res, handle, { status = 200, noindex = false, type = null } = {}) {
   expect(res.status).toBe(status);
   expectMeetHeaders(res);
   expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
   expect(res.headers.get('x-robots-tag')).toBe(noindex ? 'noindex' : null);
-  if (handle) expect(res.headers.get('link')).toBe(`<${ORIGIN}/meet/${handle}/llms.txt>; rel="alternate"; type="text/markdown"`);
+  const guide = `${ORIGIN}/meet/${handle}/llms.txt${type ? `?type=${type}` : ''}`;
+  if (handle) expect(res.headers.get('link')).toBe(`<${guide}>; rel="alternate"; type="text/markdown"`);
   expect(res.headers.get('access-control-allow-origin')).toBe(null);
 }
 
@@ -89,7 +91,7 @@ function owned(person) {
 const slotOf = (ms) => iso(ms).replace(/:00Z$/, 'Z');
 
 describe('the landing page', () => {
-  it('is the booker when one type is visible: host, intro, month, times, and the assistants’ part', async () => {
+  it('is the booker when one type is visible: host, intro, month, times, and a link for assistants', async () => {
     const { handle } = await host(signup, {
       profile: { types: [meetingType({ description: 'We go through your plans.' }), meetingType({ slug: 'secret', title: 'Hidden one', hidden: true })] }
     });
@@ -99,13 +101,14 @@ describe('the landing page', () => {
     const html = res.text;
     expect(html).toMatch(/^<!doctype html>\n<html lang="en" data-zone="Europe\/Amsterdam" data-clock="24" data-switch data-auto-zone data-auto-clock>/);
     expect(html).toContain('<script src="/meet/assets/booker.js"></script>');
-    expect(html).toContain('<h1>Bart van der Meeren</h1>');
-    expect(html).toContain('<blockquote class="quote">Happy to talk about agents in your team.</blockquote>');
-    expect(html).toContain('<h2>30 minute meeting</h2>');
-    expect(html).toContain('<p class="meta"><span>30 min</span><span>Google Meet</span></p>');
+    // The host's monogram and name, not a link on their own landing page, then their intro and the type.
+    expect(html).toMatch(/<p class="host"><span class="avatar" style="--h:\d+" aria-hidden="true">BM<\/span><span>Bart van der Meeren<\/span><\/p>/);
+    expect(html).toContain('<blockquote class="intro">Happy to talk about agents in your team.</blockquote>');
+    expect(html).toContain('<h1>30 minute meeting</h1>');
+    expect(html).toMatch(/<ul class="details"><li><svg [^>]*>.*?<\/svg><span>30 min<\/span><\/li><li><svg [^>]*>.*?<\/svg><span>Google Meet<\/span><\/li><\/ul>/);
     expect(html).toContain('<blockquote class="quote">We go through your plans.</blockquote>');
     expect(html).not.toContain('Hidden one');
-    expect(html).toMatch(/Times in Europe\/Amsterdam \(UTC\+0[12]:00\)<\/span><span class="change">Change<\/span>/);
+    expect(html).toMatch(/Times in Europe\/Amsterdam \(<span class="nowrap">UTC\+0[12]:00<\/span>\)<\/span><span class="change">Change<\/span>/);
     // The month opens at the first day with times, and that day is chosen.
     const first = slotLinks(html)[0];
     const firstStart = Date.parse(new URL(first.href, ORIGIN).searchParams.get('slot').replace('Z', ':00Z'));
@@ -113,18 +116,22 @@ describe('the landing page', () => {
     expect(first.href).toBe(`/meet/${handle}/30min?slot=${slotOf(firstStart)}`);
     expect(first.text).toBe(amsterdam(firstStart).time);
     expect(html).toContain(`data-swap="${amsterdam(firstStart).date}" aria-current="date"`);
-    // The visible line comes first in <main>, and the section for assistants is in it too.
+    // Assistants get the page's llms.txt, from the head and the footer; the page has no text of its own for them.
     const main = html.slice(html.indexOf('<main'), html.indexOf('</main>'));
-    expect(main.indexOf('AI assistant? Booking instructions are below and at')).toBeLessThan(main.indexOf('<h1>'));
-    expect(main).toContain('<section id="for-ai-assistants" lang="en">');
-    expect(main).toContain(`${ORIGIN}/meet/${handle}/30min?slot=${slotOf(firstStart)}`);
-    // The footer: the page itself, the privacy statement and a way to report the page to the operator.
+    expect(main).not.toMatch(/assistant/i);
+    expect(main).not.toContain(ORIGIN);
+    expect(html).toContain(`<link rel="alternate" type="text/markdown" href="${ORIGIN}/meet/${handle}/llms.txt" title="For AI assistants">`);
+    expect(html).toMatch(new RegExp(`<a href="${ORIGIN}/meet/${handle}/llms\\.txt"><svg [^>]*>.*?</svg>For AI assistants</a>`));
+    // The footer: the privacy statement and a way to report the page to the operator.
     const links = hrefs(html);
-    expect(links).toContain(`${ORIGIN}/meet/${handle}`);
     expect(links).toContain(`${ORIGIN}/privacy`);
     expect(links).toContain(`mailto:abuse@sync.example?subject=${encodeURIComponent(`Report: ${ORIGIN}/meet/${handle}`)}`);
     expect(html).toContain('>Report this page</a>');
-    expect(html).toContain('This page is made by Bart van der Meeren, not by Example Sync.');
+    expect(html).toContain('This page is made by Bart van der Meeren and hosted by Example Sync.');
+    // A host can choose any name, the operator's too, and the page still says who made it.
+    const { handle: lookalike } = await host(signup, { profile: { name: 'Example Sync' } });
+    const copied = await call('GET', `/meet/${lookalike}`, { vars: { OPERATOR_NAME: 'Example Sync' } });
+    expect(copied.text).toContain('This page is made by Example Sync and hosted by Example Sync.');
     expect(links).toContain(`/meet/${handle}?lang=nl`);
   });
 
@@ -143,13 +150,17 @@ describe('the landing page', () => {
     const html = res.text;
     expect(html).toContain(`<h3><a href="/meet/${handle}/30min">30 minute meeting</a></h3>`);
     expect(html).toContain(`<h3><a href="/meet/${handle}/long">Long talk</a></h3>`);
-    expect(html).toContain('<span>60 min</span><span>Phone call</span><span>Bart van der Meeren confirms each booking</span>');
+    expect(html).toMatch(/<ul class="details inline">(<li><svg [^>]*>.*?<\/svg><span>[^<]+<\/span><\/li>){3}<\/ul>/);
+    expect(html).toContain('<span>60 min</span></li><li><svg');
+    expect(html).toContain('<span>Phone call</span></li><li><svg');
+    expect(html).toContain('<span>Bart van der Meeren confirms each booking</span></li></ul>');
     expect(html).not.toContain('Hidden one');
     const times = slotLinks(html);
     expect(times.filter((t) => t.href.startsWith(`/meet/${handle}/30min?slot=`))).toHaveLength(3);
     expect(times.filter((t) => t.href.startsWith(`/meet/${handle}/long?slot=`))).toHaveLength(3);
-    expect(html.match(/>All open times<\/a>/g)).toHaveLength(2);
-    expect(html).toContain('<section id="for-ai-assistants" lang="en">');
+    expect(html.match(/>All open times<svg /g)).toHaveLength(2);
+    expect(html).toContain('<h1>Bart van der Meeren</h1>');
+    expect(html).toContain('For AI assistants</a>');
   });
 
   it('speaks Dutch for ?lang=nl and for a Dutch browser, and English when asked', async () => {
@@ -160,16 +171,15 @@ describe('the landing page', () => {
     ]) {
       const html = (await call('GET', path, { headers })).text;
       expect(html).toContain('<html lang="nl"');
-      expect(html).toMatch(/Tijden in Europe\/Amsterdam \(UTC\+0[12]:00\)/);
+      expect(html).toMatch(/Tijden in Europe\/Amsterdam \(<span class="nowrap">UTC\+0[12]:00<\/span>\)/);
       expect(html).toContain('<span class="change">Wijzigen</span>');
       expect(html).toContain('<caption class="sr-only">Kies een dag</caption>');
       expect(html).toMatch(/<thead><tr><th scope="col" abbr="maandag">ma<\/th>/);
       // Dates start with a capital in headings only.
       expect(html).toMatch(/<h2 id="times-title">[A-Z][a-z]+dag \d+ [a-z]+<\/h2>/);
       expect(html).toMatch(/data-status="\d+ tijden vrij op [a-z]+dag \d+ [a-z]+"/);
-      // The section for assistants stays English.
-      expect(html).toContain('<h2>For AI assistants</h2>');
-      expect(html).toContain('<p class="for-assistants" lang="en">AI assistant?');
+      // The link to the guide for assistants speaks the page's language; the guide itself is English.
+      expect(html).toContain('Voor AI-assistenten</a>');
     }
     const english = await call('GET', `/meet/${handle}?lang=en`, { headers: { 'accept-language': 'nl' } });
     expect(english.text).toContain('<html lang="en"');
@@ -197,7 +207,7 @@ describe('the landing page', () => {
   it('shows times in ?tz, keeps it in every link, and ignores a zone it doesn’t know', async () => {
     const { handle } = await host(signup);
     const html = (await call('GET', `/meet/${handle}?tz=America/New_York`)).text;
-    expect(html).toMatch(/Times in America\/New_York \(UTC-0[45]:00\)/);
+    expect(html).toMatch(/Times in America\/New_York \(<span class="nowrap">UTC-0[45]:00<\/span>\)/);
     expect(html).toContain('data-zone="America/New_York" data-clock="24" data-switch data-auto-clock>');
     expect(html).toContain('<option value="America/New_York" selected>America/New York</option>');
     const first = slotLinks(html)[0];
@@ -290,10 +300,10 @@ describe('the booker', () => {
     const day = amsterdam(slotAhead(3)).date;
     const month = day.slice(0, 7);
     const res = await call('GET', `/meet/${handle}/30min?date=${day}`);
-    expectPage(res, handle);
+    expectPage(res, handle, { type: '30min' });
     expect(res.headers.get('vary')).toBe('Accept-Language');
     const html = res.text;
-    expect(html).toContain('<p class="eyebrow"><a href="/meet/' + handle + '">Bart van der Meeren</a></p>');
+    expect(html).toMatch(new RegExp(`<p class="host"><span class="avatar"[^>]*>BM</span><a href="/meet/${handle}">Bart van der Meeren</a></p>`));
     expect(html).toContain('<h1>30 minute meeting</h1>');
     expect(html).toContain(`data-swap="${day}" aria-current="date"`);
     // 09:00 to 17:00 every day, 30 minutes long: 16 times.
@@ -317,10 +327,24 @@ describe('the booker', () => {
   it('opens a hidden type by its slug, and has a page for a type that isn’t there', async () => {
     const { handle } = await host(signup, { profile: { types: [meetingType(), meetingType({ slug: 'secret', title: 'Hidden one', hidden: true })] } });
     const hidden = await call('GET', `/meet/${handle}/secret`);
-    expectPage(hidden, handle);
+    expectPage(hidden, handle, { type: 'secret' });
     expect(hidden.text).toContain('<h1>Hidden one</h1>');
     expect(slotLinks(hidden.text).length).toBeGreaterThan(0);
-    expect(hidden.text).toContain(`${ORIGIN}/meet/${handle}/secret?slot=`);
+    expect(slotLinks(hidden.text)[0].href).toMatch(new RegExp(`^/meet/${handle}/secret\\?slot=`));
+    // Its guide for assistants is its own, with its open times; the page-wide one keeps it out.
+    const guide = `${ORIGIN}/meet/${handle}/llms.txt?type=secret`;
+    expect(hrefs(hidden.text)).toContain(guide);
+    const own = await call('GET', `/meet/${handle}/llms.txt?type=secret`);
+    expect(own.status).toBe(200);
+    expect(own.text).toContain('- secret: From "Bart van der Meeren": "Hidden one".');
+    expect(own.text).toContain(`${ORIGIN}/meet/${handle}/secret?slot=`);
+    expect(own.text).not.toContain('- 30min:');
+    const all = (await call('GET', `/meet/${handle}/llms.txt`)).text;
+    expect(all).toContain('- 30min:');
+    expect(all).not.toContain('secret');
+    const unknown = await call('GET', `/meet/${handle}/llms.txt?type=nope`);
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toBe('unknown_type');
     for (const slug of ['nope', 'API', 'ics', 'a.b', '%3Cscript%3E']) {
       const missing = await call('GET', `/meet/${handle}/${slug}`);
       expect(missing.status, slug).toBe(404);
@@ -332,7 +356,7 @@ describe('the booker', () => {
   it('keeps an assistant’s fields on every day and time, so the form opens filled in', async () => {
     const { handle } = await host(signup);
     const res = await call('GET', `/meet/${handle}/30min?name=Jane%20Doe&email=jane%40example.com`);
-    expectPage(res, handle, { noindex: true });
+    expectPage(res, handle, { noindex: true, type: '30min' });
     const first = slotLinks(res.text)[0];
     expect(first.href).toContain('name=Jane%20Doe&email=jane%40example.com');
   });
@@ -343,7 +367,7 @@ describe('the filled-in form', () => {
     const { handle, person } = await host(signup);
     const start = slotAhead(3);
     const res = await call('GET', `/meet/${handle}/30min?slot=${slotOf(start)}&name=Jane%20Doe&email=jane%40example.com&notes=Kick%0Aoff&via=ChatGPT`);
-    expectPage(res, handle, { noindex: true });
+    expectPage(res, handle, { noindex: true, type: '30min' });
     const html = res.text;
     expect(html).toContain('Your assistant filled this in. Check the details and press Book.');
     expect(inputValue(html, 'name')).toBe('Jane Doe');
@@ -388,7 +412,7 @@ describe('the filled-in form', () => {
     const start = slotAhead(3);
     expect((await book(handle, { type: '30min', start: iso(start), ...guest() })).status).toBe(201);
     const res = await call('GET', `/meet/${handle}/30min?slot=${slotOf(start)}&name=Jane%20Doe&email=jane%40example.com`);
-    expectPage(res, handle, { noindex: true });
+    expectPage(res, handle, { noindex: true, type: '30min' });
     expect(res.text).toContain('This time isn’t open any more.');
     expect(res.text).not.toContain('<form class="book"');
     const near = slotLinks(res.text);
@@ -405,7 +429,7 @@ describe('the filled-in form', () => {
     const { handle } = await host(signup);
     for (const slot of ['tomorrow', '2026-11-03T10:00', '2026-11-03T25:00Z', '<script>']) {
       const res = await call('GET', `/meet/${handle}/30min?slot=${encodeURIComponent(slot)}`);
-      expectPage(res, handle, { noindex: true });
+      expectPage(res, handle, { noindex: true, type: '30min' });
       expect(res.text).toContain('That time couldn’t be read. Pick a time below.');
       expect(res.text).toContain('<table class="grid">');
     }
@@ -477,7 +501,7 @@ describe('booking with the form', () => {
       [{ via: 'v'.repeat(81) }, 'via', 'The assistant’s name can be at most 80 characters']
     ]) {
       const res = await post(`/meet/${handle}/30min`, { ...base, ...fields });
-      expectPage(res, handle, { status: 400, noindex: true });
+      expectPage(res, handle, { status: 400, noindex: true, type: '30min' });
       // The page opens with the focus on the field that was wrong, which points to the notice.
       expect(res.text).toContain('<div class="notice error" role="alert" id="form-error">');
       expect(res.text).toContain(message);
@@ -498,7 +522,7 @@ describe('booking with the form', () => {
     // Specificity: the field rule is input[type=text] (0,1,1), so the invalid rule needs the element name too.
     const base = CSS.indexOf('input[type=text],input[type=email],textarea,select{');
     const invalid = CSS.indexOf('input[aria-invalid=true],textarea[aria-invalid=true]{border-color:var(--danger)}');
-    const focused = CSS.indexOf('input[aria-invalid=true]:focus-visible,textarea[aria-invalid=true]:focus-visible{outline-color:var(--danger)');
+    const focused = CSS.indexOf('input[aria-invalid=true]:focus-visible,textarea[aria-invalid=true]:focus-visible{border-color:var(--danger)');
     expect(base).toBeGreaterThan(-1);
     expect(invalid).toBeGreaterThan(base);
     expect(focused).toBeGreaterThan(invalid);
@@ -526,7 +550,7 @@ describe('booking with the form', () => {
     const start = slotAhead(3);
     await book(handle, { type: '30min', start: iso(start), ...guest() });
     const res = await post(`/meet/${handle}/30min`, { start: slotOf(start), name: 'Jane Doe', email: 'jane@example.com' });
-    expectPage(res, handle, { status: 409, noindex: true });
+    expectPage(res, handle, { status: 409, noindex: true, type: '30min' });
     expect(res.text).toContain('That time was just taken. Pick one of the nearest open times.');
     // No field was wrong, so the page opens with the focus on the notice.
     expect(res.text).toContain('<div class="notice error" role="alert" id="form-error" tabindex="-1" autofocus>');
@@ -540,7 +564,7 @@ describe('booking with the form', () => {
     const ip = '10.77.1.5';
     for (let i = 0; i < 3; i++) expect((await book(handle, { type: '30min', start: iso(slotAhead(3 + i)), ...guest() }, { ip })).status).toBe(201);
     const res = await post(`/meet/${handle}/30min`, { start: slotOf(slotAhead(9)), name: 'Jane Doe', email: 'jane@example.com' }, { ip: '10.77.1.200' });
-    expectPage(res, handle, { status: 403, noindex: true });
+    expectPage(res, handle, { status: 403, noindex: true, type: '30min' });
     expect(res.text).toContain('Too many bookings came from your network today. Try again tomorrow, or contact Bart van der Meeren another way.');
     expect(inputValue(res.text, 'name')).toBe('Jane Doe');
   });
@@ -619,7 +643,7 @@ describe('booking with the form', () => {
     const start = slotAhead(3);
     await book(handle, { type: '30min', start: iso(start), ...guest({ email: 'jane@example.com' }) });
     const res = await post(`/meet/${handle}/30min`, { start: slotOf(start), name: 'Jane', email: 'Jane@Example.com' });
-    expectPage(res, handle, { noindex: true });
+    expectPage(res, handle, { noindex: true, type: '30min' });
     expect(res.text).toContain('You already booked this time with jane@example.com.');
   });
 
@@ -737,9 +761,9 @@ describe('moving a booking', () => {
 
     const day = amsterdam(start).date;
     const booker = await call('GET', `${pick}&date=${day}`);
-    expectPage(booker, handle, { noindex: true });
+    expectPage(booker, handle, { noindex: true, type: '30min' });
     expect(booker.text).toMatch(/Pick a new time for your booking on [^<]+10:00/);
-    expect(booker.text).not.toContain('<section id="for-ai-assistants"');
+    expect(booker.text).not.toContain('For AI assistants</a>');
     expect(booker.text).not.toContain('Report this page');
     // The booking doesn't block its own neighbours: 10:30 overlaps it, and is offered only for the move.
     const half = slotOf(zonedInstant(day, '10:30', 'Europe/Amsterdam'));
@@ -749,7 +773,7 @@ describe('moving a booking', () => {
     expect(plain.some((h) => h.includes(half))).toBe(false);
 
     const confirm = await call('GET', `/meet/${handle}/30min?reschedule=${id}&k=${key}&slot=${half}`);
-    expectPage(confirm, handle, { noindex: true });
+    expectPage(confirm, handle, { noindex: true, type: '30min' });
     expect(confirm.text).toContain('<h2 class="when">Move your booking to this time?</h2>');
     const fields = formFields(confirm.text, `/meet/${handle}/booking/${id}`);
     expect(fields).toEqual({ k: key, action: 'reschedule', start: half, tz: 'Europe/Amsterdam' });
@@ -792,7 +816,7 @@ describe('moving a booking', () => {
     expect(offered.some((h) => h.endsWith(`slot=${own}`))).toBe(false);
     // A link to it shows the booker instead of asking to move the booking to where it is.
     const link = await call('GET', `/meet/${handle}/30min?reschedule=${id}&k=${key}&slot=${own}`);
-    expectPage(link, handle, { noindex: true });
+    expectPage(link, handle, { noindex: true, type: '30min' });
     expect(link.text).not.toContain('Move your booking to this time?');
     expect(link.text).toMatch(/Pick a new time for your booking on/);
 
@@ -942,6 +966,27 @@ describe('the booker script', () => {
     // The form's zone stays the one the server wrote: a browser zone the server can't read would block every booking.
     expect(res.text).not.toContain('name="tz"');
     expect((await call('HEAD', '/meet/assets/booker.js')).text).toBe('');
+  });
+
+  it('swaps the zone picker with the booker, so its form keeps the chosen day', () => {
+    expect(BOOKER_JS).toContain("doc.getElementById('zone')");
+    expect(BOOKER_JS).not.toMatch(/=>|`/);
+  });
+});
+
+describe('the pages’ font', () => {
+  it('is Inter from the server itself, cached for a year, and preloaded by every page', async () => {
+    const res = await call('GET', '/meet/assets/fonts/inter-latin-opsz-normal.woff2');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('font/woff2');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    // woff2's own signature.
+    expect(res.text.slice(0, 4)).toBe('wOF2');
+    expect((await call('GET', '/meet/assets/fonts/inter.woff2')).status).toBe(404);
+    const { handle } = await host(signup);
+    const html = (await call('GET', `/meet/${handle}`)).text;
+    expect(html).toContain('<link rel="preload" href="/meet/assets/fonts/inter-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>');
+    expect(CSS).toContain("--font:'Inter',");
   });
 });
 

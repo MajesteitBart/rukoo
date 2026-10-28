@@ -6,10 +6,9 @@
 // Every query parameter and form field is checked before use, and anything that doesn't fit is left out rather than
 // echoed. No GET or HEAD changes anything: opening a filled-in form or a manage link books, holds and cancels nothing.
 
-import { agentData, agentSection, assistantLine } from './agent-text.js';
 import { DEFAULT_LOCALES, html, text } from './booking-text.js';
 import { randomBytes, toBase64url } from './bytes.js';
-import { bookerPath, bookingPrefix, clientNetwork, config, limitRate } from './config.js';
+import { bookerPath, bookingPrefix, clientNetwork, config, fontDir, limitRate } from './config.js';
 import { NOINDEX, meetText, redirect } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -136,9 +135,12 @@ function context(request, env, url, handle, profile, source = url.searchParams, 
     f: pages.formatter(locale, zone, hour12),
     host: profile?.name ?? null,
     links: known ? links(env, url, handle) : null,
+    // The guide for assistants this page points to: the page-wide llms.txt, or a type's own on that type's pages.
+    guide: known ? links(env, url, handle).llmsTxt : null,
     // The page's own path, for links and forms: /<handle> at the root of BOOKING_ORIGIN, else /meet/<handle>.
     base: `${bookingPrefix(env, url)}/${handle}`,
     script: bookerPath(env, url),
+    fonts: fontDir(env, url),
     operator: config(env, url).operator,
     weekStart: weekStartOf(locale),
     languageLink: (l) => {
@@ -152,7 +154,7 @@ function context(request, env, url, handle, profile, source = url.searchParams, 
 // An HTML answer with the booking pages' headers, the llms.txt link and, for addresses with guest details or keys, noindex.
 function respond(ctx, request, status, body, { landing = false, noindex = false, headers = {} } = {}) {
   const extra = { vary: landing ? 'Accept, Accept-Language' : 'Accept-Language', ...headers };
-  if (ctx.links) extra.link = `<${ctx.links.llmsTxt}>; rel="alternate"; type="text/markdown"`;
+  if (ctx.guide) extra.link = `<${ctx.guide}>; rel="alternate"; type="text/markdown"`;
   if (noindex) Object.assign(extra, NOINDEX);
   return meetText(status, body, 'text/html; charset=utf-8', extra, request.method);
 }
@@ -251,9 +253,7 @@ export async function landingPage(request, env, url, handle, data) {
     profile,
     types: visible,
     slots: data.slots,
-    approval: (t) => t.confirm || page.stale,
-    agentSection: agentSection(data),
-    assistantLine: assistantLine(data)
+    approval: (t) => t.confirm || page.stale
   });
   return respond(ctx, request, 200, body, { landing: true, noindex });
 }
@@ -268,6 +268,7 @@ async function typePage(request, env, url, handle, slug) {
   if (!page.accepting || !profile) return respond(ctx, request, 200, pages.offHtml(ctx, profile), { noindex });
   let type = profile.types.find((t) => t.slug === slug);
   if (!type) return respond(ctx, request, 404, pages.missingHtml(ctx, { kind: 'type', profile }), { noindex });
+  ctx.guide = ctx.links.llmsFor(slug);
 
   let reschedule = null;
   if (q.reschedule) {
@@ -286,8 +287,7 @@ async function typePage(request, env, url, handle, slug) {
 
   // The booking's own time isn't a new one: a link to it shows the booker.
   if (q.slot !== null && q.slot !== reschedule?.booking.start) return preparedPage(ctx, request, env, handle, { page, type, q, reschedule });
-  const data = reschedule ? null : await agentData(env, url, handle, { slug, page });
-  return bookerPage(ctx, request, env, handle, { page, type, landing: false, data, q, reschedule });
+  return bookerPage(ctx, request, env, handle, { page, type, landing: false, data: null, q, reschedule });
 }
 
 async function bookerPage(ctx, request, env, handle, { page, type, landing, data, q, reschedule = null }) {
@@ -300,7 +300,7 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
   // While a booking moves it doesn't block its own neighbours, but its own time isn't offered: it isn't a new one.
   const own = reschedule ? reschedule.booking.start : null;
 
-  // The first open time decides where the month opens; the agent data usually has it already.
+  // The first open time decides where the month opens; the landing page's data (agentData) has it already.
   let first = exclude ? null : (data?.slots?.[type.slug]?.[0] ?? null);
   if (first === null) {
     const next = await nextSlots(env, handle, { days: type.horizon + 1, limit: own === null ? 1 : 2, slug: type.slug, exclude });
@@ -344,9 +344,7 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
     path: landing ? ctx.base : `${ctx.base}/${type.slug}`,
     slotPath: `${ctx.base}/${type.slug}`,
     keep,
-    weekStart: ctx.weekStart,
-    agentSection: data ? agentSection(data) : '',
-    assistantLine: data ? assistantLine(data) : ''
+    weekStart: ctx.weekStart
   };
   return respond(ctx, request, 200, pages.bookerHtml(ctx, v), { landing, noindex: Boolean(reschedule) || privateQuery(q) });
 }
@@ -416,6 +414,7 @@ async function bookPost(request, env, url, handle, slug) {
   if (!page.accepting || !profile) return respond(ctx, request, 409, pages.offHtml(ctx, profile), { noindex: true });
   const type = profile.types.find((t) => t.slug === slug);
   if (!type) return respond(ctx, request, 404, pages.missingHtml(ctx, { kind: 'type', profile }), { noindex: true });
+  ctx.guide = ctx.links.llmsFor(slug);
 
   let idem = null;
   try {

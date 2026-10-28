@@ -142,6 +142,12 @@ export function bookerPath(env, url) {
   return prefix ? `${prefix}/assets/booker.js` : '/booker.js';
 }
 
+// The pages' fonts (fonts.js): /assets/fonts/ at the root, where the website has the same files, else
+// /meet/assets/fonts/.
+export function fontDir(env, url) {
+  return `${bookingPrefix(env, url)}/assets/fonts/`;
+}
+
 // The origins a booking write may come from: the page's own, as served on either address.
 export function bookingOrigins(env, url) {
   return new Set([url.origin, bookingOrigin(env, url)]);

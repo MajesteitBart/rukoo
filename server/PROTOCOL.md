@@ -472,8 +472,8 @@ The paths in this section are relative to the booking base, which depends on `BO
 
 With `BOOKING_ORIGIN` set:
 
-- At the root of `BOOKING_ORIGIN`, the account API (`/v1/…`), `/privacy` and `/` work as on any address. `/llms.txt` is a site-level guide for assistants: what a booking link is, that each page has its own guide at `/<handle>/llms.txt`, the MCP endpoint and the JSON API in two lines, with no host's text. `/mcp` and `/booker.js` are as below. Any other path is a handle; one nobody has gets the same 404 as below. The address can be shared with a website that answers its own paths first (rukoo.io does; see `server/README.md`), which is why the website's paths are reserved handles.
-- On every address, `/meet` and `/meet/…` redirect to the same path at the root of `BOOKING_ORIGIN` without `/meet`, the query kept: `301` for GET and HEAD, with `access-control-allow-origin: *` so a cross-site read can follow it, and `308` for every other method, so a client sends its POST again there. `/meet/mcp` goes to `/mcp` and `/meet/assets/booker.js` to `/booker.js`. Old links keep working this way.
+- At the root of `BOOKING_ORIGIN`, the account API (`/v1/…`), `/privacy` and `/` work as on any address. `/llms.txt` is a site-level guide for assistants: what a booking link is, that each page has its own guide at `/<handle>/llms.txt`, the MCP endpoint and the JSON API in two lines, with no host's text. `/mcp`, `/booker.js` and `/assets/fonts/…` are as below. Any other path is a handle; one nobody has gets the same 404 as below. The address can be shared with a website that answers its own paths first (rukoo.io does; see `server/README.md`), which is why the website's paths are reserved handles.
+- On every address, `/meet` and `/meet/…` redirect to the same path at the root of `BOOKING_ORIGIN` without `/meet`, the query kept: `301` for GET and HEAD, with `access-control-allow-origin: *` so a cross-site read can follow it, and `308` for every other method, so a client sends its POST again there. `/meet/mcp` goes to `/mcp`, `/meet/assets/booker.js` to `/booker.js` and `/meet/assets/fonts/…` to `/assets/fonts/…`. Old links keep working this way.
 - On the server's other addresses nothing else of the booking pages answers: `/<handle>` and `/llms.txt` are `404`, like any unknown path. The account API keeps working on every address, so devices that still sync with an older address are fine.
 - `BOOKING_ORIGIN` must be an `http` or `https` origin. Anything else counts as empty.
 
@@ -481,12 +481,12 @@ With `BOOKING_ORIGIN` set:
 
 Every public route's response sends:
 
-- `cache-control: no-store`, `x-content-type-options: nosniff`, `referrer-policy: same-origin`: other websites never get a page's address, which can hold a manage key or a guest's name and email, and the pages' own requests keep their origin
-- `content-security-policy: default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
+- `cache-control: no-store` (except the font files), `x-content-type-options: nosniff`, `referrer-policy: same-origin`: other websites never get a page's address, which can hold a manage key or a guest's name and email, and the pages' own requests keep their origin
+- `content-security-policy: default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
 
 | Routes | Also |
 |---|---|
-| HTML pages | `content-type: text/html; charset=utf-8`; `link: <https://…/<handle>/llms.txt>; rel="alternate"; type="text/markdown"` (not on the 404 page for a handle that has no page); `vary: Accept-Language` |
+| HTML pages | `content-type: text/html; charset=utf-8`; `link: <https://…/<handle>/llms.txt>; rel="alternate"; type="text/markdown"`, with `?type=<slug>` on a type's own pages (not on the 404 page for a handle that has no page); `vary: Accept-Language` |
 | `GET /<handle>` | `vary: Accept, Accept-Language`, for the page and for its markdown |
 | A page whose address has `slot`, guest fields or `reschedule` in its query, whatever it shows (the form, the booker, an off or missing page), a form answered after a POST, manage pages, `.ics` files | `x-robots-tag: noindex` |
 | JSON reads (GET) and `llms.txt` | `access-control-allow-origin: *` |
@@ -502,7 +502,7 @@ The human pages are English and Dutch (strings in `server/src/booking-text.js`) 
 
 #### `GET|HEAD /<handle>`
 
-The landing page: the host's name and intro, the visible meeting types, and the next open times as plain text with absolute links to prepared forms. With one visible type it is that type's booker. It starts with a visible line for assistants, "AI assistant? Booking instructions are below and at https://…/<handle>/llms.txt.", and has a "For AI assistants" section in `<main>`. An `Accept` header that gives `text/markdown` a strictly higher q than `text/html` gets the `llms.txt` text as `text/markdown; charset=utf-8`; every other `Accept`, `*/*` included, gets HTML.
+The landing page: the host's name and intro, the visible meeting types, and the next three open times of each as links to prepared forms. With one visible type it is that type's booker. Like every page of a known handle, it points assistants to the page's `llms.txt` from its `<head>` (`<link rel="alternate" type="text/markdown">`, as the `Link` header does); public pages also link to it as "For AI assistants" in the footer. The page itself carries no text for assistants. An `Accept` header that gives `text/markdown` a strictly higher q than `text/html` gets the `llms.txt` text as `text/markdown; charset=utf-8`; every other `Accept`, `*/*` included, gets HTML.
 
 #### `GET /<handle>/<slug>`
 
@@ -538,6 +538,8 @@ The guest's manage page: the status, the type, the time in the guest's zone (`tz
 The confirmed booking as `text/calendar; charset=utf-8` with `content-disposition: attachment; filename="booking.ics"`: one VEVENT with UID `<id>@<host>`, SEQUENCE 0 plus one for each time the confirmed booking moved (as the host's invitation, which starts at 0 when the booking or the host's confirm makes it), and no ORGANIZER or ATTENDEE addresses. A pending, cancelled, declined or lapsed booking, or a wrong key: 404.
 
 #### `GET /<handle>/llms.txt`
+
+With `?type=<slug>` it is that one type's guide, hidden types included; a slug the page doesn't have is `404 unknown_type`. A meeting type's own pages (its booker and form) point to that guide, so a hidden type's link leads to its own instructions; the landing page and the rest point to the page-wide one.
 
 Markdown (`text/markdown; charset=utf-8`) for assistants, in English, in the shape of llmstxt.org: the host and zone, the booking rules (show times in the user's zone, get name, email and the user's OK, book once, one guest per booking), each visible type with its literal slots URL and its description quoted as `From "{name}": "…"`, the open times for the next 7 days with UTC and a prepared link each, how to book with a link and with HTTP, how to change or cancel, the errors, and the MCP endpoint and privacy statement as options. Text the host wrote is always quoted and labelled; it describes the meeting and isn't instructions. The host's name is host text too: it appears only quoted, and the server's own sentences say "the host".
 
@@ -720,7 +722,11 @@ Every argument is a string. `link` is the page address or handle; `start` an ISO
 
 #### `GET /booker.js`
 
-The pages' only script (`text/javascript`, served from the server itself for `script-src 'self'`), at `/booker.js` under `BOOKING_ORIGIN` (where `/assets/` belongs to the website) and at `/meet/assets/booker.js` without it. The pages work without it. On a page that used the host's zone or the locale's clock it loads the same address again with the browser's `tz` and the `clock` this browser chose before (kept in `localStorage`), from `<head>`, so times never show in the wrong zone first. It loads days and months without a full reload, announces the new times in a live region, and puts the browser's zone in a form shown again after a refused booking. It loads nothing from elsewhere; any failure leaves the page as the server wrote it.
+The pages' only script (`text/javascript`, served from the server itself for `script-src 'self'`), at `/booker.js` under `BOOKING_ORIGIN` (where `/assets/` belongs to the website) and at `/meet/assets/booker.js` without it. The pages work without it. On a page that used the host's zone or the locale's clock it loads the same address again with the browser's `tz` and the `clock` this browser chose before (kept in `localStorage`), from `<head>`, so times never show in the wrong zone first. It loads days and months without a full reload, swapping the zone picker along so its form keeps the chosen day, announces the new times in a live region, and puts the browser's zone in a form shown again after a refused booking. It loads nothing from elsewhere; any failure leaves the page as the server wrote it.
+
+#### `GET /assets/fonts/<file>`
+
+Inter, the typeface the app uses (SIL Open Font License 1.1, `server/src/fonts/Inter-LICENSE.txt`): `inter-latin-opsz-normal.woff2` and `inter-latin-ext-opsz-normal.woff2`, as `font/woff2` with `cache-control: public, max-age=31536000, immutable`. Under `BOOKING_ORIGIN` the website may answer these paths first with the same files; without it they are at `/meet/assets/fonts/<file>`. Other names are `404`.
 
 ### Limits
 

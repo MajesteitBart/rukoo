@@ -85,21 +85,36 @@ export const BOOKER_JS = String.raw`(function () {
         return res.text();
       })
       .then(function (html) {
-        var next = new DOMParser().parseFromString(html, 'text/html').getElementById('booker');
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var next = doc.getElementById('booker');
         if (!next) throw new Error('Open the link instead');
         next = document.importNode(next, true);
         next.setAttribute('data-swapped', '');
         box.parentNode.replaceChild(next, box);
+        // The zone picker sits beside the booker and keeps the month and day in its form, so it changes with it.
+        var zone = document.getElementById('zone');
+        var nextZone = doc.getElementById('zone');
+        if (zone && nextZone) {
+          nextZone = document.importNode(nextZone, true);
+          nextZone.open = zone.open;
+          zone.parentNode.replaceChild(nextZone, zone);
+        }
         history.pushState({ booker: true }, '', href);
         swapped = true;
         var times = next.querySelector('.times');
         var live = document.getElementById('live');
         if (live && times) live.textContent = times.getAttribute('data-status') || '';
+        var day = key !== 'prev' && key !== 'next';
         var safe = window.CSS && CSS.escape ? CSS.escape(key) : key;
-        var focus = next.querySelector('[data-swap="' + safe + '"]') || next.querySelector(key === 'prev' || key === 'next' ? '#month-title' : '#times-title');
+        var focus = next.querySelector('[data-swap="' + safe + '"]') || next.querySelector(day ? '#times-title' : '#month-title');
         if (focus) {
           if (focus.tagName !== 'A') focus.setAttribute('tabindex', '-1');
           focus.focus();
+        }
+        // On a phone the times are below the month: a picked day brings them into view.
+        if (day && times && times.getBoundingClientRect().top > window.innerHeight * 0.6) {
+          var still = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+          times.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
         }
       })
       .catch(function (err) {

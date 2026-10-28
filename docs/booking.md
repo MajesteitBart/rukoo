@@ -161,7 +161,7 @@ A booking page is at `https://rukoo.io/<handle>`, and each meeting type at `http
 
 Assistants have four ways in, all English:
 
-- `https://rukoo.io/<handle>/llms.txt` is a guide with the rules, the meeting types, the open times of the next 7 days and how to book. The page itself has a "For AI assistants" section with the same text, and asking for the page with `Accept: text/markdown` returns it. `https://rukoo.io/llms.txt` explains booking pages in general.
+- `https://rukoo.io/<handle>/llms.txt` is a guide with the rules, the meeting types, the open times of the next 7 days and how to book. The page links to it as "For AI assistants" in its footer and in its `<head>`, and asking for the page with `Accept: text/markdown` returns it. `https://rukoo.io/llms.txt` explains booking pages in general.
 - A prepared link opens the form filled in, for example `https://rukoo.io/sanne/30min?slot=2026-11-03T09:00Z&name=Jane%20Doe&email=jane%40example.com&via=Calendar%20helper`. `slot` is the start in UTC. The user checks the details and presses Book; opening the link books nothing.
 - The JSON API: `GET /<handle>/api` lists the types, `GET /<handle>/api/slots` the open times, and `POST /<handle>/api/bookings` books one. Every answer has a `message` written for the assistant to pass on.
 - `https://rukoo.io/mcp` is one MCP endpoint for every page, over plain HTTP POST without sign-in. Its tools are `get_meeting_types`, `find_available_times`, `book_meeting`, `get_booking`, `cancel_booking` and `reschedule_booking`; each takes `link`, the page's address or its handle.

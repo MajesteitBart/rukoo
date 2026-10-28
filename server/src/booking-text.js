@@ -1,5 +1,5 @@
-// What people read on booking pages (design 3.7), in English and Dutch. Agent-facing text (the "For AI assistants"
-// section, llms.txt, JSON and MCP messages) stays English and lives in agent-text.js and api.js.
+// What people read on booking pages (design 3.7), in English and Dutch. Agent-facing text (llms.txt, JSON and MCP
+// messages) stays English and lives in agent-text.js and api.js; the pages only link to llms.txt.
 //
 // Values are plain text with {name} placeholders. text() fills them in as text; html() escapes the catalog's own text
 // and puts in values the caller has already made safe, for the few sentences that hold a link. test/booking-text.test.js
@@ -19,7 +19,8 @@ export const TEXT = {
     'page.anon': 'Booking page',
     'page.privacy': 'Privacy',
     'page.report': 'Report this page',
-    'page.madeBy': 'This page is made by {host}, not by {operator}.',
+    'page.assistants': 'For AI assistants',
+    'page.madeBy': 'This page is made by {host} and hosted by {operator}.',
     'page.operator': 'the operator of this server',
     'page.operatorStart': 'The operator of this server',
     'page.language': 'Language',
@@ -151,7 +152,8 @@ export const TEXT = {
     'page.anon': 'Afsprakenpagina',
     'page.privacy': 'Privacy',
     'page.report': 'Pagina melden',
-    'page.madeBy': 'Deze pagina is gemaakt door {host}, niet door {operator}.',
+    'page.assistants': 'Voor AI-assistenten',
+    'page.madeBy': 'Deze pagina is gemaakt door {host} en wordt gehost door {operator}.',
     'page.operator': 'de beheerder van deze server',
     'page.operatorStart': 'De beheerder van deze server',
     'page.language': 'Taal',
