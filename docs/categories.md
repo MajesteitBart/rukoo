@@ -2,7 +2,7 @@
 
 Inbox categories split the inbox, like Gmail's tabs, for every kind of account: Gmail, Outlook, any IMAP server and the demo account. Rukoo doesn't label, flag or move anything on the mail server, so other mail apps see your inbox as before. The categories, the category each email got and your corrections live in Rukoo's own data, and with a [Rukoo account](account.md) every device shows the same.
 
-They show under Inbox in the sidebar, on the phone in the folder drawer; Inbox itself still shows all of it. The first start of Rukoo 2.0 offers to set them up step by step (Settings → About → What's new opens that again), or turn them on in Settings → General → Inbox categories.
+They show under Inbox in the sidebar, on the phone in the folder drawer; Inbox itself still shows all of it. The first start of Rukoo 2.1 offers to set them up step by step (Settings → About → What's new opens that again), or turn them on in Settings → General → Inbox categories.
 
 ## The categories
 
