@@ -98,6 +98,7 @@ fun CategoryDot(color: String, modifier: Modifier = Modifier, size: androidx.com
 fun CategoriesPage(app: AppViewModel) {
     val cats = app.services.categories ?: return
     val state by cats.state.collectAsStateWithLifecycle()
+    val activity by cats.activity.collectAsStateWithLifecycle()
     val toast = LocalRkToast.current
     val res = LocalContext.current.resources
     val scope = rememberCoroutineScope()
@@ -191,7 +192,11 @@ fun CategoriesPage(app: AppViewModel) {
             SettingsCard {
                 SettingsRow(
                     title = stringResource(R.string.settings_categories_again),
-                    description = stringResource(R.string.settings_categories_again_help),
+                    description = if (activity.running) {
+                        stringResource(R.string.categories_activity_progress, activity.done, activity.total)
+                    } else {
+                        stringResource(R.string.settings_categories_again_help)
+                    },
                     onClick = {
                         scope.launch {
                             val count = runCatching { cats.sortAgain() }.getOrDefault(0)

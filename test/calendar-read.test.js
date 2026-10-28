@@ -294,6 +294,12 @@ function oneObject() {
   const cal = { id: 'https://dav.example.com/home/', name: 'Home', primary: true, writable: true, selected: true, timeZone: null, scheduling: true };
   const m = monday();
   const state = { etag: '"e1"', calls: [] };
+  // A write gives the object a new version and says which one it replaced, as CalDavCalendar.written() does.
+  const write = (etag) => {
+    const replaced = state.etag;
+    state.etag = etag;
+    return { etag, replaced, occurrences: null };
+  };
   const occurrence = (n) => ({
     calendarId: cal.id,
     eventId: `${href}#${n}`,
@@ -334,24 +340,22 @@ function oneObject() {
       get: async (c, id) => occurrence(Number(id.split('#')[1])),
       update: async (c, e, input, opts) => {
         state.calls.push(['update', opts]);
-        state.etag = '"e2"';
-        return { ...e, title: input.title, etag: state.etag };
+        const written = write('"e2"');
+        return { ...e, title: input.title, etag: state.etag, written };
       },
       remove: async (c, e, opts) => {
         state.calls.push(['remove', opts]);
-        state.etag = '"e3"';
-        return { etag: state.etag };
+        return write('"e3"');
       },
       respond: async (c, e, response, opts) => {
         state.calls.push(['respond', opts]);
-        state.etag = '"e4"';
-        return { etag: state.etag };
+        return write('"e4"');
       }
     }
   };
 }
 
-test('#53: on a provider whose series is one object, every cached occurrence gets the version a change hands back', async () => {
+test('#53: on a provider whose series is one object, the cached occurrences at the version a change replaced get the one it hands back', async () => {
   const dav = oneObject();
   const { calendars } = setup(fakeCalendar(), { extra: [{ id: 'c1', type: 'imap', provider: 'other', email: 'c@example.com', color: '#ff8a3d', secret: 's', caldav: { url: 'https://dav.example.com/' } }] });
   calendars.providers.set('c1:caldav', dav.provider);
@@ -366,7 +370,8 @@ test('#53: on a provider whose series is one object, every cached occurrence get
   assert.equal(mineOnly()[0].canInvite, 'edit');
 
   let [first, second] = mineOnly();
-  await calendars.update(first.id, { title: 'Stand-up (moved)', location: '', description: '', allDay: false, start: first.start, end: first.end }, { etag: first.etag });
+  const out = await calendars.update(first.id, { title: 'Stand-up (moved)', location: '', description: '', allDay: false, start: first.start, end: first.end }, { etag: first.etag });
+  assert.equal('written' in out, false, 'what the write did stays in the store');
   assert.deepEqual(dav.state.calls[0], ['update', { notify: false, etag: '"e1"', scope: 'one', seriesEtag: null }]);
   assert.deepEqual(etags(), ['"e2"', '"e2"', '"e2"']);
   second = mineOnly()[1];

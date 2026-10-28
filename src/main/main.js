@@ -38,6 +38,9 @@ const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
 const { Categories } = require('./categories');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
+const { UpdateChecker } = require('./updates');
+// The version whose "What's new" guide everyone sees once, on the first start of it.
+const WHATS_NEW = '2.0.0';
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
 const { free: freeTime } = require('./calendar/free');
@@ -91,6 +94,7 @@ let calendars = null;
 let google = null;
 let account = null;
 let categories = null;
+let updates = null;
 let syncTimer = null;
 let newSinceFocus = 0;
 let tray = null;
@@ -419,6 +423,7 @@ function endSession() {
   if (categories) categories.close();
   if (reminders) reminders.stop();
   if (booking) booking.close();
+  if (updates) updates.stop();
   destroyTray();
   // ---- agents ----
   // dispose() saves the chats before its first await; see will-quit.
@@ -718,6 +723,26 @@ const api = {
     return res.filePath;
   },
   openExternal: (url) => openUrl(url),
+  updatesState: () => updates.state(),
+  updatesCheck: () => updates.check({ force: true }),
+  // Only the release page that was found opens; the renderer can't pass another address.
+  updatesOpen: () => {
+    const found = updates.available;
+    if (found && /^https:\/\/github\.com\//.test(found.url)) shell.openExternal(found.url);
+  },
+  // The "What's new" guide shows once per version. Hidden test windows skip it unless they ask (SEM_WHATS_NEW=1);
+  // visible ones, such as the macOS tests, say SEM_WHATS_NEW=0.
+  whatsNewState: () => ({
+    version: WHATS_NEW,
+    show:
+      engine.settings.whatsNewSeen !== WHATS_NEW &&
+      process.env.SEM_WHATS_NEW !== '0' &&
+      (!process.env.SEM_HIDDEN || process.env.SEM_WHATS_NEW === '1')
+  }),
+  whatsNewDone: () => {
+    engine.updateSettings({ whatsNewSeen: WHATS_NEW }, { quiet: true });
+    return true;
+  },
   // Which app opens mailto: links now, for Settings. available: false where Rukoo can't offer itself.
   mailtoStatus: async () => {
     if (process.platform === 'darwin') return new MacMailClient(app, Boolean(process.env.SEM_DATA_DIR)).status();
@@ -846,6 +871,12 @@ const api = {
   accountSync: () => account.sync(),
   // Inbox categories (categories/index.js).
   categoriesState: () => categories.state(),
+  // Prototype for the "What's new" guide.
+  categoriesPreview: () => categories.preview(),
+  categoriesSeed: () => {
+    categories.seed();
+    return categories.state();
+  },
   categoriesSetEnabled: (on) => categories.setEnabled(on === true),
   categoriesSetUnsure: (id) => categories.setUnsure(accountText(id, 100)),
   categoriesSave: (input) => {
@@ -881,6 +912,7 @@ const api = {
   bookingDetails: (id) => booking.details(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id) ? id : ''),
   bookingSync: () => booking.sync(),
   bookingTakeover: () => booking.takeover(),
+  categoriesActivity: () => categories.activity(),
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
       title: t('settings.rukoo.export'),
@@ -1206,6 +1238,7 @@ app.whenReady().then(() => {
   categories = new Categories({ engine, account, secrets, dataDir: path.join(app.getPath('userData'), 'data') }).init();
   if (process.env.SEM_HIDDEN) global.__semCategories = categories;
   categories.on('changed', () => broadcast('categories', categories.state()));
+  categories.on('progress', (activity) => broadcast('categories-progress', activity));
   booking = new Booking({ account, calendars, engine, secrets, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
   if (process.env.SEM_HIDDEN) global.__semBooking = booking;
   booking.on('state', (s) => broadcast('booking', s));
@@ -1214,6 +1247,16 @@ app.whenReady().then(() => {
   reminders = new ReminderRunner({ calendars, engine, dataDir: path.join(app.getPath('userData'), 'data'), notify: showReminders, powerMonitor });
   if (process.env.SEM_HIDDEN) global.__semReminders = reminders;
   reminders.start();
+  // New releases on GitHub (package.json's rukoo.releases). Tests and development profiles (SEM_HIDDEN, SEM_DATA_DIR)
+  // don't ask GitHub; a test points it at its own server with RUKOO_RELEASES_URL.
+  updates = new UpdateChecker({
+    current: app.getVersion(),
+    repo: (process.env.SEM_HIDDEN || process.env.SEM_DATA_DIR) && !process.env.RUKOO_RELEASES_URL ? null : PACKAGE_RUKOO.releases,
+    url: process.env.RUKOO_RELEASES_URL,
+    enabled: () => engine.settings.checkUpdates !== false
+  }).start();
+  if (process.env.SEM_HIDDEN) global.__semUpdates = updates;
+  updates.on('changed', (state) => broadcast('updates', state));
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({

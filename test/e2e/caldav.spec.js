@@ -103,6 +103,11 @@ test('a CalDAV server in Server settings brings the account calendar: read, crea
   await expect(event('Stand-up')).toBeVisible({ timeout: 10000 });
   await expect(win.locator('.calendar [data-ev]', { hasText: 'Stand-up' })).toHaveCount(5);
   await expect(event('Team offsite')).toBeVisible();
+  // Each calendar shows in the colour the server gives it (calendar-color), not in the account's.
+  const colour = (locator) => locator.evaluate((el) => el.style.getPropertyValue('--c'));
+  expect(await colour(event('Stand-up'))).toBe('#2952a3');
+  expect(await colour(event('Team offsite'))).toBe('#e6c800');
+  expect(await colour(win.locator('.sidebar .cal-toggle', { hasText: 'Home' }).locator('.cal-check'))).toBe('#2952a3');
 
   // An invitation: answered on the server, which tells the organizer.
   await event('Design review').click();
@@ -139,4 +144,46 @@ test('a CalDAV server in Server settings brings the account calendar: read, crea
   await expect(win.locator('[name="caldavUrl"]')).toHaveValue(`${server.url}/`);
   await win.click('[data-a="back"]');
   await expect(win.locator('.settings h1')).toHaveText(ME);
+});
+
+test('two occurrences of a series changed one after the other both save, without a conflict', async () => {
+  test.setTimeout(60000);
+  await win.click('[data-mode="calendar"]');
+  await addCalendarServer(`${server.url}/`);
+  await expect(win.locator('#toast')).toHaveText('Server settings saved');
+  await win.click('[data-a="back"]');
+  await win.click('[data-a="back"]');
+  await expect(win.locator('.calendar [data-ev]', { hasText: 'Stand-up' })).toHaveCount(5, { timeout: 10000 });
+
+  // The occurrences still called just Stand-up; an event's text holds its time as well, so its title is matched.
+  const plain = () => win.locator('.calendar [data-ev]').filter({ has: win.locator('.t', { hasText: /^Stand-up$/ }) });
+  const rename = async (occurrence, title) => {
+    await occurrence.click();
+    await card().locator('[data-pop="edit"]').click();
+    await expect(win.locator('.cal-form .note')).toBeVisible();
+    await win.fill('.cal-form [name="title"]', title);
+    await win.click('.dialog .buttons button.primary');
+    // Save asks which events of the series change: only this one.
+    await win.locator('.dialog .radio-row', { hasText: 'This event' }).click();
+    // Saved: the dialog closes, without saying the event changed elsewhere.
+    await expect(win.locator('.dialog')).toHaveCount(0);
+    await expect(event(title)).toBeVisible();
+  };
+  await expect(plain()).toHaveCount(5);
+  await rename(plain().nth(0), 'Stand-up one');
+  await rename(plain().nth(1), 'Stand-up two');
+  // Then one occurrence is deleted, again without a sync in between, and after that another one changed.
+  await plain().first().click();
+  await win.keyboard.press('Delete');
+  await win.locator('.radio-row', { hasText: 'This event' }).click();
+  await expect(win.locator('#toast')).toHaveText('Event deleted');
+  await expect(plain()).toHaveCount(2);
+  await rename(plain().first(), 'Stand-up three');
+  const data = server.object('home/standup.ics').data;
+  expect(data).toContain('SUMMARY:Stand-up one');
+  expect(data).toContain('SUMMARY:Stand-up two');
+  expect(data).toContain('SUMMARY:Stand-up three');
+  expect(data).toMatch(/EXDATE/);
+  // Every change went out on the version the one before it made: none was refused.
+  expect(server.requests.filter((r) => r.method === 'PUT').length).toBe(4);
 });

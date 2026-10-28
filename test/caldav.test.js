@@ -103,14 +103,31 @@ test('finds the calendars from the server address alone, through /.well-known/ca
     p.home = found.home;
     const calendars = await p.calendars();
     // Task lists and the scheduling inbox aren't calendars for events; the first one Rukoo may write to is primary.
+    // Each keeps the colour the server gives it, without the opacity Apple adds.
     assert.deepEqual(
-      calendars.map((c) => ({ id: c.id, name: c.name, primary: c.primary, writable: c.writable, scheduling: c.scheduling })),
+      calendars.map((c) => ({ id: c.id, name: c.name, primary: c.primary, writable: c.writable, scheduling: c.scheduling, color: c.color })),
       [
-        { id: server.calendarUrl('home'), name: 'Home', primary: true, writable: true, scheduling: false },
-        { id: server.calendarUrl('shared'), name: 'Shared with me', primary: false, writable: false, scheduling: false }
+        { id: server.calendarUrl('home'), name: 'Home', primary: true, writable: true, scheduling: false, color: '#2952a3' },
+        { id: server.calendarUrl('shared'), name: 'Shared with me', primary: false, writable: false, scheduling: false, color: '#e6c800' }
       ]
     );
+    assert.match(server.requests.filter((r) => r.method === 'PROPFIND').pop().body, /<a:calendar-color\/>/);
   });
+});
+
+test('a calendar colour the server writes in another form is left out', async () => {
+  // A server that answers calendar-color with something else than #RRGGBB or #RRGGBBAA.
+  const colours = { home: 'rgb(255, 0, 0)', shared: '#F00' };
+  const list = (home) =>
+    `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/">${Object.entries(colours)
+      .map(
+        ([id, color]) =>
+          `<d:response><d:href>${home}${id}/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>${id}</d:displayname><a:calendar-color>${color}</a:calendar-color></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
+      )
+      .join('')}</d:multistatus>`;
+  const fetchImpl = async (url, opts) => new Response(opts.method === 'PROPFIND' ? list('/home/') : '', { status: opts.method === 'PROPFIND' ? 207 : 200 });
+  const p = new CalDavCalendar({ url: 'https://dav.example.com/', home: 'https://dav.example.com/home/', credentials: () => ({ user: ME, password: 'secret' }), fetchImpl });
+  assert.deepEqual((await p.calendars()).map((c) => [c.name, c.color]), [['home', null], ['shared', null]]);
 });
 
 test('a wrong password, an address without CalDAV and a server that is gone each say so', async () => {
@@ -274,6 +291,156 @@ test('deleting a series whose opened occurrence was removed elsewhere keeps the 
     assert.equal(calendars.event(monday.id), null);
     // The rest of the series is still in the calendar.
     assert.deepEqual(calendars.view(WEEK).events.map((e) => e.title), ['Stand-up, later']);
+  });
+});
+
+// A change to an occurrence, made on the version the event card shows: the one in the store at that moment.
+const rename = (calendars, e, title) => calendars.update(e.id, { title, location: '', description: '', allDay: false, start: e.start, end: e.end }, { etag: calendars.event(e.id).etag });
+const ordered = (calendars) => calendars.view(WEEK).events.sort((a, b) => a.start - b.start);
+
+test('deleting one occurrence and then changing another of the same series saves both', async () => {
+  await withServer({ objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const [monday, later] = ordered(calendars);
+    await calendars.remove(monday.id, { etag: calendars.event(monday.id).etag });
+    assert.match(server.object('home/standup.ics').data, /EXDATE;TZID=Europe\/Amsterdam:20260323T093000/);
+    assert.equal(calendars.event(later.id).etag, server.object('home/standup.ics').etag);
+    await rename(calendars, later, 'Stand-up later and longer');
+    assert.match(server.object('home/standup.ics').data, /SUMMARY:Stand-up later and longer/);
+    assert.deepEqual(ordered(calendars).map((e) => e.title), ['Stand-up later and longer']);
+  });
+});
+
+test('answering one occurrence and then changing another of the same series saves both', async () => {
+  // The user's own daily focus time, whose first occurrence Joris turned into a meeting he invited them to: one
+  // occurrence to answer and others to change, in one calendar object.
+  const focus = ics(
+    vevent('UID:focus', 'DTSTART:20260323T120000Z', 'DTEND:20260323T130000Z', 'RRULE:FREQ=DAILY;COUNT=3', 'SUMMARY:Focus time'),
+    vevent('UID:focus', 'RECURRENCE-ID:20260323T120000Z', 'DTSTART:20260323T120000Z', 'DTEND:20260323T130000Z', 'SUMMARY:Focus time with Joris', 'ORGANIZER:mailto:joris@example.com', 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:joris@example.com', `ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:${ME}`)
+  );
+  // Also with a server that leaves the new version out of its answer, so Rukoo reads it back.
+  for (const etagOnPut of [true, false]) {
+    await withServer({ scheduling: true, etagOnPut, objects: { 'home/focus.ics': focus } }, async (server) => {
+      const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+      calendars.view(WEEK);
+      await settle(calendars);
+      const [invite, second, third] = ordered(calendars);
+      assert.deepEqual([invite.canRespond, second.canEdit, third.canEdit], [true, true, true]);
+      await calendars.respond(invite.id, 'accepted');
+      assert.match(server.object('home/focus.ics').data, new RegExp(`PARTSTAT=ACCEPTED:mailto:${ME}`));
+      const { etag } = server.object('home/focus.ics');
+      assert.deepEqual(ordered(calendars).map((e) => e.etag), [etag, etag, etag]);
+      assert.equal(calendars.event(invite.id).response, 'accepted');
+      await rename(calendars, second, 'Focus time in a quiet room');
+      assert.match(server.object('home/focus.ics').data, /SUMMARY:Focus time in a quiet room/);
+    });
+  }
+});
+
+test('an occurrence read before its series changed elsewhere still says so after a change to another one', async () => {
+  await withServer({ objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const [monday, later] = ordered(calendars);
+    // Another app renames the series. The first change finds out and shows the latest version of that occurrence.
+    server.put('home/standup.ics', STANDUP.replace('SUMMARY:Stand-up\r\n', 'SUMMARY:Daily sync\r\n'));
+    await assert.rejects(rename(calendars, monday, 'Stand-up on Monday'), { code: 'changed' });
+    assert.equal(calendars.event(monday.id).title, 'Daily sync');
+    await rename(calendars, monday, 'Daily sync on Monday');
+    // The other occurrence still shows the version from before the rename, so a change to it is refused as well
+    // rather than saved over a version the user hasn't seen.
+    assert.notEqual(calendars.event(later.id).etag, server.object('home/standup.ics').etag);
+    await assert.rejects(rename(calendars, later, 'Stand-up later and longer'), { code: 'changed' });
+    assert.doesNotMatch(server.object('home/standup.ics').data, /later and longer/);
+  });
+});
+
+test('a server that answers a write without the new version: the other occurrences of the series take it as well', async () => {
+  await withServer({ etagOnPut: false, objects: { 'home/standup.ics': STANDUP } }, async (server) => {
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const [monday, later] = ordered(calendars);
+    await calendars.remove(monday.id, { etag: calendars.event(monday.id).etag });
+    assert.equal(calendars.event(later.id).etag, server.object('home/standup.ics').etag);
+    await rename(calendars, later, 'Stand-up later and longer');
+    assert.match(server.object('home/standup.ics').data, /SUMMARY:Stand-up later and longer/);
+  });
+});
+
+test('a change made elsewhere before Rukoo reads back the version it wrote is what the occurrences show', async () => {
+  // A server that doesn't name the new version in its answer to a write, and another app that changes the series
+  // right after Rukoo's write, before Rukoo reads that version back: it renames the later stand-up and gives
+  // Monday's, which Rukoo just changed, a room.
+  let server;
+  let step = null;
+  const fail = ({ method }) => {
+    if (method === 'PUT' && step === 'armed') step = 'written';
+    else if (method === 'GET' && step === 'written') {
+      step = null;
+      const { data } = server.object('home/standup.ics');
+      server.put('home/standup.ics', data.replace(/SUMMARY:Stand-up\\?, later\r\n/, 'SUMMARY:Stand-up moved by Joris\r\n').replace('SUMMARY:Stand-up on Monday\r\n', 'SUMMARY:Stand-up on Monday\r\nLOCATION:Room 5\r\n'));
+    }
+    return null;
+  };
+  await withServer({ etagOnPut: false, fail, objects: { 'home/standup.ics': STANDUP } }, async (s) => {
+    server = s;
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const [monday, later] = ordered(calendars);
+    step = 'armed';
+    await rename(calendars, monday, 'Stand-up on Monday');
+    assert.equal(step, null);
+    // Each occurrence shows what the version it carries holds, Joris's changes included.
+    const { etag } = server.object('home/standup.ics');
+    const shown = (e) => calendars.event(e.id);
+    assert.deepEqual([shown(monday).title, shown(monday).location, shown(monday).etag], ['Stand-up on Monday', 'Room 5', etag]);
+    assert.deepEqual([shown(later).title, shown(later).etag], ['Stand-up moved by Joris', etag]);
+    // A change made on what the card showed before is refused, and Joris's change stays.
+    const input = { title: 'Stand-up later and longer', location: '', description: '', allDay: false, start: later.start, end: later.end };
+    await assert.rejects(calendars.update(later.id, input, { etag: later.etag }), { code: 'changed' });
+    assert.match(server.object('home/standup.ics').data, /SUMMARY:Stand-up moved by Joris/);
+    assert.doesNotMatch(server.object('home/standup.ics').data, /later and longer/);
+  });
+});
+
+test('an answer changed elsewhere before Rukoo reads back the version it wrote is the answer the invitation shows', async () => {
+  // The user accepts Joris's invitation in Rukoo, and declines it on their phone right after, before Rukoo reads
+  // back the version it wrote from a server that leaves it out of its answer.
+  const focus = ics(
+    vevent('UID:focus', 'DTSTART:20260323T120000Z', 'DTEND:20260323T130000Z', 'RRULE:FREQ=DAILY;COUNT=3', 'SUMMARY:Focus time'),
+    vevent('UID:focus', 'RECURRENCE-ID:20260323T120000Z', 'DTSTART:20260323T120000Z', 'DTEND:20260323T130000Z', 'SUMMARY:Focus time with Joris', 'ORGANIZER:mailto:joris@example.com', 'ATTENDEE;PARTSTAT=ACCEPTED:mailto:joris@example.com', `ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:${ME}`)
+  );
+  let server;
+  let step = null;
+  const fail = ({ method }) => {
+    if (method === 'PUT' && step === 'armed') step = 'written';
+    else if (method === 'GET' && step === 'written') {
+      step = null;
+      const { data } = server.object('home/focus.ics');
+      server.put('home/focus.ics', data.replace(`PARTSTAT=ACCEPTED:mailto:${ME}`, `PARTSTAT=DECLINED:mailto:${ME}`));
+    }
+    return null;
+  };
+  await withServer({ scheduling: true, etagOnPut: false, fail, objects: { 'home/focus.ics': focus } }, async (s) => {
+    server = s;
+    const { calendars } = setup(server, { caldav: { url: `${server.url}/`, home: server.home } });
+    calendars.view(WEEK);
+    await settle(calendars);
+    const [invite] = ordered(calendars);
+    step = 'armed';
+    await calendars.respond(invite.id, 'accepted');
+    assert.equal(step, null);
+    const { data, etag } = server.object('home/focus.ics');
+    assert.match(data, new RegExp(`PARTSTAT=DECLINED:mailto:${ME}`));
+    // The invitation shows the answer its version holds, for the user and in the guest list.
+    const shown = calendars.event(invite.id);
+    assert.deepEqual([shown.response, shown.etag], ['declined', etag]);
+    assert.deepEqual(shown.attendees.filter((a) => a.self).map((a) => a.response), ['declined']);
   });
 });
 
@@ -640,6 +807,8 @@ test('Server settings check the calendar server before saving it, and the accoun
     await settle(calendars);
     const view = calendars.view(WEEK);
     assert.deepEqual(view.accounts.map((a) => [a.id, a.kind, a.state, a.calendars.map((c) => c.name).join(',')]), [['c1', 'caldav', 'ready', 'Home,Shared with me']]);
+    // The calendar view gets each calendar's own colour.
+    assert.deepEqual(view.accounts[0].calendars.map((c) => [c.providerColor, c.color]), [['#2952a3', '#2952a3'], ['#e6c800', '#e6c800']]);
     assert.deepEqual(view.events.map((e) => e.title).sort(), ['Stand-up', 'Stand-up, later']);
 
     // A new event through the store, then a change to one occurrence.

@@ -87,6 +87,13 @@ const plain = (v) => Boolean(v && typeof v === 'object' && !Array.isArray(v));
 // Busy for availability: shown as busy and not declined. Invitations not answered yet, and tentative ones, count.
 const isBusy = (e) => e.busy !== false && e.response !== 'declined';
 const refused = (key) => calendarError('refused', t(key));
+// A provider's answer to a change to one event, apart from what the write did (written, from CalDAV), which only
+// restamp() reads and which never reaches the cache or a window.
+function apart(answer) {
+  if (!answer || !Object.hasOwn(answer, 'written')) return { event: answer, written: null };
+  const { written, ...event } = answer;
+  return { event, written };
+}
 
 // An event the way the store hands it out. One cached before these fields existed gets them here.
 function filled(e) {
@@ -928,6 +935,8 @@ class Calendars extends EventEmitter {
         // Deleted in the meantime: that is the news. Any other failure leaves the cache as it was.
         throw gone && gone.code === 'not_found' ? gone : err;
       }
+      // Only this occurrence gets the latest version. The others of a series that changed elsewhere keep the version
+      // they were read at: what they show may be out of date as well, so a change to them should say so too.
       this.store(acc, cache, latest, event);
       throw err;
     }
@@ -991,11 +1000,44 @@ class Calendars extends EventEmitter {
     return this.publicEvent(acc, event);
   }
 
-  // #53: on a provider whose series is one object with one version, a change to one occurrence gives every cached
-  // occurrence of it the new version, or the next change to another one would fail as changed.
-  shareEtag(cache, event, etag) {
-    if (!etag) return;
-    for (const e of cache.events) if (e.calendarId === event.calendarId && (event.seriesId ? e.seriesId === event.seriesId : sameEvent(e, event))) e.etag = etag;
+  // #53: a provider whose series is one object with one version (CalDAV) gives the whole object a new version when one
+  // occurrence changes, is left out or is answered. written, from the provider, holds that version, the one it
+  // replaced and, when the provider had to read the new version back, its occurrences. The occurrences cached at the
+  // replaced version move to the new one; otherwise the next change to one of them would count as made elsewhere. A
+  // version the server named in its answer holds what Rukoo wrote, so only their version changes. A version read back
+  // can also hold a change made elsewhere in between, so they take their content from it too, and one it doesn't have
+  // keeps its old version. Occurrences cached at an older version keep it: what they show may be out of date, so a
+  // change to them should say so too (unlessChanged). Google versions every occurrence on its own, so its other
+  // occurrences stay as they are. Returns the occurrences that took their content from the version read back, so a
+  // caller doesn't write its own idea of the change over them.
+  restamp(p, cache, event, written) {
+    const fresh = new Set();
+    const { etag, replaced, occurrences } = written || {};
+    if (!p.versionedSeries || !replaced || !etag || replaced === etag) return fresh;
+    const behind = cache.events.filter((e) => inScope(e, event, true) && e.etag === replaced);
+    if (!behind.length) return fresh;
+    if (typeof occurrences !== 'function') {
+      for (const e of behind) e.etag = etag;
+      return fresh;
+    }
+    let latest;
+    try {
+      // A day either side also finds an occurrence without length.
+      latest = occurrences(Math.min(...behind.map((e) => e.start)) - DAY, Math.max(...behind.map((e) => e.end)) + DAY);
+    } catch (_) {
+      // Occurrences Rukoo can't work out, such as a series too long to step through, keep their old version.
+      return fresh;
+    }
+    const read = new Map(latest.map((e) => [e.eventId, e]));
+    cache.events = cache.events
+      .map((e) => {
+        if (!behind.includes(e) || !read.has(e.eventId)) return e;
+        const next = read.get(e.eventId);
+        fresh.add(next);
+        return next;
+      })
+      .sort((a, b) => a.start - b.start);
+    return fresh;
   }
 
   changed(acc, calendarId, kind, scope, event, previous) {
@@ -1106,9 +1148,10 @@ class Calendars extends EventEmitter {
     const ruleOnSingle = !inSeries && typeof clean.recurrence === 'string';
     const one = () => this.unlessChanged(acc, p, cache, cal, event, etag, () => p.update(cal, event, clean, { notify, etag, scope: 'one', seriesEtag: null }));
     if (which === 'one' && !ruleOnSingle) {
-      const next = await this.change(acc, cache, event, one);
+      const { event: next, written } = apart(await this.change(acc, cache, event, one));
+      // The rest of the series first: store() then puts the changed occurrence over whatever restamp() left there.
+      this.restamp(p, cache, event, written);
       const out = this.store(acc, cache, next, event);
-      if (p.versionedSeries) this.shareEtag(cache, event, next.etag);
       this.changed(acc, cal.id, 'update', 'one', out, previous);
       this.watchConference(acc, cal, next);
       return out;
@@ -1116,7 +1159,8 @@ class Calendars extends EventEmitter {
     const made = await this.change(acc, cache, event, async () => {
       let result;
       try {
-        if (ruleOnSingle) result = await one();
+        // The calendar is fetched again below, so what the write did doesn't matter here.
+        if (ruleOnSingle) result = apart(await one()).event;
         else {
           const version = await this.seriesVersion(p, cal, event, etag, seriesEtag);
           result = await p.update(cal, event, clean, { notify, etag, scope: which, seriesEtag: version });
@@ -1208,7 +1252,8 @@ class Calendars extends EventEmitter {
       const from = event.originalStart ?? event.start;
       cache.events = cache.events.filter((e) => !(e.calendarId === event.calendarId && e.seriesId === event.seriesId && (e.originalStart ?? e.start) >= from));
     }
-    if (!gone && which === 'one' && p.versionedSeries && result && result.etag) this.shareEtag(cache, event, result.etag);
+    // One occurrence left out: the rest of its series has a new version.
+    if (!gone && which === 'one') this.restamp(p, cache, event, result);
     this.memos.delete(acc.id);
     this.persist(acc.id);
     this.emit('updated');
@@ -1219,17 +1264,20 @@ class Calendars extends EventEmitter {
     const { acc, p, cache, cal, event } = this.locate(id);
     if (!RESPONSES.has(response)) throw calendarError('invalid', t('errors.calendar.invalidResponse'));
     if (!event.canRespond) throw calendarError('not_invited', t('errors.calendar.notInvited'));
-    const result = await this.change(acc, cache, event, () => p.respond(cal, event, response, { series }));
+    const written = await this.change(acc, cache, event, () => p.respond(cal, event, response, { series }));
+    // An occurrence read back from the server shows the answer stored there, which can be one given elsewhere since.
+    const fresh = this.restamp(p, cache, event, written);
     for (const e of cache.events) {
-      if (!inScope(e, event, series) || !e.canRespond) continue;
+      if (!inScope(e, event, series) || !e.canRespond || fresh.has(e)) continue;
       e.response = response;
       for (const a of e.attendees || []) if (a.self) a.response = response;
     }
-    if (p.versionedSeries && result && result.etag) this.shareEtag(cache, event, result.etag);
     this.persist(acc.id);
     this.emit('updated');
-    // The reminder runner and the booking page follow at once: a declined meeting doesn't remind, and isn't busy.
-    this.changed(acc, cal.id, 'respond', series ? 'all' : 'one', this.publicEvent(acc, event), null);
+    // The reminder runner and the booking page follow at once: a declined meeting doesn't remind, and isn't busy. The
+    // event as the cache has it now, which restamp() may have replaced with the version read back.
+    const answered = cache.events.find((e) => sameEvent(e, event)) || event;
+    this.changed(acc, cal.id, 'respond', series ? 'all' : 'one', this.publicEvent(acc, answered), null);
   }
 
   // Moves an event to another calendar of the same account; an occurrence moves with its whole series. Returns the

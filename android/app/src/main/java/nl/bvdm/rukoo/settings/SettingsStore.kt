@@ -40,6 +40,8 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         private val LANGUAGE = stringPreferencesKey("language")
         private val DARK_EMAILS = booleanPreferencesKey("dark_emails")
         private val SWIPE_ACTIONS = booleanPreferencesKey("swipe_actions")
+        private val SWIPE_RIGHT = stringPreferencesKey("swipe_right")
+        private val SWIPE_LEFT = stringPreferencesKey("swipe_left")
         private val NOTIFY_MAIL = booleanPreferencesKey("notify_mail")
         private val NOTIFY_AGENTS = booleanPreferencesKey("notify_agents")
         private val SYNC_MINUTES = intPreferencesKey("sync_minutes")
@@ -59,6 +61,8 @@ class SettingsStore(private val store: DataStore<Preferences>) {
                 language = enumOr(prefs[LANGUAGE], d.language),
                 darkEmails = prefs[DARK_EMAILS] ?: d.darkEmails,
                 swipeActions = prefs[SWIPE_ACTIONS] ?: d.swipeActions,
+                swipeRight = SwipeAction.of(prefs[SWIPE_RIGHT]) ?: d.swipeRight,
+                swipeLeft = SwipeAction.of(prefs[SWIPE_LEFT]) ?: d.swipeLeft,
                 notifyMail = prefs[NOTIFY_MAIL] ?: d.notifyMail,
                 notifyAgents = prefs[NOTIFY_AGENTS] ?: d.notifyAgents,
                 syncMinutes = (prefs[SYNC_MINUTES] ?: d.syncMinutes).coerceIn(0, 24 * 60),
@@ -75,6 +79,8 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             prefs[LANGUAGE] = s.language.name
             prefs[DARK_EMAILS] = s.darkEmails
             prefs[SWIPE_ACTIONS] = s.swipeActions
+            prefs[SWIPE_RIGHT] = s.swipeRight.wire
+            prefs[SWIPE_LEFT] = s.swipeLeft.wire
             prefs[NOTIFY_MAIL] = s.notifyMail
             prefs[NOTIFY_AGENTS] = s.notifyAgents
             prefs[SYNC_MINUTES] = s.syncMinutes

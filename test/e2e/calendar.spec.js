@@ -9,14 +9,19 @@ let app;
 let win;
 let dataDir;
 
-test.beforeEach(async () => {
-  dataDir = tempDir('sem-e2e-cal-');
+// Starts Rukoo on the test's profile.
+async function launch() {
   // A Google OAuth client makes the reconnect notice appear; nothing here signs in.
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com', SEM_GOOGLE_CLIENT_SECRET: 'test-secret' };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
+}
+
+test.beforeEach(async () => {
+  dataDir = tempDir('sem-e2e-cal-');
+  await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
@@ -192,6 +197,68 @@ test('hides a calendar, switches views and moves through the weeks by keyboard',
   await win.keyboard.press('Escape');
 });
 
+test('a calendar gets another colour from its menu in the sidebar, everywhere it shows and after a restart', async () => {
+  await openCalendar();
+  const toggle = (name) => win.locator('.sidebar .cal-toggle', { hasText: name });
+  const varOf = (locator) => locator.evaluate((el) => el.style.getPropertyValue('--c'));
+  const check = (name) => varOf(toggle(name).locator('.cal-check'));
+  const colour = (title) => varOf(event(title));
+  // The page changes with the restart below; each lookup goes to the current one.
+  const menu = () => win.locator('.menu');
+  // The demo's calendars have no colour of their own, so they show in the account's.
+  expect(await check('Work')).toBe('#2fd6c0');
+  expect(await colour('Roadmap review')).toBe('#2fd6c0');
+
+  // Without a pick, Default color has nothing to undo; its dot shows the colour it goes back to.
+  const fallback = () => menu().locator('button', { hasText: 'Default color' });
+  await toggle('Work').click({ button: 'right' });
+  await expect(fallback()).toBeDisabled();
+  expect(await varOf(fallback().locator('.mi .cal-dot'))).toBe('#2fd6c0');
+  await expect(menu().locator('[aria-checked="true"][data-color="#2fd6c0"]')).toBeFocused();
+  await menu().locator('.cal-swatch-btn[aria-label="Purple"]').click();
+  await expect(menu()).toHaveCount(0);
+  // Work's events, its box in the sidebar, its events' cards and the new-event dialog take the colour. The other
+  // calendars keep theirs, and the calendar stays shown.
+  await expect.poll(() => colour('Roadmap review')).toBe('#c56cf0');
+  expect(await check('Work')).toBe('#c56cf0');
+  await expect(toggle('Work')).toHaveAttribute('aria-checked', 'true');
+  expect(await colour('Lunch with Sanne')).toBe('#2fd6c0');
+  expect(await colour('Team offsite')).toBe('#c56cf0');
+  await event('Roadmap review').click();
+  expect(await varOf(card().locator('.cal-swatch'))).toBe('#c56cf0');
+  expect(await varOf(card().locator('.cal-pop-row .cal-dot'))).toBe('#c56cf0');
+  await win.keyboard.press('Escape');
+  await win.click('[data-cal="new"]');
+  const work = await win.locator('.cal-form [name="calendar"] option', { hasText: 'Work' }).getAttribute('value');
+  await win.selectOption('.cal-form [name="calendar"]', work);
+  await expect.poll(() => varOf(win.locator('.cal-form .cal-pick'))).toBe('#c56cf0');
+  await win.keyboard.press('Escape');
+  await win.keyboard.press('u');
+  await expect.poll(() => varOf(win.locator('.cal-row', { hasText: 'Quarterly planning follow-up' }))).toBe('#c56cf0');
+  await win.keyboard.press('w');
+
+  // The colour is kept with the calendar's other choices, and is still there after a restart.
+  await closeApp(app);
+  await launch();
+  await expect(event('Roadmap review')).toBeVisible({ timeout: 15000 });
+  expect(await colour('Roadmap review')).toBe('#c56cf0');
+  expect(await check('Work')).toBe('#c56cf0');
+
+  // From the keyboard, the menu key opens the same menu on the calendar that has the focus, at its colour. Default
+  // color, just above the last item, goes back to the account's colour, and the focus returns to the calendar.
+  await toggle('Work').focus();
+  await win.keyboard.press('Shift+F10');
+  await expect(menu().locator('[aria-checked="true"][data-color="#c56cf0"]')).toBeFocused();
+  expect(await varOf(fallback().locator('.mi .cal-dot'))).toBe('#2fd6c0');
+  await win.keyboard.press('End');
+  await win.keyboard.press('ArrowUp');
+  await expect(fallback()).toBeFocused();
+  await win.keyboard.press('Enter');
+  await expect.poll(() => colour('Roadmap review')).toBe('#2fd6c0');
+  expect(await check('Work')).toBe('#2fd6c0');
+  await expect(toggle('Work')).toBeFocused();
+});
+
 // The next clock changes in the PC's time zone, found in the window: the night that has an hour twice (a day of
 // 25 hours) and the day of 23 hours. Null where the zone has no clock changes.
 const clockChanges = () =>
@@ -327,23 +394,30 @@ async function addGoogleAccount() {
         organizer: { email: 'partner@example.com' },
         attendees: [{ email: 'partner@example.com', organizer: true, responseStatus: 'accepted' }, { email: 'work@gmail.com', self: true, responseStatus: 'needsAction' }]
       },
-      // A flight Gmail found in a booking email: Google takes no new title or times for it.
-      { id: 'g3', etag: '"1"', eventType: 'fromGmail', summary: 'Flight to Lisbon', start: { dateTime: at(4, 7) }, end: { dateTime: at(4, 9) }, organizer: { email: 'work@gmail.com', self: true } }
+      // A flight Gmail found in a booking email: Google takes no new title or times for it, and locks it.
+      { id: 'g3', etag: '"1"', eventType: 'fromGmail', locked: true, summary: 'Flight to Lisbon', start: { dateTime: at(4, 7) }, end: { dateTime: at(4, 9) }, organizer: { email: 'work@gmail.com', self: true } },
+      { id: 'f1', etag: '"1"', calendarId: 'family@group.calendar.google.com', summary: 'School play', start: { dateTime: at(2, 16) }, end: { dateTime: at(2, 17) }, organizer: { email: 'work@gmail.com', self: true } }
     ];
     global.__google = { store, requests: [] };
     const json = (status, body) => ({ ok: status < 300, status, json: async () => body });
     let version = 1;
+    // Two calendars, each in the colour it has in Google Calendar.
+    const calendarList = [
+      { id: 'work@gmail.com', summary: 'work@gmail.com', primary: true, accessRole: 'owner', selected: true, backgroundColor: '#16a765' },
+      { id: 'family@group.calendar.google.com', summary: 'Family', accessRole: 'owner', selected: true, backgroundColor: '#9a9cff' }
+    ];
     global.__semCalendars.fetch = async (url, opts = {}) => {
       const u = new URL(url);
       const method = opts.method || 'GET';
       const body = opts.body ? JSON.parse(opts.body) : null;
       const ifMatch = opts.headers['if-match'] || null;
       global.__google.requests.push({ method, path: decodeURIComponent(u.pathname), query: Object.fromEntries(u.searchParams), body, ifMatch });
-      if (u.pathname.endsWith('/users/me/calendarList')) return json(200, { items: [{ id: 'work@gmail.com', summary: 'work@gmail.com', primary: true, accessRole: 'owner', selected: true }] });
+      if (u.pathname.endsWith('/users/me/calendarList')) return json(200, { items: calendarList });
+      const calendarId = decodeURIComponent((u.pathname.match(/\/calendars\/([^/]+)\/events/) || [])[1] || '');
       const id = decodeURIComponent(u.pathname.split('/events/')[1] || '');
-      if (!id && method === 'GET') return json(200, { items: store });
+      if (!id && method === 'GET') return json(200, { items: store.filter((e) => (e.calendarId || 'work@gmail.com') === calendarId) });
       if (!id && method === 'POST') {
-        const item = { ...body, id: `n${store.length}`, etag: `"${++version}"`, organizer: { email: 'work@gmail.com', self: true } };
+        const item = { ...body, calendarId, id: `n${store.length}`, etag: `"${++version}"`, organizer: { email: 'work@gmail.com', self: true } };
         store.push(item);
         return json(200, item);
       }
@@ -383,9 +457,10 @@ test('a Google calendar shows beside the demo calendar in its own colour, and ch
   await addGoogleAccount();
   const board = event('Board meeting');
   await expect(board).toBeVisible({ timeout: 10000 });
-  // Each account in its own colour: the demo account's and the Google account's.
+  // Each calendar in its own colour: the Google calendars in theirs from Google, the demo's in the account's.
   const colour = (title) => event(title).evaluate((el) => el.style.getPropertyValue('--c'));
-  expect(await colour('Board meeting')).toBe('#ff8a3d');
+  expect(await colour('Board meeting')).toBe('#16a765');
+  expect(await colour('School play')).toBe('#9a9cff');
   expect(await colour('Roadmap review')).toBe('#2fd6c0');
   await expect(win.locator('.sidebar .nav-section', { hasText: 'work@gmail.com' })).toBeVisible();
   // The primary calendar carries the account's name rather than its address again.
@@ -394,7 +469,7 @@ test('a Google calendar shows beside the demo calendar in its own colour, and ch
   // A new event goes to the calendar chosen in the dialog.
   await win.click('[data-cal="new"]');
   await win.fill('.cal-form [name="title"]', 'Hiring sync');
-  const value = await win.locator('.cal-form [name="calendar"] optgroup[label="work@gmail.com"] option').getAttribute('value');
+  const value = await win.locator('.cal-form [name="calendar"] optgroup[label="work@gmail.com"] option', { hasText: 'Work account' }).getAttribute('value');
   await win.selectOption('.cal-form [name="calendar"]', value);
   await win.click('.dialog .buttons button.primary');
   await expect(event('Hiring sync')).toBeVisible();

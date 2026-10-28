@@ -482,9 +482,9 @@ test('SMTP turning down the password is a refused sign-in too, also for the answ
 });
 
 test('a mail server that is not there is no refused sign-in', async () => {
-  const server = await imapServer();
-  const { port } = server;
-  await server.close();
+  // Nothing listens on port 1 and no test server can be given it, so the connection is always refused. A port freed
+  // by closing a test server could be handed to a server in another test file that runs at the same time.
+  const port = 1;
   await assert.rejects(signIn(port, { provider: 'google' }).verify(), (err) => {
     assert.equal(err.code, undefined);
     assert.equal(err.message, `IMAP: ${t('errors.connection.refused')}`);

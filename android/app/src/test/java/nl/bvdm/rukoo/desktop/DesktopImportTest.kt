@@ -29,6 +29,7 @@ import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.Density
 import nl.bvdm.rukoo.settings.Language
 import nl.bvdm.rukoo.settings.SettingsStore
+import nl.bvdm.rukoo.settings.SwipeAction
 import nl.bvdm.rukoo.settings.ThemeMode
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -150,6 +151,8 @@ class DesktopImportTest {
         assertEquals(Language.NL, next.language)
         assertFalse(next.darkEmails)
         assertFalse(next.swipeActions)
+        assertEquals(SwipeAction.ARCHIVE, next.swipeRight)
+        assertEquals(SwipeAction.STAR, next.swipeLeft)
         assertTrue(next.notifyMail)
         assertEquals(15, next.syncMinutes)
         assertEquals(Density.COMPACT, next.density)

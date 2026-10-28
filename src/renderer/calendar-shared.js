@@ -224,6 +224,8 @@ export function calendarColor(accountId, cal) {
   return colorOf(accountId);
 }
 export const eventColor = (e) => calendarColor(e.accountId, calendarOf(e));
+// The colour a calendar goes back to without a pick: its own, else its account's.
+export const ownColor = (accountId, cal) => (cal && HEX.test(cal.providerColor || '') ? cal.providerColor : colorOf(accountId));
 
 // Shown or hidden by the eye toggle: Settings keeps it (contracts d). Before it did, this computer kept it in
 // localStorage; those choices are read for one more release, for calendars Settings doesn't know yet.

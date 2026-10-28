@@ -1581,7 +1581,7 @@
   },
   "calendar.colors.default": {
     "message": "Default color",
-    "description": "Calendar sidebar menu: goes back to the calendar's own color (from Google or the server, else the account's) after one was picked. src/renderer/calendar.js (calendarMenu)"
+    "description": "Calendar sidebar menu: goes back to the calendar's own color (from Google or the server, else the account's) after one was picked. Shown with a dot in that color. src/renderer/calendar.js (calendarMenu)"
   },
   "calendar.colors.red": {
     "message": "Red",
@@ -7320,6 +7320,526 @@
   "settings.rukoo.typesafeHelp": {
     "message": "Sorts your inbox with Jev, because you turned it on on this computer. Gets the sender, subject and first 1,000 characters of each new inbox email, in the United States. Its own terms apply to what it keeps.",
     "description": "Settings > Rukoo account > What's stored and shared: what TypeSafe handles when Jev is on. src/renderer/rukoo-account.js (privacyPage)."
+  },
+  "whatsNew.welcome.title": {
+    "message": "What's new in Rukoo 2.0",
+    "description": "\"What's new in Rukoo 2.0\" guide: title of the first step. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.lead": {
+    "message": "Rukoo can now sort your inbox into categories, the way Gmail does with its tabs, but for every account you use. Your mail itself doesn't change.",
+    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the first step. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.categoriesTitle": {
+    "message": "Inbox categories",
+    "description": "\"What's new in Rukoo 2.0\" guide: first feature on the first step. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.categoriesText": {
+    "message": "Needs you, To read, Money, Updates and Promotions, under Inbox in the sidebar. Rukoo never moves or labels mail, so other mail apps see your inbox as before.",
+    "description": "\"What's new in Rukoo 2.0\" guide: text of the first feature. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.syncTitle": {
+    "message": "The same on every device",
+    "description": "\"What's new in Rukoo 2.0\" guide: second feature on the first step. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.syncText": {
+    "message": "A free Rukoo account keeps your categories and corrections the same on your computers and phone. It is end-to-end encrypted.",
+    "description": "\"What's new in Rukoo 2.0\" guide: text of the second feature. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.jevTitle": {
+    "message": "Smarter sorting, if you want it",
+    "description": "\"What's new in Rukoo 2.0\" guide: third feature on the first step. src/renderer/whats-new.js."
+  },
+  "whatsNew.welcome.jevText": {
+    "message": "With your own TypeSafe key, Jev sorts the mail Rukoo's rules aren't sure about.",
+    "description": "\"What's new in Rukoo 2.0\" guide: text of the third feature. src/renderer/whats-new.js."
+  },
+  "whatsNew.notNow": {
+    "message": "Not now",
+    "description": "\"What's new in Rukoo 2.0\" guide: button that closes the guide on the first step. src/renderer/whats-new.js."
+  },
+  "whatsNew.start": {
+    "message": "Set it up",
+    "description": "\"What's new in Rukoo 2.0\" guide: button that starts the guide on the first step. src/renderer/whats-new.js."
+  },
+  "whatsNew.next": {
+    "message": "Next",
+    "description": "\"What's new in Rukoo 2.0\" guide: button to the next step. src/renderer/whats-new.js."
+  },
+  "whatsNew.step": {
+    "message": "Step {step} of {count}",
+    "description": "\"What's new\" guide: accessible name of the progress dots. {step}: this step, {count}: all steps. src/renderer/whats-new.js."
+  },
+  "whatsNew.categories.title": {
+    "message": "Choose your categories",
+    "description": "\"What's new in Rukoo 2.0\" guide: title of the categories step. src/renderer/whats-new.js."
+  },
+  "whatsNew.categories.lead": {
+    "message": "Rukoo starts with these five. Turn off the ones you don't need; you can rename them, change their colors or add your own later in Settings.",
+    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the categories step for someone without categories yet. src/renderer/whats-new.js."
+  },
+  "whatsNew.categories.leadExisting": {
+    "message": "These are your categories. Change them in Settings > Inbox categories.",
+    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the categories step for someone who already has categories. src/renderer/whats-new.js."
+  },
+  "whatsNew.categories.unsureHelp": {
+    "message": "Mail the rules can't place goes here.",
+    "description": "\"What's new in Rukoo 2.0\" guide: help under \"When Rukoo isn't sure\" on the categories step. src/renderer/whats-new.js."
+  },
+  "whatsNew.categories.keepOne": {
+    "message": "Keep at least one category.",
+    "description": "\"What's new in Rukoo 2.0\" guide: toast when every category is turned off. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.title": {
+    "message": "Keep them the same on every device",
+    "description": "\"What's new in Rukoo 2.0\" guide: title of the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.lead": {
+    "message": "Your categories, the category each email got and your corrections live in a Rukoo account, so your phone and other computers sort the same way.",
+    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.e2e": {
+    "message": "End-to-end encrypted.",
+    "description": "\"What's new in Rukoo 2.0\" guide: start of the note about encryption on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.e2eText": {
+    "message": "Rukoo encrypts it on this device with a key only your devices have. The server never sees your mail, senders or category names.",
+    "description": "\"What's new in Rukoo 2.0\" guide: rest of the note about encryption on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.email": {
+    "message": "Email address",
+    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the email field on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.password": {
+    "message": "Password, at least 12 characters",
+    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the new password field on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.passwordSignIn": {
+    "message": "Password",
+    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the password field when signing in on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.signedInHelp": {
+    "message": "Your categories sync with your other devices.",
+    "description": "\"What's new in Rukoo 2.0\" guide: shown under \"Signed in as\" on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.create": {
+    "message": "Create a Rukoo account",
+    "description": "\"What's new in Rukoo 2.0\" guide: first choice on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.createHint": {
+    "message": "Free. While sign-ups are limited, you need an invite code.",
+    "description": "\"What's new in Rukoo 2.0\" guide: hint under the first choice on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.signIn": {
+    "message": "I already have an account",
+    "description": "\"What's new in Rukoo 2.0\" guide: second choice on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.signInHint": {
+    "message": "Sign in with the account you made on another device.",
+    "description": "\"What's new in Rukoo 2.0\" guide: hint under the second choice on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.local": {
+    "message": "Only on this computer",
+    "description": "\"What's new in Rukoo 2.0\" guide: third choice on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.localHint": {
+    "message": "No account. You can make one later in Settings > Rukoo account.",
+    "description": "\"What's new in Rukoo 2.0\" guide: hint under the third choice on the account step. src/renderer/whats-new.js."
+  },
+  "whatsNew.account.saveKey": {
+    "message": "Tick the box once you saved the key.",
+    "description": "\"What's new in Rukoo 2.0\" guide: toast on the recovery key step when the box is not ticked. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.title": {
+    "message": "Smarter sorting with Jev",
+    "description": "\"What's new in Rukoo 2.0\" guide: title of the Jev step. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.lead": {
+    "message": "Rukoo sorts by the sender and the mail's headers, and on Gmail accounts by Gmail's own tabs. For mail it isn't sure about, Jev, a decision model by TypeSafe, can read the email and choose from your categories.",
+    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the Jev step. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.rules": {
+    "message": "Rules only",
+    "description": "\"What's new in Rukoo 2.0\" guide: first choice on the Jev step. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.rulesHint": {
+    "message": "Nothing leaves this computer. Mail Rukoo isn't sure about goes to {name}.",
+    "description": "\"What's new in Rukoo 2.0\" guide: hint under \"Rules only\". {name}: the category for unsure mail. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.use": {
+    "message": "Use Jev with my TypeSafe key",
+    "description": "\"What's new in Rukoo 2.0\" guide: second choice on the Jev step. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.useHint": {
+    "message": "Optional. TypeSafe charges you for what you use.",
+    "description": "\"What's new in Rukoo 2.0\" guide: hint under the second choice on the Jev step. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.keySaved": {
+    "message": "Key saved; enter a new one to replace it",
+    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the key field when a key is already saved. src/renderer/whats-new.js."
+  },
+  "whatsNew.jev.needKey": {
+    "message": "Enter your TypeSafe key, or choose Rules only.",
+    "description": "\"What's new in Rukoo 2.0\" guide: toast when Jev is chosen without a key. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.title": {
+    "message": "You're all set",
+    "description": "\"What's new in Rukoo 2.0\" guide: title of the last step. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.lead": {
+    "message": "Rukoo sorts your inbox now, and new mail as it arrives. Move an email to another category any time; Rukoo can remember that for its sender.",
+    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the last step. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.leadExisting": {
+    "message": "Your inbox is already sorted. Rukoo keeps doing it as new mail arrives.",
+    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the last step when categories were already on. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.categories": {
+    "message": {"one": "{count} category", "other": "{count} categories"},
+    "description": "\"What's new\" guide, last step: how many categories. {count}: the number. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.synced": {
+    "message": "Synced with {email}",
+    "description": "\"What's new in Rukoo 2.0\" guide: summary line when signed in. {email}: the account email address. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.syncedHelp": {
+    "message": "Your other devices show the same categories.",
+    "description": "\"What's new in Rukoo 2.0\" guide: help under the synced summary line. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.local": {
+    "message": "Only on this computer",
+    "description": "\"What's new in Rukoo 2.0\" guide: summary line without an account. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.localHelp": {
+    "message": "Make an account any time in Settings > Rukoo account.",
+    "description": "\"What's new in Rukoo 2.0\" guide: help under the summary line without an account. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.jev": {
+    "message": "Jev sorts what the rules aren't sure about",
+    "description": "\"What's new in Rukoo 2.0\" guide: summary line with Jev on. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.jevHelp": {
+    "message": "With your TypeSafe key.",
+    "description": "\"What's new in Rukoo 2.0\" guide: help under the Jev summary line. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.rules": {
+    "message": "Sorted by rules",
+    "description": "\"What's new in Rukoo 2.0\" guide: summary line without Jev. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.sort": {
+    "message": "Sort my inbox",
+    "description": "\"What's new in Rukoo 2.0\" guide: button that finishes the guide and sorts the inbox. src/renderer/whats-new.js."
+  },
+  "whatsNew.done.close": {
+    "message": "Done",
+    "description": "\"What's new in Rukoo 2.0\" guide: button that closes the guide when categories were already on. src/renderer/whats-new.js."
+  },
+  "whatsNew.settingsRow": {
+    "message": "What's new in Rukoo 2.0",
+    "description": "Settings > About: the row that opens the \"What's new\" guide again. src/renderer/settings.js."
+  },
+  "whatsNew.settingsHelp": {
+    "message": "Inbox categories, the Rukoo account and Jev, step by step",
+    "description": "Settings > About: description of the \"What's new\" row. src/renderer/settings.js."
+  },
+  "updates.button.label": {
+    "message": "Update to {version}",
+    "description": "Sidebar: small button above the sync status when a newer Rukoo is on GitHub. {version}: e.g. 2.1.0. src/renderer/app.js (updateButton)."
+  },
+  "updates.button.title": {
+    "message": "Rukoo {version} is available. Opens its download page.",
+    "description": "Sidebar: tooltip of the update button. {version}: e.g. 2.1.0. src/renderer/app.js (updateButton)."
+  },
+  "settings.updates.title": {
+    "message": "Check for updates",
+    "description": "Settings > About: switch for the update check. src/renderer/settings.js."
+  },
+  "settings.updates.help": {
+    "message": "Rukoo asks GitHub for new releases every few hours. GitHub sees your IP address.",
+    "description": "Settings > About: description of the update check switch. src/renderer/settings.js."
+  },
+  "settings.updates.checkNow": {
+    "message": "Check now",
+    "description": "Settings > About: row that checks for a newer Rukoo right away. src/renderer/settings.js."
+  },
+  "settings.updates.available": {
+    "message": "Rukoo {version} is available",
+    "description": "Settings > About: value of Check now, and a toast, when a newer Rukoo exists. {version}: e.g. 2.1.0. src/renderer/settings.js."
+  },
+  "settings.updates.upToDate": {
+    "message": "Rukoo is up to date",
+    "description": "Settings > About: value of Check now, and a toast, when no newer Rukoo exists. src/renderer/settings.js."
+  },
+  "settings.updates.failed": {
+    "message": "Couldn't reach GitHub. Try again later.",
+    "description": "Settings > About: toast when the update check failed. src/renderer/settings.js."
+  },
+  "settings.keyboard.title": {
+    "message": "Keyboard shortcuts",
+    "description": "Settings > Keyboard shortcuts: page title and row on the Settings overview. src/renderer/settings.js."
+  },
+  "settings.keyboard.rowHelp": {
+    "message": "Use the shortcuts of the mail app you know",
+    "description": "Settings > Keyboard shortcuts: description of the row on the Settings overview. src/renderer/settings.js."
+  },
+  "settings.keyboard.intro": {
+    "message": "Pick the mail app whose shortcuts you know. Rukoo's own are the default.",
+    "description": "Settings > Keyboard shortcuts: text above the list of schemes. src/renderer/settings.js."
+  },
+  "settings.keyboard.list": {
+    "message": "Shortcuts in {scheme}",
+    "description": "Settings > Keyboard shortcuts: group title above the shortcuts of the chosen scheme. {scheme}: e.g. Gmail. src/renderer/settings.js."
+  },
+  "settings.keyboard.fixed": {
+    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears.",
+    "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.compose": {
+    "message": "New message",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.reply": {
+    "message": "Reply",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.replyAll": {
+    "message": "Reply all",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.forward": {
+    "message": "Forward",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.archive": {
+    "message": "Archive",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.delete": {
+    "message": "Delete",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.read": {
+    "message": "Mark as read",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.unread": {
+    "message": "Mark as unread",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.toggleRead": {
+    "message": "Mark as read or unread",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.star": {
+    "message": "Star",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.move": {
+    "message": "Move to folder",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.category": {
+    "message": "Move to category",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.next": {
+    "message": "Next email",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.previous": {
+    "message": "Previous email",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.search": {
+    "message": "Search",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.sync": {
+    "message": "Sync",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.print": {
+    "message": "Print",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.selectAll": {
+    "message": "Select all",
+    "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.swipe.title": {
+    "message": "Swipe and quick actions",
+    "description": "Settings > Swipe and quick actions: page title and row on the Settings overview. src/renderer/settings.js."
+  },
+  "settings.swipe.rowHelp": {
+    "message": "What a swipe or the buttons on an email do",
+    "description": "Settings > Swipe and quick actions: description of the row on the Settings overview. src/renderer/settings.js."
+  },
+  "settings.swipe.touch": {
+    "message": "Swipe on touch screens",
+    "description": "Settings > Swipe and quick actions: switch for swiping list rows. src/renderer/settings.js."
+  },
+  "settings.swipe.touchHelp": {
+    "message": "Swipe an email in the list with a finger or pen.",
+    "description": "Settings > Swipe and quick actions: description of the swipe switch. src/renderer/settings.js."
+  },
+  "settings.swipe.right": {
+    "message": "Swipe right",
+    "description": "Settings > Swipe and quick actions: row and dialog title: the action of a swipe to the right. src/renderer/settings.js."
+  },
+  "settings.swipe.left": {
+    "message": "Swipe left",
+    "description": "Settings > Swipe and quick actions: row and dialog title: the action of a swipe to the left. src/renderer/settings.js."
+  },
+  "settings.swipe.quick": {
+    "message": "Quick actions",
+    "description": "Settings > Swipe and quick actions: group title above the quick action switches. src/renderer/settings.js."
+  },
+  "settings.swipe.quickHelp": {
+    "message": "The buttons on an email under the mouse, at most four.",
+    "description": "Settings > Swipe and quick actions: text under the quick action switches. src/renderer/settings.js."
+  },
+  "settings.swipe.quickMax": {
+    "message": "Choose at most four quick actions.",
+    "description": "Settings > Swipe and quick actions: toast when a fifth quick action is turned on. src/renderer/settings.js."
+  },
+  "settings.actions.none": {
+    "message": "Nothing",
+    "description": "Settings > Swipe and quick actions: an action for a swipe or a quick action button. src/renderer/settings.js."
+  },
+  "settings.actions.read": {
+    "message": "Mark as read or unread",
+    "description": "Settings > Swipe and quick actions: an action for a swipe or a quick action button. src/renderer/settings.js."
+  },
+  "settings.actions.archive": {
+    "message": "Archive",
+    "description": "Settings > Swipe and quick actions: an action for a swipe or a quick action button. src/renderer/settings.js."
+  },
+  "settings.actions.delete": {
+    "message": "Delete",
+    "description": "Settings > Swipe and quick actions: an action for a swipe or a quick action button. src/renderer/settings.js."
+  },
+  "settings.actions.star": {
+    "message": "Star",
+    "description": "Settings > Swipe and quick actions: an action for a swipe or a quick action button. src/renderer/settings.js."
+  },
+  "settings.actions.move": {
+    "message": "Move to folder",
+    "description": "Settings > Swipe and quick actions: an action for a swipe or a quick action button. src/renderer/settings.js."
+  },
+  "settings.actions.category": {
+    "message": "Move to category",
+    "description": "Settings > Swipe and quick actions: an action for a swipe or a quick action button. src/renderer/settings.js."
+  },
+  "mailbox.selection.all": {
+    "message": "Select all",
+    "description": "List toolbar while selecting: tooltip of the checkbox that selects every email shown, with its shortcut. src/renderer/app.js (renderListTools)."
+  },
+  "categories.activity.sorting": {
+    "message": "Sorting your inbox",
+    "description": "Sidebar, sorting status and its panel: line above the sync status while the rules sort a lot of email. src/renderer/sort-activity.js."
+  },
+  "categories.activity.sortingJev": {
+    "message": "Jev is sorting",
+    "description": "Sidebar, sorting status and its panel: line above the sync status while Jev sorts, followed by a count such as 12/48. src/renderer/sort-activity.js."
+  },
+  "categories.activity.sorted": {
+    "message": {"one": "Sorted {count} email", "other": "Sorted {count} emails"},
+    "description": "Sidebar, sorting status and its panel: line above the sync status, and in the panel, after a sort someone asked for. {count}: emails sorted. src/renderer/sort-activity.js."
+  },
+  "categories.activity.nothing": {
+    "message": "Nothing new to sort",
+    "description": "Sidebar, sorting status and its panel: line above the sync status after a sort that found nothing to sort. src/renderer/sort-activity.js."
+  },
+  "categories.activity.waitingUntil": {
+    "message": "Jev waits until {time}",
+    "description": "Sidebar, sorting status and its panel: line above the sync status while TypeSafe is busy or out of reach. {time}: when Rukoo tries again, such as 14:32. src/renderer/sort-activity.js."
+  },
+  "categories.activity.waitingTitle": {
+    "message": "Jev is waiting",
+    "description": "Sidebar, sorting status and its panel: panel title, and the line above the sync status, while TypeSafe is busy or out of reach. src/renderer/sort-activity.js."
+  },
+  "categories.activity.keyRefused": {
+    "message": "Jev can't use your key",
+    "description": "Sidebar, sorting status and its panel: line above the sync status and panel title when TypeSafe refused the API key. src/renderer/sort-activity.js."
+  },
+  "categories.activity.show": {
+    "message": "What Jev is doing",
+    "description": "Sidebar, sorting status and its panel: tooltip of the line above the sync status, and the accessible name of its panel. src/renderer/sort-activity.js."
+  },
+  "categories.activity.titleJev": {
+    "message": "Jev is sorting your inbox",
+    "description": "Sidebar, sorting status and its panel: panel title while Jev sorts. src/renderer/sort-activity.js."
+  },
+  "categories.activity.titleSorting": {
+    "message": "Sorting your inbox",
+    "description": "Sidebar, sorting status and its panel: panel title while the rules sort, without Jev. src/renderer/sort-activity.js."
+  },
+  "categories.activity.titleDone": {
+    "message": "Your inbox is sorted",
+    "description": "Sidebar, sorting status and its panel: panel title when nothing is being sorted. src/renderer/sort-activity.js."
+  },
+  "categories.activity.progress": {
+    "message": "{done} of {total} sorted",
+    "description": "Sidebar, sorting status and its panel: panel, under the title while sorting. {done}: emails sorted so far, {total}: emails in this sort. src/renderer/sort-activity.js."
+  },
+  "categories.activity.lessThanMinute": {
+    "message": "less than a minute left",
+    "description": "Sidebar, sorting status and its panel: panel, after the progress while sorting. src/renderer/sort-activity.js."
+  },
+  "categories.activity.minutesLeft": {
+    "message": {"one": "about {count} minute left", "other": "about {count} minutes left"},
+    "description": "Sidebar, sorting status and its panel: panel, after the progress while sorting. {count}: minutes. src/renderer/sort-activity.js."
+  },
+  "categories.activity.busy": {
+    "message": "TypeSafe is busy.",
+    "description": "Sidebar, sorting status and its panel: panel text while TypeSafe is busy. src/renderer/sort-activity.js."
+  },
+  "categories.activity.network": {
+    "message": "Rukoo can't reach TypeSafe.",
+    "description": "Sidebar, sorting status and its panel: panel text while TypeSafe is out of reach. src/renderer/sort-activity.js."
+  },
+  "categories.activity.retryAt": {
+    "message": "Rukoo tries again at {time}.",
+    "description": "Sidebar, sorting status and its panel: panel text after why Jev waits. {time}: such as 14:32. src/renderer/sort-activity.js."
+  },
+  "categories.activity.keyText": {
+    "message": "TypeSafe didn't accept your API key. Check it in Settings, or turn Jev off.",
+    "description": "Sidebar, sorting status and its panel: panel text when TypeSafe refused the API key. src/renderer/sort-activity.js."
+  },
+  "categories.activity.waitingCount": {
+    "message": {"one": "{count} email waits for Jev.", "other": "{count} emails wait for Jev."},
+    "description": "Sidebar, sorting status and its panel: panel text while Jev waits. {count}: emails. src/renderer/sort-activity.js."
+  },
+  "categories.activity.newMailJev": {
+    "message": "Jev sorts new email as it comes in.",
+    "description": "Sidebar, sorting status and its panel: panel text when sorting is done, with Jev on. src/renderer/sort-activity.js."
+  },
+  "categories.activity.newMail": {
+    "message": "Rukoo sorts new email as it comes in.",
+    "description": "Sidebar, sorting status and its panel: panel text when sorting is done, without Jev. src/renderer/sort-activity.js."
+  },
+  "categories.activity.recent": {
+    "message": "Just sorted",
+    "description": "Sidebar, sorting status and its panel: panel, heading above Jev's last decisions. src/renderer/sort-activity.js."
+  },
+  "categories.activity.sure": {
+    "message": "{percent}% sure",
+    "description": "Sidebar, sorting status and its panel: panel, after the sender of an email Jev sorted. {percent}: Jev's confidence. src/renderer/sort-activity.js."
+  },
+  "categories.activity.unsure": {
+    "message": "not sure it's {name} ({percent}%)",
+    "description": "Sidebar, sorting status and its panel: panel, after the sender of an email Jev wasn't sure about, which went to the category for unsure mail. {name}: the category Jev leaned to, {percent}: its confidence. src/renderer/sort-activity.js."
+  },
+  "categories.activity.meanwhile": {
+    "message": "Emails Jev hasn't reached yet stay where they are for now.",
+    "description": "Sidebar, sorting status and its panel: panel note while Jev sorts or waits. src/renderer/sort-activity.js."
+  },
+  "categories.activity.settings": {
+    "message": "Settings",
+    "description": "Sidebar, sorting status and its panel: panel button that opens Settings > Inbox categories. src/renderer/sort-activity.js."
+  },
+  "categories.activity.checkKey": {
+    "message": "Check the key",
+    "description": "Sidebar, sorting status and its panel: panel button that opens Settings > Inbox categories when the key was refused. src/renderer/sort-activity.js."
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

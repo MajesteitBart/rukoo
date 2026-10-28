@@ -30,6 +30,7 @@ function scheduling(data, user) {
 // true drops the connection, a status answers with that error instead, as a gateway that gave up waiting.
 function caldavServer({ user = 'me@example.com', password: initialPassword = 'secret', objects = {}, scheduling: schedules = false, etagOnPut = true, move = true, more = {}, fail = null, lose = null } = {}) {
   let password = initialPassword;
+  // Colours as servers write Apple's calendar-color: with an opacity, as Apple does, or without; the task list has none.
   const calendars = {
     home: { name: 'Home', comps: ['VEVENT'], write: true, color: '#2952A3FF', timeZone: 'Europe/Amsterdam' },
     shared: { name: 'Shared with me', comps: ['VEVENT'], write: false, color: '#E6C800' },
@@ -107,7 +108,8 @@ function caldavServer({ user = 'me@example.com', password: initialPassword = 'se
                 (c.color ? `<a:calendar-color xmlns:a="http://apple.com/ns/ical/">${esc(c.color)}</a:calendar-color>` : '') +
                 (c.timeZone ? `<cal:calendar-timezone>${esc(zoneData(c.timeZone))}</cal:calendar-timezone>` : '') +
                 (c.sharedBy ? `<cs:shared-url xmlns:cs="http://calendarserver.org/ns/"><d:href>/dav/calendars/${esc(c.sharedBy)}/</d:href></cs:shared-url>` : ''),
-              '<a:calendar-order xmlns:a="http://apple.com/ns/ical/"/>'
+              // A calendar without a colour has none to give: the server lists calendar-color as not found.
+              `<a:calendar-order xmlns:a="http://apple.com/ns/ical/"/>${c.color ? '' : '<a:calendar-color xmlns:a="http://apple.com/ns/ical/"/>'}`
             )
           )
         ];

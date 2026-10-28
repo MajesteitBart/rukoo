@@ -383,8 +383,10 @@ class CalDavCalendar {
   }
 
   // Writes a calendar object over the version etag, or as a new one (create); returns its new version and the object
-  // as written. A new one that is there already, from an earlier try whose answer got lost, is written over when it
-  // is the same event (uid) and the user's own. zones: false leaves the zone definitions as they came.
+  // that version holds. Most servers name the new version in their answer, and then it holds what Rukoo wrote. A
+  // server that doesn't is asked afterwards, and another change can come in between, so then it holds what the
+  // server sent back (read). A new one that is there already, from an earlier try whose answer got lost, is written
+  // over when it is the same event (uid) and the user's own. zones: false leaves the zone definitions as they came.
   async write(href, obj, { etag = null, create = false, uid = null, zones = true } = {}) {
     const body = ics.serialize(obj, { zones });
     let res = await this.request('PUT', href, { body, type: ICS, etag: create ? null : etag, create });
@@ -398,7 +400,15 @@ class CalDavCalendar {
       res = await this.request('PUT', href, { body, type: ICS, etag: made.etag });
     }
     if (!res.ok) throw httpError(res.status, { write: true });
-    return { etag: res.etag || (await this.load(href)).etag, obj: ics.parseObject(body) };
+    return res.etag ? { etag: res.etag, obj: ics.parseObject(body), read: false } : { ...(await this.load(href)), read: true };
+  }
+
+  // What a write did to a calendar object, for the store to move the rest of a series along (restamp in index.js):
+  // the new version, the one it replaced, and, when Rukoo had to read the new version back, its occurrences between
+  // two times.
+  written(cal, href, replaced, saved) {
+    const ctx = this.ctx(cal, href, saved.etag);
+    return { etag: saved.etag || null, replaced: replaced || null, occurrences: saved.read ? (start, end) => ics.expand(saved.obj, ctx, start, end) : null };
   }
 
   async get(cal, eventId) {
@@ -427,8 +437,9 @@ class CalDavCalendar {
   // ('following') or all of them ('all'). etag is the version the user changed, seriesEtag the series' (every
   // occurrence of a series carries the object's version, so they are the same unless one is out of date); a newer
   // one on the server makes this fail with 'changed'. For 'following' the new series is written first and the old
-  // one cut after it; when the server refuses that cut, the new one goes again. Returns the changed occurrence; for a
-  // change to a series, null when it can't be named.
+  // one cut after it; when the server refuses that cut, the new one goes again. Returns the changed occurrence as its
+  // new version has it; for a change to a series, null when it can't be named. A change to one occurrence or a single
+  // event also says what the write did (written), so the store can move the rest of the series along.
   async update(cal, event, input, { etag = null, scope = 'one', seriesEtag = null } = {}) {
     const { href, rid } = ics.splitId(event.eventId);
     const { obj, etag: current } = await this.load(href);
@@ -460,14 +471,15 @@ class CalDavCalendar {
     }
     const saved = await this.write(href, obj, { etag: version || current });
     const e = ics.pick(saved.obj, this.ctx(cal, href, saved.etag), plan.rid);
-    if (!e && !whole) throw notFound();
-    return e;
+    if (whole) return e;
+    if (!e) throw notFound();
+    return { ...e, written: this.written(cal, href, version || current, saved) };
   }
 
   // An event, a whole series, one occurrence, which the series then leaves out (EXDATE), or an occurrence and every
   // later one (the series ends before it); each only on the version the user saw. After an occurrence is left out,
-  // returns the object's new version, which every other occurrence of it now has (#53). The older series: true is
-  // scope 'all'.
+  // returns what that write did (written): the object's new version, which the other occurrences of it now have
+  // (#53). The older series: true is scope 'all'.
   async remove(cal, event, { scope = null, series = false, etag = null, seriesEtag = null } = {}) {
     const { href, rid } = ics.splitId(event.eventId);
     const which = scope === 'following' || scope === 'all' || scope === 'one' ? scope : series ? 'all' : 'one';
@@ -488,8 +500,7 @@ class CalDavCalendar {
       return { etag: null };
     }
     try {
-      const saved = await this.write(href, obj, { etag: version || current });
-      return { etag: saved.etag };
+      return this.written(cal, href, version || current, await this.write(href, obj, { etag: version || current }));
     } catch (err) {
       // A cut whose answer got lost may have been made: then the deletion is done, as asked.
       const held = which === 'following' && maybeWritten(err) ? await this.cutHeld(href, rid) : false;
@@ -513,14 +524,13 @@ class CalDavCalendar {
   }
 
   // An answer to an invitation: only the user's own PARTSTAT changes, in the occurrence or in the whole series. The
-  // server sends the organizer the reply (RFC 6638); events only offer this where the server says it does. Returns
-  // the object's new version (#53).
+  // server sends the organizer the reply (RFC 6638); events only offer this where the server says it does. Like
+  // remove, it returns what the write did (#53).
   async respond(cal, event, response, { series = false } = {}) {
     const { href, rid } = ics.splitId(event.eventId);
     const { obj, etag } = await this.load(href);
     if (!ics.respond(obj, rid, response, { me: this.me(), series })) throw calendarError('not_invited', t('errors.calendar.notInvited'));
-    const saved = await this.write(href, obj, { etag, zones: false });
-    return { etag: saved.etag };
+    return this.written(cal, href, etag, await this.write(href, obj, { etag, zones: false }));
   }
 
   // The series an occurrence belongs to, as the event dialog edits it, with its version.
