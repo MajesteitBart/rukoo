@@ -77,7 +77,9 @@ test('the panel lists open time from main by day, shows it on the grid and copie
   const zone = await win.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
   expect(lines.pop()).toBe(`Times in ${zone}`);
   expect(lines.length).toBeGreaterThan(2);
-  expect(lines.map((l) => l.replace(/^[^:]*: /, '').replace(/\s/g, ''))).toEqual(await panelTimes());
+  // Today's first open time starts now, so a minute can tick over between the panel's read and the copy's.
+  const fromNow = (list) => list.map((l, i) => (i === 0 ? l.replace(/^\d{1,2}:\d{2}/, '') : l));
+  expect(fromNow(lines.map((l) => l.replace(/^[^:]*: /, '').replace(/\s/g, '')))).toEqual(fromNow(await panelTimes()));
 
   // A click on an open time takes the grid to that day, where the open time shows in green.
   const first = panel().locator('.free-slot').first();
