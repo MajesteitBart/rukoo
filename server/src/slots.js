@@ -97,6 +97,15 @@ export function merge(list) {
   return out;
 }
 
+// A booking keeps its length when it moves, also after the host changed its type's duration. Its new time is checked
+// as its own type with the booking's length (end - start); buffers, interval, notice and limits stay the type's. A
+// booking of another type, or none, leaves the type as it is.
+export function movingType(type, booking) {
+  if (!booking || booking.type !== type.slug) return type;
+  const duration = (booking.end - booking.start) / MINUTE;
+  return duration === type.duration ? type : { ...type, duration };
+}
+
 // When a pending request lapses: 48 hours after it was made, or its start minus the type's minimum notice.
 export function expiresAt(createdAt, start, minNotice) {
   return Math.min(createdAt + PENDING_HOLD, start - minNotice * MINUTE);
@@ -104,7 +113,8 @@ export function expiresAt(createdAt, start, minNotice) {
 
 // The open starts of one type in [from, to), as { start, date }.
 //   profile, windows, busy: as published; bookings: the page's active bookings ({ id, type, start, end });
-//   exclude: a booking id that doesn't count against itself (a reschedule); dark: offer nothing.
+//   exclude: a booking id that doesn't count against itself (a reschedule; pass its type through movingType() so the
+//   new time is checked at the booking's own length); dark: offer nothing.
 export function openSlots({ profile, windows, busy, bookings, type, from, to, now, exclude = null, dark = false }) {
   if (dark) return [];
   const lo = Math.max(from, now + type.minNotice * MINUTE);

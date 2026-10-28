@@ -357,6 +357,68 @@ test('a split whose old half changed in the meantime is taken back and says the 
   assert.deepEqual(clock(), before);
 });
 
+const isCut = (r) => r.method === 'PATCH' && r.path === '/calendars/me@example.com/events/sync';
+const earlier = ['2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26'].map((d) => `${d} 10:00 Team sync`);
+const later = ['2026-11-02', '2026-11-09', '2026-11-16', '2026-11-23', '2026-11-30', '2026-12-07'].map((d) => `${d} 11:00 Team sync`);
+
+test('a split whose cut Google made without the answer arriving keeps the new series, so no occurrence goes missing', async () => {
+  // The answer is lost on the way back: the connection drops, or a gateway answers 502 instead.
+  for (const lost of [true, 502]) {
+    const { calendars, fake, on, clock } = await open([master(), exception('2026-11-09', { summary: 'Renamed one' })], { lose: ({ method, url }) => method === 'PATCH' && url.pathname.endsWith('/events/sync') && lost });
+    const opened = on('2026-11-02');
+    const edited = await calendars.update(opened.id, input(opened, { start: ams('2026-11-02', '11:00'), end: ams('2026-11-02', '11:30') }), { scope: 'following', etag: opened.etag });
+    const made = requests(fake, 'POST').pop().body.id;
+    const cut = fake.requests.findIndex(isCut);
+    assert.ok(fake.requests.slice(cut + 1).some((r) => r.method === 'GET' && r.path.endsWith('/events/sync')), `${lost}: the old series is read again`);
+    assert.equal(fake.store.find((e) => e.id === made).status, 'confirmed', `${lost}: the new series stays`);
+    assert.equal(requests(fake, 'DELETE', `/events/${made}`).length, 0);
+    // The split finishes: the old series' changed occurrence after the cut goes, and its change is in the new series.
+    assert.equal(fake.find(exception('2026-11-09').id).status, 'cancelled');
+    assert.deepEqual(clock(), [...earlier, later[0], '2026-11-09 11:00 Renamed one', ...later.slice(2)], String(lost));
+    assert.equal(edited.start, ams('2026-11-02', '11:00'));
+  }
+});
+
+test("a split whose cut may have been made, when Google can't be asked again, keeps both halves and a sync shows every occurrence", async () => {
+  // The connection drops after Google made the cut, and stays down for the requests after it.
+  let down = false;
+  const { calendars, fake, on, clock } = await open([master()], {
+    lose: (r) => {
+      if (isCut({ method: r.method, path: decodeURIComponent(r.url.pathname.replace('/calendar/v3', '')) })) down = true;
+      return down;
+    }
+  });
+  const opened = on('2026-11-02');
+  await assert.rejects(calendars.update(opened.id, input(opened, { start: ams('2026-11-02', '11:00'), end: ams('2026-11-02', '11:30') }), { scope: 'following', etag: opened.etag }), (err) => err.code === 'unsure' && err.partial === true && err.reason === 'network');
+  const made = requests(fake, 'POST').pop().body.id;
+  assert.equal(requests(fake, 'DELETE').length, 0, 'nothing is deleted on an outcome nobody knows');
+  assert.equal(fake.store.find((e) => e.id === made).status, 'confirmed');
+  down = false;
+  await calendars.syncAll();
+  assert.deepEqual(clock(), [...earlier, ...later]);
+});
+
+test('a split whose cut failed with a server error before Google made it reads the old series again and then takes the new half back', async () => {
+  const { calendars, fake, on, clock } = await open([master()], {
+    fail: ({ method, url }) => (method === 'PATCH' && url.pathname.endsWith('/events/sync') ? { status: 503, body: { error: { code: 503, message: 'Backend Error', errors: [{ reason: 'backendError' }] } } } : null)
+  });
+  const before = clock();
+  const opened = on('2026-11-02');
+  await assert.rejects(calendars.update(opened.id, input(opened, { title: 'x' }), { scope: 'following', etag: opened.etag }), (err) => err.code === 'split_failed');
+  const made = requests(fake, 'POST').pop().body.id;
+  assert.ok(fake.requests.slice(fake.requests.findIndex(isCut) + 1).some((r) => r.method === 'GET' && r.path.endsWith('/events/sync')), 'read again first');
+  assert.equal(fake.store.find((e) => e.id === made).status, 'cancelled');
+  assert.deepEqual(clock(), before);
+});
+
+test('deleting this and following whose cut Google made without the answer arriving is done', async () => {
+  const { calendars, fake, on, clock } = await open([master(), exception('2026-11-09', { summary: 'Renamed one' })], { lose: ({ method, url }) => method === 'PATCH' && url.pathname.endsWith('/events/sync') });
+  const opened = on('2026-11-02');
+  await calendars.remove(opened.id, { scope: 'following', etag: opened.etag });
+  assert.equal(fake.find(exception('2026-11-09').id).status, 'cancelled', 'the changed occurrence after the end goes too');
+  assert.deepEqual(clock(), earlier);
+});
+
 test('deleting this and following ends the series before it, and at the first occurrence deletes it', async () => {
   const { calendars, fake, on, clock, changes } = await open([master(), exception('2026-11-09', { summary: 'Sync (moved)', ...slot('2026-11-10', '10:00', '10:30') })]);
   const opened = on('2026-11-02');

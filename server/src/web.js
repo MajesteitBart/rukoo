@@ -28,6 +28,7 @@ import {
   rescheduleBooking,
   slotParam
 } from './public.js';
+import { movingType } from './slots.js';
 import { DAY, isDate, isZone, zonedParts } from './zone.js';
 
 const MINUTE = 60000;
@@ -265,7 +266,7 @@ async function typePage(request, env, url, handle, slug) {
   const q = typeQuery(url.searchParams);
   const noindex = privateQuery(q);
   if (!page.accepting || !profile) return respond(ctx, request, 200, pages.offHtml(ctx, profile), { noindex });
-  const type = profile.types.find((t) => t.slug === slug);
+  let type = profile.types.find((t) => t.slug === slug);
   if (!type) return respond(ctx, request, 404, pages.missingHtml(ctx, { kind: 'type', profile }), { noindex });
 
   let reschedule = null;
@@ -279,6 +280,8 @@ async function typePage(request, env, url, handle, slug) {
       return seeOther(href(`${ctx.base}/booking/${b.id}`, { k: q.reschedule.key, ...ctx.keep }));
     }
     reschedule = { booking: b, key: q.reschedule.key };
+    // The booking keeps its length when it moves, which the type may no longer have: the pages show that length.
+    type = movingType(type, b);
   }
 
   // The booking's own time isn't a new one: a link to it shows the booker.
@@ -546,7 +549,7 @@ async function managePost(request, env, url, handle, id) {
         const alternatives = otherTimes(result.alternatives, current.booking);
         const body = pages.rescheduleHtml(ctx, {
           profile,
-          type,
+          type: movingType(type, current.booking),
           booking: current.booking,
           key,
           start,

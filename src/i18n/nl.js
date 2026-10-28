@@ -702,6 +702,7 @@
   "errors.calendar.ruleKept": "Een nieuwe herhaling geldt voor deze en volgende afspraken of voor alle afspraken, niet voor één.",
   "errors.calendar.noGuests": "Deze agenda verstuurt geen uitnodigingen, dus de afspraken kunnen geen gasten hebben.",
   "errors.calendar.splitFailed": "Rukoo kon deze en de volgende afspraken niet wijzigen en heeft de reeks gelaten zoals hij was. Probeer het opnieuw.",
+  "errors.calendar.splitUnsure": "De agenda gaf geen antwoord, dus Rukoo weet niet of deze en de volgende afspraken zijn gewijzigd. Bij de volgende synchronisatie zie je hoe ze nu staan.",
   "errors.calendar.invalidFree": "Rukoo zoekt vrije tijd van 5 minuten tot 8 uur, over hoogstens 31 dagen.",
   "errors.caldav.signIn": "De agendaserver weigerde de gebruikersnaam of het wachtwoord. Controleer ze bij Serverinstellingen.",
   "errors.caldav.setupSignIn": "De agendaserver weigerde de gebruikersnaam of het wachtwoord. Controleer ze, of laat de agendaserver leeg om het account zonder agenda toe te voegen.",

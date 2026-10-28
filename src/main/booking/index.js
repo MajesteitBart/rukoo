@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
+const { AsyncLocalStorage } = require('async_hooks');
 const { t, translate, getLanguage, getLocale } = require('../../i18n');
 const { encodeId, calendarKey } = require('../calendar');
 const { openWindows, workWeekly } = require('../calendar/availability');
@@ -45,10 +46,21 @@ const MAX_PUBLISHED = 50;
 const ACTIVE = new Set(['pending', 'confirmed']);
 const STATUSES = new Set(['pending', 'confirmed', 'cancelled', 'declined', 'expired']);
 const NOTICE_ID = /^[A-Za-z0-9_:.@-]{1,120}$/;
+// A calendar UID the server takes with handled (PROTOCOL.md): 1 to 255 visible ASCII characters.
+const UID = /^[\x21-\x7e]{1,255}$/;
 
 const plain = (v) => Boolean(v && typeof v === 'object' && !Array.isArray(v));
 const lower = (s) => String(s || '').trim().toLowerCase();
 const num = (v) => (Number.isSafeInteger(v) ? v : null);
+
+// A job whose Rukoo session ended while it waited: a sign-out, or another account signed in. It stops without
+// another write; what it still had in hand belongs to the session that ended.
+const staleError = () => rules.bookingError('signedOut', { code: 'stale_session' });
+const isStale = (err) => Boolean(err && err.code === 'stale_session');
+// For a catch that lets a job go on after a failure, but not after its session ended.
+const unlessStale = (err) => {
+  if (isStale(err)) throw err;
+};
 
 function readJson(file, fallback) {
   try {
@@ -130,6 +142,8 @@ class Booking extends EventEmitter {
     this.file = emptyFile();
     this.queue = Promise.resolve();
     this.running = 0;
+    // The session each job started in, through all its awaits (live()).
+    this.jobs = new AsyncLocalStorage();
     this.timers = { tick: null, soon: new Map() };
     this.last = { poll: 0, info: 0, refresh: 0 };
     // Booking ids whose events this service is writing now: their 'changed' events are its own.
@@ -226,18 +240,45 @@ class Booking extends EventEmitter {
     this.broadcast();
   }
 
-  // One job at a time: a publish, a poll and an action never run over each other.
+  // One job at a time: a publish, a poll and an action never run over each other. Each job belongs to the session it
+  // started in; when that session ends while the job waits, the job stops and gets the state there is now.
   exclusive(job) {
     const run = this.queue.then(async () => {
       this.running += 1;
       try {
-        return await job();
+        return await this.jobs.run({ session: this.account.session, acct: this.acct }, job);
+      } catch (err) {
+        if (isStale(err)) return this.state();
+        throw err;
       } finally {
         this.running -= 1;
       }
     });
     this.queue = run.catch(() => {});
     return run;
+  }
+
+  // Throws when the session the running job started in has ended: signed out, signed in again, or another account.
+  // Every await in a job is followed by this before the job writes a record, booking.json, a notice or calls the
+  // server, because after a switch acct, mapKey() and the server's session are the next account's. Outside a job
+  // (a handle check, a test) there is nothing to compare.
+  live() {
+    const job = this.jobs.getStore();
+    if (job && (job.session !== this.account.session || job.acct !== this.acct)) throw staleError();
+  }
+
+  // Awaits work a job started (a calendar, the account), then live(): a session that ended meanwhile wins over the
+  // work's own answer or error.
+  async after(promise) {
+    let value;
+    try {
+      value = await promise;
+    } catch (err) {
+      this.live();
+      throw err;
+    }
+    this.live();
+    return value;
   }
 
   soon(name, ms) {
@@ -261,7 +302,7 @@ class Booking extends EventEmitter {
     await this.exclusive(async () => {
       if (now - this.last.info >= INFO_EVERY) {
         this.last.info = now;
-        await this.account.serverInfo().catch(() => {});
+        await this.after(this.account.serverInfo().catch(() => {}));
       }
       if (this.supported() === false) return;
       const on = this.status() === 'on';
@@ -274,7 +315,7 @@ class Booking extends EventEmitter {
       }
       // At least every 30 minutes, and a few minutes after a publish that failed.
       const every = this.file.publish.ok ? PUBLISH_EVERY : PUBLISH_RETRY;
-      if (this.thisDevice() && now - (this.file.publish.at || 0) >= every) await this.publish({ force: true }).catch(() => {});
+      if (this.thisDevice() && now - (this.file.publish.at || 0) >= every) await this.publish({ force: true }).catch(unlessStale);
       await this.poll();
     }).catch(() => {});
     this.changed();
@@ -367,13 +408,20 @@ class Booking extends EventEmitter {
     if (page.device && page.device.current) this.file.device = page.device.id;
   }
 
+  // A booking route, only in the session the job started in; an answer that comes after that session ended goes
+  // nowhere.
   async call(method, route, body) {
+    this.live();
+    let res;
     try {
-      return await this.account.bookingCall(method, route, body);
+      res = await this.account.bookingCall(method, route, body);
     } catch (err) {
+      this.live();
       if (err && err.code === 'handle_lost') this.file.lost = true;
       throw asBookingError(err);
     }
+    this.live();
+    return res;
   }
 
   // GET /v1/booking. A page this account lost, or a server that can't be reached, leaves what this computer knew.
@@ -381,16 +429,17 @@ class Booking extends EventEmitter {
     if (!this.account.signedIn) return;
     if (info) {
       this.last.info = this.now();
-      await this.account.serverInfo().catch(() => {});
+      await this.after(this.account.serverInfo().catch(() => {}));
     }
     if (this.supported() === false) return;
     this.last.refresh = this.now();
     try {
       this.setPage(await this.call('GET', '/v1/booking'));
-    } catch (_) {
+    } catch (err) {
       // Shown through the state: lost, stale or unchanged.
+      unlessStale(err);
     }
-    await this.followUrl().catch(() => {});
+    await this.followUrl().catch(unlessStale);
   }
 
   // The settings record keeps the public address as the server reports it, for the footer and other devices.
@@ -403,14 +452,14 @@ class Booking extends EventEmitter {
 
   // Writes the settings record after a pull, with change applied to what the pull brought (contracts g).
   async writeSettings(change) {
-    await this.account.sync().catch(() => {});
+    await this.after(this.account.sync().catch(() => {}));
     const current = this.record('settings');
     const next = change(plain(current) ? current : null);
     if (!next) return null;
     const checked = rules.checkSettings(next, { meet: true, today: rules.todayIn(next.timeZone, this.now()) });
     this.account.put('booking', `settings:${this.acct}`, checked);
     // Up at once rather than with the next push, so another computer sees the change when it looks.
-    await this.account.sync().catch(() => {});
+    await this.after(this.account.sync().catch(() => {}));
     return checked;
   }
 
@@ -662,6 +711,7 @@ class Booking extends EventEmitter {
   }
 
   addNotice(kind, row, name) {
+    this.live();
     const id = `${kind}:${row.id}`;
     this.file.notices = this.file.notices.filter((n) => n.id !== id);
     this.file.notices.push({ id, kind, bookingId: row.id, type: row.type, start: row.start, name: name || '', at: this.now() });
@@ -676,7 +726,7 @@ class Booking extends EventEmitter {
 
   async requireSupported() {
     this.requireSignedIn();
-    if (this.supported() === null) await this.account.serverInfo().catch(() => {});
+    if (this.supported() === null) await this.after(this.account.serverInfo().catch(() => {}));
     if (this.supported() === false) throw rules.bookingError('unsupported');
   }
 
@@ -702,8 +752,8 @@ class Booking extends EventEmitter {
     return this.exclusive(async () => {
       await this.requireSupported();
       const i = plain(input) ? input : {};
-      await this.account.sync().catch(() => {});
-      await this.calendars.loadCalendars().catch(() => []);
+      await this.after(this.account.sync().catch(() => {}));
+      await this.after(this.calendars.loadCalendars().catch(() => []));
       const local = this.calendars.list().find((acc) => acc.calendars.some((c) => calendarKey(acc.id, c.id) === i.destination));
       const cal = local && local.calendars.find((c) => calendarKey(local.id, c.id) === i.destination);
       if (!cal) throw rules.bookingError('noDestination', { code: 'invalid', field: 'destination' });
@@ -736,7 +786,7 @@ class Booking extends EventEmitter {
       await this.publish({ force: true, settings, enabling: true, takeover: Boolean(this.file.page && this.file.page.device && !this.thisDevice()) });
       const page = this.file.page;
       await this.writeSettings(() => ({ ...settings, url: (page && page.url) || settings.url, device: page && page.device ? page.device.id : null }));
-      await this.poll().catch(() => {});
+      await this.poll().catch(unlessStale);
       return this.state();
     }).finally(() => this.changed());
   }
@@ -744,7 +794,7 @@ class Booking extends EventEmitter {
   async save(patch) {
     return this.exclusive(async () => {
       this.requireSignedIn();
-      await this.account.sync().catch(() => {});
+      await this.after(this.account.sync().catch(() => {}));
       const current = this.record('settings');
       if (!plain(current)) throw rules.bookingError('notOn');
       const p = { ...(plain(patch) ? patch : {}) };
@@ -765,7 +815,7 @@ class Booking extends EventEmitter {
         // handle has waiting are handled first: afterwards only the new one is read, and the server refuses the
         // rename while any are left.
         if (!this.thisDevice()) throw rules.bookingError('notBookingDevice');
-        await this.poll().catch(() => {});
+        await this.poll().catch(unlessStale);
         await this.publish({ force: true, settings });
       }
       const page = this.file.page;
@@ -773,7 +823,7 @@ class Booking extends EventEmitter {
         const merged = rules.mergeSettings(pulled || current, patch);
         return { ...merged, url: page && page.handle === settings.handle && page.url ? page.url : merged.url };
       });
-      if (on && this.thisDevice() && written) await this.publish({ force: true, settings: written }).catch(() => {});
+      if (on && this.thisDevice() && written) await this.publish({ force: true, settings: written }).catch(unlessStale);
       return this.state();
     }).finally(() => this.changed());
   }
@@ -812,9 +862,13 @@ class Booking extends EventEmitter {
       clearTimeout(this.timers.soon.get(name));
       this.timers.soon.delete(name);
     }
+    // Only the page of the session whose account is being deleted: one that ended before or during the call counts as
+    // a failure, so the account isn't deleted then.
+    const session = this.account.session;
     const deleted = await this.exclusive(async () => {
       try {
-        await this.account.bookingCall('DELETE', '/v1/booking');
+        if (this.account.session !== session) throw staleError();
+        await this.after(this.account.bookingCall('DELETE', '/v1/booking'));
       } catch (err) {
         if (err && err.status === 404) return false;
         throw rules.bookingError('deleteFirst');
@@ -830,8 +884,8 @@ class Booking extends EventEmitter {
       await this.requireSupported();
       await this.refresh();
       if (this.status() !== 'on') throw rules.bookingError('notOn');
-      await this.account.sync().catch(() => {});
-      await this.calendars.loadCalendars().catch(() => []);
+      await this.after(this.account.sync().catch(() => {}));
+      await this.after(this.calendars.loadCalendars().catch(() => []));
       this.seedAvailability();
       const settings = this.settings();
       if (!settings) throw rules.bookingError('notOn');
@@ -840,7 +894,7 @@ class Booking extends EventEmitter {
       await this.publish({ force: true, takeover: true, settings });
       const page = this.file.page;
       await this.writeSettings((current) => ({ ...(current || settings), device: page && page.device ? page.device.id : null }));
-      await this.poll().catch(() => {});
+      await this.poll().catch(unlessStale);
       return this.state();
     }).finally(() => this.changed());
   }
@@ -887,19 +941,20 @@ class Booking extends EventEmitter {
     };
     if (!this.account.get('bookingkey', acct)) {
       try {
-        await this.account.sync();
-      } catch (_) {
+        await this.after(this.account.sync());
+      } catch (err) {
+        unlessStale(err);
         throw rules.bookingError('noKey');
       }
       if (!this.account.get('bookingkey', acct)) this.account.put('bookingkey', acct, keys.newKeyring(this.now()), { ifAbsent: true });
     }
     // The first sync sends it, or brings the one another device wrote first.
-    for (let i = 0; i < 3 && !ready(); i++) await this.account.sync().catch(() => {});
+    for (let i = 0; i < 3 && !ready(); i++) await this.after(this.account.sync().catch(() => {}));
     if (!ready()) throw rules.bookingError('noKey');
     // Then it is read back: a pull after the server stored it must still give this key.
     const kid = this.account.get('bookingkey', acct).current;
     if (this.keyRead !== `${acct}\n${kid}`) {
-      await this.account.sync().catch(() => {});
+      await this.after(this.account.sync().catch(() => {}));
       if (!ready() || this.account.get('bookingkey', acct).current !== kid) throw rules.bookingError('noKey');
       this.keyRead = `${acct}\n${kid}`;
     }
@@ -923,7 +978,7 @@ class Booking extends EventEmitter {
     for (const [date, ranges] of Object.entries(settings.overrides)) if (date >= today) overrides[date] = ranges;
     const windows = openWindows({ weekly, overrides, timeZone: zone, from, to });
 
-    const set = await this.calendars.availabilitySet();
+    const set = await this.after(this.calendars.availabilitySet());
     const accounts = new Map();
     for (const acc of this.calendars.list()) accounts.set(acc.id, acc);
     const byAccount = new Map();
@@ -948,16 +1003,17 @@ class Booking extends EventEmitter {
           // time, and a guest moving the booking a little mustn't run into it. Every other event is busy, also one
           // with a booking id: the host moved it elsewhere, or its booking is gone (the page was turned off). The
           // same stretch busyTimes reads, so its read comes from this one.
-          const read = await this.calendars.read({ start: from - buffer - DAY, end: to + buffer + DAY, calendars: list });
+          const read = await this.after(this.calendars.read({ start: from - buffer - DAY, end: to + buffer + DAY, calendars: list }));
           if (read.failed.length) throw new Error('unread');
           const ids = read.events.filter((e) => e.bookingId && active.has(e.bookingId) && e.start === active.get(e.bookingId).start && e.end === active.get(e.bookingId).end).map((e) => e.id);
-          const r = await this.calendars.busyTimes({ start: from - buffer, end: to + buffer, calendars: list, timeZone: zone, exclude: { ids } });
+          const r = await this.after(this.calendars.busyTimes({ start: from - buffer, end: to + buffer, calendars: list, timeZone: zone, exclude: { ids } }));
           if (!r.failed.length) {
             ok = true;
             busy.push(...r.intervals);
             this.file.busy[email] = { at: now, intervals: r.intervals };
           }
-        } catch (_) {
+        } catch (err) {
+          unlessStale(err);
           ok = false;
         }
       } else if (!failedIds.has(accountId)) ok = true;
@@ -1017,8 +1073,9 @@ class Booking extends EventEmitter {
       this.setPage(await this.call('PUT', '/v1/booking', body));
       if (reclaim) this.account.dropHandleKey();
     } catch (err) {
+      unlessStale(err);
       this.file.publish = { ...this.file.publish, at: now, ok: false, error: err.message };
-      if (err.code === 'other_device') await this.refresh().catch(() => {});
+      if (err.code === 'other_device') await this.refresh().catch(unlessStale);
       throw err;
     }
     this.file.publish = { at: now, lastOk: now, hash, ok: true, error: null };
@@ -1027,7 +1084,7 @@ class Booking extends EventEmitter {
     if (!before || before.join('\n') !== payload.availability.join('\n')) this.account.put('booking', `published:${this.acct}`, { availability: payload.availability, at: now });
     this.persist();
     // Each publish also compares the booked events with the bookings (design 2.9, Reconciliation).
-    await this.reconcile().catch(() => {});
+    await this.reconcile().catch(unlessStale);
     return true;
   }
 
@@ -1045,7 +1102,7 @@ class Booking extends EventEmitter {
       const opened = this.keyring();
       // A published key this computer doesn't have, or a page that still names this computer's old session: publish
       // first, or every booking action would be refused.
-      if ((opened && page.keyId && !opened.keys.has(page.keyId)) || this.resigned()) await this.publish({ force: true }).catch(() => {});
+      if ((opened && page.keyId && !opened.keys.has(page.keyId)) || this.resigned()) await this.publish({ force: true }).catch(unlessStale);
       await this.processAll();
     }
     this.prune();
@@ -1099,6 +1156,7 @@ class Booking extends EventEmitter {
       try {
         await this.process(row);
       } catch (err) {
+        unlessStale(err);
         // Another device took over, or the page is gone: nothing more to do here. Anything else is tried again.
         if (err && (err.code === 'other_device' || err.code === 'handle_lost')) break;
       }
@@ -1109,7 +1167,6 @@ class Booking extends EventEmitter {
   async process(row) {
     const settings = this.settings();
     if (!settings) return;
-    let uid = null;
     if (row.status === 'pending') {
       const guest = this.guestOf(row);
       if (!this.file.seen[row.id]) {
@@ -1123,8 +1180,6 @@ class Booking extends EventEmitter {
       const map = this.map(row.id);
       if (!map) {
         const ev = await this.createEvent(row, guest, settings);
-        // The server takes a calendar UID of 1 to 255 visible ASCII characters (PROTOCOL.md, handled).
-        uid = ev.uid && row.uid && ev.uid !== row.uid && /^[\x21-\x7e]{1,255}$/.test(ev.uid) ? ev.uid : null;
         // Also a booking the guest already moved before this computer saw it; one the host accepted was seen as a
         // request.
         if (!this.file.seen[row.id]) {
@@ -1158,12 +1213,16 @@ class Booking extends EventEmitter {
       }
       this.dropNotices(row.id, ['overlap']);
     } else this.dropNotices(row.id, ['overlap']);
-    await this.handled(row, uid);
+    await this.handled(row);
   }
 
-  async handled(row, uid = null) {
+  // The booking version is handled. The UID the calendar gave the booking's event (in its mapping record, see
+  // createEvent) goes along every time the server still has another, so a handled that failed and is tried again
+  // still tells it.
+  async handled(row) {
     const body = { action: 'handled', version: row.version };
-    if (uid && !this.file.noUid) body.uid = uid;
+    const map = this.map(row.id);
+    if (map && typeof map.uid === 'string' && UID.test(map.uid) && row.uid && map.uid !== row.uid && !this.file.noUid) body.uid = map.uid;
     let res;
     try {
       res = await this.call('POST', `/v1/booking/bookings/${row.id}`, body);
@@ -1178,13 +1237,10 @@ class Booking extends EventEmitter {
     if (!ACTIVE.has(row.status)) this.opened.delete(row.id);
     const next = res && cleanRow(res.booking);
     if (next) this.file.rows[row.id] = next;
-    if (body.uid) {
-      const map = this.map(row.id);
-      if (map) this.writeMap({ ...map, uid: body.uid });
-    }
   }
 
   writeMap(map) {
+    this.live();
     this.account.put('booking', this.mapKey(map.id || map.bookingId), map);
   }
 
@@ -1195,6 +1251,7 @@ class Booking extends EventEmitter {
   // A desktop notification (or a toast while Rukoo is focused; main.js decides) about a booking. text: which words,
   // when they aren't the kind's own (a withdrawn request is a guest's cancellation).
   tell(kind, row, guest, open, text = kind) {
+    this.live();
     const settings = this.settings();
     const type = settings && settings.types.find((x) => x.slug === row.type);
     const params = { guest: rules.shortName(guest && guest.name) || t('booking.notifications.someone'), type: type ? type.title : row.type, when: whenText(row.start) };
@@ -1259,7 +1316,7 @@ class Booking extends EventEmitter {
   async findEvent(row, accountId) {
     const keysOf = this.calendarKeys(accountId);
     if (!keysOf.length) return null;
-    const read = await this.calendars.read({ start: Math.min(row.start, row.bookedStart) - DAY, end: Math.max(row.end, row.bookedEnd) + DAY, calendars: keysOf, maxAgeMs: 0 });
+    const read = await this.after(this.calendars.read({ start: Math.min(row.start, row.bookedStart) - DAY, end: Math.max(row.end, row.bookedEnd) + DAY, calendars: keysOf, maxAgeMs: 0 }));
     if (read.failed.length) throw rules.bookingError('calendarUnreadable');
     return read.events.find((e) => e.bookingId === row.id) || null;
   }
@@ -1275,7 +1332,7 @@ class Booking extends EventEmitter {
     const now = this.now();
     const start = Math.min(now - LOOK_BACK, ...around.map((a) => a.start - DAY));
     const end = Math.max(now + LOOK_AHEAD, ...around.map((a) => a.end + DAY));
-    const read = await this.calendars.read({ start, end, calendars: keysOf, maxAgeMs: 0 });
+    const read = await this.after(this.calendars.read({ start, end, calendars: keysOf, maxAgeMs: 0 }));
     if (read.failed.length) throw rules.bookingError('calendarUnreadable');
     return byBooking(read.events);
   }
@@ -1302,11 +1359,14 @@ class Booking extends EventEmitter {
     this.own.add(row.id);
     try {
       let ev = await this.findEvent(row, dest.accountId);
-      if (!ev) ev = await this.calendars.create(this.eventInput(row, guest, settings, dest), { notify: row.notify, bookingId: row.id, uid: row.uid });
+      if (!ev) ev = await this.after(this.calendars.create(this.eventInput(row, guest, settings, dest), { notify: row.notify, bookingId: row.id, uid: row.uid }));
       // Made for an earlier time of this booking (an answer that got lost, then the guest moved it): it goes to this one.
       else if (ev.start !== row.start || ev.end !== row.end) ev = await this.moveTo(await this.intoCache(ev), row);
       const acc = this.engine.accounts.find((a) => a.id === ev.accountId);
-      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid: row.uid, version: row.version, type: row.type, start: row.start, end: row.end, guest, customLength: false });
+      // uid: the one the calendar gave the event (Google may ignore the booking's), kept before handled tells the
+      // server, so a handled that fails still has it the next time. The booking's own when the server can't take it.
+      const uid = typeof ev.uid === 'string' && UID.test(ev.uid) ? ev.uid : row.uid;
+      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid, version: row.version, type: row.type, start: row.start, end: row.end, guest, customLength: false });
       return ev;
     } finally {
       this.own.delete(row.id);
@@ -1340,7 +1400,7 @@ class Booking extends EventEmitter {
     const fetches = [() => this.calendars.ensure(found.accountId, found.start - DAY, found.end + DAY), () => this.calendars.syncAccount(found.accountId), () => this.calendars.ensure(found.accountId, found.start - DAY, found.end + DAY)];
     for (const fetch of fetches) {
       if (cached()) break;
-      await fetch().catch(() => {});
+      await this.after(fetch().catch(() => {}));
     }
     if (!cached()) throw rules.bookingError('calendarUnreadable');
     return this.calendars.event(found.id);
@@ -1349,7 +1409,7 @@ class Booking extends EventEmitter {
   // An event in the cache moved to the booking's time, with mail when the server's notify says so.
   async moveTo(ev, row) {
     const input = { accountId: ev.accountId, calendarId: ev.calendarId, title: ev.title, location: ev.location, description: ev.description, allDay: false, start: row.start, end: row.end };
-    return (await this.calendars.update(ev.id, input, { notify: row.notify, etag: ev.etag, scope: 'one' })) || ev;
+    return (await this.after(this.calendars.update(ev.id, input, { notify: row.notify, etag: ev.etag, scope: 'one' }))) || ev;
   }
 
   // A guest's move: the event goes to the new time.
@@ -1379,9 +1439,11 @@ class Booking extends EventEmitter {
     try {
       const ev = await this.writableEvent(map, { start: map.start, end: map.end });
       if (!ev) return;
-      await this.calendars.remove(ev.id, { notify, etag: ev.etag, scope: 'one' }).catch((err) => {
-        if (!err || err.code !== 'not_found') throw err;
-      });
+      await this.after(
+        this.calendars.remove(ev.id, { notify, etag: ev.etag, scope: 'one' }).catch((err) => {
+          if (!err || err.code !== 'not_found') throw err;
+        })
+      );
     } finally {
       this.own.delete(map.id);
     }
@@ -1390,11 +1452,12 @@ class Booking extends EventEmitter {
   // A new or moved booking that overlaps something else on fresh busy data keeps its event; the host decides.
   async checkOverlap(row, guest, settings) {
     try {
-      const busy = await this.calendars.busyTimes({ start: row.start, end: row.end, calendars: null, timeZone: settings.timeZone, exclude: { bookings: [row.id] }, maxAgeMs: 0 });
+      const busy = await this.after(this.calendars.busyTimes({ start: row.start, end: row.end, calendars: null, timeZone: settings.timeZone, exclude: { bookings: [row.id] }, maxAgeMs: 0 }));
       if (busy.intervals.some(([s, e]) => s < row.end && e > row.start)) this.addNotice('overlap', row, rules.shortName(guest && guest.name));
       else this.dropNotices(row.id, ['overlap']);
-    } catch (_) {
+    } catch (err) {
       // Unknown: no notice either way.
+      unlessStale(err);
     }
   }
 
@@ -1428,7 +1491,7 @@ class Booking extends EventEmitter {
       });
       let events;
       try {
-        const read = await this.calendars.read({ start: Math.min(...times) - DAY, end: Math.max(...times) + DAY, calendars: keysOf });
+        const read = await this.after(this.calendars.read({ start: Math.min(...times) - DAY, end: Math.max(...times) + DAY, calendars: keysOf }));
         // Nothing is concluded from a calendar that couldn't be read.
         if (read.failed.length) continue;
         const all = byBooking(read.events);
@@ -1437,7 +1500,8 @@ class Booking extends EventEmitter {
           const ev = eventFor(all.get(r.id), this.map(r.id));
           if (ev) events.set(r.id, ev);
         }
-      } catch (_) {
+      } catch (err) {
+        unlessStale(err);
         continue;
       }
       // An event that isn't there may have moved further, or this computer's copy may be older than it (another
@@ -1453,7 +1517,8 @@ class Booking extends EventEmitter {
             // Not found, and its calendar wasn't among those read: nothing is concluded.
             else if (!this.mappedCalendarRead(this.map(r.id), accountId)) unsure.add(r.id);
           }
-        } catch (_) {
+        } catch (err) {
+          unlessStale(err);
           for (const r of missing) unsure.add(r.id);
         }
       }
@@ -1487,7 +1552,8 @@ class Booking extends EventEmitter {
           }
           if (next.calendarId !== map.calendarId || next.eventId !== map.eventId || Boolean(map.customLength) !== custom) this.writeMap(next);
         } catch (err) {
-          if (err && err.code === 'stale_version') await this.fetchRows(this.file.cursor, true).catch(() => {});
+          unlessStale(err);
+          if (err && err.code === 'stale_version') await this.fetchRows(this.file.cursor, true).catch(unlessStale);
           else if (err && (err.code === 'other_device' || err.code === 'handle_lost')) return;
         }
       }
@@ -1503,7 +1569,7 @@ class Booking extends EventEmitter {
     const map = this.map(row.id);
     if (map) this.writeMap({ ...map, version: next.version, cancelled: true });
     this.dropNotices(row.id, ['overlap', 'mailBudget']);
-    await this.handled(next).catch(() => {});
+    await this.handled(next).catch(unlessStale);
     return next;
   }
 
@@ -1563,7 +1629,7 @@ class Booking extends EventEmitter {
     if (refresh && this.account.signedIn) {
       await this.exclusive(async () => {
         await this.refresh({ info: true });
-        if (this.status() !== 'signed_out' && this.supported() !== false && this.file.page && this.file.page.handle) await this.fetchRows(this.file.cursor, true).catch(() => {});
+        if (this.status() !== 'signed_out' && this.supported() !== false && this.file.page && this.file.page.handle) await this.fetchRows(this.file.cursor, true).catch(unlessStale);
       }).catch(() => {});
       this.changed();
     }
@@ -1575,9 +1641,9 @@ class Booking extends EventEmitter {
     if (!this.account.signedIn) return this.state();
     await this.exclusive(async () => {
       await this.refresh({ info: true });
-      if (this.status() === 'on' && this.thisDevice()) await this.publish().catch(() => {});
+      if (this.status() === 'on' && this.thisDevice()) await this.publish().catch(unlessStale);
       await this.poll();
-      await this.reconcile().catch(() => {});
+      await this.reconcile().catch(unlessStale);
     }).finally(() => this.changed());
     return this.state();
   }
@@ -1618,7 +1684,7 @@ class Booking extends EventEmitter {
         else await this.cancel(row, { message, notify: o.notify !== false });
       } catch (err) {
         // The booking changed meanwhile: the window gets it as it is now.
-        if (err && err.code === 'stale_version') await this.fetchRows(this.file.cursor, true).catch(() => {});
+        if (err && err.code === 'stale_version') await this.fetchRows(this.file.cursor, true).catch(unlessStale);
         throw err;
       }
       return this.state();
@@ -1643,7 +1709,7 @@ class Booking extends EventEmitter {
     const res = await this.call('POST', `/v1/booking/bookings/${row.id}`, body);
     const next = cleanRow(res && res.booking) || { ...row, status: 'declined', version: row.version + 1 };
     this.file.rows[row.id] = next;
-    await this.handled(next).catch(() => {});
+    await this.handled(next).catch(unlessStale);
     if (email && guest) await this.declineMail(row, guest, message);
   }
 
@@ -1661,7 +1727,8 @@ class Booking extends EventEmitter {
     const url = settings.url || (this.file.page && this.file.page.url) || '';
     const subject = translate(locale, 'booking.decline.subject', { type: type ? type.title : row.type, when });
     const text = [message || translate(locale, 'booking.decline.body', { type: type ? type.title : row.type, when }), url ? translate(locale, 'booking.decline.again', { url }) : ''].filter(Boolean).join('\n\n');
-    await this.engine.send({ accountId: dest.accountId, to: [{ name: '', address: guest.email }], subject, text });
+    this.live();
+    await this.after(this.engine.send({ accountId: dest.accountId, to: [{ name: '', address: guest.email }], subject, text }));
   }
 
   // A booking that is over isn't cancelled: its event is an ordinary one to delete by then, and the guest isn't told.
@@ -1675,7 +1742,7 @@ class Booking extends EventEmitter {
       if (!err || err.code !== 'stale_version') throw err;
       // The guest moved the booking after this computer last saw it. The event and its cancellation are out already,
       // so the cancel goes to the booking as it is now; otherwise the next poll would make the event again.
-      await this.fetchRows(this.file.cursor, true).catch(() => {});
+      await this.fetchRows(this.file.cursor, true).catch(unlessStale);
       const current = this.file.rows[row.id];
       if (!current || !ACTIVE.has(current.status)) throw err;
       await this.hostCancel(current, 'host_cancelled', message);

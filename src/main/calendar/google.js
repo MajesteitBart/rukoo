@@ -23,6 +23,10 @@ function calendarError(code, message, extra = {}) {
   return Object.assign(new Error(message), { calendar: true, code }, extra);
 }
 
+// A failed write that may have been made all the same: no answer came back (a dropped connection, a timeout, a body
+// cut off), or the server failed (5xx) after it may have taken it. A refusal (409, 412, any other 4xx) means it wasn't.
+const maybeWritten = (err) => Boolean(err && (err.code === 'network' || err.status >= 500));
+
 // The reason codes Google puts in an error, old style (errors[].reason) and new (details[].reason).
 function reasons(body) {
   const e = (body && body.error) || {};
@@ -386,6 +390,36 @@ function splitLines(lines, split, zone, toAllDay, shift, toZone = zone) {
   return { before, after };
 }
 
+// Whether an UNTIL lies before the split: by date for an all-day series or a date-only UNTIL, else as an instant (a
+// floating one on the series' clock).
+function untilBefore(until, split, zone, allDay) {
+  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/.exec(String(until));
+  if (!m) return false;
+  const date = `${m[1]}-${m[2]}-${m[3]}`;
+  if (allDay || !m[4]) return date < split.wall.date;
+  const ms = m[7] ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : instantOf({ date, minutes: m[4] * 60 + Number(m[5]) }, zone) + m[6] * 1000;
+  return ms < split.ms;
+}
+
+// Whether a series' recurrence lines end before the split: every rule stops before it (an UNTIL before it, or a COUNT
+// used up before it) and no extra date (RDATE) lies at or after it. That is what a cut there leaves.
+function endsBefore(lines, first, split, zone, allDay) {
+  for (const line of lines) {
+    if (isRule(line)) {
+      const rule = line.slice(6);
+      const parts = ruleParts(rule);
+      const until = rulePart(parts, 'UNTIL');
+      const count = rulePart(parts, 'COUNT');
+      const ends = until ? untilBefore(until, split, zone, allDay) : Boolean(count) && countBefore(rule, first, split.wall, allDay) >= Number(count);
+      if (!ends) return false;
+      continue;
+    }
+    const d = lineDates(line, zone);
+    if (d && d.kind === 'RDATE' && d.values.some((v) => wallDelta(v.at === null ? { date: v.date, minutes: 0 } : wall(v.at, zone), split.wall) <= 0)) return false;
+  }
+  return true;
+}
+
 // A series' EXDATE and RDATE lines when its first occurrence moves by shift minutes on the clock: every occurrence
 // moves as far, so these lines must too, or a deleted occurrence comes back. They are written in the zone the series
 // is in now, all-day or timed as it is now. Lines Rukoo can't read stay as they are.
@@ -459,7 +493,7 @@ class GoogleCalendar {
       if (res.ok) throw calendarError('network', t('errors.calendar.unreachable'));
     }
     if (res.ok) return data;
-    throw apiError(res.status, data);
+    throw Object.assign(apiError(res.status, data), { status: res.status });
   }
 
   // Every page, or an error: a list cut off at the limit would look complete and replace the cached events.
@@ -846,6 +880,19 @@ class GoogleCalendar {
     });
   }
 
+  // After a cut that may have been made without an answer saying so: whether the series as Google has it now ends
+  // before the split (true), still runs past it (false), or can't be told (null: no answer again, or the series is
+  // gone or no longer repeats).
+  async cutHeld(cal, master, split, { zone, allDay, first }) {
+    try {
+      const now = await this.request('GET', this.eventPath(cal, master.id));
+      if (!now || now.status === 'cancelled' || !Array.isArray(now.recurrence)) return null;
+      return endsBefore(now.recurrence, first, split, zone, allDay);
+    } catch (_) {
+      return null;
+    }
+  }
+
   // Deletes the occurrences the cut series kept of their own after its new end, so they don't show next to the new
   // series. Guests aren't told: they hear about the new series and the cut one already.
   async dropLater(cal, later) {
@@ -858,7 +905,7 @@ class GoogleCalendar {
   // "This and following": the series is cut before the opened occurrence and a new series starts with the change.
   // The new one is made first, with an id that a retry repeats, and gets the old series' Meet, reminders, guests and
   // private properties, the rest of its COUNT and its UNTIL, and the deleted and changed occurrences from the split on.
-  // Only then is the old one cut, on the version the user saw; when that fails, the new one is deleted again.
+  // Only then is the old one cut, on the version the user saw; when Google refuses that, the new one is deleted again.
   // Without a rule ("stop repeating" from here on) the new half is one event: the opened occurrence as it is, with the
   // change. Then it is returned; a new series isn't (the store finds its occurrence after the refetch).
   async split(cal, event, input, { notify = false, seriesEtag = null } = {}) {
@@ -947,9 +994,19 @@ class GoogleCalendar {
     try {
       // One event has no occurrences to copy them to; the later ones go with the cut series below.
       if (repeats) await this.copyExceptions(cal, master, made, later, { event, input, moved, shift, zone, newZone });
-      await this.cut(cal, master, split, { zone, allDay, sendUpdates, seriesEtag });
     } catch (err) {
       await undo(err);
+    }
+    try {
+      await this.cut(cal, master, split, { zone, allDay, sendUpdates, seriesEtag });
+    } catch (err) {
+      // A cut without an answer, or with a server error, may have been made all the same, and then deleting the new
+      // series would take every occurrence from the split on with it. So the old series is read again: a cut that
+      // was made finishes the split, and the new one only goes when the old one still runs past the split. When
+      // that can't be told, both stay; the error says what went wrong, and a sync shows how the calendar is.
+      const held = maybeWritten(err) ? await this.cutHeld(cal, master, split, { zone, allDay, first }) : false;
+      if (held === null) throw calendarError('unsure', t('errors.calendar.splitUnsure'), { partial: true, reason: err.code || null });
+      if (!held) await undo(err);
     }
     await this.dropLater(cal, later);
     return repeats ? null : toEvent(made, cal);
@@ -1003,7 +1060,14 @@ class GoogleCalendar {
       return;
     }
     const later = await this.laterExceptions(cal, master, split.wall, zone);
-    await this.cut(cal, master, split, { zone, allDay, sendUpdates, seriesEtag });
+    try {
+      await this.cut(cal, master, split, { zone, allDay, sendUpdates, seriesEtag });
+    } catch (err) {
+      // A cut whose answer got lost may have been made: then the deletion is done, as asked.
+      const held = maybeWritten(err) ? await this.cutHeld(cal, master, split, { zone, allDay, first }) : false;
+      if (held === null) throw calendarError('unsure', t('errors.calendar.splitUnsure'), { partial: true, reason: err.code || null });
+      if (!held) throw err;
+    }
     await this.dropLater(cal, later);
   }
 
@@ -1090,6 +1154,7 @@ module.exports = {
   toEvent,
   apiError,
   calendarError,
+  maybeWritten,
   dayKey,
   localDay,
   plainDescription,

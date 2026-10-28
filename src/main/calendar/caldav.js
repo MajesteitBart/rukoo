@@ -10,7 +10,7 @@ const { t } = require('../../i18n');
 // https://www.rfc-editor.org/rfc/rfc4791 https://www.rfc-editor.org/rfc/rfc6764 https://www.rfc-editor.org/rfc/rfc6638
 const crypto = require('crypto');
 const { DOMParser } = require('@xmldom/xmldom');
-const { calendarError } = require('./google');
+const { calendarError, maybeWritten } = require('./google');
 const { isZone, pcZone } = require('./zone');
 const ics = require('./ics');
 
@@ -140,14 +140,16 @@ const utcStamp = ics.utcStamp;
 
 // ---------- errors ----------
 
+// Each error keeps the status, so a server error after a write (5xx) can be told from a refusal (4xx).
 function httpError(status, { write = false } = {}) {
-  if (status === 401) return calendarError('password', t('errors.caldav.signIn'));
-  if (status === 403 && write) return calendarError('read_only', t('errors.calendar.readOnly'));
-  if (status === 404 || status === 410) return calendarError('not_found', t('errors.calendar.notFound'));
+  const error = (code, message) => calendarError(code, message, { status });
+  if (status === 401) return error('password', t('errors.caldav.signIn'));
+  if (status === 403 && write) return error('read_only', t('errors.calendar.readOnly'));
+  if (status === 404 || status === 410) return error('not_found', t('errors.calendar.notFound'));
   // If-Match failed: the event changed since the version the user saw.
-  if (status === 412) return calendarError('changed', t('errors.calendar.changed'));
-  if (status === 429 || status === 503) return calendarError('busy', t('errors.caldav.busy'));
-  return calendarError('request', t('errors.caldav.request', { reason: status }));
+  if (status === 412) return error('changed', t('errors.calendar.changed'));
+  if (status === 429 || status === 503) return error('busy', t('errors.caldav.busy'));
+  return error('request', t('errors.caldav.request', { reason: status }));
 }
 
 const changed = () => calendarError('changed', t('errors.calendar.changed'));
@@ -425,8 +427,8 @@ class CalDavCalendar {
   // ('following') or all of them ('all'). etag is the version the user changed, seriesEtag the series' (every
   // occurrence of a series carries the object's version, so they are the same unless one is out of date); a newer
   // one on the server makes this fail with 'changed'. For 'following' the new series is written first and the old
-  // one cut after it; when that cut fails, the new one goes again. Returns the changed occurrence; for a change to a
-  // series, null when it can't be named.
+  // one cut after it; when the server refuses that cut, the new one goes again. Returns the changed occurrence; for a
+  // change to a series, null when it can't be named.
   async update(cal, event, input, { etag = null, scope = 'one', seriesEtag = null } = {}) {
     const { href, rid } = ics.splitId(event.eventId);
     const { obj, etag: current } = await this.load(href);
@@ -442,9 +444,17 @@ class CalDavCalendar {
       try {
         await this.write(href, obj, { etag: version || current });
       } catch (err) {
-        await this.request('DELETE', nextHref, { etag: made.etag }).catch(() => {});
-        if (err && err.code === 'changed') throw err;
-        throw calendarError('split_failed', t('errors.calendar.splitFailed'));
+        // A cut without an answer, or with a server error, may have been made all the same, and then deleting the new
+        // series would take every occurrence from the split on with it. So the old series is read again: a cut that
+        // was made finishes the split, and the new one only goes when the old one still runs past the split. When
+        // that can't be told, both stay; the error says what went wrong, and a sync shows how the calendar is.
+        const held = maybeWritten(err) ? await this.cutHeld(href, rid) : false;
+        if (held === null) throw calendarError('unsure', t('errors.calendar.splitUnsure'), { partial: true, reason: err.code || null });
+        if (!held) {
+          await this.request('DELETE', nextHref, { etag: made.etag }).catch(() => {});
+          if (err && err.code === 'changed') throw err;
+          throw calendarError('split_failed', t('errors.calendar.splitFailed'));
+        }
       }
       return ics.pick(made.obj, this.ctx(cal, nextHref, made.etag), plan.nextRid);
     }
@@ -477,8 +487,29 @@ class CalDavCalendar {
       if (!res.ok) throw httpError(res.status, { write: true });
       return { etag: null };
     }
-    const saved = await this.write(href, obj, { etag: version || current });
-    return { etag: saved.etag };
+    try {
+      const saved = await this.write(href, obj, { etag: version || current });
+      return { etag: saved.etag };
+    } catch (err) {
+      // A cut whose answer got lost may have been made: then the deletion is done, as asked.
+      const held = which === 'following' && maybeWritten(err) ? await this.cutHeld(href, rid) : false;
+      if (held === null) throw calendarError('unsure', t('errors.calendar.splitUnsure'), { partial: true, reason: err.code || null });
+      if (!held) throw err;
+      return { etag: held.etag };
+    }
+  }
+
+  // After a cut that may have been made without an answer saying so: { etag } when the series on the server ends
+  // before the occurrence now, false when it still runs past it, null when that can't be told (no answer again, or
+  // no series there any more).
+  async cutHeld(href, rid) {
+    try {
+      const { obj, etag } = await this.load(href);
+      const ends = ics.endsBefore(obj, rid);
+      return ends === null ? null : ends && { etag: etag || null };
+    } catch (_) {
+      return null;
+    }
   }
 
   // An answer to an invitation: only the user's own PARTSTAT changes, in the occurrence or in the whole series. The

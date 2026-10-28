@@ -425,7 +425,7 @@ A booking action from the booking device. `<id>` is 22 characters of base64url.
 | `confirm` | `{ "action": "confirm", "version": 1 }` | `pending` → `confirmed`. |
 | `decline` | `{ "action": "decline", "version": 1, "message": "…" }` | `pending` → `declined`; the slot is free again. `message` is optional. |
 | `cancel` | `{ "action": "cancel", "version": 3, "reason": "host_deleted", "message": "…" }` | `pending` or `confirmed` → `cancelled`. `reason` is `host_cancelled`, `host_deleted` or `guest_declined`; `message` is optional. A booking whose meeting is over gets `409 not_active`, as a guest's cancellation does. |
-| `reschedule` | `{ "action": "reschedule", "version": 3, "start": 1793703600000, "host": true }` | Moves the booking, keeping its length. With `host: true` the slot rules are skipped, for times the host set in their own calendar; without it the new time must be an open slot (`409 slot_taken` with `alternatives`). |
+| `reschedule` | `{ "action": "reschedule", "version": 3, "start": 1793703600000, "host": true }` | Moves the booking, keeping its length. With `host: true` the slot rules are skipped, for times the host set in their own calendar; without it the new time must be an open slot for the booking's own length (see Slots; `409 slot_taken` with `alternatives`). |
 
 Every action except `handled` must name the current `version`; another one gets `409 stale_version` with the booking as it is. A booking that is no longer pending can't be confirmed or declined (`409 stale_version`), so a lapsed request stays lapsed. → `200 { "booking": { … } }` in the shape of `GET /v1/booking/bookings`.
 
@@ -455,6 +455,7 @@ The server works out the open times; devices only publish windows and busy times
 - Candidates step by the type's `slotInterval` from local midnight on the host's wall clock in the profile's `timeZone`. A time a clock change skips isn't offered; of a time that happens twice, only the first counts.
 - A candidate lies inside `windows[schedule]`, starts at least `minNotice` from now and less than `horizon` days ahead.
 - The meeting widened by `bufferBefore` and `bufferAfter` overlaps neither `busy` nor any active booking widened by its own type's buffers. Pending requests hold their slot until they lapse. The booking being rescheduled doesn't count against itself.
+- A booking keeps its length when it moves, also after the host changed its type's `duration`. A move, by the guest or by the host without `host: true`, is checked as the booking's type with the booking's own length (`end - start`) in place of `duration`; the buffers, `slotInterval`, `minNotice`, `horizon` and limits stay the type's. The times offered for a move (the booker with `reschedule`) and the `alternatives` of a refused move are worked out the same way. `GET /api/slots` lists times for a new booking, at the type's current `duration`, so a time from it can still be refused for a longer booking that moves there (`409 slot_taken`, with `alternatives` that fit it).
 - The host-local day stays under the type's `dailyLimit` and the page's `dailyCap`.
 - More than 24 hours (`BOOKING_STALE_HOURS`) after the last publish, every type acts as if it needs the host's confirmation, and a guest can't move a confirmed booking (`403 limit_reached`, `limit: "stale"`): its new time would only be checked against the same old busy times. More than 7 days (`BOOKING_DARK_DAYS`) after it, no times are offered: the page shows the text for "no open times", plus `contact`.
 
@@ -516,7 +517,7 @@ The booker for one type, hidden types included. Query parameters, each checked b
 | `clock` | `12` or `24`; default from the `Accept-Language` locale |
 | `slot` | a start in UTC, `2026-11-03T09:00Z` (seconds optional; an offset works too, and a space before it reads as `+`): shows the filled-in form for that time |
 | `name`, `email`, `notes`, `via` | fill in the form; a space in `email` reads as `+`. Without `slot` they travel with every day and time, so the form opens filled in. |
-| `reschedule`, `k` | a booking id and its manage key: the guest picks a new time for that booking, which doesn't count against its own new time. The booking's own time isn't offered, and a `slot` at that time shows the booker. |
+| `reschedule`, `k` | a booking id and its manage key: the guest picks a new time for that booking, which doesn't count against its own new time. The times offered, and the length the page shows, are for the booking's own length (see Slots). The booking's own time isn't offered, and a `slot` at that time shows the booker. |
 
 Without `slot` the page opens at the month and day of the first open time; days with times are links, and so are the day's times. With one that can't be read, it says so above the booker. With `slot`, the page shows the time in `tz` (or the host's zone), in the host's zone when that differs, and in UTC, the fields filled in, and "Your assistant filled this in. Check the details and press Book." when the link filled any in. When the slot is gone it lists the 3 nearest open times as links that keep the fields, and no form. With `reschedule` and `slot`, it asks "Move your booking to this time?" with a button that posts to the manage page. A booking of another type, or one that can't move any more, is sent to its manage page (303). Opening any of these books, holds and moves nothing.
 
@@ -666,7 +667,7 @@ An `Idempotency-Key` seen in the last 24 hours with the same body answers what t
 
 #### `POST /<handle>/api/bookings/<id>/reschedule`
 
-`Authorization: Bearer <manageKey>`, body `{ "start": "2026-11-04T13:00:00Z", "time_zone": "Europe/Amsterdam" }` → `200 { "booking": { … }, "ics_url", "message" }`. A guest can reschedule a booking twice; a third time, past the page's mail budget, or a confirmed booking while the page is stale (see Slots), gets `403 limit_reached`. A pending request stays pending at its new time. A move to the time the booking already has answers 200 and changes nothing: no move is used, `version` and `sequence` stay, nothing is mailed, and the message says so. Cancelled, declined, lapsed or past bookings: `409 not_active`.
+`Authorization: Bearer <manageKey>`, body `{ "start": "2026-11-04T13:00:00Z", "time_zone": "Europe/Amsterdam" }` → `200 { "booking": { … }, "ics_url", "message" }`. A guest can reschedule a booking twice; a third time, past the page's mail budget, or a confirmed booking while the page is stale (see Slots), gets `403 limit_reached`. The booking keeps its length, and the new time must be open for that length (see Slots), else `409 slot_taken` with `alternatives`. A pending request stays pending at its new time. A move to the time the booking already has answers 200 and changes nothing: no move is used, `version` and `sequence` stay, nothing is mailed, and the message says so. Cancelled, declined, lapsed or past bookings: `409 not_active`.
 
 #### Public errors
 

@@ -26,7 +26,9 @@ function scheduling(data, user) {
 // objects: { 'home/standup.ics': 'BEGIN:VCALENDAR…' }. scheduling: say calendar-auto-schedule in the DAV header, and
 // keep what it would send in sent. etagOnPut: answer a PUT with the new ETag, as most servers do; without it the
 // client has to fetch it. move: take WebDAV MOVE (otherwise 405). more: calendars besides home, shared and tasks.
-function caldavServer({ user = 'me@example.com', password: initialPassword = 'secret', objects = {}, scheduling: schedules = false, etagOnPut = true, move = true, more = {}, fail = null } = {}) {
+// fail answers a request before the server looks at it; lose lets the server carry it out and then loses the answer:
+// true drops the connection, a status answers with that error instead, as a gateway that gave up waiting.
+function caldavServer({ user = 'me@example.com', password: initialPassword = 'secret', objects = {}, scheduling: schedules = false, etagOnPut = true, move = true, more = {}, fail = null, lose = null } = {}) {
   let password = initialPassword;
   const calendars = {
     home: { name: 'Home', comps: ['VEVENT'], write: true, color: '#2952A3FF', timeZone: 'Europe/Amsterdam' },
@@ -66,7 +68,13 @@ function caldavServer({ user = 'me@example.com', password: initialPassword = 'se
   function handle(req, res, body) {
     const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     requests.push({ method: req.method, path, depth: req.headers.depth, ifMatch: req.headers['if-match'] || null, ifNoneMatch: req.headers['if-none-match'] || null, destination: req.headers.destination || null, overwrite: req.headers.overwrite || null, body });
+    const lost = lose ? lose({ method: req.method, path, body }) : null;
     const send = (status, text = '', headers = {}) => {
+      if (lost === true) return res.socket.destroy();
+      if (lost) {
+        res.writeHead(lost, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end('');
+      }
       res.writeHead(status, { 'content-type': 'application/xml; charset=utf-8', ...headers });
       res.end(text);
     };

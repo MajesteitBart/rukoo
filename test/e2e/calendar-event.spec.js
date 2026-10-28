@@ -445,8 +445,10 @@ test('the custom repeat form writes its rule, and the presets know the month', a
   await custom.locator('[data-wd="5"]').click();
   await save();
   await expect(form()).toHaveCount(0);
-  const made = await win.evaluate(() => window.mail.call('calendarView', { start: new Date(2027, 2, 28).getTime(), end: new Date(2027, 4, 1).getTime() }).then((v) => v.events.filter((e) => e.title === 'Book club')));
-  expect(made).toHaveLength(3);
+  // The view of those weeks fills in the background: asked again until the series is in it.
+  const bookClub = () => win.evaluate(() => window.mail.call('calendarView', { start: new Date(2027, 2, 28).getTime(), end: new Date(2027, 4, 1).getTime() }).then((v) => v.events.filter((e) => e.title === 'Book club')));
+  await expect.poll(async () => (await bookClub()).length).toBe(3);
+  const made = await bookClub();
   expect((await callsTo('calendarCreate'))[0][0].recurrence).toBe('FREQ=WEEKLY;INTERVAL=2;BYDAY=WE,FR;COUNT=3;WKST=MO');
   const series = await win.evaluate((id) => window.mail.call('calendarSeries', id), made[0].id);
   expect(series.rule.split(';').filter((p) => p !== 'WKST=MO').sort()).toEqual(['BYDAY=WE,FR', 'COUNT=3', 'FREQ=WEEKLY', 'INTERVAL=2']);

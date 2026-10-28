@@ -1163,6 +1163,62 @@ test('this and following at the first occurrence is the whole series, and a fail
   }
 });
 
+// The occurrences of SYNC in spring after a split on 23 March that renames the rest: still eight.
+const SPLIT = [
+  '2026-03-02T08:00 Team sync',
+  '2026-03-17T08:00 Team sync (Tuesday)',
+  '2026-03-23T08:00 Later sync',
+  '2026-03-30T07:00 Later sync',
+  '2026-04-06T09:00 Team sync, late',
+  '2026-04-20T07:00 Later sync',
+  '2026-04-27T07:00 Later sync',
+  '2026-05-04T07:00 Later sync'
+];
+const cutPut = (r) => r.method === 'PUT' && r.path.endsWith('/sync.ics');
+
+test('a cut the server made without its answer arriving keeps the new series, so no occurrence goes missing', async () => {
+  // The connection drops after the server wrote the cut, or a gateway answers 504 instead.
+  for (const lost of [true, 504]) {
+    await withServer({ objects: { 'home/sync.ics': SYNC }, lose: (r) => cutPut(r) && lost }, async (server) => {
+      const { p, home, on } = await sync(server);
+      const opened = on('2026-03-23');
+      const made = await p.update(home, opened, base(opened, { title: 'Later sync' }), { etag: opened.etag, scope: 'following', seriesEtag: opened.etag });
+      assert.equal(server.names().length, 2, `${lost}: both halves stay`);
+      assert.equal(server.requests.some((r) => r.method === 'DELETE'), false);
+      assert.match(stored(server, 'home/sync.ics'), /UNTIL=20260323T075959Z/);
+      assert.deepEqual([made.title, made.start], ['Later sync', opened.start]);
+      assert.deepEqual(shown(await p.events(home, SPRING.start, SPRING.end)), SPLIT, String(lost));
+    });
+  }
+});
+
+test("a cut that may have been made, when the server can't be asked again, keeps both halves and a sync shows every occurrence", async () => {
+  // The connection drops after the server wrote the cut, and stays down for the requests after it.
+  let down = false;
+  const lose = (r) => {
+    if (cutPut(r)) down = true;
+    return down;
+  };
+  await withServer({ objects: { 'home/sync.ics': SYNC }, lose }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const opened = on('2026-03-23');
+    await assert.rejects(p.update(home, opened, base(opened, { title: 'Later sync' }), { etag: opened.etag, scope: 'following' }), (err) => err.code === 'unsure' && err.partial === true && err.reason === 'network');
+    assert.equal(server.names().length, 2, 'nothing is deleted on an outcome nobody knows');
+    down = false;
+    assert.deepEqual(shown(await p.events(home, SPRING.start, SPRING.end)), SPLIT);
+  });
+});
+
+test('deleting this and following whose cut the server made without the answer arriving is done', async () => {
+  await withServer({ objects: { 'home/sync.ics': SYNC }, lose: cutPut }, async (server) => {
+    const { p, home, on } = await sync(server);
+    const opened = on('2026-04-06');
+    const done = await p.remove(home, opened, { scope: 'following', etag: opened.etag, seriesEtag: opened.etag });
+    assert.equal(done.etag, server.object('home/sync.ics').etag);
+    assert.deepEqual(shown(await p.events(home, SPRING.start, SPRING.end)), ['2026-03-02T08:00 Team sync', '2026-03-17T08:00 Team sync (Tuesday)', '2026-03-23T08:00 Team sync', '2026-03-30T07:00 Team sync']);
+  });
+});
+
 test('deleting this and following ends the series before the occurrence; from the first one it deletes the series', async () => {
   await withServer({ objects: { 'home/sync.ics': SYNC } }, async (server) => {
     const { p, home, on } = await sync(server);

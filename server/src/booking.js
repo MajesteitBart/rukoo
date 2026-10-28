@@ -13,7 +13,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { blob, fromBase64url, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import { ACCOUNT_NAME, accountObject, configProblem, jurisdiction } from './config.js';
 import { saltedHash, seal, unwrapManageKey, wrapManageKey } from './seal.js';
-import { expiresAt, isOpen, nearest, openSlots, resolveType } from './slots.js';
+import { expiresAt, isOpen, movingType, nearest, openSlots, resolveType } from './slots.js';
 import { DAY, zonedParts } from './zone.js';
 
 // The owner of a page whose account was deleted: deleted:<hash of the deleting device's handleKey> (wipe()).
@@ -164,7 +164,8 @@ export class Booking extends DurableObject {
   }
 
   // Open starts of one type in [from, to). type null picks the only visible type. exclude: { id, keyHash } of a
-  // booking the guest is moving, which then doesn't count against its own new time (the key has to match).
+  // booking the guest is moving, which then doesn't count against its own new time (the key has to match), and whose
+  // own length the starts of its type are for (movingType()); the type returned has that length then.
   slots({ type, from, to, exclude = null }, times) {
     const now = Date.now();
     const page = this.#page();
@@ -175,9 +176,11 @@ export class Booking extends DurableObject {
     const resolved = resolveType(info.profile, type);
     if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible });
     this.#expire(now);
-    const input = { ...this.#slotInput(page, resolved.type, now, info), exclude: this.#excluded(exclude) };
+    const moving = this.#excluded(exclude);
+    const slotType = movingType(resolved.type, moving);
+    const input = { ...this.#slotInput(page, slotType, now, info), exclude: moving?.id ?? null };
     const starts = openSlots({ ...input, from, to }).map((s) => s.start);
-    return { ok: true, page: info, type: resolved.type, starts, now };
+    return { ok: true, page: info, type: slotType, starts, now };
   }
 
   // The open starts of every visible type in [from, to), at most limit each: the landing page's and llms.txt's
@@ -190,11 +193,11 @@ export class Booking extends DurableObject {
     const info = this.#info(page, now, times);
     if (!info.accepting) return { ok: true, page: info, slots: {}, now };
     this.#expire(now);
-    const skip = this.#excluded(exclude);
+    const moving = this.#excluded(exclude);
     const slots = {};
     for (const type of info.profile.types) {
       if (slug ? type.slug !== slug : type.hidden) continue;
-      slots[type.slug] = openSlots({ ...this.#slotInput(page, type, now, info), exclude: skip, from, to })
+      slots[type.slug] = openSlots({ ...this.#slotInput(page, movingType(type, moving), now, info), exclude: moving?.id ?? null, from, to })
         .slice(0, limit)
         .map((s) => s.start);
     }
@@ -212,15 +215,17 @@ export class Booking extends DurableObject {
     const resolved = resolveType(info.profile, type);
     if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible });
     this.#expire(now);
-    const input = { ...this.#slotInput(page, resolved.type, now, info), exclude: this.#excluded(exclude) };
+    const moving = this.#excluded(exclude);
+    const slotType = movingType(resolved.type, moving);
+    const input = { ...this.#slotInput(page, slotType, now, info), exclude: moving?.id ?? null };
     const open = isOpen(input, start);
-    return { ok: true, page: info, type: resolved.type, open, alternatives: open ? [] : nearest(input, start), now };
+    return { ok: true, page: info, type: slotType, open, alternatives: open ? [] : nearest(input, start), now };
   }
 
-  // The id of a booking to leave out of the slot rules, when its manage key matches; else nothing is left out.
+  // The booking to leave out of the slot rules, when its manage key matches; else null and nothing is left out.
   #excluded(exclude) {
     if (!exclude || typeof exclude.id !== 'string' || !exclude.keyHash) return null;
-    return this.#guestRow(exclude.id, exclude.keyHash) ? exclude.id : null;
+    return this.#guestRow(exclude.id, exclude.keyHash);
   }
 
   #slotInput(page, type, now, info) {
@@ -508,8 +513,10 @@ export class Booking extends DurableObject {
     if (confirmed && info.stale) return fail('limit_reached', { limit: 'stale', page: info });
     const type = info.profile.types.find((t) => t.slug === row.type);
     if (!type) return fail('not_active', { booking: publicRow(row), page: info });
-    const slotInput = { ...this.#slotInput(page, type, now, info), exclude: row.id };
-    if (!isOpen(slotInput, start)) return fail('slot_taken', { alternatives: nearest(slotInput, start), page: info, type });
+    // The booking keeps its length, also when the host has changed the type's duration since: the new time must fit it.
+    const slotType = movingType(type, row);
+    const slotInput = { ...this.#slotInput(page, slotType, now, info), exclude: row.id };
+    if (!isOpen(slotInput, start)) return fail('slot_taken', { alternatives: nearest(slotInput, start), page: info, type: slotType });
     if (confirmed) this.#countMail(info.profile);
     this.#change(row.id, {
       start,
@@ -781,7 +788,8 @@ export class Booking extends DurableObject {
         if (!a.host) {
           const info = this.#info(page, now, times);
           if (!type || !info.accepting) return fail('slot_taken', { alternatives: [] });
-          const slotInput = { ...this.#slotInput(page, type, now, info), exclude: id };
+          // As for a guest's move: checked at the booking's own length.
+          const slotInput = { ...this.#slotInput(page, movingType(type, row), now, info), exclude: id };
           if (!isOpen(slotInput, a.start)) return fail('slot_taken', { alternatives: nearest(slotInput, a.start) });
         }
         this.#change(id, {

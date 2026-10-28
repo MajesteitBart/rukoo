@@ -1122,9 +1122,12 @@ class Calendars extends EventEmitter {
           result = await p.update(cal, event, clean, { notify, etag, scope: which, seriesEtag: version });
         }
       } catch (err) {
-        // The series changed elsewhere, or a split was taken back: show the series as it is now.
-        if (err && (err.code === 'changed' || err.code === 'split_failed')) {
-          await this.refetch(acc, p, cache, [cal.id]);
+        // The series changed elsewhere, a split was taken back, or a split may half have happened: show the series as
+        // it is now. After an unsure split the calendar may be out of reach, and then the error says so itself.
+        if (err && (err.code === 'changed' || err.code === 'split_failed' || err.code === 'unsure')) {
+          await this.refetch(acc, p, cache, [cal.id]).catch((again) => {
+            if (err.code !== 'unsure') throw again;
+          });
           this.emit('updated');
         }
         throw err;

@@ -2787,6 +2787,10 @@
     "message": "Rukoo couldn't change this and the following events, so it left the series as it was. Try again.",
     "description": "Calendar error when splitting a series failed halfway and Rukoo deleted the new part again, so the series is unchanged. src/main/calendar/google.js (split)"
   },
+  "errors.calendar.splitUnsure": {
+    "message": "The calendar didn't answer, so Rukoo doesn't know whether this and the following events changed. The next sync shows how they are now.",
+    "description": "Calendar error when a change or deletion of this and the following events of a series got no clear answer and Rukoo couldn't check afterwards; nothing was undone. src/main/calendar/google.js and caldav.js (split, cut)"
+  },
   "errors.calendar.invalidFree": {
     "message": "Rukoo looks for free time of 5 minutes to 8 hours, over at most 31 days.",
     "description": "Free time error when the availability panel, the composer or an agent asks for a length or a period outside those limits. src/main/calendar/free.js"

@@ -1321,6 +1321,17 @@ function truncate(obj, rid) {
   return false;
 }
 
+// Whether a series has nothing left from an occurrence on: no start of its rule or its extra dates, and no occurrence
+// changed on its own. That is what a cut there leaves. null when obj holds no series.
+function endsBefore(obj, rid) {
+  const at = ridInstant(rid);
+  const { master } = obj;
+  if (!master || !recurring(master) || !Number.isFinite(at)) return null;
+  const tzid = tzidOf(master, 'dtstart');
+  for (const time of starts(master)) if (instant(time, tzid) >= at) return false;
+  return !obj.exceptions.some((x) => !cancelled(x) && exceptionAt(x) >= at);
+}
+
 // An answer to an invitation: only the user's own PARTSTAT changes, in the occurrence or in the whole series. Returns
 // whether the user was among the guests.
 function respond(obj, rid, response, { me, series = false }) {
@@ -1452,6 +1463,7 @@ module.exports = {
   edit,
   excludeOccurrence,
   truncate,
+  endsBefore,
   respond,
   ensureZones,
   invitesOf,

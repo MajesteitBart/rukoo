@@ -142,7 +142,9 @@ function instanceOf(master, occ) {
 // body; its reference doesn't list the field, so by default the fake ignores it and makes its own ('keep' honours it
 // and answers 409 for one it has). attendeeCap: how many guests Google sends back at most; an event with more comes
 // back with only the user's own entry and attendeesOmitted, also when maxAttendees asks for more.
-function fakeCalendar({ events = [], fail = null, conference = 'ready', pendingReads = 1, insertUid = 'ignore', attendeeCap = Infinity } = {}) {
+// fail answers a request before the fake looks at it; lose lets the fake carry it out and then loses the answer, as
+// on a connection that drops: fetch fails, or with a status the answer is that error instead.
+function fakeCalendar({ events = [], fail = null, lose = null, conference = 'ready', pendingReads = 1, insertUid = 'ignore', attendeeCap = Infinity } = {}) {
   const calendars = [
     {
       id: 'me@example.com',
@@ -266,7 +268,7 @@ function fakeCalendar({ events = [], fail = null, conference = 'ready', pendingR
     return { ...item, attendees: item.attendees.filter((a) => a.self), attendeesOmitted: true };
   }
 
-  const fetchImpl = async (url, opts = {}) => {
+  const serve = async (url, opts = {}) => {
     const u = new URL(url);
     const method = opts.method || 'GET';
     const body = opts.body ? JSON.parse(opts.body) : null;
@@ -388,6 +390,13 @@ function fakeCalendar({ events = [], fail = null, conference = 'ready', pendingR
       return { ok: true, status: 204, json: async () => ({}) };
     }
     return json(400, {});
+  };
+  const fetchImpl = async (url, opts = {}) => {
+    const answer = await serve(url, opts);
+    const lost = lose && lose({ method: opts.method || 'GET', url: new URL(url), body: opts.body ? JSON.parse(opts.body) : null });
+    if (lost === true) throw new TypeError('fetch failed');
+    if (lost) return json(lost, { error: { code: lost, message: 'Backend Error', errors: [{ reason: 'backendError' }] } });
+    return answer;
   };
   return { fetchImpl, requests, store, calendars, find: (id, calendarId = 'me@example.com') => (find(calendarId, id) || {}).item || null };
 }
