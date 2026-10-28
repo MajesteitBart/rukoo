@@ -467,13 +467,14 @@ The paths in this section are relative to the booking base, which depends on `BO
 
 | `BOOKING_ORIGIN` | Booking base | Pages | MCP | Script |
 |---|---|---|---|---|
-| set, such as `https://rukoo.io` | its root | `https://rukoo.io/<handle>…` | `/mcp` | `/booker.js` |
+| set, such as `https://meet.rukoo.io` | its root | `https://meet.rukoo.io/<handle>…` | `/mcp` | `/booker.js` |
 | empty (self-hosted servers, tests) | `/meet` on every address of the server | `https://<server>/meet/<handle>…` | `/meet/mcp` | `/meet/assets/booker.js` |
 
 With `BOOKING_ORIGIN` set:
 
-- At the root of `BOOKING_ORIGIN`, the account API (`/v1/…`), `/privacy` and `/` work as on any address. `/llms.txt` is a site-level guide for assistants: what a booking link is, that each page has its own guide at `/<handle>/llms.txt`, the MCP endpoint and the JSON API in two lines, with no host's text. `/mcp`, `/booker.js` and `/assets/fonts/…` are as below. Any other path is a handle; one nobody has gets the same 404 as below. The address can be shared with a website that answers its own paths first (rukoo.io does; see `server/README.md`), which is why the website's paths are reserved handles.
+- At the root of `BOOKING_ORIGIN`, the account API (`/v1/…`), `/privacy` and `/` work as on any address. `/llms.txt` is a site-level guide for assistants: what a booking link is, that each page has its own guide at `/<handle>/llms.txt`, the MCP endpoint and the JSON API in two lines, with no host's text. `/mcp`, `/booker.js` and `/assets/fonts/…` are as below. Any other path is a handle; one nobody has gets the same 404 as below. The address can be shared with a website that answers its own paths first (rukoo.io was, before the pages moved to meet.rukoo.io; see `server/README.md`), which is why the website's paths are reserved handles.
 - On every address, `/meet` and `/meet/…` redirect to the same path at the root of `BOOKING_ORIGIN` without `/meet`, the query kept: `301` for GET and HEAD, with `access-control-allow-origin: *` so a cross-site read can follow it, and `308` for every other method, so a client sends its POST again there. `/meet/mcp` goes to `/mcp`, `/meet/assets/booker.js` to `/booker.js` and `/meet/assets/fonts/…` to `/assets/fonts/…`. Old links keep working this way.
+- On an address in `BOOKING_FORMER_ROOTS`, where the pages lived at the root before, a GET or HEAD without an `Authorization` header redirects (`301`) to the same path at the root of `BOOKING_ORIGIN`, `/meet` taken off when it has one; `/`, `/privacy` and the account API stay. Every other request to the pages, such as a form post, a JSON write, an MCP call, a read with a manage key, a guest's manage page and calendar file (`/<handle>/booking/<id>`), or the pages' script and fonts, is answered there as at `BOOKING_ORIGIN`, with `BOOKING_ORIGIN`'s addresses in the answer: a form's post and the manage page it leads to must stay on the form's origin (`form-action 'self'` covers the whole navigation), and clients drop `Authorization` on a redirect to another origin. A page opened before the move still books, moves and cancels. Without a valid `BOOKING_ORIGIN` the setting does nothing.
 - On the server's other addresses nothing else of the booking pages answers: `/<handle>` and `/llms.txt` are `404`, like any unknown path. The account API keeps working on every address, so devices that still sync with an older address are fine.
 - `BOOKING_ORIGIN` must be an `http` or `https` origin. Anything else counts as empty.
 
@@ -695,7 +696,7 @@ Messages, JSON and MCP text are English. The human pages are English and Dutch.
 
 #### `POST /mcp`
 
-One MCP endpoint for every page on the server. Its tools take `link`: the booking page's URL as the user pasted it (a type's URL selects that type) or the bare handle. With `BOOKING_ORIGIN` set, an older `/meet/<handle>` link on that origin counts too. So does a `/meet/<handle>` link on an address in `BOOKING_ALIASES`, the comma-separated origins the pages used to live at (`https://rukoo-account.bvdm.ai` for rukoo.io). A link to another server gets `invalid` with this server's booking base in the message (`such as https://rukoo.io/<handle>`), and `instructions` names the same base.
+One MCP endpoint for every page on the server. Its tools take `link`: the booking page's URL as the user pasted it (a type's URL selects that type) or the bare handle. With `BOOKING_ORIGIN` set, an older `/meet/<handle>` link on that origin counts too. So does a `/meet/<handle>` link on an address in `BOOKING_ALIASES`, the comma-separated origins the pages used to live at (`https://rukoo-account.bvdm.ai` for meet.rukoo.io), and a `/<handle>` link on an address in `BOOKING_FORMER_ROOTS` (`https://rukoo.io`). A link to another server gets `invalid` with this server's booking base in the message (`such as https://meet.rukoo.io/<handle>`), and `instructions` names the same base.
 
 Dispatch, in this order:
 

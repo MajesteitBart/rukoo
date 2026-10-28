@@ -103,8 +103,8 @@ function originOf(value) {
 }
 
 // BOOKING_ORIGIN as an origin, or null when it is empty or broken. With one, booking pages live at the root of that
-// address (https://rukoo.io/<handle>) and /meet redirects there from every address. Without one they live under /meet
-// on every address. A broken setting counts as none rather than making links nobody can open.
+// address (https://meet.rukoo.io/<handle>) and /meet redirects there from every address. Without one they live under
+// /meet on every address. A broken setting counts as none rather than making links nobody can open.
 export function bookingRoot(env) {
   return originOf(text(env.BOOKING_ORIGIN));
 }
@@ -112,10 +112,26 @@ export function bookingRoot(env) {
 // BOOKING_ALIASES: the addresses booking pages used to live at, comma-separated origins. Their /meet/<handle> links
 // still name the same pages where a link is read (the MCP link argument). Entries that aren't http(s) are left out.
 export function bookingAliases(env) {
+  return originList(env.BOOKING_ALIASES);
+}
+
+// BOOKING_FORMER_ROOTS: addresses whose root held the booking pages before BOOKING_ORIGIN did, comma-separated origins
+// (https://rukoo.io, before https://meet.rukoo.io). Reads there redirect to the same path under BOOKING_ORIGIN; the
+// rest is still answered there (index.js), and their links still name the same pages. Without a BOOKING_ORIGIN there
+// is nowhere to move to, so there are none.
+export function bookingFormerRoots(env) {
+  const root = bookingRoot(env);
+  if (!root) return new Set();
+  const roots = originList(env.BOOKING_FORMER_ROOTS);
+  roots.delete(root);
+  return roots;
+}
+
+function originList(value) {
   return new Set(
-    String(env.BOOKING_ALIASES || '')
+    String(value || '')
       .split(',')
-      .map((value) => originOf(value.trim()))
+      .map((entry) => originOf(entry.trim()))
       .filter(Boolean)
   );
 }
@@ -125,15 +141,15 @@ export function bookingOrigin(env, url) {
   return bookingRoot(env) ?? url.origin;
 }
 
-// The absolute address every booking page's address starts with: https://rukoo.io, or https://<this server>/meet.
+// The absolute address every booking page's address starts with: https://meet.rukoo.io, or https://<this server>/meet.
 export function bookingBase(env, url) {
   return bookingRoot(env) ?? `${url.origin}/meet`;
 }
 
-// The same as a path on this request's address, for links inside the pages: '' at the root of BOOKING_ORIGIN, else
-// '/meet'.
+// The same as a path on this request's address, for links inside the pages: '' at the root of BOOKING_ORIGIN or of a
+// former root, else '/meet'.
 export function bookingPrefix(env, url) {
-  return bookingRoot(env) === url.origin ? '' : '/meet';
+  return bookingRoot(env) === url.origin || bookingFormerRoots(env).has(url.origin) ? '' : '/meet';
 }
 
 // The pages' script: /booker.js at the root (/assets/ belongs to the website there), else /meet/assets/booker.js.

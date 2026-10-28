@@ -107,7 +107,7 @@ function cleanRow(r) {
 const httpUrl = (v) => typeof v === 'string' && /^https?:\/\//.test(v);
 
 // What GET and PUT /v1/booking say about the page, as this computer keeps it. base is where every page on the server
-// starts (https://rukoo.io, or <server>/meet), there before the account has a handle; older servers don't send it.
+// starts (https://meet.rukoo.io, or <server>/meet), there before the account has a handle; older servers don't send it.
 function cleanPage(p) {
   if (!plain(p)) return null;
   const device = plain(p.device) && typeof p.device.id === 'string' ? { id: p.device.id.slice(0, 200), name: typeof p.device.name === 'string' ? p.device.name.slice(0, 200) : null, current: p.device.current === true } : null;

@@ -53,6 +53,9 @@
     // Addresses booking pages used to live at, comma-separated origins: MCP takes their /meet/<handle> links as the
     // same pages.
     "BOOKING_ALIASES": "",
+    // Addresses whose root held the booking pages before BOOKING_ORIGIN, comma-separated origins: their paths redirect
+    // to BOOKING_ORIGIN (apart from /, /privacy and the account API), and links to them name the same pages.
+    "BOOKING_FORMER_ROOTS": "",
     // Handles taken down by the operator, comma-separated: they answer 404 and can't be claimed.
     "BLOCKED_HANDLES": ""
   },
@@ -77,12 +80,16 @@
 
   // The server Rukoo itself uses, run by its maintainer: npm run deploy -- --env bvdm. A fork deploys the settings
   // above with its own vars instead. Bindings and vars don't carry over into an environment, so they're repeated.
-  // rukoo.io reaches this Worker through the rukoo-site Worker's ACCOUNT service binding (README.md); the custom
-  // domain below stays for devices that still sync with it and for old /meet links, which redirect to rukoo.io.
+  // meet.rukoo.io is this Worker's own custom domain, for the booking pages. rukoo.io reaches it through the
+  // rukoo-site Worker's ACCOUNT service binding (README.md) for the account API. rukoo-account.bvdm.ai stays for
+  // devices that still sync with it and for old /meet links, which redirect to meet.rukoo.io.
   "env": {
     "bvdm": {
       "name": "rukoo-account",
-      "routes": [{ "pattern": "rukoo-account.bvdm.ai", "custom_domain": true }],
+      "routes": [
+        { "pattern": "rukoo-account.bvdm.ai", "custom_domain": true },
+        { "pattern": "meet.rukoo.io", "custom_domain": true }
+      ],
       "durable_objects": {
         "bindings": [
           { "name": "ACCOUNTS", "class_name": "Account" },
@@ -106,10 +113,12 @@
         "MAX_ACCOUNTS": 1000,
         "BOOKING_STALE_HOURS": 24,
         "BOOKING_DARK_DAYS": 7,
-        // Booking pages, /mcp and /llms.txt live at the root of rukoo.io, next to the website.
-        "BOOKING_ORIGIN": "https://rukoo.io",
-        // Where the pages lived before rukoo.io; its /meet links redirect, and MCP takes them as the same pages.
+        // Booking pages, /mcp and /llms.txt live at the root of meet.rukoo.io.
+        "BOOKING_ORIGIN": "https://meet.rukoo.io",
+        // Where the pages lived before: /meet on the old address, and the root of rukoo.io. Both redirect, and MCP takes
+        // their links as the same pages.
         "BOOKING_ALIASES": "https://rukoo-account.bvdm.ai",
+        "BOOKING_FORMER_ROOTS": "https://rukoo.io",
         "BLOCKED_HANDLES": ""
       },
       "ratelimits": [

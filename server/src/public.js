@@ -19,7 +19,7 @@ export const LOCATION_LABEL = { googleMeet: 'Google Meet', phone: 'Phone call', 
 export const MAX_SLOT_DAYS = 31;
 export const DEFAULT_SLOT_DAYS = 14;
 
-// The addresses a page's public routes use, all absolute: https://rukoo.io/<handle>… under BOOKING_ORIGIN, else
+// The addresses a page's public routes use, all absolute: https://meet.rukoo.io/<handle>… under BOOKING_ORIGIN, else
 // https://<this server>/meet/<handle>…. base is the part before the handle.
 export function links(env, url, handle) {
   const origin = bookingOrigin(env, url);

@@ -168,6 +168,7 @@ The settings in `vars`:
 | `BOOKING_DARK_DAYS` | Days after the last publish before a page offers no times at all. Default 7. |
 | `BOOKING_ORIGIN` | An address booking pages live at the root of, such as `https://meet.example.org`, so a page is `https://meet.example.org/<handle>`. Empty means each page lives under `/meet` on the address it was opened on. See below. |
 | `BOOKING_ALIASES` | Addresses your booking pages used to live at, as origins separated by commas, such as `https://accounts.example.org`. The MCP endpoint takes a `/meet/<handle>` link on one of them as the same page, so links people saved before a move still work there. Empty by default. |
+| `BOOKING_FORMER_ROOTS` | Addresses whose root held your booking pages before `BOOKING_ORIGIN`, as origins separated by commas. Reads there redirect to the same path on `BOOKING_ORIGIN`; posts, MCP calls, reads with a manage key, guests' manage pages and the pages' script and fonts are still answered there, so a page or client from before the move keeps working, and MCP takes links to those addresses as the same pages. It does nothing without `BOOKING_ORIGIN`. Empty by default. |
 | `BLOCKED_HANDLES` | Handles you took down, separated by commas. They answer like a handle nobody has and can't be claimed. |
 
 Set `OPERATOR_CONTACT` before you let people turn pages on. Every booking page has a "Report this page" link, and it goes there: an email address becomes a mail with the page's address in the subject, a web address is linked as it is. Without it the link isn't shown, and `BLOCKED_HANDLES` is how you act on a report.
@@ -186,7 +187,7 @@ Booking links end up in email footers, so a short domain helps. Route it to this
 
 Pages then live at the root of that address, without `/meet`: `https://meet.example.org/<handle>`, with the MCP endpoint at `/mcp`, the pages' script at `/booker.js` and a guide for assistants at `/llms.txt`. The app shows that address, and every link the pages, `llms.txt`, the JSON API and MCP hand out uses it. Any other path there counts as a handle, so an unknown one gets the booking pages' 404. The account API (`/v1/…`) and `/privacy` work on both domains.
 
-`/meet/…` on any address redirects to the same path on `BOOKING_ORIGIN` (301 for reads, 308 for posts), so links handed out before you set it keep working. An assistant that passes such a link to MCP doesn't follow the redirect, so list the old address in `BOOKING_ALIASES` if it was your own. A booking's calendar UID keeps the host it was made under, so changing `BOOKING_ORIGIN` later doesn't split anyone's calendar entries.
+`/meet/…` on any address redirects to the same path on `BOOKING_ORIGIN` (301 for reads, 308 for posts), so links handed out before you set it keep working. An assistant that passes such a link to MCP doesn't follow the redirect, so list the old address in `BOOKING_ALIASES` if it was your own. If the pages lived at the root of another address before, list that one in `BOOKING_FORMER_ROOTS` instead: its links redirect the same way, without `/meet`. A booking's calendar UID keeps the host it was made under, so changing `BOOKING_ORIGIN` later doesn't split anyone's calendar entries.
 
 [PROTOCOL.md](PROTOCOL.md#where-public-routes-live) lists the routes on each kind of address.
 
@@ -207,16 +208,18 @@ The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by d
 
 ### How rukoo.io is set up
 
-rukoo.io serves Rukoo's website and this server from one domain, through two Workers:
+rukoo.io serves Rukoo's website and this server's account API; the booking pages are on meet.rukoo.io. Two Workers do it:
 
 1. `rukoo-site`, from the separate rukoo-site repository, has the custom domains `rukoo.io` and `www.rukoo.io` (www redirects to the apex). It serves the website's static files first. A request that matches no file goes on, unchanged, through a service binding named `ACCOUNT` to the `rukoo-account` Worker: the same method, URL and headers, so this server sees `https://rukoo.io/...` addresses, the client's `cf-connecting-ip` for its rate limits, and the `Origin` and `Sec-Fetch-Site` headers its write checks read.
-2. `rukoo-account`, this folder, deployed with `--env bvdm`. Its `BOOKING_ORIGIN` is `https://rukoo.io`, so booking pages are `https://rukoo.io/<handle>`, MCP is `https://rukoo.io/mcp` and the account API is `https://rukoo.io/v1/...`. A booking's calendar UID ends in `@rukoo.io`.
+2. `rukoo-account`, this folder, deployed with `--env bvdm`. It has the custom domain `meet.rukoo.io`, which is its `BOOKING_ORIGIN`, so booking pages are `https://meet.rukoo.io/<handle>` and MCP is `https://meet.rukoo.io/mcp`. The account API is `https://rukoo.io/v1/...`, through the site Worker. A booking's calendar UID ends in `@meet.rukoo.io`, or `@rukoo.io` for one made before the move.
 
-The website's paths (`/`, `/index.html`, `/404.html`, `/app.js`, `/styles.css`, `/assets/*`, `/img/*`, `/media/*`, and its redirects `/download/*`, `/releases` and `/github`) always win, because the site Worker answers them before anything reaches this server. That is why the server reserves those names and likely future ones as handles. `/` on this server is only a fallback page; on rukoo.io the website answers it.
+The pages lived at the root of rukoo.io at first. `BOOKING_FORMER_ROOTS` is `https://rukoo.io`, so a page link there that reaches this server redirects to the same path on meet.rukoo.io, and MCP takes rukoo.io links as the same pages. Posts, MCP calls, reads with a manage key and guests' manage pages are still answered on rukoo.io, for pages and clients from before the move.
 
-The Worker keeps its old custom domain `rukoo-account.bvdm.ai`. Devices that still sync with that address keep working, since the account API answers on every address, and its `/meet/...` links redirect to the same page on rukoo.io. `BOOKING_ALIASES` is `https://rukoo-account.bvdm.ai`, so MCP takes those old links too.
+The website's paths (`/`, `/index.html`, `/404.html`, `/app.js`, `/styles.css`, `/assets/*`, `/img/*`, `/media/*`, and its redirects `/download/*`, `/releases` and `/github`) always win on rukoo.io, because the site Worker answers them before anything reaches this server. The server keeps those names and likely future ones reserved as handles, from when the pages shared rukoo.io with the website. `/` on rukoo.io is the website; on meet.rukoo.io it is this server's own page.
 
-Both addresses reach the same Worker and the same storage, so they hold the same accounts and booking pages. Signing in still needs the address an account was made at, because the password proof includes it ([PROTOCOL.md](PROTOCOL.md#keys)). A device signed in at the old address keeps using it until it signs out or deletes the account.
+The Worker keeps its old custom domain `rukoo-account.bvdm.ai`. Devices that still sync with that address keep working, since the account API answers on every address, and its `/meet/...` links redirect to the same page on meet.rukoo.io. `BOOKING_ALIASES` is `https://rukoo-account.bvdm.ai`, so MCP takes those old links too.
+
+All three addresses reach the same Worker and the same storage, so they hold the same accounts and booking pages. Signing in still needs the address an account was made at, because the password proof includes it ([PROTOCOL.md](PROTOCOL.md#keys)). A device signed in at the old address keeps using it until it signs out or deletes the account.
 
 ## What lands in Cloudflare's logs
 

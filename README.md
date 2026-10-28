@@ -4,7 +4,7 @@
 
 Rukoo Mail is an open-source email client for Windows and Linux. A macOS build and an Android app are experimental. Mail, calendar and agent chat share one window. You connect your own mail accounts and your own agent: Hermes Agent, Claude Code, Codex or OpenClaw.
 
-The latest release is [2.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.0). It adds a full calendar, an overview of your free time and booking pages on rukoo.io. It's also the first stable release with inbox categories and the Rukoo account, which arrived in the 2.0.0 pre-release.
+The latest release is [2.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.0). It adds a full calendar, an overview of your free time and booking pages on meet.rukoo.io. It's also the first stable release with inbox categories and the Rukoo account, which arrived in the 2.0.0 pre-release.
 
 ## Install
 
@@ -41,7 +41,7 @@ More in [Mail](docs/mail.md) and [Inbox categories](docs/categories.md).
 - The calendar (`Ctrl+2`) shows your Google calendars and the CalDAV calendars of IMAP accounts together, by month, week, day or what's coming.
 - Drag on the grid to create an event, and drag events to move or resize them. Events can have guests, repeats, reminders and their own time zone. Google calendars add Meet links.
 - The availability panel (`A`) lists your open time across your calendars. The composer's calendar button inserts the same list into a message.
-- A booking page such as `https://rukoo.io/sanne` lets people, and their AI assistants, pick a time with you. Each booking lands in your calendar, which sends the invitation.
+- A booking page such as `https://meet.rukoo.io/sanne` lets people, and their AI assistants, pick a time with you. Each booking lands in your calendar, which sends the invitation.
 
 More in [Calendar](docs/calendar.md) and [Booking page](docs/booking.md).
 

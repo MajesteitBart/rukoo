@@ -12,7 +12,7 @@
 
 import pkg from '../package.json' with { type: 'json' };
 import * as api from './api.js';
-import { bookingAliases, bookingBase, bookingOrigins, bookingRoot, clientNetwork, limitRate } from './config.js';
+import { bookingAliases, bookingBase, bookingFormerRoots, bookingOrigins, bookingRoot, clientNetwork, limitRate } from './config.js';
 import { meetEmpty, meetJson, meetText } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -27,7 +27,7 @@ const BODY_MAX = 64 * 1024;
 const MAX_HOPS = 5;
 const SERVER_INFO = { name: 'rukoo-booking', title: 'Rukoo booking pages', version: pkg.version };
 
-// base: where this server's booking pages live, https://rukoo.io or https://<server>/meet.
+// base: where this server's booking pages live, https://meet.rukoo.io or https://<server>/meet.
 export function instructions(base) {
   return (
     'Book meetings on Rukoo booking pages. Every tool takes link: the booking page address your user shared ' +
@@ -248,9 +248,9 @@ export function decodeName(value) {
 }
 
 // The handle (and type) a link points at on this server. Throws invalid for anything else. Under BOOKING_ORIGIN a page
-// is https://rukoo.io/<handle>, and an older /meet/<handle> link (which redirects there) counts too; without it, only
-// /meet/<handle>. On an address in BOOKING_ALIASES, where the pages used to live, a /meet/<handle> link names the
-// same page.
+// is https://meet.rukoo.io/<handle>, and an older /meet/<handle> link (which redirects there) counts too; without it,
+// only /meet/<handle>. On an address in BOOKING_ALIASES, where the pages used to live, a /meet/<handle> link names the
+// same page, and so does a /<handle> link on a former root in BOOKING_FORMER_ROOTS.
 export function parseLink(env, url, link) {
   const refuse = () =>
     new HttpError(400, 'invalid', `link must be a booking page on this server, such as ${bookingBase(env, url)}/<handle>, or the handle itself.`, {}, { field: 'link' });
@@ -262,7 +262,7 @@ export function parseLink(env, url, link) {
   } catch {
     throw refuse();
   }
-  const here = bookingOrigins(env, url).has(parsed.origin);
+  const here = bookingOrigins(env, url).has(parsed.origin) || bookingFormerRoots(env).has(parsed.origin);
   if (!here && !bookingAliases(env).has(parsed.origin)) throw refuse();
   let path = parsed.pathname;
   if (path.startsWith('/meet/')) path = path.slice('/meet'.length);
