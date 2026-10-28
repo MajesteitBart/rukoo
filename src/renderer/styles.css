@@ -4236,9 +4236,11 @@ body.compose-window {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+/* Its own width, up to 55%: a long server address keeps its end, next to the handle, and loses its start behind an
+   ellipsis (rtl puts the overflow on the left; the inner span stays ltr). */
 .booking-handle-base {
-  display: flex;
-  align-items: center;
+  flex-shrink: 0;
+  align-self: center;
   padding: 0 2px 0 10px;
   color: var(--text-3);
   font-size: 13.5px;
@@ -6220,6 +6222,17 @@ button.cal-title:hover {
 }
 .scrim.cal-scrim .dialog {
   max-height: calc(100vh - clamp(16px, 7vh, 64px) - 24px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* The title and the buttons stay in view; the fields scroll between them. The 4px inset keeps focus rings whole. */
+.scrim.cal-scrim .dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 -4px;
+  padding: 0 4px 4px;
 }
 .cal-quick .error:empty,
 .cal-reqcard .error:empty,

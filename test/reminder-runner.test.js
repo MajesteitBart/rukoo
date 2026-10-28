@@ -103,7 +103,8 @@ test('a reminder shows once at its time, and not again after a restart', async (
 
 test('reminders.json is written when a reminder shows, and otherwise every few minutes, not at every check', async (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: BASE });
-  const store = fakeCalendars([event()]);
+  // The reminder is at 08:52, between the periodic saves of 08:50 and 08:55.
+  const store = fakeCalendars([event({ start: BASE + HOUR + 2 * MINUTE, end: BASE + HOUR + 32 * MINUTE })]);
   const { r, shown, dataDir } = runner(t, store);
   const saved = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'reminders.json'), 'utf8'));
   r.start();
@@ -113,10 +114,24 @@ test('reminders.json is written when a reminder shows, and otherwise every few m
   assert.equal(saved().lastCheck, BASE, 'four checks later, still the first one');
   await advance(t, r, 3 * MINUTE);
   assert.equal(saved().lastCheck, BASE + 5 * MINUTE);
-  await advance(t, r, 45 * MINUTE + TICK);
+  await advance(t, r, 47 * MINUTE);
   assert.equal(shown.length, 1);
   assert.equal(Object.keys(saved().fired).length, 1, 'a reminder that showed is written at once');
-  assert.ok(saved().lastCheck >= BASE + 50 * MINUTE);
+  assert.equal(saved().lastCheck, BASE + 52 * MINUTE);
+});
+
+test("an event read only after its reminder time still reminds, if that time passed a moment ago", async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: BASE });
+  const store = fakeCalendars([]);
+  const { r, shown } = runner(t, store);
+  r.start();
+  await settle(r);
+  await advance(t, r, 51 * MINUTE);
+  // An event whose reminder was due at 08:50 arrives with the next read, at 08:51.
+  store.events = [event()];
+  r.readAt = 0;
+  await advance(t, r, TICK);
+  assert.equal(shown.length, 1);
 });
 
 test('reminders that fall due together make one notification', async (t) => {
@@ -244,4 +259,68 @@ test('the events are read again every 15 minutes, and a week-ahead reminder fire
   await advance(t, r, 15 * MINUTE);
   assert.deepEqual(shown.flat().map((d) => d.id), ['far']);
   assert.equal(reminderNotice(shown[0], Date.now()).body, `${new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).format(BASE + 7 * DAY + HOUR)} at 09:00`);
+});
+
+// The real calendar store, with the Google fake, for what the store tells the runner.
+function realStore(t, events) {
+  const { fakeCalendar, setup } = require('./fixtures/google-calendar');
+  const fake = fakeCalendar({ events });
+  const ctx = setup(fake);
+  t.after(() => ctx.calendars.flush());
+  return { ...ctx, fake };
+}
+
+const invitation = (start) => ({
+  id: 'inv',
+  summary: 'Vendor call',
+  start: { dateTime: new Date(start).toISOString(), timeZone: 'Europe/Amsterdam' },
+  end: { dateTime: new Date(start + 30 * MINUTE).toISOString(), timeZone: 'Europe/Amsterdam' },
+  organizer: { email: 'joris@example.com' },
+  attendees: [{ email: 'joris@example.com', organizer: true, responseStatus: 'accepted' }, { email: 'me@example.com', self: true, responseStatus: 'needsAction' }],
+  reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 20 }] }
+});
+
+test('a meeting declined in Rukoo stops reminding at once, before any sync', async (t) => {
+  const t0 = Date.now();
+  const { calendars, engine } = realStore(t, [invitation(t0 + 30 * MINUTE)]);
+  await calendars.ensure('g1', t0 - DAY, t0 + 7 * DAY);
+  let clock = t0;
+  const shown = [];
+  const r = new ReminderRunner({ calendars, engine, dataDir: tempDir('rukoo-reminders-'), notify: (list) => shown.push(list), now: () => clock });
+  t.after(() => r.stop());
+  r.start();
+  await r.tick();
+  assert.equal(r.events.find((e) => e.title === 'Vendor call').response, 'needsAction');
+  await calendars.respond(r.events.find((e) => e.title === 'Vendor call').id, 'declined');
+  assert.equal(r.events.find((e) => e.title === 'Vendor call').response, 'declined');
+  clock = t0 + 10 * MINUTE + 1000;
+  await r.tick();
+  assert.deepEqual(shown, []);
+});
+
+test('started without a network, the runner reminds from the cached calendar the view shows', async (t) => {
+  const t0 = Date.now();
+  let offline = false;
+  const { fakeCalendar, setup } = require('./fixtures/google-calendar');
+  const fake = fakeCalendar({ events: [{ ...invitation(t0 + 30 * MINUTE), attendees: undefined, organizer: { email: 'me@example.com', self: true }, summary: 'Dentist' }] });
+  const fetchImpl = fake.fetchImpl;
+  fake.fetchImpl = async (...args) => (offline ? { ok: false, status: 503, json: async () => ({ error: { code: 503, message: 'down' } }), text: async () => '' } : fetchImpl(...args));
+  const first = setup(fake);
+  await first.calendars.ensure('g1', t0 - DAY, t0 + 7 * DAY);
+  first.calendars.flush();
+  // A restart an hour later, offline: the cache on disk is old and the provider doesn't answer.
+  offline = true;
+  const { Calendars } = require('../src/main/calendar');
+  const calendars = new Calendars({ engine: first.engine, fetchImpl: fake.fetchImpl });
+  for (const f of calendars.cache('g1').fetched) f.at -= HOUR;
+  assert.equal((await calendars.read({ start: t0, end: t0 + DAY })).failed.length, 1);
+  let clock = t0;
+  const shown = [];
+  const r = new ReminderRunner({ calendars, engine: first.engine, dataDir: tempDir('rukoo-reminders-'), notify: (list) => shown.push(list), now: () => clock });
+  t.after(() => r.stop());
+  r.start();
+  await r.tick();
+  clock = t0 + 10 * MINUTE + 1000;
+  await r.tick();
+  assert.deepEqual(shown.flat().map((x) => x.title), ['Dentist']);
 });

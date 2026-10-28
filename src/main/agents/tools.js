@@ -1904,7 +1904,8 @@ async function findFreeTime(hub, args) {
     lines: result.lines || [],
     calendars_checked: (result.checked || []).length
   };
-  if (!out.calendars_checked) notes.push("None of the user's calendars counts toward their availability, so these times are not checked against any calendar. Tell the user.");
+  // No calendar was read because none counts; calendars that count but failed to load are named below instead.
+  if (!out.calendars_checked && !(result.failed || []).length) notes.push("None of the user's calendars counts toward their availability, so these times are not checked against any calendar. Tell the user.");
   if ((result.failed || []).length) {
     const part = failedPart(result.failed, 'its busy time is missing and these times may be wrong');
     out.failed = part.failed;

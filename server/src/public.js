@@ -72,6 +72,7 @@ export function publicProfile(page) {
     timeZone: p.timeZone,
     locale: p.locale,
     contact: p.contact,
+    ...(p.invites === false ? { invites: false } : {}),
     types: p.types.map((t) => ({
       slug: t.slug,
       title: t.title,

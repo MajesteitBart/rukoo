@@ -365,9 +365,9 @@ function dateLine(kind, values, zone, allDay) {
 }
 
 // A series' other recurrence lines on either side of a split: what stays with the old series, and what moves to the
-// new one shifted by as much as its start moved, written all-day or timed as the new series is. Lines Rukoo can't
-// read stay with the old series as they are.
-function splitLines(lines, split, zone, toAllDay, shift) {
+// new one shifted by as much as its start moved, written all-day or timed and in the zone (toZone) the new series is.
+// Lines Rukoo can't read stay with the old series as they are.
+function splitLines(lines, split, zone, toAllDay, shift, toZone = zone) {
   const before = [];
   const after = [];
   for (const line of lines) {
@@ -381,7 +381,7 @@ function splitLines(lines, split, zone, toAllDay, shift) {
     const late = walls.filter((w) => wallDelta(w, split) <= 0).map((w) => shifted(w, shift));
     if (early.length === walls.length) before.push(line);
     else if (early.length) before.push(dateLine(parsed.kind, early, zone, parsed.values[0].at === null));
-    if (late.length) after.push(dateLine(parsed.kind, late, zone, toAllDay));
+    if (late.length) after.push(dateLine(parsed.kind, late, toZone, toAllDay));
   }
   return { before, after };
 }
@@ -579,13 +579,20 @@ class GoogleCalendar {
       if (err.code !== 'conflict' || (!input.id && !booking)) throw err;
     }
     const found = booking ? await this.findBooking(cal, bookingId, uid) : await this.request('GET', this.eventPath(cal, input.id));
+    if (!found && booking && uid) {
+      // The uid is taken by an event the user doesn't organize, such as an invitation that carries it: the booking
+      // gets an event of its own, which a retry finds by its booking id.
+      const item = await this.request('POST', this.eventsPath(cal), { query: { sendUpdates: notify ? 'all' : 'none', conferenceDataVersion: 1 }, body: this.fields(input, { bookingId, requestId }) });
+      return toEvent(item, cal);
+    }
     if (!found) throw calendarError('conflict', t('errors.calendar.readOnly'));
     return this.restore(cal, found, input, { notify, bookingId, requestId });
   }
 
   // A booking event made before, live or deleted (Google keeps deleted events): first by the booking id in its private
   // properties, which Google keeps as written, then by its uid. Google's insert reference doesn't list iCalUID among the
-  // fields it takes, so the event may carry a uid Google made up; the event the store returns says which.
+  // fields it takes, so the event may carry a uid Google made up; the event the store returns says which. By uid only an
+  // event the user organizes counts: anyone can send an invitation with the booking's uid.
   async findBooking(cal, bookingId, uid) {
     const best = (items, ok) => {
       const list = items.filter((i) => i && !i.recurringEventId && ok(i));
@@ -597,7 +604,7 @@ class GoogleCalendar {
       if (found) return found;
     }
     if (!uid) return null;
-    return best(await this.pages(this.eventsPath(cal), { iCalUID: uid, showDeleted: 'true' }), (i) => i.iCalUID === uid);
+    return best(await this.pages(this.eventsPath(cal), { iCalUID: uid, showDeleted: 'true' }), (i) => i.iCalUID === uid && Boolean(i.organizer && i.organizer.self));
   }
 
   // An event a create made before. A live one is the user's own Save that got no answer: it gets the latest fields,
@@ -686,8 +693,9 @@ class GoogleCalendar {
 
   // Where the series' first occurrence goes when the user moves the opened occurrence from event's times to input's:
   // by the same distance on the clock in the series' zone, its start and its end each on their own, so a change of
-  // clocks between the two occurrences doesn't move the series by an hour. Also the first occurrence's date before and
-  // after, for the rule.
+  // clocks between the two occurrences doesn't move the series by an hour. Also the first occurrence's date before (in
+  // the old zone) and after (in the zone the series is in from now on), for the rule: Google repeats it in that zone,
+  // so a new zone that puts the start on another date takes the weekday along.
   shiftMaster(master, event, input, zone) {
     const m = master.start;
     const mAllDay = Boolean(m.date);
@@ -704,7 +712,7 @@ class GoogleCalendar {
       const start = instantOf(shifted(wall(ms, zone), wallDelta(wall(event.start, zone), wall(input.start, zone))), zone);
       let end = instantOf(shifted(wall(Date.parse(master.end.dateTime), endZone), wallDelta(wall(event.end, endZone), wall(input.end, endZone))), endZone);
       if (end <= start) end = start + (input.end - input.start);
-      return { ...timed(start, end, input.timeZone || zone, input.timeZone || endZone), from: wall(ms, zone).date, to: wall(start, zone).date };
+      return { ...timed(start, end, input.timeZone || zone, input.timeZone || endZone), from: wall(ms, zone).date, to: wall(start, input.timeZone || zone).date };
     }
     if (input.allDay) {
       const from = mAllDay ? m.date : wall(Date.parse(m.dateTime), zone).date;
@@ -874,11 +882,14 @@ class GoogleCalendar {
     // own times.
     const durationDays = allDay ? daysBetween(master.start.date, master.end.date) : 0;
     const mins = allDay ? 0 : wallDelta(wall(Date.parse(master.start.dateTime), zone), wall(Date.parse(master.end.dateTime), (master.end && master.end.timeZone) || zone));
+    // The zone the new series repeats in: the one the user picked when the times changed. Its start, rule, EXDATEs and
+    // copied occurrences are read on that clock, so a zone that puts the start on another date takes the weekday along.
+    const newZone = (moved || !repeats) && !input.allDay ? input.timeZone || zone : zone;
     let startTimes;
     let newStart;
     if (moved || !repeats) {
       startTimes = times(input, input.timeZone || zone, { endTimeZone: input.timeZone || (master.end && master.end.timeZone) || zone });
-      newStart = input.allDay ? { date: input.startDate, minutes: 0 } : wall(input.start, zone);
+      newStart = input.allDay ? { date: input.startDate, minutes: 0 } : wall(input.start, newZone);
     } else if (allDay) {
       startTimes = { start: { date: split.wall.date }, end: { date: addDays(split.wall.date, durationDays) } };
       newStart = split.wall;
@@ -899,10 +910,10 @@ class GoogleCalendar {
         rules.push(ruleText(parts));
       }
     }
-    const { after } = splitLines(lines.filter((l) => !isRule(l)), split.wall, zone, newAllDay, shift);
+    const { after } = splitLines(lines.filter((l) => !isRule(l)), split.wall, zone, newAllDay, shift, newZone);
     // Deleted occurrences from the split on become EXDATEs of the new series, where its rule puts them now.
     const gone = later.filter((i) => i.status === 'cancelled').map((i) => shifted(originalWall(i, zone), shift));
-    if (gone.length && rules.length) after.push(dateLine('EXDATE', gone, zone, newAllDay));
+    if (gone.length && rules.length) after.push(dateLine('EXDATE', gone, newZone, newAllDay));
 
     const id = splitId(master.id, split.ms, !repeats);
     const kept = {};
@@ -935,7 +946,7 @@ class GoogleCalendar {
     };
     try {
       // One event has no occurrences to copy them to; the later ones go with the cut series below.
-      if (repeats) await this.copyExceptions(cal, master, made, later, { event, input, moved, shift, zone });
+      if (repeats) await this.copyExceptions(cal, master, made, later, { event, input, moved, shift, zone, newZone });
       await this.cut(cal, master, split, { zone, allDay, sendUpdates, seriesEtag });
     } catch (err) {
       await undo(err);
@@ -947,7 +958,7 @@ class GoogleCalendar {
   // The occurrences the old series changed on their own from the split on, changed the same way in the new series.
   // Their own fields go over; fields the user just changed for the whole new series don't, and neither do the times of
   // the edited occurrence when those are the new series' start.
-  async copyExceptions(cal, master, made, later, { event, input, moved, shift, zone }) {
+  async copyExceptions(cal, master, made, later, { event, input, moved, shift, zone, newZone = zone }) {
     for (const item of later) {
       if (item.status === 'cancelled') continue;
       const edited = item.id === event.eventId;
@@ -959,7 +970,7 @@ class GoogleCalendar {
       if (!sameTime(item.start, item.originalStartTime)) Object.assign(body, { start: item.start, end: item.end });
       if (!Object.keys(body).length) continue;
       const at = shifted(original, shift);
-      const originalStart = item.originalStartTime.date ? at.date : new Date(instantOf(at, zone)).toISOString();
+      const originalStart = item.originalStartTime.date ? at.date : new Date(instantOf(at, newZone)).toISOString();
       const page = await this.request('GET', `${this.eventPath(cal, made.id)}/instances`, { query: { originalStart, showDeleted: 'true' } });
       const instance = ((page && page.items) || [])[0];
       if (!instance) continue;

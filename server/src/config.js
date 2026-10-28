@@ -90,19 +90,34 @@ export function positive(value, fallback) {
   return Number.isSafeInteger(n) && n > 0 ? n : fallback;
 }
 
-// BOOKING_ORIGIN as an origin, or null when it is empty or broken. With one, booking pages live at the root of that
-// address (https://rukoo.io/<handle>) and /meet redirects there from every address. Without one they live under /meet
-// on every address. A broken setting counts as none rather than making links nobody can open.
-export function bookingRoot(env) {
-  const value = text(env.BOOKING_ORIGIN);
+// An http(s) address as an origin, or null when it is empty or isn't one.
+function originOf(value) {
   if (!value) return null;
   try {
     const origin = new URL(value);
     if (origin.protocol === 'https:' || origin.protocol === 'http:') return origin.origin;
   } catch {
-    // Treated as unset.
+    // Not an address.
   }
   return null;
+}
+
+// BOOKING_ORIGIN as an origin, or null when it is empty or broken. With one, booking pages live at the root of that
+// address (https://rukoo.io/<handle>) and /meet redirects there from every address. Without one they live under /meet
+// on every address. A broken setting counts as none rather than making links nobody can open.
+export function bookingRoot(env) {
+  return originOf(text(env.BOOKING_ORIGIN));
+}
+
+// BOOKING_ALIASES: the addresses booking pages used to live at, comma-separated origins. Their /meet/<handle> links
+// still name the same pages where a link is read (the MCP link argument). Entries that aren't http(s) are left out.
+export function bookingAliases(env) {
+  return new Set(
+    String(env.BOOKING_ALIASES || '')
+      .split(',')
+      .map((value) => originOf(value.trim()))
+      .filter(Boolean)
+  );
 }
 
 // The origin booking pages are shared under: BOOKING_ORIGIN, else the one the request came in on.

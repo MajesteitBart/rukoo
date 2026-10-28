@@ -90,6 +90,8 @@ test('signed out, the page leads to a new account and back to the setup, which c
   await expect(setup).toBeVisible();
   await expect(setup.locator('[name="handle"]')).toHaveValue(HANDLE);
   await expect(setup.locator('[data-handle-status]')).toHaveText('Available');
+  // The address before the handle, as the server reports it: this one keeps its pages under /meet.
+  await expect(setup.locator('.booking-handle-base')).toHaveText(`${server.url.replace(/^https?:\/\//, '')}/meet/`);
   await expect(setup.locator('[name="name"]')).toHaveValue('Demo User');
   await expect(setup.locator('[data-destination-note]')).toHaveText("This calendar sends no invitations. Guests only get the booking page's confirmation.");
   // The handle is checked as it is typed.
@@ -135,8 +137,11 @@ test('signed out, the page leads to a new account and back to the setup, which c
 test('a handle the server refuses is said on the setup screen, which keeps what was typed', async () => {
   await call('accountSignUp', { email: 'host@example.com', password: PASSWORD, invite: '' });
   server.fail = ({ route }) => (route === 'PUT /v1/booking' ? [409, { error: 'handle_taken', message: 'taken' }] : null);
+  // A server whose pages live at the root of their own address, as rukoo.io's do.
+  server.bookingOrigin = 'https://book.example';
   await openBookingPage();
   const setup = page().locator('form[data-form="booking-setup"]');
+  await expect(setup.locator('.booking-handle-base')).toHaveText('book.example/');
   await setup.locator('[name="name"]').fill('Demo Host');
   await setup.locator('button[type=submit]').click();
   await expect(setup.locator('[data-error]')).not.toHaveText('', { timeout: 15000 });
@@ -353,6 +358,10 @@ test('the page and the overview keep their place while the booking state comes i
   await expect(page().locator('[data-booking-publish]')).toHaveText('Last updated from this computer: 3 minutes ago');
   expect(await win.evaluate(() => window.__hoursRow === document.querySelector('.page.settings [data-a="booking-hours"]'))).toBe(true);
   expect(await top()).toBe(bottom);
+  // Under a minute ago is "just now", not Intl's "this minute" ("binnen een minuut" in Dutch).
+  state.publishing.lastAt = Date.now() - 10000;
+  await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'booking', payload: s }), state);
+  await expect(page().locator('[data-booking-publish]')).toHaveText('Last updated from this computer: just now');
 
   // A new request is drawn, and the page stays where it was.
   await server.book({ handle: HANDLE, type: '30min', start: slot(9, 10), guest: { name: 'Eve Example' }, status: 'pending' });
@@ -386,6 +395,23 @@ test('the page and the overview keep their place while the booking state comes i
   expect(await top()).toBe(overview);
 });
 
+test('in Dutch, a date inside a sentence keeps its lowercase weekday, and a publish a moment ago is "zojuist"', async () => {
+  await pageOn();
+  await server.book({ handle: HANDLE, type: '30min', start: slot(4, 10), guest: { name: 'Ann Example' }, status: 'pending' });
+  await call('bookingSync');
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
+  await win.evaluate(() => document.querySelector('[data-action="settings"]').click());
+  await page().locator('[data-a="booking-open"]').click();
+  await expect(page().locator('h1')).toHaveText('Afsprakenpagina');
+  const ann = page().locator('.booking-item', { hasText: 'Ann Example' });
+  await expect(ann).toContainText('wacht op je tot ');
+  expect(await ann.textContent()).toMatch(/wacht op je tot (maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag) \d+ /);
+  const state = await booking();
+  state.publishing.lastAt = Date.now() - 10000;
+  await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'booking', payload: s }), state);
+  await expect(page().locator('[data-booking-publish]')).toHaveText('Laatst bijgewerkt vanaf deze computer: zojuist');
+});
+
 test('a notice button acts on its own notice, named by id', async () => {
   await pageOn();
   const first = await server.book({ handle: HANDLE, type: '30min', start: slot(3, 10), guest: { name: 'Ann Example' } });
@@ -403,4 +429,21 @@ test('a notice button acts on its own notice, named by id', async () => {
   await expect(notices).toHaveCount(1);
   const left = (await booking()).notices.map((n) => n.id);
   expect(left).toEqual([`guestCancelled:${first.id}`]);
+
+  // An overlap notice's Cancel booking asks first, as the bookings list does.
+  const third = await server.book({ handle: HANDLE, type: '30min', start: slot(5, 10), guest: { name: 'Cleo Example' } });
+  await call('bookingSync');
+  await app.evaluate(({}, id) => {
+    const b = global.__semBooking;
+    b.addNotice('overlap', b.file.rows[id], 'Cleo');
+    b.changed();
+  }, third.id);
+  const cancel = page().locator(`[data-a="booking-notice:${encodeURIComponent(`overlap:${third.id}`)}:cancel"]`);
+  await expect(cancel).toHaveCount(1);
+  await cancel.click();
+  await expect(win.locator('.scrim [name="check"]')).toBeChecked();
+  expect(published().bookings.get(third.id).status).toBe('confirmed');
+  await win.locator('.scrim .buttons button', { hasText: 'Cancel booking' }).click();
+  await expect(win.locator('#toast')).toHaveText('Booking cancelled', { timeout: 15000 });
+  expect(published().bookings.get(third.id)).toMatchObject({ status: 'cancelled', reason: 'host_cancelled' });
 });

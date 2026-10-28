@@ -780,6 +780,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     const MAX_LINES = 5;
     const typeOf = () => types.find((x) => x.slug === f.type) || types[0] || null;
     const linked = () => Boolean(f.link && url);
+    // The footer under the signature has the link already: the times still follow the page, without a second link.
+    const inFooter = () => Boolean(url) && [...editor.querySelectorAll(':scope > .signature a[href]')].some((a) => a.getAttribute('href') === url);
     const options = () => ({
       length: linked() && typeOf() ? typeOf().duration : f.length,
       hours: linked() ? 'booking' : f.hours
@@ -788,7 +790,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       const r = f.result;
       if (!r || !r.lines.length) return '';
       const lines = r.lines.slice(0, MAX_LINES);
-      const link = linked() ? `<div>${withLink(t('composer.booking.linkLine', { url: '{url}' }), url)}</div>` : '';
+      const link = linked() && !inFooter() ? `<div>${withLink(t('composer.booking.linkLine', { url: '{url}' }), url)}</div>` : '';
       return `<div>${esc(t('composer.booking.intro'))}</div><ul>${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><div>${esc(t('composer.booking.zoneLine', { zone: r.timeZone }))}</div>${link}<div><br></div>`;
     };
     const picked = await dialog({
@@ -816,7 +818,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
               <label>${esc(t('calendar.free.hours'))}<select name="hours" ${linked() ? 'disabled' : ''}>${hours.map(([v, label]) => `<option value="${v}"${v === hourValue ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select></label>
               <label>${esc(t('calendar.free.zone'))}<select name="zone">${zoneOptions(f.zone, booking && booking.settings && booking.settings.timeZone ? [booking.settings.timeZone] : [])}</select></label>
             </div>
-            ${url ? `<label class="inline"><input type="checkbox" name="link" ${f.link ? 'checked' : ''}/> ${esc(t('composer.booking.withLink'))}</label><span class="field-help">${esc(t('composer.booking.withLinkHelp'))}</span>` : ''}
+            ${url ? `<label class="inline"><input type="checkbox" name="link" ${f.link ? 'checked' : ''}/> ${esc(t('composer.booking.withLink'))}</label><span class="field-help">${esc(t('composer.booking.withLinkHelp'))}${inFooter() ? ` ${esc(t('composer.booking.linkInFooter'))}` : ''}</span>` : ''}
             <div class="free-preview-label" id="free-preview-label">${esc(t('composer.booking.preview'))}</div>
             <div class="free-preview" aria-labelledby="free-preview-label" aria-live="polite"></div>
           </div>`;

@@ -27,9 +27,9 @@ The setup is one screen:
 
 Turn on publishes the page, and the screen that follows has Copy link, Preview page and Add to signature. The page starts with one meeting type, "30 minute meeting", with Google Meet when the calendar allows it.
 
-After that, Settings → Booking page shows your link, the requests and upcoming bookings, the meeting types, the hours and the page's own settings: introduction, contact line (shown when no times are open or the page is off), page language (also the language of the footer text and of the booked events' titles), time zone, link and bookings per day.
+After that, Settings → Booking page shows your link, the requests and upcoming bookings, the meeting types, the hours and the page's own settings: introduction, contact line (shown when no times are open), page language (also the language of the footer text and of the booked events' titles), time zone, link and bookings per day.
 
-You can change the link up to 3 times in 30 days, but not while it has bookings in the future. The old link forwards to the new one for 180 days.
+You can change the link up to 3 times in 30 days, but not while it has bookings in the future, or while a guest's cancellation hasn't reached your calendar yet. The old link forwards to the new one for 180 days.
 
 ## Meeting types
 
@@ -81,7 +81,7 @@ When a new booking overlaps an event that came after Rukoo last published your t
 
 ## Requests
 
-A type that needs your approval makes requests. A request holds its time on the page. In the calendar it shows as a dashed "Request" block at that time, and the Calendar switch at the top of the sidebar counts the open ones. Accept puts the event in your calendar, and the guest gets the invitation. Decline frees the time. A message you add shows on the guest's booking page; "Also email this message from …" sends it from the calendar's account as well, and is off by default.
+A type that needs your approval makes requests. A request holds its time on the page. In the calendar it shows as a dashed "Request" block at that time, and the Calendar switch at the top of the sidebar counts the open ones. Accept puts the event in your calendar, and the guest gets the invitation. Decline frees the time. A message you add shows on the guest's confirmation page, where they manage the booking; "Also email this message from …" sends it from the calendar's account as well, and is off by default.
 
 A request you don't answer lapses 48 hours after it was made, or at its start minus the minimum notice, whichever comes first.
 
@@ -89,9 +89,9 @@ New bookings of any type also become requests when the page is out of date, when
 
 ## Cancelling and moving
 
-Cancel booking, on the event's card (or `Delete`) or in the bookings list, cancels it. A message you add shows on the guest's booking page, and your calendar sends the cancellation.
+Cancel booking, on the event's card (or `Delete`) or in the bookings list, cancels it. A message you add shows on the guest's confirmation page, and your calendar sends the cancellation.
 
-When you move or resize a booked event in Rukoo, or move it in Google Calendar or another app, the booking moves along and the guest's booking page shows the new time. When you change only the length, the booking keeps its own and the card says "Length changed in your calendar". When you delete the event in another app, or the guest declines your calendar's invitation, Rukoo cancels the booking at its next check and shows a notice.
+When you move or resize a booked event in Rukoo, or move it in Google Calendar or another app, the booking moves along and the guest's confirmation page shows the new time. When you change only the length, the booking keeps its own and the card says "Length changed in your calendar". When you delete the event in another app, or the guest declines your calendar's invitation, Rukoo cancels the booking at its next check and shows a notice.
 
 The guest cancels or picks another time from the page they saw after booking, or through the API, and can move a booking twice. Rukoo then moves or removes the event, and your calendar mails the guest.
 
@@ -130,10 +130,10 @@ Every booking makes your calendar send mail from your address. These limits keep
 | New bookings per day | Bookings per day on your page: 20 by default, 1 to 50 |
 | Bookings in the future | 500 |
 | Moves by the guest | 2 per booking |
-| Mail | 10 changes a day that make your calendar send mail: new bookings, moves and cancellations by guests |
+| Mail | 10 changes a day that make your calendar send mail: new bookings, requests you accept, and moves and cancellations by guests |
 | Requests from one address | 20 writes a minute |
 
-Past the mail limit, new bookings become requests and guests can't move bookings. A guest can still cancel: the event leaves your calendar, and on a Google calendar no cancellation mail goes out ("No email sent to a guest"). A CalDAV server that sends invitations mails anyway, because Rukoo can't stop it.
+Accepting a request counts too, so a day of accepted requests can use the limit up. Past the mail limit, new bookings become requests and guests can't move bookings. Requests you accept then still get their invitation. A guest can still cancel: the event leaves your calendar, and on a Google calendar no cancellation mail goes out ("No email sent to a guest"). A CalDAV server that sends invitations mails anyway, because Rukoo can't stop it.
 
 ## What the server sees and keeps
 

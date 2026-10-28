@@ -114,6 +114,33 @@ test('all events: a move by a week across the clock change keeps the series at 1
   assert.ok(events().every((e) => zonedParts(e.start, Z).weekday === 2 && zonedParts(e.start, Z).time === '11:00'));
 });
 
+test("a new zone that puts the series' start on another date takes the rule along, for all events and for this and following", async () => {
+  // Tuesdays at 08:00 in Amsterdam are Mondays at 23:00 in Los Angeles, where Google repeats the series after the change.
+  const LA = 'America/Los_Angeles';
+  const tuesdays = (extra = {}) => master({ ...slot('2026-11-03', '08:00', '08:30'), recurrence: ['RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=6'], ...extra });
+  const dates = ['2026-11-03', '2026-11-10', '2026-11-17', '2026-11-24', '2026-12-01', '2026-12-08'].map((d) => `${d} 08:00 Team sync`);
+
+  const all = await open([tuesdays()]);
+  const opened = all.on('2026-11-10');
+  const { etag } = await all.calendars.series(opened.id);
+  await all.calendars.update(opened.id, input(opened, { timeZone: LA }), { scope: 'all', seriesEtag: etag, etag: opened.etag });
+  const patch = requests(all.fake, 'PATCH').pop();
+  assert.deepEqual(patch.body.start, { date: null, dateTime: iso(ams('2026-11-03', '08:00')), timeZone: LA });
+  assert.deepEqual(patch.body.recurrence, ['RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=6']);
+  assert.deepEqual(all.clock(), dates, 'still Tuesday at 08:00 in Amsterdam');
+
+  // This and following, with an EXDATE and a deleted occurrence after the split: both stay deleted in the new zone.
+  const exdate = `EXDATE;TZID=${Z}:20261124T080000`;
+  const gone = { id: `sync_${basic(ams('2026-12-01', '08:00'))}`, recurringEventId: 'sync', originalStartTime: { dateTime: iso(ams('2026-12-01', '08:00')), timeZone: Z }, ...slot('2026-12-01', '08:00', '08:30'), status: 'cancelled', ...mine };
+  const following = await open([tuesdays({ recurrence: ['RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=6', exdate] }), gone]);
+  const split = following.on('2026-11-17');
+  await following.calendars.update(split.id, input(split, { timeZone: LA }), { scope: 'following', etag: split.etag });
+  const post = requests(following.fake, 'POST').pop();
+  assert.deepEqual(post.body.start, { dateTime: iso(ams('2026-11-17', '08:00')), timeZone: LA });
+  assert.deepEqual(post.body.recurrence, ['RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4', `EXDATE;TZID=${LA}:20261123T230000`, `EXDATE;TZID=${LA}:20261130T230000`]);
+  assert.deepEqual(following.clock(), [dates[0], dates[1], dates[2], dates[5]]);
+});
+
 test('the line helper moves EXDATE and RDATE values on the clock, into another zone, and between all-day and timed', () => {
   const lines = ['EXDATE;TZID=Europe/Amsterdam:20261019T100000,20261102T100000', 'RDATE;TZID=Europe/Amsterdam:20261231T100000', 'EXDATE:20261116T090000Z', 'EXRULE:FREQ=MONTHLY'];
   // An hour later, across the clock change of 25 October: still on the hour on the clock. A UTC value is read on it.

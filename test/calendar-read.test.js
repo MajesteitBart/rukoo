@@ -274,11 +274,13 @@ test("list() gives the accounts and their calendars without fetching, and the st
   assert.deepEqual(seen.synced, [{ accountId: 'g1' }]);
 
   const [a, inv] = calendars.view(week).events;
+  // An answer says so too, with the event as answered, so the reminders and the booking page follow at once.
   await calendars.respond(inv.id, 'accepted');
-  assert.deepEqual(seen.changed, [], 'an answer is no change of the calendar');
-  await calendars.remove(a.id, { etag: a.etag, notify: true });
   assert.equal(seen.changed.length, 1);
-  assert.deepEqual([seen.changed[0].kind, seen.changed[0].scope, seen.changed[0].event, seen.changed[0].previous.id], ['remove', 'one', null, a.id]);
+  assert.deepEqual([seen.changed[0].kind, seen.changed[0].scope, seen.changed[0].event.id, seen.changed[0].event.response, seen.changed[0].previous], ['respond', 'one', inv.id, 'accepted', null]);
+  await calendars.remove(a.id, { etag: a.etag, notify: true });
+  assert.equal(seen.changed.length, 2);
+  assert.deepEqual([seen.changed[1].kind, seen.changed[1].scope, seen.changed[1].event, seen.changed[1].previous.id], ['remove', 'one', null, a.id]);
   // A failed sync says nothing.
   calendars.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: { message: 'down' } }) });
   calendars.providers.clear();

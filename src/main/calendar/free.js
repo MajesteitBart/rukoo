@@ -16,8 +16,9 @@ const HOURS = new Set(['booking', 'working', 'any']);
 
 // opts: { start, end (at most 31 days later), length (minutes, 5..480), hours, timeZone?, locale?, hour12? }.
 // booking: the booking page's hours ({ weekly, overrides, timeZone }) or null when the page is off; 'booking' hours
-// then fall back to working hours. The result's times are meant to be shown in timeZone (the PC's by default), also
-// when booking hours are laid out in the page's own zone; all-day events then block whole days in that zone too.
+// then fall back to working hours. timeZone (the PC's by default) is only the zone the result is shown in: working
+// hours are the PC's, as the grid shades them, and booking hours are in the page's own zone. All-day events block
+// whole days in the zone the hours are in.
 async function free(calendars, settings, booking, opts = {}) {
   const o = opts && typeof opts === 'object' ? opts : {};
   const { start, end } = o;
@@ -33,12 +34,12 @@ async function free(calendars, settings, booking, opts = {}) {
   const locale = (languages.find((l) => l.code === language) || languages[0]).locale;
 
   let open;
-  let busyZone = timeZone;
+  let busyZone = pcZone();
   try {
     if (hours === 'booking') {
       open = openWindows({ weekly: booking.weekly, overrides: booking.overrides || {}, timeZone: booking.timeZone, from: start, to: end });
       busyZone = booking.timeZone;
-    } else if (hours === 'working') open = openWindows({ weekly: workWeekly(settings && settings.calendar), timeZone, from: start, to: end });
+    } else if (hours === 'working') open = openWindows({ weekly: workWeekly(settings && settings.calendar), timeZone: busyZone, from: start, to: end });
     else open = [[start, end]];
   } catch (err) {
     // Booking hours that don't make a schedule; the booking service checks them when they are saved.

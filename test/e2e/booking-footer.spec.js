@@ -14,7 +14,7 @@ let server;
 
 const PASSWORD = 'a long enough password';
 const HANDLE = 'demo-host';
-const URL_ = `https://meet.example/meet/${HANDLE}`;
+const URL_ = `https://meet.example/${HANDLE}`;
 const FOOTER_EN = `Want to meet with me? Pick a time, or share this link with your agent: ${URL_}`;
 const FOOTER_NL = `Wil je met me afspreken? Kies een moment, of deel deze link met je AI-agent: ${URL_}`;
 
@@ -280,4 +280,24 @@ test("free times with the link leave out what the meeting type's notice and hori
   await dialog.locator('[name="link"]').uncheck();
   await expect(dialog.locator('.free-preview li').first()).toBeVisible({ timeout: 10000 });
   await expect(dialog.locator('.buttons button', { hasText: 'Insert' })).toBeEnabled();
+});
+
+test('free times in a message whose footer has the link follow the page without a second link', async () => {
+  await pageOn();
+  await call('updateSettings', { signatureHtml: '<b>Demo Sender</b>', bookingFooter: true });
+  await reload();
+  await compose();
+  await expect(editor().locator(`.signature a[href="${URL_}"]`)).toHaveCount(1);
+  await editor().click({ position: { x: 4, y: 4 } });
+  await win.click('.composer [data-c="calendar"]');
+  await win.locator('.menu button', { hasText: 'Insert my free times…' }).click();
+  const dialog = win.locator('.scrim .dialog');
+  await expect(dialog.locator('[name="link"]')).toBeChecked();
+  await expect(dialog.locator('.field-help')).toContainText("The link is under your signature already, so it isn't added twice.");
+  await dialog.locator('[name="range"]').selectOption('days14');
+  await expect(dialog.locator('.free-preview li').first()).toBeVisible({ timeout: 10000 });
+  await expect(dialog.locator('.free-preview')).not.toContainText(URL_);
+  await dialog.locator('.buttons button', { hasText: 'Insert' }).click();
+  await expect(editor().locator('ul li').first()).toBeVisible();
+  await expect(editor().locator(`a[href="${URL_}"]`)).toHaveCount(1);
 });

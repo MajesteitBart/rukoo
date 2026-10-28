@@ -694,6 +694,26 @@ describe('the manage page', () => {
     expect(html).not.toContain('.ics');
   });
 
+  it('says no invitation comes when the host’s calendar sends none, as do the answer and the agent texts', async () => {
+    const h = await host(signup, { profile: { invites: false } });
+    const res = await book(h.handle, { type: '30min', start: iso(slotAhead(3)), ...guest() });
+    expect(res.status).toBe(201);
+    expect(res.body.invitation).toBe(false);
+    expect(res.body.message).toContain("calendar doesn't send invitations, so keep the manage link");
+    expect(res.body.message).not.toContain('sends an invitation');
+    const manage = new URL(res.body.manage_url).pathname + new URL(res.body.manage_url).search;
+    const html = (await call('GET', manage)).text;
+    expect(html).toContain('Bart van der Meeren’s calendar doesn’t send invitations. Keep this page');
+    expect(html).not.toContain('sends you an invitation');
+    expect((await call('GET', `${manage}&lang=nl`)).text).toContain('De agenda van Bart van der Meeren stuurt geen uitnodigingen.');
+    const llms = (await call('GET', `/meet/${h.handle}/llms.txt`)).text;
+    expect(llms).toContain("The host's calendar doesn't send invitations");
+    expect(llms).not.toContain('sends the invitation');
+    // An ordinary page says nothing of it.
+    const usual = await book((await host(signup)).handle, { type: '30min', start: iso(slotAhead(3)), ...guest() });
+    expect('invitation' in usual.body).toBe(false);
+  });
+
   it('is in Dutch for ?lang=nl', async () => {
     const { manage } = await booked();
     const html = (await call('GET', `${manage}&lang=nl`)).text;

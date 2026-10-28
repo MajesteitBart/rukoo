@@ -12,7 +12,7 @@
 
 import pkg from '../package.json' with { type: 'json' };
 import * as api from './api.js';
-import { bookingBase, bookingOrigins, bookingRoot, clientNetwork, limitRate } from './config.js';
+import { bookingAliases, bookingBase, bookingOrigins, bookingRoot, clientNetwork, limitRate } from './config.js';
 import { meetEmpty, meetJson, meetText } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -249,7 +249,8 @@ export function decodeName(value) {
 
 // The handle (and type) a link points at on this server. Throws invalid for anything else. Under BOOKING_ORIGIN a page
 // is https://rukoo.io/<handle>, and an older /meet/<handle> link (which redirects there) counts too; without it, only
-// /meet/<handle>.
+// /meet/<handle>. On an address in BOOKING_ALIASES, where the pages used to live, a /meet/<handle> link names the
+// same page.
 export function parseLink(env, url, link) {
   const refuse = () =>
     new HttpError(400, 'invalid', `link must be a booking page on this server, such as ${bookingBase(env, url)}/<handle>, or the handle itself.`, {}, { field: 'link' });
@@ -261,10 +262,11 @@ export function parseLink(env, url, link) {
   } catch {
     throw refuse();
   }
-  if (!bookingOrigins(env, url).has(parsed.origin)) throw refuse();
+  const here = bookingOrigins(env, url).has(parsed.origin);
+  if (!here && !bookingAliases(env).has(parsed.origin)) throw refuse();
   let path = parsed.pathname;
   if (path.startsWith('/meet/')) path = path.slice('/meet'.length);
-  else if (!bookingRoot(env)) throw refuse();
+  else if (!here || !bookingRoot(env)) throw refuse();
   // Any address under the page counts, a manage link too; its second part names a type when it can be one.
   const m = path.match(/^\/([^/]+)(?:\/([^/]+))?(?:\/.*)?$/);
   if (!m || !input.HANDLE.test(m[1])) throw refuse();
@@ -436,14 +438,17 @@ function successText(name, body, host) {
       return lines.join('\n');
     }
     case 'book_meeting': {
-      const b = body.booking;
       if (body.already_booked) {
-        return `Already booked for this email: ${b.type} at ${b.start} (${b.start_utc}), status ${b.status}. The invitation and manage link come with the host's invitation. Don't book again.`;
+        return "Already booked for this email at this time. The link to change or cancel it was in the answer to the first booking; the invitation comes from the host's calendar. Don't book again.";
       }
+      const b = body.booking;
+      const invites = body.invitation !== false;
       const lines = [
         b.status === 'pending'
-          ? `Requested, not confirmed yet: ${b.type} at ${b.start} (${b.start_utc}). The host confirms or declines; the invitation follows when they confirm. If they haven't by ${b.expires_at}, the request lapses.`
-          : `Booked: ${b.type} at ${b.start} (${b.start_utc}). The host's calendar sends an invitation to the guest's email, usually within minutes; it can take longer while the host's computer is off. The booking holds either way.`
+          ? `Requested, not confirmed yet: ${b.type} at ${b.start} (${b.start_utc}). The host confirms or declines; ${invites ? 'the invitation follows when they confirm' : 'the manage link shows the answer, and no invitation is sent'}. If they haven't by ${b.expires_at}, the request lapses.`
+          : invites
+            ? `Booked: ${b.type} at ${b.start} (${b.start_utc}). The host's calendar sends an invitation to the guest's email, usually within minutes; it can take longer while the host's computer is off. The booking holds either way.`
+            : `Booked: ${b.type} at ${b.start} (${b.start_utc}). The host's calendar doesn't send invitations, so give your user the manage link: it has the time and the way to change or cancel.`
       ];
       if (body.key) lines.push(`Booking id ${b.id}, key ${body.key}: keep both to change or cancel. Manage link for your user: ${body.manage_url}`);
       if (body.ics_url) lines.push(`Calendar file: ${body.ics_url}`);

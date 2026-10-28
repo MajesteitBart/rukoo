@@ -124,6 +124,7 @@ describe('GET /v1/booking', () => {
     expect(res.body).toEqual({
       handle: null,
       url: null,
+      base: 'https://accounts.example/meet',
       enabled: false,
       device: null,
       publishedAt: null,
@@ -154,6 +155,7 @@ describe('PUT /v1/booking', () => {
     expect(view).toEqual({
       handle,
       url: `https://accounts.example/meet/${handle}`,
+      base: 'https://accounts.example/meet',
       enabled: true,
       device: { id: person.account.devices[0].id, name: 'Test desktop', current: true },
       publishedAt: expect.any(Number),
@@ -173,8 +175,11 @@ describe('PUT /v1/booking', () => {
     const person = await signup();
     const key = await hostKey();
     const handle = newHandle();
-    const res = await publish(person, page(handle, key), { vars: { BOOKING_ORIGIN: 'https://meet.example/' } });
-    expect(res.body.url).toBe(`https://meet.example/${handle}`);
+    const vars = { BOOKING_ORIGIN: 'https://meet.example/' };
+    const before = await call('GET', '/v1/booking', { token: person.token, vars });
+    expect(before.body).toMatchObject({ handle: null, url: null, base: 'https://meet.example' });
+    const res = await publish(person, page(handle, key), { vars });
+    expect(res.body).toMatchObject({ url: `https://meet.example/${handle}`, base: 'https://meet.example' });
   });
 
   it('refuses invalid, reserved and blocked handles, and another account’s', async () => {
@@ -309,6 +314,19 @@ describe('renaming', () => {
     expect(res.body.error).toBe('has_bookings');
     expect((await bookingStub(handle).view(TIMES)).accepting).toBe(true);
     expect(await tables(bookingStub(next))).toEqual([]);
+  });
+
+  it("is refused while a guest's cancellation of a future booking waits for the booking device", async () => {
+    const { person, key, handle } = await host(signup);
+    expect((await bookDirect(handle, tenAm(5))).outcome).toBe('created');
+    // The guest cancelled; the booking device hasn't handled that version yet.
+    await runInDurableObject(bookingStub(handle), (instance, state) => state.storage.sql.exec("UPDATE bookings SET status = 'cancelled', cancelledBy = 'guest', version = version + 1"));
+    const next = newHandle('waiting');
+    const res = await publish(person, page(next, key));
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('has_bookings');
+    await runInDurableObject(bookingStub(handle), (instance, state) => state.storage.sql.exec('UPDATE bookings SET handledVersion = version'));
+    expect((await publish(person, page(next, key))).status).toBe(200);
   });
 
   it('undoes the old handle’s retirement when the new one is taken', async () => {
@@ -450,6 +468,30 @@ describe('deleting the account', () => {
     expect(view).toMatchObject({ state: 'page', accepting: false, profile: null });
     const stranger = await signup();
     expect((await publish(stranger, page(handle, await hostKey()))).body.error).toBe('handle_reserved');
+  });
+
+  it('keeps the handle from a new sign-up with the same email; only the deleting device’s key takes it back', async () => {
+    const { person: alice, handle } = await host(signup);
+    const handleKey = randomKey();
+    const res = await call('DELETE', '/v1/account', { token: alice.token, body: { authKey: alice.authKey, handleKey } });
+    expect(res.status).toBe(204);
+    // Sign-ups don't prove the address: someone else can sign up with it, but not take the page.
+    const again = await signup({ email: alice.email });
+    const check = await call('GET', `/v1/booking/handles/${handle}`, { token: again.token });
+    expect(check.body).toEqual({ handle, available: false, reason: 'reserved' });
+    expect((await publish(again, page(handle, await hostKey()))).body.error).toBe('handle_reserved');
+    expect((await publish(again, { ...page(handle, await hostKey()), reclaim: randomKey() })).body.error).toBe('handle_reserved');
+    // The device that deleted it, with the account made again, has the key.
+    const back = await publish(again, { ...page(handle, await hostKey()), reclaim: handleKey });
+    expect(back.status).toBe(200);
+    expect(back.body).toMatchObject({ handle, enabled: true });
+  });
+
+  it('without a key from the deleting device, nobody gets the handle back', async () => {
+    const { person: alice, handle } = await host(signup);
+    expect((await call('DELETE', '/v1/account', { token: alice.token, body: { authKey: alice.authKey } })).status).toBe(204);
+    const again = await signup({ email: alice.email });
+    expect((await publish(again, page(handle, await hostKey()))).body.error).toBe('handle_reserved');
   });
 });
 

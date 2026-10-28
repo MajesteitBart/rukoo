@@ -167,6 +167,7 @@ The settings in `vars`:
 | `BOOKING_STALE_HOURS` | Hours after the holder's computer last published before every meeting type waits for the holder's confirmation. Default 24. |
 | `BOOKING_DARK_DAYS` | Days after the last publish before a page offers no times at all. Default 7. |
 | `BOOKING_ORIGIN` | An address booking pages live at the root of, such as `https://meet.example.org`, so a page is `https://meet.example.org/<handle>`. Empty means each page lives under `/meet` on the address it was opened on. See below. |
+| `BOOKING_ALIASES` | Addresses your booking pages used to live at, as origins separated by commas, such as `https://accounts.example.org`. The MCP endpoint takes a `/meet/<handle>` link on one of them as the same page, so links people saved before a move still work there. Empty by default. |
 | `BLOCKED_HANDLES` | Handles you took down, separated by commas. They answer like a handle nobody has and can't be claimed. |
 
 Set `OPERATOR_CONTACT` before you let people turn pages on. Every booking page has a "Report this page" link, and it goes there: an email address becomes a mail with the page's address in the subject, a web address is linked as it is. Without it the link isn't shown, and `BLOCKED_HANDLES` is how you act on a report.
@@ -185,7 +186,7 @@ Booking links end up in email footers, so a short domain helps. Route it to this
 
 Pages then live at the root of that address, without `/meet`: `https://meet.example.org/<handle>`, with the MCP endpoint at `/mcp`, the pages' script at `/booker.js` and a guide for assistants at `/llms.txt`. The app shows that address, and every link the pages, `llms.txt`, the JSON API and MCP hand out uses it. Any other path there counts as a handle, so an unknown one gets the booking pages' 404. The account API (`/v1/…`) and `/privacy` work on both domains.
 
-`/meet/…` on any address redirects to the same path on `BOOKING_ORIGIN` (301 for reads, 308 for posts), so links handed out before you set it keep working. A booking's calendar UID keeps the host it was made under, so changing `BOOKING_ORIGIN` later doesn't split anyone's calendar entries.
+`/meet/…` on any address redirects to the same path on `BOOKING_ORIGIN` (301 for reads, 308 for posts), so links handed out before you set it keep working. An assistant that passes such a link to MCP doesn't follow the redirect, so list the old address in `BOOKING_ALIASES` if it was your own. A booking's calendar UID keeps the host it was made under, so changing `BOOKING_ORIGIN` later doesn't split anyone's calendar entries.
 
 [PROTOCOL.md](PROTOCOL.md#where-public-routes-live) lists the routes on each kind of address.
 
@@ -213,9 +214,9 @@ rukoo.io serves Rukoo's website and this server from one domain, through two Wor
 
 The website's paths (`/`, `/index.html`, `/404.html`, `/app.js`, `/styles.css`, `/assets/*`, `/img/*`, `/media/*`, and its redirects `/download/*`, `/releases` and `/github`) always win, because the site Worker answers them before anything reaches this server. That is why the server reserves those names and likely future ones as handles. `/` on this server is only a fallback page; on rukoo.io the website answers it.
 
-The Worker keeps its old custom domain `rukoo-account.bvdm.ai`. Devices that still sync with that address keep working, since the account API answers on every address, and its `/meet/...` links redirect to the same page on rukoo.io.
+The Worker keeps its old custom domain `rukoo-account.bvdm.ai`. Devices that still sync with that address keep working, since the account API answers on every address, and its `/meet/...` links redirect to the same page on rukoo.io. `BOOKING_ALIASES` is `https://rukoo-account.bvdm.ai`, so MCP takes those old links too.
 
-Both addresses reach the same Worker and the same storage, so they hold the same accounts and booking pages: an account made on one signs in on the other.
+Both addresses reach the same Worker and the same storage, so they hold the same accounts and booking pages. Signing in still needs the address an account was made at, because the password proof includes it ([PROTOCOL.md](PROTOCOL.md#keys)). A device signed in at the old address keeps using it until it signs out or deletes the account.
 
 ## What lands in Cloudflare's logs
 

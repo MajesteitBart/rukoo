@@ -135,7 +135,7 @@ function context(request, env, url, handle, profile, source = url.searchParams, 
     f: pages.formatter(locale, zone, hour12),
     host: profile?.name ?? null,
     links: known ? links(env, url, handle) : null,
-    // The page's own path, for links and forms: /<handle> at the root of BOOKING_ORIGIN, else /<handle>.
+    // The page's own path, for links and forms: /<handle> at the root of BOOKING_ORIGIN, else /meet/<handle>.
     base: `${bookingPrefix(env, url)}/${handle}`,
     script: bookerPath(env, url),
     operator: config(env, url).operator,

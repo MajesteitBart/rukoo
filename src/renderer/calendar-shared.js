@@ -58,11 +58,13 @@ export function setContext(context) {
 }
 
 // What one part of the calendar asks of another without importing it: calendar.js sets reload when it loads, and
-// calendar-event.js calls it after a change. openRequest opens a booking request's card (calendar-event.js sets it);
-// panels holds the side panels the toolbar can open, such as the availability panel (calendar-free.js registers it).
+// calendar-event.js calls it after a change. openRequest opens a booking request's card and cancelBooking asks before
+// it cancels a booking (calendar-event.js sets both); panels holds the side panels the toolbar can open, such as the
+// availability panel (calendar-free.js registers it).
 export const hooks = {
   reload: () => {},
   openRequest: null,
+  cancelBooking: null,
   panels: {}
 };
 
@@ -180,8 +182,12 @@ export function keptInstant(ms, date, time) {
   return Number.isFinite(ms) && dateValue(ms) === date && timeValue(ms) === time ? ms : parseLocal(date, time);
 }
 
+// A day for inside a sentence or in brackets: the weekday keeps the language's own case ("vrijdag 30 oktober" in
+// Dutch). longDay starts a line or a heading with a capital.
+export const inlineDay = (ts) => fmt(ts, { weekday: 'long', day: 'numeric', month: 'long' });
+
 export function longDay(ts) {
-  return cap(fmt(ts, { weekday: 'long', day: 'numeric', month: 'long' }));
+  return cap(inlineDay(ts));
 }
 
 // "Tuesday 13 October, 14:00 – 15:30", or the days of an all-day event.

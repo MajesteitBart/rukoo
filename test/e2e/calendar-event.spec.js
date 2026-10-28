@@ -464,6 +464,39 @@ test('the custom repeat form writes its rule, and the presets know the month', a
   await expect(form().locator('[data-wd="5"]')).toHaveAttribute('aria-pressed', 'true');
 });
 
+test("a weekly series in another time zone repeats on the weekday the dialog shows, from its first day", async () => {
+  await openCalendar();
+  await watchCalls();
+  // 01:00 on the PC is the day before in Pago Pago (UTC-11), wherever east of UTC-10 the PC is.
+  const thursday = await column(3).evaluate((el) => Number(el.dataset.calCol));
+  await win.click('[data-cal="new"]');
+  await form().locator('[name="title"]').fill('Night call');
+  await set('startDate', await dateText(thursday));
+  await set('startTime', '01:00');
+  await openMore();
+  await form().locator('[name="timeZone"]').fill('Pacific/Pago_Pago');
+  await form().locator('[name="timeZone"]').dispatchEvent('input');
+  const repeat = form().locator('[name="repeat"]');
+  await expect(repeat.locator('option[value="weekly"]')).toHaveText('Weekly on Thursday');
+  await repeat.selectOption('weekly');
+  await save();
+  await expect(form()).toHaveCount(0);
+  // The rule names the day as Pago Pago has it, and the week starts there on Sunday, the PC's Monday.
+  expect((await callsTo('calendarCreate'))[0][0].recurrence).toBe('FREQ=WEEKLY;BYDAY=WE;WKST=SU');
+  await expect.poll(async () => (await storedAll('Night call')).length).toBeGreaterThanOrEqual(3);
+  const made = await storedAll('Night call');
+  expect(made[0].start).toBe(await timeOn(thursday, 1, 0));
+  const clock = await win.evaluate((list) => list.map((ms) => `${new Date(ms).getDay()} ${new Date(ms).getHours()}`), made.map((e) => e.start));
+  expect(new Set(clock)).toEqual(new Set(['4 1']));
+  // Opened again, the rule is the preset it was made with.
+  await scrollGrid(0);
+  await event('Night call').click();
+  await card().locator('[data-pop="edit"]').click();
+  await openMore();
+  await expect(form().locator('[name="repeat"]')).toHaveValue('weekly');
+  await expect(form().locator('[name="repeat"] option:checked')).toHaveText('Weekly on Thursday');
+});
+
 test('reminders, the time zone and show as are saved and come back in the dialog', async () => {
   await openCalendar();
   await win.click('[data-cal="new"]');
@@ -484,6 +517,16 @@ test('reminders, the time zone and show as are saved and come back in the dialog
   await expect(form().locator('[data-zone-note]')).toContainText('in America/New York');
   await form().locator('[name="visibility"]').selectOption('private');
   await expect(form().locator('[data-extras-sum]')).toHaveText('2 reminders · America/New York · Private');
+  // With everything open the fields scroll, while the title and Save stay inside the window.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 700));
+  await expect.poll(() => win.evaluate(() => window.innerHeight)).toBeLessThan(720);
+  const inView = await win.evaluate(() => {
+    const save = document.querySelector('.scrim .dialog .buttons button.primary');
+    const title = document.querySelector('.scrim .dialog h2');
+    const r = save.getBoundingClientRect();
+    return r.bottom <= window.innerHeight && r.top >= 0 && title.getBoundingClientRect().top >= 0;
+  });
+  expect(inView).toBe(true);
   await save();
   await expect(form()).toHaveCount(0);
   await expect.poll(() => storedOne('Board call')).not.toBeNull();
@@ -688,7 +731,7 @@ test('a booking request opens its card from the grid: Accept, and Decline with a
   // What the guest wrote is text, never markup.
   await expect(req.locator('h2')).toHaveText('Booking request from Jane <b>Doe</b>');
   await expect(req).toContainText('About <i>pricing</i>');
-  await expect(req).toContainText('Booked via An assistant <script>window.__xss = 1</script>');
+  await expect(req).toContainText('Assistant: An assistant <script>window.__xss = 1</script>');
   await expect(req).toContainText('30 minute meeting');
   expect(await req.locator('b, i, script').count()).toBe(0);
   expect(await win.evaluate(() => window.__xss)).toBeUndefined();
@@ -704,11 +747,11 @@ test('a booking request opens its card from the grid: Accept, and Decline with a
   await expect(req).toHaveCount(0);
   expect(await bookingCalls()).toEqual([['Rf63vMqqWdS0MICDAHKmrw', 'accept']]);
 
-  // Decline: a message for the guest's booking page, and the email only when asked for.
+  // Decline: a message for the guest's confirmation page, and the email only when asked for.
   await block.click();
   await req.locator('[data-req="decline"]').click();
   await expect(win.locator('.dialog h2')).toHaveText('Decline this request?');
-  await expect(win.locator('.dialog')).toContainText('Jane <b>Doe</b> sees on their booking page that the request was declined.');
+  await expect(win.locator('.dialog')).toContainText('Jane <b>Doe</b> sees on their confirmation page that the request was declined.');
   await expect(win.locator('.dialog [name="email"]')).not.toBeChecked();
   await expect(win.locator('.dialog label', { hasText: 'Also email the message from demo@example.com' })).toBeVisible();
   await win.fill('.dialog [name="message"]', 'Sorry, that week is full.');
@@ -761,7 +804,7 @@ test("a booked event's card shows the guest's details as text, and Cancel bookin
   await expect(card()).toContainText('Booked through your booking page');
   await expect(card()).toContainText('<img src=x onerror="window.__xss=1">Eve');
   await expect(card()).toContainText('<b>Bring</b> the numbers https://evil.example/x');
-  await expect(card()).toContainText('Booked via <script>window.__xss=2</script>');
+  await expect(card()).toContainText('Assistant: <script>window.__xss=2</script>');
   await expect(card()).toContainText("Guest's time:");
   // Nothing of it became markup or a link.
   expect(await card().locator('img, b, script, [data-href]').count()).toBe(0);
@@ -804,6 +847,46 @@ test("a booked event's card shows the guest's details as text, and Cancel bookin
   await win.locator('.dialog .buttons button.danger').click();
   await expect(toast()).toHaveText('Event deleted');
   await expect.poll(() => storedOne('Intro call')).toBeNull();
+  expect(await bookingCalls()).toHaveLength(1);
+});
+
+test("the overlap notice asks before it cancels a booking, and a booked event that is over is deleted as an ordinary one", async () => {
+  await openCalendar();
+  await fakeBooking();
+  const accountId = await demoAccount();
+  const thursday = await column(3).evaluate((el) => Number(el.dataset.calCol));
+  const start = await timeOn(thursday, 12);
+  const guest = { name: 'Jane Doe', email: 'jane@example.com', notes: '', timeZone: 'Europe/Amsterdam', locale: 'en', via: '' };
+  const booking = { id: 'Ov3rAAAAAAAAAAAAAAAAAA', status: 'confirmed', type: 'intro', typeTitle: 'Intro call', start, end: start + 1800000, channel: 'web', eventId: null, guest, customLength: false };
+  const device = { id: 'd1', name: 'Office PC', current: true };
+  const overlap = { id: `overlap:${booking.id}`, kind: 'overlap', tone: 'warn', bookingId: booking.id, title: 'A booking overlaps another event', text: 'Keep both, or cancel the booking.', actions: [{ action: 'keep', label: 'Keep' }, { action: 'cancel', label: 'Cancel booking' }, { action: 'open', label: 'Open' }] };
+  await win.evaluate(async (state) => (await import('./calendar-free.js')).applyBooking(state), { status: 'on', thisDevice: true, device, bookings: [booking], requests: [], notices: [overlap] });
+  const notice = win.locator('.cal-notice', { hasText: 'A booking overlaps another event' });
+  await notice.locator('button', { hasText: 'Cancel booking' }).click();
+  await expect(win.locator('.dialog h2')).toHaveText('Cancel this booking?');
+  await expect(win.locator('.dialog')).toContainText('Jane Doe gets a cancellation for');
+  await win.locator('.dialog .buttons button', { hasText: 'Keep booking' }).click();
+  await expect(win.locator('.dialog')).toHaveCount(0);
+  expect(await bookingCalls()).toEqual([]);
+  await notice.locator('button', { hasText: 'Cancel booking' }).click();
+  await win.locator('.dialog .buttons button.danger').click();
+  await expect(toast()).toHaveText('Booking cancelled');
+  expect(await bookingCalls()).toEqual([[booking.id, 'cancel', { notify: true }]]);
+
+  // Last week's booked meeting: Delete is a plain delete, and the booking isn't cancelled.
+  const past = await shiftDays(start, -7);
+  await app.evaluate(({}, [accountId, start]) => global.__semCalendars.create({ accountId, calendarId: 'personal', title: 'Last week intro', location: '', description: '', allDay: false, start, end: start + 1800000 }, { bookingId: 'Pa5tAAAAAAAAAAAAAAAAAA' }), [accountId, past]);
+  await setBooking({ status: 'on', thisDevice: true, device, bookings: [{ ...booking, id: 'Pa5tAAAAAAAAAAAAAAAAAA', start: past, end: past + 1800000 }], requests: [] });
+  await win.locator('.cal-days .cal-gutter').click();
+  await win.keyboard.press('k');
+  await scrollGrid(10);
+  await event('Last week intro').click();
+  await expect(card()).toContainText('Booked through your booking page');
+  await expect(card().locator('[data-pop="delete"]')).toHaveAttribute('title', 'Delete (Delete)');
+  await win.keyboard.press('Delete');
+  await expect(win.locator('.dialog h2')).toHaveText('Delete this event?');
+  await win.locator('.dialog .buttons button.danger').click();
+  await expect(toast()).toHaveText('Event deleted');
   expect(await bookingCalls()).toHaveLength(1);
 });
 

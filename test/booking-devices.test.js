@@ -111,6 +111,20 @@ test('another computer shows the page read-only until it takes over; the first t
   assert.equal(puts.at(-1).body.takeover, true);
 });
 
+test("a computer without the calendar for bookings can't take the page over, so no booking goes without its event", async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, { name: 'desk' });
+  await desk.booking.enable(ENABLE);
+  const laptop = await computer(t, srv, { signUp: false, name: 'laptop' });
+  // The laptop has another mail account only.
+  laptop.engine.accounts[0].email = 'someone-else@example.com';
+  await laptop.account.sync();
+  await laptop.booking.load({ refresh: true });
+  await assert.rejects(laptop.booking.takeover(), (err) => err.code === 'invalid' && err.field === 'destination' && /isn't on this computer/.test(err.message));
+  assert.equal(laptop.booking.state().thisDevice, false);
+  assert.equal(srv.pages.get('bart').deviceId, [...srv.sessions.values()].find((s) => s.name === 'desk').id);
+});
+
 test('signing in again on the booking device takes the page over for the new session by itself', async (t) => {
   const srv = await server(t);
   const desk = await computer(t, srv);
@@ -145,6 +159,34 @@ test('a page turned off on another computer stays off: the booking device asks b
   assert.equal(srv.pages.get('bart').enabled, false);
   assert.equal(srv.calls.filter((c) => c.route === 'PUT /v1/booking').length, 1, 'only the one that turned it on');
   assert.equal(desk.booking.state().status, 'off');
+});
+
+test("the server refuses the former booking device's publish until it has read the page another computer turned off", async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv, { name: 'desk' });
+  await desk.booking.enable(ENABLE);
+  const { body } = srv.calls.filter((c) => c.route === 'PUT /v1/booking').at(-1);
+  const laptop = await computer(t, srv, { signUp: false, name: 'laptop' });
+  await laptop.account.sync();
+  await laptop.booking.load({ refresh: true });
+  await laptop.booking.disable();
+  const deskSession = [...srv.sessions.values()].find((s) => s.name === 'desk').id;
+  assert.equal(srv.pages.get('bart').offDevice, deskSession);
+
+  // What the desk had, sent as an older Rukoo would, without reading first: refused, and the page stays off.
+  await assert.rejects(desk.account.bookingCall('PUT', '/v1/booking', { ...body, takeover: false }), (err) => err.code === 'other_device');
+  await assert.rejects(desk.account.bookingCall('PUT', '/v1/booking', { ...body, handle: 'bart-vdm', takeover: false }), (err) => err.code === 'other_device');
+  assert.equal(srv.pages.get('bart').enabled, false);
+  // The laptop, which turned it off, isn't held back.
+  assert.equal(laptop.booking.state().status, 'off');
+
+  // Rukoo reads before it publishes: that clears the block, and turning the page on again from setup needs no takeover.
+  assert.equal(await desk.booking.publish({ force: true }), false);
+  assert.equal(srv.pages.get('bart').offDevice, null);
+  const state = await desk.booking.enable(ENABLE);
+  assert.equal(state.status, 'on');
+  assert.equal(state.thisDevice, true);
+  assert.notEqual(srv.calls.filter((c) => c.route === 'PUT /v1/booking').at(-1).body.takeover, true);
 });
 
 test("a computer that took over with an older copy of the calendar applies the guest's move and cancellation", async (t) => {
@@ -273,6 +315,28 @@ test('deleting the Rukoo account turns the booking page off first and stops when
   assert.ok(routes.lastIndexOf('POST /v1/logout') < routes.indexOf('DELETE /v1/booking'));
   assert.ok(routes.indexOf('DELETE /v1/booking') < routes.indexOf('DELETE /v1/account'));
   assert.equal(during, sessions);
+});
+
+test("an account deleted and made again on the same computer takes its handle back; a sign-up elsewhere with the email doesn't", async (t) => {
+  const srv = await server(t);
+  const desk = await computer(t, srv);
+  await desk.booking.enable(ENABLE);
+  await desk.account.deleteAccount(PASSWORD);
+  assert.equal(srv.pages.get('bart').owner.startsWith('deleted:'), true);
+
+  // Someone else signs up with the same address first: the address isn't proven, so that gets no handle.
+  const other = await computer(t, srv, { name: 'elsewhere' });
+  assert.deepEqual(await other.booking.checkHandle('bart'), { handle: 'bart', available: false, reason: 'reserved' });
+  await assert.rejects(other.booking.enable(ENABLE), (err) => err.code === 'handle_reserved');
+  await other.account.deleteAccount(PASSWORD);
+
+  // The computer that deleted it kept the key: made again there, the account has the handle back.
+  await desk.account.signUp({ email: 'host@example.com', password: PASSWORD });
+  assert.deepEqual(await desk.booking.checkHandle('bart'), { handle: 'bart', available: true, reason: null });
+  const state = await desk.booking.enable(ENABLE);
+  assert.equal(state.handle, 'bart');
+  assert.equal(srv.pages.get('bart').owner, 'host@example.com');
+  assert.equal(desk.account.handleKeyFor('host@example.com'), null, 'used once');
 });
 
 test('a server without booking pages is left alone when the account is deleted', async (t) => {

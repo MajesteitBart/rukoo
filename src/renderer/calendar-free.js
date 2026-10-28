@@ -396,7 +396,8 @@ function calendarNotice(n, state) {
         if (item && item.eventId) return openEvent(item.eventId, item.start);
         return n.bookingId ? openRequest(n.bookingId) : null;
       case 'cancel':
-        return n.bookingId ? act(() => api('bookingAction', n.bookingId, 'cancel', { notify: true })) : null;
+        // As from the event's card: the host confirms, and may write the guest a message.
+        return item && hooks.cancelBooking ? hooks.cancelBooking({ allDay: false, start: item.start, end: item.end }, item) : null;
       case 'keep':
       case 'dismiss':
         return act(() => api('bookingAction', n.id, action));

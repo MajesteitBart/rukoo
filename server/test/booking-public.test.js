@@ -340,16 +340,15 @@ describe('POST /meet/<handle>/api/bookings', () => {
     expect(short.body.field).toBe('idempotency_key');
   });
 
-  it('answers already_booked for the same time and email, without the key', async () => {
+  it("answers already_booked for the same time and email, without the key or the booking's id and status", async () => {
     const { handle } = await host(signup);
     const body = bookingBody(slotAhead(3));
-    const first = await book(handle, body);
+    await book(handle, body);
     const again = await book(handle, { ...body, email: body.email.toUpperCase() });
     expect(again.status).toBe(200);
     expect(again.body).toEqual({
       already_booked: true,
-      booking: first.body.booking,
-      message: "This time is already booked for this email; the invitation and manage link come with the host's invitation."
+      message: "This time is already booked for this email. The link to change or cancel it was in the answer to the first booking; the invitation comes from the host's calendar."
     });
     const someoneElse = await book(handle, { ...body, email: 'other@example.com' });
     expect(someoneElse.status).toBe(409);

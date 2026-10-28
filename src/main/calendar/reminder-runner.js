@@ -90,10 +90,12 @@ class ReminderRunner {
   async read() {
     const now = this.now();
     const range = readRange({ to: now + READ_EVERY, now });
-    const { events, failed } = await this.calendars.read({ start: range.start, end: range.end });
-    // An account that couldn't be read keeps the events it had, so a network hiccup doesn't drop its reminders.
-    const kept = new Set(failed.map((f) => f.accountId));
-    this.events = [...events, ...this.events.filter((e) => kept.has(e.accountId))];
+    const { events, failed } = await this.calendars.read({ start: range.start, end: range.end, lastKnown: true });
+    // An account that couldn't be read keeps the events it had, so a network hiccup doesn't drop its reminders; one
+    // this runner hasn't read yet (Rukoo started without a network) reminds from the store's cached events.
+    const failedIds = new Set(failed.map((f) => f.accountId));
+    const had = new Set(this.events.filter((e) => failedIds.has(e.accountId)).map((e) => e.accountId));
+    this.events = [...events.filter((e) => !had.has(e.accountId)), ...this.events.filter((e) => had.has(e.accountId))];
     this.readAt = now;
     this.range = range;
   }

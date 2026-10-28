@@ -3,7 +3,7 @@
 // don't call each other. Only a dead session answers 401: everything about the page itself is a 409 or a 404.
 
 import { HANDLE_CHANGES } from './account.js';
-import { fromBase64url, toBase64url } from './bytes.js';
+import { fromBase64url, randomBytes, sha256, toBase64url } from './bytes.js';
 import { accountObject, blockedHandles, bookingBase, bookingObject, bookingTimes, ACCOUNT_NAME } from './config.js';
 import { json, send } from './http.js';
 import * as input from './input.js';
@@ -21,6 +21,7 @@ const MESSAGES = {
   not_found: 'There is no such booking.',
   slot_taken: "That time isn't open.",
   stale_version: 'The booking changed meanwhile.',
+  not_active: "The booking is over, so it can't be cancelled.",
   invalid: 'The request was refused.'
 };
 
@@ -46,13 +47,16 @@ async function signedIn(request, env) {
   return { account, token, auth };
 }
 
-// What GET /v1/booking returns, from the page's view and the account's sessions.
+// What GET /v1/booking returns, from the page's view and the account's sessions. base is what every page address on
+// this server starts with, so a device can show it before the account has a handle.
 function ownerJson(env, url, auth, view, used) {
   const handleChanges = { used, max: HANDLE_CHANGES };
+  const base = bookingBase(env, url);
   if (!view) {
     return {
       handle: auth.handle,
-      url: auth.handle ? pageUrl(env, url, auth.handle) : null,
+      url: auth.handle ? `${base}/${auth.handle}` : null,
+      base,
       enabled: false,
       device: null,
       publishedAt: null,
@@ -66,7 +70,8 @@ function ownerJson(env, url, auth, view, used) {
   }
   return {
     handle: view.handle,
-    url: pageUrl(env, url, view.handle),
+    url: `${base}/${view.handle}`,
+    base,
     enabled: view.enabled,
     device: view.deviceId ? { id: view.deviceId, name: auth.devices[view.deviceId] ?? null, current: view.deviceId === auth.deviceId } : null,
     publishedAt: view.publishedAt,
@@ -77,10 +82,6 @@ function ownerJson(env, url, auth, view, used) {
     today: view.today,
     handleChanges
   };
-}
-
-function pageUrl(env, url, handle) {
-  return `${bookingBase(env, url)}/${handle}`;
 }
 
 export async function getBooking(request, env, url) {
@@ -112,6 +113,7 @@ export async function putBooking(request, env, url) {
   const body = await input.readJson(request, input.PUBLISH_BODY_MAX);
   const data = input.bookingPut(body, Date.now(), blockedHandles(env));
   await checkKey(data.profile);
+  if (data.reclaim) data.reclaim = toBase64url(await sha256(data.reclaim));
   const times = bookingTimes(env);
   const owner = auth.name;
   const current = auth.handle;
@@ -164,10 +166,12 @@ export async function deleteBooking(request, env) {
 }
 
 // After an account is deleted: its page goes the same way. The page's own daily check catches a failure here.
-export async function wipeAfterDelete(env, token, handle) {
+// reclaim: the hash of the deleting device's handleKey, or null; the handle stays reserved for whoever holds that key,
+// not for whoever signs up next with the same email.
+export async function wipeAfterDelete(env, token, handle, reclaim = null) {
   if (!handle) return;
   try {
-    await bookingObject(env, handle).wipe(token.slice(0, token.indexOf('.')));
+    await bookingObject(env, handle).wipe(token.slice(0, token.indexOf('.')), null, { reclaim: reclaim ?? toBase64url(randomBytes(32)) });
   } catch (err) {
     console.error('Wiping a booking page after account deletion failed:', err?.message || 'unknown error');
   }

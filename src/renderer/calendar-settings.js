@@ -29,10 +29,11 @@ const REMINDERS = [null, 0, 5, 10, 15, 30, 60];
 const DEFAULTS = { weekStart: null, weekends: true, workDays: [1, 2, 3, 4, 5], workStart: '09:00', workEnd: '17:00', duration: 60, reminder: 10, notify: true, colors: {} };
 
 const key = (accountId, calendarId) => `${accountId}\n${calendarId}`;
-// A weekday's name: 0 Sunday … 6 Saturday, from a week in January 2023 that starts on a Sunday.
-export const weekdayName = (day, style = 'long') => {
+// A weekday's name: 0 Sunday … 6 Saturday, from a week in January 2023 that starts on a Sunday. With a capital, for a
+// label; inline keeps the language's own case, for inside a sentence or in brackets ("Automatisch (maandag)").
+export const weekdayName = (day, style = 'long', inline = false) => {
   const name = new Intl.DateTimeFormat(getLocale(), { weekday: style }).format(new Date(2023, 0, 1 + day));
-  return name.replace(/^./, (c) => c.toUpperCase());
+  return inline ? name : name.replace(/^./, (c) => c.toUpperCase());
 };
 export function localeFirstDay() {
   try {
@@ -105,7 +106,7 @@ export function calendarSettingsPages({ row, go, rerender, current }) {
 
   function weekCard() {
     const c = { ...DEFAULTS, ...calendar };
-    const startLabel = c.weekStart === null ? t('settings.calendar.weekStartAuto', { day: weekdayName(localeFirstDay()) }) : weekdayName(c.weekStart);
+    const startLabel = c.weekStart === null ? t('settings.calendar.weekStartAuto', { day: weekdayName(localeFirstDay(), 'long', true) }) : weekdayName(c.weekStart);
     const days = weekOrder(c)
       .map((d) => {
         const on = c.workDays.includes(d);
@@ -262,7 +263,7 @@ export function calendarSettingsPages({ row, go, rerender, current }) {
         const v = await choiceDialog(
           t('settings.calendar.weekStart'),
           [
-            { value: 'auto', label: t('settings.calendar.weekStartAuto', { day: weekdayName(localeFirstDay()) }) },
+            { value: 'auto', label: t('settings.calendar.weekStartAuto', { day: weekdayName(localeFirstDay(), 'long', true) }) },
             { value: 1, label: weekdayName(1) },
             { value: 0, label: weekdayName(0) },
             { value: 6, label: weekdayName(6) }

@@ -194,7 +194,7 @@ export const RESERVED_HANDLES = new Set(
     'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking',
     'bookings cal calendar openapi well-known static abuse security status operator bvdm',
     'img media download downloads github releases styles app film video docs blog about pricing features terms legal',
-    'press contact changelog android windows mac linux robots sitemap favicon index booker'
+    'press contact changelog android windows mac linux robots sitemap favicon index booker 404 500'
   ]
     .join(' ')
     .split(' ')
@@ -369,6 +369,8 @@ export function profile(value, schedules = ['default']) {
     publicKey: value.publicKey,
     contact: value.contact === null || value.contact === undefined ? null : line(value.contact, 'profile.contact', { max: 200 }) || null,
     dailyCap: integer(value.dailyCap ?? 20, 'profile.dailyCap', 1, 50),
+    // false: the host's calendar sends no invitations (a demo calendar); absent means it does.
+    ...(value.invites === false ? { invites: false } : {}),
     types
   };
 }
@@ -411,7 +413,9 @@ export function bookingPut(body, now, blocked = []) {
   }
   if (count > MAX_WINDOWS) throw invalid(`windows can hold at most ${MAX_WINDOWS} intervals.`, 'windows');
   const busy = intervals(body.busy, 'busy', { max: MAX_BUSY, from: now - 3 * DAY, to: now + 93 * DAY, align: QUARTER });
-  return { handle: h, enabled, takeover, profile: profile(body.profile, names), windows, busy };
+  // The handleKey a device sent when it deleted the account that had this handle, to take it back.
+  const reclaim = body.reclaim === undefined || body.reclaim === null ? null : key(body.reclaim, 'reclaim', 32);
+  return { handle: h, enabled, takeover, profile: profile(body.profile, names), windows, busy, reclaim };
 }
 
 // A calendar UID as providers make them: 1 to 255 visible ASCII characters, such as abc123@google.com.

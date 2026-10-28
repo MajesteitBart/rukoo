@@ -21,6 +21,7 @@ export default defineConfig({
           OPERATOR_CONTACT: '',
           PRIVACY_URL: '',
           BOOKING_ORIGIN: '',
+          BOOKING_ALIASES: '',
           BLOCKED_HANDLES: ''
         }
       }

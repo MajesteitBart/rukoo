@@ -86,10 +86,15 @@ describe('the account API at the booking address', () => {
   it('gives the owner the page address under BOOKING_ORIGIN on either address', async () => {
     const person = await signup();
     const handle = newHandle();
+    // The base comes before there is a handle, so the app can show where the page will live.
+    for (const read of [at, old]) {
+      const none = await read('GET', '/v1/booking', { token: person.token });
+      expect(none.body).toMatchObject({ handle: null, url: null, base: BOOKING });
+    }
     const res = await publish(person, page(handle, await hostKey()), { vars: VARS });
     expect(res.body.url).toBe(`${BOOKING}/${handle}`);
     const there = await at('GET', '/v1/booking', { token: person.token });
-    expect(there.body.url).toBe(`${BOOKING}/${handle}`);
+    expect(there.body).toMatchObject({ url: `${BOOKING}/${handle}`, base: BOOKING });
   });
 });
 
@@ -248,6 +253,29 @@ describe('booking pages at the root of BOOKING_ORIGIN', () => {
     expect(get.text).toContain(`${BOOKING}/<handle>/llms.txt`);
   });
 
+  it('takes /meet links on an address in BOOKING_ALIASES as the same page', async () => {
+    const { handle } = await host(signup);
+    const vars = { ...VARS, BOOKING_ALIASES: ' https://old.example/ , not an address, https://older.example:8443' };
+    const tool = (name, args) => rpc('tools/call', { name, arguments: args }, { vars });
+    for (const link of [`https://old.example/meet/${handle}`, `old.example/meet/${handle}/30min`, `https://older.example:8443/meet/${handle}`]) {
+      const times = await tool('find_available_times', { link });
+      expect(times.body.result.isError, link).toBe(false);
+      expect(times.body.result.structuredContent.type).toBe('30min');
+    }
+    const types = await tool('get_meeting_types', { link: `https://old.example/meet/${handle}` });
+    expect(types.body.result.structuredContent.links.page).toBe(`${BOOKING}/${handle}`);
+    // Only /meet links: the root of a former address was never a booking page, and other addresses stay refused.
+    for (const link of [`https://old.example/${handle}`, `https://older.example/meet/${handle}`, `http://old.example/meet/${handle}`, `https://elsewhere.example/meet/${handle}`]) {
+      const res = await tool('get_meeting_types', { link });
+      expect(res.body.result.isError, link).toBe(true);
+      expect(res.body.result.structuredContent).toMatchObject({ error: 'invalid', field: 'link' });
+      expect(res.body.result.structuredContent.message).toContain(`such as ${BOOKING}/<handle>`);
+    }
+    // Without the setting, the former address is another server.
+    const without = await rpc('tools/call', { name: 'get_meeting_types', arguments: { link: `https://old.example/meet/${handle}` } });
+    expect(without.body.result.isError).toBe(true);
+  });
+
   it('redirects a renamed page to the new handle at the root', async () => {
     const { person, key, handle } = await host(signup);
     const next = newHandle('renamed');
@@ -289,7 +317,7 @@ describe('booking pages at the root of BOOKING_ORIGIN', () => {
   it('keeps the website’s paths and likely future ones from being claimed', async () => {
     const person = await signup();
     const key = await hostKey();
-    for (const handle of ['assets', 'img', 'media', 'download', 'downloads', 'github', 'releases', 'styles', 'app', 'docs', 'blog', 'pricing', 'contact', 'android', 'robots', 'sitemap', 'favicon', 'index', 'booker', 'llms', 'mcp', 'privacy']) {
+    for (const handle of ['assets', 'img', 'media', 'download', 'downloads', 'github', 'releases', 'styles', 'app', 'docs', 'blog', 'pricing', 'contact', 'android', 'robots', 'sitemap', 'favicon', 'index', 'booker', 'llms', 'mcp', 'privacy', '404', '500']) {
       const res = await publish(person, page(handle, key), { vars: VARS });
       expect(res.status, handle).toBe(409);
       expect(res.body.error, handle).toBe('handle_reserved');

@@ -48,6 +48,9 @@
     // well; /meet on any other address redirects there. "" keeps them under /meet on the address each request came in
     // on.
     "BOOKING_ORIGIN": "",
+    // Addresses booking pages used to live at, comma-separated origins: MCP takes their /meet/<handle> links as the
+    // same pages.
+    "BOOKING_ALIASES": "",
     // Handles taken down by the operator, comma-separated: they answer 404 and can't be claimed.
     "BLOCKED_HANDLES": ""
   },
@@ -103,6 +106,8 @@
         "BOOKING_DARK_DAYS": 7,
         // Booking pages, /mcp and /llms.txt live at the root of rukoo.io, next to the website.
         "BOOKING_ORIGIN": "https://rukoo.io",
+        // Where the pages lived before rukoo.io; its /meet links redirect, and MCP takes them as the same pages.
+        "BOOKING_ALIASES": "https://rukoo-account.bvdm.ai",
         "BLOCKED_HANDLES": ""
       },
       "ratelimits": [

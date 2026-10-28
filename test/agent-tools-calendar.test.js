@@ -382,6 +382,16 @@ test('find_free_time asks for free time in English, on the calendars that count,
   } finally {
     await withPage.done();
   }
+  // Every calendar that counts failed to load: the answer says that, not that none counts.
+  const allFailed = await demo({ calendarFree: async () => ({ windows: [], failed: [{ accountId: 'g1', email: 'me@example.com', code: 'reconnect' }], checked: [], lines: [], timeZone: 'UTC' }) });
+  try {
+    const res = data(await allFailed.hub.callTool(local(), 'find_free_time', { start: '2026-11-02', end: '2026-11-03', duration_minutes: 30 }));
+    assert.equal(res.calendars_checked, 0);
+    assert.doesNotMatch(res.note, /None of the user's calendars counts/);
+    assert.match(res.note, /could not read the calendar of me@example\.com/);
+  } finally {
+    await allFailed.done();
+  }
 });
 
 test('find_free_time on the demo calendar leaves out busy time, and its lines stay English in a Dutch Rukoo', async () => {

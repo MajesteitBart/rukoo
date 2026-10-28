@@ -57,6 +57,27 @@ const bookingEvent = (fake, id) => fake.store.find((e) => e.extendedProperties &
 const when = (ms) => new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(ms);
 const pause = () => new Promise((resolve) => setTimeout(resolve, 20));
 
+test("before the page has a handle, the state says where the server's pages start, as the server reports it", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  let state = await host.booking.load({ refresh: true });
+  assert.equal(state.handle, null);
+  assert.equal(state.url, null);
+  assert.equal(state.base, `${srv.url}/meet`);
+  // A server from before base doesn't say; the setup then shows <server>/meet/ itself.
+  srv.fail = ({ route }) => (route === 'GET /v1/booking' ? [200, { handle: null, url: null, enabled: false, handleChanges: { used: 0, max: 3 } }] : null);
+  state = await host.booking.load({ refresh: true });
+  assert.equal(state.base, null);
+  srv.fail = null;
+  // A server with BOOKING_ORIGIN keeps its pages at the root of that address.
+  srv.bookingOrigin = 'https://book.example';
+  state = await host.booking.load({ refresh: true });
+  assert.equal(state.base, 'https://book.example');
+  state = await host.booking.enable(ENABLE);
+  assert.equal(state.url, 'https://book.example/bart');
+  assert.equal(state.base, 'https://book.example');
+});
+
 test('turning the page on publishes the hours, the busy time and the key, and keeps the address in the settings', async (t) => {
   const srv = await server(t);
   const busyStart = slot(2, 11);
@@ -570,4 +591,166 @@ test('turning the page off deletes it on the server and the mapping records, and
   assert.deepEqual(host.booking.link(), { url: `${srv.url}/meet/bart`, types: [{ slug: '30min', title: '30 minute meeting', duration: 30, url: `${srv.url}/meet/bart/30min` }] });
   assert.equal(host.booking.hours().timeZone, 'Europe/Amsterdam');
   assert.equal(host.booking.locale(), 'en');
+});
+
+test('an event someone else made that carries a booking id leaves the booking alone', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const start = slot(3, 10);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe', email: 'jane@example.com' } });
+  await host.booking.sync();
+  // Two hours later, with the guest declining: as a calendar that kept the id on a copied or foreign event shows it.
+  host.fake.store.push({
+    id: 'other',
+    calendarId: 'me@example.com',
+    etag: '"1"',
+    status: 'confirmed',
+    summary: 'Something',
+    organizer: { email: 'mallory@example.net' },
+    attendees: [
+      { email: 'mallory@example.net', organizer: true, responseStatus: 'accepted' },
+      { email: 'jane@example.com', responseStatus: 'declined' },
+      { email: 'me@example.com', self: true, responseStatus: 'needsAction' }
+    ],
+    extendedProperties: { private: { rukooBooking: id } },
+    start: { dateTime: new Date(start + 2 * HOUR).toISOString() },
+    end: { dateTime: new Date(start + 2 * HOUR + 30 * 60000).toISOString() }
+  });
+  await host.calendars.syncAccount('g1');
+  host.calendars.memos.clear();
+  await host.booking.reconcile();
+  const row = srv.pages.get('bart').bookings.get(id);
+  assert.deepEqual([row.status, row.start], ['confirmed', start], "the mapped event is the booking's");
+  assert.deepEqual(host.booking.state().notices, []);
+});
+
+test("an invitation from someone else with the booking's uid doesn't stop the booking getting its own event", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv, { fake: fakeCalendar({ insertUid: 'keep' }) });
+  await host.booking.enable(ENABLE);
+  const start = slot(3, 10);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe', email: 'jane@example.com' } });
+  const row = srv.pages.get('bart').bookings.get(id);
+  host.fake.store.push({
+    id: 'theirs',
+    calendarId: 'me@example.com',
+    etag: '"1"',
+    iCalUID: row.uid,
+    status: 'confirmed',
+    summary: 'Confirm at https://evil.example',
+    organizer: { email: 'jane@example.com' },
+    attendees: [{ email: 'jane@example.com', organizer: true, responseStatus: 'accepted' }, { email: 'me@example.com', self: true, responseStatus: 'needsAction' }],
+    start: { dateTime: new Date(start).toISOString() },
+    end: { dateTime: new Date(start + 30 * 60000).toISOString() }
+  });
+  await host.booking.sync();
+  const map = host.account.get('booking', `map:${host.account.acct}:${id}`);
+  assert.ok(map && map.eventId !== 'theirs', 'an event of its own');
+  assert.ok(bookingEvent(host.fake, id));
+  assert.equal(srv.pages.get('bart').bookings.get(id).handledVersion, 1);
+  assert.equal(host.fake.store.find((e) => e.id === 'theirs').summary, 'Confirm at https://evil.example', 'the invitation is left as it is');
+});
+
+test('a destination calendar that leaves the list cancels no bookings; a guest move waits, and the booking device says so', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable({ ...ENABLE, destination: calendarKey('g1', 'team@example.com') });
+  const start = slot(3, 10);
+  const a = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  const b = await srv.book({ handle: 'bart', type: '30min', start: slot(4, 11), guest: { name: 'Max Power', email: 'max@example.org' } });
+  await host.booking.sync();
+  await host.calendars.ensure('g1', Date.now(), Date.now() + 7 * DAY);
+  // Hidden from the list in Google: calendarList leaves it out; its events stay.
+  host.fake.calendars.splice(host.fake.calendars.findIndex((c) => c.id === 'team@example.com'), 1);
+  await host.calendars.syncAccount('g1');
+  assert.ok(!host.calendars.list()[0].calendars.some((c) => c.id === 'team@example.com'));
+  host.calendars.memos.clear();
+  await host.booking.reconcile();
+  for (const { id } of [a, b]) assert.equal(srv.pages.get('bart').bookings.get(id).status, 'confirmed');
+  assert.deepEqual(host.booking.state().notices.map((n) => n.kind), ['destination']);
+  assert.match(host.booking.state().notices[0].text, /isn't on this computer/);
+
+  srv.guestReschedule({ handle: 'bart', id: a.id, start: start + 2 * HOUR });
+  await host.booking.sync();
+  assert.ok(host.account.get('booking', `map:${host.account.acct}:${a.id}`), 'the mapping record stays');
+  assert.equal(srv.pages.get('bart').bookings.get(a.id).handledVersion, 1, 'tried again later');
+  assert.equal(Date.parse(bookingEvent(host.fake, a.id).start.dateTime), start);
+});
+
+test("cancelling while the guest's move isn't processed yet cancels the booking as it is now, for good", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const start = slot(3, 10);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  await host.booking.sync();
+  srv.guestReschedule({ handle: 'bart', id, start: start + 2 * HOUR });
+  await host.booking.action(id, 'cancel', { notify: true });
+  const row = srv.pages.get('bart').bookings.get(id);
+  assert.deepEqual([row.status, row.cancelledBy], ['cancelled', 'host']);
+  const made = inserted(host.fake).length;
+  await host.booking.sync();
+  assert.equal(inserted(host.fake).length, made, 'no event again');
+  assert.equal(bookingEvent(host.fake, id).status, 'cancelled');
+  assert.ok(!host.fake.requests.some((r) => r.method === 'PATCH' && r.body && r.body.status === 'confirmed'));
+});
+
+test('a booking whose meeting is over is not cancelled, and its guest is not told', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const start = Math.floor((Date.now() - 2 * DAY) / HOUR) * HOUR;
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  await host.booking.sync();
+  assert.ok(bookingEvent(host.fake, id));
+  await assert.rejects(host.booking.action(id, 'cancel', { notify: true }), (err) => err.code === 'notFound');
+  assert.equal(host.fake.requests.filter((r) => r.method === 'DELETE').length, 0);
+  assert.equal(srv.pages.get('bart').bookings.get(id).status, 'confirmed');
+});
+
+test("a rename handles the old handle's waiting cancellation first, and is refused while it can't be", async (t) => {
+  const srv = await server(t);
+  let failing = false;
+  const fake = fakeCalendar({ fail: ({ method }) => (failing && method === 'DELETE' ? { status: 500, body: { error: { code: 500, message: 'down' } } } : null) });
+  const host = await computer(t, srv, { fake });
+  await host.booking.enable(ENABLE);
+  const first = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe' } });
+  const second = await srv.book({ handle: 'bart', type: '30min', start: slot(4, 10), guest: { name: 'Max Power', email: 'max@example.org' } });
+  await host.booking.sync();
+  srv.guestCancel({ handle: 'bart', id: first.id });
+  srv.guestCancel({ handle: 'bart', id: second.id });
+  // The calendar can't take the cancellations out: the rename waits.
+  failing = true;
+  await assert.rejects(host.booking.save({ handle: 'bart-vdm' }), (err) => err.code === 'has_bookings');
+  assert.equal(host.booking.settings().handle, 'bart');
+  failing = false;
+  const state = await host.booking.save({ handle: 'bart-vdm' });
+  assert.equal(state.handle, 'bart-vdm');
+  for (const { id } of [first, second]) {
+    assert.equal(bookingEvent(host.fake, id).status, 'cancelled');
+    const row = srv.pages.get('bart').bookings.get(id);
+    assert.equal(row.handledVersion, row.version);
+  }
+  assert.deepEqual(host.shown.map((n) => n.kind), ['new', 'new', 'cancelled', 'cancelled']);
+});
+
+test("the booking link leaves out hidden meeting types; only Google's no-mail notice is about mail", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const visible = host.booking.settings().types[0];
+  await host.booking.save({ types: [visible, { ...visible, slug: 'board', title: 'Board call', hidden: true }] });
+  assert.deepEqual(host.booking.link().types.map((x) => x.slug), ['30min']);
+
+  // A calendar other than Google's sends what its server sends: no "no email sent" notice for it.
+  const row = { id: 'Kq0bAAAAAAAAAAAAAAAAAA', type: '30min', start: slot(3, 10) };
+  for (const kind of ['caldav', 'demo']) {
+    host.booking.resolve = () => ({ kind });
+    host.booking.budgetNotice(row, { name: 'Jane Doe' }, host.booking.settings());
+  }
+  assert.deepEqual(host.booking.file.notices, []);
+  host.booking.resolve = () => ({ kind: 'google' });
+  host.booking.budgetNotice(row, { name: 'Jane Doe' }, host.booking.settings());
+  assert.deepEqual(host.booking.file.notices.map((n) => n.kind), ['mailBudget']);
 });

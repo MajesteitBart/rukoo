@@ -567,7 +567,9 @@ class Calendars extends EventEmitter {
   // that couldn't be read. From the cache when the view's stretch covers them and was fetched at most maxAgeMs ago
   // (Infinity takes it at any age); otherwise read from the providers in the account's queue, without changing the
   // view's stretch or loading state and without 'updated', and kept for maxAgeMs so the next read doesn't ask again.
-  async read({ start, end, calendars = null, maxAgeMs = MEMO_AGE } = {}) {
+  // lastKnown: an account that can't be read gives its cached events, whatever their age, and is still in failed; for
+  // the reminder runner, which would rather remind from what the calendar view shows than not at all.
+  async read({ start, end, calendars = null, maxAgeMs = MEMO_AGE, lastKnown = false } = {}) {
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw calendarError('invalid', t('errors.calendar.invalidTimes'));
     const wanted = Array.isArray(calendars) ? new Set(calendars) : null;
     const age = typeof maxAgeMs === 'number' && maxAgeMs >= 0 ? maxAgeMs : MEMO_AGE;
@@ -582,6 +584,7 @@ class Calendars extends EventEmitter {
           for (const e of await this.readAccount(acc, start, end, wanted, age)) events.push(this.publicEvent(acc, e));
         } catch (err) {
           failed.push(this.failure(acc, err));
+          if (lastKnown) for (const e of this.cache(acc.id).events) if (overlaps(e, start, end) && (!wanted || wanted.has(calendarKey(acc.id, e.calendarId)))) events.push(this.publicEvent(acc, e));
         }
       })
     );
@@ -1210,6 +1213,8 @@ class Calendars extends EventEmitter {
     if (p.versionedSeries && result && result.etag) this.shareEtag(cache, event, result.etag);
     this.persist(acc.id);
     this.emit('updated');
+    // The reminder runner and the booking page follow at once: a declined meeting doesn't remind, and isn't busy.
+    this.changed(acc, cal.id, 'respond', series ? 'all' : 'one', this.publicEvent(acc, event), null);
   }
 
   // Moves an event to another calendar of the same account; an occurrence moves with its whole series. Returns the

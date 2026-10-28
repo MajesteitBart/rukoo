@@ -16,6 +16,8 @@ import { saltedHash, seal, unwrapManageKey, wrapManageKey } from './seal.js';
 import { expiresAt, isOpen, nearest, openSlots, resolveType } from './slots.js';
 import { DAY, zonedParts } from './zone.js';
 
+// The owner of a page whose account was deleted: deleted:<hash of the deleting device's handleKey> (wipe()).
+const DELETED = 'deleted:';
 const MINUTE = 60000;
 // A handle given up stays reserved for its last account this long, then becomes free.
 export const RESERVED_FOR = 365 * DAY;
@@ -591,7 +593,12 @@ export class Booking extends DurableObject {
       fresh = true;
     }
     const page = this.#page();
-    if (page.owner !== owner) return fail('other_owner', { retired: Boolean(page.retiredAt) });
+    if (page.owner !== owner) {
+      // A deleted account's handle goes to the account that brings the deleting device's key, nobody else.
+      if (!data.reclaim || page.owner !== `${DELETED}${data.reclaim}`) return fail('other_owner', { retired: Boolean(page.retiredAt) });
+      this.sql.exec('UPDATE page SET owner = ? WHERE id = 1', owner);
+      page.owner = owner;
+    }
     if (page.deviceId && page.deviceId !== deviceId && !takeover && !page.retiredAt) return fail('other_device');
     if (this.#unaware(page, deviceId, takeover)) return fail('other_device');
     const previous = { fresh, retiredAt: page.retiredAt, movedTo: page.movedTo, movedUntil: page.movedUntil, enabled: page.enabled };
@@ -622,8 +629,9 @@ export class Booking extends DurableObject {
   }
 
   // The first half of a rename: the old handle stops taking bookings and redirects, but keeps what it published
-  // until finishRetire(), so restore() can put it back exactly. Refused while bookings lie ahead, and, like a publish,
-  // from a device that doesn't handle the page.
+  // until finishRetire(), so restore() can put it back exactly. Refused while bookings lie ahead, or a change to one
+  // (a guest's cancellation) waits for the booking device, which only reads the new handle afterwards; and, like a
+  // publish, from a device that doesn't handle the page.
   retire(owner, movedTo, deviceId = null, takeover = false) {
     const now = Date.now();
     const page = this.#page();
@@ -632,7 +640,7 @@ export class Booking extends DurableObject {
     if (deviceId && page.deviceId && page.deviceId !== deviceId && !takeover && !page.retiredAt) return fail('other_device');
     if (this.#unaware(page, deviceId, takeover)) return fail('other_device');
     this.#expire(now);
-    const ahead = this.sql.exec("SELECT COUNT(*) AS n FROM bookings WHERE status IN ('pending', 'confirmed') AND end > ?", now).one().n;
+    const ahead = this.sql.exec("SELECT COUNT(*) AS n FROM bookings WHERE end > ? AND (status IN ('pending', 'confirmed') OR version > handledVersion)", now).one().n;
     if (ahead > 0) return fail('has_bookings');
     const previous = { retiredAt: page.retiredAt, movedTo: page.movedTo, movedUntil: page.movedUntil, enabled: page.enabled };
     this.sql.exec(
@@ -669,12 +677,15 @@ export class Booking extends DurableObject {
   }
 
   // DELETE /v1/booking and account deletion: everything on the page goes; the claim stays, reserved for this account.
-  // deviceId: the session that turned the page off, for DELETE /v1/booking.
-  wipe(owner, deviceId = null) {
+  // deviceId: the session that turned the page off, for DELETE /v1/booking. reclaim, after an account deletion: the
+  // owner becomes deleted:<reclaim>, so a new account with the same email (sign-ups don't prove the address) gets the
+  // handle only with the deleting device's handleKey.
+  wipe(owner, deviceId = null, { reclaim = null } = {}) {
     const page = this.#page();
     if (!page) return { ok: true };
     if (page.owner !== owner) return fail('handle_lost');
     this.#wipe(Date.now(), deviceId);
+    if (reclaim) this.sql.exec('UPDATE page SET owner = ? WHERE id = 1', `${DELETED}${reclaim}`);
     return { ok: true };
   }
 
@@ -760,6 +771,8 @@ export class Booking extends DurableObject {
         break;
       case 'cancel':
         if (!ACTIVE.includes(row.status)) return stale();
+        // A meeting that is over stays as it went, as a guest's cancellation does (guestCancel).
+        if (row.end <= now) return fail('not_active', { booking: ownerRow(row) });
         this.#change(id, { status: 'cancelled', notify: false, cancelledBy: 'host', reason: a.reason, message: a.message });
         break;
       case 'reschedule': {
@@ -858,7 +871,7 @@ export class Booking extends DurableObject {
       if (page.movedTo && page.movedUntil <= now) this.sql.exec('UPDATE page SET movedTo = NULL, movedUntil = NULL WHERE id = 1');
       // A retired handle publishes nothing; a rename that stopped halfway leaves its old data for this.
       if (page.retiredAt && page.profile) this.#unpublish();
-      const ahead = this.sql.exec("SELECT COUNT(*) AS n FROM bookings WHERE status IN ('pending', 'confirmed') AND end > ?", now).one().n;
+      const ahead = this.sql.exec("SELECT COUNT(*) AS n FROM bookings WHERE end > ? AND (status IN ('pending', 'confirmed') OR version > handledVersion)", now).one().n;
       if (!page.retiredAt && page.publishedAt && now - page.publishedAt >= UNPUBLISHED_FOR && ahead === 0) this.#unpublish();
     });
 
@@ -877,7 +890,11 @@ export class Booking extends DurableObject {
       if (page && page.owner === owner) {
         // Gone on two checks a day apart, with no answer in between that found it: only then is the page wiped, which
         // can't be undone.
-        if (alive === false && page.missingSince !== null) this.#wipe(now);
+        if (alive === false && page.missingSince !== null) {
+          this.#wipe(now);
+          // The account is gone: nobody can take the handle back by signing up with its email.
+          this.sql.exec('UPDATE page SET owner = ? WHERE id = 1', `${DELETED}${toBase64url(randomBytes(32))}`);
+        }
         else if (alive === false) this.sql.exec('UPDATE page SET checkedAt = ?, missingSince = ? WHERE id = 1', now, now);
         else if (alive === true) this.sql.exec('UPDATE page SET checkedAt = ?, missingSince = NULL WHERE id = 1', now);
         else this.sql.exec('UPDATE page SET checkedAt = ? WHERE id = 1', now);

@@ -258,6 +258,12 @@ describe('the booking tools', () => {
     // The same idempotency key gives the same booking back.
     const again = await tool('book_meeting', { link, start: iso(slotAhead(3)), name: 'Jane Doe', email: 'jane@example.com', notes: 'Kickoff', time_zone: 'Europe/Amsterdam', via: 'Clark', idempotency_key: 'mcp-retry-0123456789' });
     expect(again.body.result.structuredContent.booking.id).toBe(id);
+    // Without that key, the same email and time say only that it is booked: not the id, not the status.
+    const same = (await tool('book_meeting', { link, start: iso(slotAhead(3)), name: 'Someone', email: 'jane@example.com' })).body.result;
+    expect(same.isError).toBe(false);
+    expect(same.structuredContent).toEqual({ already_booked: true, message: expect.any(String) });
+    expect(same.content[0].text).toContain('was in the answer to the first booking');
+    expect(same.content[0].text).not.toContain(id);
 
     const read = await tool('get_booking', { link: result.structuredContent.manage_url, booking_id: id, key });
     expect(read.body.result.structuredContent.booking.status).toBe('confirmed');
@@ -299,6 +305,19 @@ describe('the booking tools', () => {
     }
     const unknown = await tool('get_meeting_types', { link: newHandle('nobody') });
     expect(unknown.body.result.structuredContent.error).toBe('not_found');
+  });
+
+  it('takes a /meet link on an address in BOOKING_ALIASES as this server’s page', async () => {
+    const { handle } = await host(signup);
+    const aliased = (link, vars) =>
+      post({ jsonrpc: '2.0', id: nextId++, method: 'tools/call', params: { name: 'find_available_times', arguments: { link } } }, {}, vars ? { vars } : {});
+    const link = `https://elsewhere.example/meet/${handle}/30min`;
+    const res = await aliased(link, { BOOKING_ALIASES: 'https://elsewhere.example' });
+    expect(res.body.result.isError).toBe(false);
+    expect(res.body.result.structuredContent.type).toBe('30min');
+    expect(res.body.result.structuredContent.slots[0].book_url).toContain(`https://accounts.example/meet/${handle}/`);
+    expect((await aliased(link)).body.result.structuredContent).toMatchObject({ error: 'invalid', field: 'link' });
+    expect((await aliased(`https://elsewhere.example/${handle}`, { BOOKING_ALIASES: 'https://elsewhere.example' })).body.result.isError).toBe(true);
   });
 
   it('follows a renamed page', async () => {

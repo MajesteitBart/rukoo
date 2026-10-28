@@ -31,7 +31,8 @@ import {
   byId,
   shownView,
   range,
-  duration
+  duration,
+  inlineDay
 } from './calendar-shared.js';
 
 // An event's card next to it in the grid or list, a booking request's card, the quick popover that makes an event
@@ -100,7 +101,6 @@ const isAddress = (s) => typeof s === 'string' && s.length <= 320 && ADDRESS.tes
 
 // When an event is, for inside a sentence: as whenText, but the weekday keeps the language's own case ("vrijdag 30
 // oktober" in Dutch, where whenText starts a line with a capital).
-const inlineDay = (ms) => fmt(ms, { weekday: 'long', day: 'numeric', month: 'long' });
 function whenInline(e) {
   if (e.allDay) {
     const last = addDays(e.end, -1);
@@ -117,6 +117,23 @@ const daysInMonth = (ms) => {
   const d = new Date(ms);
   return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
 };
+
+// The start's weekday, day of the month, month and month length on the clock of the zone a series repeats in, and
+// how many days that date is from the PC's. The editor shows days as the PC has them; the rule names them as the
+// calendar repeats them, in the event's zone, or a Tuesday 08:00 in Amsterdam set in Los Angeles repeats on Wednesdays.
+function zoneDay(start, zone) {
+  const d = new Date(start);
+  const pc = { wd: d.getDay(), day: d.getDate(), month: d.getMonth() + 1, last: daysInMonth(start), shift: 0 };
+  if (!zone || !isZone(zone) || zone === pcZone()) return pc;
+  const parts = {};
+  for (const p of new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(d)) parts[p.type] = Number(p.value);
+  const there = Date.UTC(parts.year, parts.month - 1, parts.day);
+  const shift = Math.round((there - Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  return { wd: new Date(there).getUTCDay(), day: parts.day, month: parts.month, last: new Date(Date.UTC(parts.year, parts.month, 0)).getUTCDate(), shift };
+}
+const shiftDay = (wd, n) => (((wd + n) % 7) + 7) % 7;
+// The zone the event's series repeats in, for its rule: none for all-day events.
+const ruleZone = (v) => (!v.allDay && isZone(v.timeZone) ? v.timeZone : null);
 
 const focusables = (root) =>
   [...root.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter((x) => !x.disabled && !x.closest('[hidden], [inert]') && x.getClientRects().length);
@@ -207,6 +224,8 @@ async function bookingOf(e) {
 }
 
 const bookingDevice = () => (C.booking && C.booking.device && C.booking.device.name) || t('calendar.booking.otherComputer');
+// A booked event whose meeting has ended is an ordinary event to delete: its guest isn't sent a cancellation.
+const over = (e) => e.end <= Date.now();
 
 // What a guest wrote, as text. Their notes don't turn into links: they are someone else's words.
 function guestRows(g, start, end, row) {
@@ -233,7 +252,7 @@ function popHtml(e, booking) {
   const acc = account(e.accountId);
   const cal = calendarOf(e);
   const guests = e.attendees || [];
-  const cancels = Boolean(booking && C.booking.thisDevice);
+  const cancels = Boolean(booking && C.booking.thisDevice && !over(e));
   const deleteTitle = cancels ? t('calendar.booking.cancelShortcut') : t('calendar.event.deleteShortcut');
   const actions = [
     e.canEdit ? `<button class="icon-btn sm" data-pop="edit" title="${esc(t('calendar.event.editShortcut'))}">${icons.edit}</button>` : '',
@@ -464,6 +483,7 @@ function openRequest(bookingId, anchor) {
   (el.querySelector('[data-req="accept"]') || el.querySelector('[data-req="close"]')).focus();
 }
 hooks.openRequest = openRequest;
+hooks.cancelBooking = (e, b) => cancelBooking(e, b);
 
 function closeRequest(refocus = false) {
   if (!reqCard) return;
@@ -977,8 +997,9 @@ function bindGuests(root, v, mode, onChange) {
 // ---------- repeat ----------
 
 // The rule an RRULE value says, as the editor shows it: a preset, the custom form, or a rule outside what the editor
-// can show, kept as it is (design 1.1.6). start is the event's start, which presets take their day from.
-function parseRule(text, start) {
+// can show, kept as it is (design 1.1.6). start is the event's start, which presets take their day from; zone the one
+// the series repeats in, whose dates the rule names (zoneDay).
+function parseRule(text, start, zone = null) {
   if (!text) return { mode: 'none' };
   const kept = { mode: 'kept', kept: String(text) };
   const parts = {};
@@ -991,11 +1012,10 @@ function parseRule(text, start) {
   if (Object.keys(parts).some((k) => !known.has(k)) || (parts.COUNT && parts.UNTIL)) return kept;
   const interval = parts.INTERVAL ? Number(parts.INTERVAL) : 1;
   if (!Number.isInteger(interval) || interval < 1 || interval > 999) return kept;
-  const d = new Date(start);
-  const wd = d.getDay();
-  const day = d.getDate();
-  const month = d.getMonth() + 1;
-  const out = { mode: 'custom', freq: parts.FREQ, interval, days: [wd], monthly: 'day', ends: 'never', until: '', count: 10 };
+  const z = zoneDay(start, zone);
+  const { wd, day, month } = z;
+  const pcWd = new Date(start).getDay();
+  const out = { mode: 'custom', freq: parts.FREQ, interval, days: [pcWd], monthly: 'day', ends: 'never', until: '', count: 10 };
   if (parts.COUNT) {
     const n = Number(parts.COUNT);
     if (!Number.isInteger(n) || n < 1 || n > 999) return kept;
@@ -1013,7 +1033,7 @@ function parseRule(text, start) {
     if (parts.BYMONTHDAY || parts.BYMONTH) return kept;
     if (byday) {
       if (byday.some((x) => !WD.includes(x))) return kept;
-      out.days = [...new Set(byday.map((x) => WD.indexOf(x)))];
+      out.days = [...new Set(byday.map((x) => shiftDay(WD.indexOf(x), -z.shift)))];
     }
   } else if (parts.FREQ === 'MONTHLY') {
     if (parts.BYMONTH || (parts.BYMONTHDAY && byday)) return kept;
@@ -1022,7 +1042,7 @@ function parseRule(text, start) {
       const m = /^([+-]?\d)?(SU|MO|TU|WE|TH|FR|SA)$/.exec(byday.length === 1 ? byday[0] : '');
       if (!m || WD.indexOf(m[2]) !== wd) return kept;
       const n = Number(m[1] || 0);
-      if (n === -1 && day + 7 > daysInMonth(start)) out.monthly = 'last';
+      if (n === -1 && day + 7 > z.last) out.monthly = 'last';
       else if (n >= 1 && n <= 4 && n === Math.ceil(day / 7)) out.monthly = 'nth';
       else return kept;
     }
@@ -1033,7 +1053,7 @@ function parseRule(text, start) {
   if (interval === 1 && out.ends === 'never') {
     if (out.freq === 'DAILY') return { ...out, mode: 'daily' };
     if (out.freq === 'WEEKLY' && out.days.length === 5 && [1, 2, 3, 4, 5].every((x) => out.days.includes(x))) return { ...out, mode: 'weekdays' };
-    if (out.freq === 'WEEKLY' && out.days.length === 1 && out.days[0] === wd) return { ...out, mode: 'weekly' };
+    if (out.freq === 'WEEKLY' && out.days.length === 1 && out.days[0] === pcWd) return { ...out, mode: 'weekly' };
     if (out.freq === 'MONTHLY') return { ...out, mode: out.monthly === 'last' ? 'monthlyLast' : out.monthly === 'nth' ? 'monthlyNth' : 'monthlyDay' };
     if (out.freq === 'YEARLY') return { ...out, mode: 'yearly' };
   }
@@ -1046,20 +1066,26 @@ const untilStamp = (date, allDay) => {
   return new Date(y, m - 1, d, 23, 59, 59).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 };
 
-// The RRULE value the editor stands for, with the user's week start (design 1.1.6); null for no repeat.
-function ruleOf(r, start, allDay) {
+// The RRULE value the editor stands for, with the user's week start (design 1.1.6); null for no repeat. zone: the one
+// the series repeats in; the days the editor shows on the PC's clock are named as they fall there (zoneDay).
+function ruleOf(r, start, allDay, zone = null) {
   if (!r || r.mode === 'none' || r.mode === 'loading') return null;
   if (r.mode === 'kept') return r.kept;
-  const d = new Date(start);
-  const wd = d.getDay();
-  const day = d.getDate();
-  const wkst = `WKST=${WD[firstWeekday()]}`;
-  const nth = Math.ceil(day / 7);
+  const z = zoneDay(start, allDay ? null : zone);
+  const { wd, day } = z;
+  const wkst = `WKST=${WD[shiftDay(firstWeekday(), z.shift)]}`;
+  // No fifth weekday: one is always the last. "Last" where the zone's date isn't in its month's last week is the nth.
+  const nth = Math.ceil(day / 7) > 4 ? -1 : Math.ceil(day / 7);
+  const last = day + 7 > z.last ? -1 : nth;
+  const weekDays = (days) => {
+    const order = [0, 1, 2, 3, 4, 5, 6].map((i) => (firstWeekday() + i) % 7);
+    return order.filter((x) => days.includes(x)).map((x) => WD[shiftDay(x, z.shift)]).join(',');
+  };
   switch (r.mode) {
     case 'daily':
       return `FREQ=DAILY;${wkst}`;
     case 'weekdays':
-      return `FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;${wkst}`;
+      return `FREQ=WEEKLY;BYDAY=${weekDays([1, 2, 3, 4, 5])};${wkst}`;
     case 'weekly':
       return `FREQ=WEEKLY;BYDAY=${WD[wd]};${wkst}`;
     case 'monthlyDay':
@@ -1067,18 +1093,15 @@ function ruleOf(r, start, allDay) {
     case 'monthlyNth':
       return `FREQ=MONTHLY;BYDAY=${nth}${WD[wd]};${wkst}`;
     case 'monthlyLast':
-      return `FREQ=MONTHLY;BYDAY=-1${WD[wd]};${wkst}`;
+      return `FREQ=MONTHLY;BYDAY=${last}${WD[wd]};${wkst}`;
     case 'yearly':
-      return `FREQ=YEARLY;BYMONTH=${d.getMonth() + 1};BYMONTHDAY=${day};${wkst}`;
+      return `FREQ=YEARLY;BYMONTH=${z.month};BYMONTHDAY=${day};${wkst}`;
     default: {
       const parts = [`FREQ=${r.freq}`];
       if (r.interval > 1) parts.push(`INTERVAL=${r.interval}`);
-      if (r.freq === 'WEEKLY') {
-        const order = [0, 1, 2, 3, 4, 5, 6].map((i) => (firstWeekday() + i) % 7);
-        parts.push(`BYDAY=${order.filter((x) => r.days.includes(x)).map((x) => WD[x]).join(',')}`);
-      }
-      if (r.freq === 'MONTHLY') parts.push(r.monthly === 'last' ? `BYDAY=-1${WD[wd]}` : r.monthly === 'nth' ? `BYDAY=${nth}${WD[wd]}` : `BYMONTHDAY=${day}`);
-      if (r.freq === 'YEARLY') parts.push(`BYMONTH=${d.getMonth() + 1}`, `BYMONTHDAY=${day}`);
+      if (r.freq === 'WEEKLY') parts.push(`BYDAY=${weekDays(r.days)}`);
+      if (r.freq === 'MONTHLY') parts.push(r.monthly === 'last' ? `BYDAY=${last}${WD[wd]}` : r.monthly === 'nth' ? `BYDAY=${nth}${WD[wd]}` : `BYMONTHDAY=${day}`);
+      if (r.freq === 'YEARLY') parts.push(`BYMONTH=${z.month}`, `BYMONTHDAY=${day}`);
       if (r.ends === 'after') parts.push(`COUNT=${r.count}`);
       if (r.ends === 'on' && r.until) parts.push(`UNTIL=${untilStamp(r.until, allDay)}`);
       parts.push(wkst);
@@ -1729,7 +1752,7 @@ function repeatFromSeries(info, start) {
   if (!info) return { mode: 'kept', kept: '', unknown: true };
   if (Array.isArray(info.rules) && info.rules.length > 1) return { mode: 'kept', kept: info.rule };
   const anchor = Number.isFinite(info.start) ? info.start : start;
-  return { ...parseRule(info.rule, anchor), anchor };
+  return { ...parseRule(info.rule, anchor, info.allDay ? null : info.timeZone), anchor };
 }
 
 // Checks the whole form; the values with their times, or KEEP_OPEN after saying what to fix.
@@ -1768,7 +1791,7 @@ function createInput(v) {
   }
   if (v.guests.length && invitesOf(v.key) === 'provider') input.guests = { add: v.guests.map((g) => ({ address: g.address, name: String(g.name || '').slice(0, 200), optional: Boolean(g.optional) })) };
   if (v.meet && meetAllowed(v.key)) input.addMeet = true;
-  const rule = ruleOf(v.repeat, v.start, v.allDay);
+  const rule = ruleOf(v.repeat, v.start, v.allDay, ruleZone(v));
   if (rule) input.recurrence = rule;
   if (v.reminders && (v.remindersTouched || !v.reminders.useDefault) && !sameReminders(v.reminders, startReminders(v.key))) input.reminders = cleanReminders(v.reminders, v);
   if (!v.allDay && isZone(v.timeZone) && v.timeZone !== pcZone()) input.timeZone = v.timeZone;
@@ -1800,7 +1823,7 @@ function editInput(e, v, opened, series) {
   if (v.meet !== opened.meet) input.addMeet = v.meet;
   let ruleChanged = false;
   if (v.repeat.touched && v.repeat.mode !== 'loading') {
-    const rule = ruleOf(v.repeat, v.start, v.allDay);
+    const rule = ruleOf(v.repeat, v.start, v.allDay, ruleZone(v));
     const before = series ? series.rule : null;
     if (!sameRule(rule, before) && !(rule === null && !before)) {
       input.recurrence = rule;
@@ -2237,7 +2260,7 @@ export function seriesChoice(title, e, { wide = false } = {}) {
 
 export async function removeEvent(e) {
   closePop();
-  const booking = await bookingOf(e);
+  const booking = over(e) ? null : await bookingOf(e);
   // On the computer that handles bookings, deleting a booked event cancels the booking (contracts k).
   if (booking && C.booking.thisDevice) return cancelBooking(e, booking);
   let scope = 'one';
@@ -2262,7 +2285,8 @@ export async function removeEvent(e) {
 }
 
 // Cancel booking: the event goes, the guest hears it from the calendar, and may read a short message from the host
-// on their booking page.
+// on their confirmation page. e: the booked event, or { allDay, start, end } from the booking where only that is at hand
+// (an overlap notice).
 async function cancelBooking(e, b) {
   const name = (b.guest && (b.guest.name || b.guest.email)) || '';
   await messageDialog({

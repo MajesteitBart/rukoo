@@ -81,7 +81,7 @@ Updating Rukoo doesn't update the bridge. Most releases leave the bridge protoco
 - The bridge waits up to 115 seconds for a tool call, including the time it takes to find the device. `write_draft` waits for Rukoo's composer, which takes at most 20 seconds. Mail actions answer within 90 seconds. Everything else answers in well under a second.
 - Choosing a device adds one short request per open Rukoo to each call. Looking for devices takes up to 4 seconds, or 8 when a phone is online, because a Windows PC without Rukoo drops the connection without answering. That happens in the background, except when no known Rukoo answers.
 - `timeout: 120` is Hermes' own limit for a call to this server.
-- Rukoo's tools don't block while they wait for the user. `propose_action`, `mail_action` and `create_event` put an approval card in Rukoo and return right away. When the user approves, Rukoo sends Clark a new message. So the entry doesn't need `trust: untrusted`, and Hermes' approval timeout doesn't come into play.
+- Rukoo's tools don't block while they wait for the user. `propose_action`, `mail_action` and `create_event` put an approval card in Rukoo and return right away. When the user approves a `propose_action` card, Rukoo sends Clark a new message. What came of a `mail_action` or `create_event` card reaches Clark with the user's next message. So the entry doesn't need `trust: untrusted`, and Hermes' approval timeout doesn't come into play.
 
 ## Troubleshooting
 

@@ -155,6 +155,15 @@ describe('bookings for the host’s devices', () => {
     expect(rows.map((r) => [r.status, r.seq])).toEqual([['cancelled', 6]]);
   });
 
+  it("doesn't cancel a booking whose meeting is over", async () => {
+    const { person, handle } = await host(signup);
+    const b = await bookDirect(handle, slotAhead(2));
+    later(3 * DAY);
+    const res = await act(person, b.booking.id, { action: 'cancel', version: 1, reason: 'host_cancelled' });
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: 'not_active', booking: { status: 'confirmed', version: 1 } });
+  });
+
   it('records what a device handled without making a change', async () => {
     const { person, handle } = await host(signup);
     const b = await bookDirect(handle, slotAhead(2));
@@ -337,7 +346,7 @@ describe('the daily alarm', () => {
     });
   }
 
-  it('wipes a page whose account is missing on two checks a day apart, keeping the claim', async () => {
+  it('wipes a page whose account is missing on two checks a day apart, keeping the handle reserved for nobody', async () => {
     const { handle } = await host(signup);
     await bookDirect(handle, slotAhead(3));
     await orphan(handle);
@@ -350,7 +359,8 @@ describe('the daily alarm', () => {
     later(DAY);
     await runDurableObjectAlarm(bookingStub(handle));
     [p] = await sql(handle, 'SELECT owner, profile, retiredAt, enabled, missingSince FROM page');
-    expect(p).toMatchObject({ owner: 'N'.repeat(43), profile: null, enabled: 0, retiredAt: expect.any(Number), missingSince: null });
+    // Not for the account's routing name either: a new sign-up with the same email would match it.
+    expect(p).toMatchObject({ owner: expect.stringMatching(/^deleted:[A-Za-z0-9_-]{43}$/), profile: null, enabled: 0, retiredAt: expect.any(Number), missingSince: null });
     expect((await sql(handle, 'SELECT COUNT(*) AS n FROM bookings'))[0].n).toBe(0);
   });
 

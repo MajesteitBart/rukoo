@@ -37,6 +37,9 @@ const RECORD_BYTES = 16384;
 const FIRST_WRITE_WINS = new Set(['classification', 'bookingkey']);
 // Collections whose keys name the Rukoo account they belong to (<acct>); see bookingAcct().
 const PER_ACCOUNT = new Set(['booking', 'bookingkey']);
+// Addresses Rukoo used as its default server before. A device signed in at one keeps it (pin()) while the session
+// lasts; once it ends, the device goes back to the default (forget()).
+const FORMER_SERVERS = ['https://rukoo-account.bvdm.ai'];
 // Which of two versions of a record wins: the later change, and on a tie the larger value, so every device picks the
 // same one whatever order they arrive in.
 const gone = (x) => (x.d || x.deleted ? 1 : 0);
@@ -49,7 +52,7 @@ const ERRORS = new Set([
   'signed_in', 'signed_out', 'wrong_password',
   // The booking routes (server/PROTOCOL.md, Owner errors).
   'handle_taken', 'handle_reserved', 'handle_lost', 'handle_changes', 'has_bookings', 'other_device', 'not_found', 'slot_taken',
-  'stale_version'
+  'stale_version', 'not_active'
 ]);
 
 function readJson(file, fallback) {
@@ -128,6 +131,7 @@ class AccountService extends EventEmitter {
     // The cursor as of the records last written to disk: the state on disk never goes past it.
     this.durableCursor = Number(this.state.cursor) || 0;
     if (this.state.email && this.state.token && this.state.dataKey) {
+      this.pin();
       try {
         this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64') });
       } catch (_) {
@@ -141,6 +145,17 @@ class AccountService extends EventEmitter {
 
   get server() {
     return this.state.server || this.defaultServer;
+  }
+
+  // A session belongs to the address it signed in at, because the password proofs include it (server/PROTOCOL.md,
+  // Keys). A device that signed in at the default keeps that address when a newer Rukoo has another default. Sessions
+  // from before sessionServer was kept have the server info fetched at sign-in, which is for the same address.
+  pin() {
+    if (this.state.server) return;
+    const at = serverUrl(this.state.sessionServer || (this.state.info && this.state.info.server));
+    if (!at || at === this.defaultServer) return;
+    this.state.server = at;
+    this.saveState();
   }
 
   get signedIn() {
@@ -211,6 +226,7 @@ class AccountService extends EventEmitter {
     if (url && !server) throw fail('no_server');
     this.state.server = server && server !== this.defaultServer ? server : null;
     this.state.info = null;
+    delete this.state.formerServer;
     this.saveState();
     this.changedStatus();
     return this.status();
@@ -283,6 +299,25 @@ class AccountService extends EventEmitter {
     if (!validEmail(address)) throw fail('invalid_email');
     if (typeof password !== 'string' || !password) throw fail('unauthorized');
     this.checkStorage();
+    const former = this.state.server ? null : this.state.formerServer;
+    try {
+      return await this.login(address, password);
+    } catch (err) {
+      // This device went back to the default from a former one (forget()). An account made there signs in only
+      // there, as the password proofs include the address: try it once, and keep it when it works.
+      if (!former || !err || err.code !== 'unauthorized') throw err;
+      this.state.server = former;
+      try {
+        return await this.login(address, password);
+      } catch (_) {
+        this.state.server = null;
+        this.saveState();
+        throw err;
+      }
+    }
+  }
+
+  async login(address, password) {
     await this.serverInfo();
     const { authKey, wrapKey } = await this.authFor(address, password);
     const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() });
@@ -403,13 +438,31 @@ class AccountService extends EventEmitter {
       await this.checkPassword(authKey);
       await this.beforeDelete();
     }
-    await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey) }, { auth: true, session });
+    // The key to take the booking page's handle back with an account made again here: the server keeps the handle
+    // for it, not for whoever signs up next with this email (sign-ups don't prove the address).
+    const handleKey = keys.b64u(crypto.randomBytes(32));
+    const email = this.state.email;
+    await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey), handleKey }, { auth: true, session });
     if (this.session === session) {
       this.state.error = null;
       this.forget();
+      this.state.handleKey = { email, key: handleKey };
+      this.saveState();
       this.changedStatus();
     }
     return this.status();
+  }
+
+  // The handleKey this device kept when it deleted the account with this email, for the booking page's publish.
+  handleKeyFor(email) {
+    const k = this.state.handleKey;
+    return k && email && k.email === keys.normalizeEmail(email) && typeof k.key === 'string' ? k.key : null;
+  }
+
+  dropHandleKey() {
+    if (!this.state.handleKey) return;
+    delete this.state.handleKey;
+    this.saveState();
   }
 
   // Whether authKey is this account's password, without changing anything there: a sign-in of its own (the route
@@ -444,12 +497,14 @@ class AccountService extends EventEmitter {
     this.state = {
       ...this.state,
       email,
+      sessionServer: this.server,
       token: this.secrets.encrypt(token),
       dataKey: this.secrets.encrypt(dataKey.toString('base64')),
       cursor: 0,
       lastSync: null,
       error: null
     };
+    delete this.state.formerServer;
     const acct = bookingAcct(email);
     for (const e of this.entries.values()) {
       delete e.seq;
@@ -486,8 +541,13 @@ class AccountService extends EventEmitter {
       delete e.dirty;
       delete e.ifAbsent;
     }
-    const { server, info, error } = this.state;
-    this.state = { server, info, error };
+    // A device pinned to a former default goes back to the default: signed out here, deleted, or ended elsewhere, as
+    // when another device deleted the account to make it again at the default.
+    // signIn() tries the former address once more, for an account still there (formerServer).
+    const former = FORMER_SERVERS.includes(this.state.server);
+    const { server, info, error, handleKey } = this.state;
+    const kept = handleKey ? { handleKey } : {};
+    this.state = former ? { server: null, info: null, error, formerServer: server, ...kept } : { server, info, error, ...(this.state.formerServer ? { formerServer: this.state.formerServer } : {}), ...kept };
     this.saveState();
   }
 

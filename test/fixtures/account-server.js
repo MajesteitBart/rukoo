@@ -22,9 +22,8 @@ const QUARTER = 15 * MINUTE;
 const HANDLE = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,31}$/;
 const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
 const BOOKING_ID = /^[A-Za-z0-9_-]{22}$/;
-const RESERVED_HANDLES = new Set(
-  'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking bookings cal calendar openapi well-known static abuse security status operator bvdm'.split(' ')
-);
+// The desktop's list, which test/booking-rules.test.js holds to the server's (server/src/input.js).
+const { RESERVED_HANDLES } = require('../../src/main/booking/rules');
 const ACTIONS = ['handled', 'confirm', 'decline', 'cancel', 'reschedule'];
 const REASONS = ['host_cancelled', 'host_deleted', 'guest_declined'];
 const ACTIVE = ['pending', 'confirmed'];
@@ -116,8 +115,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
   const pages = new Map();
   // Set gzip on the started server to answer pulls compressed whatever the device asked for, as a proxy that
   // compresses everything would. mailMax is the booking pages' daily mail budget, now the server's clock and
-  // bookingOrigin the origin of the pages' public addresses (the server's own by default). fail({ route, body }) may
-  // answer a request instead of the server: [status, json] or null.
+  // bookingOrigin the server's BOOKING_ORIGIN: pages live at its root, and without it under /meet on the server's own
+  // address. fail({ route, body }) may answer a request instead of the server: [status, json] or null.
   const control = { gzip: false, mailMax: 10, now: () => Date.now(), bookingOrigin: null, fail: null };
 
   const info = () => ({
@@ -150,8 +149,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
 
   // ---- booking pages ----
 
-  const origin = () => control.bookingOrigin || control.url;
-  const pageUrl = (handle) => `${origin()}/meet/${handle}`;
+  const base = () => control.bookingOrigin || `${control.url}/meet`;
+  const pageUrl = (handle) => `${base()}/${handle}`;
   const deviceName = (id) => {
     const s = [...sessions.values()].find((x) => x.id === id);
     return s ? s.name : null;
@@ -184,7 +183,7 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
     const handleChanges = { used: acc.booking.changes.filter((t) => t > control.now() - 30 * DAY).length, max: HANDLE_CHANGES };
     if (!page) {
       const handle = acc.booking.handle;
-      return { handle, url: handle ? pageUrl(handle) : null, enabled: false, device: null, publishedAt: null, keyId: null, seq: 0, pending: 0, upcoming: 0, today: null, handleChanges };
+      return { handle, url: handle ? pageUrl(handle) : null, base: base(), enabled: false, device: null, publishedAt: null, keyId: null, seq: 0, pending: 0, upcoming: 0, today: null, handleChanges };
     }
     lapse(page);
     const now = control.now();
@@ -193,6 +192,7 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
     return {
       handle: page.handle,
       url: pageUrl(page.handle),
+      base: base(),
       enabled: page.enabled && !page.retiredAt,
       device: page.deviceId ? { id: page.deviceId, name: deviceName(page.deviceId), current: page.deviceId === session.id } : null,
       publishedAt: page.publishedAt,
@@ -205,10 +205,16 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
     };
   };
 
+  // A page turned off from another session than the booking device's keeps that device in offDevice: it doesn't know
+  // yet and may still publish what it had. Its publishes and renames without takeover get other_device until its
+  // session reads GET /v1/booking (PROTOCOL.md, One booking device).
+  const unaware = (page, session, takeover) => !takeover && Boolean(page.offDevice) && page.offDevice === session.id;
+
   const booking = {
     'GET /v1/booking': ({ acc, session }) => {
       const page = pageOf(acc);
       if (page === 'lost') return refuse('handle_lost');
+      if (page && page.offDevice === session.id) page.offDevice = null;
       return [200, ownerJson(acc, session, page)];
     },
     'PUT /v1/booking': ({ acc, session, body }) => {
@@ -220,6 +226,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       const takeover = body.takeover === true;
       const current = acc.booking.handle;
       const target = pages.get(body.handle);
+      // A deleted account's handle goes back only with the key the deleting device sent (PROTOCOL.md, Handles).
+      if (target && target.owner !== acc.email && typeof body.reclaim === 'string' && target.owner === `deleted:${sha(body.reclaim)}`) target.owner = acc.email;
       if (target && target.owner !== acc.email) return refuse(body.handle === current ? 'handle_lost' : target.retiredAt ? 'handle_reserved' : 'handle_taken');
       const renaming = Boolean(current) && current !== body.handle;
       const old = renaming ? pages.get(current) : null;
@@ -227,13 +235,15 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
         if (acc.booking.changes.filter((t) => t > now - 30 * DAY).length >= HANDLE_CHANGES) return refuse('handle_changes');
         if (old && old.owner === acc.email) {
           if (old.deviceId && old.deviceId !== session.id && !takeover && !old.retiredAt) return refuse('other_device');
+          if (unaware(old, session, takeover)) return refuse('other_device');
           lapse(old);
-          if ([...old.bookings.values()].some((r) => ACTIVE.includes(r.status) && r.end > now)) return refuse('has_bookings');
+          if ([...old.bookings.values()].some((r) => r.end > now && (ACTIVE.includes(r.status) || r.version > (r.handledVersion || 0)))) return refuse('has_bookings');
         }
       }
-      const page = target || { owner: acc.email, handle: body.handle, enabled: false, deviceId: null, profile: null, windows: null, busy: null, publishedAt: null, seq: 0, retiredAt: null, bookings: new Map(), counts: null };
+      const page = target || { owner: acc.email, handle: body.handle, enabled: false, deviceId: null, offDevice: null, profile: null, windows: null, busy: null, publishedAt: null, seq: 0, retiredAt: null, bookings: new Map(), counts: null };
       if (page.deviceId && page.deviceId !== session.id && !takeover && !page.retiredAt) return refuse('other_device');
-      Object.assign(page, { profile: body.profile, windows: body.windows, busy: body.busy, publishedAt: now, enabled: body.enabled, deviceId: session.id, retiredAt: null });
+      if (unaware(page, session, takeover)) return refuse('other_device');
+      Object.assign(page, { profile: body.profile, windows: body.windows, busy: body.busy, publishedAt: now, enabled: body.enabled, deviceId: session.id, offDevice: null, retiredAt: null });
       pages.set(page.handle, page);
       if (old && old.owner === acc.email) Object.assign(old, { retiredAt: now, enabled: false, profile: null, windows: null, busy: null, deviceId: null, movedTo: body.handle });
       if (body.handle !== current) {
@@ -242,10 +252,13 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       }
       return [200, ownerJson(acc, session, page)];
     },
-    'DELETE /v1/booking': ({ acc }) => {
+    'DELETE /v1/booking': ({ acc, session }) => {
       const page = pageOf(acc);
       if (page && page !== 'lost') {
-        Object.assign(page, { profile: null, windows: null, busy: null, publishedAt: null, enabled: false, deviceId: null, seq: 0, counts: null, retiredAt: page.retiredAt || control.now() });
+        // The booking device, or the one an earlier turn-off left unaware; never the session that turns it off now.
+        const off = page.deviceId || page.offDevice || null;
+        const offDevice = off !== session.id ? off : null;
+        Object.assign(page, { profile: null, windows: null, busy: null, publishedAt: null, enabled: false, deviceId: null, offDevice, seq: 0, counts: null, retiredAt: page.retiredAt || control.now() });
         page.bookings.clear();
       }
       return [204];
@@ -314,6 +327,7 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
           break;
         case 'cancel': {
           if (!ACTIVE.includes(row.status)) return stale();
+          if (row.end <= control.now()) return refuse('not_active', { booking: ownerRow(row) });
           const reason = body.reason === undefined ? 'host_cancelled' : body.reason;
           if (!REASONS.includes(reason)) return invalid('reason');
           change(page, row, { status: 'cancelled', notify: false, cancelledBy: 'host', reason, message });
@@ -387,7 +401,7 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       updatedAt: now,
       expiresAt: made === 'pending' ? Math.min(now + PENDING_HOLD, start - t.minNotice * MINUTE) : null,
       reschedules: 0,
-      uid: `${id}@${new URL(origin()).host}`,
+      uid: `${id}@${new URL(base()).host}`,
       notify: made === 'confirmed',
       cancelledBy: null,
       reason: null,
@@ -494,7 +508,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       endSessions(acc.email, null);
       // The Worker wipes a deleted account's page as well; its handle stays reserved.
       const page = acc.booking.handle && pages.get(acc.booking.handle);
-      if (page && page.owner === acc.email) Object.assign(page, { profile: null, enabled: false, deviceId: null, retiredAt: control.now(), bookings: new Map() });
+      const owner = typeof body.handleKey === 'string' ? `deleted:${sha(body.handleKey)}` : `deleted:${token()}`;
+      if (page && page.owner === acc.email) Object.assign(page, { owner, profile: null, enabled: false, deviceId: null, offDevice: null, retiredAt: control.now(), bookings: new Map() });
       return [204];
     },
     'GET /v1/records': ({ acc, url }) => {

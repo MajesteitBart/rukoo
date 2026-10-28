@@ -6,7 +6,7 @@
 import { t, getLanguage, translate, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast, dialog, confirmDialog, choiceDialog, hhmm, KEEP_OPEN } from './ui.js';
-import { duration, whenText, longDay, pcZone, zoneOptions } from './calendar-shared.js';
+import { duration, whenText, longDay, inlineDay, pcZone, zoneOptions } from './calendar-shared.js';
 import { safeBookingUrl, bookingFooterHtml } from './composer.js';
 import { signaturePreview } from './signature.js';
 import { weekOrder, weekdayName, workHoursText } from './calendar-settings.js';
@@ -15,8 +15,19 @@ export const BOOKING_VIEWS = ['booking', 'booking-setup', 'booking-type', 'booki
 
 const HANDLE = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,31}$/;
 const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
-const RESERVED_HANDLES = new Set(['api', 'assets', 'v1', 'meet', 'mcp', 'llms', 'admin', 'help', 'privacy', 'rukoo', 'www', 'mail', 'support', 'account', 'settings', 'login', 'signup', 'book', 'booking', 'bookings', 'cal', 'calendar', 'openapi', 'well-known', 'static', 'abuse', 'security', 'status', 'operator', 'bvdm']);
-const RESERVED_SLUGS = new Set(['api', 'mcp', 'booking', 'bookings', 'llms', 'openapi', 'ics', 'assets', 'manage', 'prepare']);
+// The server's reserved handles and slugs (server/src/input.js), as in src/main/booking/rules.js, which the renderer
+// can't load; test/booking-rules.test.js holds both copies to the server's.
+const RESERVED_HANDLES = new Set(
+  [
+    'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking',
+    'bookings cal calendar openapi well-known static abuse security status operator bvdm',
+    'img media download downloads github releases styles app film video docs blog about pricing features terms legal',
+    'press contact changelog android windows mac linux robots sitemap favicon index booker 404 500'
+  ]
+    .join(' ')
+    .split(' ')
+);
+const RESERVED_SLUGS = new Set('api mcp booking bookings llms openapi ics assets manage prepare'.split(' '));
 const MAX_TYPES = 10;
 const MAX_RANGES = 6;
 const FOOTER_MAX = 300;
@@ -58,10 +69,12 @@ const slugify = (text, max) =>
     .replace(/^-+|-+$/g, '')
     .slice(0, max)
     .replace(/-+$/, '');
-// "3 minutes ago", in the interface language.
+// "3 minutes ago", in the interface language. Under a minute is "just now": Intl's "this minute" is "binnen een
+// minuut" in Dutch, which reads as still to come.
 function ago(ms) {
   const rtf = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' });
   const minutes = Math.round((ms - Date.now()) / 60000);
+  if (minutes === 0) return t('settings.booking.justNow');
   if (Math.abs(minutes) < 60) return rtf.format(minutes, 'minute');
   const hours = Math.round(minutes / 60);
   if (Math.abs(hours) < 48) return rtf.format(hours, 'hour');
@@ -314,7 +327,9 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   function setupHtml() {
     const v = setupValues();
     const dests = destinations();
-    const base = state.url ? state.url.replace(/[^/]*$/, '') : `${hostOf(state.server)}/meet/`;
+    // The page's address before its handle: from the page's own address, else as the server reports it (older servers
+    // don't, and keep pages under /meet).
+    const base = state.url ? state.url.replace(/[^/]*$/, '') : state.base ? `${state.base}/` : `${hostOf(state.server)}/meet/`;
     const status = handleStatus(v.handle);
     const calendarsHtml = (lists || [])
       .filter((a) => a.calendars.length)
@@ -425,7 +440,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const bits = [whenText({ start: b.start, end: b.end, allDay: false })];
     if (b.guest && b.guest.via) bits.push(t('settings.booking.via', { via: b.guest.via }));
     if (b.customLength) bits.push(t('settings.booking.customLength'));
-    if (request && b.expiresAt) bits.push(t('settings.booking.expires', { time: `${longDay(b.expiresAt)}, ${hhmm(b.expiresAt)}` }));
+    if (request && b.expiresAt) bits.push(t('settings.booking.expires', { time: `${inlineDay(b.expiresAt)}, ${hhmm(b.expiresAt)}` }));
     const notes = b.guest && b.guest.notes ? `<div class="desc booking-notes">${esc(b.guest.notes)}</div>` : '';
     const id = esc(b.id);
     const actions = !state.thisDevice
@@ -465,7 +480,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   function pageHtml() {
     const device = state.device;
     const unchecked = ((state.publishing && state.publishing.unchecked) || [])
-      .map((u) => `<div class="row static"><div class="text"><div class="desc booking-warn">${esc(t('settings.booking.unchecked', { email: u.email, time: `${longDay(u.since)}, ${hhmm(u.since)}` }))}</div></div></div>`)
+      .map((u) => `<div class="row static"><div class="text"><div class="desc booking-warn">${esc(t('settings.booking.unchecked', { email: u.email, time: `${inlineDay(u.since)}, ${hhmm(u.since)}` }))}</div></div></div>`)
       .join('');
     const otherDevice =
       !state.thisDevice && device
@@ -657,7 +672,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
         return `<div class="row static booking-day">
           <div class="booking-day-name">${esc(weekdayName(d))}</div>
           <div class="booking-ranges">${ranges.length ? rangeHtml(`w${d}`, ranges, weekdayName(d)) : `<span class="booking-unavailable">${esc(t('settings.booking.unavailableDay'))}</span>`}</div>
-          <button type="button" class="icon-btn sm" data-a="booking-range-add:w${d}" title="${esc(t('settings.booking.addRange', { day: weekdayName(d) }))}" aria-label="${esc(t('settings.booking.addRange', { day: weekdayName(d) }))}" ${ranges.length >= MAX_RANGES || !roomFor(ranges) ? 'disabled' : ''}>${icons.plus}</button>
+          <button type="button" class="icon-btn sm" data-a="booking-range-add:w${d}" title="${esc(t('settings.booking.addRange', { day: weekdayName(d, 'long', true) }))}" aria-label="${esc(t('settings.booking.addRange', { day: weekdayName(d, 'long', true) }))}" ${ranges.length >= MAX_RANGES || !roomFor(ranges) ? 'disabled' : ''}>${icons.plus}</button>
         </div>`;
       })
       .join('');
@@ -1014,6 +1029,18 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     });
   }
 
+  // Cancelling a booking, from the list or a notice: the host confirms, may write the guest a message and chooses
+  // whether the calendar tells the guest.
+  async function cancelAsk(id) {
+    const v = await messageDialog({
+      title: t('settings.booking.cancelTitle'),
+      help: t('settings.booking.cancelHelp'),
+      okLabel: t('settings.booking.cancel'),
+      check: { label: t('settings.booking.cancelNotify'), on: true }
+    });
+    if (v) await action(() => api('bookingAction', id, 'cancel', { message: v.message || undefined, notify: v.checked }), t('settings.booking.cancelled'));
+  }
+
   async function noticeAction(id, name) {
     const n = (state.notices || []).find((x) => x.id === id);
     const a = n && (n.actions || []).find((x) => x.action === name);
@@ -1022,7 +1049,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
       case 'takeover':
         return action(() => api('bookingTakeover'), t('settings.booking.takenOver'));
       case 'cancel':
-        return n.bookingId ? action(() => api('bookingAction', n.bookingId, 'cancel', { notify: true }), t('settings.booking.cancelled')) : null;
+        return n.bookingId ? cancelAsk(n.bookingId) : null;
       case 'keep':
       case 'dismiss':
         return action(() => api('bookingAction', n.id, a.action));
@@ -1116,14 +1143,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
       return true;
     }
     if (a.startsWith('booking-cancel:')) {
-      const id = a.slice(15);
-      const v = await messageDialog({
-        title: t('settings.booking.cancelTitle'),
-        help: t('settings.booking.cancelHelp'),
-        okLabel: t('settings.booking.cancel'),
-        check: { label: t('settings.booking.cancelNotify'), on: true }
-      });
-      if (v) await action(() => api('bookingAction', id, 'cancel', { message: v.message || undefined, notify: v.checked }), t('settings.booking.cancelled'));
+      await cancelAsk(a.slice(15));
       return true;
     }
     if (a.startsWith('booking-notice:')) {

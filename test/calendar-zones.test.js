@@ -44,20 +44,28 @@ test('an all-day event blocks its date from midnight to midnight in the zone ask
   assert.deepEqual(newYork.intervals.at(-1), [ny('2026-11-06', '00:00'), ny('2026-11-07', '00:00')]);
 });
 
-test('free time in working hours in Amsterdam, shown in Amsterdam, while the PC is in New York', async () => {
-  const { calendars, engine } = setup(fakeCalendar({ events }));
+test("free time in working hours stays on the PC's clock in New York when it is shown in Amsterdam", async () => {
+  const busyMorning = [
+    ...events,
+    { id: 'standup', summary: 'Standup', start: { dateTime: new Date(ny('2026-11-05', '10:00')).toISOString(), timeZone: NY }, end: { dateTime: new Date(ny('2026-11-05', '11:00')).toISOString(), timeZone: NY }, ...mine }
+  ];
+  const { calendars, engine } = setup(fakeCalendar({ events: busyMorning }));
+  // The zone asked for only says how the times read: 09:00-17:00 in New York is 15:00-23:00 in Amsterdam.
   const result = await free(calendars, engine.settings, null, { ...THU_FRI, length: 30, hours: 'working', timeZone: Z, locale: 'en' });
   assert.equal(result.timeZone, Z);
   assert.deepEqual(result.windows, [
-    [ams('2026-11-05', '09:00'), ams('2026-11-05', '10:00')],
-    [ams('2026-11-05', '11:00'), ams('2026-11-05', '17:00')]
-  ], 'Friday is the vacation day there');
-  assert.deepEqual(result.lines, ['Thu 5 Nov: 09:00–10:00, 11:00–17:00']);
+    [ny('2026-11-05', '09:00'), ny('2026-11-05', '10:00')],
+    [ny('2026-11-05', '11:00'), ny('2026-11-05', '17:00')]
+  ], "Friday is the vacation day on the PC's clock");
+  assert.deepEqual(result.lines, ['Thu 5 Nov: 15:00–16:00, 17:00–23:00']);
+  const own = await free(calendars, engine.settings, null, { ...THU_FRI, length: 30, hours: 'working', locale: 'en' });
+  assert.deepEqual(own.windows, result.windows, 'the same open time in either zone');
+  assert.deepEqual(own.lines, ['Thu 5 Nov: 09:00–10:00, 11:00–17:00']);
   const dutch = await free(calendars, engine.settings, null, { ...THU_FRI, length: 30, hours: 'working', timeZone: Z, locale: 'nl' });
   assert.deepEqual(dutch.lines, formatFreeTimes(dutch.windows, { locale: 'nl-NL', timeZone: Z }));
   assert.notDeepEqual(dutch.lines, result.lines);
   const long = await free(calendars, engine.settings, null, { ...THU_FRI, length: 90, hours: 'working', timeZone: Z, locale: 'en' });
-  assert.deepEqual(long.windows, [[ams('2026-11-05', '11:00'), ams('2026-11-05', '17:00')]], 'only windows of the length asked for');
+  assert.deepEqual(long.windows, [[ny('2026-11-05', '11:00'), ny('2026-11-05', '17:00')]], 'only windows of the length asked for');
 });
 
 test("booking hours keep the booking page's zone; the result is shown in the PC's zone by default", async () => {
@@ -69,9 +77,21 @@ test("booking hours keep the booking page's zone; the result is shown in the PC'
   assert.deepEqual(result.windows, [
     [ams('2026-11-05', '09:00'), ams('2026-11-05', '10:00')],
     [ams('2026-11-05', '11:00'), ams('2026-11-05', '17:00')]
-  ], "the vacation blocks Friday in the booking page's zone, as the page itself does");
+  ], 'Friday is the vacation day');
   assert.deepEqual(result.lines, ['Thu 5 Nov: 03:00–04:00, 05:00–11:00']);
   // Without a booking page, booking hours are the working hours, here in the PC's own zone.
   const fallback = await free(calendars, engine.settings, null, { ...THU_FRI, length: 30, hours: 'booking', locale: 'en' });
   assert.deepEqual(fallback.windows[0], [ny('2026-11-05', '09:00'), ny('2026-11-05', '17:00')]);
+});
+
+test("with booking hours, an all-day event blocks its whole day in the booking page's zone, not on the PC's clock", async () => {
+  // Tokyo is 14 hours ahead of the PC: Friday 09:00-17:00 there is Thursday 19:00 to Friday 03:00 in New York, so
+  // the vacation read as New York's Friday would leave Tokyo's Friday morning open.
+  const TOKYO = 'Asia/Tokyo';
+  const tokyo = (date, time) => zonedInstant(date, time, TOKYO);
+  const { calendars, engine } = setup(fakeCalendar({ events: events.filter((e) => e.id === 'vacation') }));
+  const nine = [['09:00', '17:00']];
+  const booking = { weekly: [[], nine, nine, nine, nine, nine, []], overrides: {}, timeZone: TOKYO };
+  const result = await free(calendars, engine.settings, booking, { start: tokyo('2026-11-05', '00:00'), end: tokyo('2026-11-07', '00:00'), length: 30, hours: 'booking', locale: 'en' });
+  assert.deepEqual(result.windows, [[tokyo('2026-11-05', '09:00'), tokyo('2026-11-05', '17:00')]]);
 });

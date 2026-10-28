@@ -121,6 +121,7 @@ class AccountService(
         val token = state.token
         val dataKey = state.dataKey
         if (email != null && token != null && dataKey != null) {
+            pin()
             val plainToken = secrets.decrypt(token)
             val key = secrets.decrypt(dataKey)?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
             if (plainToken != null && key != null && key.size == 32) {
@@ -135,6 +136,20 @@ class AccountService(
     }
 
     val server: String get() = synchronized(lock) { state.server ?: defaultServer }
+
+    /**
+     * A session belongs to the address it signed in at, because the password proofs include it (server/PROTOCOL.md,
+     * Keys). A phone that signed in at the default keeps that address when a newer Rukoo has another default. Sessions
+     * from before [AccountState.sessionServer] was kept have the server info fetched at sign-in, which is for the same
+     * address. Under the lock.
+     */
+    private fun pin() {
+        if (state.server != null) return
+        val at = AccountServers.serverUrl(state.sessionServer ?: state.info?.server, devHosts) ?: return
+        if (at == defaultServer) return
+        state = state.copy(server = at)
+        saveState()
+    }
 
     val signedIn: Boolean get() = synchronized(lock) { session != null }
 
@@ -480,6 +495,7 @@ class AccountService(
         synchronized(lock) {
             state = state.copy(
                 email = email,
+                sessionServer = state.server ?: defaultServer,
                 token = secrets.encrypt(token),
                 dataKey = secrets.encrypt(Base64.getEncoder().encodeToString(dataKey)),
                 cursor = 0,
@@ -524,7 +540,13 @@ class AccountService(
             e.dirty = false
             e.ifAbsent = false
         }
-        state = AccountState(server = state.server, info = state.info, error = state.error)
+        // A phone pinned to a former default goes back to the default: signed out here, deleted, or ended elsewhere, as
+        // when another device deleted the account to make it again at the default.
+        state = if (state.server in FORMER_SERVERS) {
+            AccountState(error = state.error)
+        } else {
+            AccountState(server = state.server, info = state.info, error = state.error)
+        }
         saveState()
     }
 
@@ -926,6 +948,10 @@ class AccountService(
         // writes and this phone receives with the rest of the account.
         private val PER_ACCOUNT = setOf("booking", "bookingkey")
         private val ACCT_IN_KEY = Regex("^[a-z]+:([A-Za-z0-9_-]{16})(?::|$)")
+
+        // Addresses Rukoo used as its default server before. A phone signed in at one keeps it ([pin]) while the session
+        // lasts; once it ends, the phone goes back to the default ([forget]).
+        internal val FORMER_SERVERS = listOf("https://rukoo-account.bvdm.ai")
 
         /** `<acct>`: the first 16 characters of base64url(SHA-256) of the trimmed, lowercased Rukoo account email. */
         fun bookingAcct(email: String): String =

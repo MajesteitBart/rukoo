@@ -2116,7 +2116,7 @@
     "description": "Booking or request card: the guest's time zone, when it can't be used to show their time. src/renderer/calendar-event.js (guestRows)"
   },
   "calendar.booking.via": {
-    "message": "Booked via {via}",
+    "message": "Assistant: {via}",
     "description": "Booking or request card: who made the booking for the guest, as the booking said, such as an assistant's name. via is the guest's own text. src/renderer/calendar-event.js (guestRows)"
   },
   "calendar.booking.customLength": {
@@ -2144,7 +2144,7 @@
     "description": "Label of the field for a short message to the guest when a booking is cancelled or a request declined. src/renderer/calendar-event.js (cancelBooking, declineRequest)"
   },
   "calendar.booking.messageHelp": {
-    "message": "It shows on the guest's booking page.",
+    "message": "It shows on the guest's confirmation page.",
     "description": "Line under the message field in the cancel-booking dialog. src/renderer/calendar-event.js (cancelBooking)"
   },
   "calendar.booking.keep": {
@@ -2204,11 +2204,11 @@
     "description": "Title of the dialog before a booking request is declined. src/renderer/calendar-event.js (declineRequest)"
   },
   "calendar.booking.declineHelp": {
-    "message": "{name} sees on their booking page that the request was declined.",
+    "message": "{name} sees on their confirmation page that the request was declined.",
     "description": "Text in the decline dialog; name is the guest's name. src/renderer/calendar-event.js (declineRequest)"
   },
   "calendar.booking.declineHelpNoName": {
-    "message": "The guest sees on their booking page that the request was declined.",
+    "message": "The guest sees on their confirmation page that the request was declined.",
     "description": "Text in the decline dialog when the guest's details can't be read. src/renderer/calendar-event.js (declineRequest)"
   },
   "calendar.booking.declineEmail": {
@@ -4921,6 +4921,10 @@
     "message": "Add my booking link",
     "description": "Free-times dialog checkbox: also inserts the booking page's link under the times. src/renderer/composer.js"
   },
+  "composer.booking.linkInFooter": {
+    "message": "The link is under your signature already, so it isn't added twice.",
+    "description": "Free-times dialog: added to the help under Add my booking link when the message's signature footer has the booking link. src/renderer/composer.js (freeTimes)"
+  },
   "composer.booking.withLinkHelp": {
     "message": "The times then follow your booking page's hours, and the meeting type's length and minimum notice. The page may offer fewer, because free time around meetings and the limit per day only count there.",
     "description": "Free-times dialog: help under Add my booking link. src/renderer/composer.js"
@@ -5369,6 +5373,10 @@
     "message": "Booking page up to date",
     "description": "Toast after Check for bookings now. src/renderer/booking-settings.js"
   },
+  "settings.booking.justNow": {
+    "message": "just now",
+    "description": "Booking page: the ago value of settings.booking.lastUpdated for a publish less than a minute ago, mid-sentence and lowercase. src/renderer/booking-settings.js (ago)"
+  },
   "settings.booking.lastUpdated": {
     "message": "Last updated from this computer: {ago}",
     "description": "Booking page: when this computer last published the open times; ago is such as \"3 minutes ago\". src/renderer/booking-settings.js"
@@ -5463,14 +5471,14 @@
   },
   "settings.booking.message": {
     "message": "Message to the guest (optional)",
-    "description": "Decline and cancel dialogs: the host's message, shown on the guest's booking page. src/renderer/booking-settings.js"
+    "description": "Decline and cancel dialogs: the host's message, shown on the guest's confirmation page (the page they manage the booking on). src/renderer/booking-settings.js"
   },
   "settings.booking.cancelTitle": {
     "message": "Cancel this booking?",
     "description": "Title of the cancel dialog. src/renderer/booking-settings.js"
   },
   "settings.booking.cancelHelp": {
-    "message": "The event leaves your calendar and the guest's booking is cancelled. Your message shows on the guest's booking page.",
+    "message": "The event leaves your calendar and the guest's booking is cancelled. Your message shows on the guest's confirmation page.",
     "description": "Cancel dialog text. src/renderer/booking-settings.js"
   },
   "settings.booking.cancelNotify": {
@@ -5542,7 +5550,7 @@
     "description": "Booking page row and prompt: a line shown when no times are open. src/renderer/booking-settings.js"
   },
   "settings.booking.contactHelp": {
-    "message": "Shows when no times are open or the page is off.",
+    "message": "Shows when no times are open.",
     "description": "Booking page: help under Contact line. src/renderer/booking-settings.js"
   },
   "settings.booking.contactPlaceholder": {
@@ -6225,6 +6233,10 @@
     "message": "The booking changed in the meantime. Rukoo now shows it as it is.",
     "description": "Rukoo account error from the booking routes: the booking changed since this computer last read it; Rukoo reads it again. src/main/account/index.js (fail)."
   },
+  "account.errors.not_active": {
+    "message": "This booking is over, so it can't be cancelled.",
+    "description": "Rukoo account error from the booking routes: the host tried to cancel a booking whose meeting has ended. src/main/account/index.js (fail)."
+  },
   "booking.errors.unsupported": {
     "message": "This server doesn't support booking pages.",
     "description": "Booking page error: the Rukoo account server doesn't list booking in its features. src/main/booking/index.js."
@@ -6512,6 +6524,14 @@
   "booking.notices.publishFailedText": {
     "message": "Rukoo tries again in a few minutes. {error}",
     "description": "Booking notice text when publishing failed. error is the localised reason. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.destinationTitle": {
+    "message": "New bookings can't reach your calendar",
+    "description": "Booking notice title on the booking device: the calendar bookings are written to isn't on this computer or can't be written. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.destinationText": {
+    "message": "The calendar for bookings, in {email}, isn't on this computer. New and moved bookings get no event and no invitation until you choose another calendar in Settings → Booking page.",
+    "description": "Booking notice text when the destination calendar is missing on the booking device. email is the mail account the calendar belongs to. src/main/booking/index.js (notices)."
   },
   "booking.notices.overlapTitle": {
     "message": "A booking overlaps another event",

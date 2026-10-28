@@ -238,14 +238,17 @@ async function replaceRecovery(request, env) {
 }
 
 // The account's booking page goes with it: the object hands back the handle it had, and the page is wiped after.
+// handleKey (optional): the deleting device's key to take the handle back with an account made again later; sign-ups
+// don't prove the address, so the email alone doesn't (PROTOCOL.md, Handles).
 async function deleteAccount(request, env) {
   const { stub, token } = session(request, env);
   const body = await input.readJson(request);
+  const handleKey = body.handleKey === undefined || body.handleKey === null ? null : input.key(body.handleKey, 'handleKey', 32);
   const result = await stub.deleteAccount(token, { authKey: input.key(body.authKey, 'authKey', 32) });
   if (result.status === 204) {
     const registry = registryObject(env);
     if (registry) await registry.release();
-    await owner.wipeAfterDelete(env, token, result.handle);
+    await owner.wipeAfterDelete(env, token, result.handle, handleKey ? toBase64url(await sha256(handleKey)) : null);
   }
   return send(result);
 }

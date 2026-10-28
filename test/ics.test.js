@@ -47,6 +47,14 @@ test('reminders are read from the alarms: before or after the start, from the en
   assert.deepEqual(day.reminders.overrides, [{ method: 'popup', minutes: -540 }]);
 });
 
+test("a booking id counts only on the user's own event, not on an invitation from someone else that carries one", () => {
+  const read = (...lines) => ics.pick(ics.parseObject(object(vevent('UID:b', 'DTSTART:20260325T090000Z', 'DTEND:20260325T093000Z', 'SUMMARY:B', 'X-RUKOO-BOOKING:Rf63vMqqWdS0MICDAHKmrw', ...lines))), ctx(), null);
+  assert.equal(read().bookingId, 'Rf63vMqqWdS0MICDAHKmrw', 'no organizer: the user’s own');
+  assert.equal(read(`ORGANIZER:mailto:${ME}`).bookingId, 'Rf63vMqqWdS0MICDAHKmrw');
+  const foreign = read('ORGANIZER:mailto:mallory@example.net', `ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:${ME}`, 'ATTENDEE;PARTSTAT=DECLINED:mailto:jane@example.com');
+  assert.equal(foreign.bookingId, null);
+});
+
 test('a time the clock shows twice is written in UTC; any other time in its zone', () => {
   const make = (start) => unfold(ics.serialize(ics.newObject({ title: 'Night', location: '', description: '', allDay: false, start, end: start + 3600000 }, { uid: 'n', zone: AMS })));
   // On 25 October 2026 Amsterdam shows 02:30 at 00:30 and again at 01:30 UTC.

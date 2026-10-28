@@ -229,29 +229,32 @@ export async function postBooking(env, url, handle, body, ctx) {
   fields.locale = fields.locale ?? ctx.locale ?? page.profile.locale;
   const result = await createBooking(env, handle, fields, { ...ctx, url });
   if (!result.ok) return failure(result, { l, zone });
+  // Someone who only knows the guest's email and the time learns no more than that: not the booking's id or status.
+  const invites = result.page.profile?.invites !== false;
+  if (result.outcome === 'already') {
+    return answer(200, {
+      already_booked: true,
+      message: `This time is already booked for this email. The link to change or cancel it was in the answer to the first booking${invites ? "; the invitation comes from the host's calendar" : ''}.`
+    });
+  }
   const name = result.page.profile.name;
   const booking = bookingJson(result.booking, result.page, zone);
   const when = whenText(result.booking.start, result.booking.end, zone);
   const title = titleOf(result.booking, result.page);
-  if (result.outcome === 'already') {
-    return answer(200, {
-      already_booked: true,
-      booking,
-      message: "This time is already booked for this email; the invitation and manage link come with the host's invitation."
-    });
-  }
   const key = result.key;
   const manage = key ? l.manage(result.booking.id, key) : null;
   const pending = result.booking.status === 'pending';
   const lines = pending
     ? [
         `Requested: ${title} with ${name}, ${when}.`,
-        `${name} will confirm or decline; the invitation follows when they confirm.`,
+        invites ? `${name} will confirm or decline; the invitation follows when they confirm.` : `${name} will confirm or decline; the manage link shows the answer, and no invitation is sent.`,
         `If ${name} hasn't confirmed by ${dayText(result.booking.expiresAt, zone)} ${isoIn(result.booking.expiresAt, zone).slice(11, 16)} ${zone}, the request lapses.`
       ]
     : [
         `Booked: ${title} with ${name}, ${when}.`,
-        `${name}'s calendar sends an invitation to ${fields.email}, usually within minutes; it can take longer while their computer is off. The booking holds either way.`
+        invites
+          ? `${name}'s calendar sends an invitation to ${fields.email}, usually within minutes; it can take longer while their computer is off. The booking holds either way.`
+          : `${name}'s calendar doesn't send invitations, so keep the manage link: it has the time and the way to change or cancel.`
       ];
   if (manage) lines.push(`Change or cancel: ${manage}.`);
   lines.push(`Show your user the privacy statement: ${l.privacy}.`);
@@ -263,6 +266,8 @@ export async function postBooking(env, url, handle, body, ctx) {
     privacy_url: l.privacy,
     message: lines.join(' ')
   };
+  // The host's calendar sends no invitation (a demo calendar): the manage link is all the guest gets.
+  if (!invites) out.invitation = false;
   if (result.outcome === 'replayed') return answer(201, out, { 'idempotent-replayed': 'true' });
   return answer(201, out);
 }
@@ -328,7 +333,9 @@ export async function postReschedule(env, url, handle, id, key, body) {
     if (result.unchanged) return `${title} with ${name} is already at ${when}. Nothing changed, and no move was used.`;
     return result.booking.status === 'pending'
       ? `Moved: ${title} with ${name} to ${when}. It still waits for ${name} to confirm.`
-      : `Moved: ${title} with ${name} to ${when}. ${name}'s calendar sends the updated invitation, usually within minutes.`;
+      : result.page.profile?.invites === false
+        ? `Moved: ${title} with ${name} to ${when}.`
+        : `Moved: ${title} with ${name} to ${when}. ${name}'s calendar sends the updated invitation, usually within minutes.`;
   });
   return out;
 }

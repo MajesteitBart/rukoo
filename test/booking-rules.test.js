@@ -7,6 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const rules = require('../src/main/booking/rules');
 const keys = require('../src/main/booking/keys');
 const { bookingAcct } = require('../src/main/account');
@@ -67,6 +68,29 @@ test('handles and slugs follow the shared vectors', () => {
   for (const s of vectors.slugs.reserved) assert.equal(rules.slugProblem(s), 'reserved', s);
 });
 
+// A `const NAME = new Set(...)` in a source file, read as text: every quoted word in it, split on spaces.
+function setInSource(file, name) {
+  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const start = source.indexOf(`const ${name} = new Set(`);
+  assert.notEqual(start, -1, `${name} in ${file}`);
+  const expr = source.slice(start, source.indexOf(');', start));
+  return new Set([...expr.matchAll(/'([^']*)'/g)].map((m) => m[1]).join(' ').split(/\s+/).filter(Boolean));
+}
+
+test("the desktop reserves the server's handles and slugs, in main and in the renderer", async () => {
+  const server = await import(pathToFileURL(path.join(__dirname, '..', 'server', 'src', 'input.js')).href);
+  const sorted = (set) => [...set].sort();
+  assert.ok(server.RESERVED_HANDLES.has('contact') && server.RESERVED_HANDLES.has('meet'));
+  assert.deepEqual(sorted(rules.RESERVED_HANDLES), sorted(server.RESERVED_HANDLES), 'src/main/booking/rules.js');
+  assert.deepEqual(sorted(rules.RESERVED_SLUGS), sorted(server.RESERVED_SLUGS), 'src/main/booking/rules.js');
+  const renderer = 'src/renderer/booking-settings.js';
+  assert.deepEqual(sorted(setInSource(renderer, 'RESERVED_HANDLES')), sorted(server.RESERVED_HANDLES), renderer);
+  assert.deepEqual(sorted(setInSource(renderer, 'RESERVED_SLUGS')), sorted(server.RESERVED_SLUGS), renderer);
+  // The suggestion skips them: contact@ and press@ addresses are common.
+  assert.equal(rules.defaultHandle('', 'contact@example.com'), '');
+  assert.equal(rules.defaultHandle('Press', 'press@example.com'), '');
+});
+
 test('the suggested handle comes from the name, else the address', () => {
   assert.equal(rules.defaultHandle('Bart van der Meeren', 'bart@example.com'), 'bart-van-der-meeren');
   assert.equal(rules.defaultHandle('Zoë Ñúñez', 'z@example.com'), 'zoe-nunez');
@@ -114,6 +138,13 @@ test('the published profile never carries a private location value', () => {
   assert.equal(rules.publishedType(type, { confirm: true }).confirm, true);
   assert.equal(rules.defaultType('nl').title, 'Gesprek van 30 minuten');
   assert.equal(rules.defaultType('en', { conference: true }).location.kind, 'googleMeet');
+});
+
+test('the published profile says invites: false only for a calendar that sends no invitations', () => {
+  const settings = { name: 'Bart', intro: '', timeZone: 'Europe/Amsterdam', locale: 'en', contact: null, dailyCap: 20, types: [rules.defaultType('en')] };
+  const keys = { keyId: 'k', publicKey: 'p' };
+  assert.equal('invites' in rules.profileOf(settings, keys), false);
+  assert.equal(rules.profileOf(settings, keys, { invites: false }).invites, false);
 });
 
 test('settings merge per the save rules and are checked whole', () => {

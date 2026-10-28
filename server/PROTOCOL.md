@@ -27,7 +27,7 @@ All key derivation happens on the device.
 | `recoveryAuth` | `HKDF(recoveryKey, "rukoo/v1/recovery-auth\n" + server)` |
 | `recoveryWrap` | `HKDF(recoveryKey, "rukoo/v1/recovery-wrap")` |
 
-`server` is the server's address as the device uses it: scheme, host, port only when it isn't the default one, and path, without a trailing slash, in lowercase apart from the path, such as `https://rukoo-account.bvdm.ai`. With it in `authKey` and `recoveryAuth`, a proof made for one server is no good at another. A server someone was tricked into using can't pass a person's sign-in on to their real server. The other side of this: an account belongs to the address it was made at, so a server that moves to another address has to keep answering at the old one.
+`server` is the server's address as the device uses it: scheme, host, port only when it isn't the default one, and path, without a trailing slash, in lowercase apart from the path, such as `https://rukoo.io`. With it in `authKey` and `recoveryAuth`, a proof made for one server is no good at another. A server someone was tricked into using can't pass a person's sign-in on to their real server. The other side of this: an account belongs to the address it was made at, so a server that moves to another address has to keep answering at the old one.
 
 `HKDF(ikm, info)` is HKDF-SHA256 (RFC 5869) with an empty salt, which gives the same keys as a salt of 32 zero bytes, and 32 bytes of output. `info` is the label's UTF-8 bytes.
 
@@ -175,7 +175,7 @@ For a forgotten password. `start` takes `{ "email", "recoveryAuth" }` and return
 
 ### `DELETE /v1/account`
 
-`{ "authKey" }` → `204`. Deletes the account and every record at once.
+`{ "authKey", "handleKey" }` → `204`. Deletes the account and every record at once. `handleKey` is optional: 32 random bytes in base64url that the deleting device makes and keeps. The account's booking page is wiped, and its handle stays reserved for 12 months for whoever sends that key as `reclaim` with `PUT /v1/booking`; without it, for nobody. Sign-ups don't prove the address, so a new account with the same email gets the handle only with the key.
 
 ### `GET /v1/records?since=<seq>&limit=<n>`
 
@@ -217,7 +217,7 @@ The server can't reset a password: it never has the key. A forgotten password pl
 
 ## Booking pages
 
-A booking page lets other people, and their AI assistants, book time with an account holder at `https://<BOOKING_ORIGIN>/<handle>`, or at `/meet/<handle>` on a server without `BOOKING_ORIGIN` (see [Where public routes live](#where-public-routes-live)). It is off until the account holder turns it on, and turning it on changes what the server sees: unlike records, a booking page's open times, its texts and the bookings made on it are readable by the server, because the server has to offer times and take bookings while the host's computers are off.
+A booking page lets other people, and their AI assistants, book time with an account holder at `<BOOKING_ORIGIN>/<handle>`, or at `/meet/<handle>` on a server without `BOOKING_ORIGIN` (see [Where public routes live](#where-public-routes-live)). It is off until the account holder turns it on, and turning it on changes what the server sees: unlike records, a booking page's open times, its texts and the bookings made on it are readable by the server, because the server has to offer times and take bookings while the host's computers are off.
 
 Only the host's Rukoo on one computer, the booking device, talks to mail and calendar providers. The server never holds provider tokens or passwords and never sends mail. It offers times from what the booking device published, takes bookings, and keeps each guest's name, email, notes and assistant name sealed to a key only the host's devices hold. The server reads those details once, at booking time, to seal them; after that a copy of its storage doesn't reveal them. The operator, or a server that was broken into, can still read new bookings as they arrive.
 
@@ -228,7 +228,7 @@ Owner routes are under `/v1/booking`, need a session and use the same JSON style
 - A handle is 3 to 32 characters: lowercase letters, digits and single hyphens inside, `^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,31}$`. Paths match it exactly; `/Bart` is a 404.
 - Reserved handles: `api`, `assets`, `v1`, `meet`, `mcp`, `llms`, `admin`, `help`, `privacy`, `rukoo`, `www`, `mail`, `support`, `account`, `settings`, `login`, `signup`, `book`, `booking`, `bookings`, `cal`, `calendar`, `openapi`, `well-known`, `static`, `abuse`, `security`, `status`, `operator`, `bvdm`, plus whatever the operator lists in `BLOCKED_HANDLES`. Because pages can share the root of an address with a website (rukoo.io does), the website's paths and likely future ones are reserved too: `img`, `media`, `download`, `downloads`, `github`, `releases`, `styles`, `app`, `film`, `video`, `docs`, `blog`, `about`, `pricing`, `features`, `terms`, `legal`, `press`, `contact`, `changelog`, `android`, `windows`, `mac`, `linux`, `robots`, `sitemap`, `favicon`, `index`, `booker`.
 - An account has at most one handle and can change it at most 3 times in 30 days.
-- A handle that is given up (renamed, turned off, or its account deleted) stays reserved for that account for 12 months, then becomes free. A renamed handle redirects to the new one with 301 for 180 days. A rename is refused while the old handle has bookings in the future.
+- A handle that is given up (renamed, turned off, or its account deleted) stays reserved for that account for 12 months, then becomes free. After a deletion, "that account" means whoever brings the deleting device's `handleKey` (see `DELETE /v1/account`); a page whose account disappeared otherwise is reserved for nobody. A renamed handle redirects to the new one with 301 for 180 days. A rename is refused while the old handle has bookings in the future, or a future booking has a change the booking device hasn't handled yet (a guest's cancellation): after the rename it only reads the new handle.
 - A meeting type's slug is 1 to 40 characters with the same character rules, unique on its page, and none of `api`, `mcp`, `booking`, `bookings`, `llms`, `openapi`, `ics`, `assets`, `manage`, `prepare`.
 
 ### One booking device
@@ -244,7 +244,7 @@ A page turned off from another session has no booking device, but the device tha
 | 400 | `invalid`, with `field` naming the first field that was refused |
 | 401 | `unauthorized`, only for a missing or ended session |
 | 404 | `not_found`: no such booking |
-| 409 | `handle_taken`, `handle_reserved`, `handle_lost` (the page's handle no longer belongs to this account), `handle_changes` (more than 3 in 30 days), `has_bookings` (a rename while future bookings exist), `other_device`, `slot_taken`, `stale_version` |
+| 409 | `handle_taken`, `handle_reserved`, `handle_lost` (the page's handle no longer belongs to this account), `handle_changes` (more than 3 in 30 days), `has_bookings` (a rename while future bookings exist, or a change to one, such as a guest's cancellation, isn't handled yet), `other_device`, `slot_taken`, `stale_version`, `not_active` (a cancel of a booking that is over) |
 | 413 | `too_large` |
 
 None of these routes answers 401 for anything but the session itself, so a device never mistakes a lost handle for being signed out. A `409 stale_version` carries the booking as it is now: `{ "error": "stale_version", "message": "…", "booking": { … } }`. A `409 slot_taken` carries up to 3 `alternatives` as start times in milliseconds.
@@ -257,6 +257,7 @@ The account's booking page.
 {
   "handle": "bart",
   "url": "https://meet.example/bart",
+  "base": "https://meet.example",
   "enabled": true,
   "device": { "id": "q8Zr3mXwT0aYbC1dEfGh2i", "name": "Bart's desktop", "current": true },
   "publishedAt": 1793000000000,
@@ -270,12 +271,13 @@ The account's booking page.
 ```
 
 - `url` is the page's public address: `BOOKING_ORIGIN` plus `/<handle>` when the operator set one (the example), else the server's own origin plus `/meet/<handle>`. Devices take it from here and never build it themselves.
+- `base` is what every page address on this server starts with, without a trailing slash: `BOOKING_ORIGIN`, else the server's own origin plus `/meet`. It is there before the account has a handle, so a device can show where a new page will live.
 - `device` is the booking device; `name` is null when that session has ended, and `current` says whether it is the caller.
 - `publishedAt` is the last publish; `keyId` the key that guest details are sealed to now.
 - `seq` is the newest change to the page's bookings (see `GET /v1/booking/bookings`).
 - `today` counts the host's local day: new bookings against the daily cap, and invitation-causing changes against the mail budget.
 
-An account without a handle gets `{ "handle": null, "url": null, "enabled": false, "device": null, "publishedAt": null, "keyId": null, "seq": 0, "pending": 0, "upcoming": 0, "today": null, "handleChanges": { "used": 0, "max": 3 } }`. A handle this account kept while the page is off has `enabled` false and the same `handle`.
+An account without a handle gets `{ "handle": null, "url": null, "base": "https://meet.example", "enabled": false, "device": null, "publishedAt": null, "keyId": null, "seq": 0, "pending": 0, "upcoming": 0, "today": null, "handleChanges": { "used": 0, "max": 3 } }`. A handle this account kept while the page is off has `enabled` false and the same `handle`.
 
 ### `PUT /v1/booking`
 
@@ -325,6 +327,7 @@ Claims the handle if needed, publishes and turns the page on or off. The whole p
 |---|---|
 | `handle` | the handle rules above. A different handle than the account has renames the page (see Handles). |
 | `enabled` | false keeps the page and its bookings but offers no times; the page says it isn't taking bookings and shows `contact` |
+| `reclaim` | optional; the `handleKey` sent when the account that had this handle was deleted. With it, an account (usually the same person's, made again) takes the reserved handle over; a wrong one is `409 handle_reserved` |
 | `profile` | at most 64 KiB as JSON |
 | `name` | 1 to 100 characters |
 | `intro` | at most 1000 |
@@ -333,6 +336,7 @@ Claims the handle if needed, publishes and turns the page on or off. The whole p
 | `keyId`, `publicKey` | base64url of 8 and 65 bytes; `keyId` is `SHA-256(publicKey)[0..8]`, `publicKey` an uncompressed P-256 point |
 | `contact` | null or at most 200 characters |
 | `dailyCap` | 1 to 50 new bookings per host-local day |
+| `invites` | optional; `false` when the host's calendar sends guests no invitations (a demo calendar). Leave it out otherwise |
 | `types` | 1 to 10 |
 | `slug`, `title`, `duration` | slug rules; 1 to 100 characters; minutes, 5 to 480, a multiple of 5 |
 | `description` | at most 500 |
@@ -420,7 +424,7 @@ A booking action from the booking device. `<id>` is 22 characters of base64url.
 | `handled` | `{ "action": "handled", "version": 2, "uid": "3q5n8kb4o0b8j0q1k2r7c2a9vs@google.com" }` | Sets `handledVersion` to the larger of the two. `version` may not be above the current one. `uid` is optional: the UID the host's calendar gave the event, when it isn't the booking's own, 1 to 255 visible ASCII characters (`400 invalid`, field `uid`, otherwise). The server stores it as the booking's `uid`; like the rest of `handled` it doesn't advance the cursor. |
 | `confirm` | `{ "action": "confirm", "version": 1 }` | `pending` → `confirmed`. |
 | `decline` | `{ "action": "decline", "version": 1, "message": "…" }` | `pending` → `declined`; the slot is free again. `message` is optional. |
-| `cancel` | `{ "action": "cancel", "version": 3, "reason": "host_deleted", "message": "…" }` | `pending` or `confirmed` → `cancelled`. `reason` is `host_cancelled`, `host_deleted` or `guest_declined`; `message` is optional. |
+| `cancel` | `{ "action": "cancel", "version": 3, "reason": "host_deleted", "message": "…" }` | `pending` or `confirmed` → `cancelled`. `reason` is `host_cancelled`, `host_deleted` or `guest_declined`; `message` is optional. A booking whose meeting is over gets `409 not_active`, as a guest's cancellation does. |
 | `reschedule` | `{ "action": "reschedule", "version": 3, "start": 1793703600000, "host": true }` | Moves the booking, keeping its length. With `host: true` the slot rules are skipped, for times the host set in their own calendar; without it the new time must be an open slot (`409 slot_taken` with `alternatives`). |
 
 Every action except `handled` must name the current `version`; another one gets `409 stale_version` with the booking as it is. A booking that is no longer pending can't be confirmed or declined (`409 stale_version`), so a lapsed request stays lapsed. → `200 { "booking": { … } }` in the shape of `GET /v1/booking/bookings`.
@@ -646,7 +650,9 @@ Headers: `content-type: application/json`, optionally `Idempotency-Key` (16 to 2
 
 A type that needs approval gives `status: "pending"`, `expires_at`, `ics_url: null` and the message "Bart van der Meeren will confirm or decline; the invitation follows when they confirm." Past the day's mail budget a new booking becomes a request the same way.
 
-The same type, start and email as an active booking answers `200` with `{ "already_booked": true, "booking": { … }, "message": "This time is already booked for this email; the invitation and manage link come with the host's invitation." }`, and `key`, `manage_url` and `ics_url` only when the `Idempotency-Key` matches the one that booked it.
+When the host's calendar sends no invitations (the profile has `invites: false`, as for a demo calendar), the answer also has `"invitation": false`, and the message, the manage page, the booking form, `book_meeting` and the agent texts say that no invitation is sent and the manage link is the guest's record.
+
+The same type, start and email as an active booking, without the `Idempotency-Key` that booked it, answers `200` with only `{ "already_booked": true, "message": "This time is already booked for this email. The link to change or cancel it was in the answer to the first booking; the invitation comes from the host's calendar." }`. It says nothing more, not the booking's id or status: anyone who knows the guest's email can send it. The same `Idempotency-Key` gets the first answer again, as below.
 
 An `Idempotency-Key` seen in the last 24 hours with the same body answers what the first request got, `201` with the header `idempotent-replayed: true`; the key comes back only because the server kept it wrapped under a key derived from the `Idempotency-Key`. A different body under the same key: `409 idempotency_mismatch`.
 
@@ -686,7 +692,7 @@ Messages, JSON and MCP text are English. The human pages are English and Dutch.
 
 #### `POST /mcp`
 
-One MCP endpoint for every page on the server. Its tools take `link`: the booking page's URL as the user pasted it (a type's URL selects that type) or the bare handle. With `BOOKING_ORIGIN` set, an older `/meet/<handle>` link on that origin counts too. A link to another server gets `invalid` with this server's booking base in the message (`such as https://rukoo.io/<handle>`), and `instructions` names the same base.
+One MCP endpoint for every page on the server. Its tools take `link`: the booking page's URL as the user pasted it (a type's URL selects that type) or the bare handle. With `BOOKING_ORIGIN` set, an older `/meet/<handle>` link on that origin counts too. So does a `/meet/<handle>` link on an address in `BOOKING_ALIASES`, the comma-separated origins the pages used to live at (`https://rukoo-account.bvdm.ai` for rukoo.io). A link to another server gets `invalid` with this server's booking base in the message (`such as https://rukoo.io/<handle>`), and `instructions` names the same base.
 
 Dispatch, in this order:
 

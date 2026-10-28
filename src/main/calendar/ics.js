@@ -421,7 +421,8 @@ function toEvent(comp, { cal, href, etag, me, rid = null, seriesId = null, locke
   // A TZID is the sender's text: only a zone the PC knows by name, or UTC, reaches the store (Zone | null).
   const zone = zoneOrNull(tzid) || (!allDay && utcTime(startTime) ? 'UTC' : null);
   const kind = String(comp.getFirstPropertyValue('class') || '').toUpperCase();
-  const booking = String(comp.getFirstPropertyValue(BOOKING) || '').trim();
+  // A booking id counts only on an event the user organizes: anyone can send an invitation that carries one.
+  const booking = own ? String(comp.getFirstPropertyValue(BOOKING) || '').trim() : '';
   return {
     calendarId: cal.id,
     eventId: rid ? `${href}#${rid}` : href,

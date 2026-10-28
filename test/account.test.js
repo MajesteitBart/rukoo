@@ -626,6 +626,178 @@ test('signing in again on this computer survives a restart, and signing out keep
   assert.ok(!saved.includes('token') && !saved.includes('dataKey'), 'no session left on disk');
 });
 
+// Rukoo's former default address and today's. The real server answers on both; here both reach the test server.
+const OLD_DEFAULT = 'https://rukoo-account.bvdm.ai';
+const NEW_DEFAULT = 'https://rukoo.io';
+
+// A Rukoo whose default server is defaultServer, as one release or the next would have it.
+function release(t, srv, defaultServer, dir, name = 'desk') {
+  const { request } = require('../src/main/account/client');
+  const acc = new AccountService({
+    dataDir: dir,
+    secrets,
+    defaultServer,
+    deviceName: name,
+    platform: 'linux',
+    request: (server, ...rest) => request([OLD_DEFAULT, NEW_DEFAULT].includes(server) ? srv.url : server, ...rest)
+  }).init();
+  t.after(() => acc.close());
+  return acc;
+}
+
+const stateOnDisk = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'account.json'), 'utf8'));
+
+test('a device signed in at the old default keeps that address when the default moves, until it signs out', async (t) => {
+  const srv = await server(t);
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'pin@example.com', password: PASSWORD });
+  before.put('category', 'updates', { name: 'Updates' });
+  await before.sync();
+  before.close();
+  assert.ok(!stateOnDisk(dir).server, 'the default is not stored');
+  // As an older Rukoo wrote it, without the session's address: the server info fetched at sign-in names it.
+  const older = stateOnDisk(dir);
+  delete older.sessionServer;
+  assert.equal(older.info.server, OLD_DEFAULT);
+  fs.writeFileSync(path.join(dir, 'account.json'), JSON.stringify(older));
+
+  // The update: the same session, still at the address its password proofs were made for.
+  const after = release(t, srv, NEW_DEFAULT, dir);
+  assert.equal(after.status().signedIn, true);
+  assert.equal(after.status().server, OLD_DEFAULT);
+  assert.equal(after.status().defaultServer, NEW_DEFAULT);
+  assert.equal(stateOnDisk(dir).server, OLD_DEFAULT);
+  assert.equal(after.status().info.operator.name, 'Test operator');
+  after.put('category', 'promotions', { name: 'Promotions' });
+  await after.sync();
+  assert.equal(srv.accounts.get('pin@example.com').records.size, 2);
+  await after.changePassword(PASSWORD, 'another long password');
+  assert.ok((await after.newRecoveryKey('another long password')).recoveryKey);
+  // A device at the new default can't sign in to it: the proof is made for the other address.
+  const fresh = release(t, srv, NEW_DEFAULT, tmpDir(t), 'laptop');
+  await assert.rejects(fresh.signIn({ email: 'pin@example.com', password: 'another long password' }), { code: 'unauthorized' });
+  after.close();
+
+  // Restarts keep it, now from the stored address.
+  const again = release(t, srv, NEW_DEFAULT, dir);
+  assert.equal(again.status().server, OLD_DEFAULT);
+  await again.signOut();
+  assert.equal(again.status().signedIn, false);
+  assert.equal(again.status().server, NEW_DEFAULT, 'signed out, it uses the default');
+  assert.ok(!stateOnDisk(dir).server);
+  assert.equal(again.status().info, null);
+  assert.deepEqual(again.get('category', 'promotions'), { name: 'Promotions' });
+  // The account itself is still at the old address: signing in tries it there too, and stays there.
+  await again.signIn({ email: 'pin@example.com', password: 'another long password' });
+  assert.equal(again.status().signedIn, true);
+  assert.equal(again.status().server, OLD_DEFAULT);
+  // A wrong password is wrong at both, and leaves the device at the default; so does an address chosen by hand.
+  await again.signOut();
+  await assert.rejects(again.signIn({ email: 'pin@example.com', password: 'not the password at all' }), { code: 'unauthorized' });
+  assert.equal(again.status().server, NEW_DEFAULT);
+  again.setServer(NEW_DEFAULT);
+  await assert.rejects(again.signIn({ email: 'pin@example.com', password: 'another long password' }), { code: 'unauthorized' });
+  again.setServer(OLD_DEFAULT);
+  await again.signIn({ email: 'pin@example.com', password: 'another long password' });
+  assert.equal(again.status().signedIn, true);
+});
+
+test("a pinned device signed out by a password change elsewhere signs in again with the new password, at the old address", async (t) => {
+  const srv = await server(t);
+  const deskDir = tmpDir(t);
+  const phoneDir = tmpDir(t);
+  const d0 = release(t, srv, OLD_DEFAULT, deskDir);
+  await d0.signUp({ email: 'bart@example.com', password: PASSWORD });
+  d0.close();
+  const p0 = release(t, srv, OLD_DEFAULT, phoneDir, 'phone');
+  await p0.signIn({ email: 'bart@example.com', password: PASSWORD });
+  p0.close();
+  const desk = release(t, srv, NEW_DEFAULT, deskDir);
+  const phone = release(t, srv, NEW_DEFAULT, phoneDir, 'phone');
+  await phone.changePassword(PASSWORD, 'another long password');
+  await signedOut(desk);
+  assert.equal(desk.status().server, NEW_DEFAULT);
+  await desk.signIn({ email: 'bart@example.com', password: 'another long password' });
+  assert.equal(desk.status().signedIn, true);
+  assert.equal(desk.status().server, OLD_DEFAULT);
+  assert.equal(stateOnDisk(deskDir).formerServer, undefined);
+});
+
+test('deleting the account on a pinned device moves it to the default, where the account can be made again', async (t) => {
+  const srv = await server(t);
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'move@example.com', password: PASSWORD });
+  before.close();
+
+  const after = release(t, srv, NEW_DEFAULT, dir);
+  assert.equal(after.status().server, OLD_DEFAULT);
+  await after.deleteAccount(PASSWORD);
+  assert.equal(after.status().server, NEW_DEFAULT);
+  assert.ok(!stateOnDisk(dir).server);
+  await after.signUp({ email: 'move@example.com', password: PASSWORD });
+  assert.equal(after.status().server, NEW_DEFAULT);
+  after.close();
+
+  // Signed in at the default of the day: nothing to pin.
+  const again = release(t, srv, NEW_DEFAULT, dir);
+  assert.equal(again.status().signedIn, true);
+  assert.ok(!stateOnDisk(dir).server);
+  await again.changePassword(PASSWORD, 'another long password');
+});
+
+test("a pinned address that was never a default stays; a former default ends with the session, also one ended elsewhere", async (t) => {
+  const srv = await server(t);
+  // A fork whose default moved: its old address isn't one of Rukoo's, so signing out keeps it.
+  const dir = tmpDir(t);
+  const first = new AccountService({ dataDir: dir, secrets, defaultServer: srv.url, deviceName: 'desk', platform: 'linux' }).init();
+  await first.signUp({ email: 'fork@example.com', password: PASSWORD });
+  first.close();
+  const other = srv.url.replace('127.0.0.1', 'localhost');
+  const moved = new AccountService({ dataDir: dir, secrets, defaultServer: other, deviceName: 'desk', platform: 'linux' }).init();
+  t.after(() => moved.close());
+  assert.equal(moved.status().server, srv.url);
+  await moved.signOut();
+  assert.equal(moved.status().server, srv.url);
+  await moved.signIn({ email: 'fork@example.com', password: PASSWORD });
+
+  // The way to move: one device deletes the account and makes it again at the default. The other, pinned as well,
+  // finds its session ended and goes to the default too, where the account is now.
+  const deskDir = tmpDir(t);
+  const laptopDir = tmpDir(t);
+  const desk = release(t, srv, OLD_DEFAULT, deskDir);
+  await desk.signUp({ email: 'moved@example.com', password: PASSWORD });
+  desk.close();
+  const laptop = release(t, srv, OLD_DEFAULT, laptopDir, 'laptop');
+  await laptop.signIn({ email: 'moved@example.com', password: PASSWORD });
+  laptop.close();
+  const newDesk = release(t, srv, NEW_DEFAULT, deskDir);
+  const newLaptop = release(t, srv, NEW_DEFAULT, laptopDir, 'laptop');
+  assert.equal(newDesk.status().server, OLD_DEFAULT);
+  assert.equal(newLaptop.status().server, OLD_DEFAULT);
+  await newDesk.deleteAccount(PASSWORD);
+  await newDesk.signUp({ email: 'moved@example.com', password: PASSWORD });
+  await signedOut(newLaptop);
+  assert.equal(newLaptop.status().server, NEW_DEFAULT);
+  assert.ok(!stateOnDisk(laptopDir).server);
+  await newLaptop.signIn({ email: 'moved@example.com', password: PASSWORD });
+  assert.equal(newLaptop.status().signedIn, true);
+});
+
+test('a device signed out at the old default follows the new one', async (t) => {
+  const srv = await server(t);
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.serverInfo();
+  before.close();
+  const after = release(t, srv, NEW_DEFAULT, dir);
+  assert.equal(after.status().server, NEW_DEFAULT);
+  assert.equal(after.status().info, null, "the old address's info isn't shown for the new one");
+  await after.signUp({ email: 'new@example.com', password: PASSWORD });
+  assert.equal(after.status().server, NEW_DEFAULT);
+});
+
 test('a device that was removed elsewhere finds itself signed out', async (t) => {
   const srv = await server(t);
   const desk = device(t, srv, 'desk');

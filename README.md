@@ -47,14 +47,14 @@ Releases up to v1.2.0 contain only Windows packages; later releases add Linux an
 - Drag on the week or day grid to make an event, drag an event to another time or day, or drag its bottom edge to change its length. In the month view you drag across days for an all-day event, or drag an event to another day. Undo, or `Ctrl+Z`, puts a moved or resized event back. A click on an empty spot, or a drag, opens a small popover with the title, the calendar, guests, Google Meet and a line that names what the time overlaps. Enter saves it, and More options opens the full dialog. The dialog adds the place and the description, and under More the repeat, reminders, the event's time zone, Show as (busy or free) and visibility. Picking another calendar there moves the event to another calendar of the same account. Duplicate on an event's card starts a new event with the same details.
 - You add and remove guests, with suggestions from your contacts, and mark them optional, on Google calendars and on CalDAV calendars whose server sends the invitations. Guests only get an email from Google when you say so. You answer invitations with Yes, Maybe or No. Google calendars that allow it get a Google Meet switch, and the event's card a button to join the call.
 - Events repeat every day, every weekday, weekly, monthly on a date or on the first to fourth or last weekday, yearly, or by your own rule with an interval, weekdays and an end. Changing, moving or deleting one occurrence asks whether that goes for this event, this and following events, or all events. A rule the dialog can't edit shows as "Custom rule, kept" and stays as it is.
-- An event takes up to five reminders, from the start to a week before, and for all-day events at 09:00 on the day or up to a week before. Rukoo shows them as desktop notifications, also while its window is open, with several at once in one notification; a click opens the event. Settings → Calendar turns them off and sets a default reminder for timed events whose calendar sets none, such as CalDAV events without an alarm.
+- An event takes up to five reminders, from the start to a week before. All-day events take them at 09:00 the day before or up to a week before, and on CalDAV and demo calendars also at 09:00 on the day itself, which Google calendars can't store. Rukoo shows them as desktop notifications, also while its window is open, with several at once in one notification; a click opens the event. Settings → Calendar turns them off and sets a default reminder for timed events whose calendar sets none, such as CalDAV events without an alarm.
 - Settings → Calendar also has the first day of the week, weekends, working days and hours (the grid dims the time outside them) and the default event length, and per calendar its color and whether it counts toward your availability.
 - An availability panel (`A`) lists your open time across the calendars that count toward availability, for a length of 15 to 90 minutes, this week, next week or the next 14 days, within your working hours, your booking page's hours or any time, in your time zone or another. While it is open the grid shows the same open time. It names the accounts it couldn't read instead of treating them as free. From the panel you copy the times as text, copy your booking link or block a day on your booking page.
 - A booking page, such as `https://rukoo.io/sanne`, where people and their AI assistants pick a time with you. It runs on your Rukoo account, Rukoo puts each booking in your calendar, and your calendar sends the invitation. Booking requests that wait for your approval show on the calendar grid as dashed blocks, with Accept and Decline on their card, and the Calendar switch counts them. The composer's calendar button inserts your link or a list of your free times, and a line under your signature can carry the link. See [Booking page](docs/booking.md).
 - CalDAV calendars for IMAP accounts whose provider offers CalDAV. Enter the CalDAV address with the manual server settings when you add the account, or later in its Server settings; a host name such as `caldav.example.com` is enough when the server supports `/.well-known/caldav`. Rukoo signs in with the account's username and password.
 - A chat panel (`Ctrl+J`) for Hermes Agent, Claude Code, Codex and OpenClaw. Quick actions draft a reply, brief you on the sender, plan follow-ups, tell the team, update other systems, unsubscribe and summarize. You can hide, reorder and edit them, and add your own, in Settings → Agents → Shortcuts. Agents read mail and write drafts through Rukoo's own MCP server and never send mail; anything other people will see waits for your approval. Each chat can pick its own model and effort under the input. You can attach files and other emails to a message with the paperclip, by dragging them onto the panel, by pasting, or with "Add to chat" in an email's menu. Works the same for every provider. See [Agents](docs/agents.md).
 - Inbox categories split the inbox into tabs, like Gmail's, for every account: Needs you, To read, Money, Updates and Promotions to start with, which you can rename, reorder and add to. Nothing moves on the mail server. Rukoo sorts by the mail's headers, the sender and Gmail's own tabs, and optionally with Jev, TypeSafe's decision model, using your own API key. Move an email to another category, and choose to do the same for its sender's later mail. See [Inbox categories](docs/categories.md).
-- A Rukoo account keeps Rukoo's own data, such as inbox categories and your corrections, the same on your devices. It is end-to-end encrypted: the key comes from your password and never reaches the server. Settings → Rukoo account shows who runs the server, where it keeps data and what it can see, and exports or deletes everything. Rukoo uses the server at `https://rukoo.io`, run by its maintainer; the account API, the booking pages and Rukoo's website share that address. Devices that use the old address, `https://rukoo-account.bvdm.ai`, keep working there. The server is in `server/`, ready to deploy to your own Cloudflare account. See [Rukoo account](docs/account.md).
+- A Rukoo account keeps Rukoo's own data, such as inbox categories and your corrections, the same on your devices. It is end-to-end encrypted: the key comes from your password and never reaches the server. Settings → Rukoo account shows who runs the server, where it keeps data and what it can see, and exports or deletes everything. Rukoo uses the server at `https://rukoo.io`, run by its maintainer; the account API, the booking pages and Rukoo's website share that address. A device signed in at the old address, `https://rukoo-account.bvdm.ai`, keeps using it until you sign out or delete the account. To move to rukoo.io, delete the account on that device and create it again. The server is in `server/`, ready to deploy to your own Cloudflare account. See [Rukoo account](docs/account.md).
 - Rukoo on an Android phone can pair with this computer in Settings → Agents → Phone. Pairing shows an address and a code for the phone, and can send the phone your accounts and agent settings once. The phone then runs its Claude Code and Codex chats on this computer over Tailscale, with Rukoo's tools acting on the phone's mail, and Clark's bridge finds Rukoo on the phone as well. See [Rukoo on your phone](docs/agents.md#rukoo-on-your-phone) and [Rukoo for Android](docs/android.md).
 - Skills in the Agent Skills format: Rukoo's own from `skills/`, and yours from `%APPDATA%\Rukoo Mail\skills`. Every agent gets them through Rukoo's MCP server, and `/name` in the chat input starts one. `$` offers the skills of the agent itself: the ones on your Hermes server, or the ones you installed for Claude Code or Codex. OpenClaw's gateway doesn't list its skills, so OpenClaw has none after `$`; it still uses them on its own. See [Skills](docs/agents.md#skills).
 - Zoom from 80% to 200% with `Ctrl+Plus`, `Ctrl+Minus` or Ctrl and the mouse wheel. The main window and the compose windows share one level, and the app remembers it.
@@ -115,13 +115,37 @@ Planned follow-ups, and an approval card before anything goes to Todoist.
 
 ![Follow-ups and an approval card](docs/screenshots/light/12-agent-plan.png)
 
-The calendar, with the demo account's week.
+The calendar, with the demo account's week and the small month in the sidebar.
 
 ![Calendar week view](docs/screenshots/light/13-calendar.png)
 
 An invitation that waits for an answer.
 
 ![An event card with Yes, Maybe and No](docs/screenshots/light/14-calendar-event.png)
+
+The month view, with each day's events by start time.
+
+![Calendar month view](docs/screenshots/light/15-calendar-month.png)
+
+A click on the grid starts a new event in a popover beside it.
+
+![The quick popover for a new event](docs/screenshots/light/16-calendar-quick.png)
+
+The full dialog of a weekly event, with More open on its repeat, reminder and time zone.
+
+![The event dialog with More open](docs/screenshots/light/17-calendar-dialog.png)
+
+Availability lists your open time for the next 14 days and marks it on the grid.
+
+![The availability panel beside the week](docs/screenshots/light/18-calendar-availability.png)
+
+Settings → Calendar: the week, working hours, reminders and the calendars that count toward availability.
+
+![Calendar settings](docs/screenshots/light/19-settings-calendar.png)
+
+Settings → Booking page, before you have a Rukoo account.
+
+![Booking page settings, signed out](docs/screenshots/light/20-settings-booking.png)
 
 ## Limits
 

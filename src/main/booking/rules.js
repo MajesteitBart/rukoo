@@ -15,8 +15,18 @@ const HANDLE = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,31}$/;
 const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
 const BOOKING_ID = /^[A-Za-z0-9_-]{22}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+// The server's reserved handles and slugs (server/src/input.js): its own paths, words people would take for Rukoo's,
+// and the website's paths at the root of rukoo.io. The renderer keeps a copy (booking-settings.js);
+// test/booking-rules.test.js holds both to the server's.
 const RESERVED_HANDLES = new Set(
-  'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking bookings cal calendar openapi well-known static abuse security status operator bvdm'.split(' ')
+  [
+    'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking',
+    'bookings cal calendar openapi well-known static abuse security status operator bvdm',
+    'img media download downloads github releases styles app film video docs blog about pricing features terms legal',
+    'press contact changelog android windows mac linux robots sitemap favicon index booker 404 500'
+  ]
+    .join(' ')
+    .split(' ')
 );
 const RESERVED_SLUGS = new Set('api mcp booking bookings llms openapi ics assets manage prepare'.split(' '));
 const LOCATIONS = ['googleMeet', 'phone', 'inPerson', 'link', 'none'];
@@ -326,7 +336,9 @@ function publishedType(type, { confirm = false } = {}) {
 }
 
 // The published profile. confirmAll: every type waits for the host, because a calendar couldn't be checked.
-function profileOf(settings, { keyId, publicKey }, { confirmAll = false } = {}) {
+// invites: whether the destination calendar sends the guest an invitation; a demo calendar doesn't, and then the
+// guest's pages say so (design 1.2).
+function profileOf(settings, { keyId, publicKey }, { confirmAll = false, invites = true } = {}) {
   return {
     name: settings.name,
     intro: settings.intro,
@@ -336,6 +348,7 @@ function profileOf(settings, { keyId, publicKey }, { confirmAll = false } = {}) 
     publicKey,
     contact: settings.contact,
     dailyCap: settings.dailyCap,
+    ...(invites ? {} : { invites: false }),
     types: settings.types.map((type) => publishedType(type, { confirm: confirmAll }))
   };
 }

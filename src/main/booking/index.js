@@ -92,14 +92,18 @@ function cleanRow(r) {
   };
 }
 
-// What GET and PUT /v1/booking say about the page, as this computer keeps it.
+const httpUrl = (v) => typeof v === 'string' && /^https?:\/\//.test(v);
+
+// What GET and PUT /v1/booking say about the page, as this computer keeps it. base is where every page on the server
+// starts (https://rukoo.io, or <server>/meet), there before the account has a handle; older servers don't send it.
 function cleanPage(p) {
   if (!plain(p)) return null;
   const device = plain(p.device) && typeof p.device.id === 'string' ? { id: p.device.id.slice(0, 200), name: typeof p.device.name === 'string' ? p.device.name.slice(0, 200) : null, current: p.device.current === true } : null;
   const today = plain(p.today) ? { bookings: num(p.today.bookings) || 0, cap: num(p.today.cap) || 0, mail: num(p.today.mail) || 0, mailMax: num(p.today.mailMax) || 0 } : null;
   return {
     handle: typeof p.handle === 'string' ? p.handle.slice(0, 64) : null,
-    url: typeof p.url === 'string' && /^https?:\/\//.test(p.url) ? p.url.slice(0, 2000) : null,
+    url: httpUrl(p.url) ? p.url.slice(0, 2000) : null,
+    base: httpUrl(p.base) ? p.base.slice(0, 2000).replace(/\/+$/, '') : null,
     enabled: p.enabled === true,
     device,
     publishedAt: num(p.publishedAt),
@@ -523,6 +527,7 @@ class Booking extends EventEmitter {
       invite: Boolean(info && info.signups === 'invite'),
       handle: signedIn ? (page && page.handle) || (settings && settings.handle) || null : null,
       url: signedIn ? (page && page.url) || (settings && settings.url) || null : null,
+      base: signedIn ? (page && page.base) || null : null,
       enabled: status === 'on',
       settings: signedIn ? settings : null,
       resolved: signedIn ? this.resolved(settings) : { availability: [], destination: null },
@@ -606,6 +611,10 @@ class Booking extends EventEmitter {
         for (const u of this.file.unchecked) {
           if (!u.over || !u.accountId) continue;
           add({ id: `unchecked:${u.accountId}`, kind: 'unchecked', tone: 'warn', accountId: u.accountId, email: u.email, title: t('booking.notices.uncheckedTitle', { email: u.email }), text: t('booking.notices.uncheckedText'), actions: [action('reconnect')] });
+        }
+        const dest = settings && settings.destination ? this.resolve(settings.destination) : null;
+        if (dest && !(dest.found && dest.writable)) {
+          add({ id: 'destination', kind: 'destination', tone: 'error', title: t('booking.notices.destinationTitle'), text: t('booking.notices.destinationText', { email: dest.email }), actions: [action('dismiss')] });
         }
         if (!this.file.publish.ok) add({ id: 'publishFailed', kind: 'publishFailed', tone: 'error', title: t('booking.notices.publishFailedTitle'), text: t('booking.notices.publishFailedText', { error: this.file.publish.error || '' }), actions: [action('dismiss')] });
         // Bookings ahead whose guest details didn't open here: the guests have their answer from the page, and the
@@ -752,8 +761,11 @@ class Booking extends EventEmitter {
       const settings = rules.checkSettings(next, { today: rules.todayIn(next.timeZone, this.now()), meet });
       const on = this.status() === 'on';
       if (settings.handle !== current.handle && on) {
-        // A rename goes to the server first; when it is refused the record keeps the old handle.
+        // A rename goes to the server first; when it is refused the record keeps the old handle. Changes the old
+        // handle has waiting are handled first: afterwards only the new one is read, and the server refuses the
+        // rename while any are left.
         if (!this.thisDevice()) throw rules.bookingError('notBookingDevice');
+        await this.poll().catch(() => {});
         await this.publish({ force: true, settings });
       }
       const page = this.file.page;
@@ -819,9 +831,12 @@ class Booking extends EventEmitter {
       await this.refresh();
       if (this.status() !== 'on') throw rules.bookingError('notOn');
       await this.account.sync().catch(() => {});
+      await this.calendars.loadCalendars().catch(() => []);
       this.seedAvailability();
       const settings = this.settings();
       if (!settings) throw rules.bookingError('notOn');
+      // Bookings are written to the destination calendar from here on: a computer without it would make no events.
+      this.destinationOf(settings.destination);
       await this.publish({ force: true, takeover: true, settings });
       const page = this.file.page;
       await this.writeSettings((current) => ({ ...(current || settings), device: page && page.device ? page.device.id : null }));
@@ -852,6 +867,10 @@ class Booking extends EventEmitter {
     await this.requireSupported();
     const res = await this.call('GET', `/v1/booking/handles/${encodeURIComponent(h)}`);
     const reason = ['taken', 'reserved', 'invalid', 'yours'].includes(res && res.reason) ? res.reason : null;
+    // The handle of the account this device deleted and made again: reserved for the key it kept, which the publish
+    // sends.
+    const settings = this.settings();
+    if (reason === 'reserved' && settings && settings.handle === h && this.account.handleKeyFor && this.account.handleKeyFor(this.account.status().email)) return { handle: h, available: true, reason: null };
     return { handle: h, available: Boolean(res && res.available), reason };
   }
 
@@ -949,6 +968,7 @@ class Booking extends EventEmitter {
       else confirmAll = true;
       unchecked.push({ accountId, email, since: last ? last.at : null, over: !fresh });
     }
+    const destination = settings.destination ? this.resolve(settings.destination) : null;
     const availability = set.keys
       .map((key) => {
         const acc = accounts.get(key.slice(0, key.indexOf('\n')));
@@ -958,7 +978,7 @@ class Booking extends EventEmitter {
       .sort()
       .slice(0, MAX_PUBLISHED);
     return {
-      profile: rules.profileOf(settings, keys.published(opened), { confirmAll }),
+      profile: rules.profileOf(settings, keys.published(opened), { confirmAll, invites: !(destination && destination.kind === 'demo') }),
       windows,
       busy: rules.publishedBusy(busy, windows, buffer),
       unchecked,
@@ -990,8 +1010,12 @@ class Booking extends EventEmitter {
       if (this.status() !== 'on' || !this.thisDevice()) return false;
     }
     if (takeover || this.resigned()) body.takeover = true;
+    // After this device deleted the account and it was made again: the key that takes the old handle back.
+    const reclaim = this.account.handleKeyFor ? this.account.handleKeyFor(this.account.status().email) : null;
+    if (reclaim) body.reclaim = reclaim;
     try {
       this.setPage(await this.call('PUT', '/v1/booking', body));
+      if (reclaim) this.account.dropHandleKey();
     } catch (err) {
       this.file.publish = { ...this.file.publish, at: now, ok: false, error: err.message };
       if (err.code === 'other_device') await this.refresh().catch(() => {});
@@ -1240,10 +1264,11 @@ class Booking extends EventEmitter {
     return read.events.find((e) => e.bookingId === row.id) || null;
   }
 
-  // Every booking event of a mail account, by booking id, read fresh from its calendars from a month back to over a
-  // year ahead and around the given times. This decides that an event is gone: this computer's copy of the calendar
-  // can be older than the event (another computer made it), and the host may have moved it far. Throws when the
-  // account can't be read, so nothing is concluded from a calendar that didn't answer.
+  // Every booking event of a mail account, by booking id (a list, as more than one event can carry an id; eventFor
+  // picks), read fresh from its calendars from a month back to over a year ahead and around the given times. This
+  // decides that an event is gone: this computer's copy of the calendar can be older than the event (another computer
+  // made it), and the host may have moved it far. Throws when the account can't be read, so nothing is concluded from
+  // a calendar that didn't answer.
   async bookingEvents(accountId, around = []) {
     const keysOf = this.calendarKeys(accountId);
     if (!keysOf.length) throw rules.bookingError('calendarUnreadable');
@@ -1252,9 +1277,13 @@ class Booking extends EventEmitter {
     const end = Math.max(now + LOOK_AHEAD, ...around.map((a) => a.end + DAY));
     const read = await this.calendars.read({ start, end, calendars: keysOf, maxAgeMs: 0 });
     if (read.failed.length) throw rules.bookingError('calendarUnreadable');
-    const out = new Map();
-    for (const e of read.events) if (e.bookingId && !out.has(e.bookingId)) out.set(e.bookingId, e);
-    return out;
+    return byBooking(read.events);
+  }
+
+  // Whether the calendar a mapping names is one this computer can read in its account: a booking whose event isn't
+  // found there isn't gone when its calendar left the account's list (hidden, unsubscribed).
+  mappedCalendarRead(map, accountId) {
+    return this.calendarKeys(accountId).includes(calendarKey(accountId, map.calendarId));
   }
 
   // Where a booking's event is when this computer has no mapping record for it, in the mapping's shape; null when the
@@ -1288,17 +1317,20 @@ class Booking extends EventEmitter {
     return this.engine.accounts.find((a) => lower(a.email) === lower(map.accountEmail)) || null;
   }
 
-  // The event of a mapping, in the cache the store changes events in; null without its mail account on this
-  // computer. One the cache doesn't have is looked for fresh (bookingEvents) and fetched into the cache, and only when
-  // that read finds none is it gone (null). Throws when the calendar can't be read.
+  // The event of a mapping, in the cache the store changes events in. One the cache doesn't have is looked for fresh
+  // (bookingEvents) and fetched into the cache, and only when that read finds none in the calendars the mapping's is
+  // among is it gone (null). Throws when that can't be told: the calendar can't be read, its mail account isn't on
+  // this computer, or the mapping's calendar left the account's list.
   async writableEvent(map, around) {
     const acc = this.accountFor(map);
-    if (!acc) return null;
+    if (!acc) throw rules.bookingError('calendarUnreadable');
     const events = this.calendars.cache(acc.id).events;
     const hit = events.find((e) => e.calendarId === map.calendarId && e.eventId === map.eventId) || events.find((e) => e.bookingId === map.id);
     if (hit) return this.calendars.event(encodeId(acc.id, hit.calendarId, hit.eventId));
-    const found = (await this.bookingEvents(acc.id, [around])).get(map.id);
-    return found ? this.intoCache(found) : null;
+    const found = eventFor((await this.bookingEvents(acc.id, [around])).get(map.id), map);
+    if (found) return this.intoCache(found);
+    if (!this.mappedCalendarRead(map, acc.id)) throw rules.bookingError('calendarUnreadable');
+    return null;
   }
 
   // An event read fresh, in the cache the store changes events in: its stretch is fetched into the cache, or else the
@@ -1342,6 +1374,7 @@ class Booking extends EventEmitter {
   // when its mail account isn't on this computer; a calendar that can't be read throws, because the event, and the
   // guest's invitation, may still be there.
   async removeEvent(map, notify) {
+    if (!this.accountFor(map)) return;
     this.own.add(map.id);
     try {
       const ev = await this.writableEvent(map, { start: map.start, end: map.end });
@@ -1398,7 +1431,12 @@ class Booking extends EventEmitter {
         const read = await this.calendars.read({ start: Math.min(...times) - DAY, end: Math.max(...times) + DAY, calendars: keysOf });
         // Nothing is concluded from a calendar that couldn't be read.
         if (read.failed.length) continue;
-        events = new Map(read.events.filter((e) => e.bookingId).map((e) => [e.bookingId, e]));
+        const all = byBooking(read.events);
+        events = new Map();
+        for (const r of list) {
+          const ev = eventFor(all.get(r.id), this.map(r.id));
+          if (ev) events.set(r.id, ev);
+        }
       } catch (_) {
         continue;
       }
@@ -1409,7 +1447,12 @@ class Booking extends EventEmitter {
       if (missing.length) {
         try {
           const found = await this.bookingEvents(accountId, missing);
-          for (const r of missing) if (found.has(r.id)) events.set(r.id, found.get(r.id));
+          for (const r of missing) {
+            const ev = eventFor(found.get(r.id), this.map(r.id));
+            if (ev) events.set(r.id, ev);
+            // Not found, and its calendar wasn't among those read: nothing is concluded.
+            else if (!this.mappedCalendarRead(this.map(r.id), accountId)) unsure.add(r.id);
+          }
         } catch (_) {
           for (const r of missing) unsure.add(r.id);
         }
@@ -1621,11 +1664,22 @@ class Booking extends EventEmitter {
     await this.engine.send({ accountId: dest.accountId, to: [{ name: '', address: guest.email }], subject, text });
   }
 
+  // A booking that is over isn't cancelled: its event is an ordinary one to delete by then, and the guest isn't told.
   async cancel(row, { message, notify }) {
-    if (!ACTIVE.has(row.status)) throw rules.bookingError('notFound');
+    if (!ACTIVE.has(row.status) || row.end <= this.now()) throw rules.bookingError('notFound');
     const map = this.map(row.id);
     if (map && row.status === 'confirmed') await this.removeEvent(map, notify);
-    await this.hostCancel(row, 'host_cancelled', message);
+    try {
+      await this.hostCancel(row, 'host_cancelled', message);
+    } catch (err) {
+      if (!err || err.code !== 'stale_version') throw err;
+      // The guest moved the booking after this computer last saw it. The event and its cancellation are out already,
+      // so the cancel goes to the booking as it is now; otherwise the next poll would make the event again.
+      await this.fetchRows(this.file.cursor, true).catch(() => {});
+      const current = this.file.rows[row.id];
+      if (!current || !ACTIVE.has(current.status)) throw err;
+      await this.hostCancel(current, 'host_cancelled', message);
+    }
   }
 }
 
@@ -1639,6 +1693,20 @@ function asBookingError(err) {
   if (err.details && err.details.field) out.field = err.details.field;
   if (err.details && err.details.booking) out.current = err.details.booking;
   return out;
+}
+
+// Booking events by booking id: every event with an id, as more than one can carry it.
+function byBooking(events) {
+  const out = new Map();
+  for (const e of events) if (e.bookingId) out.set(e.bookingId, [...(out.get(e.bookingId) || []), e]);
+  return out;
+}
+
+// A booking's event among those with its id: the one its mapping names, else the first. Another event with the same
+// id (copied, or someone else's that carries it) doesn't take the booking's place.
+function eventFor(list, map) {
+  if (!list || !list.length) return null;
+  return (map && list.find((e) => e.calendarId === map.calendarId && e.eventId === map.eventId)) || list[0];
 }
 
 // A booking's time for the host, in the interface language and the PC's zone: 'Tue 3 Nov, 10:00'.

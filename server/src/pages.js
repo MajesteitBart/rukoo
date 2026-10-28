@@ -606,7 +606,7 @@ function bookFormHtml(ctx, v, path) {
   if (v.fields.via || v.error?.field === 'via') {
     out.push(fieldHtml(v, { name: 'via', label: ctx.T('form.via'), hint: ctx.T('form.viaHint', { host }), max: 80 }));
   }
-  if (v.approval) out.push(`<p class="small">${esc(ctx.T('form.approval', { host }))}</p>`);
+  if (v.approval) out.push(`<p class="small">${esc(ctx.T(v.profile.invites === false ? 'form.approvalNoInvitation' : 'form.approval', { host }))}</p>`);
   out.push(`<p class="privacy-line">${ctx.H('form.privacy', { host: esc(host), operator: esc(operator) })}${privacy}</p>`);
   out.push(`<div class="actions"><button class="btn primary" type="submit">${esc(ctx.T('form.book'))}</button></div>`, '</form>');
   return out.join('\n');
@@ -618,7 +618,7 @@ export function alreadyHtml(ctx, { profile, type, start, end, email }) {
   const main = [
     '<div class="card">',
     `<header class="head"><p class="eyebrow"><a href="${esc(href(ctx.base, ctx.keep))}">${esc(profile.name)}</a></p><h1>${esc(type.title)}</h1></header>`,
-    noticeHtml([esc(ctx.T('form.already', { email, host: profile.name }))]),
+    noticeHtml([esc(ctx.T(profile.invites === false ? 'form.alreadyNoInvitation' : 'form.already', { email, host: profile.name }))]),
     whenHtml(ctx, { start, end, hostZone: profile.timeZone, host: profile.name }),
     `<p class="small"><a href="${esc(href(path, ctx.keep))}">${esc(ctx.T('form.other'))}</a></p>`,
     '</div>'
@@ -655,12 +655,13 @@ export function rescheduleHtml(ctx, v) {
 
 const STATUS_TONE = { confirmed: 'ok', pending: 'wait' };
 
-function statusLines(ctx, booking, host, over) {
+// invites: false when the host's calendar sends no invitations; this page is then the guest's only record.
+function statusLines(ctx, booking, host, over, invites = true) {
   switch (booking.status) {
     case 'confirmed':
-      return [over ? ctx.T('manage.over') : ctx.T('manage.invitation', { host })];
+      return [over ? ctx.T('manage.over') : ctx.T(invites ? 'manage.invitation' : 'manage.noInvitation', { host })];
     case 'pending': {
-      const lines = [ctx.T('manage.pending', { host })];
+      const lines = [ctx.T(invites ? 'manage.pending' : 'manage.pendingNoInvitation', { host })];
       if (booking.expiresAt) lines.push(ctx.T('manage.lapses', { host, time: `${ctx.f.momentText(booking.expiresAt)} (${ctx.zone})` }));
       return lines;
     }
@@ -687,7 +688,7 @@ export function manageHtml(ctx, v) {
   parts.push(`<h1>${esc(ctx.T('manage.with', { type: type?.title ?? booking.type, host }))}</h1>`);
   parts.push('</header>');
   parts.push(
-    statusLines(ctx, booking, host, over)
+    statusLines(ctx, booking, host, over, profile?.invites !== false)
       .map((l, i) => `<p class="${i ? 'small' : 'lead'}">${esc(l)}</p>`)
       .join('\n')
   );
