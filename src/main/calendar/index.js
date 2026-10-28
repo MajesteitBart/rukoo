@@ -223,6 +223,9 @@ class Calendars extends EventEmitter {
     this.saveTimers = new Map();
     // What read() fetched outside the view's stretch, per account and calendar: [{ start, end, at, events }].
     this.memos = new Map();
+    // What a provider's own search found lately, per account: { at, events }. A result can lie outside every stretch
+    // read so far, and its card opens before the view has fetched it.
+    this.found = new Map();
     this.conferenceDelays = CONFERENCE_DELAYS;
     engine.on('account-removed', (acc) => this.forget(acc));
     // A new calendar server, or none: what the cache holds came from the old one.
@@ -371,7 +374,7 @@ class Calendars extends EventEmitter {
   // After signing in again: the account may have its calendar now, and an earlier sign-in error is gone.
   reconnected(id) {
     for (const key of this.providers.keys()) if (key.startsWith(`${id}:`)) this.providers.delete(key);
-    this.memos.delete(id);
+    this.dropMemos(id);
     const cache = this.caches.get(id);
     if (cache) {
       cache.error = null;
@@ -386,7 +389,7 @@ class Calendars extends EventEmitter {
     const id = acc.id;
     for (const key of this.providers.keys()) if (key.startsWith(`${id}:`)) this.providers.delete(key);
     this.caches.delete(id);
-    this.memos.delete(id);
+    this.dropMemos(id);
     clearTimeout(this.saveTimers.get(id));
     this.saveTimers.delete(id);
     fs.rmSync(this.file(id), { force: true });
@@ -783,6 +786,7 @@ class Calendars extends EventEmitter {
               const cals = await this.calendarsFor(acc, p, cache);
               return (await Promise.all(cals.map((cal) => p.search(cal, q, now - SEARCH_YEAR, now + SEARCH_YEAR)))).flat();
             });
+            this.found.set(acc.id, { at: Date.now(), events: found });
             for (const e of found) events.push(this.publicEvent(acc, e));
           } else {
             for (const e of await this.readAccount(acc, now - 30 * DAY, now + 180 * DAY, null, MEMO_AGE)) if (matches(e, needle)) events.push(this.publicEvent(acc, e));
@@ -819,7 +823,7 @@ class Calendars extends EventEmitter {
         const at = Date.now();
         Object.assign(cache, { calendars, range, events: [], fetched: [{ start: range.start, end: range.end, at }], syncedAt: at, error: null, failedAt: null });
         this.merge(cache, range, events);
-        this.memos.delete(id);
+        this.dropMemos(id);
       } catch (err) {
         this.failed(acc, cache, err, grant);
         throw err;
@@ -907,7 +911,7 @@ class Calendars extends EventEmitter {
       throw err;
     } finally {
       // Whatever was read outside the view may be out of date now.
-      this.memos.delete(acc.id);
+      this.dropMemos(acc.id);
     }
   }
 
@@ -976,7 +980,8 @@ class Calendars extends EventEmitter {
     this.persist(acc.id);
   }
 
-  // One event from the cache, wherever it lies now, or from what read() fetched lately outside it; null when gone.
+  // One event from the cache, wherever it lies now, or from what read() or a search fetched lately outside it; null when
+  // gone.
   event(id) {
     const { accountId, calendarId, eventId } = decodeId(id);
     const acc = this.engine.accounts.find((a) => a.id === accountId);
@@ -989,12 +994,20 @@ class Calendars extends EventEmitter {
       const hit = now - m.at <= MEMO_KEEP && m.events.find(match);
       if (hit) return this.publicEvent(acc, hit);
     }
-    return null;
+    const searched = this.found.get(acc.id);
+    const hit = searched && now - searched.at <= MEMO_KEEP && searched.events.find(match);
+    return hit ? this.publicEvent(acc, hit) : null;
+  }
+
+  // Lets go of what was read outside the cache, after a change or a new grant: it may no longer be so.
+  dropMemos(id) {
+    this.memos.delete(id);
+    this.found.delete(id);
   }
 
   store(acc, cache, event, replaces = null) {
     cache.events = cache.events.filter((e) => !sameEvent(e, replaces || event)).concat(event).sort((a, b) => a.start - b.start);
-    this.memos.delete(acc.id);
+    this.dropMemos(acc.id);
     this.persist(acc.id);
     this.emit('updated');
     return this.publicEvent(acc, event);
@@ -1233,7 +1246,7 @@ class Calendars extends EventEmitter {
           // read, let the cached stretch go so the next view fetches it whole.
           if (err && err.code === 'unsure') {
             await this.refetch(acc, p, cache, [cal.id]);
-            this.memos.delete(acc.id);
+            this.dropMemos(acc.id);
             this.emit('updated');
           }
           throw err;
@@ -1254,7 +1267,7 @@ class Calendars extends EventEmitter {
     }
     // One occurrence left out: the rest of its series has a new version.
     if (!gone && which === 'one') this.restamp(p, cache, event, result);
-    this.memos.delete(acc.id);
+    this.dropMemos(acc.id);
     this.persist(acc.id);
     this.emit('updated');
     this.changed(acc, cal.id, which === 'one' ? 'remove' : 'series', which, null, previous);

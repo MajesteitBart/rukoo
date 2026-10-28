@@ -568,6 +568,11 @@ test('search: Google looks a year back and ahead itself; the demo calendar is se
   assert.ok(found.events.some((e) => e.accountId === 'd1' && /Roadmap/.test(e.title)));
   assert.deepEqual(found.failed, []);
   assert.equal(calendars.loading.size, 0);
+  // A result far outside anything read yet still opens its card, until a change lets go of what was read outside.
+  const far = google.find((e) => e.eventId === 's1');
+  assert.equal(calendars.event(far.id)?.title, 'Roadmap review');
+  calendars.dropMemos('g1');
+  assert.equal(calendars.event(far.id), null);
   await assert.rejects(calendars.search('   '), invalidWith('errors.calendar.invalidQuery'));
   await assert.rejects(calendars.search('x'.repeat(201)), invalidWith('errors.calendar.invalidQuery'));
 });
