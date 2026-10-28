@@ -1,4 +1,4 @@
-// Rukoo 2.0's "What's new" guide, the keyboard schemes and the update check, in the real app with a throwaway
+// Rukoo 2.1's "What's new" guide, the keyboard schemes and the update check, in the real app with a throwaway
 // profile and the demo account.
 const { test, expect, _electron: electron } = require('@playwright/test');
 const http = require('http');
@@ -48,7 +48,7 @@ test('the guide explains categories first, sorts only at the end, and shows once
   await launch({ SEM_WHATS_NEW: '1' });
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
-  await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.0", { timeout: 15000 });
+  await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.1", { timeout: 15000 });
   await expect(win.locator('.nav-item.nav-sub')).toHaveCount(0);
   // The first step also names the calendar and the booking page, which ship in the same release.
   await expect(guide().locator('.wn-feature b')).toHaveText(['Inbox categories', 'The same on every device', 'Smarter sorting, if you want it', 'Calendar and booking page']);
@@ -85,7 +85,7 @@ test('the guide explains categories first, sorts only at the end, and shows once
   await expect(guide()).toHaveCount(0);
   await win.click('[data-action="settings"]');
   await win.locator('.page.settings [data-a="whats-new"]').click();
-  await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.0");
+  await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.1");
   await next();
   await expect(guide()).toContainText('These are your categories');
 });
@@ -113,7 +113,7 @@ test('signing in during the guide keeps the categories the account already has',
     await launch({ RUKOO_ACCOUNT_SERVER: server.url, SEM_WHATS_NEW: '1' });
     await win.waitForSelector('.provider-grid');
     await win.click('[data-s="demo"]');
-    await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.0", { timeout: 15000 });
+    await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.1", { timeout: 15000 });
     await next();
     await guide().locator('.wn-cat', { hasText: 'Money' }).click();
     await next();
@@ -189,7 +189,7 @@ test("after the guide, the sidebar and a panel show what Jev is doing, and when 
   await launch({ SEM_WHATS_NEW: '1' });
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
-  await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.0", { timeout: 15000 });
+  await expect(guide().locator('h2')).toHaveText("What's new in Rukoo 2.1", { timeout: 15000 });
   // Jev, answering each email after a moment; Money unless told it's busy.
   await app.evaluate(() => {
     global.__busy = false;

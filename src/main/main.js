@@ -40,7 +40,7 @@ const { Categories } = require('./categories');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker } = require('./updates');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
-const WHATS_NEW = '2.0.0';
+const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
 // ---- /agents ----
 const { free: freeTime } = require('./calendar/free');

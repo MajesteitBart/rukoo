@@ -7322,56 +7322,56 @@
     "description": "Settings > Rukoo account > What's stored and shared: what TypeSafe handles when Jev is on. src/renderer/rukoo-account.js (privacyPage)."
   },
   "whatsNew.welcome.title": {
-    "message": "What's new in Rukoo 2.0",
-    "description": "\"What's new in Rukoo 2.0\" guide: title of the first step. src/renderer/whats-new.js."
+    "message": "What's new in Rukoo 2.1",
+    "description": "\"What's new in Rukoo 2.1\" guide: title of the first step. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.lead": {
     "message": "Rukoo can now sort your inbox into categories, the way Gmail does with its tabs, but for every account you use. Your mail itself doesn't change.",
-    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the first step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: introduction on the first step. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.categoriesTitle": {
     "message": "Inbox categories",
-    "description": "\"What's new in Rukoo 2.0\" guide: first feature on the first step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: first feature on the first step. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.categoriesText": {
     "message": "Needs you, To read, Money, Updates and Promotions, under Inbox in the sidebar. Rukoo never moves or labels mail, so other mail apps see your inbox as before.",
-    "description": "\"What's new in Rukoo 2.0\" guide: text of the first feature. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: text of the first feature. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.syncTitle": {
     "message": "The same on every device",
-    "description": "\"What's new in Rukoo 2.0\" guide: second feature on the first step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: second feature on the first step. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.syncText": {
     "message": "A free Rukoo account keeps your categories and corrections the same on your computers and phone. It is end-to-end encrypted.",
-    "description": "\"What's new in Rukoo 2.0\" guide: text of the second feature. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: text of the second feature. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.jevTitle": {
     "message": "Smarter sorting, if you want it",
-    "description": "\"What's new in Rukoo 2.0\" guide: third feature on the first step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: third feature on the first step. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.jevText": {
     "message": "With your own TypeSafe key, Jev sorts the mail Rukoo's rules aren't sure about.",
-    "description": "\"What's new in Rukoo 2.0\" guide: text of the third feature. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: text of the third feature. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.calendarTitle": {
     "message": "Calendar and booking page",
-    "description": "\"What's new in Rukoo 2.0\" guide: fourth feature on the first step, the calendar's additions and the booking page. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: fourth feature on the first step, the calendar's additions and the booking page. src/renderer/whats-new.js."
   },
   "whatsNew.welcome.calendarText": {
     "message": "A month view, repeating events and reminders. On your booking page, people and their AI assistants pick a time with you.",
-    "description": "\"What's new in Rukoo 2.0\" guide: text of the fourth feature, about the calendar and the booking page (Settings → Booking page). src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: text of the fourth feature, about the calendar and the booking page (Settings → Booking page). src/renderer/whats-new.js."
   },
   "whatsNew.notNow": {
     "message": "Not now",
-    "description": "\"What's new in Rukoo 2.0\" guide: button that closes the guide on the first step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: button that closes the guide on the first step. src/renderer/whats-new.js."
   },
   "whatsNew.start": {
     "message": "Set it up",
-    "description": "\"What's new in Rukoo 2.0\" guide: button that starts the guide on the first step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: button that starts the guide on the first step. src/renderer/whats-new.js."
   },
   "whatsNew.next": {
     "message": "Next",
-    "description": "\"What's new in Rukoo 2.0\" guide: button to the next step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: button to the next step. src/renderer/whats-new.js."
   },
   "whatsNew.step": {
     "message": "Step {step} of {count}",
@@ -7379,127 +7379,127 @@
   },
   "whatsNew.categories.title": {
     "message": "Choose your categories",
-    "description": "\"What's new in Rukoo 2.0\" guide: title of the categories step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: title of the categories step. src/renderer/whats-new.js."
   },
   "whatsNew.categories.lead": {
     "message": "Rukoo starts with these five. Turn off the ones you don't need; you can rename them, change their colors or add your own later in Settings.",
-    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the categories step for someone without categories yet. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: introduction on the categories step for someone without categories yet. src/renderer/whats-new.js."
   },
   "whatsNew.categories.leadExisting": {
     "message": "These are your categories. Change them in Settings > Inbox categories.",
-    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the categories step for someone who already has categories. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: introduction on the categories step for someone who already has categories. src/renderer/whats-new.js."
   },
   "whatsNew.categories.unsureHelp": {
     "message": "Mail the rules can't place goes here.",
-    "description": "\"What's new in Rukoo 2.0\" guide: help under \"When Rukoo isn't sure\" on the categories step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: help under \"When Rukoo isn't sure\" on the categories step. src/renderer/whats-new.js."
   },
   "whatsNew.categories.keepOne": {
     "message": "Keep at least one category.",
-    "description": "\"What's new in Rukoo 2.0\" guide: toast when every category is turned off. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: toast when every category is turned off. src/renderer/whats-new.js."
   },
   "whatsNew.account.title": {
     "message": "Keep them the same on every device",
-    "description": "\"What's new in Rukoo 2.0\" guide: title of the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: title of the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.lead": {
     "message": "Your categories, the category each email got and your corrections live in a Rukoo account, so your phone and other computers sort the same way.",
-    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: introduction on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.e2e": {
     "message": "End-to-end encrypted.",
-    "description": "\"What's new in Rukoo 2.0\" guide: start of the note about encryption on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: start of the note about encryption on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.e2eText": {
     "message": "Rukoo encrypts it on this device with a key only your devices have. The server never sees your mail, senders or category names.",
-    "description": "\"What's new in Rukoo 2.0\" guide: rest of the note about encryption on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: rest of the note about encryption on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.email": {
     "message": "Email address",
-    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the email field on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: placeholder of the email field on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.password": {
     "message": "Password, at least 12 characters",
-    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the new password field on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: placeholder of the new password field on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.passwordSignIn": {
     "message": "Password",
-    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the password field when signing in on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: placeholder of the password field when signing in on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.signedInHelp": {
     "message": "Your categories sync with your other devices.",
-    "description": "\"What's new in Rukoo 2.0\" guide: shown under \"Signed in as\" on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: shown under \"Signed in as\" on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.create": {
     "message": "Create a Rukoo account",
-    "description": "\"What's new in Rukoo 2.0\" guide: first choice on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: first choice on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.createHint": {
     "message": "Free. While sign-ups are limited, you need an invite code.",
-    "description": "\"What's new in Rukoo 2.0\" guide: hint under the first choice on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: hint under the first choice on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.signIn": {
     "message": "I already have an account",
-    "description": "\"What's new in Rukoo 2.0\" guide: second choice on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: second choice on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.signInHint": {
     "message": "Sign in with the account you made on another device.",
-    "description": "\"What's new in Rukoo 2.0\" guide: hint under the second choice on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: hint under the second choice on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.local": {
     "message": "Only on this computer",
-    "description": "\"What's new in Rukoo 2.0\" guide: third choice on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: third choice on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.localHint": {
     "message": "No account. You can make one later in Settings > Rukoo account.",
-    "description": "\"What's new in Rukoo 2.0\" guide: hint under the third choice on the account step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: hint under the third choice on the account step. src/renderer/whats-new.js."
   },
   "whatsNew.account.saveKey": {
     "message": "Tick the box once you saved the key.",
-    "description": "\"What's new in Rukoo 2.0\" guide: toast on the recovery key step when the box is not ticked. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: toast on the recovery key step when the box is not ticked. src/renderer/whats-new.js."
   },
   "whatsNew.jev.title": {
     "message": "Smarter sorting with Jev",
-    "description": "\"What's new in Rukoo 2.0\" guide: title of the Jev step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: title of the Jev step. src/renderer/whats-new.js."
   },
   "whatsNew.jev.lead": {
     "message": "Rukoo sorts by the sender and the mail's headers, and on Gmail accounts by Gmail's own tabs. For mail it isn't sure about, Jev, a decision model by TypeSafe, can read the email and choose from your categories.",
-    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the Jev step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: introduction on the Jev step. src/renderer/whats-new.js."
   },
   "whatsNew.jev.rules": {
     "message": "Rules only",
-    "description": "\"What's new in Rukoo 2.0\" guide: first choice on the Jev step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: first choice on the Jev step. src/renderer/whats-new.js."
   },
   "whatsNew.jev.rulesHint": {
     "message": "Nothing leaves this computer. Mail Rukoo isn't sure about goes to {name}.",
-    "description": "\"What's new in Rukoo 2.0\" guide: hint under \"Rules only\". {name}: the category for unsure mail. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: hint under \"Rules only\". {name}: the category for unsure mail. src/renderer/whats-new.js."
   },
   "whatsNew.jev.use": {
     "message": "Use Jev with my TypeSafe key",
-    "description": "\"What's new in Rukoo 2.0\" guide: second choice on the Jev step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: second choice on the Jev step. src/renderer/whats-new.js."
   },
   "whatsNew.jev.useHint": {
     "message": "Optional. TypeSafe charges you for what you use.",
-    "description": "\"What's new in Rukoo 2.0\" guide: hint under the second choice on the Jev step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: hint under the second choice on the Jev step. src/renderer/whats-new.js."
   },
   "whatsNew.jev.keySaved": {
     "message": "Key saved; enter a new one to replace it",
-    "description": "\"What's new in Rukoo 2.0\" guide: placeholder of the key field when a key is already saved. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: placeholder of the key field when a key is already saved. src/renderer/whats-new.js."
   },
   "whatsNew.jev.needKey": {
     "message": "Enter your TypeSafe key, or choose Rules only.",
-    "description": "\"What's new in Rukoo 2.0\" guide: toast when Jev is chosen without a key. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: toast when Jev is chosen without a key. src/renderer/whats-new.js."
   },
   "whatsNew.done.title": {
     "message": "You're all set",
-    "description": "\"What's new in Rukoo 2.0\" guide: title of the last step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: title of the last step. src/renderer/whats-new.js."
   },
   "whatsNew.done.lead": {
     "message": "Rukoo sorts your inbox now, and new mail as it arrives. Move an email to another category any time; Rukoo can remember that for its sender.",
-    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the last step. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: introduction on the last step. src/renderer/whats-new.js."
   },
   "whatsNew.done.leadExisting": {
     "message": "Your inbox is already sorted. Rukoo keeps doing it as new mail arrives.",
-    "description": "\"What's new in Rukoo 2.0\" guide: introduction on the last step when categories were already on. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: introduction on the last step when categories were already on. src/renderer/whats-new.js."
   },
   "whatsNew.done.categories": {
     "message": {"one": "{count} category", "other": "{count} categories"},
@@ -7507,42 +7507,42 @@
   },
   "whatsNew.done.synced": {
     "message": "Synced with {email}",
-    "description": "\"What's new in Rukoo 2.0\" guide: summary line when signed in. {email}: the account email address. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: summary line when signed in. {email}: the account email address. src/renderer/whats-new.js."
   },
   "whatsNew.done.syncedHelp": {
     "message": "Your other devices show the same categories.",
-    "description": "\"What's new in Rukoo 2.0\" guide: help under the synced summary line. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: help under the synced summary line. src/renderer/whats-new.js."
   },
   "whatsNew.done.local": {
     "message": "Only on this computer",
-    "description": "\"What's new in Rukoo 2.0\" guide: summary line without an account. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: summary line without an account. src/renderer/whats-new.js."
   },
   "whatsNew.done.localHelp": {
     "message": "Make an account any time in Settings > Rukoo account.",
-    "description": "\"What's new in Rukoo 2.0\" guide: help under the summary line without an account. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: help under the summary line without an account. src/renderer/whats-new.js."
   },
   "whatsNew.done.jev": {
     "message": "Jev sorts what the rules aren't sure about",
-    "description": "\"What's new in Rukoo 2.0\" guide: summary line with Jev on. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: summary line with Jev on. src/renderer/whats-new.js."
   },
   "whatsNew.done.jevHelp": {
     "message": "With your TypeSafe key.",
-    "description": "\"What's new in Rukoo 2.0\" guide: help under the Jev summary line. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: help under the Jev summary line. src/renderer/whats-new.js."
   },
   "whatsNew.done.rules": {
     "message": "Sorted by rules",
-    "description": "\"What's new in Rukoo 2.0\" guide: summary line without Jev. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: summary line without Jev. src/renderer/whats-new.js."
   },
   "whatsNew.done.sort": {
     "message": "Sort my inbox",
-    "description": "\"What's new in Rukoo 2.0\" guide: button that finishes the guide and sorts the inbox. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: button that finishes the guide and sorts the inbox. src/renderer/whats-new.js."
   },
   "whatsNew.done.close": {
     "message": "Done",
-    "description": "\"What's new in Rukoo 2.0\" guide: button that closes the guide when categories were already on. src/renderer/whats-new.js."
+    "description": "\"What's new in Rukoo 2.1\" guide: button that closes the guide when categories were already on. src/renderer/whats-new.js."
   },
   "whatsNew.settingsRow": {
-    "message": "What's new in Rukoo 2.0",
+    "message": "What's new in Rukoo 2.1",
     "description": "Settings > About: the row that opens the \"What's new\" guide again. src/renderer/settings.js."
   },
   "whatsNew.settingsHelp": {

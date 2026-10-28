@@ -1,6 +1,6 @@
-// "What's new in Rukoo 2.0": one guided window that explains inbox categories, then sets them up in order: the
+// "What's new in Rukoo 2.1": one guided window that explains inbox categories, then sets them up in order: the
 // categories, an account to sync them, Jev if wanted, and only then the first sort. Everyone sees it once on the
-// first start of 2.0 (main's whatsNewState); Settings > What's new opens it again. The first step also names the
+// first start of 2.1 (main's whatsNewState); Settings > What's new opens it again. The first step also names the
 // calendar's additions and the booking page, which need no setting up here.
 import { t } from './i18n.js';
 import { icons } from './icons.js';
