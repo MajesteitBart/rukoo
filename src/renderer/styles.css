@@ -4712,25 +4712,37 @@ body.calendar-mode .titlebar-search {
   cursor: pointer;
 }
 
-/* Events are soft cards in their account's colour: a tint, rounded corners and a little room around each, no
-   edges. How strong the tint is depends on the theme and on the answer to an invitation. */
+/* Events are soft cards in their calendar's colour: a tint, rounded corners and a little room around each, no
+   edges. The tint is that colour at a set lightness, with its chroma capped. Calendars come in every lightness,
+   Google's pastels beside deep blues, and a share of each mixed into the panel left the pastels nearly white; this
+   way every calendar shows at the same strength and its text at the same contrast, and a grey one stays grey.
+   Each level is a lightness (-l) and a chroma cap (-c); which one applies depends on the theme, on hover, on the
+   open card and on the answer to an invitation. */
 .calendar,
 .cal-pop {
-  --ev: 24%;
-  --ev-hover: 32%;
-  --ev-pale: 9%;
-  --ev-open: 40%;
+  --ev-l: 0.34;
+  --ev-c: 0.05;
+  --ev-hover-l: 0.38;
+  --ev-hover-c: 0.055;
+  --ev-pale-l: 0.265;
+  --ev-pale-c: 0.025;
+  --ev-open-l: 0.43;
+  --ev-open-c: 0.07;
 }
 :root.light .calendar,
 :root.light .cal-pop {
-  --ev: 16%;
-  --ev-hover: 23%;
-  --ev-pale: 7%;
-  --ev-open: 30%;
+  --ev-l: 0.93;
+  --ev-c: 0.055;
+  --ev-hover-l: 0.905;
+  --ev-hover-c: 0.065;
+  --ev-pale-l: 0.965;
+  --ev-pale-c: 0.022;
+  --ev-open-l: 0.87;
+  --ev-open-c: 0.08;
 }
 .cal-chip,
 .cal-ev {
-  --tint: color-mix(in srgb, var(--c) var(--ev), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-l) min(c, var(--ev-c)) h);
   background: var(--tint);
   color: var(--text);
   text-align: left;
@@ -4738,7 +4750,7 @@ body.calendar-mode .titlebar-search {
 }
 .cal-chip:hover,
 .cal-ev:hover {
-  --tint: color-mix(in srgb, var(--c) var(--ev-hover), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-hover-l) min(c, var(--ev-hover-c)) h);
 }
 .cal-chip {
   position: relative;
@@ -4866,11 +4878,11 @@ body.calendar-mode .titlebar-search {
    maybe is striped; declined fades and is struck through. */
 .cal-ev.needs,
 .cal-chip.needs {
-  --tint: color-mix(in srgb, var(--c) var(--ev-pale), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-pale-l) min(c, var(--ev-pale-c)) h);
 }
 .cal-ev.needs:hover,
 .cal-chip.needs:hover {
-  --tint: color-mix(in srgb, var(--c) var(--ev), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-l) min(c, var(--ev-c)) h);
 }
 .cal-ev.needs .t::before,
 .cal-chip.needs .t::before {
@@ -4885,11 +4897,11 @@ body.calendar-mode .titlebar-search {
 }
 .cal-ev.maybe,
 .cal-chip.maybe {
-  background: repeating-linear-gradient(135deg, var(--tint) 0 6px, color-mix(in srgb, var(--c) var(--ev-pale), var(--panel)) 6px 12px);
+  background: repeating-linear-gradient(135deg, var(--tint) 0 6px, oklch(from var(--c) var(--ev-pale-l) min(c, var(--ev-pale-c)) h) 6px 12px);
 }
 .cal-ev.declined,
 .cal-chip.declined {
-  --tint: color-mix(in srgb, var(--c) var(--ev-pale), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-pale-l) min(c, var(--ev-pale-c)) h);
   color: var(--text-3);
 }
 .cal-ev.declined .t,
@@ -4904,7 +4916,7 @@ body.calendar-mode .titlebar-search {
 .cal-ev.open,
 .cal-chip.open {
   z-index: 2;
-  --tint: color-mix(in srgb, var(--c) var(--ev-open), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-open-l) min(c, var(--ev-open-c)) h);
   box-shadow: var(--shadow-sm);
   color: var(--text);
 }
@@ -4962,7 +4974,7 @@ body.calendar-mode .titlebar-search {
 /* A row is a soft card in its account's colour, like the events in the week. Everything in it hangs from the
    first line: the time, the dot, the title, a pill and the guests. */
 .cal-row {
-  --tint: color-mix(in srgb, var(--c) var(--ev-pale), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-pale-l) min(c, var(--ev-pale-c)) h);
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -4976,7 +4988,7 @@ body.calendar-mode .titlebar-search {
 }
 .cal-row:hover,
 .cal-row.open {
-  --tint: color-mix(in srgb, var(--c) var(--ev), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-l) min(c, var(--ev-c)) h);
 }
 .cal-row-time {
   width: 104px;
@@ -5666,16 +5678,16 @@ button.cal-title:hover {
 .cal-ev.cal-ghost {
   z-index: 4;
   pointer-events: none;
-  --tint: color-mix(in srgb, var(--c) var(--ev-open), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-open-l) min(c, var(--ev-open-c)) h);
   box-shadow: var(--shadow);
 }
 .cal-ev.cal-ghost.new {
-  --tint: color-mix(in srgb, var(--c) var(--ev), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-l) min(c, var(--ev-c)) h);
   box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 60%, transparent), var(--shadow-sm);
 }
 .cal-allday-cell.drop,
 .cal-mcell.drop {
-  background: color-mix(in srgb, var(--c) var(--ev-pale), transparent);
+  background: oklch(from var(--c) var(--ev-pale-l) min(c, var(--ev-pale-c)) h);
   box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 55%, transparent);
 }
 .cal-allday-cell.drop {
@@ -5790,12 +5802,12 @@ button.cal-title:hover {
   height: 7px;
 }
 .cal-mchip.span {
-  --tint: color-mix(in srgb, var(--c) var(--ev), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-l) min(c, var(--ev-c)) h);
   background: var(--tint);
   font-weight: 500;
 }
 .cal-mchip.span:hover {
-  --tint: color-mix(in srgb, var(--c) var(--ev-hover), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-hover-l) min(c, var(--ev-hover-c)) h);
 }
 .cal-mchip.timed:hover {
   background: var(--hover);
@@ -5811,10 +5823,10 @@ button.cal-title:hover {
   border-bottom-right-radius: 0;
 }
 .cal-mchip.span.needs {
-  --tint: color-mix(in srgb, var(--c) var(--ev-pale), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-pale-l) min(c, var(--ev-pale-c)) h);
 }
 .cal-mchip.span.maybe {
-  background: repeating-linear-gradient(135deg, var(--tint) 0 6px, color-mix(in srgb, var(--c) var(--ev-pale), var(--panel)) 6px 12px);
+  background: repeating-linear-gradient(135deg, var(--tint) 0 6px, oklch(from var(--c) var(--ev-pale-l) min(c, var(--ev-pale-c)) h) 6px 12px);
 }
 .cal-mchip.timed.needs .cal-dot {
   background: none;
@@ -5829,7 +5841,7 @@ button.cal-title:hover {
   box-shadow: var(--shadow-sm);
 }
 .cal-mchip.span.open {
-  --tint: color-mix(in srgb, var(--c) var(--ev-open), var(--panel));
+  --tint: oklch(from var(--c) var(--ev-open-l) min(c, var(--ev-open-c)) h);
   background: var(--tint);
 }
 .cal-mchip:focus-visible,
