@@ -54,7 +54,7 @@ test('a popup reminder fires once its time is in (from, to]; email reminders are
   const list = check([e], { from: START - 15 * MINUTE, to: START - 10 * MINUTE });
   assert.deepEqual(list, [{
     key: `${e.uid}\n${START}\n${START}\n10`, id: e.id, title: 'Roadmap', location: 'Room 4', meeting: 'https://meet.example.com/x',
-    start: START, end: START + HOUR, allDay: false, minutes: 10, at: START - 10 * MINUTE, late: 0
+    start: START, end: START + HOUR, allDay: false, minutes: 10, at: START - 10 * MINUTE, until: START + LATE, late: 0
   }]);
   assert.deepEqual(check([e], { from: START - 10 * MINUTE, to: START }), [], 'from is exclusive');
   assert.deepEqual(check([e], { from: START - 40 * MINUTE, to: START - 10 * MINUTE - 1 }), [], 'to is inclusive, and email never fires');
@@ -355,6 +355,25 @@ test('a read of readRange() every 15 minutes finds every reminder, four weeks ah
       assert.ok(shows(d.at - 1, last), `${label}, late`);
     }
   }
+});
+
+test('an all-day reminder shows once when its event was cached in a zone a day ahead', () => {
+  // Cached at UTC+14, read in Los Angeles: the cached end lies before the 09:00 reminder on the first day here.
+  const e = allDay('2026-11-03', { reminders: popup(-540) }, 'Pacific/Kiritimati');
+  const zone = 'America/Los_Angeles';
+  const at = zonedInstant('2026-11-03', '09:00', zone);
+  assert.ok(e.end < at);
+  const o = { fallback: 10, isShown: () => true, calendarOf: () => calendar(), timeZone: zone };
+  // The runner's ticks every 30 s, each looking back 15 minutes, for two hours after the reminder.
+  let state = record(emptyState(), [], at - MINUTE);
+  const shown = [];
+  for (let tick = at; tick < at + 2 * HOUR; tick += 30000) {
+    const list = unfired(due([e], { ...o, from: since(state, tick) - 15 * MINUTE, to: tick, now: tick }), state);
+    shown.push(...list);
+    state = record(state, list, tick);
+  }
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0].at, at);
 });
 
 test('reminders.json: bad content is left out, ended events go, and the file is bounded', () => {

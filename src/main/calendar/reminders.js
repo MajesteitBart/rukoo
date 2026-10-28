@@ -109,6 +109,7 @@ function due(events, { from, to, fallback = null, isShown, calendarOf, now = Dat
         allDay: Boolean(e.allDay),
         minutes,
         at,
+        until,
         late: !e.allDay && now > e.start ? Math.floor((now - e.start) / MINUTE) : 0
       });
     }
@@ -126,7 +127,7 @@ function readRange({ to, now = Date.now() } = {}) {
   return { start: now - 2 * DAY, end: Math.max(to, now) + MAX_MINUTES * MINUTE + 2 * DAY };
 }
 
-// reminders.json: { v: 1, lastCheck: ms | null, fired: { key: the event's end } }.
+// reminders.json: { v: 1, lastCheck: ms | null, fired: { key: until when it is kept } }.
 function emptyState() {
   return { v: 1, lastCheck: null, fired: {} };
 }
@@ -172,12 +173,13 @@ function unfired(list, state) {
   return list.filter((d) => !own(state.fired, d.key));
 }
 
-// The state after a check at `now` that showed `shown`: they are remembered until their event ends (plus the LATE
-// margin, so an event shorter than that can't show its reminder twice), and keys of events that are over go.
+// The state after a check at `now` that showed `shown`: they are remembered until their event ends or due() stops
+// offering them, whichever is later (plus the LATE margin, so an event shorter than that can't show its reminder
+// twice), and older keys go. An all-day event cached in a zone far ahead can end before its first day here is over.
 function record(state, shown, now) {
   const fired = {};
   for (const [key, end] of Object.entries(state.fired)) if (end + LATE > now) fired[key] = end;
-  for (const d of shown) fired[d.key] = d.end;
+  for (const d of shown) fired[d.key] = Number.isFinite(d.until) ? Math.max(d.end, d.until) : d.end;
   const keys = Object.keys(fired);
   if (keys.length > MAX_FIRED) {
     // The ones ending last are the ones that could still fire.
