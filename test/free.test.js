@@ -2,6 +2,8 @@
 
 // free(): open time on the calendars that count toward availability, for the availability panel, the composer and
 // find_free_time. Zone cases with the PC elsewhere are in calendar-zones.test.js.
+// Working hours are the PC's, so the PC is in Amsterdam here, wherever the tests run.
+process.env.TZ = 'Europe/Amsterdam';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

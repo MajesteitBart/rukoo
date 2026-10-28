@@ -330,7 +330,8 @@ test('a Meet link Google is still making is read again until it is there', async
   calendars.conferenceDelays = [5, 10, 40];
   const made = await calendars.create({ accountId: 'g1', calendarId: 'me@example.com', title: 'Call', allDay: false, start: at(m, 2, 9).getTime(), end: at(m, 2, 10).getTime(), addMeet: true });
   assert.deepEqual([made.conference, made.meeting], [{ solution: 'hangoutsMeet', pending: true }, null]);
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // The reads run on timers; a slow machine gets up to two seconds for them.
+  for (let i = 0; i < 40 && calendars.event(made.id).conference.pending; i++) await new Promise((resolve) => setTimeout(resolve, 50));
   await settle(calendars);
   const now = calendars.event(made.id);
   assert.deepEqual(now.conference, { solution: 'hangoutsMeet', pending: false });
