@@ -189,7 +189,7 @@ async function refreshOnce() {
   const [list, counts, categories] = await Promise.all([api('list', query), api('counts', S.scope), api('categoriesState').catch(() => S.categories)]);
   S.list = list;
   S.counts = counts;
-  S.categories = categories;
+  categoriesChanged(categories);
   setCategories(categories);
   setKeymap(data.settings.keymap);
   if (S.updates === undefined) S.updates = await api('updatesState').catch(() => null);
@@ -289,9 +289,24 @@ const categoryOf = (id) => (S.categories && S.categories.categories.find((c) => 
 const rowCategory = (m) => (m.category && S.categories && S.categories.enabled && !(categoriesOn() && categoryOf(S.category)) ? categoryOf(m.category) : null);
 
 
-// The list in the category tab on screen.
+// The categories Inbox itself leaves out: their Show in Inbox switch is off.
+const hiddenCategories = () => new Set(((S.categories && S.categories.categories) || []).filter((c) => c.inbox === false).map((c) => c.id));
+
+// The list in the category tab on screen. Inbox itself leaves out the categories set not to show there.
 function categoryRows() {
-  return categoriesOn() && categoryOf(S.category) ? S.list.filter((m) => m.category === S.category) : S.list;
+  if (!categoriesOn()) return S.list;
+  if (categoryOf(S.category)) return S.list.filter((m) => m.category === S.category);
+  const hidden = hiddenCategories();
+  return hidden.size ? S.list.filter((m) => !hidden.has(m.category)) : S.list;
+}
+
+// New categories from main. A category Inbox stops showing takes its open email out of the reading pane, as it
+// takes its row out of the list.
+function categoriesChanged(next) {
+  const before = hiddenCategories();
+  S.categories = next;
+  const m = S.selectedId && !S.checked.size && !S.composer ? S.list.find((x) => x.id === S.selectedId) : null;
+  if (m && !before.has(m.category) && hiddenCategories().has(m.category) && !categoryRows().includes(m)) closeReader();
 }
 
 // The list as shown: the category tab's list narrowed by the quick filter.
@@ -726,14 +741,17 @@ function renderSidebar() {
   };
 
   const views = VIEWS.filter((v) => !hidden.has(v.id) && (!v.role || roles.has(v.id)));
-  // Inbox categories sit under Inbox, each with its unread count while the inbox is open.
+  // Inbox categories sit under Inbox, each with its unread count while the inbox is open. A category Inbox doesn't
+  // show gets a crossed-out eye.
   const subs = S.categories && S.categories.enabled ? S.categories.categories : [];
   const subRows = () =>
     subs
       .map((c) => {
         const on = S.view === 'inbox' && S.category === c.id;
         const n = S.view === 'inbox' ? S.list.filter((m) => m.unread && m.category === c.id).length : 0;
-        return `<button class="nav-item nav-sub ${on ? 'active' : ''}" data-view="inbox" data-category="${esc(c.id)}" style="--cat:${esc(c.color)}" title="${esc(c.name)}"><span class="ic"><span class="cdot"></span></span><span class="label">${esc(c.name)}</span>${n ? `<span class="count">${n}</span>` : ''}</button>`;
+        const off = c.inbox === false;
+        const mark = off ? `<span class="cat-off" role="img" aria-label="${esc(t('mailbox.categories.hidden'))}">${icons.eyeOff}</span>` : '';
+        return `<button class="nav-item nav-sub ${on ? 'active' : ''}" data-view="inbox" data-category="${esc(c.id)}" style="--cat:${esc(c.color)}" title="${esc(off ? t('mailbox.categories.hiddenTitle', { name: c.name }) : c.name)}"><span class="ic"><span class="cdot"></span></span><span class="label">${esc(c.name)}</span>${mark}${n ? `<span class="count">${n}</span>` : ''}</button>`;
       })
       .join('');
   const viewRows = views
@@ -838,7 +856,7 @@ function bindSidebar() {
         return toggleSortPanel(t);
     }
     if (t.dataset.view) {
-      // Inbox shows all of it; a category under it shows that category.
+      // Inbox shows all of it, apart from categories it doesn't show; a category under it shows that category.
       if (t.dataset.view === 'inbox') S.category = t.dataset.category || null;
       // A search shows no categories, so a category picked during one ends the search (changeView) first.
       if (t.dataset.category && S.view === 'inbox' && !S.query.trim()) {
@@ -935,7 +953,7 @@ function listTitle() {
     return { title: t('mailbox.search.results'), sub: t('mailbox.search.summary', { count: rows().length, query: S.query.trim(), scope: S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase() }) };
   }
   const acc = account(S.scope);
-  const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? S.list.filter((m) => m.unread).length : 0;
+  const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? categoryRows().filter((m) => m.unread).length : 0;
   const where = acc ? acc.email : t('mailbox.search.allAccounts');
   // A category under Inbox: its name, with the inbox it belongs to.
   const cat = categoriesOn() && categoryOf(S.category);
@@ -1428,6 +1446,12 @@ async function setDensity(density) {
 }
 
 async function markAllRead() {
+  // With inbox categories, Inbox and each category mark what they list, not the whole inbox.
+  if (categoriesOn()) {
+    const list = categoryRows().filter((m) => m.unread);
+    for (const m of list) await api('setFlags', m.id, { unread: false }).catch(() => {});
+    return toast(list.length ? t('mailbox.actions.readCount', { count: list.length }) : t('mailbox.actions.alreadyRead'));
+  }
   const n = await api('markAllRead', S.scope, S.view, S.folder);
   toast(n ? t('mailbox.actions.readCount', { count: n }) : t('mailbox.actions.alreadyRead'));
 }
@@ -2617,7 +2641,7 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'booking') applyBooking(payload);
   if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
   if (type === 'categories') {
-    S.categories = payload;
+    categoriesChanged(payload);
     setCategories(payload);
     renderSidebar();
     renderList();
@@ -2644,9 +2668,17 @@ window.mail.on(async ({ type, payload }) => {
     S.scope = 'all';
     S.view = 'inbox';
     S.folder = null;
+    S.category = null;
     S.query = '';
     S.filter = 'all';
     await refresh();
+    // Mail in a category Inbox doesn't show opens in that category, where the list has its row.
+    const m = S.list.find((x) => x.id === payload);
+    if (m && !categoryRows().includes(m)) {
+      S.category = m.category;
+      renderSidebar();
+      renderList();
+    }
     openMessage(payload);
   }
 });

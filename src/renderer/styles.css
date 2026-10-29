@@ -2563,6 +2563,44 @@ body:has(.page) .titlebar-actions {
   border-color: var(--panel);
   box-shadow: 0 0 0 2px var(--cat);
 }
+/* The category dialog's Show in Inbox: a switch with a line under its label. */
+.cat-inbox {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 2px 0;
+  text-align: left;
+  border-radius: 6px;
+}
+.cat-inbox .text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.cat-inbox .l {
+  font-size: 13px;
+  color: var(--text);
+}
+.cat-inbox .switch {
+  pointer-events: none;
+}
+/* A category Inbox doesn't show: a crossed-out eye beside its name, here and under Inbox in the sidebar. */
+.cat-off {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-3);
+}
+.cat-off svg {
+  width: 14px;
+  height: 14px;
+}
+.cat-main .title .cat-off {
+  margin-left: 6px;
+  vertical-align: -2px;
+}
 /* Settings > Rukoo account: a paragraph between the cards, and the recovery key shown once. */
 .settings-text {
   color: var(--text-2);
@@ -7521,6 +7559,10 @@ button.cal-gchip-main:hover {
   height: 8px;
   border-radius: 50%;
   background: var(--cat);
+}
+.nav-item.nav-sub .cat-off svg {
+  width: 13px;
+  height: 13px;
 }
 .shell.collapsed .nav-item.nav-sub {
   display: none;

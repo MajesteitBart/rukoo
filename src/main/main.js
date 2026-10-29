@@ -205,7 +205,9 @@ function destroyTray() {
 }
 
 function notify(messages) {
-  newSinceFocus += messages.length;
+  // New mail in an inbox category Inbox doesn't show leaves the badge alone, as it does the unread count.
+  const hidden = engine.hiddenCategories ? engine.hiddenCategories() : new Set();
+  newSinceFocus += messages.filter((m) => !hidden.has(m.category)).length;
   refreshBadge();
   if (!engine.settings.notifications || !Notification.isSupported()) return;
   if (win && win.isFocused()) return;
@@ -882,7 +884,13 @@ const api = {
   categoriesSave: (input) => {
     const i = plainObject(input);
     const optional = (v, max) => (v === null ? null : typeof v === 'string' ? v.slice(0, max) : undefined);
-    return categories.saveCategory({ id: accountText(i.id, 100) || null, name: optional(i.name, 100), description: optional(i.description, 1000), color: accountText(i.color, 20) || undefined });
+    return categories.saveCategory({
+      id: accountText(i.id, 100) || null,
+      name: optional(i.name, 100),
+      description: optional(i.description, 1000),
+      color: accountText(i.color, 20) || undefined,
+      inbox: typeof i.inbox === 'boolean' ? i.inbox : undefined
+    });
   },
   categoriesRemove: (id) => categories.removeCategory(accountText(id, 100)),
   categoriesReorder: (ids) => categories.reorder((Array.isArray(ids) ? ids : []).slice(0, 50).map((id) => accountText(id, 100))),

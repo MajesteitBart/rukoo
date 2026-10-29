@@ -1107,15 +1107,22 @@ class Engine extends EventEmitter {
     return n;
   }
 
+  // Unread mail in Inbox: without the inbox categories Inbox doesn't show (set by main, categories/), with the older
+  // unread mail, which has no category.
+  inboxUnread(scope, hidden = this.hiddenCategories ? this.hiddenCategories() : new Set()) {
+    return this.collect(scope, this.viewPredicate('unread')).filter((m) => !hidden.has(m.category)).length + this.olderUnread(scope);
+  }
+
   // Unread mail in the inboxes of all accounts: the taskbar badge's "unread" count and the tray's tooltip.
   unreadCount() {
-    return this.collect('all', this.viewPredicate('unread')).length + this.olderUnread('all');
+    return this.inboxUnread('all');
   }
 
   counts(scope = 'all') {
     const res = { accounts: {}, views: {} };
+    const hidden = this.hiddenCategories ? this.hiddenCategories() : new Set();
     for (const acc of this.accounts) {
-      res.accounts[acc.id] = this.collect(acc.id, this.viewPredicate('unread')).length + this.olderUnread(acc.id);
+      res.accounts[acc.id] = this.inboxUnread(acc.id, hidden);
     }
     res.all = Object.values(res.accounts).reduce((a, b) => a + b, 0);
     // The list only holds the newest inboxLimit messages of each inbox, so its header names the older unread mail apart.
@@ -1124,8 +1131,9 @@ class Engine extends EventEmitter {
     const count = (view, onlyUnread) =>
       this.collect(scope, this.viewPredicate(view)).filter((m) => !onlyUnread || m.unread).length;
     // Only the inbox and Unread add the older mail: VIP picks its mail by sender, and other folders count their cache.
+    // Unread and VIP still count the categories Inbox doesn't show.
     res.views = {
-      inbox: count('inbox', true) + res.olderUnread,
+      inbox: this.inboxUnread(scope, hidden),
       unread: count('unread', true) + res.olderUnread,
       vip: count('vip', true),
       starred: count('starred'),
