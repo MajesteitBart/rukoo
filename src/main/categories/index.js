@@ -77,6 +77,7 @@ class Categories extends EventEmitter {
     this.local = readJson(this.file(), {});
     this.redo = new Set(Array.isArray(this.local.redo) ? this.local.redo.filter((k) => typeof k === 'string') : []);
     this.engine.categoryOf = (acc, m) => this.of(acc, m);
+    this.engine.hiddenCategories = () => this.hiddenFromInbox();
     this.account.on('records', ({ collections }) => {
       if (collections.some((c) => ['category', 'classification', 'override', 'sender', 'setting'].includes(c))) this.changed();
       // Categories turned on or off, or one removed, here or on another device: notifications waiting for Jev are
@@ -129,10 +130,18 @@ class Categories extends EventEmitter {
           description: (v && v.description) || (preset ? t(`categories.presets.${preset}.description`) : ''),
           custom: { name: Boolean(v && v.name), description: Boolean(v && v.description) },
           color: (v && v.color) || PRESET_COLORS[preset] || COLORS[0],
-          order: Number(v && v.order) || 0
+          order: Number(v && v.order) || 0,
+          // Whether Inbox itself shows this category's mail; a record without the field is shown.
+          inbox: !(v && v.inbox === false)
         };
       })
       .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  }
+
+  // The categories Inbox leaves out, while categories are on. Their own tabs still show their mail.
+  hiddenFromInbox() {
+    if (!this.settings().enabled) return new Set();
+    return new Set(this.list().filter((c) => !c.inbox).map((c) => c.id));
   }
 
   // Prototype for the guide: the categories as they are, or the presets they would start with, without writing them.
@@ -145,7 +154,8 @@ class Categories extends EventEmitter {
       description: t(`categories.presets.${id}.description`),
       custom: { name: false, description: false },
       color: PRESET_COLORS[id],
-      order
+      order,
+      inbox: true
     }));
   }
 
@@ -194,9 +204,10 @@ class Categories extends EventEmitter {
     return this.state();
   }
 
-  // A new category (no id) or changes to one. name or description null goes back to a preset's own. The state, with
-  // the id of the category saved (saved).
-  saveCategory({ id = null, name, description, color } = {}) {
+  // A new category (no id) or changes to one. name or description null goes back to a preset's own. inbox false
+  // keeps its mail out of Inbox itself; shown, the record leaves the field out, as records before it did. The state,
+  // with the id of the category saved (saved).
+  saveCategory({ id = null, name, description, color, inbox } = {}) {
     const list = this.list();
     const was = id ? this.account.get('category', id) : undefined;
     if (id && was === undefined) throw new Error('invalid');
@@ -210,6 +221,8 @@ class Categories extends EventEmitter {
       color: typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? color : (was && was.color) || COLORS[list.length % COLORS.length],
       order: was ? Number(was.order) || 0 : Math.max(-1, ...list.map((c) => c.order)) + 1
     };
+    if (inbox === false) value.inbox = false;
+    else if (inbox === true) delete value.inbox;
     if (!PRESETS.includes(key) && !value.name) throw new Error(t('categories.errors.needName'));
     this.account.put('category', key, value);
     this.changed();

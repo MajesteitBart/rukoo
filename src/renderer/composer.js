@@ -63,7 +63,19 @@ function cleanDraftHtml(html) {
     }
     if (el.style && /fixed|sticky|absolute/i.test(el.style.position)) el.style.position = '';
   }
+  // The font wrapper payload() puts around the text (and Android's, the same) comes off again, also when earlier
+  // saves nested it: the text and the signature are the editor's own lines, as in a new message.
+  for (let wrap = ownWrapper(doc.body); wrap; wrap = ownWrapper(doc.body)) wrap.replaceWith(...wrap.childNodes);
   return doc.body.innerHTML;
+}
+
+// The body's one element when it is that wrapper, with nothing else around it but white space. Exactly its font
+// and size: a block with any other style of its own is the user's formatting.
+function ownWrapper(body) {
+  const el = body.firstElementChild;
+  if (!el || body.childElementCount !== 1 || el.tagName !== 'DIV' || el.attributes.length !== 1 || el.style.length !== 2) return null;
+  if ([...body.childNodes].some((n) => n !== el && n.textContent.trim())) return null;
+  return el.style.fontFamily.replace(/["'\s]/g, '') === 'SegoeUI,Arial,sans-serif' && el.style.fontSize === '12pt' ? el : null;
 }
 
 // A saved reply carries the earlier mail after its own text: a header block, then a blockquote.
@@ -524,6 +536,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   st.agent = null;
   let agentBefore = null;
   let covered = new Set();
+  // Changes of From to another account, so Undo knows whether the signature in agentBefore is still the right one.
+  let accountSwitches = 0;
   const agentMark = $('.agent-mark', page);
   const describeAgent = () => {
     agentMark.hidden = !st.agent;
@@ -625,8 +639,14 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (editor.contains(t)) return;
     if (t.dataset.field === 'account') {
       const [accountId, ...rest] = t.value.split('|');
+      const moved = accountId !== st.accountId;
       st.accountId = accountId;
       st.from = rest.join('|');
+      // Signatures belong to accounts: another address of the same account keeps the one there is.
+      if (moved) {
+        accountSwitches++;
+        useAccountSignature();
+      }
       showDefaultLink();
       changed();
     }
@@ -1371,12 +1391,35 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     $('[data-field="subject"]', page).value = subject;
     title();
   };
-  const snapshot = () => ({ html: editor.innerHTML, to: [...st.to], cc: [...st.cc], bcc: [...st.bcc], subject: st.subject, showCc: st.showCc, showBcc: st.showBcc });
+  const snapshot = () => ({ html: editor.innerHTML, accountSwitches, to: [...st.to], cc: [...st.cc], bcc: [...st.bcc], subject: st.subject, showCc: st.showCc, showBcc: st.showBcc });
   // Agent text goes above the signature and the empty line before it.
   const signatureStart = () => {
     const sig = editor.querySelector(':scope > .signature');
     const spacer = sig && sig.previousElementSibling;
     return spacer && !spacer.textContent.trim() && !spacer.querySelector('img') ? spacer : sig;
+  };
+  // The chosen account's signature and booking link in place of the ones in the editor, as a new message from that
+  // account would have them: added at the end when there were none, gone with their empty line when it has none.
+  const useAccountSignature = () => {
+    const acc = data.accounts.find((a) => a.id === st.accountId);
+    if (!acc) return;
+    const html = signatureBlockHtml(acc, data);
+    const sig = editor.querySelector(':scope > .signature');
+    if (!html) {
+      if (sig) signatureStart().remove();
+      sig?.remove();
+      return;
+    }
+    // Parsed as an inert template, then moved in.
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    if (sig) return sig.replaceChildren(tpl.content);
+    const spacer = document.createElement('div');
+    spacer.append(document.createElement('br'));
+    const block = document.createElement('div');
+    block.className = 'signature';
+    block.append(tpl.content);
+    editor.append(spacer, block);
   };
 
   // content: { to, cc, bcc, subject, html | text }. A field left out stays as it is; an empty list clears it.
@@ -1476,6 +1519,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     covered = new Set();
     st.agent = null;
     editor.innerHTML = before.html;
+    // From stays as you set it, so after a change of account (also away and back) the signature is that account's now.
+    if (before.accountSwitches !== accountSwitches) useAccountSignature();
     for (const field of ['to', 'cc', 'bcc']) {
       st[field] = before[field];
       renderRecipients(field);
@@ -1549,8 +1594,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     getDraft,
     undoAgent,
     canUndoAgent,
-    // Main's state after an update: the link beside From follows the default account.
-    accountsChanged: (next) => syncDefault(next.accounts),
+    // Main's state after an update: the link beside From follows the default account, and a later change of From
+    // brings the signature as Settings has it now.
+    accountsChanged(next) {
+      data = next;
+      syncDefault(next.accounts);
+    },
     retheme(next) {
       if (next) {
         data = next;

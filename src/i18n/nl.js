@@ -855,6 +855,7 @@
     "other": "Nog {count} e-mails van {sender}"
   },
   "mailbox.message.vip": "VIP",
+  "mailbox.message.account": "Account: {account}",
   "mailbox.move.alreadyThere": "Die e-mails staan daar al",
   "mailbox.move.count": {
     "one": "{count} e-mail verplaatst naar {folder}",
@@ -1842,6 +1843,8 @@
   "mailbox.categories.alwaysDoneMany": "Mail van deze {count} afzenders gaat voortaan naar {name}",
   "mailbox.categories.empty": "Niets in {name}",
   "mailbox.categories.unreadCount": {"one": "{count} ongelezen", "other": "{count} ongelezen"},
+  "mailbox.categories.hidden": "Niet in Postvak IN",
+  "mailbox.categories.hiddenTitle": "{name} staat niet in Postvak IN",
   "settings.general.categories": "Inboxcategorieën",
   "settings.general.categoriesOn": "Aan",
   "settings.general.categoriesOff": "Uit",
@@ -1860,6 +1863,8 @@
   "settings.categories.description": "Wat hier hoort",
   "settings.categories.descriptionHelp": "Rukoo, en Jev als die aan staat, lezen dit om te bepalen welke mail hier komt. Noem de soorten mail en afzenders.",
   "settings.categories.color": "Kleur",
+  "settings.categories.inbox": "Tonen in Postvak IN",
+  "settings.categories.inboxHelp": "Staat dit uit, dan blijft deze mail uit Postvak IN en telt hij daar niet mee als ongelezen. Je vindt hem onder de categorie in de zijbalk, en zoeken vindt hem nog steeds.",
   "settings.categories.notify": "Meldingen",
   "settings.categories.notifyHelp": "Toon een desktopmelding bij nieuwe mail in deze categorie. Deze keuze blijft op deze computer.",
   "settings.categories.notifyBlocked": "Meldingen staan uit voor alle nieuwe mail, dus ook deze categorie blijft stil. Zet eerst Meldingen aan in de instellingen.",

@@ -1080,3 +1080,160 @@ test("Jev's answers look at the email each is for, not at every waiting one", as
   assert.ok(looks <= 2 * n, `${looks} looks for ${n} answers`);
   assert.ok(reads <= 3 * n, `${reads} reads for ${n} answers`);
 });
+
+test('a category kept out of Inbox says so in its own record, beside fields another app added', (t) => {
+  const { cats, account } = setup(t, inbox());
+  cats.setEnabled(true);
+  assert.ok(cats.list().every((c) => c.inbox), 'every category starts in Inbox');
+  assert.deepEqual([...cats.hiddenFromInbox()], []);
+  // A newer app may keep a field of its own in the record.
+  account.put('category', 'promotions', { ...account.get('category', 'promotions'), later: 1 });
+  let state = cats.saveCategory({ id: 'promotions', inbox: false });
+  assert.equal(state.categories.find((c) => c.id === 'promotions').inbox, false);
+  assert.equal(account.get('category', 'promotions').inbox, false);
+  assert.equal(account.get('category', 'promotions').later, 1);
+  assert.deepEqual([...cats.hiddenFromInbox()], ['promotions']);
+  // Other edits leave it as it is, and so does going back to Rukoo's own text.
+  cats.saveCategory({ id: 'promotions', name: 'Ads', color: '#4a7dff' });
+  cats.saveCategory({ id: 'promotions', name: null, description: null });
+  assert.equal(account.get('category', 'promotions').inbox, false);
+  // With categories off, Inbox has nothing to leave out.
+  cats.setEnabled(false);
+  assert.deepEqual([...cats.hiddenFromInbox()], []);
+  cats.setEnabled(true);
+  // Shown again, the record is as older apps write it.
+  cats.saveCategory({ id: 'promotions', inbox: true });
+  assert.equal('inbox' in account.get('category', 'promotions'), false);
+  assert.equal(account.get('category', 'promotions').later, 1);
+  assert.equal(cats.list().find((c) => c.id === 'promotions').inbox, true);
+  state = cats.saveCategory({ name: 'Kids', inbox: false });
+  assert.equal(state.categories.find((c) => c.name === 'Kids').inbox, false);
+});
+
+test('every device with the account keeps a category out of Inbox, also after another edits it', async (t) => {
+  const { startAccountServer } = require('./fixtures/account-server');
+  const srv = await startAccountServer();
+  t.after(() => srv.close());
+  const device = (name) => {
+    const dir = tmpDir(t);
+    const { engine } = fakeEngine(inbox());
+    const account = new AccountService({ dataDir: dir, secrets, defaultServer: srv.url, deviceName: name, platform: 'linux' }).init();
+    const cats = new Categories({ engine, account, secrets, dataDir: dir, jev }).init();
+    t.after(() => {
+      cats.close();
+      account.close();
+    });
+    return { cats, account };
+  };
+  const desk = device('desk');
+  await desk.account.signUp({ email: 'hide@example.com', password: 'a long enough password' });
+  desk.cats.setEnabled(true);
+  desk.cats.saveCategory({ id: 'promotions', inbox: false });
+  await desk.account.sync();
+
+  const laptop = device('laptop');
+  await laptop.account.signIn({ email: 'hide@example.com', password: 'a long enough password' });
+  let changed = 0;
+  laptop.cats.on('changed', () => changed++);
+  await laptop.account.sync();
+  assert.ok(changed > 0, 'the window hears of it');
+  assert.deepEqual([...laptop.cats.hiddenFromInbox()], ['promotions']);
+
+  // A rename on the laptop keeps the switch, on both devices.
+  laptop.cats.saveCategory({ id: 'promotions', name: 'Ads' });
+  await laptop.account.sync();
+  await desk.account.sync();
+  const promotions = desk.cats.list().find((c) => c.id === 'promotions');
+  assert.equal(promotions.name, 'Ads');
+  assert.equal(promotions.inbox, false);
+});
+
+// The real engine with the demo account, and categories on.
+async function demoInbox(t) {
+  const { Engine } = require('../src/main/engine');
+  const dir = tmpDir(t);
+  const engine = new Engine({ dataDir: path.join(dir, 'mail') }).init();
+  const acc = await engine.addAccount({ type: 'demo' });
+  await engine.syncAccount(acc.id);
+  const account = new AccountService({ dataDir: dir, secrets, defaultServer: '', deviceName: 'desk' }).init();
+  const cats = new Categories({ engine, account, secrets, dataDir: dir, jev }).init();
+  t.after(async () => {
+    cats.close();
+    account.close();
+    await engine.close();
+  });
+  cats.setEnabled(true);
+  return { engine, acc, cats };
+}
+
+test("unread mail in a category Inbox doesn't show leaves the inbox counts, but not Unread's", async (t) => {
+  const { engine, acc, cats } = await demoInbox(t);
+  const unread = (category) => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread && (!category || m.category === category)).length;
+  const all = unread();
+  const promotions = unread('promotions');
+  assert.ok(promotions > 0 && promotions < all, 'the demo inbox has unread promotions and other unread mail');
+  assert.equal(engine.counts(acc.id).views.inbox, all);
+
+  cats.saveCategory({ id: 'promotions', inbox: false });
+  const expectCounts = (inboxCount, unreadCount) => {
+    const c = engine.counts(acc.id);
+    assert.equal(c.views.inbox, inboxCount);
+    assert.equal(c.accounts[acc.id], inboxCount, 'the account menu');
+    assert.equal(c.all, inboxCount, 'All inboxes in the account menu');
+    assert.equal(engine.counts('all').views.inbox, inboxCount, 'All inboxes');
+    assert.equal(engine.unreadCount(), inboxCount, 'the badge and the tray');
+    assert.equal(c.views.unread, unreadCount, 'Unread still counts every category');
+  };
+  expectCounts(all - promotions, all);
+  // The list still has that mail, for the category's own view.
+  assert.equal(unread('promotions'), promotions);
+
+  // The unread mail older than the cache has no category, so it keeps counting.
+  engine.caches.get(acc.id).boxes.INBOX.olderUnseen = 40;
+  expectCounts(all - promotions + 40, all + 40);
+
+  cats.setEnabled(false);
+  expectCounts(all + 40, all + 40);
+});
+
+test("new mail stops counting for the badge once it is read, moved or in a category Inbox doesn't show", async (t) => {
+  const { encodeId } = require('../src/main/engine');
+  const { engine, acc, cats } = await demoInbox(t);
+  const unread = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread);
+  const promotion = unread.find((m) => m.category === 'promotions');
+  const [first, second, third] = unread.filter((m) => m.category !== 'promotions');
+  assert.ok(promotion && third, 'the demo inbox has unread promotions and other unread mail');
+  const gone = encodeId(acc.id, 'INBOX', 999999);
+  const ids = new Set([promotion.id, first.id, second.id, third.id, gone]);
+  assert.equal(engine.newCount(ids), 4);
+  assert.equal(ids.has(gone), false, 'an email no longer in the cache leaves the list');
+
+  cats.saveCategory({ id: 'promotions', inbox: false });
+  assert.equal(engine.newCount(ids), 3);
+  // Put in a hidden category after it came in: by a move here, a sender rule, Jev or another device.
+  cats.move([first.id], 'promotions');
+  assert.equal(engine.newCount(ids), 2);
+  await engine.setFlags(second.id, { unread: false });
+  assert.equal(engine.newCount(ids), 1);
+  // Shown again, the promotions count again.
+  cats.saveCategory({ id: 'promotions', inbox: true });
+  assert.equal(engine.newCount(ids), 3);
+});
+
+test('marking Inbox read leaves out the categories it doesn\'t show, and a category marks its own mail', async (t) => {
+  const { engine, acc, cats } = await demoInbox(t);
+  const unread = (category) => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread && (!category || m.category === category)).length;
+  const promotions = unread('promotions');
+  const updates = unread('updates');
+  assert.ok(promotions > 0 && updates > 0);
+  cats.saveCategory({ id: 'promotions', inbox: false });
+
+  assert.equal(await engine.markAllRead(acc.id, 'inbox', null, { category: 'updates' }), updates);
+  assert.equal(unread('updates'), 0);
+  assert.ok(unread() > promotions, 'the other categories are still unread');
+  await engine.markAllRead(acc.id, 'inbox');
+  assert.equal(unread(), promotions, 'only the hidden category is still unread');
+  // The Unread view marks every category.
+  assert.equal(await engine.markAllRead(acc.id, 'unread'), promotions);
+  assert.equal(unread(), 0);
+});

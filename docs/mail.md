@@ -12,7 +12,7 @@ Yahoo, Outlook, Exchange, Office365 and any other provider connect over IMAP, wi
 
 Microsoft has switched off password sign-in for most Outlook.com and many Microsoft 365 mailboxes. Those need OAuth, which Rukoo doesn't implement yet. Exchange works when the server offers IMAP and SMTP; Exchange ActiveSync isn't supported.
 
-The account switcher at the top of the sidebar lists each account by its display name, with the address underneath. "All accounts" is a unified inbox, where each message carries a short account label. A new message started there, from the tray or from an email link uses the default account. Settings marks it with a badge and lets you change it beside each account. A new message from another account offers Use as default account beside From.
+The account switcher at the top of the sidebar lists each account by its display name, with the address underneath. "All accounts" is a unified inbox, where each message shows its account as a dot in the account's color on the sender's picture. A new message started there, from the tray or from an email link uses the default account. Settings marks it with a badge and lets you change it beside each account. A new message from another account offers Use as default account beside From.
 
 ### Google sign-in
 
@@ -94,7 +94,7 @@ How Rukoo becomes the app for email links depends on the system: see [Windows](p
 
 ## Notifications and settings
 
-Rukoo shows desktop notifications for new mail. Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
+Rukoo shows desktop notifications for new mail. Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
 
 Settings has language, theme, zoom, list density, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default, plain text or formatted) and the booking link under it, spam addresses, VIPs and folder visibility. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
 

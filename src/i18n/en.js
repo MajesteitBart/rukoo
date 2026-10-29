@@ -3318,6 +3318,10 @@
     "message": "VIP",
     "description": "mailbox > message. src/renderer/app.js (itemHtml); src/renderer/app.js (renderReader)"
   },
+  "mailbox.message.account": {
+    "message": "Account: {account}",
+    "description": "mailbox > message. Screen reader label of the dot in an account's color on the sender's picture, in a list of several accounts. {account}: the account's display name or address. src/renderer/app.js (itemHtml)"
+  },
   "mailbox.move.alreadyThere": {
     "message": "These emails are already there",
     "description": "mailbox > move. src/renderer/app.js (moveMessages)"
@@ -7137,6 +7141,14 @@
     "message": {"one": "{count} unread", "other": "{count} unread"},
     "description": "Inbox categories in the main window: accessible name of the unread count on a category tab. src/renderer/app.js."
   },
+  "mailbox.categories.hidden": {
+    "message": "Not shown in Inbox",
+    "description": "Inbox categories: accessible name and tooltip of the crossed-out eye beside a category whose Show in Inbox switch is off, in the sidebar and in Settings > Inbox categories. src/renderer/app.js; src/renderer/categories-settings.js."
+  },
+  "mailbox.categories.hiddenTitle": {
+    "message": "{name} isn't shown in Inbox",
+    "description": "Inbox categories in the main window: tooltip of a category under Inbox in the sidebar whose Show in Inbox switch is off. {name}: the category. src/renderer/app.js."
+  },
   "settings.general.categories": {
     "message": "Inbox categories",
     "description": "Settings > General: row that opens the inbox categories page. src/renderer/settings.js (render)."
@@ -7208,6 +7220,14 @@
   "settings.categories.color": {
     "message": "Color",
     "description": "Settings > Inbox categories: label of the color choice in the category dialog. src/renderer/categories-settings.js."
+  },
+  "settings.categories.inbox": {
+    "message": "Show in Inbox",
+    "description": "Settings > Inbox categories: switch in the category dialog; off keeps the category's mail out of Inbox itself. Inbox is the label of mailbox.folders.inbox. src/renderer/categories-settings.js."
+  },
+  "settings.categories.inboxHelp": {
+    "message": "When off, this mail stays out of Inbox and its unread count. You find it under the category in the sidebar, and search still finds it.",
+    "description": "Settings > Inbox categories: help under the Show in Inbox switch in the category dialog. src/renderer/categories-settings.js."
   },
   "settings.categories.notify": {
     "message": "Notifications",
