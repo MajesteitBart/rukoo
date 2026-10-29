@@ -12,7 +12,7 @@ Yahoo, Outlook, Exchange, Office365 and any other provider connect over IMAP, wi
 
 Microsoft has switched off password sign-in for most Outlook.com and many Microsoft 365 mailboxes. Those need OAuth, which Rukoo doesn't implement yet. Exchange works when the server offers IMAP and SMTP; Exchange ActiveSync isn't supported.
 
-The account switcher at the top of the sidebar lists each account by its display name, with the address underneath. "All accounts" is a unified inbox, where each message carries a short account label. A new message started there, from the tray or from an email link uses the default account. Settings marks it with a badge and lets you change it beside each account. A new message from another account offers Use as default account beside From.
+The account switcher at the top of the sidebar lists each account by its display name, with the address underneath. "All accounts" is a unified inbox, where each message shows its account as a dot in the account's color on the sender's picture. A new message started there, from the tray or from an email link uses the default account. Settings marks it with a badge and lets you change it beside each account. A new message from another account offers Use as default account beside From.
 
 ### Google sign-in
 
