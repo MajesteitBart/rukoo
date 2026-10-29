@@ -211,6 +211,7 @@ async function refreshOnce() {
   renderSearch();
   renderSidebar();
   renderList();
+  reconcileReader();
   if (S.checked.size > 1) renderReader();
   else renderReaderNav();
   autoOpen();
@@ -289,9 +290,24 @@ const categoryOf = (id) => (S.categories && S.categories.categories.find((c) => 
 const rowCategory = (m) => (m.category && S.categories && S.categories.enabled && !(categoriesOn() && categoryOf(S.category)) ? categoryOf(m.category) : null);
 
 
-// The list in the category tab on screen.
+// The categories Inbox itself leaves out: their Show in Inbox switch is off.
+const hiddenCategories = () => new Set(((S.categories && S.categories.categories) || []).filter((c) => c.inbox === false).map((c) => c.id));
+
+// The list in the category tab on screen. Inbox itself leaves out the categories set not to show there.
 function categoryRows() {
-  return categoriesOn() && categoryOf(S.category) ? S.list.filter((m) => m.category === S.category) : S.list;
+  if (!categoriesOn()) return S.list;
+  if (categoryOf(S.category)) return S.list.filter((m) => m.category === S.category);
+  const hidden = hiddenCategories();
+  return hidden.size ? S.list.filter((m) => !hidden.has(m.category)) : S.list;
+}
+
+// The reading pane shows an inbox email only while Inbox or the open category lists it. One that leaves the list,
+// because it moved to another category, its category left Inbox or categories came on, leaves the reading pane too.
+// The editor stays where it is.
+function reconcileReader() {
+  if (!S.selectedId || S.composer || !categoriesOn()) return;
+  const m = S.list.find((x) => x.id === S.selectedId);
+  if (m && !categoryRows().includes(m)) closeReader();
 }
 
 // The list as shown: the category tab's list narrowed by the quick filter.
@@ -726,14 +742,17 @@ function renderSidebar() {
   };
 
   const views = VIEWS.filter((v) => !hidden.has(v.id) && (!v.role || roles.has(v.id)));
-  // Inbox categories sit under Inbox, each with its unread count while the inbox is open.
+  // Inbox categories sit under Inbox, each with its unread count while the inbox is open. A category Inbox doesn't
+  // show gets a crossed-out eye.
   const subs = S.categories && S.categories.enabled ? S.categories.categories : [];
   const subRows = () =>
     subs
       .map((c) => {
         const on = S.view === 'inbox' && S.category === c.id;
         const n = S.view === 'inbox' ? S.list.filter((m) => m.unread && m.category === c.id).length : 0;
-        return `<button class="nav-item nav-sub ${on ? 'active' : ''}" data-view="inbox" data-category="${esc(c.id)}" style="--cat:${esc(c.color)}" title="${esc(c.name)}"><span class="ic"><span class="cdot"></span></span><span class="label">${esc(c.name)}</span>${n ? `<span class="count">${n}</span>` : ''}</button>`;
+        const off = c.inbox === false;
+        const mark = off ? `<span class="cat-off" role="img" aria-label="${esc(t('mailbox.categories.hidden'))}">${icons.eyeOff}</span>` : '';
+        return `<button class="nav-item nav-sub ${on ? 'active' : ''}" data-view="inbox" data-category="${esc(c.id)}" style="--cat:${esc(c.color)}" title="${esc(off ? t('mailbox.categories.hiddenTitle', { name: c.name }) : c.name)}"><span class="ic"><span class="cdot"></span></span><span class="label">${esc(c.name)}</span>${mark}${n ? `<span class="count">${n}</span>` : ''}</button>`;
       })
       .join('');
   const viewRows = views
@@ -838,14 +857,15 @@ function bindSidebar() {
         return toggleSortPanel(t);
     }
     if (t.dataset.view) {
-      // Inbox shows all of it; a category under it shows that category.
+      // Inbox shows all of it, apart from categories it doesn't show; a category under it shows that category.
       if (t.dataset.view === 'inbox') S.category = t.dataset.category || null;
       // A search shows no categories, so a category picked during one ends the search (changeView) first.
       if (t.dataset.category && S.view === 'inbox' && !S.query.trim()) {
         clearChecks();
         S.filter = 'all';
         renderSidebar();
-        return renderList();
+        renderList();
+        return reconcileReader();
       }
       S.view = t.dataset.view;
       S.folder = null;
@@ -935,7 +955,7 @@ function listTitle() {
     return { title: t('mailbox.search.results'), sub: t('mailbox.search.summary', { count: rows().length, query: S.query.trim(), scope: S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase() }) };
   }
   const acc = account(S.scope);
-  const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? S.list.filter((m) => m.unread).length : 0;
+  const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? categoryRows().filter((m) => m.unread).length : 0;
   const where = acc ? acc.email : t('mailbox.search.allAccounts');
   // A category under Inbox: its name, with the inbox it belongs to.
   const cat = categoriesOn() && categoryOf(S.category);
@@ -1428,7 +1448,8 @@ async function setDensity(density) {
 }
 
 async function markAllRead() {
-  const n = await api('markAllRead', S.scope, S.view, S.folder);
+  // With inbox categories, Inbox and each category mark what they list, not the whole inbox (engine.markAllRead).
+  const n = await api('markAllRead', S.scope, S.view, S.folder, categoriesOn() && categoryOf(S.category) ? S.category : null);
   toast(n ? t('mailbox.actions.readCount', { count: n }) : t('mailbox.actions.alreadyRead'));
 }
 
@@ -2023,6 +2044,8 @@ async function compose(opts) {
       S.composer = null;
       // The chat's draft cards remember which stored draft this composer left behind.
       agentPanel?.composerClosed(mounted);
+      // An email that left the list while the editor was open doesn't come back with the reading pane.
+      reconcileReader();
       renderShell();
       renderReader();
       agentViewChanged();
@@ -2043,6 +2066,15 @@ export async function openMessage(id, { auto = false } = {}) {
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn) return;
   const m = S.list.find((x) => x.id === id);
+  // An inbox email the list leaves out, from a notification or the agent, opens in its own category, so its row is
+  // on screen and the reading pane keeps it (reconcileReader).
+  if (m && categoriesOn() && !categoryRows().includes(m) && categoryOf(m.category)) {
+    S.category = m.category;
+    S.filter = 'all';
+    clearChecks();
+    renderSidebar();
+    renderList();
+  }
   const left = S.keptId && S.keptId !== id ? S.keptId : null;
   if (S.keptId !== id) S.keptId = m && m.unread ? id : null;
   S.selectedId = id;
@@ -2644,6 +2676,7 @@ window.mail.on(async ({ type, payload }) => {
     S.scope = 'all';
     S.view = 'inbox';
     S.folder = null;
+    S.category = null;
     S.query = '';
     S.filter = 'all';
     await refresh();

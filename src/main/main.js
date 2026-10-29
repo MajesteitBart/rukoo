@@ -96,7 +96,10 @@ let account = null;
 let categories = null;
 let updates = null;
 let syncTimer = null;
-let newSinceFocus = 0;
+// The emails that came in since the main window last had focus, by id; badgeCount() counts the ones still new.
+let newSinceFocus = new Set();
+// The count the badge shows, so an update that leaves it as it is doesn't draw it again.
+let badgeShown = null;
 let tray = null;
 // Set once Rukoo really quits, so the main window closes instead of hiding in the tray. A window with unsaved
 // changes holds the quit while it asks about them, and can call it off; see watchQuit().
@@ -160,13 +163,15 @@ function scheduleSync() {
 function badgeCount() {
   if (engine.settings.badge === 'none') return 0;
   if (engine.settings.badge === 'unread') return engine.unreadCount();
-  return newSinceFocus;
+  // Read, moved or put in a category Inbox doesn't show, new mail stops counting.
+  return engine.newCount(newSinceFocus);
 }
 
-function refreshBadge() {
-  if (process.platform === 'darwin') app.dock?.setBadge(badgeCount() ? String(badgeCount()) : '');
-  send('badge', badgeCount());
-  refreshTray();
+function refreshBadge(count = badgeCount()) {
+  badgeShown = count;
+  if (process.platform === 'darwin') app.dock?.setBadge(count ? String(count) : '');
+  send('badge', count);
+  refreshTray(count);
 }
 
 // The tray icon is there while closing or minimizing hides the main window, so the window can always come back.
@@ -193,8 +198,8 @@ function updateTray() {
 
 // The tooltip counts unread mail. The icon gets a dot while the taskbar badge has a count, because the badge
 // isn't visible while the window is hidden.
-function refreshTray() {
-  if (tray) tray.update({ unread: engine.unreadCount(), dot: badgeCount() > 0 });
+function refreshTray(badge = badgeCount()) {
+  if (tray) tray.update({ unread: engine.unreadCount(), dot: badge > 0 });
 }
 
 // Removed before Rukoo exits; an icon left behind stays in the notification area until the mouse passes over it.
@@ -205,7 +210,7 @@ function destroyTray() {
 }
 
 function notify(messages) {
-  newSinceFocus += messages.length;
+  for (const m of messages) newSinceFocus.add(m.id);
   refreshBadge();
   if (!engine.settings.notifications || !Notification.isSupported()) return;
   if (win && win.isFocused()) return;
@@ -576,7 +581,7 @@ const api = {
   archive: (id) => engine.archive(id),
   canUndo: (id) => engine.canUndo(id),
   undoMove: (id) => engine.undoMove(id),
-  markAllRead: (scope, view, folder) => engine.markAllRead(scope, view, folder),
+  markAllRead: (scope, view, folder, category) => engine.markAllRead(scope, view, folder, { category: accountText(category, 100) || null }),
   move: (id, dest) => engine.move(id, dest),
   remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
   emptyFolder: (accountId, folder) => engine.emptyFolder(accountId, folder),
@@ -882,7 +887,13 @@ const api = {
   categoriesSave: (input) => {
     const i = plainObject(input);
     const optional = (v, max) => (v === null ? null : typeof v === 'string' ? v.slice(0, max) : undefined);
-    return categories.saveCategory({ id: accountText(i.id, 100) || null, name: optional(i.name, 100), description: optional(i.description, 1000), color: accountText(i.color, 20) || undefined });
+    return categories.saveCategory({
+      id: accountText(i.id, 100) || null,
+      name: optional(i.name, 100),
+      description: optional(i.description, 1000),
+      color: accountText(i.color, 20) || undefined,
+      inbox: typeof i.inbox === 'boolean' ? i.inbox : undefined
+    });
   },
   categoriesRemove: (id) => categories.removeCategory(accountText(id, 100)),
   categoriesReorder: (ids) => categories.reorder((Array.isArray(ids) ? ids : []).slice(0, 50).map((id) => accountText(id, 100))),
@@ -1135,6 +1146,8 @@ function updateApplicationMenu() {
 function createWindow({ hidden = false } = {}) {
   const b = windowState.bounds('main', { width: 1440, height: 920, minWidth: 760, minHeight: 560 });
   const { bar, background } = themeColors();
+  // A new window draws the badge again.
+  badgeShown = null;
   win = new BrowserWindow({
     width: b.width,
     height: b.height,
@@ -1153,7 +1166,7 @@ function createWindow({ hidden = false } = {}) {
   watchZoom(win);
   watchQuit(win);
   win.on('focus', () => {
-    newSinceFocus = 0;
+    newSinceFocus.clear();
     refreshBadge();
   });
   // Close to the tray: the window hides before its page hears of the close, so nothing asks about unsaved
@@ -1218,8 +1231,10 @@ app.whenReady().then(() => {
     // The Mac menu follows the language; elsewhere the menu stays off and needs no update.
     if (process.platform === 'darwin') updateApplicationMenu();
     send('updated');
-    if (engine.settings.badge === 'unread') refreshBadge();
-    else refreshTray();
+    // The badge follows the mail in both counts: an email read, moved or put in a category Inbox doesn't show.
+    const count = badgeCount();
+    if (count !== badgeShown) refreshBadge(count);
+    else refreshTray(count);
   });
   engine.on('new-mail', notify);
   calendars = new Calendars({ engine });

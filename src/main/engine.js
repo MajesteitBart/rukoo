@@ -1107,15 +1107,44 @@ class Engine extends EventEmitter {
     return n;
   }
 
+  // Unread mail in Inbox: without the inbox categories Inbox doesn't show (set by main, categories/), with the older
+  // unread mail, which has no category.
+  inboxUnread(scope, hidden = this.hiddenCategories ? this.hiddenCategories() : new Set()) {
+    return this.collect(scope, this.viewPredicate('unread')).filter((m) => !hidden.has(m.category)).length + this.olderUnread(scope);
+  }
+
   // Unread mail in the inboxes of all accounts: the taskbar badge's "unread" count and the tray's tooltip.
   unreadCount() {
-    return this.collect('all', this.viewPredicate('unread')).length + this.olderUnread('all');
+    return this.inboxUnread('all');
+  }
+
+  // How many of the emails in ids (a Set of message ids) still count as new: in an inbox, unread, and in a category
+  // Inbox shows. The taskbar badge's count of new mail. An id that is gone from the cache, because the email moved or
+  // was deleted, leaves ids.
+  newCount(ids) {
+    const hidden = this.hiddenCategories ? this.hiddenCategories() : new Set();
+    let n = 0;
+    for (const id of ids) {
+      let found;
+      try {
+        found = this.locate(id);
+      } catch (_) {
+        ids.delete(id);
+        continue;
+      }
+      const { acc, msg, folder } = found;
+      if (!msg.unread || this.isSpam(msg.from) || (this.folderInfo(acc.id, folder) || {}).role !== 'inbox') continue;
+      if (hidden.size && this.categoryOf && hidden.has(this.categoryOf(acc, msg))) continue;
+      n++;
+    }
+    return n;
   }
 
   counts(scope = 'all') {
     const res = { accounts: {}, views: {} };
+    const hidden = this.hiddenCategories ? this.hiddenCategories() : new Set();
     for (const acc of this.accounts) {
-      res.accounts[acc.id] = this.collect(acc.id, this.viewPredicate('unread')).length + this.olderUnread(acc.id);
+      res.accounts[acc.id] = this.inboxUnread(acc.id, hidden);
     }
     res.all = Object.values(res.accounts).reduce((a, b) => a + b, 0);
     // The list only holds the newest inboxLimit messages of each inbox, so its header names the older unread mail apart.
@@ -1124,8 +1153,9 @@ class Engine extends EventEmitter {
     const count = (view, onlyUnread) =>
       this.collect(scope, this.viewPredicate(view)).filter((m) => !onlyUnread || m.unread).length;
     // Only the inbox and Unread add the older mail: VIP picks its mail by sender, and other folders count their cache.
+    // Unread and VIP still count the categories Inbox doesn't show.
     res.views = {
-      inbox: count('inbox', true) + res.olderUnread,
+      inbox: this.inboxUnread(scope, hidden),
       unread: count('unread', true) + res.olderUnread,
       vip: count('vip', true),
       starred: count('starred'),
@@ -1315,8 +1345,11 @@ class Engine extends EventEmitter {
     }
   }
 
-  async markAllRead(scope, view, folder) {
-    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:'));
+  // The inbox marks what it lists: without the inbox categories it doesn't show, or one category's mail only.
+  async markAllRead(scope, view, folder, { category = null } = {}) {
+    const hidden = view === 'inbox' && this.hiddenCategories ? this.hiddenCategories() : new Set();
+    const listed = (m) => (view === 'inbox' && category ? m.category === category : !hidden.has(m.category));
+    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:') && listed(m));
     for (const m of list) await this.setFlags(m.id, { unread: false }).catch(() => {});
     return list.length;
   }

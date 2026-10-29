@@ -69,7 +69,7 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 
 | Collection | Key | Value | Writes |
 |---|---|---|---|
-| `category` | the category's id | `{ name, description, color, order, kind, fallback }` | last write wins |
+| `category` | the category's id | `{ name, description, color, order, inbox }`; `inbox` false keeps the category's mail out of Inbox itself, and a value without it is shown | last write wins |
 | `classification` | account email + `"\n"` + the email's Message-ID; `"m:"` + its SHA-256 hex when it is longer than 256 characters; or `"h:"` + SHA-256 hex of sender, date and subject when it has none | `{ category, source, confidence, model, at }` | first write wins (`ifAbsent`) |
 | `override` | the same key as `classification` | `{ category, at }` | last write wins |
 | `sender` | a lowercased sender address | `{ category, at }` | last write wins |

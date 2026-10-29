@@ -2,7 +2,7 @@
 
 Inbox categories split the inbox, like Gmail's tabs, for every kind of account: Gmail, Outlook, any IMAP server and the demo account. Rukoo doesn't label, flag or move anything on the mail server, so other mail apps see your inbox as before. The categories, the category each email got and your corrections live in Rukoo's own data, and with a [Rukoo account](account.md) every device shows the same.
 
-They show under Inbox in the sidebar, on the phone in the folder drawer; Inbox itself still shows all of it. On the computer, each email in Inbox carries a label with its category's color and name. Search results and views built from the inbox, such as VIPs, show the label too. A category's own tab has its color at the top of the list, with a dot before its name. The first start of Rukoo 2.1 offers to set them up step by step (Settings → About → What's new opens that again), or turn them on in Settings → General → Inbox categories.
+They show under Inbox in the sidebar, on the phone in the folder drawer. Inbox itself still shows all of it, unless you [keep a category out of it](#keeping-a-category-out-of-inbox). On the computer, each email in Inbox carries a label with its category's color and name. Search results and views built from the inbox, such as VIPs, show the label too. A category's own tab has its color at the top of the list, with a dot before its name. The first start of Rukoo 2.1 offers to set them up step by step (Settings → About → What's new opens that again), or turn them on in Settings → General → Inbox categories.
 
 ## The categories
 
@@ -18,7 +18,15 @@ Rukoo starts with five:
 
 Change their names, descriptions and colors, move them up and down, delete them, or add your own, up to twelve. The description says what belongs in a category; Jev reads it to decide (see below). Rukoo's own five follow the app's language until you change their text.
 
-Each email goes to one category. When several fit, the one higher in the list wins. **Inbox** shows the whole inbox, and **When Rukoo isn't sure** picks the category for mail Rukoo can't place.
+Each email goes to one category. When several fit, the one higher in the list wins. **Inbox** shows the whole inbox, apart from the categories you keep out of it, and **When Rukoo isn't sure** picks the category for mail Rukoo can't place.
+
+## Keeping a category out of Inbox
+
+Each category has a **Show in Inbox** switch in its dialog under Settings → Inbox categories. It is on for every category until you turn it off. Then that category's mail leaves Inbox itself, both for one account and for All inboxes, and a crossed-out eye marks the category under Inbox in the sidebar and in Settings. The category itself still shows all its mail and its own unread count.
+
+Its unread mail no longer counts toward Inbox: not in the sidebar's Inbox count, the counts per account, the taskbar badge or the tray icon. That holds for both badge settings, new mail and unread mail. Unread mail older than the messages Rukoo keeps for the inbox has no category, so it keeps counting. **Mark all as read** in Inbox marks only what Inbox lists.
+
+A search covers every category, as it always does, so it still finds this mail. The Unread and VIP views also still show it. The switch is part of the category, so with a Rukoo account every computer follows it.
 
 ## Moving mail
 
@@ -55,3 +63,4 @@ Click the line for the details: how far the sort is, with an estimate of the tim
 
 - Categories apply to the inbox, in the newest messages Rukoo keeps for it.
 - Without Jev, mail from people is split only by whether you're in To or Cc, so Needs you and To read are a rough guess.
+- Rukoo for Android doesn't have Show in Inbox yet: the phone's Inbox shows every category. Editing a category on the phone keeps the switch as the computer set it.

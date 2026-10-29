@@ -9,8 +9,8 @@ let app;
 let win;
 let dataDir;
 
-test.beforeEach(async () => {
-  dataDir = tempDir('rukoo-categories-e2e-');
+// Starts Rukoo on dataDir: the first time with no account yet, again for a restart.
+async function launch() {
   // No account server: categories work without one, on this computer.
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', RUKOO_ACCOUNT_SERVER: 'http://127.0.0.1:9' };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -19,6 +19,11 @@ test.beforeEach(async () => {
   app = await electron.launch({ args: [entry], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
+}
+
+test.beforeEach(async () => {
+  dataDir = tempDir('rukoo-categories-e2e-');
+  await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
@@ -248,4 +253,208 @@ test('Jev needs a key and says what it shares', async () => {
   await settings().locator('[data-a="rukoo"]').click();
   await settings().locator('[data-a="rukoo-go:rukoo-privacy"]').click();
   await expect(settings().locator('.row', { hasText: 'TypeSafe, Inc.' })).toContainText('Sorts your inbox with Jev');
+});
+
+// The count on a row of the sidebar, 0 when it shows none.
+async function countOn(row) {
+  const count = row.locator('.count');
+  return (await count.count()) ? Number(await count.textContent()) : 0;
+}
+
+test('a category kept out of Inbox leaves Inbox and its counts, keeps its own mail, and stays so after a restart', async () => {
+  await turnOn();
+  await closeSettings();
+  const promotionsRow = () => win.locator('.nav-item.nav-sub', { hasText: 'Promotions' });
+  const items = () => win.locator('.list-scroll .item');
+  // One of its emails is open when the category leaves Inbox.
+  await items().filter({ hasText: 'ANWB Newsletter' }).first().click();
+  await expect(win.locator('.reader-subject')).toBeVisible();
+  await expect.poll(() => app.evaluate(() => global.__semEngine.listMessages({ view: 'inbox' }).find((m) => m.from.name === 'ANWB Newsletter').unread)).toBe(false);
+  const inboxUnread = () => app.evaluate(() => global.__semEngine.counts('all').views.inbox);
+  await expect.poll(async () => (await countOn(inboxRow())) === (await inboxUnread())).toBe(true);
+  await expect.poll(() => countOn(promotionsRow())).toBeGreaterThan(0);
+  const all = await countOn(inboxRow());
+  const promotions = await countOn(promotionsRow());
+  expect(all).toBeGreaterThan(promotions);
+
+  // The switch is in the category's dialog, on until it is turned off.
+  await win.click('[data-action="settings"]');
+  await settings().locator('[data-a="categories"]').click();
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  const dialog = () => win.locator('.scrim .dialog');
+  const sw = () => dialog().locator('[role="switch"]', { hasText: 'Show in Inbox' });
+  await expect(sw()).toHaveAttribute('aria-checked', 'true');
+  await sw().click();
+  await expect(sw()).toHaveAttribute('aria-checked', 'false');
+  await dialog().locator('.buttons button', { hasText: 'Save' }).click();
+  await expect(settings().locator('[data-a="cat-edit:promotions"] .cat-off')).toHaveAttribute('aria-label', 'Not shown in Inbox');
+  await expect(settings().locator('[data-a="cat-edit:money"] .cat-off')).toHaveCount(0);
+  await closeSettings();
+
+  // Inbox leaves its mail out, also from the reading pane, and the counts follow; its own row still has all of it,
+  // marked as not in Inbox.
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);
+  await expect(win.locator('.reader-subject')).toHaveCount(0);
+  await expect(items().filter({ hasText: 'Forward Future' })).toHaveCount(0);
+  await expect(items().filter({ hasText: 'Sanne de Vries' })).toHaveCount(1);
+  await expect.poll(() => countOn(inboxRow())).toBe(all - promotions);
+  await expect(win.locator('.list-title .sub')).toContainText(`${all - promotions} unread`);
+  await expect(promotionsRow().locator('.cat-off')).toBeVisible();
+  await expect(promotionsRow()).toHaveAttribute('title', "Promotions isn't shown in Inbox");
+  expect(await countOn(promotionsRow())).toBe(promotions);
+  await promotionsRow().click();
+  await expect(win.locator('.list-title h1')).toHaveText('Promotions');
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(1);
+
+  // The badge and the tray: unread mail, and the default count of new mail since the window had focus.
+  expect(await app.evaluate(() => global.__semEngine.unreadCount())).toBe(all - promotions);
+  if (await app.evaluate(() => Boolean(global.__semTray))) await expect.poll(() => app.evaluate(() => global.__semTray.unread)).toBe(all - promotions);
+  await win.evaluate(() => {
+    window.__badges = [];
+    window.mail.on(({ type, payload }) => type === 'badge' && window.__badges.push(payload));
+  });
+  const arrived = await app.evaluate(() => {
+    const engine = global.__semEngine;
+    // No notifications on the screen during the test.
+    engine.settings.notifications = false;
+    const unread = engine.listMessages({ view: 'inbox' }).filter((m) => m.unread);
+    const [a, b] = unread.filter((m) => m.category === 'needs-you');
+    for (const m of [a, unread.find((x) => x.category === 'promotions'), b]) engine.emit('new-mail', [m]);
+    return a.id;
+  });
+  await expect.poll(() => win.evaluate(() => window.__badges.length)).toBe(3);
+  const [first, hidden, second] = await win.evaluate(() => window.__badges);
+  expect(hidden).toBe(first);
+  expect(second).toBe(first + 1);
+  // New mail put in a hidden category after it came in stops counting, and counts again when it comes back.
+  const lastBadge = () => win.evaluate(() => window.__badges[window.__badges.length - 1]);
+  await app.evaluate((_e, id) => global.__semCategories.move([id], 'promotions'), arrived);
+  await expect.poll(lastBadge).toBe(second - 1);
+  await app.evaluate((_e, id) => global.__semCategories.move([id], 'needs-you'), arrived);
+  await expect.poll(lastBadge).toBe(second);
+
+  // A click on a notification for it opens it in its own category, where its row is.
+  await inboxRow().click();
+  const anwb = await app.evaluate(() => global.__semEngine.listMessages({ view: 'inbox' }).find((m) => m.from.name === 'ANWB Newsletter'));
+  await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'open-message', payload: id }), anwb.id);
+  await expect(win.locator('.nav-item.nav-sub.active')).toContainText('Promotions');
+  await expect(items().filter({ hasText: 'ANWB Newsletter' }).first()).toHaveClass(/selected/);
+  // It stays open when the list is fetched again.
+  await app.evaluate(() => global.__semEngine.emit('updated'));
+  await win.waitForTimeout(500);
+  await expect(win.locator('.reader-subject')).toBeVisible();
+  // Opening it read it.
+  const promotionsLeft = promotions - (anwb.unread ? 1 : 0);
+  await expect.poll(() => countOn(promotionsRow())).toBe(promotionsLeft);
+
+  // A search still finds it, in Inbox too.
+  await inboxRow().click();
+  await win.fill('#search', 'ANWB');
+  await expect(items().filter({ hasText: 'ANWB Newsletter' }).first()).toBeVisible();
+  await win.click('[data-action="search-clear"]');
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);
+
+  // All accounts leaves it out too, and so does the account menu's count.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const server = { host: '127.0.0.1', port: 1, secure: false, user: 'werk@example.com' };
+    engine.accounts.push({ id: 'w1', type: 'imap', provider: 'other', email: 'werk@example.com', name: 'Werk', label: 'werk@example.com', color: '#ff8a3d', signature: null, secret: 'plain:', imap: server, smtp: server, createdAt: Date.now() });
+    engine.caches.set('w1', { folders: [], boxes: {}, lastSync: Date.now() });
+    engine.emit('updated');
+  });
+  await expect(async () => {
+    await win.click('[data-action="accounts"]');
+    await expect(win.locator('.menu button', { hasText: 'All accounts' })).toBeVisible({ timeout: 500 });
+  }).toPass();
+  await expect(win.locator('.menu button', { hasText: 'demo@example.com' }).locator('.mh')).toHaveText(String(all - promotions));
+  await expect(win.locator('.menu button', { hasText: 'All accounts' }).locator('.mh')).toHaveText(String(all - promotions));
+  await win.locator('.menu button', { hasText: 'All accounts' }).click();
+  await expect(win.locator('.account-switch')).toContainText('All accounts');
+  await expect(items().filter({ hasText: 'Sanne de Vries' })).toHaveCount(1);
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);
+  await expect.poll(() => countOn(inboxRow())).toBe(all - promotions);
+
+  // Mark all as read in Inbox marks what Inbox lists, not the mail it leaves out.
+  await win.click('[data-action="list-more"]');
+  await win.locator('.menu button', { hasText: 'Mark all as read' }).click();
+  await expect(win.locator('#toast')).toContainText(`${all - promotions}`);
+  await expect.poll(() => countOn(inboxRow())).toBe(0);
+  expect(promotionsLeft).toBeGreaterThan(0);
+  expect(await countOn(promotionsRow())).toBe(promotionsLeft);
+
+  // After a restart, the category is still out of Inbox.
+  await closeApp(app);
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await expect(promotionsRow().locator('.cat-off')).toBeVisible();
+  await expect(items().filter({ hasText: 'Sanne de Vries' })).toHaveCount(1);
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);
+  await win.click('[data-action="settings"]');
+  await settings().locator('[data-a="categories"]').click();
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  await expect(sw()).toHaveAttribute('aria-checked', 'false');
+  // Turned on again, the mail is back in Inbox.
+  await sw().click();
+  await dialog().locator('.buttons button', { hasText: 'Save' }).click();
+  await expect(settings().locator('[data-a="cat-edit:promotions"] .cat-off')).toHaveCount(0);
+  await closeSettings();
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(1);
+  await expect(promotionsRow().locator('.cat-off')).toHaveCount(0);
+});
+
+test('an email open in the reading pane leaves it when Inbox stops listing it, but an editor stays', async () => {
+  await turnOn();
+  await closeSettings();
+  const items = () => win.locator('.list-scroll .item');
+  const row = (sender) => items().filter({ hasText: sender }).first();
+  const reader = () => win.locator('.reader-subject');
+  const showInInbox = (id, inbox) => win.evaluate(([id, inbox]) => window.mail.call('categoriesSave', { id, inbox }), [id, inbox]);
+
+  // Open and checked: its row, the selection and the reading pane all let it go.
+  await row('ANWB Newsletter').click();
+  await expect(reader()).toBeVisible();
+  await row('ANWB Newsletter').click({ modifiers: ['Control'] });
+  await expect(win.locator('.list-tools.selecting')).toBeVisible();
+  await showInInbox('promotions', false);
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);
+  await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
+  await expect(reader()).toHaveCount(0);
+
+  // Moved into a category Inbox already leaves out.
+  await row('Bencompare').click();
+  await expect(reader()).toBeVisible();
+  await row('Bencompare').click({ button: 'right' });
+  await win.locator('.menu button', { hasText: 'Move to category' }).click();
+  await win.locator('.scrim .radio-row', { hasText: 'Promotions' }).click();
+  await expect(items().filter({ hasText: 'Bencompare' })).toHaveCount(0);
+  await expect(reader()).toHaveCount(0);
+
+  // Categories turned on again, with Promotions still kept out of Inbox.
+  await win.evaluate(() => window.mail.call('categoriesSetEnabled', false));
+  await expect(win.locator('.nav-item.nav-sub')).toHaveCount(0);
+  await row('ANWB Newsletter').click();
+  await expect(reader()).toBeVisible();
+  await win.evaluate(() => window.mail.call('categoriesSetEnabled', true));
+  await expect(win.locator('.nav-item.nav-sub')).toHaveCount(5);
+  await expect(items().filter({ hasText: 'ANWB Newsletter' })).toHaveCount(0);
+  await expect(reader()).toHaveCount(0);
+
+  // A reply in the reading pane stays when its email's category leaves Inbox.
+  await row('Sanne de Vries').click();
+  await win.click('[data-reader="reply"]');
+  await expect(win.locator('.composer .editor')).toBeVisible({ timeout: 15000 });
+  await showInInbox('needs-you', false);
+  await expect(items().filter({ hasText: 'Sanne de Vries' })).toHaveCount(0);
+  await expect(win.locator('.composer .editor')).toBeVisible();
+  // Closing that reply doesn't bring back the email Inbox no longer lists, not even until the next refresh.
+  await win.evaluate(() => {
+    window.__readerBack = false;
+    new MutationObserver(() => {
+      if (document.querySelector('.reader-subject')) window.__readerBack = true;
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  await win.click('.composer [data-c="close"]');
+  await expect(win.locator('.composer')).toHaveCount(0);
+  expect(await win.evaluate(() => window.__readerBack)).toBe(false);
+  await expect(reader()).toHaveCount(0);
 });

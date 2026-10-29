@@ -7,9 +7,11 @@ import { api, esc, toast, dialog, confirmDialog, choiceDialog, KEEP_OPEN } from 
 export const CATEGORY_VIEWS = ['categories'];
 const COLORS = ['#ff5d73', '#4a7dff', '#2fd6c0', '#f5c542', '#c56cf0', '#ff8a3d', '#5ec2ff', '#7a808e'];
 
-// Edits a category, or makes a new one (c null). Resolves to { name, description, color }, 'restore', 'delete' or null.
+// Edits a category, or makes a new one (c null). Resolves to { name, description, color, inbox }, 'restore', 'delete'
+// or null.
 function categoryDialog(c, { canDelete }) {
   let color = (c && c.color) || COLORS[0];
+  let inbox = !c || c.inbox !== false;
   const buttons = [];
   if (c && canDelete) buttons.push({ get label() { return t('common.actions.delete'); }, value: 'delete', danger: true, left: true });
   if (c && c.preset && (c.custom.name || c.custom.description)) buttons.push({ get label() { return t('settings.categories.restore'); }, value: 'restore', left: true });
@@ -24,7 +26,7 @@ function categoryDialog(c, { canDelete }) {
         name.focus();
         return KEEP_OPEN;
       }
-      return { name: name.value.trim(), description: description.value.trim(), color };
+      return { name: name.value.trim(), description: description.value.trim(), color, inbox };
     }
   });
   return dialog({
@@ -40,6 +42,9 @@ function categoryDialog(c, { canDelete }) {
         <label>${esc(t('settings.categories.description'))}<textarea name="description" maxlength="400">${esc(c ? c.description : '')}</textarea>
           <span class="field-help">${esc(t('settings.categories.descriptionHelp'))}</span></label>
         <div class="cat-colors"><span>${esc(t('settings.categories.color'))}</span><div role="radiogroup">${swatches}</div></div>
+        <button type="button" class="cat-inbox" role="switch" aria-checked="${inbox}" aria-labelledby="cat-inbox-l" aria-describedby="cat-inbox-h" data-inbox>
+          <span class="text"><span class="l" id="cat-inbox-l">${esc(t('settings.categories.inbox'))}</span><span class="field-help" id="cat-inbox-h">${esc(t('settings.categories.inboxHelp'))}</span></span>
+          <span class="switch ${inbox ? 'on' : ''}"></span></button>
         <div class="error" data-error></div></div>`;
       body.querySelectorAll('.cat-swatch').forEach((b) =>
         b.addEventListener('click', () => {
@@ -47,6 +52,12 @@ function categoryDialog(c, { canDelete }) {
           body.querySelectorAll('.cat-swatch').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
         })
       );
+      const sw = body.querySelector('[data-inbox]');
+      sw.addEventListener('click', () => {
+        inbox = !inbox;
+        sw.setAttribute('aria-checked', String(inbox));
+        sw.querySelector('.switch').classList.toggle('on', inbox);
+      });
     }
   });
 }
@@ -117,7 +128,9 @@ export function categoryPages({ row, go, rerender, current }) {
       <div class="row static cat-row">
         <button class="cat-main" data-a="cat-edit:${esc(c.id)}">
           <span class="cat-dot" style="--cat:${esc(c.color)}" aria-hidden="true"></span>
-          <span class="text"><span class="title">${esc(c.name)}</span>${c.description ? `<span class="desc">${esc(c.description)}</span>` : ''}</span>
+          <span class="text"><span class="title">${esc(c.name)}${
+            c.inbox === false ? `<span class="cat-off" role="img" aria-label="${esc(t('mailbox.categories.hidden'))}" title="${esc(t('mailbox.categories.hidden'))}">${icons.eyeOff}</span>` : ''
+          }</span>${c.description ? `<span class="desc">${esc(c.description)}</span>` : ''}</span>
         </button>
         <button class="icon-btn" data-a="cat-up:${esc(c.id)}" ${i === 0 ? 'disabled' : ''} title="${esc(t('settings.categories.up'))}" aria-label="${esc(t('settings.categories.up'))}">${icons.up}</button>
         <button class="icon-btn" data-a="cat-down:${esc(c.id)}" ${i === list.length - 1 ? 'disabled' : ''} title="${esc(t('settings.categories.down'))}" aria-label="${esc(t('settings.categories.down'))}">${icons.down}</button>
@@ -196,7 +209,7 @@ export function categoryPages({ row, go, rerender, current }) {
     // A preset keeps following the language until its text is changed.
     const name = c && c.preset && v.name === c.name && !c.custom.name ? undefined : v.name || null;
     const description = c && c.preset && v.description === c.description && !c.custom.description ? undefined : v.description || null;
-    return run(() => api('categoriesSave', { id: id || null, name, description, color: v.color }));
+    return run(() => api('categoriesSave', { id: id || null, name, description, color: v.color, inbox: v.inbox }));
   }
 
   // Handles a data-a action of these pages; false when it isn't one.

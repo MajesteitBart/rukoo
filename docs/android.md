@@ -95,7 +95,7 @@ The server is `https://rukoo.io` unless you choose another while signed out; [Ru
 
 ## Inbox categories
 
-Settings > Inbox categories turns [inbox categories](categories.md) on. The folder drawer then lists them under Inbox, each with its color; one shows only its mail, under its own name, and switching clears a selection. Inbox still shows all of it, and a search covers every category. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
+Settings > Inbox categories turns [inbox categories](categories.md) on. The folder drawer then lists them under Inbox, each with its color; one shows only its mail, under its own name, and switching clears a selection. Inbox still shows all of it, also a category the desktop keeps out of Inbox with Show in Inbox, and a search covers every category. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
 
 The settings page has the desktop's parts: the categories with up and down, editing a name, description and color, adding up to twelve and deleting; When Rukoo isn't sure; Sort with Jev and the TypeSafe API key, which stays on this phone, encrypted like the mail passwords; Sort the inbox again, which counts along while it runs; and the senders with a rule.
 
