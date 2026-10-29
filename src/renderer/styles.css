@@ -2563,28 +2563,40 @@ body:has(.page) .titlebar-actions {
   border-color: var(--panel);
   box-shadow: 0 0 0 2px var(--cat);
 }
-/* The category dialog's Show in Inbox: a switch with a line under its label. */
-.cat-inbox {
+/* The category dialog's switches, Show in Inbox and Notifications: a label with a line under it, and the switch. */
+.cat-inbox,
+.cat-notify {
   display: flex;
   align-items: center;
   gap: 12px;
   width: 100%;
-  padding: 2px 0;
   text-align: left;
+  padding: 2px 0;
   border-radius: 6px;
+  cursor: pointer;
 }
-.cat-inbox .text {
+.cat-inbox .text,
+.cat-notify .text {
   flex: 1;
   min-width: 0;
   display: grid;
   gap: 2px;
 }
-.cat-inbox .l {
+.cat-inbox .title,
+.cat-notify .title {
   font-size: 13px;
   color: var(--text);
 }
-.cat-inbox .switch {
+.cat-inbox .switch,
+.cat-notify .switch {
   pointer-events: none;
+}
+/* Notifications off for all mail: the switch keeps its state, dimmed, and the help under it says why. */
+.cat-notify:disabled {
+  cursor: default;
+}
+.cat-notify:disabled .switch {
+  opacity: 0.45;
 }
 /* A category Inbox doesn't show: a crossed-out eye beside its name, here and under Inbox in the sidebar. */
 .cat-off {
@@ -2600,6 +2612,17 @@ body:has(.page) .titlebar-actions {
 .cat-main .title .cat-off {
   margin-left: 6px;
   vertical-align: -2px;
+}
+/* A category whose notifications are off on this computer: a crossed-out bell at the end of its row. */
+.cat-muted {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  color: var(--text-3);
+}
+.cat-muted svg {
+  width: 16px;
+  height: 16px;
 }
 /* Settings > Rukoo account: a paragraph between the cards, and the recovery key shown once. */
 .settings-text {
