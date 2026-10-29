@@ -14,7 +14,18 @@ test('an invitation months ahead is found by its UID for its own account, and an
   const fake = fakeCalendar({
     events: [
       { id: 'evt90', iCalUID: 'planning-1@example.com', summary: 'Planning', start: { dateTime: iso(at(m, 90, 9)) }, end: { dateTime: iso(at(m, 90, 10)) }, ...theirs },
-      { id: 'other', summary: 'Something else', start: { dateTime: iso(at(m, 90, 9)) }, end: { dateTime: iso(at(m, 90, 10)) }, ...theirs }
+      { id: 'other', summary: 'Something else', start: { dateTime: iso(at(m, 90, 9)) }, end: { dateTime: iso(at(m, 90, 10)) }, ...theirs },
+      // The same meeting in a team calendar the account sees, where the team's address is the guest.
+      {
+        id: 'team90',
+        calendarId: 'team@example.com',
+        iCalUID: 'planning-1@example.com',
+        summary: 'Planning',
+        start: { dateTime: iso(at(m, 90, 9)) },
+        end: { dateTime: iso(at(m, 90, 10)) },
+        organizer: { email: 'joris@example.com' },
+        attendees: [{ email: 'joris@example.com', organizer: true }, { email: 'team@example.com', self: true, responseStatus: 'needsAction' }]
+      }
     ]
   });
   const { calendars } = setup(fake);
@@ -22,8 +33,11 @@ test('an invitation months ahead is found by its UID for its own account, and an
   await settle(calendars);
   const query = { uid: 'planning-1@example.com', start, end: start + 3600000 };
 
-  const found = await calendars.findInvite({ ...query, accountId: 'g1' });
+  const found = await calendars.findInvite({ ...query, accountId: 'g1', me: 'Me@Example.com' });
   assert.equal(found.eventId, 'evt90');
+  assert.equal(found.calendarId, 'me@example.com', "not the team calendar, where the answer would be the team's");
+  const team = await calendars.findInvite({ ...query, accountId: 'g1', me: 'team@example.com' });
+  assert.equal(team && team.eventId, 'team90');
   assert.equal(found.canRespond, true);
   assert.equal((await calendars.findInvite({ ...query, me: 'me@example.com' })).eventId, 'evt90', 'by the invited address');
   assert.equal(await calendars.findInvite({ ...query, accountId: 'other-account' }), null, 'not for another account');

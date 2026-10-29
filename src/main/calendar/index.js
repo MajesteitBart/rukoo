@@ -1022,17 +1022,18 @@ class Calendars extends EventEmitter {
   // of a series, the same original start. Google puts an invitation into the calendar when it arrives, under an id
   // of its own, and so do CalDAV servers that handle scheduling. A day either side of its time is read; null when no
   // calendar has it (or none could be read).
-  // accountId, me: the account it came to and the address it invites. The same meeting can be in the calendar of
-  // another account, for another address of the user's; only an event of this account, or one where this address is
-  // the user's own place among the guests, is the one to answer.
+  // accountId, me: the account it came to and the address that answers it. The same meeting can be in another
+  // calendar, of this account or another, where the user's place among the guests is another address (a shared team
+  // calendar, a second account): an answer there would be that address's. So with an address, only an event where
+  // it is the calendar's own guest counts, this account's first; without one, only this account's events.
   async findInvite({ uid, start, end, rid = null, accountId = null, me = null }) {
     if (!uid || !Number.isFinite(start)) return null;
     const at = Number.isFinite(rid) ? rid : start;
     const { events } = await this.read({ start: Math.min(at, start) - DAY, end: Math.max(Number.isFinite(end) ? end : start, at) + DAY });
     const address = me ? String(me).toLowerCase() : null;
-    const same = events.filter(
-      (e) => e.uid === uid && ((accountId && e.accountId === accountId) || (address && (e.attendees || []).some((a) => a.self && a.address === address)))
-    );
+    const same = events
+      .filter((e) => e.uid === uid && (address ? (e.attendees || []).some((a) => a.self && String(a.address).toLowerCase() === address) : accountId && e.accountId === accountId))
+      .sort((a, b) => (b.accountId === accountId) - (a.accountId === accountId));
     if (Number.isFinite(rid)) return same.find((e) => e.originalStart === rid || (!e.seriesId && e.start === rid)) || null;
     return same.find((e) => !e.seriesId || e.start === start) || same[0] || null;
   }

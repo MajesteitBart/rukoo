@@ -73,14 +73,16 @@ function inviteOf(text, { me = [], method = null }) {
   // Only its own STATUS cancels it: a series with one occurrence called off is still an invitation, and that
   // occurrence stays out of expand().
   const cancelled = m === 'CANCEL' || /^cancelled$/i.test(String(comp.getFirstPropertyValue('status') || ''));
-  // A cancelled event leaves expand() empty; the card still shows what was cancelled.
+  // A cancelled event leaves expand() empty, and so does a series whose occurrences were all called off one by one;
+  // the card still shows what was cancelled, from that component alone.
   if (cancelled) comp.removeAllProperties('status');
+  const shown = cancelled ? { vcal: obj.vcal, master: comp === obj.master ? comp : null, exceptions: comp === obj.master ? [] : [comp] } : obj;
   const mine = new Set(me.map((a) => String(a || '').toLowerCase()).filter(Boolean));
   const ctx = { cal: { id: 'invite', writable: false }, href: 'invite', etag: null, me: mine, local: true };
   const from = startOf(comp);
   if (!Number.isFinite(from)) return null;
   // The first occurrence of a series; one event, or one occurrence of a series on its own, as it is.
-  const list = ics.recurring(obj.master) ? ics.expand(obj, ctx, from - DAY, from + 366 * DAY) : ics.expand(obj, ctx, -Infinity, Infinity);
+  const list = ics.recurring(shown.master) ? ics.expand(shown, ctx, from - DAY, from + 366 * DAY) : ics.expand(shown, ctx, -Infinity, Infinity);
   const event = list[0] || null;
   if (!event) return null;
   const ridProp = comp.getFirstProperty('recurrence-id');

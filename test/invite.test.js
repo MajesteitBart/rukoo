@@ -197,3 +197,21 @@ test('a series with one occurrence called off is still an invitation, and that o
   assert.equal(one.cancelled, true);
   assert.equal(one.rid, Date.UTC(2026, 9, 30, 12));
 });
+
+test('a cancelled series whose occurrences were all called off one by one still shows what was cancelled', () => {
+  const exception = (day) => [
+    'BEGIN:VEVENT',
+    'UID:abc123@google.com',
+    `RECURRENCE-ID;TZID=Europe/Amsterdam:202610${day}T130000`,
+    `DTSTART;TZID=Europe/Amsterdam:202610${day}T130000`,
+    `DTEND;TZID=Europe/Amsterdam:202610${day}T140000`,
+    'SUMMARY:Cycle 16: agents & demo account',
+    'STATUS:CANCELLED',
+    'END:VEVENT'
+  ];
+  const text = ics({ method: 'CANCEL', status: 'CANCELLED', event: ['RRULE:FREQ=DAILY;COUNT=2'], extra: [...exception('30'), ...exception('31')] });
+  const inv = readInvite(text, { me: ['bart@example.com'] });
+  assert.equal(inv.cancelled, true);
+  assert.equal(inv.title, 'Cycle 16: agents & demo account');
+  assert.equal(inv.start, Date.UTC(2026, 9, 30, 12));
+});
