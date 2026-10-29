@@ -166,3 +166,34 @@ test('the .ics file Rukoo is started with: a path or file URL, never a switch', 
   assert.equal(icsFromArgs(['Rukoo Mail.exe', 'missing.ics'], 'C:\\', isFile), null);
   assert.equal(icsFromArgs(['Rukoo Mail.exe'], 'C:\\', isFile), null);
 });
+
+test('a value that only breaks when read makes no invitation, and throws nothing', () => {
+  const broken = ics().replace('DTSTART;TZID=Europe/Amsterdam:20261030T130000', 'DTSTART:bad');
+  assert.equal(readInvite(broken, { me: ['bart@example.com'] }), null);
+});
+
+test('a series with one occurrence called off is still an invitation, and that occurrence stays out', () => {
+  const text = ics({
+    event: ['RRULE:FREQ=WEEKLY;BYDAY=FR;COUNT=4'],
+    extra: [
+      'BEGIN:VEVENT',
+      'UID:abc123@google.com',
+      'RECURRENCE-ID;TZID=Europe/Amsterdam:20261030T130000',
+      'DTSTART;TZID=Europe/Amsterdam:20261030T130000',
+      'DTEND;TZID=Europe/Amsterdam:20261030T140000',
+      'SUMMARY:Cycle 16: agents & demo account',
+      'STATUS:CANCELLED',
+      'SEQUENCE:1',
+      'END:VEVENT'
+    ]
+  });
+  const inv = readInvite(text, { me: ['bart@example.com'] });
+  assert.equal(inv.cancelled, false);
+  assert.equal(inv.series, true);
+  // The first occurrence was called off, so the card starts at the next one.
+  assert.equal(inv.start, Date.UTC(2026, 10, 6, 12));
+  // Cancelling that one occurrence on its own is a cancellation of it.
+  const one = readInvite(text.replace('METHOD:REQUEST', 'METHOD:CANCEL').replace(/BEGIN:VEVENT[\s\S]*?END:VEVENT\r\n/, ''), {});
+  assert.equal(one.cancelled, true);
+  assert.equal(one.rid, Date.UTC(2026, 9, 30, 12));
+});

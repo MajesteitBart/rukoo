@@ -48,32 +48,40 @@ const startOf = (comp) => {
   return prop ? ics.instant(prop.getFirstValue(), prop.getParameter('tzid') || null) : NaN;
 };
 
-// The invitation as the card shows it, or null when the text isn't a calendar with an event.
+// The invitation as the card shows it, or null when the text isn't a calendar with an event. The text comes from
+// mail, and ical.js reads values only when asked for them, so a broken one (DTSTART:bad) throws late: whatever
+// throws makes it no invitation, and the email reads as it did before.
 // me: the addresses of the account it came to (or of every account, for a file). method: the email part's METHOD,
 // which wins over the one inside the object.
-function readInvite(text, { me = [], method = null } = {}) {
+function readInvite(text, opts = {}) {
+  try {
+    return inviteOf(text, opts);
+  } catch {
+    return null;
+  }
+}
+
+function inviteOf(text, { me = [], method = null }) {
   const obj = parse(text);
   if (!obj) return null;
   const comps = [obj.master, ...obj.exceptions].filter(Boolean);
+  // What the card is about: the event or series, or one occurrence on its own.
   const comp = comps[0];
   if (!comp) return null;
   const inner = String(obj.vcal.getFirstPropertyValue('method') || '').toUpperCase();
   const m = String(method || inner || 'PUBLISH').toUpperCase();
-  const cancelled = m === 'CANCEL' || comps.some((c) => /^cancelled$/i.test(String(c.getFirstPropertyValue('status') || '')));
+  // Only its own STATUS cancels it: a series with one occurrence called off is still an invitation, and that
+  // occurrence stays out of expand().
+  const cancelled = m === 'CANCEL' || /^cancelled$/i.test(String(comp.getFirstPropertyValue('status') || ''));
   // A cancelled event leaves expand() empty; the card still shows what was cancelled.
-  for (const c of comps) c.removeAllProperties('status');
+  if (cancelled) comp.removeAllProperties('status');
   const mine = new Set(me.map((a) => String(a || '').toLowerCase()).filter(Boolean));
   const ctx = { cal: { id: 'invite', writable: false }, href: 'invite', etag: null, me: mine, local: true };
   const from = startOf(comp);
   if (!Number.isFinite(from)) return null;
-  let event = null;
-  try {
-    // The first occurrence of a series; one event, or one occurrence of a series on its own, as it is.
-    const list = ics.recurring(obj.master) ? ics.expand(obj, ctx, from - DAY, from + 366 * DAY) : ics.expand(obj, ctx, -Infinity, Infinity);
-    event = list[0] || null;
-  } catch {
-    event = null;
-  }
+  // The first occurrence of a series; one event, or one occurrence of a series on its own, as it is.
+  const list = ics.recurring(obj.master) ? ics.expand(obj, ctx, from - DAY, from + 366 * DAY) : ics.expand(obj, ctx, -Infinity, Infinity);
+  const event = list[0] || null;
   if (!event) return null;
   const ridProp = comp.getFirstProperty('recurrence-id');
   const rid = ridProp ? ics.instant(ridProp.getFirstValue(), ridProp.getParameter('tzid') || null) : null;

@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const { Invitations } = require('../src/main/calendar/invitations');
 
-function ics({ method = 'REQUEST', uid = 'uid-1@example.com', status = 'CONFIRMED', organizer = 'daniel@example.com' } = {}) {
+function ics({ method = 'REQUEST', uid = 'uid-1@example.com', status = 'CONFIRMED', organizer = 'daniel@example.com', sequence = 0, guests = ['sanne@example.com'] } = {}) {
   return [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -19,26 +19,29 @@ function ics({ method = 'REQUEST', uid = 'uid-1@example.com', status = 'CONFIRME
     'DTSTART:20261103T090000Z',
     'DTEND:20261103T100000Z',
     'SUMMARY:Planning',
+    `SEQUENCE:${sequence}`,
     `STATUS:${status}`,
     `ORGANIZER;CN=Daniel:mailto:${organizer}`,
     `ATTENDEE;CN=Daniel;PARTSTAT=ACCEPTED:mailto:${organizer}`,
-    'ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:sanne@example.com',
+    ...guests.map((g) => `ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${g}`),
     'END:VEVENT',
     'END:VCALENDAR',
     ''
   ].join('\r\n');
 }
 
-// A mail engine with one account, Sanne's, whose invitations are kept by id; send() records what would go out.
-function fakeEngine(sources) {
-  const acc = { id: 'acc1', email: 'sanne@example.com', name: 'Sanne de Vries' };
+// A mail engine with Sanne's account (and her work account, when asked), whose invitations are kept by id; send()
+// records what would go out.
+const SANNE = { id: 'acc1', email: 'sanne@example.com', name: 'Sanne de Vries' };
+const WORK = { id: 'acc2', email: 'sanne@work.example', name: 'Sanne de Vries' };
+function fakeEngine(sources, accounts = [SANNE]) {
   const sent = [];
   return {
     sent,
-    accounts: [acc],
+    accounts,
     identities: (a) => [{ address: a.email, name: a.name }],
     identity: (a, address) => (!address || address.toLowerCase() === a.email ? { address: a.email, name: a.name } : null),
-    ownAddresses: () => [acc.email],
+    ownAddresses: (id) => accounts.filter((a) => !id || a.id === id).map((a) => a.email),
     inviteSource: async (id) => sources[id] || null,
     send: async (payload, opts) => sent.push({ payload, opts })
   };
@@ -49,8 +52,8 @@ function fakeCalendars(found) {
   const calls = { respond: [], create: [], find: [] };
   return {
     calls,
-    findInvite: async (inv) => {
-      calls.find.push(inv.uid);
+    findInvite: async (query) => {
+      calls.find.push(query);
       return found;
     },
     respond: async (id, response, opts) => calls.respond.push({ id, response, opts }),
@@ -71,6 +74,9 @@ test('an invitation in a calendar that can answer it is answered there, and no e
   const state = await inv.state({ id: 'm1' });
   assert.equal(state.event.id, 'acc1:primary:evt1');
   assert.equal(state.invite.me, 'sanne@example.com');
+  // Only this account's event, for this address, is the one to answer.
+  assert.equal(calendars.calls.find[0].accountId, 'acc1');
+  assert.equal(calendars.calls.find[0].me, 'sanne@example.com');
   const res = await inv.answer({ id: 'm1' }, 'accepted');
   assert.equal(res.via, 'calendar');
   assert.deepEqual(calendars.calls.respond, [{ id: 'acc1:primary:evt1', response: 'accepted', opts: { series: false } }]);
@@ -149,4 +155,39 @@ test('an .ics file is kept by token for its card, and its event is added to a ch
   fs.writeFileSync(file, 'not a calendar');
   assert.throws(() => inv.openFile(file), /can't read this calendar file/);
   await assert.rejects(inv.state({ file: 'unknown' }), /can't read this calendar file/);
+});
+
+test('a meeting that invites two of the user\'s accounts keeps an answer for each', async () => {
+  const both = ics({ guests: ['sanne@example.com', 'sanne@work.example'] });
+  const engine = fakeEngine({ home: { text: both, method: 'REQUEST', accountId: 'acc1' }, work: { text: both, method: 'REQUEST', accountId: 'acc2' } }, [SANNE, WORK]);
+  const inv = new Invitations({ engine, calendars: fakeCalendars(null), dataDir: dataDir() });
+  await inv.answer({ id: 'work' }, 'accepted');
+  assert.equal(engine.sent[0].payload.from, 'sanne@work.example');
+  assert.match(engine.sent[0].opts.icalEvent.content.replace(/\r\n /g, ''), /PARTSTAT=ACCEPTED;RSVP=TRUE:mailto:sanne@work.example|PARTSTAT=ACCEPTED:mailto:sanne@work.example/);
+  assert.equal((await inv.state({ id: 'work' })).answered, 'accepted');
+  assert.equal((await inv.state({ id: 'home' })).answered, null, 'the home address has not answered');
+});
+
+test('an .ics attachment keeps the account of its email, also when another account is invited too', async () => {
+  const engine = fakeEngine({}, [SANNE, WORK]);
+  const inv = new Invitations({ engine, calendars: fakeCalendars(null), dataDir: dataDir() });
+  const token = inv.openText(ics({ guests: ['sanne@example.com', 'sanne@work.example'] }), 'invite.ics', 'acc2');
+  const state = await inv.state({ file: token });
+  assert.deepEqual(state.account, { id: 'acc2', email: 'sanne@work.example' });
+  assert.equal(state.invite.me, 'sanne@work.example');
+  await inv.answer({ file: token }, 'declined');
+  assert.equal(engine.sent[0].payload.accountId, 'acc2');
+});
+
+test('an updated invitation asks again, also after its event was added to a calendar', async () => {
+  const sources = { v0: { text: ics(), method: 'REQUEST', accountId: 'acc1' }, v1: { text: ics({ sequence: 1 }), method: 'REQUEST', accountId: 'acc1' } };
+  const engine = fakeEngine(sources);
+  const inv = new Invitations({ engine, calendars: fakeCalendars(null), dataDir: dataDir() });
+  await inv.answer({ id: 'v0' }, 'accepted');
+  assert.equal((await inv.state({ id: 'v0' })).answered, 'accepted');
+  assert.equal((await inv.state({ id: 'v1' })).answered, null);
+  await inv.add({ id: 'v1' }, { accountId: 'acc1', calendarId: 'primary' });
+  const after = await inv.state({ id: 'v1' });
+  assert.equal(after.answered, null, 'adding is no answer to the update');
+  assert.equal(after.added.id, 'acc1:cal:new');
 });

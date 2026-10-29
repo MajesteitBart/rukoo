@@ -17,7 +17,8 @@ const RESPONSES = new Set(['accepted', 'tentative', 'declined']);
 const KEEP = 500;
 const FILES = 20;
 
-const keyOf = (inv) => `${inv.uid}\n${Number.isFinite(inv.rid) ? inv.rid : ''}`;
+// One meeting can invite several of the user's addresses, each with an answer of its own.
+const keyOf = (inv, who) => `${inv.uid}\n${Number.isFinite(inv.rid) ? inv.rid : ''}\n${who || ''}`;
 const fail = (key) => Object.assign(new Error(t(key)), { code: 'invite' });
 
 class Invitations {
@@ -42,9 +43,12 @@ class Invitations {
     return this.memory;
   }
 
-  remember(inv, patch) {
+  // What this address did with the invitation: { response, responseSequence } once it answered by email (the
+  // SEQUENCE it answered, so an update asks again), { added } once its event went into a calendar.
+  remember(inv, who, patch) {
     const all = this.load();
-    all[keyOf(inv)] = { ...(all[keyOf(inv)] || {}), ...patch, sequence: inv.sequence, at: Date.now() };
+    const key = keyOf(inv, who);
+    all[key] = { ...(all[key] || {}), ...patch, at: Date.now() };
     const keys = Object.keys(all);
     if (keys.length > KEEP) for (const k of keys.sort((a, b) => all[a].at - all[b].at).slice(0, keys.length - KEEP)) delete all[k];
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -58,7 +62,7 @@ class Invitations {
     const inv = readInvite(s, { me: this.engine.ownAddresses() });
     if (!inv) throw fail('errors.invite.unreadable');
     const token = crypto.randomUUID();
-    const owner = accountId || this.accountFor(inv.me);
+    const owner = this.engine.accounts.find((a) => a.id === accountId) || this.accountFor(inv.me);
     this.files.set(token, { text: s, name: String(name || ''), accountId: owner ? owner.id : null });
     while (this.files.size > FILES) this.files.delete(this.files.keys().next().value);
     return token;
@@ -89,25 +93,35 @@ class Invitations {
     return { text: file.text, method: null, accountId: file.accountId, name: file.name };
   }
 
+  // The invitation as the account it came to reads it, that account, and the address that answers for it: the one
+  // the invitation lists, or the account's own for an invitation sent to a list.
   async read(source) {
     const src = await this.source(source);
     const inv = readInvite(src.text, { me: this.engine.ownAddresses(src.accountId), method: src.method });
     if (!inv) throw fail('errors.invite.unreadable');
-    return { src, inv };
+    const acc = this.engine.accounts.find((a) => a.id === src.accountId) || this.accountFor(inv.me);
+    const own = acc ? this.engine.identity(acc, null) : null;
+    const who = String(inv.me || (own ? own.address : '')).toLowerCase() || null;
+    return { src, inv, acc, who };
+  }
+
+  // The event in the user's calendars, for this account and address only: the same meeting may be in another of
+  // the user's calendars, for another of their addresses, which this answer isn't for.
+  find(inv, acc, who) {
+    return this.calendars.findInvite({ uid: inv.uid, start: inv.start, end: inv.end, rid: inv.rid, accountId: acc ? acc.id : null, me: who }).catch(() => null);
   }
 
   // The card's state: the invitation, the event in the user's calendars (null when none has it, or none could be
   // read), the answer given by email and the event added from here. The account answers by email go from.
   async state(source) {
-    const { src, inv } = await this.read(source);
-    const event = await this.calendars.findInvite(inv).catch(() => null);
-    const kept = this.load()[keyOf(inv)] || {};
-    const acc = this.engine.accounts.find((a) => a.id === src.accountId) || this.accountFor(inv.me);
+    const { src, inv, acc, who } = await this.read(source);
+    const event = await this.find(inv, acc, who);
+    const kept = this.load()[keyOf(inv, who)] || {};
     return {
       invite: inv,
       name: src.name,
       event,
-      answered: kept.response && kept.sequence >= inv.sequence ? kept.response : null,
+      answered: kept.response && kept.responseSequence >= inv.sequence ? kept.response : null,
       added: kept.added || null,
       account: acc ? { id: acc.id, email: acc.email } : null
     };
@@ -115,38 +129,37 @@ class Invitations {
 
   async answer(source, response) {
     if (!RESPONSES.has(response)) throw fail('errors.calendar.invalidResponse');
-    const { src, inv } = await this.read(source);
+    const { src, inv, acc, who } = await this.read(source);
     if (inv.method !== 'REQUEST' || inv.cancelled || (inv.organizer && inv.organizer.self)) throw fail('errors.invite.notAnswerable');
-    const event = await this.calendars.findInvite(inv).catch(() => null);
+    const event = await this.find(inv, acc, who);
     if (event && event.canRespond) {
       await this.calendars.respond(event.id, response, { series: inv.series && !Number.isFinite(inv.rid) });
       return { via: 'calendar', event: this.calendars.event(event.id) || { ...event, response } };
     }
     if (!inv.organizer || !inv.organizer.address) throw fail('errors.invite.noOrganizer');
-    const acc = this.engine.accounts.find((a) => a.id === src.accountId) || this.accountFor(inv.me);
     if (!acc) throw fail('errors.invite.noAccount');
     const from = (inv.me && this.engine.identity(acc, inv.me)) || this.engine.identity(acc, null);
-    const who = from.name || acc.name || from.address;
+    const name = from.name || acc.name || from.address;
     const title = inv.title || t('calendar.event.noTitle');
-    const content = replyText(src.text, { address: inv.me || from.address, name: who, response });
+    const content = replyText(src.text, { address: who || from.address, name, response });
     await this.engine.send(
       {
         accountId: acc.id,
         from: from.address,
         to: [{ name: inv.organizer.name || '', address: inv.organizer.address }],
         subject: t(`invite.reply.subject.${response}`, { title }),
-        text: t(`invite.reply.body.${response}`, { name: who, title })
+        text: t(`invite.reply.body.${response}`, { name, title })
       },
       { icalEvent: { method: 'REPLY', content } }
     );
-    this.remember(inv, { response });
+    this.remember(inv, who, { response, responseSequence: inv.sequence });
     return { via: 'email', to: inv.organizer.address };
   }
 
   // A copy of the event in a calendar of the user's choosing: its title, time, place, description and repeat rule,
   // without guests. The organizer's later changes don't reach the copy.
   async add(source, { accountId, calendarId }) {
-    const { inv } = await this.read(source);
+    const { inv, who } = await this.read(source);
     if (inv.cancelled) throw fail('errors.invite.cancelled');
     const input = {
       accountId,
@@ -160,7 +173,7 @@ class Invitations {
       ...(inv.rule && !Number.isFinite(inv.rid) ? { recurrence: inv.rule } : {})
     };
     const made = await this.calendars.create(input);
-    this.remember(inv, { added: { id: made.id, start: made.start } });
+    this.remember(inv, who, { added: { id: made.id, start: made.start } });
     return made;
   }
 }
