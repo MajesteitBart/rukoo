@@ -1,6 +1,146 @@
 // English source catalog with translator context.
 (function (root) {
   const messages = {
+  "errors.invite.unreadable": {
+    "message": "Rukoo can't read this calendar file.",
+    "description": "An .ics file or an email's calendar part holds no event Rukoo can show. src/main/calendar/invitations.js; src/main/main.js (openIcsFile)"
+  },
+  "errors.invite.notAnswerable": {
+    "message": "Rukoo can't answer this invitation.",
+    "description": "The invitation was cancelled, is the user's own, or is not a request. src/main/calendar/invitations.js"
+  },
+  "errors.invite.noOrganizer": {
+    "message": "This invitation doesn't say who sent it, so Rukoo can't answer it.",
+    "description": "The invitation has no ORGANIZER to email the answer to. src/main/calendar/invitations.js"
+  },
+  "errors.invite.noAccount": {
+    "message": "None of your accounts is invited, so Rukoo can't send your answer.",
+    "description": "An .ics file invites an address none of the user's accounts has. src/main/calendar/invitations.js"
+  },
+  "errors.invite.cancelled": {
+    "message": "This event was cancelled.",
+    "description": "Add to calendar on a cancelled event. src/main/calendar/invitations.js"
+  },
+  "invite.card.label": {
+    "message": "Calendar invitation",
+    "description": "Accessible name of the card. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.from": {
+    "message": "Invitation from {name}",
+    "description": "Line above the title. {name}: the organizer. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.updatedFrom": {
+    "message": "Updated invitation from {name}",
+    "description": "Line above the title for a changed event (SEQUENCE above 0). {name}: the organizer. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.cancelledBy": {
+    "message": "Cancelled by {name}",
+    "description": "Line above the title of a cancelled event. {name}: the organizer. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.cancelled": {
+    "message": "Cancelled",
+    "description": "Pill beside a cancelled event, and the line above its title when it names no organizer. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.event": {
+    "message": "Event",
+    "description": "Line above the title of an event that isn't an invitation, such as an .ics file from a ticket shop. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.replied.accepted": {
+    "message": "{name} accepted",
+    "description": "Line above the title of a guest's answer to the user's own event. {name}: the guest. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.replied.tentative": {
+    "message": "{name} might come",
+    "description": "Line above the title of a guest's answer Maybe. {name}: the guest. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.replied.declined": {
+    "message": "{name} declined",
+    "description": "Line above the title of a guest's answer No. {name}: the guest. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.you": {
+    "message": "you",
+    "description": "The user in the list of guests, lower case inside the list. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.looking": {
+    "message": "Looking in your calendars…",
+    "description": "Note while Rukoo looks for the event in the user's calendars. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.viaCalendar": {
+    "message": "This event is in your calendar, which sends your answer to the organizer.",
+    "description": "Note when the answer goes through Google Calendar or a CalDAV server. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.byEmail": {
+    "message": "Your answer goes to {address} by email.",
+    "description": "Note when no calendar can answer: Rukoo emails the organizer. {address}: the organizer's email address. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.answeredByEmail": {
+    "message": "Your answer went to {address} by email.",
+    "description": "Note after the user answered by email; another answer goes the same way. {address}: the organizer's email address. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.organizer": {
+    "message": "organizer",
+    "description": "After the organizer's name in the list of guests, in brackets and lower case: \"Joris Bakker (organizer)\". Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.inCalendar": {
+    "message": "This event is in your calendar.",
+    "description": "Note for an event in the user's calendar that needs no answer. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.addedNote": {
+    "message": "You added this event to your calendar.",
+    "description": "Note after Add to calendar. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.notInCalendar": {
+    "message": "This event isn't in your calendars.",
+    "description": "Note for an event in none of the user's calendars. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.open": {
+    "message": "Open in calendar",
+    "description": "Button: shows the event in Rukoo's calendar. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.add": {
+    "message": "Add to calendar",
+    "description": "Button: opens a menu of the user's calendars to put a copy of the event in. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.added": {
+    "message": "Added to {calendar}",
+    "description": "Toast after Add to calendar. {calendar}: the calendar's name. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.noCalendar": {
+    "message": "There's no calendar to add it to.",
+    "description": "Toast for Add to calendar without a writable calendar. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.card.sent": {
+    "message": "Your answer went to {address}",
+    "description": "Toast after an answer was emailed to the organizer. {address}: their address. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.dialog.title": {
+    "message": "Calendar file",
+    "description": "Title of the dialog for an .ics file opened with Rukoo or from an attachment. Invitation card above an email that carries a calendar invitation, and in the dialog for an .ics file. src/renderer/invite.js"
+  },
+  "invite.reply.subject.accepted": {
+    "message": "Accepted: {title}",
+    "description": "Subject of the answer Yes. {title}: the event's title. The email Rukoo sends to an invitation's organizer when the user answers it and no calendar of theirs can (an iTIP REPLY); in the user's language. src/main/calendar/invitations.js"
+  },
+  "invite.reply.subject.tentative": {
+    "message": "Tentatively accepted: {title}",
+    "description": "Subject of the answer Maybe. The email Rukoo sends to an invitation's organizer when the user answers it and no calendar of theirs can (an iTIP REPLY); in the user's language. src/main/calendar/invitations.js"
+  },
+  "invite.reply.subject.declined": {
+    "message": "Declined: {title}",
+    "description": "Subject of the answer No. The email Rukoo sends to an invitation's organizer when the user answers it and no calendar of theirs can (an iTIP REPLY); in the user's language. src/main/calendar/invitations.js"
+  },
+  "invite.reply.body.accepted": {
+    "message": "{name} has accepted this invitation: {title}",
+    "description": "Text of the answer Yes. {name}: the user. {title}: the event's title. The email Rukoo sends to an invitation's organizer when the user answers it and no calendar of theirs can (an iTIP REPLY); in the user's language. src/main/calendar/invitations.js"
+  },
+  "invite.reply.body.tentative": {
+    "message": "{name} might attend: {title}",
+    "description": "Text of the answer Maybe. The email Rukoo sends to an invitation's organizer when the user answers it and no calendar of theirs can (an iTIP REPLY); in the user's language. src/main/calendar/invitations.js"
+  },
+  "invite.reply.body.declined": {
+    "message": "{name} has declined this invitation: {title}",
+    "description": "Text of the answer No. The email Rukoo sends to an invitation's organizer when the user answers it and no calendar of theirs can (an iTIP REPLY); in the user's language. src/main/calendar/invitations.js"
+  },
   "mailbox.sidebar.accountCount": {
     "message": { "one": "{count} account", "other": "{count} accounts" },
     "description": "Sidebar account switcher: number of accounts below the All accounts label."

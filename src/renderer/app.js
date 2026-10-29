@@ -39,6 +39,7 @@ import { openWhatsNew } from './whats-new.js';
 import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
 import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
 import * as calendar from './calendar.js';
+import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
 
@@ -164,8 +165,18 @@ function searchingAll() {
   return Boolean(S.query.trim()) && S.searchScope !== 'view';
 }
 
+// An .ics file opened before the first state came in waits for it, so its card is in the user's language.
+let pendingInviteFile = null;
+
+// Open in calendar on an invitation's card.
+function openCalendarEvent(id, start) {
+  setMode('calendar');
+  calendar.openEvent(id, Number.isFinite(start) ? start : undefined);
+}
+
 async function refreshOnce() {
   const data = await api('state');
+  const first = !S.data;
   S.data = data;
   // A default account changed in Settings or a compose window: the editor's link beside From follows it.
   S.composer?.accountsChanged(data);
@@ -173,6 +184,10 @@ async function refreshOnce() {
   setLanguage(data.settings.language);
   renderedLanguage = data.settings.language;
   localize();
+  if (first && pendingInviteFile) {
+    openInviteFile(pendingInviteFile, { openEvent: openCalendarEvent });
+    pendingInviteFile = null;
+  }
   if (languageChanged) {
     if (S.message) renderReader();
     S.composer?.retheme(data);
@@ -2177,7 +2192,8 @@ const previews = new Map();
 
 // One attachment is just its card; several get a header with a save-all action. Images show a thumbnail.
 function attachmentsHtml(m) {
-  const list = m.attachments || [];
+  // An invitation's calendar part shows as its card (invite.js).
+  const list = (m.attachments || []).filter((a) => !(a.calendar && m.invite));
   if (!list.length) return '';
   const total = list.reduce((n, a) => n + (a.size || 0), 0);
   const open = list.length === 1 || S.attachmentsOpen;
@@ -2310,6 +2326,7 @@ function renderReader() {
           </div>
           ${detailsHtml(m)}
         </header>
+        ${m.invite ? '<div class="invite-slot"></div>' : ''}
         ${attachmentsHtml(m)}
         ${body}
       </article>
@@ -2323,6 +2340,8 @@ function renderReader() {
     fillFrame(frame, m, { light: isLight(), darkEmails: s.darkEmails !== false, fitContent: s.fitContent !== false });
   }
   if (!S.loading) loadPreviews(m);
+  const slot = el.querySelector('.invite-slot');
+  if (slot) mountInvite(slot, { id: m.id }, m.invite, { openEvent: openCalendarEvent }).catch(() => {});
   wantLogos([m]);
 }
 
@@ -2647,6 +2666,11 @@ window.mail.on(async ({ type, payload }) => {
   // The booking page's state: requests and booked events on the grid, its notices above it, the link for the composer.
   // Its notices come translated from main, so a language change asks for them again.
   if (type === 'booking') applyBooking(payload);
+  // An .ics file opened with Rukoo, or an .ics attachment: its card.
+  if (type === 'invite-file' && payload && typeof payload.token === 'string') {
+    if (S.data) openInviteFile(payload.token, { openEvent: openCalendarEvent });
+    else pendingInviteFile = payload.token;
+  }
   if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
   if (type === 'categories') {
     S.categories = payload;

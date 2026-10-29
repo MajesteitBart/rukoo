@@ -19,6 +19,7 @@ Keys describe the screen, feature, and purpose, rather than the displayed wordin
 | `reader.*` | Reading pane, recipient summary, headers, attachments, unsubscribe |
 | `composer.*` | Inline and separate compose windows, formatting, drafts, quoted mail |
 | `calendar.*` | The Mail and Calendar switch, the calendar view, its sidebar, the event card and the event dialog |
+| `invite.*` | The invitation card in the reader and for .ics files, and the email that answers an invitation |
 | `settings.*` | General settings, account settings, aliases, signatures, and About |
 | `native.*` | Windows file pickers, notifications, taskbar badge, default filenames |
 | `errors.*` | Application-owned account, server, Google, and mail errors |
