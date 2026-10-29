@@ -189,7 +189,7 @@ async function refreshOnce() {
   const [list, counts, categories] = await Promise.all([api('list', query), api('counts', S.scope), api('categoriesState').catch(() => S.categories)]);
   S.list = list;
   S.counts = counts;
-  categoriesChanged(categories);
+  S.categories = categories;
   setCategories(categories);
   setKeymap(data.settings.keymap);
   if (S.updates === undefined) S.updates = await api('updatesState').catch(() => null);
@@ -211,6 +211,7 @@ async function refreshOnce() {
   renderSearch();
   renderSidebar();
   renderList();
+  reconcileReader();
   if (S.checked.size > 1) renderReader();
   else renderReaderNav();
   autoOpen();
@@ -300,13 +301,13 @@ function categoryRows() {
   return hidden.size ? S.list.filter((m) => !hidden.has(m.category)) : S.list;
 }
 
-// New categories from main. A category Inbox stops showing takes its open email out of the reading pane, as it
-// takes its row out of the list.
-function categoriesChanged(next) {
-  const before = hiddenCategories();
-  S.categories = next;
-  const m = S.selectedId && !S.checked.size && !S.composer ? S.list.find((x) => x.id === S.selectedId) : null;
-  if (m && !before.has(m.category) && hiddenCategories().has(m.category) && !categoryRows().includes(m)) closeReader();
+// The reading pane shows an inbox email only while Inbox or the open category lists it. One that leaves the list,
+// because it moved to another category, its category left Inbox or categories came on, leaves the reading pane too.
+// The editor stays where it is.
+function reconcileReader() {
+  if (!S.selectedId || S.composer || !categoriesOn()) return;
+  const m = S.list.find((x) => x.id === S.selectedId);
+  if (m && !categoryRows().includes(m)) closeReader();
 }
 
 // The list as shown: the category tab's list narrowed by the quick filter.
@@ -863,7 +864,8 @@ function bindSidebar() {
         clearChecks();
         S.filter = 'all';
         renderSidebar();
-        return renderList();
+        renderList();
+        return reconcileReader();
       }
       S.view = t.dataset.view;
       S.folder = null;
@@ -1446,13 +1448,8 @@ async function setDensity(density) {
 }
 
 async function markAllRead() {
-  // With inbox categories, Inbox and each category mark what they list, not the whole inbox.
-  if (categoriesOn()) {
-    const list = categoryRows().filter((m) => m.unread);
-    for (const m of list) await api('setFlags', m.id, { unread: false }).catch(() => {});
-    return toast(list.length ? t('mailbox.actions.readCount', { count: list.length }) : t('mailbox.actions.alreadyRead'));
-  }
-  const n = await api('markAllRead', S.scope, S.view, S.folder);
+  // With inbox categories, Inbox and each category mark what they list, not the whole inbox (engine.markAllRead).
+  const n = await api('markAllRead', S.scope, S.view, S.folder, categoriesOn() && categoryOf(S.category) ? S.category : null);
   toast(n ? t('mailbox.actions.readCount', { count: n }) : t('mailbox.actions.alreadyRead'));
 }
 
@@ -2067,6 +2064,15 @@ export async function openMessage(id, { auto = false } = {}) {
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn) return;
   const m = S.list.find((x) => x.id === id);
+  // An inbox email the list leaves out, from a notification or the agent, opens in its own category, so its row is
+  // on screen and the reading pane keeps it (reconcileReader).
+  if (m && categoriesOn() && !categoryRows().includes(m) && categoryOf(m.category)) {
+    S.category = m.category;
+    S.filter = 'all';
+    clearChecks();
+    renderSidebar();
+    renderList();
+  }
   const left = S.keptId && S.keptId !== id ? S.keptId : null;
   if (S.keptId !== id) S.keptId = m && m.unread ? id : null;
   S.selectedId = id;
@@ -2641,7 +2647,7 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'booking') applyBooking(payload);
   if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
   if (type === 'categories') {
-    categoriesChanged(payload);
+    S.categories = payload;
     setCategories(payload);
     renderSidebar();
     renderList();
@@ -2672,13 +2678,6 @@ window.mail.on(async ({ type, payload }) => {
     S.query = '';
     S.filter = 'all';
     await refresh();
-    // Mail in a category Inbox doesn't show opens in that category, where the list has its row.
-    const m = S.list.find((x) => x.id === payload);
-    if (m && !categoryRows().includes(m)) {
-      S.category = m.category;
-      renderSidebar();
-      renderList();
-    }
     openMessage(payload);
   }
 });

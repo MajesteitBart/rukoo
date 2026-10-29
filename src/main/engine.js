@@ -1118,6 +1118,28 @@ class Engine extends EventEmitter {
     return this.inboxUnread('all');
   }
 
+  // How many of the emails in ids (a Set of message ids) still count as new: in an inbox, unread, and in a category
+  // Inbox shows. The taskbar badge's count of new mail. An id that is gone from the cache, because the email moved or
+  // was deleted, leaves ids.
+  newCount(ids) {
+    const hidden = this.hiddenCategories ? this.hiddenCategories() : new Set();
+    let n = 0;
+    for (const id of ids) {
+      let found;
+      try {
+        found = this.locate(id);
+      } catch (_) {
+        ids.delete(id);
+        continue;
+      }
+      const { acc, msg, folder } = found;
+      if (!msg.unread || this.isSpam(msg.from) || (this.folderInfo(acc.id, folder) || {}).role !== 'inbox') continue;
+      if (hidden.size && this.categoryOf && hidden.has(this.categoryOf(acc, msg))) continue;
+      n++;
+    }
+    return n;
+  }
+
   counts(scope = 'all') {
     const res = { accounts: {}, views: {} };
     const hidden = this.hiddenCategories ? this.hiddenCategories() : new Set();
@@ -1323,8 +1345,11 @@ class Engine extends EventEmitter {
     }
   }
 
-  async markAllRead(scope, view, folder) {
-    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:'));
+  // The inbox marks what it lists: without the inbox categories it doesn't show, or one category's mail only.
+  async markAllRead(scope, view, folder, { category = null } = {}) {
+    const hidden = view === 'inbox' && this.hiddenCategories ? this.hiddenCategories() : new Set();
+    const listed = (m) => (view === 'inbox' && category ? m.category === category : !hidden.has(m.category));
+    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:') && listed(m));
     for (const m of list) await this.setFlags(m.id, { unread: false }).catch(() => {});
     return list.length;
   }
