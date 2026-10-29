@@ -2623,6 +2623,14 @@
     "message": "Attachment not found.",
     "description": "errors > attachment. src/main/engine.js"
   },
+  "errors.image.unavailable": {
+    "message": "Rukoo couldn't get this image.",
+    "description": "Context menu on an image in an email: the image could not be downloaded, or is larger than 25 MB. src/main/mailimage.js"
+  },
+  "errors.image.unsupported": {
+    "message": "Rukoo can't copy or save this kind of image.",
+    "description": "Context menu on an image in an email: the image is not a PNG, JPEG, GIF, WebP, BMP or ICO file (an SVG, for example). src/main/mailimage.js"
+  },
   "errors.connection.auth": {
     "message": "Sign-in failed. Check your email address and password or app password.",
     "description": "errors > connection. src/main/imap.js (friendlyError)"
@@ -3568,6 +3576,10 @@
     "message": "attachment",
     "description": "Default filename for an attachment without a filename."
   },
+  "native.image.defaultName": {
+    "message": "image",
+    "description": "File name, without extension, for an image from an email whose address has no name, when it is saved or opened. Lower case, like a file name. src/main/mailimage.js"
+  },
   "native.attachments.defaultNumbered": {
     "message": "attachment-{number}",
     "description": "Default attachment filename with its one-based index."
@@ -3699,6 +3711,46 @@
   "reader.content.label": {
     "message": "Email content",
     "description": "reader > content. src/renderer/app.js (renderReader)"
+  },
+  "reader.content.openLink": {
+    "message": "Open link",
+    "description": "Menu item: opens the link in the default browser. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.copyLink": {
+    "message": "Copy link address",
+    "description": "Menu item: copies the link's web address. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.linkCopied": {
+    "message": "Link copied",
+    "description": "Toast after Copy link address. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.openImage": {
+    "message": "Open image",
+    "description": "Menu item: opens the image in the computer's default image viewer. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.copyImage": {
+    "message": "Copy image",
+    "description": "Menu item: copies the image itself to the clipboard. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.imageCopied": {
+    "message": "Image copied",
+    "description": "Toast after Copy image. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.saveImage": {
+    "message": "Save image as…",
+    "description": "Menu item: asks where to save the image, then saves it. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.imageSaved": {
+    "message": "Image saved",
+    "description": "Toast after the image was saved. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.copy": {
+    "message": "Copy",
+    "description": "Menu item: copies the selected text. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
+  },
+  "reader.content.selectAll": {
+    "message": "Select all",
+    "description": "Menu item: selects all of the email's text. Context menu on an email's content (right-click in the reader or the quoted email in the composer). src/renderer/mailframe.js (frameMenu)"
   },
   "reader.details.hide": {
     "message": "Hide all details",

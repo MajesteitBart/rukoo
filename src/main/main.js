@@ -16,7 +16,8 @@ const {
   nativeImage,
   Notification,
   Menu,
-  screen
+  screen,
+  session
 } = require('electron');
 const { Engine } = require('./engine');
 const { cleanSignatureHtml } = require('./signature');
@@ -26,6 +27,7 @@ const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
+const { mailImage } = require('./mailimage');
 const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
@@ -33,7 +35,7 @@ const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
 const { windowChrome, MailtoQueue, MacMailClient, macMenu } = require('./desktop');
 // ---- agents ----
-const { clipboard, powerMonitor } = require('electron');
+const { clipboard, ClipboardItem, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
 const { Categories } = require('./categories');
@@ -551,6 +553,9 @@ async function tempAttachment(id, index) {
   return file;
 }
 
+// An image in an email, fetched through the windows' session (see mailimage.js).
+const emailImage = (src) => mailImage(src, { fetch: (url, opts) => session.defaultSession.fetch(url, opts) });
+
 async function printHtml(html) {
   const printer = new BrowserWindow({ show: false, webPreferences: { javascript: false, sandbox: true } });
   await printer.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
@@ -734,6 +739,32 @@ const api = {
     return res.filePath;
   },
   openExternal: (url) => openUrl(url),
+  // The context menu in an email. Copy image: the image as a data: URL, which the reader turns into a PNG for
+  // copyImage, since PNG is the one image type the clipboard takes. Open image: a copy in the default image viewer.
+  copyText: async (text) => {
+    if (typeof text !== 'string' || !text || text.length > 100000) throw new Error('invalid');
+    await clipboard.writeText(text);
+    return true;
+  },
+  imageData: async (src) => {
+    const img = await emailImage(src);
+    return `data:${img.type};base64,${img.content.toString('base64')}`;
+  },
+  copyImage: async (png) => {
+    const image = /^data:image\/png;base64,/.test(String(png || '')) ? nativeImage.createFromDataURL(png) : null;
+    if (!image || image.isEmpty()) throw new Error(t('errors.image.unsupported'));
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([image.toPNG()], { type: 'image/png' }) })]);
+    return true;
+  },
+  openImage: async (src) => {
+    const img = await emailImage(src);
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-mail-')), img.name);
+    fs.writeFileSync(file, img.content);
+    markOfTheWeb(file);
+    const err = await shell.openPath(file);
+    if (err) throw new Error(err);
+    return true;
+  },
   updatesState: () => updates.state(),
   updatesCheck: () => updates.check({ force: true }),
   // Only the release page that was found opens; the renderer can't pass another address.
@@ -1088,8 +1119,19 @@ Object.assign(api, {
 
 // Calls that act on the window that makes them.
 const windowApi = {
+  // copy: the reader's context menu, for the selection in the email frame it has just focused.
   nativeEdit: (sender, action) => {
-    if (['undo', 'redo', 'selectAll'].includes(action)) sender[action]();
+    if (['undo', 'redo', 'selectAll', 'copy'].includes(action)) sender[action]();
+  },
+  // Save image as, from an email's context menu; the dialog belongs to the window it was asked in.
+  saveImage: async (sender, src) => {
+    const img = await emailImage(src);
+    const owner = BrowserWindow.fromWebContents(sender) || win;
+    const res = await dialog.showSaveDialog(owner, { defaultPath: path.join(app.getPath('downloads'), img.name) });
+    if (res.canceled || !res.filePath) return false;
+    fs.writeFileSync(res.filePath, img.content);
+    markOfTheWeb(res.filePath);
+    return res.filePath;
   },
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
