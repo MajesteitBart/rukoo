@@ -208,6 +208,17 @@ test("a category's notifications turn off on this computer and stay off after a 
   await dialog().locator('.buttons button', { hasText: 'Save' }).click();
   await expect(settings().locator('[data-a="cat-edit:promotions"] .cat-muted')).toHaveCount(0);
   expect(local()).toHaveLength(1);
+
+  // "Use Rukoo's text" keeps a change to the switch.
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  await dialog().locator('[name="name"]').fill('Offers');
+  await dialog().locator('.buttons button', { hasText: 'Save' }).click();
+  await expect(settings().locator('[data-a="cat-edit:promotions"]')).toContainText('Offers');
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  await notify().click();
+  await dialog().locator('.buttons button', { hasText: "Use Rukoo's text" }).click();
+  await expect(settings().locator('[data-a="cat-edit:promotions"] .title')).toHaveText('Promotions');
+  await expect(settings().locator('[data-a="cat-edit:promotions"] .cat-muted')).toHaveCount(1);
 });
 
 test('new mail in a muted category sends no notification', async () => {

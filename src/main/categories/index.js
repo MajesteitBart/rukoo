@@ -58,6 +58,8 @@ class Categories extends EventEmitter {
     // Emails "Sort the inbox again" still has to sort, by key, because Jev was busy or stopped before it got to them.
     // Their older category stays until then.
     this.redo = new Set();
+    // The emails the running sort has for Jev, by key, until each one's answer is in: their notifications wait for it.
+    this.asking = new Set();
     // What the sorting is doing, for the sidebar (activity()). user: someone asked for this sort, so its end is
     // news: turning categories on, a new Jev key, "Sort the inbox again".
     this.progress = { running: false, user: false, again: false, total: 0, done: 0, asked: 0, answered: 0, sorted: 0, waiting: 0, startedAt: 0, finishedAt: 0 };
@@ -77,6 +79,9 @@ class Categories extends EventEmitter {
     this.engine.categoryOf = (acc, m) => this.of(acc, m);
     this.account.on('records', ({ collections }) => {
       if (collections.some((c) => ['category', 'classification', 'override', 'sender', 'setting'].includes(c))) this.changed();
+      // Categories turned on or off, or one removed, here or on another device: notifications waiting for Jev are
+      // decided again (notices.js). Not for each email's category, which comes with every answer.
+      if (collections.some((c) => c === 'category' || c === 'setting')) this.emit('reconsider');
     });
     this.engine.on('updated', () => this.soon());
     return this;
@@ -189,7 +194,8 @@ class Categories extends EventEmitter {
     return this.state();
   }
 
-  // A new category (no id) or changes to one. name or description null goes back to a preset's own.
+  // A new category (no id) or changes to one. name or description null goes back to a preset's own. The state, with
+  // the id of the category saved (saved).
   saveCategory({ id = null, name, description, color } = {}) {
     const list = this.list();
     const was = id ? this.account.get('category', id) : undefined;
@@ -207,7 +213,7 @@ class Categories extends EventEmitter {
     if (!PRESETS.includes(key) && !value.name) throw new Error(t('categories.errors.needName'));
     this.account.put('category', key, value);
     this.changed();
-    return this.state();
+    return { ...this.state(), saved: key };
   }
 
   removeCategory(id) {
@@ -268,28 +274,34 @@ class Categories extends EventEmitter {
     return set;
   }
 
-  // The category the rules give an email, among the ones that exist: { category, strength }.
-  byRules(acc, m, ids, unsure) {
+  // The category the rules give an email, among the ones that exist: { category, strength }. order: the ids in order.
+  byRules(acc, m, ids, unsure, order = this.list().map((c) => c.id)) {
     const known = this.writtenTo().has(lower(m.from && m.from.address));
-    const order = this.list().map((c) => c.id);
     const { preset, strength } = presetFor(m, { own: this.own(acc), vip: this.engine.isVip(m.from), known }, order);
     return ids.has(preset) ? { category: preset, strength } : { category: unsure, strength: 'weak' };
   }
 
-  // An inbox email's category id, or null when categories are off. Called for every message the list shows.
-  of(acc, m) {
+  // The categories as placing an email needs them, worked out once for many: { ids, order, unsure }. Null while
+  // categories are off.
+  context() {
     const s = this.settings();
     if (!s.enabled) return null;
-    const list = this.list();
-    if (!list.length) return null;
-    const ids = new Set(list.map((c) => c.id));
-    const unsure = ids.has(s.unsure) ? s.unsure : list[0].id;
+    const order = this.list().map((c) => c.id);
+    if (!order.length) return null;
+    const ids = new Set(order);
+    return { ids, order, unsure: ids.has(s.unsure) ? s.unsure : order[0] };
+  }
+
+  // An inbox email's category id, or null when categories are off. Called for every message the list shows.
+  of(acc, m, ctx = this.context()) {
+    if (!ctx) return null;
+    const { ids, order, unsure } = ctx;
     const key = this.key(acc, m);
     for (const [collection, k] of [['override', key], ['sender', lower(m.from && m.from.address)], ['classification', key]]) {
       const v = this.account.get(collection, k);
       if (v && ids.has(v.category)) return v.category;
     }
-    return this.byRules(acc, m, ids, unsure).category;
+    return this.byRules(acc, m, ids, unsure, order).category;
   }
 
   // Puts emails in a category, by id; with sender, also every later email from their senders.
@@ -338,13 +350,19 @@ class Categories extends EventEmitter {
         if (!box) continue;
         for (const m of box.messages) {
           const key = this.key(acc, m);
-          if (this.account.get('override', key) !== undefined) continue;
-          if (!again && !this.redo.has(key) && this.account.get('classification', key) !== undefined) continue;
+          if (!this.toSort(key, again)) continue;
           out.push({ id: encodeId(acc.id, f.path, m.uid), acc, m, key });
         }
       }
     }
     return out.sort((a, b) => b.m.date - a.m.date);
+  }
+
+  // Whether a sort takes up an email, by its key: not one a person moved, and not sorted yet, unless it is sorted
+  // again (again, or still on the re-sort list). unsorted() and jevSoon() both go by this.
+  toSort(key, again = false) {
+    if (this.account.get('override', key) !== undefined) return false;
+    return again || this.redo.has(key) || this.account.get('classification', key) === undefined;
   }
 
   // Whether this computer sorts with Jev: on, with a key. Mail Jev should sort waits for it, also while TypeSafe
@@ -468,8 +486,6 @@ class Categories extends EventEmitter {
             sorted++;
             this.live();
           }
-          // The email's notification may wait for this answer (notices.js).
-          this.emit('sorted', k);
           p.answered++;
           p.done++;
           p.sorted = sorted;
@@ -480,11 +496,18 @@ class Categories extends EventEmitter {
         } catch (err) {
           later(k);
           stop = err;
+        } finally {
+          // The email's notification may wait for this answer (notices.js).
+          this.asking.delete(k);
+          this.emit('sorted', k);
         }
       }
     };
     const asked = forJev.length;
+    for (const item of forJev) this.asking.add(item.key);
     await Promise.all(Array.from({ length: JEV_AT_ONCE }, next));
+    // What a stop or a change of settings left in the queue; the change says so itself ('reconsider').
+    this.asking.clear();
     for (const item of forJev) later(item.key);
     clearTimeout(this.liveTimer);
     this.liveTimer = null;
@@ -567,6 +590,7 @@ class Categories extends EventEmitter {
     this.local.jev = { ...(this.local.jev || {}), error: code };
     this.saveLocal();
     this.emit('changed');
+    this.emit('reconsider');
     this.progressChanged(true);
   }
 
@@ -584,6 +608,7 @@ class Categories extends EventEmitter {
     this.retryTimer = null;
     this.saveLocal();
     this.emit('changed');
+    this.emit('reconsider');
     // Jev off, or a new key: what was waiting for Jev is the next sort's to count.
     if (!j.on) this.progress.waiting = 0;
     this.progressChanged(true);
@@ -603,49 +628,52 @@ class Categories extends EventEmitter {
     return Array.isArray(this.local.muted) ? this.local.muted.filter((k) => typeof k === 'string') : [];
   }
 
-  // The muted categories that exist; none while categories are off.
-  muted() {
-    if (!this.settings().enabled) return new Set();
-    const ids = this.mutedIds();
-    return new Set(this.list().filter((c) => ids.includes(c.id)).map((c) => c.id));
-  }
-
   setNotify(id, on) {
     if (!this.list().some((c) => c.id === id)) throw new Error('invalid');
     const ids = this.mutedIds().filter((k) => k !== id);
     this.local.muted = on ? ids : [...ids, id];
     this.saveLocal();
     this.emit('changed');
+    this.emit('reconsider');
     return this.state();
   }
 
-  // What a new inbox email's notification does (notices.js): 'wait' while Jev is about to sort it, 'mute' when its
-  // category is muted, else 'show'. m: the engine's 'new-mail' message. jev false: the category it has now decides.
-  notice(m, { jev = true } = {}) {
-    const muted = this.muted();
-    if (!muted.size) return 'show';
+  // What deciding notifications needs, worked out once for many emails (notices.js): context(), the muted categories
+  // that exist (none while categories are off), whether Jev can be asked, and whether a re-sort is to follow.
+  noticeContext() {
+    const ctx = this.context();
+    const ids = this.mutedIds();
+    const muted = new Set(ctx ? ctx.order.filter((id) => ids.includes(id)) : []);
+    return { ...ctx, muted, jev: Boolean(muted.size && this.jevKey()), again: Boolean(this.followUp && this.followUp.again) };
+  }
+
+  // What a new inbox email's notification does (notices.js), with the email's key: 'wait' while Jev's answer for it is
+  // still to come, 'mute' when its category is muted, else 'show'. m: the engine's 'new-mail' message. jev false:
+  // the category it has now decides.
+  notice(m, { jev = true, ctx = this.noticeContext() } = {}) {
+    if (!ctx.muted.size) return { what: 'show', key: null };
     let found = null;
     try {
       found = this.engine.locate(m.id);
     } catch (_) {}
     // Gone from the inbox meanwhile: the category it came with.
-    if (!found || !found.msg) return muted.has(m.category) ? 'mute' : 'show';
-    if (jev && this.jevSoon(found.acc, found.msg)) return 'wait';
-    return muted.has(this.of(found.acc, found.msg)) ? 'mute' : 'show';
+    if (!found || !found.msg) return { what: ctx.muted.has(m.category) ? 'mute' : 'show', key: null };
+    const key = this.key(found.acc, found.msg);
+    if (jev && this.jevSoon(found.acc, found.msg, key, ctx)) return { what: 'wait', key };
+    return { what: ctx.muted.has(this.of(found.acc, found.msg, ctx)) ? 'mute' : 'show', key };
   }
 
-  // Whether the next sort asks Jev about an email: Jev can be asked now, and nothing places the email but rules that
-  // aren't sure about it. What run() sends to Jev.
-  jevSoon(acc, m) {
-    const s = this.settings();
-    const list = this.list();
-    if (!s.enabled || !list.length || !m.signals || !this.jevKey()) return false;
-    const key = this.key(acc, m);
-    if (this.account.get('override', key) !== undefined || this.account.get('classification', key) !== undefined) return false;
-    const ids = new Set(list.map((c) => c.id));
+  // Whether Jev's answer for an email is still to come: the running sort has it for Jev, or the next sort takes it up
+  // (toSort(), as unsorted() does) and sends it to Jev because the rules aren't sure. A correction or a sender rule
+  // places the email whatever Jev answers.
+  jevSoon(acc, m, key, ctx) {
+    if (!ctx.jev) return false;
+    if (this.account.get('override', key) !== undefined) return false;
     const sender = this.account.get('sender', lower(m.from && m.from.address));
-    if (sender && ids.has(sender.category)) return false;
-    return this.byRules(acc, m, ids, ids.has(s.unsure) ? s.unsure : list[0].id).strength !== 'strong';
+    if (sender && ctx.ids.has(sender.category)) return false;
+    if (this.asking.has(key)) return true;
+    if (!m.signals || !this.toSort(key, ctx.again)) return false;
+    return this.byRules(acc, m, ctx.ids, ctx.unsure, ctx.order).strength !== 'strong';
   }
 
   close() {

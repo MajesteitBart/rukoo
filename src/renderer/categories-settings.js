@@ -7,13 +7,13 @@ import { api, esc, toast, dialog, confirmDialog, choiceDialog, KEEP_OPEN } from 
 export const CATEGORY_VIEWS = ['categories'];
 const COLORS = ['#ff5d73', '#4a7dff', '#2fd6c0', '#f5c542', '#c56cf0', '#ff8a3d', '#5ec2ff', '#7a808e'];
 
-// Edits a category, or makes a new one (c null). Resolves to { name, description, color, notify }, 'restore', 'delete'
-// or null. notify: whether its new mail sends a notification on this computer.
+// Edits a category, or makes a new one (c null). Resolves to { name, description, color, notify }, { restore, notify },
+// 'delete' or null. notify: whether its new mail sends a notification on this computer.
 function categoryDialog(c, { canDelete, notify }) {
   let color = (c && c.color) || COLORS[0];
   const buttons = [];
   if (c && canDelete) buttons.push({ get label() { return t('common.actions.delete'); }, value: 'delete', danger: true, left: true });
-  if (c && c.preset && (c.custom.name || c.custom.description)) buttons.push({ get label() { return t('settings.categories.restore'); }, value: 'restore', left: true });
+  if (c && c.preset && (c.custom.name || c.custom.description)) buttons.push({ get label() { return t('settings.categories.restore'); }, value: () => ({ restore: true, notify }), left: true });
   buttons.push({ get label() { return t('common.actions.cancel'); }, value: null });
   buttons.push({
     get label() { return c ? t('common.actions.save') : t('common.actions.add'); },
@@ -200,23 +200,18 @@ export function categoryPages({ row, go, rerender, current }) {
     const notify = !(c && state.muted.includes(c.id));
     const v = await categoryDialog(c, { canDelete: state.categories.length > 1, notify });
     if (!v) return;
-    if (v === 'restore') return run(() => api('categoriesSave', { id, name: null, description: null }));
     if (v === 'delete') {
       const ok = await confirmDialog(t('settings.categories.deleteTitle', { name: c.name }), t('settings.categories.deleteHelp'), t('common.actions.delete'), true);
       if (ok) await run(() => api('categoriesRemove', id));
       return;
     }
-    // A preset keeps following the language until its text is changed.
-    const name = c && c.preset && v.name === c.name && !c.custom.name ? undefined : v.name || null;
-    const description = c && c.preset && v.description === c.description && !c.custom.description ? undefined : v.description || null;
-    const before = state.categories.map((x) => x.id);
+    // A preset keeps following the language until its text is changed; "Use Rukoo's text" makes it follow it again.
+    const name = v.restore ? null : c && c.preset && v.name === c.name && !c.custom.name ? undefined : v.name || null;
+    const description = v.restore ? null : c && c.preset && v.description === c.description && !c.custom.description ? undefined : v.description || null;
     return run(async () => {
-      const res = await api('categoriesSave', { id: id || null, name, description, color: v.color });
-      if (v.notify === notify) return res;
-      // Notifications stay on this computer, apart from the category's synced record. A new one is the id that wasn't
-      // there before.
-      const saved = id || (res.categories.find((x) => !before.includes(x.id)) || {}).id;
-      return saved ? api('categoriesSetNotify', saved, v.notify) : res;
+      const res = await api('categoriesSave', v.restore ? { id, name, description } : { id: id || null, name, description, color: v.color });
+      // Notifications stay on this computer, apart from the category's synced record; saved is its id, also a new one's.
+      return v.notify === notify ? res : api('categoriesSetNotify', res.saved, v.notify);
     });
   }
 

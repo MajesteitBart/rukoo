@@ -779,7 +779,7 @@ test('with no category muted, new mail notifies at once, as without categories',
   cats.setEnabled(false);
   notices.add(all());
   assert.deepEqual(titles(), Array(3).fill(['Sanne de Vries', 'Shop', 'App']));
-  assert.equal(notices.waiting.size, 0);
+  assert.equal(notices.batches.size, 0);
   assert.deepEqual(jevs.asked(), [], 'nothing waited for a sort');
 });
 
@@ -795,12 +795,12 @@ test("a muted category's mail that the rules are sure about sends no notificatio
   // The shop's offer and the login alert: strong rules, so no Jev and no wait.
   notices.add([arrived(cats, acc, msgs[1]), arrived(cats, acc, msgs[2])]);
   assert.deepEqual(titles(), []);
-  assert.equal(notices.waiting.size, 0);
+  assert.equal(notices.batches.size, 0);
   // A sender rule places mail at once too, also mail the rules alone aren't sure about.
   account.put('sender', 'sanne@studio.example', { category: 'promotions' });
   notices.add([arrived(cats, acc, msgs[3])]);
   assert.deepEqual(titles(), []);
-  assert.equal(notices.waiting.size, 0);
+  assert.equal(notices.batches.size, 0);
 });
 
 test('a held notification goes by the category Jev gives the email', async (t) => {
@@ -824,7 +824,7 @@ test('a held notification goes by the category Jev gives the email', async (t) =
   jevs.answer('Meeting notes', 'to-read');
   await sorting;
   assert.deepEqual(titles(), [['App'], ['Club']], "Jev put Sanne's email in Money, which is muted");
-  assert.equal(notices.waiting.size, 0);
+  assert.equal(notices.batches.size, 0);
   t.mock.timers.tick(HOLD);
   assert.equal(titles().length, 2, 'the wait has nothing left to do');
 });
@@ -846,7 +846,7 @@ test('after the wait for Jev, the category the email has then decides', (t) => {
   t.mock.timers.tick(1);
   // The rules put Sanne's email in Needs you, which is muted, and the club's in Promotions.
   assert.deepEqual(titles(), [['Club']]);
-  assert.equal(notices.waiting.size, 0);
+  assert.equal(notices.batches.size, 0);
 });
 
 test('without Jev to wait for, the category decides at once', async (t) => {
@@ -879,7 +879,7 @@ test('without Jev to wait for, the category decides at once', async (t) => {
   notices.add(batch());
   // Sanne's email is in Needs you by the rules each time.
   assert.deepEqual(titles(), [['App'], ['App'], ['App']]);
-  assert.equal(notices.waiting.size, 0);
+  assert.equal(notices.batches.size, 0);
 });
 
 test('a notification waiting for Jev goes as soon as Jev gives up or is turned off', async (t) => {
@@ -906,7 +906,7 @@ test('a notification waiting for Jev goes as soon as Jev gives up or is turned o
   notices.add([arrived(cats, acc, msgs[3])]);
   sorting = cats.sort();
   await settle();
-  assert.equal(notices.waiting.size, 1);
+  assert.equal(notices.batches.size, 1);
   cats.setJev({ on: false });
   assert.deepEqual(titles(), [['Sanne de Vries'], ['Club']]);
   // The answers on their way when Jev went off.
@@ -914,7 +914,7 @@ test('a notification waiting for Jev goes as soon as Jev gives up or is turned o
   jevs.answer('Meeting notes', 'money');
   await sorting;
   assert.equal(titles().length, 2);
-  assert.equal(notices.waiting.size, 0);
+  assert.equal(notices.batches.size, 0);
 });
 
 test('new mail still notifies three at a time, then counts, also after waiting for Jev', async (t) => {
@@ -955,4 +955,128 @@ test("notifications per category stay on this computer, and a deleted category's
   assert.deepEqual(again.state().muted, ['promotions']);
   again.removeCategory('promotions');
   assert.deepEqual(JSON.parse(fs.readFileSync(again.file(), 'utf8')).muted, []);
+});
+
+test('saving a category says which one it saved, also a new one', (t) => {
+  const { cats } = setup(t, inbox());
+  cats.setEnabled(true);
+  const state = cats.saveCategory({ name: 'Kids' });
+  assert.equal(state.categories.find((c) => c.id === state.saved).name, 'Kids');
+  assert.equal(cats.saveCategory({ id: 'money', name: 'Finance' }).saved, 'money');
+});
+
+test('a batch that partly waits for Jev still notifies three at a time, then counts once', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // Sign-in alerts the rules are sure about, and notes from people that go to Jev.
+  const alert = (i) => ({ uid: 30 + i, messageId: `<a${i}@x>`, from: { name: `App ${i}`, address: `noreply@app${i}.example` }, to: [{ address: 'me@work.example' }], subject: `Sign-in ${i}`, date: 30 + i, signals: {} });
+  const note = (i) => ({ uid: 40 + i, messageId: `<p${i}@x>`, from: { name: `Person ${i}`, address: `person${i}@studio.example` }, to: [], cc: [{ address: 'me@work.example' }], subject: `Note ${i}`, date: 40 + i, signals: {} });
+  const fake = { MODEL: 'jev-test', classify: async () => ({ category: 'to-read', confidence: 0.9, model: 'jev-test' }) };
+  const arrive = async (alerts, notes) => {
+    const msgs = [...alerts.map(alert), ...notes.map(note)];
+    const { cats, acc } = setup(t, msgs, { jevImpl: fake });
+    const { notices, shown } = notifier(t, cats);
+    cats.setEnabled(true);
+    cats.setJev({ key: 'KEY', on: true });
+    cats.setNotify('money', false);
+    notices.add(msgs.map((m) => arrived(cats, acc, m)));
+    const first = shown.map((list) => list.map((n) => n.title));
+    await cats.sort();
+    // An email's own notification by its sender, the count by its text.
+    return { first, all: shown.map((list) => list.map((n) => (n.id ? n.title : n.body))) };
+  };
+
+  // Four at once and four after Jev: three now, and one count for all eight at the end.
+  let { first, all } = await arrive([0, 1, 2, 3], [0, 1, 2, 3]);
+  assert.deepEqual(first, [['App 0', 'App 1', 'App 2']]);
+  assert.deepEqual(all, [['App 0', 'App 1', 'App 2'], ['8 new emails']]);
+
+  // One at once: the notes Jev answered fill the three, and the count covers the batch.
+  ({ first, all } = await arrive([0], [0, 1, 2, 3]));
+  assert.deepEqual(first, [['App 0']]);
+  assert.deepEqual(all, [['App 0'], ['Person 0', 'Person 1', '5 new emails']]);
+
+  // All of it after Jev, three or fewer: no count.
+  ({ all } = await arrive([], [0, 1]));
+  assert.deepEqual(all, [['Person 0', 'Person 1']]);
+});
+
+test('a notification waits for a re-sort Jev has yet to do, also for mail sorted before', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const jevs = heldJev();
+  const msgs = inbox();
+  const { cats, acc } = setup(t, msgs, { jevImpl: jevs.fake });
+  const { notices, titles } = notifier(t, cats);
+  cats.setEnabled(true);
+  // Without Jev, the rules store Needs you for Sanne's email.
+  await cats.sort();
+  cats.setJev({ key: 'KEY', on: true });
+  cats.setNotify('money', false);
+
+  // On the re-sort list, because TypeSafe was busy during "Sort the inbox again": Jev sorts it next.
+  cats.redo.add(cats.key(acc, msgs[0]));
+  notices.add([arrived(cats, acc, msgs[0])]);
+  assert.equal(notices.batches.size, 1);
+  let sorting = cats.sort();
+  await settle();
+  jevs.answer('Can you sign this?', 'money');
+  await sorting;
+  assert.deepEqual(titles(), [], 'Jev moved it to Money, which is muted');
+
+  // "Sort the inbox again" running: Jev has the email now.
+  sorting = cats.sortAgain();
+  await settle();
+  notices.add([arrived(cats, acc, msgs[0])]);
+  assert.equal(notices.batches.size, 1);
+  jevs.answer('Can you sign this?', 'to-read');
+  await sorting;
+  assert.deepEqual(titles(), [['Sanne de Vries']]);
+
+  // "Sort the inbox again" asked for while a sort runs for the club's new email: it follows, and takes Sanne's email
+  // up again. Jev turned off meanwhile: the category it has decides.
+  msgs.push(club());
+  cats.sort();
+  await settle();
+  cats.sortAgain();
+  notices.add([arrived(cats, acc, msgs[0])]);
+  assert.equal(notices.batches.size, 1);
+  cats.setJev({ on: false });
+  assert.equal(notices.batches.size, 0);
+  assert.deepEqual(titles(), [['Sanne de Vries'], ['Sanne de Vries']]);
+});
+
+test("Jev's answers look at the email each is for, not at every waiting one", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const n = 40;
+  const msgs = Array.from({ length: n }, (_, i) => ({ uid: 100 + i, messageId: `<w${i}@x>`, from: { name: `Person ${i}`, address: `person${i}@studio.example` }, to: [], cc: [{ address: 'me@work.example' }], subject: `Note ${i}`, date: 100 + i, signals: {} }));
+  const fake = { MODEL: 'jev-test', classify: async () => ({ category: 'to-read', confidence: 0.9, model: 'jev-test' }) };
+  const { cats, acc, account } = setup(t, msgs, { jevImpl: fake });
+  const { notices, shown } = notifier(t, cats);
+  cats.setEnabled(true);
+  cats.setJev({ key: 'KEY', on: true });
+  cats.setNotify('money', false);
+  // One email per arrival, so every batch waits on its own.
+  for (const m of msgs) notices.add([arrived(cats, acc, m)]);
+  assert.equal(notices.batches.size, n);
+  // Each look at the categories reads every record the account has (AccountService.list); each look at an email
+  // finds it in the inbox and reads its records.
+  let reads = 0;
+  let looks = 0;
+  const list = account.list.bind(account);
+  account.list = (c) => {
+    if (c === 'category') reads++;
+    return list(c);
+  };
+  const notice = cats.notice.bind(cats);
+  cats.notice = (...args) => {
+    looks++;
+    return notice(...args);
+  };
+  await cats.sort();
+  assert.equal(shown.length, n);
+  assert.equal(notices.batches.size, 0);
+  // The sort reads the categories about once per email, and each answer once more. Each answer looks at its email
+  // twice: once when it comes, once when its batch goes. Looking at every waiting email for each answer would take
+  // more than n * n / 2.
+  assert.ok(looks <= 2 * n, `${looks} looks for ${n} answers`);
+  assert.ok(reads <= 3 * n, `${reads} reads for ${n} answers`);
 });

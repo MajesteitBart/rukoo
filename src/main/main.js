@@ -206,8 +206,8 @@ function destroyTray() {
   if (process.env.SEM_HIDDEN) global.__semTray = null;
 }
 
-// The badge counts all new mail. Notifications skip the categories muted on this computer, and mail Jev is about to
-// sort waits for its category (categories/notices.js).
+// The badge counts first. The notifications get the whole batch: they skip the categories muted on this computer, and
+// mail Jev is about to sort waits for its category (categories/notices.js).
 function notify(messages) {
   newSinceFocus += messages.length;
   refreshBadge();
