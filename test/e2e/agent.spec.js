@@ -1504,6 +1504,54 @@ test('agent text goes above a formatted signature and leaves it as it is', async
   expect(after.signature).toBe(before.signature);
 });
 
+test('Undo after another account in From keeps that account signature', async () => {
+  await win.evaluate(() => window.mail.call('updateSettings', { signatureHtml: '<i>General one</i>' }));
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const server = { host: '127.0.0.1', port: 1, secure: false, user: 'werk@example.com' };
+    engine.accounts.push({ id: 'w1', type: 'imap', provider: 'other', email: 'werk@example.com', name: 'Werk', label: 'werk@example.com', color: '#ff8a3d', signature: 'Werk signature', signatureHtml: '<b>Werk signature</b>', secret: 'plain:', imap: server, smtp: server, createdAt: Date.now() });
+    engine.caches.set('w1', { folders: [], boxes: {}, lastSync: Date.now() });
+  });
+  await win.reload();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await openChat('Call on Thursday');
+  await say('Hello there');
+  await expect(transcript()).toContainText('You asked', { timeout: 10000 });
+  const cid = await conversationId();
+  expect((await tool(cid, 'write_draft', { mode: 'reply', body: 'Agent text.' })).error).toBeNull();
+  await expect(editor()).toContainText('Agent text.');
+  const sig = editor().locator(':scope > .signature');
+  await expect(sig).toHaveText('General one');
+
+  const from = win.locator('.composer [data-field="account"]');
+  await from.selectOption('w1|werk@example.com');
+  await expect(sig.locator('b')).toHaveText('Werk signature');
+  // Choosing From is your own edit, so Undo asks first. The agent text goes, From and its signature stay.
+  await win.click('.composer [data-c="agent-undo"]');
+  await win.click('.scrim .buttons button:text-is("Undo")');
+  await expect(editor()).not.toContainText('Agent text.');
+  await expect(from).toHaveValue('w1|werk@example.com');
+  await expect(sig).toHaveCount(1);
+  await expect(sig.locator('b')).toHaveText('Werk signature');
+  await expect(sig.locator('i')).toHaveCount(0);
+
+  // Away and back after the general signature changed: Undo leaves the one From brought, not the one the agent saw.
+  expect((await tool(cid, 'write_draft', { mode: 'reply', body: 'Second text.' })).error).toBeNull();
+  await expect(editor()).toContainText('Second text.');
+  await win.evaluate(() => window.mail.call('updateSettings', { signatureHtml: '<i>Current one</i>' }));
+  const demoId = await app.evaluate(() => global.__semEngine.accounts.find((a) => a.type === 'demo').id);
+  // The window hears of the new setting a moment later; until then the switch brings the old one.
+  await expect(async () => {
+    await from.selectOption('w1|werk@example.com');
+    await from.selectOption(`${demoId}|demo@example.com`);
+    await expect(sig).toHaveText('Current one', { timeout: 500 });
+  }).toPass();
+  await win.click('.composer [data-c="agent-undo"]');
+  await win.click('.scrim .buttons button:text-is("Undo")');
+  await expect(editor()).not.toContainText('Second text.');
+  await expect(sig).toHaveText('Current one');
+});
+
 test('a reopened reply-all draft with only a new To still drops the old Cc', async () => {
   await openChat('Call on Thursday');
   await say('Hello there');
