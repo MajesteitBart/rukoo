@@ -7,8 +7,9 @@ import { api, esc, toast, dialog, confirmDialog, choiceDialog, KEEP_OPEN } from 
 export const CATEGORY_VIEWS = ['categories'];
 const COLORS = ['#ff5d73', '#4a7dff', '#2fd6c0', '#f5c542', '#c56cf0', '#ff8a3d', '#5ec2ff', '#7a808e'];
 
-// Edits a category, or makes a new one (c null). Resolves to { name, description, color }, 'restore', 'delete' or null.
-function categoryDialog(c, { canDelete }) {
+// Edits a category, or makes a new one (c null). Resolves to { name, description, color, notify }, 'restore', 'delete'
+// or null. notify: whether its new mail sends a notification on this computer.
+function categoryDialog(c, { canDelete, notify }) {
   let color = (c && c.color) || COLORS[0];
   const buttons = [];
   if (c && canDelete) buttons.push({ get label() { return t('common.actions.delete'); }, value: 'delete', danger: true, left: true });
@@ -24,7 +25,7 @@ function categoryDialog(c, { canDelete }) {
         name.focus();
         return KEEP_OPEN;
       }
-      return { name: name.value.trim(), description: description.value.trim(), color };
+      return { name: name.value.trim(), description: description.value.trim(), color, notify };
     }
   });
   return dialog({
@@ -40,6 +41,10 @@ function categoryDialog(c, { canDelete }) {
         <label>${esc(t('settings.categories.description'))}<textarea name="description" maxlength="400">${esc(c ? c.description : '')}</textarea>
           <span class="field-help">${esc(t('settings.categories.descriptionHelp'))}</span></label>
         <div class="cat-colors"><span>${esc(t('settings.categories.color'))}</span><div role="radiogroup">${swatches}</div></div>
+        <button type="button" class="cat-notify" role="switch" aria-checked="${notify}" aria-labelledby="cat-notify-title" aria-describedby="cat-notify-help">
+          <span class="text"><span class="title" id="cat-notify-title">${esc(t('settings.categories.notify'))}</span><span class="field-help" id="cat-notify-help">${esc(t('settings.categories.notifyHelp'))}</span></span>
+          <span class="switch ${notify ? 'on' : ''}" aria-hidden="true"></span>
+        </button>
         <div class="error" data-error></div></div>`;
       body.querySelectorAll('.cat-swatch').forEach((b) =>
         b.addEventListener('click', () => {
@@ -47,6 +52,12 @@ function categoryDialog(c, { canDelete }) {
           body.querySelectorAll('.cat-swatch').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
         })
       );
+      const toggle = body.querySelector('.cat-notify');
+      toggle.addEventListener('click', () => {
+        notify = !notify;
+        toggle.setAttribute('aria-checked', String(notify));
+        toggle.querySelector('.switch').classList.toggle('on', notify);
+      });
     }
   });
 }
@@ -118,6 +129,7 @@ export function categoryPages({ row, go, rerender, current }) {
         <button class="cat-main" data-a="cat-edit:${esc(c.id)}">
           <span class="cat-dot" style="--cat:${esc(c.color)}" aria-hidden="true"></span>
           <span class="text"><span class="title">${esc(c.name)}</span>${c.description ? `<span class="desc">${esc(c.description)}</span>` : ''}</span>
+          ${state.muted.includes(c.id) ? `<span class="cat-muted" role="img" title="${esc(t('settings.categories.notifyOff'))}" aria-label="${esc(t('settings.categories.notifyOff'))}">${icons.bellOff}</span>` : ''}
         </button>
         <button class="icon-btn" data-a="cat-up:${esc(c.id)}" ${i === 0 ? 'disabled' : ''} title="${esc(t('settings.categories.up'))}" aria-label="${esc(t('settings.categories.up'))}">${icons.up}</button>
         <button class="icon-btn" data-a="cat-down:${esc(c.id)}" ${i === list.length - 1 ? 'disabled' : ''} title="${esc(t('settings.categories.down'))}" aria-label="${esc(t('settings.categories.down'))}">${icons.down}</button>
@@ -185,7 +197,8 @@ export function categoryPages({ row, go, rerender, current }) {
 
   async function editCategory(id) {
     const c = id ? state.categories.find((x) => x.id === id) : null;
-    const v = await categoryDialog(c, { canDelete: state.categories.length > 1 });
+    const notify = !(c && state.muted.includes(c.id));
+    const v = await categoryDialog(c, { canDelete: state.categories.length > 1, notify });
     if (!v) return;
     if (v === 'restore') return run(() => api('categoriesSave', { id, name: null, description: null }));
     if (v === 'delete') {
@@ -196,7 +209,15 @@ export function categoryPages({ row, go, rerender, current }) {
     // A preset keeps following the language until its text is changed.
     const name = c && c.preset && v.name === c.name && !c.custom.name ? undefined : v.name || null;
     const description = c && c.preset && v.description === c.description && !c.custom.description ? undefined : v.description || null;
-    return run(() => api('categoriesSave', { id: id || null, name, description, color: v.color }));
+    const before = state.categories.map((x) => x.id);
+    return run(async () => {
+      const res = await api('categoriesSave', { id: id || null, name, description, color: v.color });
+      if (v.notify === notify) return res;
+      // Notifications stay on this computer, apart from the category's synced record. A new one is the id that wasn't
+      // there before.
+      const saved = id || (res.categories.find((x) => !before.includes(x.id)) || {}).id;
+      return saved ? api('categoriesSetNotify', saved, v.notify) : res;
+    });
   }
 
   // Handles a data-a action of these pages; false when it isn't one.

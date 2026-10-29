@@ -82,8 +82,8 @@ class Categories extends EventEmitter {
     return this;
   }
 
-  // What stays on this computer: Jev's settings, and the emails a re-sort still has to do (redo), so a restart
-  // doesn't forget them.
+  // What stays on this computer: Jev's settings, the categories whose notifications are off (muted), and the emails a
+  // re-sort still has to do (redo), so a restart doesn't forget them.
   saveLocal() {
     // The account's records go to disk first: a re-sort list without an email whose new category is still only in
     // memory would forget that email for good if the app quit right then. When they can't be written, the emails on
@@ -167,6 +167,8 @@ class Categories extends EventEmitter {
         .filter(({ v }) => v && list.some((c) => c.id === v.category))
         .map(({ k, v }) => ({ address: k, category: v.category }))
         .sort((a, b) => a.address.localeCompare(b.address)),
+      // Categories whose new mail sends no notification on this computer.
+      muted: list.filter((c) => this.mutedIds().includes(c.id)).map((c) => c.id),
       signedIn: this.account.signedIn,
       limit: MAX_CATEGORIES
     };
@@ -214,6 +216,10 @@ class Categories extends EventEmitter {
     if (list.length <= 1) throw new Error(t('categories.errors.last'));
     this.account.remove('category', id);
     if (this.settings().unsure === id) this.putSettings({ unsure: list.find((c) => c.id !== id).id });
+    if (this.mutedIds().includes(id)) {
+      this.local.muted = this.mutedIds().filter((k) => k !== id);
+      this.saveLocal();
+    }
     this.changed();
     return this.state();
   }
@@ -462,6 +468,8 @@ class Categories extends EventEmitter {
             sorted++;
             this.live();
           }
+          // The email's notification may wait for this answer (notices.js).
+          this.emit('sorted', k);
           p.answered++;
           p.done++;
           p.sorted = sorted;
@@ -585,6 +593,59 @@ class Categories extends EventEmitter {
 
   sortAgain() {
     return this.sort({ again: true, user: true });
+  }
+
+  // ---- notifications ----
+
+  // Categories whose new mail sends no desktop notification. On this computer only, like the Notifications setting,
+  // so a phone and a computer can differ.
+  mutedIds() {
+    return Array.isArray(this.local.muted) ? this.local.muted.filter((k) => typeof k === 'string') : [];
+  }
+
+  // The muted categories that exist; none while categories are off.
+  muted() {
+    if (!this.settings().enabled) return new Set();
+    const ids = this.mutedIds();
+    return new Set(this.list().filter((c) => ids.includes(c.id)).map((c) => c.id));
+  }
+
+  setNotify(id, on) {
+    if (!this.list().some((c) => c.id === id)) throw new Error('invalid');
+    const ids = this.mutedIds().filter((k) => k !== id);
+    this.local.muted = on ? ids : [...ids, id];
+    this.saveLocal();
+    this.emit('changed');
+    return this.state();
+  }
+
+  // What a new inbox email's notification does (notices.js): 'wait' while Jev is about to sort it, 'mute' when its
+  // category is muted, else 'show'. m: the engine's 'new-mail' message. jev false: the category it has now decides.
+  notice(m, { jev = true } = {}) {
+    const muted = this.muted();
+    if (!muted.size) return 'show';
+    let found = null;
+    try {
+      found = this.engine.locate(m.id);
+    } catch (_) {}
+    // Gone from the inbox meanwhile: the category it came with.
+    if (!found || !found.msg) return muted.has(m.category) ? 'mute' : 'show';
+    if (jev && this.jevSoon(found.acc, found.msg)) return 'wait';
+    return muted.has(this.of(found.acc, found.msg)) ? 'mute' : 'show';
+  }
+
+  // Whether the next sort asks Jev about an email: Jev can be asked now, and nothing places the email but rules that
+  // aren't sure about it. What run() sends to Jev.
+  jevSoon(acc, m) {
+    const s = this.settings();
+    const list = this.list();
+    if (!s.enabled || !list.length || !m.signals || !this.jevKey()) return false;
+    const key = this.key(acc, m);
+    if (this.account.get('override', key) !== undefined || this.account.get('classification', key) !== undefined) return false;
+    const ids = new Set(list.map((c) => c.id));
+    const sender = this.account.get('sender', lower(m.from && m.from.address));
+    if (sender && ids.has(sender.category)) return false;
+    return this.byRules(acc, m, ids, ids.has(s.unsure) ? s.unsure : list[0].id).strength !== 'strong';
   }
 
   close() {

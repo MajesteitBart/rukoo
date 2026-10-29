@@ -2511,6 +2511,40 @@ body:has(.page) .titlebar-actions {
   border-color: var(--panel);
   box-shadow: 0 0 0 2px var(--cat);
 }
+/* The category dialog's notifications switch, and the mark on a category row while they are off. */
+.cat-notify {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 2px 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cat-notify .text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.cat-notify .title {
+  font-size: 13px;
+  color: var(--text);
+}
+.cat-notify .switch {
+  pointer-events: none;
+}
+.cat-muted {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  color: var(--text-3);
+}
+.cat-muted svg {
+  width: 16px;
+  height: 16px;
+}
 /* Settings > Rukoo account: a paragraph between the cards, and the recovery key shown once. */
 .settings-text {
   color: var(--text-2);

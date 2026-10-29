@@ -20,6 +20,12 @@ Change their names, descriptions and colors, move them up and down, delete them,
 
 Each email goes to one category. When several fit, the one higher in the list wins. **Inbox** shows the whole inbox, and **When Rukoo isn't sure** picks the category for mail Rukoo can't place.
 
+## Notifications
+
+Each category has a **Notifications** switch in its dialog, under Settings → General → Inbox categories. It starts on. Turn it off, and new mail in that category shows no desktop notification; a bell with a line through it marks the category in the list. The switch is set per computer, like Settings → General → Notifications, so a phone and a computer can differ. Rukoo for Android doesn't have it yet.
+
+While a category's notifications are off and Jev is on, the notification for an email the rules aren't sure about waits for Jev and follows the category Jev gives it. After 20 seconds without an answer, the category the email has by then decides. Rukoo decides straight away for mail the rules are sure about, and when Jev is off, waits for TypeSafe or stopped because TypeSafe refused the key. While every category notifies, notifications come at once, as without categories. The taskbar badge still counts all new mail.
+
 ## Moving mail
 
 Right-click an email, or choose More with several selected, and pick **Move to category**. On Android, press and hold an email (or select several) and choose More, or use More in the open email. The toast that follows offers **Also future mail**: then every later email from that sender goes there too. Settings lists these senders, and you can remove a rule there.

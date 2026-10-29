@@ -37,6 +37,7 @@ const { clipboard, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
 const { Categories } = require('./categories');
+const { MailNotices } = require('./categories/notices');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker } = require('./updates');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
@@ -94,6 +95,7 @@ let calendars = null;
 let google = null;
 let account = null;
 let categories = null;
+let mailNotices = null;
 let updates = null;
 let syncTimer = null;
 let newSinceFocus = 0;
@@ -204,28 +206,31 @@ function destroyTray() {
   if (process.env.SEM_HIDDEN) global.__semTray = null;
 }
 
+// The badge counts all new mail. Notifications skip the categories muted on this computer, and mail Jev is about to
+// sort waits for its category (categories/notices.js).
 function notify(messages) {
   newSinceFocus += messages.length;
   refreshBadge();
   if (!engine.settings.notifications || !Notification.isSupported()) return;
   if (win && win.isFocused()) return;
-  const list = messages.slice(0, 3);
-  for (const m of list) {
-    const n = new Notification({
-      title: m.from.name || m.from.address,
-      body: [m.subject, m.preview].filter(Boolean).join('\n').slice(0, 180),
-      // nativeImage can read from inside app.asar; a plain path cannot.
-      icon: nativeImage.createFromPath(ICON),
-      silent: false
-    });
+  mailNotices.add(messages);
+}
+
+// Now, or once Jev sorted the mail, so the window may have come forward meanwhile.
+function showMailNotices(list) {
+  if (!engine.settings.notifications || (win && win.isFocused())) return;
+  for (const { id, title, body } of list) {
+    if (!id) {
+      new Notification({ title, body }).show();
+      continue;
+    }
+    // nativeImage can read from inside app.asar; a plain path cannot.
+    const n = new Notification({ title, body, icon: nativeImage.createFromPath(ICON), silent: false });
     n.on('click', () => {
       showWindow();
-      send('open-message', m.id);
+      send('open-message', id);
     });
     n.show();
-  }
-  if (messages.length > list.length) {
-    new Notification({ title: 'Rukoo Mail', body: t('native.notifications.newCount', { count: messages.length }) }).show();
   }
 }
 
@@ -421,6 +426,7 @@ function endSession() {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
+  if (mailNotices) mailNotices.close();
   if (reminders) reminders.stop();
   if (booking) booking.close();
   if (updates) updates.stop();
@@ -885,6 +891,8 @@ const api = {
     return categories.saveCategory({ id: accountText(i.id, 100) || null, name: optional(i.name, 100), description: optional(i.description, 1000), color: accountText(i.color, 20) || undefined });
   },
   categoriesRemove: (id) => categories.removeCategory(accountText(id, 100)),
+  // Notifications for a category's new mail, on this computer only.
+  categoriesSetNotify: (id, on) => categories.setNotify(accountText(id, 100), on === true),
   categoriesReorder: (ids) => categories.reorder((Array.isArray(ids) ? ids : []).slice(0, 50).map((id) => accountText(id, 100))),
   categoriesMove: (ids, category, opts) =>
     // Every selected email: a unified inbox can show several hundred per account.
@@ -1239,6 +1247,7 @@ app.whenReady().then(() => {
   if (process.env.SEM_HIDDEN) global.__semCategories = categories;
   categories.on('changed', () => broadcast('categories', categories.state()));
   categories.on('progress', (activity) => broadcast('categories-progress', activity));
+  mailNotices = new MailNotices({ categories, show: showMailNotices });
   booking = new Booking({ account, calendars, engine, secrets, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
   if (process.env.SEM_HIDDEN) global.__semBooking = booking;
   booking.on('state', (s) => broadcast('booking', s));
@@ -1319,6 +1328,7 @@ app.on('before-quit', () => {
   if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
+  if (mailNotices) mailNotices.close();
   if (reminders) reminders.stop();
   if (booking) booking.close();
 });

@@ -1,6 +1,8 @@
 // Inbox categories: turned on in Settings, the categories under Inbox in the sidebar, moving an email and its sender, and editing,
-// reordering and renaming categories. The real app with a throwaway profile, the demo account and no Rukoo account.
+// reordering and renaming categories, and their notifications. The real app with a throwaway profile, the demo account
+// and no Rukoo account.
 const { test, expect, _electron: electron } = require('@playwright/test');
+const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
@@ -9,8 +11,7 @@ let app;
 let win;
 let dataDir;
 
-test.beforeEach(async () => {
-  dataDir = tempDir('rukoo-categories-e2e-');
+async function launch() {
   // No account server: categories work without one, on this computer.
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', RUKOO_ACCOUNT_SERVER: 'http://127.0.0.1:9' };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -19,6 +20,11 @@ test.beforeEach(async () => {
   app = await electron.launch({ args: [entry], cwd: path.join(__dirname, '..', '..'), env });
   win = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
+}
+
+test.beforeEach(async () => {
+  dataDir = tempDir('rukoo-categories-e2e-');
+  await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
@@ -162,6 +168,73 @@ test('categories can be renamed, added, moved up and kept after a restart', asyn
   await win.reload();
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
   await expect(tabs()).toHaveText(['Needs you', 'To read', 'Finance', 'Promotions', 'Updates', 'Kids']);
+});
+
+test("a category's notifications turn off on this computer and stay off after a restart", async () => {
+  await turnOn();
+  // The window after the restart is another one.
+  const dialog = () => win.locator('.scrim .dialog');
+  const notify = () => dialog().locator('.cat-notify');
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  await expect(notify()).toHaveAttribute('aria-checked', 'true');
+  await expect(dialog()).toContainText('This choice stays on this computer.');
+  await notify().click();
+  await expect(notify()).toHaveAttribute('aria-checked', 'false');
+  await dialog().locator('.buttons button', { hasText: 'Save' }).click();
+  await expect(settings().locator('[data-a="cat-edit:promotions"] .cat-muted')).toHaveAttribute('aria-label', 'Notifications off');
+  await expect(settings().locator('.cat-muted')).toHaveCount(1);
+
+  // A new category can start with them off.
+  await settings().locator('[data-a="cat-add"]').click();
+  await dialog().locator('[name="name"]').fill('Kids');
+  await notify().click();
+  await dialog().locator('.buttons button', { hasText: 'Add' }).click();
+  await expect(settings().locator('.cat-row').last()).toContainText('Kids');
+  await expect(settings().locator('.cat-row').last().locator('.cat-muted')).toHaveCount(1);
+  // Kept on this computer, beside the Jev key, not in the categories' synced records.
+  const local = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'data', 'categories.json'), 'utf8')).muted;
+  expect(local()).toHaveLength(2);
+  expect(local()).toContain('promotions');
+
+  await closeApp(app);
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await win.click('[data-action="settings"]');
+  await settings().locator('[data-a="categories"]').click();
+  await expect(settings().locator('.cat-muted')).toHaveCount(2);
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  await expect(notify()).toHaveAttribute('aria-checked', 'false');
+  await notify().click();
+  await dialog().locator('.buttons button', { hasText: 'Save' }).click();
+  await expect(settings().locator('[data-a="cat-edit:promotions"] .cat-muted')).toHaveCount(0);
+  expect(local()).toHaveLength(1);
+});
+
+test('new mail in a muted category sends no notification', async () => {
+  await turnOn();
+  await settings().locator('[data-a="cat-edit:updates"]').click();
+  await win.locator('.scrim .dialog .cat-notify').click();
+  await win.locator('.scrim .dialog .buttons button', { hasText: 'Save' }).click();
+  await expect(settings().locator('[data-a="cat-edit:updates"] .cat-muted')).toHaveCount(1);
+  await closeSettings();
+  const shown = await app.evaluate(async ({ Notification, BrowserWindow }) => {
+    // Notifications are recorded instead of shown, as for a window in the background.
+    BrowserWindow.getAllWindows()[0].isFocused = () => false;
+    global.__shown = [];
+    Notification.prototype.show = function () {
+      global.__shown.push(this);
+    };
+    const engine = global.__semEngine;
+    const raw = (from, subject, n) =>
+      [`From: ${from}`, 'To: demo@example.com', `Subject: ${subject}`, `Date: ${new Date().toUTCString()}`, `Message-ID: <${Date.now()}.${n}@example.com>`, '', 'Hello'].join('\r\n');
+    // A sign-in alert, which the rules put in Updates without a doubt, and an email from a person.
+    await engine.session(engine.accounts[0]).append('INBOX', raw('App <noreply@app.example>', 'New sign-in', 1));
+    await engine.session(engine.accounts[0]).append('INBOX', raw('Sanne de Vries <sanne@example.com>', 'Lunch on Friday?', 2));
+    await engine.syncAll();
+    return global.__shown.map((n) => n.title);
+  });
+  expect(shown).toEqual(['Sanne de Vries']);
+  await expect(win.locator('.item', { hasText: 'New sign-in' })).toHaveCount(1);
 });
 
 test('Jev needs a key and says what it shares', async () => {
