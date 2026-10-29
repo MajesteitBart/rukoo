@@ -111,10 +111,12 @@ test('Inbox shows each email its category, and a category tab wears its color', 
   await expect(pill('ANWB Newsletter')).toHaveText('Promotions');
 });
 
-test('a narrow list with folder, category and account labels still shows the subject', async () => {
+test('with several accounts the account is a dot on the picture, and a narrow list with folder and category labels still shows the subject', async () => {
   await turnOn();
   await closeSettings();
-  // A second account, on a server these tests never reach, so a search over everything labels the account too.
+  // A long name, so the category's label needs all the room it may take.
+  await win.evaluate(() => window.mail.call('categoriesSave', { id: 'needs-you', name: 'Needs you today or tomorrow' }));
+  // A second account, on a server these tests never reach, so a search over everything shows the account too.
   await app.evaluate(() => {
     const engine = global.__semEngine;
     const server = { host: '127.0.0.1', port: 1, secure: false, user: 'werk@example.com' };
@@ -127,9 +129,13 @@ test('a narrow list with folder, category and account labels still shows the sub
   await win.click('.search-scope');
   await win.click('.menu button:has-text("All accounts")');
   const row = win.locator('.list-scroll .item', { hasText: 'Vandebron' }).first();
-  await expect(row.locator('.pill.cat')).toHaveText('Needs you');
-  await expect(row.locator('.pill.acc')).toBeVisible();
-  await expect(row.locator('.flags .pill')).toHaveCount(3);
+  await expect(row.locator('.pill.cat')).toHaveText('Needs you today or tomorrow');
+  // The account isn't a label beside the category's, but a dot in its color on the sender's picture.
+  const dot = row.locator('.lead .acc-dot');
+  await expect(dot).toHaveAttribute('aria-label', 'Account: demo');
+  await expect(dot).toHaveAttribute('title', 'demo@example.com');
+  await expect(row.locator('.pill.acc')).toHaveCount(0);
+  await expect(row.locator('.flags .pill')).toHaveCount(2);
 
   // The narrowest list there is, made by keyboard on the divider as a user would, so a later layout pass keeps it.
   await win.locator('.divider').focus();

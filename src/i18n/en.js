@@ -3318,6 +3318,10 @@
     "message": "VIP",
     "description": "mailbox > message. src/renderer/app.js (itemHtml); src/renderer/app.js (renderReader)"
   },
+  "mailbox.message.account": {
+    "message": "Account: {account}",
+    "description": "mailbox > message. Screen reader label of the dot in an account's color on the sender's picture, in a list of several accounts. {account}: the account's display name or address. src/renderer/app.js (itemHtml)"
+  },
   "mailbox.move.alreadyThere": {
     "message": "These emails are already there",
     "description": "mailbox > move. src/renderer/app.js (moveMessages)"

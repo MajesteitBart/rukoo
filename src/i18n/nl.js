@@ -855,6 +855,7 @@
     "other": "Nog {count} e-mails van {sender}"
   },
   "mailbox.message.vip": "VIP",
+  "mailbox.message.account": "Account: {account}",
   "mailbox.move.alreadyThere": "Die e-mails staan daar al",
   "mailbox.move.count": {
     "one": "{count} e-mail verplaatst naar {folder}",
