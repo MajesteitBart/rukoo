@@ -2044,6 +2044,8 @@ async function compose(opts) {
       S.composer = null;
       // The chat's draft cards remember which stored draft this composer left behind.
       agentPanel?.composerClosed(mounted);
+      // An email that left the list while the editor was open doesn't come back with the reading pane.
+      reconcileReader();
       renderShell();
       renderReader();
       agentViewChanged();

@@ -446,4 +446,15 @@ test('an email open in the reading pane leaves it when Inbox stops listing it, b
   await showInInbox('needs-you', false);
   await expect(items().filter({ hasText: 'Sanne de Vries' })).toHaveCount(0);
   await expect(win.locator('.composer .editor')).toBeVisible();
+  // Closing that reply doesn't bring back the email Inbox no longer lists, not even until the next refresh.
+  await win.evaluate(() => {
+    window.__readerBack = false;
+    new MutationObserver(() => {
+      if (document.querySelector('.reader-subject')) window.__readerBack = true;
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  await win.click('.composer [data-c="close"]');
+  await expect(win.locator('.composer')).toHaveCount(0);
+  expect(await win.evaluate(() => window.__readerBack)).toBe(false);
+  await expect(reader()).toHaveCount(0);
 });
