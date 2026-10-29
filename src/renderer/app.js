@@ -284,6 +284,9 @@ function accountLabel(acc) {
 // Inbox categories show as tabs in the inbox, while categories are on and nothing is searched.
 const categoriesOn = () => Boolean(S.categories && S.categories.enabled && S.categories.categories.length) && S.view === 'inbox' && !S.query.trim();
 const categoryOf = (id) => (S.categories && S.categories.categories.find((c) => c.id === id)) || null;
+// An email's category in a list that mixes them: Inbox itself, a search, or a view built from the inbox such as
+// VIPs. Not in a category's own tab, whose header says it already.
+const rowCategory = (m) => (m.category && S.categories && S.categories.enabled && !(categoriesOn() && categoryOf(S.category)) ? categoryOf(m.category) : null);
 
 
 // The list in the category tab on screen.
@@ -938,7 +941,7 @@ function listTitle() {
   const cat = categoriesOn() && categoryOf(S.category);
   if (cat) {
     const n = categoryRows().filter((m) => m.unread).length;
-    return { title: cat.name, sub: n ? t('mailbox.list.unreadSummary', { count: n, scope: viewLabel() }) : viewLabel() };
+    return { title: cat.name, sub: n ? t('mailbox.list.unreadSummary', { count: n, scope: viewLabel() }) : viewLabel(), color: cat.color };
   }
   // The inbox count in the sidebar adds the unread mail older than the messages the list holds; name it apart here,
   // where the list's own unread mail is counted.
@@ -955,7 +958,11 @@ function listTitle() {
 
 function renderListHead() {
   const head = $('.list-head');
-  const { title, sub, hint } = listTitle();
+  const { title, sub, hint, color } = listTitle();
+  // A category's tab wears its color, so it can't be taken for Inbox itself.
+  head.classList.toggle('cat-head', Boolean(color));
+  if (color) head.style.setProperty('--cat', color);
+  else head.style.removeProperty('--cat');
   head.innerHTML = `<div class="list-title"><h1>${esc(title)}</h1><div class="sub"${hint ? ` title="${esc(hint)}"` : ''}>${esc(sub)}</div></div>
     ${S.query.trim() ? `<button class="tbtn" data-action="search-clear" data-i18n-title="mailbox.search.clearShortcut" title="${esc(t('mailbox.search.clearShortcut'))}">${icons.close}<span data-i18n="common.actions.clear">${esc(t('common.actions.clear'))}</span></button>` : ''}
     <button class="icon-btn" data-action="sync" title="${esc(tip(t('mailbox.actions.sync'), 'sync'))}">${icons.sync}</button>
@@ -1109,10 +1116,12 @@ function listHtml() {
 
 function itemHtml(m, { multi, showFolder, stack, stacked }) {
   const acc = multi && account(m.accountId);
+  const cat = rowCategory(m);
   const draft = m.role === 'drafts';
   const pills = [
     m.vip ? `<span class="pill vip" data-i18n="mailbox.message.vip">${esc(t('mailbox.message.vip'))}</span>` : '',
     showFolder ? `<span class="pill">${esc(folderName(m))}</span>` : '',
+    cat ? `<span class="pill cat" style="--cat:${esc(cat.color)}" title="${esc(cat.name)}">${esc(cat.name)}</span>` : '',
     acc ? `<span class="pill acc" style="--acc:${esc(acc.color)}" title="${esc(acc.email)}">${esc(accountLabel(acc))}</span>` : ''
   ].join('');
   const swipe = swipeHtml(m);

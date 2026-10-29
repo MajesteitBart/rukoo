@@ -47,6 +47,8 @@
   --sel: #2c2f38;
   --sel-strong: #353946;
   --chip: #2a2c34;
+  /* How much of a category's color washes its label: less on dark, so the text keeps 4.5:1. */
+  --cat-tint: 11%;
   --text: #ecedf1;
   --text-2: #a7adba;
   --text-3: #7a808e;
@@ -88,6 +90,7 @@
   --sel: #ebedf1;
   --sel-strong: #e1e4ea;
   --chip: #eff1f4;
+  --cat-tint: 16%;
   --text: #16181d;
   --text-2: #565c69;
   --text-3: #868b98;
@@ -1040,18 +1043,28 @@ body:has(.page) .titlebar-actions {
   background: var(--accent-soft);
   font-weight: 650;
 }
-.pill.acc {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+/* An account, and an email's inbox category in a list that mixes them: a dot in their color before the name, which
+   ends in an ellipsis when the row is short of room. The category's name sits on a wash of its color. */
+.pill.acc,
+.pill.cat {
+  display: block;
 }
-.pill.acc::before {
+.pill.acc::before,
+.pill.cat::before {
   content: '';
+  display: inline-block;
   width: 6px;
   height: 6px;
+  margin-right: 4px;
   border-radius: 50%;
   background: var(--acc);
-  flex: none;
+  vertical-align: 1px;
+}
+.pill.cat {
+  background: color-mix(in srgb, var(--cat) var(--cat-tint), var(--chip));
+}
+.pill.cat::before {
+  background: var(--cat);
 }
 .draft-tag {
   color: var(--danger);
@@ -1110,6 +1123,20 @@ body:has(.page) .titlebar-actions {
   gap: 2px;
   padding: 12px 10px 4px 18px;
   min-height: 56px;
+}
+/* A category's tab: its color washes the top of the list and its dot stands before the name. */
+.list-head.cat-head {
+  background: linear-gradient(color-mix(in srgb, var(--cat) 18%, transparent), transparent);
+}
+.list-head.cat-head h1::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--cat);
+  vertical-align: 2px;
 }
 .list-title {
   flex: 1;
@@ -1370,10 +1397,21 @@ body:has(.page) .titlebar-actions {
 .line2 .preview-inline {
   display: none;
 }
+/* The pills give way before the subject does: they shrink and end in an ellipsis, and never take more than 60% of
+   the line, so a narrow list with folder, category and account pills still shows some of the subject. */
 .flags {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
+}
+.flags .pill {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.flags .star-btn {
   flex: none;
 }
 .star-btn {

@@ -85,6 +85,67 @@ test('turning categories on puts them under Inbox, and each shows its mail', asy
   expect(inbox).toBeGreaterThan(10);
 });
 
+test('Inbox shows each email its category, and a category tab wears its color', async () => {
+  const pill = (sender) => win.locator('.list-scroll .item', { hasText: sender }).first().locator('.pill.cat');
+  // Off: no categories, so nothing to show.
+  await expect(win.locator('.list-scroll .pill.cat')).toHaveCount(0);
+  await turnOn();
+  await closeSettings();
+
+  await expect(pill('ANWB Newsletter')).toHaveText('Promotions');
+  await expect(pill('Sanne de Vries')).toHaveText('Needs you');
+  await expect(pill('ANWB Newsletter')).toHaveAttribute('style', '--cat:#c56cf0');
+  await expect(win.locator('.list-head')).not.toHaveClass(/cat-head/);
+
+  // In its own tab the header says which category it is, so the rows leave it out.
+  await win.locator('.nav-item.nav-sub', { hasText: 'Promotions' }).click();
+  await expect(win.locator('.list-head')).toHaveClass(/cat-head/);
+  await expect(win.locator('.list-head')).toHaveCSS('--cat', '#c56cf0');
+  await expect(win.locator('.list-scroll .item').first()).toBeVisible();
+  await expect(win.locator('.list-scroll .pill.cat')).toHaveCount(0);
+
+  // Back in Inbox the header is plain again.
+  await inboxRow().click();
+  await expect(win.locator('.list-head')).not.toHaveClass(/cat-head/);
+  await expect(win.locator('.list-head')).toHaveCSS('--cat', '');
+  await expect(pill('ANWB Newsletter')).toHaveText('Promotions');
+});
+
+test('a narrow list with folder, category and account labels still shows the subject', async () => {
+  await turnOn();
+  await closeSettings();
+  // A second account, on a server these tests never reach, so a search over everything labels the account too.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const server = { host: '127.0.0.1', port: 1, secure: false, user: 'werk@example.com' };
+    engine.accounts.push({ id: 'w1', type: 'imap', provider: 'other', email: 'werk@example.com', name: 'Werk with a long display name', color: '#ff8a3d', signature: null, secret: 'plain:', imap: server, smtp: server, createdAt: Date.now() });
+    engine.caches.set('w1', { folders: [], boxes: {}, lastSync: Date.now() });
+  });
+  await win.reload();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await win.fill('#search', 'contract');
+  await win.click('.search-scope');
+  await win.click('.menu button:has-text("All accounts")');
+  const row = win.locator('.list-scroll .item', { hasText: 'Vandebron' }).first();
+  await expect(row.locator('.pill.cat')).toHaveText('Needs you');
+  await expect(row.locator('.pill.acc')).toBeVisible();
+  await expect(row.locator('.flags .pill')).toHaveCount(3);
+
+  // The narrowest list there is.
+  await win.evaluate(() => document.documentElement.style.setProperty('--list-w', '300px'));
+  await expect.poll(() => win.locator('.listpane').evaluate((el) => el.getBoundingClientRect().width)).toBe(300);
+  const box = await row.evaluate((el) => {
+    const line = el.querySelector('.line2').getBoundingClientRect();
+    return {
+      subject: el.querySelector('.subject').getBoundingClientRect().width,
+      flagsEnd: el.querySelector('.flags').getBoundingClientRect().right,
+      lineEnd: line.right
+    };
+  });
+  expect(box.subject).toBeGreaterThan(40);
+  expect(box.flagsEnd).toBeLessThanOrEqual(box.lineEnd + 0.5);
+});
+
 test('an email moves to another category, and its sender follows on request', async () => {
   await turnOn();
   await closeSettings();
