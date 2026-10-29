@@ -2535,6 +2535,13 @@ body:has(.page) .titlebar-actions {
 .cat-notify .switch {
   pointer-events: none;
 }
+/* Notifications off for all mail: the switch keeps its state, dimmed, and the help under it says why. */
+.cat-notify:disabled {
+  cursor: default;
+}
+.cat-notify:disabled .switch {
+  opacity: 0.45;
+}
 .cat-muted {
   flex: none;
   margin-left: auto;

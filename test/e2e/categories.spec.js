@@ -221,6 +221,26 @@ test("a category's notifications turn off on this computer and stay off after a 
   await expect(settings().locator('[data-a="cat-edit:promotions"] .cat-muted')).toHaveCount(1);
 });
 
+test('with notifications off for all mail, the category switch stays as it is and says why', async () => {
+  await turnOn();
+  const dialog = () => win.locator('.scrim .dialog');
+  const notify = () => dialog().locator('.cat-notify');
+  await win.evaluate(() => window.mail.call('updateSettings', { notifications: false }));
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  await expect(notify()).toBeDisabled();
+  await expect(notify()).toHaveAttribute('aria-checked', 'true');
+  await expect(dialog().locator('#cat-notify-help')).toHaveText('Notifications are off for all new mail, so this category stays quiet too. Turn on Notifications in Settings first.');
+  await notify().click({ force: true });
+  await expect(notify()).toHaveAttribute('aria-checked', 'true');
+  await dialog().locator('.buttons button', { hasText: 'Cancel' }).click();
+
+  // On again, the switch works as before.
+  await win.evaluate(() => window.mail.call('updateSettings', { notifications: true }));
+  await settings().locator('[data-a="cat-edit:promotions"]').click();
+  await expect(notify()).toBeEnabled();
+  await expect(dialog().locator('#cat-notify-help')).toContainText('This choice stays on this computer.');
+});
+
 test('new mail in a muted category sends no notification', async () => {
   await turnOn();
   await settings().locator('[data-a="cat-edit:updates"]').click();

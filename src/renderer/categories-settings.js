@@ -8,8 +8,9 @@ export const CATEGORY_VIEWS = ['categories'];
 const COLORS = ['#ff5d73', '#4a7dff', '#2fd6c0', '#f5c542', '#c56cf0', '#ff8a3d', '#5ec2ff', '#7a808e'];
 
 // Edits a category, or makes a new one (c null). Resolves to { name, description, color, notify }, { restore, notify },
-// 'delete' or null. notify: whether its new mail sends a notification on this computer.
-function categoryDialog(c, { canDelete, notify }) {
+// 'delete' or null. notify: whether its new mail sends a notification on this computer. allowed: false while
+// notifications are off for all mail, which leaves the switch as it is and says why.
+function categoryDialog(c, { canDelete, notify, allowed = true }) {
   let color = (c && c.color) || COLORS[0];
   const buttons = [];
   if (c && canDelete) buttons.push({ get label() { return t('common.actions.delete'); }, value: 'delete', danger: true, left: true });
@@ -41,8 +42,8 @@ function categoryDialog(c, { canDelete, notify }) {
         <label>${esc(t('settings.categories.description'))}<textarea name="description" maxlength="400">${esc(c ? c.description : '')}</textarea>
           <span class="field-help">${esc(t('settings.categories.descriptionHelp'))}</span></label>
         <div class="cat-colors"><span>${esc(t('settings.categories.color'))}</span><div role="radiogroup">${swatches}</div></div>
-        <button type="button" class="cat-notify" role="switch" aria-checked="${notify}" aria-labelledby="cat-notify-title" aria-describedby="cat-notify-help">
-          <span class="text"><span class="title" id="cat-notify-title">${esc(t('settings.categories.notify'))}</span><span class="field-help" id="cat-notify-help">${esc(t('settings.categories.notifyHelp'))}</span></span>
+        <button type="button" class="cat-notify" role="switch" aria-checked="${notify}" aria-labelledby="cat-notify-title" aria-describedby="cat-notify-help" ${allowed ? '' : 'disabled'}>
+          <span class="text"><span class="title" id="cat-notify-title">${esc(t('settings.categories.notify'))}</span><span class="field-help" id="cat-notify-help">${esc(t(allowed ? 'settings.categories.notifyHelp' : 'settings.categories.notifyBlocked'))}</span></span>
           <span class="switch ${notify ? 'on' : ''}" aria-hidden="true"></span>
         </button>
         <div class="error" data-error></div></div>`;
@@ -54,6 +55,7 @@ function categoryDialog(c, { canDelete, notify }) {
       );
       const toggle = body.querySelector('.cat-notify');
       toggle.addEventListener('click', () => {
+        if (!allowed) return;
         notify = !notify;
         toggle.setAttribute('aria-checked', String(notify));
         toggle.querySelector('.switch').classList.toggle('on', notify);
@@ -198,7 +200,9 @@ export function categoryPages({ row, go, rerender, current }) {
   async function editCategory(id) {
     const c = id ? state.categories.find((x) => x.id === id) : null;
     const notify = !(c && state.muted.includes(c.id));
-    const v = await categoryDialog(c, { canDelete: state.categories.length > 1, notify });
+    // With notifications off for all mail, a category's switch would change nothing you can see.
+    const allowed = await api('state').then((s) => s.settings.notifications !== false).catch(() => true);
+    const v = await categoryDialog(c, { canDelete: state.categories.length > 1, notify, allowed });
     if (!v) return;
     if (v === 'delete') {
       const ok = await confirmDialog(t('settings.categories.deleteTitle', { name: c.name }), t('settings.categories.deleteHelp'), t('common.actions.delete'), true);

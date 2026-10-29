@@ -7217,6 +7217,10 @@
     "message": "Show a desktop notification for new mail in this category. This choice stays on this computer.",
     "description": "Settings > Inbox categories: help under the notifications switch in the category dialog. The choice isn't synced, so a phone can differ. src/renderer/categories-settings.js."
   },
+  "settings.categories.notifyBlocked": {
+    "message": "Notifications are off for all new mail, so this category stays quiet too. Turn on Notifications in Settings first.",
+    "description": "Settings > Inbox categories: help under the disabled notifications switch in the category dialog while notifications are off for all mail (settings.general.notifications, whose label is the Notifications named here). src/renderer/categories-settings.js."
+  },
   "settings.categories.notifyOff": {
     "message": "Notifications off",
     "description": "Settings > Inbox categories: tooltip and accessible name of the bell icon on a category row whose notifications are off. src/renderer/categories-settings.js."

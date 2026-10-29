@@ -1862,6 +1862,7 @@
   "settings.categories.color": "Kleur",
   "settings.categories.notify": "Meldingen",
   "settings.categories.notifyHelp": "Toon een desktopmelding bij nieuwe mail in deze categorie. Deze keuze blijft op deze computer.",
+  "settings.categories.notifyBlocked": "Meldingen staan uit voor alle nieuwe mail, dus ook deze categorie blijft stil. Zet eerst Meldingen aan in de instellingen.",
   "settings.categories.notifyOff": "Meldingen uit",
   "settings.categories.restore": "Tekst van Rukoo gebruiken",
   "settings.categories.deleteTitle": "{name} verwijderen?",
