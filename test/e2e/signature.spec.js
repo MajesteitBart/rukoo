@@ -160,6 +160,109 @@ test('the signature is formatted in new mail, replies, forwards and the compose 
   await expectSignature(popped.locator('.compose .editor'));
 });
 
+// Two more accounts beside the demo one, on a server these tests never reach: Werk with a signature of its own,
+// Privé with its own empty one. The window is reloaded so the editor starts from main's list with them in it.
+async function addAccounts() {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const add = (id, email, name, signature, signatureHtml) => {
+      const server = { host: '127.0.0.1', port: 1, secure: false, user: email };
+      engine.accounts.push({ id, type: 'imap', provider: 'other', email, name, label: email, color: '#ff8a3d', signature, signatureHtml, secret: 'plain:', imap: server, smtp: server, createdAt: Date.now() });
+      engine.caches.set(id, { folders: [], boxes: {}, lastSync: Date.now() });
+    };
+    add('w1', 'werk@example.com', 'Werk', 'Werk signature', '<b>Werk signature</b>');
+    add('p1', 'prive@example.com', 'Privé', '', null);
+  });
+  await win.reload();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+}
+
+test('another account in From brings its own signature, in the inline editor and the compose window', async () => {
+  await setSignature('<i>General one</i>');
+  await addAccounts();
+  const demoId = await app.evaluate(() => global.__semEngine.accounts.find((a) => a.type === 'demo').id);
+
+  async function check(page, editor) {
+    const from = page.locator('[data-field="account"]');
+    const sig = editor.locator(':scope > .signature');
+    await expect(sig).toHaveText('General one');
+    await editor.click({ position: { x: 4, y: 4 } });
+    await page.keyboard.type('Hello there.');
+
+    await from.selectOption('w1|werk@example.com');
+    await expect(sig).toHaveCount(1);
+    await expect(sig.locator('b')).toHaveText('Werk signature');
+    await expect(sig.locator('i')).toHaveCount(0);
+    // An account with an empty signature of its own: no signature, and no empty line left where it was.
+    await from.selectOption('p1|prive@example.com');
+    await expect(sig).toHaveCount(0);
+    expect(await editor.innerHTML()).toBe('<div>Hello there.</div>');
+    // Back to an account with one: it comes back at the end, after an empty line, as in a new message.
+    await from.selectOption(`${demoId}|demo@example.com`);
+    await expect(sig).toHaveText('General one');
+    expect(await editor.innerHTML()).toBe('<div>Hello there.</div><div><br></div><div class="signature"><i>General one</i></div>');
+    await expect(page.locator('.composer')).toHaveAttribute('data-dirty', 'true');
+  }
+
+  await win.click('[data-action="compose"]');
+  await check(win, win.locator('.composer .editor'));
+  await win.click('[data-c="discard"]');
+  await win.click('.scrim .buttons button:text-is("Delete")');
+  await expect(win.locator('.composer')).toHaveCount(0);
+
+  const [popup] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  await popup.waitForSelector('.composer .editor');
+  await check(popup, popup.locator('.composer .editor'));
+});
+
+test('a reopened draft has its signature on its own line again, and swaps it with From too', async () => {
+  await setSignature('<i>General one</i>');
+  await addAccounts();
+  await win.click('[data-action="compose"]');
+  const editor = win.locator('.composer .editor');
+  await win.fill('[data-field="subject"]', 'Reopened draft');
+  await editor.click({ position: { x: 4, y: 4 } });
+  await win.keyboard.type('Hello there.');
+  await win.keyboard.press('Control+s');
+  await expect(win.locator('.composer .save-state')).toHaveText('Draft saved');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.composer')).toHaveCount(0);
+
+  await win.click('[data-view="drafts"]');
+  await item('Reopened draft').click();
+  await win.click('[data-reader="edit"]');
+  // The text and the signature are the editor's own lines again, not inside the font wrapper of the saved mail.
+  expect(await editor.innerHTML()).toBe('<div>Hello there.</div><div><br></div><div class="signature"><i>General one</i></div>');
+  const sig = editor.locator('.signature');
+  await win.locator('.composer [data-field="account"]').selectOption('w1|werk@example.com');
+  await expect(sig).toHaveCount(1);
+  await expect(sig.locator('b')).toHaveText('Werk signature');
+  await win.locator('.composer [data-field="account"]').selectOption('p1|prive@example.com');
+  await expect(sig).toHaveCount(0);
+  expect(await editor.innerHTML()).toBe('<div>Hello there.</div>');
+});
+
+test('a reopened draft keeps a formatted block of its own that uses the same font as the saved mail', async () => {
+  await win.click('[data-action="compose"]');
+  const editor = win.locator('.composer .editor');
+  await win.fill('[data-field="subject"]', 'Styled draft');
+  const styled = `<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:12pt;color:rgb(200, 0, 0);text-align:center"><b>Centered and red</b></div>`;
+  await editor.evaluate((el, html) => (el.innerHTML = html), styled);
+  await win.keyboard.press('Control+s');
+  await expect(win.locator('.composer .save-state')).toHaveText('Draft saved');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.composer')).toHaveCount(0);
+
+  await win.click('[data-view="drafts"]');
+  await item('Styled draft').click();
+  await win.click('[data-reader="edit"]');
+  const block = editor.locator(':scope > div');
+  await expect(block).toHaveCount(1);
+  await expect(block).toHaveCSS('color', 'rgb(200, 0, 0)');
+  await expect(block).toHaveCSS('text-align', 'center');
+  await expect(block.locator('b')).toHaveText('Centered and red');
+});
+
 test('a draft keeps the signature, and sent mail carries it with its image and text', async () => {
   await setSignature(SIGNATURE);
   await win.click('[data-action="compose"]');
