@@ -131,8 +131,9 @@ test('a narrow list with folder, category and account labels still shows the sub
   await expect(row.locator('.pill.acc')).toBeVisible();
   await expect(row.locator('.flags .pill')).toHaveCount(3);
 
-  // The narrowest list there is.
-  await win.evaluate(() => document.documentElement.style.setProperty('--list-w', '300px'));
+  // The narrowest list there is, made by keyboard on the divider as a user would, so a later layout pass keeps it.
+  await win.locator('.divider').focus();
+  for (let i = 0; i < 5; i++) await win.keyboard.press('ArrowLeft');
   await expect.poll(() => win.locator('.listpane').evaluate((el) => el.getBoundingClientRect().width)).toBe(300);
   const box = await row.evaluate((el) => {
     const line = el.querySelector('.line2').getBoundingClientRect();
