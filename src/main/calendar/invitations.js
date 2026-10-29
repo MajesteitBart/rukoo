@@ -108,7 +108,8 @@ class Invitations {
   // The event in the user's calendars, for this account and address only: the same meeting may be in another of
   // the user's calendars, for another of their addresses, which this answer isn't for.
   find(inv, acc, who) {
-    return this.calendars.findInvite({ uid: inv.uid, start: inv.start, end: inv.end, rid: inv.rid, accountId: acc ? acc.id : null, me: who }).catch(() => null);
+    const organizer = inv.organizer ? inv.organizer.address : null;
+    return this.calendars.findInvite({ uid: inv.uid, start: inv.start, end: inv.end, rid: inv.rid, accountId: acc ? acc.id : null, me: who, organizer }).catch(() => null);
   }
 
   // The card's state: the invitation, the event in the user's calendars (null when none has it, or none could be
@@ -161,6 +162,8 @@ class Invitations {
   async add(source, { accountId, calendarId }) {
     const { inv, who } = await this.read(source);
     if (inv.cancelled) throw fail('errors.invite.cancelled');
+    // Its rule from the first occurrence that's left would shift the series and bring back what was left out.
+    if (inv.irregular && !Number.isFinite(inv.rid)) throw fail('errors.invite.irregular');
     const input = {
       accountId,
       calendarId,

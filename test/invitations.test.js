@@ -77,6 +77,7 @@ test('an invitation in a calendar that can answer it is answered there, and no e
   // Only this account's event, for this address, is the one to answer.
   assert.equal(calendars.calls.find[0].accountId, 'acc1');
   assert.equal(calendars.calls.find[0].me, 'sanne@example.com');
+  assert.equal(calendars.calls.find[0].organizer, 'daniel@example.com');
   const res = await inv.answer({ id: 'm1' }, 'accepted');
   assert.equal(res.via, 'calendar');
   assert.deepEqual(calendars.calls.respond, [{ id: 'acc1:primary:evt1', response: 'accepted', opts: { series: false } }]);
@@ -190,4 +191,25 @@ test('an updated invitation asks again, also after its event was added to a cale
   const after = await inv.state({ id: 'v1' });
   assert.equal(after.answered, null, 'adding is no answer to the update');
   assert.equal(after.added.id, 'acc1:cal:new');
+});
+
+test('a series whose occurrences were moved or left out is not copied from its rule', async () => {
+  const series = ics().replace('SUMMARY:Planning', 'SUMMARY:Planning\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\nEXDATE:20261103T090000Z');
+  const engine = fakeEngine({ s: { text: series, method: 'REQUEST', accountId: 'acc1' } });
+  const calendars = fakeCalendars(null);
+  const inv = new Invitations({ engine, calendars, dataDir: dataDir() });
+  assert.equal((await inv.state({ id: 's' })).invite.irregular, true);
+  await assert.rejects(inv.add({ id: 's' }, { accountId: 'acc1', calendarId: 'primary' }), /can't copy it to a calendar/);
+  assert.equal(calendars.calls.create.length, 0);
+});
+
+test('an invitation sent to a mailing list is answered by the account it came to', async () => {
+  const engine = fakeEngine({ list: { text: ics({ guests: ['team@lists.example.com'] }), method: 'REQUEST', accountId: 'acc1' } });
+  const inv = new Invitations({ engine, calendars: fakeCalendars(null), dataDir: dataDir() });
+  const state = await inv.state({ id: 'list' });
+  assert.equal(state.invite.me, null);
+  assert.deepEqual(state.account, { id: 'acc1', email: 'sanne@example.com' });
+  await inv.answer({ id: 'list' }, 'accepted');
+  assert.match(engine.sent[0].opts.icalEvent.content.replace(/\r\n /g, ''), /ATTENDEE;CN=Sanne de Vries;PARTSTAT=ACCEPTED:mailto:sanne@example.com/);
+  assert.equal((await inv.state({ id: 'list' })).answered, 'accepted');
 });

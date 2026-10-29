@@ -1026,13 +1026,17 @@ class Calendars extends EventEmitter {
   // calendar, of this account or another, where the user's place among the guests is another address (a shared team
   // calendar, a second account): an answer there would be that address's. So with an address, only an event where
   // it is the calendar's own guest counts, this account's first; without one, only this account's events.
-  async findInvite({ uid, start, end, rid = null, accountId = null, me = null }) {
+  // organizer: the invitation's. Anyone who knows a meeting's UID can send an email with it; only one from the
+  // event's own organizer may stand for it, so a forged one can't change the answer the calendar has.
+  async findInvite({ uid, start, end, rid = null, accountId = null, me = null, organizer = null }) {
     if (!uid || !Number.isFinite(start)) return null;
     const at = Number.isFinite(rid) ? rid : start;
     const { events } = await this.read({ start: Math.min(at, start) - DAY, end: Math.max(Number.isFinite(end) ? end : start, at) + DAY });
     const address = me ? String(me).toLowerCase() : null;
+    const by = String(organizer || '').toLowerCase();
     const same = events
-      .filter((e) => e.uid === uid && (address ? (e.attendees || []).some((a) => a.self && String(a.address).toLowerCase() === address) : accountId && e.accountId === accountId))
+      .filter((e) => e.uid === uid && String((e.organizer && e.organizer.address) || '').toLowerCase() === by)
+      .filter((e) => (address ? (e.attendees || []).some((a) => a.self && String(a.address).toLowerCase() === address) : accountId && e.accountId === accountId))
       .sort((a, b) => (b.accountId === accountId) - (a.accountId === accountId));
     if (Number.isFinite(rid)) return same.find((e) => e.originalStart === rid || (!e.seriesId && e.start === rid)) || null;
     return same.find((e) => !e.seriesId || e.start === start) || same[0] || null;

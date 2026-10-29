@@ -172,6 +172,23 @@ test('an invitation no calendar has is answered by email, stays answered, and ca
   await expect(card().locator('[data-invite="open"]')).toBeVisible();
 });
 
+test('an invitation sent to a mailing list can be answered, as the account it came to', async () => {
+  await launch();
+  await demo();
+  const start = Date.now() + 3 * 86400000;
+  const list = ics({ uid: 'all-hands-1@example.com', title: 'All hands', start, end: start + 3600000 }).replace(
+    'ATTENDEE;CN=Demo User;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:demo@example.com',
+    'ATTENDEE;CN=Everyone;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:everyone@lists.example.com'
+  );
+  await invitation('Invitation: All hands', list);
+  await openMail('Invitation: All hands');
+  await expect(card().locator('.invite-note')).toHaveText('Your answer goes to joris@example.com by email.');
+  await card().locator('[data-invite-answer="accepted"]').click();
+  await expect(win.locator('#toast')).toHaveText('Your answer went to joris@example.com');
+  const [reply] = await sent();
+  expect(reply.icalEvent.content.replace(/\r\n /g, '')).toMatch(/ATTENDEE;CN=Demo User;PARTSTAT=ACCEPTED:mailto:demo@example\.com/);
+});
+
 test('a cancellation shows as cancelled, without answers', async () => {
   await launch();
   await demo();

@@ -31,7 +31,7 @@ test('an invitation months ahead is found by its UID for its own account, and an
   const { calendars } = setup(fake);
   calendars.view({ start: m, end: m + 7 * DAY });
   await settle(calendars);
-  const query = { uid: 'planning-1@example.com', start, end: start + 3600000 };
+  const query = { uid: 'planning-1@example.com', start, end: start + 3600000, organizer: 'Joris@Example.com' };
 
   const found = await calendars.findInvite({ ...query, accountId: 'g1', me: 'Me@Example.com' });
   assert.equal(found.eventId, 'evt90');
@@ -43,6 +43,9 @@ test('an invitation months ahead is found by its UID for its own account, and an
   assert.equal(await calendars.findInvite({ ...query, accountId: 'other-account' }), null, 'not for another account');
   assert.equal(await calendars.findInvite({ ...query, me: 'someone@example.com' }), null, 'not for another address');
   assert.equal(await calendars.findInvite({ ...query, uid: 'nope@example.com', accountId: 'g1' }), null);
+  // A forged email with the meeting's UID but another organizer doesn't stand for it.
+  assert.equal(await calendars.findInvite({ ...query, accountId: 'g1', me: 'me@example.com', organizer: 'mallory@example.com' }), null);
+  assert.equal(await calendars.findInvite({ ...query, accountId: 'g1', me: 'me@example.com', organizer: null }), null);
   assert.equal(calendars.cache('g1').events.some((e) => e.eventId === 'evt90'), false, 'outside the cached weeks');
 
   // Answering it works although the view never showed that week, and Google tells the organizer.

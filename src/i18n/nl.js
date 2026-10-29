@@ -5,6 +5,7 @@
   "errors.invite.notAnswerable": "Rukoo kan deze uitnodiging niet beantwoorden.",
   "errors.invite.noOrganizer": "Deze uitnodiging zegt niet wie hem stuurde, dus Rukoo kan hem niet beantwoorden.",
   "errors.invite.noAccount": "Geen van je accounts is uitgenodigd, dus Rukoo kan je antwoord niet versturen.",
+  "errors.invite.irregular": "Sommige keren van deze reeks zijn verplaatst of geannuleerd, dus Rukoo kan hem niet naar een agenda kopiëren.",
   "errors.invite.cancelled": "Deze afspraak is geannuleerd.",
   "invite.card.label": "Agenda-uitnodiging",
   "invite.card.from": "Uitnodiging van {name}",

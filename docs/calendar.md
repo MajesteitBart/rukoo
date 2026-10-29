@@ -31,7 +31,9 @@ An email with an invitation shows a card above its text: the event, its time and
 - When one of your calendars has the event and can answer it, the answer goes through that calendar. Google puts invitations into your Google calendar as they arrive and tells the organizer. A CalDAV server that sends invitations does the same. The card says so, and Open in calendar shows the event.
 - Otherwise Rukoo emails the answer to the organizer, from the account the invitation came to, as other mail apps do: an iCalendar reply that Google Calendar, Outlook and Apple Calendar read. The card names the address it goes to, and remembers the answer.
 
-Add to calendar puts a copy of the event in a calendar you pick, without its guests. Later changes from the organizer don't reach that copy. A cancellation shows as cancelled, without answers. A guest's answer to your own event shows who answered what.
+Rukoo only counts an event in your calendar as the invitation's when it has the same organizer and you are among its guests with the address the invitation went to. An invitation sent to a mailing list is answered from the account it came to.
+
+Add to calendar puts a copy of the event in a calendar you pick, without its guests. Later changes from the organizer don't reach that copy. A series with moved or cancelled occurrences can't be copied, since its rule alone would give the wrong dates. A cancellation shows as cancelled, without answers. A guest's answer to your own event shows who answered what.
 
 ### .ics files
 

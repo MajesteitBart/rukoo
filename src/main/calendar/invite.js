@@ -97,6 +97,8 @@ function inviteOf(text, { me = [], method = null }) {
     series: ics.recurring(obj.master),
     // The repeat rule, for a copy added to a calendar (RRULE's value).
     rule: obj.master && obj.master.hasProperty('rrule') ? obj.master.getFirstPropertyValue('rrule').toString() : null,
+    // A series with occurrences moved, changed or left out: a copy from its rule alone would differ from it.
+    irregular: Boolean(ics.recurring(obj.master) && (obj.exceptions.length || obj.master.hasProperty('exdate') || obj.master.hasProperty('rdate'))),
     cancelled,
     title: event.title,
     location: event.location,

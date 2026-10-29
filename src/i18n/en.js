@@ -17,6 +17,10 @@
     "message": "None of your accounts is invited, so Rukoo can't send your answer.",
     "description": "An .ics file invites an address none of the user's accounts has. src/main/calendar/invitations.js"
   },
+  "errors.invite.irregular": {
+    "message": "Some occurrences of this series were moved or cancelled, so Rukoo can't copy it to a calendar.",
+    "description": "Add to calendar on a recurring invitation whose occurrences differ from its rule: a copy made from the rule would be wrong. src/main/calendar/invitations.js"
+  },
   "errors.invite.cancelled": {
     "message": "This event was cancelled.",
     "description": "Add to calendar on a cancelled event. src/main/calendar/invitations.js"

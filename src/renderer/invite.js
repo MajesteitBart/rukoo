@@ -22,8 +22,11 @@ function kindLine(inv) {
   return t('invite.card.event');
 }
 
-// Whether the user can answer it: an invitation that asks them, not one they sent or one that was called off.
-const answerable = (inv) => inv.method === 'REQUEST' && !inv.cancelled && Boolean(inv.me) && !(inv.organizer && inv.organizer.self);
+// Whether the user can answer it: an invitation that asks them, not one they sent or one that was called off. One
+// sent to a mailing list names none of the user's addresses; once main knows the account it came to, that account
+// answers it. An .ics file that invites none of the user's accounts has none.
+const answerable = (inv, state) =>
+  inv.method === 'REQUEST' && !inv.cancelled && !(inv.organizer && inv.organizer.self) && Boolean(inv.me || (state && state.account));
 
 // The answer the card shows as chosen: the calendar's, else the one sent by email, else what the invitation says.
 function chosen(inv, state) {
@@ -35,8 +38,8 @@ function chosen(inv, state) {
 function note(inv, state) {
   if (!state) return t('invite.card.looking');
   const e = state.event;
-  if (e && e.canRespond && answerable(inv)) return t('invite.card.viaCalendar');
-  if (answerable(inv) && inv.organizer && inv.organizer.address) {
+  if (e && e.canRespond && answerable(inv, state)) return t('invite.card.viaCalendar');
+  if (answerable(inv, state) && inv.organizer && inv.organizer.address) {
     return t(state.answered ? 'invite.card.answeredByEmail' : 'invite.card.byEmail', { address: inv.organizer.address });
   }
   if (e) return t('invite.card.inCalendar');
@@ -58,7 +61,7 @@ export function inviteHtml(inv, state = null) {
     rows.push(`<div class="invite-row">${icons.people}<span><span class="invite-count">${esc(t('calendar.guests.count', { count: guests.length }))}</span> ${esc(names + more)}</span></div>`);
   }
   const current = chosen(inv, state);
-  const rsvp = answerable(inv)
+  const rsvp = answerable(inv, state)
     ? `<div class="invite-rsvp"><span>${esc(t('calendar.rsvp.question'))}</span><div class="filters" role="group" aria-label="${esc(t('calendar.rsvp.question'))}">${RESPONSES.map(
         (r) => `<button class="filter ${current === r ? 'active' : ''}" data-invite-answer="${r}" aria-pressed="${current === r}">${esc(t(`calendar.rsvp.${r}`))}</button>`
       ).join('')}</div></div>`
@@ -67,7 +70,7 @@ export function inviteHtml(inv, state = null) {
   const added = state && !event && state.added;
   const action = event || added
     ? `<button class="btn sm" data-invite="open">${icons.calendar}<span>${esc(t('invite.card.open'))}</span></button>`
-    : state && !inv.cancelled && inv.method !== 'REPLY'
+    : state && !inv.cancelled && inv.method !== 'REPLY' && !(inv.irregular && !Number.isFinite(inv.rid))
       ? `<button class="btn sm" data-invite="add" aria-haspopup="menu">${icons.calendarPlus}<span>${esc(t('invite.card.add'))}</span></button>`
       : '';
   return `<section class="invite ${inv.cancelled ? 'cancelled' : ''}" aria-label="${esc(t('invite.card.label'))}">
