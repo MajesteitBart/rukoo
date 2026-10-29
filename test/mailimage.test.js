@@ -20,6 +20,13 @@ test('a data: image keeps its bytes and gets a name from what it is, not what it
   assert.deepEqual(img.content, PNG);
 });
 
+test('a data: image with percent escapes instead of base64 reads as its bytes', async () => {
+  const escaped = [...GIF].map((b) => `%${b.toString(16).padStart(2, '0')}`).join('');
+  const img = await mailImage(`data:image/gif,${escaped}`);
+  assert.equal(img.type, 'image/gif');
+  assert.deepEqual(img.content, GIF);
+});
+
 test('an image on the web is fetched once, and named after its address', async () => {
   const asked = [];
   const fetch = async (url, opts) => {

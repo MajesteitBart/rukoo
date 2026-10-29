@@ -6,8 +6,9 @@ const { safeName } = require('./files');
 
 // The images an email shows, for the reader's context menu: Copy image, Open image and Save image as. An image is a
 // data: URL, which is what the parser makes of an inline cid: image, or an address on the web. The frame loaded that
-// address already (remote images are not blocked), so asking for it again tells the sender nothing new; it goes
-// through the window's own session, with its cache and proxy. Only raster images pass the sniff: SVG can carry script.
+// address already (remote images are not blocked), so the request goes through the window's own session, with its
+// cache and proxy: mostly the cache answers, and otherwise the sender sees one more request for an image it served,
+// after the user asked for it. Only raster images pass the sniff: SVG can carry script.
 const MAX_BYTES = 25 * 1024 * 1024;
 const TIMEOUT = 20000;
 const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/x-icon': 'ico' };
@@ -17,10 +18,12 @@ function sniff(buf) {
   return imageType(buf);
 }
 
-// Only base64: a raster image is never written out with percent escapes, and SVG is not let through anyway.
+// Base64, or percent escapes standing for the bytes; the sniff below decides what the bytes are.
 function fromDataUrl(src) {
-  const m = /^data:[^,]*;base64,(.*)$/is.exec(src);
-  return m ? Buffer.from(m[1].replace(/\s+/g, ''), 'base64') : null;
+  const m = /^data:([^,]*),(.*)$/is.exec(src);
+  if (!m) return null;
+  if (/;base64$/i.test(m[1])) return Buffer.from(m[2].replace(/\s+/g, ''), 'base64');
+  return Buffer.from(m[2].replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16))), 'latin1');
 }
 
 async function readCapped(res) {
