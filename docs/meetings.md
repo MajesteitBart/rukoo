@@ -1,6 +1,6 @@
 # Meetings
 
-[Rukoo Voice](../voice/README.md) records your meetings on this computer: your microphone and the call audio. Rukoo shows them as they happen, next to your agent. The switch at the top of the sidebar, or `Ctrl+3`, replaces the message list and the reader with the meeting view.
+[Rukoo Voice](../voice/README.md) records your meetings on this computer: your microphone and the call audio. Rukoo shows them as they happen, next to your agent. **Meet** in the switch at the top of the sidebar, or `Ctrl+3`, replaces the message list and the reader with the meeting view.
 
 Rukoo can't start Rukoo Voice. While Voice isn't running, the view says so and still shows the meetings Rukoo kept from before.
 

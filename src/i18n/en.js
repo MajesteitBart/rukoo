@@ -8662,12 +8662,12 @@
     "description": "Accessible name of the meeting view, the third mode next to Mail and Calendar. src/renderer/app.js (renderShell)"
   },
   "meeting.mode.label": {
-    "message": "Meetings",
+    "message": "Meet",
     "description": "Sidebar switch at the top: the segment that shows Rukoo Voice meetings. Short; it shares a narrow sidebar with the Mail and Calendar segments. src/renderer/app.js (renderModeSwitch)"
   },
   "meeting.mode.shortcut": {
-    "message": "Meetings (Ctrl+3)",
-    "description": "Tooltip of the Meetings segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+    "message": "Meet (Ctrl+3)",
+    "description": "Tooltip of the Meet segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
   },
   "meeting.untitled": {
     "message": "Meeting at {time}",
