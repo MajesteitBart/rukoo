@@ -116,10 +116,13 @@ async function videoServer() {
       if (/x-www-form-urlencoded/.test(req.headers['content-type'] || '')) r.form = Object.fromEntries(new URLSearchParams(raw));
       if (/json/.test(req.headers['content-type'] || '') && raw) r.json = JSON.parse(raw);
       s.requests.push(r);
-      const answer = (s.fail && s.fail(r)) || (r.path.startsWith('/zoom/') ? zoom(r, r.path) : teams(r, r.path));
-      const [status, body] = answer;
-      if (status === 204 || body === null) res.writeHead(status).end();
-      else res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+      // hold(request): a promise the answer waits for, as a slow service would make it.
+      Promise.resolve(s.hold && s.hold(r)).then(() => {
+        const answer = (s.fail && s.fail(r)) || (r.path.startsWith('/zoom/') ? zoom(r, r.path) : teams(r, r.path));
+        const [status, body] = answer;
+        if (status === 204 || body === null) res.writeHead(status).end();
+        else res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+      });
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

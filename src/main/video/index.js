@@ -101,6 +101,13 @@ class VideoServices extends EventEmitter {
     return this.adapters.has(id) ? this.adapters.get(id).name : String(id || '');
   }
 
+  // Whether a service's meetings are moved and deleted with their bookings (Zoom, Teams); a Jitsi room has no time
+  // and nothing to delete.
+  manages(id) {
+    const a = this.adapters.get(id);
+    return Boolean(a && a.remove);
+  }
+
   // The OAuth client a service signs in with: from the environment, else from the client file a user chose. null
   // when there is none; the repository and its builds carry no client of their own (docs/booking.md).
   client(id) {
@@ -149,13 +156,18 @@ class VideoServices extends EventEmitter {
     if (a.kind === 'room') return this.setRoom(id, { on: true });
     const client = this.client(id);
     if (!client) throw videoError('unavailable', t('errors.video.notConfigured', { service: a.name }));
-    // A second Connect cancels the first sign-in; only the latest one clears the pending state when it ends.
+    // This sign-in, until it ends, Cancel is pressed or another Connect starts: only then is nothing stored, also
+    // when Cancel comes after the browser answered and the tokens are on their way.
     const attempt = {};
     this.attempt = attempt;
+    const current = () => {
+      if (this.attempt !== attempt) throw videoError('cancelled', t('errors.video.cancelled', { service: a.name }));
+    };
     this.pending = id;
     this.emit('changed', this.state());
     try {
       const tokens = await this.flow.signIn(a.oauth(client), client);
+      current();
       if (!tokens.refresh_token) throw videoError('failed', t('errors.video.noRefreshToken', { service: a.name }));
       const grant = { accessToken: tokens.access_token, expiresAt: this.now() + (Number(tokens.expires_in) || 3600) * 1000 };
       // Encrypted before anything changes: a keyring that can't store it leaves the service as it was.
@@ -166,17 +178,28 @@ class VideoServices extends EventEmitter {
       } catch (_) {
         // The account's name is only shown in Settings; meetings work without it.
       }
+      current();
       this.file.accounts[id] = { email: profile.email, name: profile.name, secret, at: this.now(), renew: false };
       this.tokens.set(id, grant);
     } finally {
-      if (this.attempt === attempt) this.pending = null;
+      if (this.attempt === attempt) {
+        this.attempt = null;
+        this.pending = null;
+      }
       this.changed();
     }
     return this.state();
   }
 
+  // Stops the sign-in that is open, wherever it is.
   cancel() {
+    const open = Boolean(this.attempt);
+    this.attempt = null;
     this.flow.cancel();
+    if (open && this.pending) {
+      this.pending = null;
+      this.emit('changed', this.state());
+    }
   }
 
   // Forgets the sign-in on this computer; the access stays listed in the service's own account settings until the

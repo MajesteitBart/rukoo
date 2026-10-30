@@ -173,9 +173,9 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
 
   const videoServices = () => (video && Array.isArray(video.services) ? video.services : []);
   const videoName = (id) => (videoServices().find((s) => s.id === id) || { name: id }).name;
-  // The services a type's location can be: those connected here or needing renewal, and the type's own whatever its
-  // state, so opening a type never changes its location.
-  const videoOptions = (current) => videoServices().filter((s) => s.status === 'connected' || s.status === 'renew' || s.id === current);
+  // The services a type's location can be: on the computer that handles bookings, those connected here or needing
+  // renewal; and the type's own whatever its state, so opening a type never changes its location.
+  const videoOptions = (current) => videoServices().filter((s) => s.id === current || (state.thisDevice && (s.status === 'connected' || s.status === 'renew')));
   const videoLabel = (s) => (s.status === 'connected' ? s.name : s.status === 'renew' ? t('settings.booking.videoRenewOption', { service: s.name }) : t('settings.booking.videoOffOption', { service: s.name }));
   // A location select's value: 'video:zoom' for a video service, else the kind.
   const kindValue = (loc) => (loc.kind === 'video' ? `video:${loc.service}` : loc.kind);
@@ -658,6 +658,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   // Under Location: what a video service does, or where to connect one while none is.
   function videoHelp(value) {
     if (value.startsWith('video:')) return t('settings.booking.videoHelp', { service: videoName(value.slice(6)) });
+    if (!state.thisDevice) return t('settings.booking.videoOtherDevice');
     return videoOptions(null).length ? '' : t('settings.booking.videoNone');
   }
   const labelPlaceholder = (value) => (value.startsWith('video:') ? videoName(value.slice(6)) : t('settings.booking.locationLabelPlaceholder'));

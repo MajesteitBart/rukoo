@@ -6137,6 +6137,10 @@
     "message": "Each booking gets its own {service} link in the guest's invitation. The page shows only the label.",
     "description": "Meeting type editor: help under Location when a video service is chosen. service is Zoom, Microsoft Teams or Jitsi Meet. src/renderer/booking-settings.js"
   },
+  "settings.booking.videoOtherDevice": {
+    "message": "Video services are chosen on the computer that handles your bookings, where they are connected.",
+    "description": "Meeting type editor: help under Location on a computer that doesn't handle bookings, so it offers no video services. src/renderer/booking-settings.js"
+  },
   "settings.booking.videoNone": {
     "message": "To give each booking its own meeting link, connect Zoom, Microsoft Teams or Jitsi Meet in Settings → Video meetings.",
     "description": "Meeting type editor: help under Location while no video service is connected on this computer. src/renderer/booking-settings.js"
@@ -6789,6 +6793,10 @@
     "message": "Google Meet needs a Google calendar that allows it as the calendar for bookings.",
     "description": "Booking page error: a meeting type uses Google Meet but the destination calendar can't add it. src/main/booking/rules.js."
   },
+  "booking.errors.videoElsewhere": {
+    "message": "Choose a video service on the computer that handles your bookings, where it is connected.",
+    "description": "Booking page error: a meeting type's location was set to Zoom, Microsoft Teams or Jitsi Meet on a computer that doesn't handle bookings. src/main/booking/index.js (save)."
+  },
   "booking.errors.notBookingDevice": {
     "message": "Another computer handles your bookings. Use this computer for bookings first.",
     "description": "Booking page error: only the booking device can publish, rename the page or act on bookings. src/main/booking/index.js."
@@ -7044,6 +7052,14 @@
   "booking.notices.videoRenewText": {
     "message": "The {service} connection on this computer needs renewing, so new bookings of {types} go in your calendar without a link. Renew it in Settings → Video meetings.",
     "description": "Booking notice text when the sign-in to a video service a meeting type uses stopped working on the booking device. service is Zoom or Microsoft Teams; types lists the meeting types' titles. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoBookingsTitle": {
+    "message": "{service} meetings can't follow their bookings",
+    "description": "Booking notice title on the booking device: upcoming bookings have Zoom or Teams meetings, but that service can't be used on this computer, so moves and cancellations can't change the meetings. service is Zoom or Microsoft Teams. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoBookingsText": {
+    "message": { "one": "{why} Until that's fixed, Rukoo can't move or delete the {service} meeting of {count} upcoming booking.", "other": "{why} Until that's fixed, Rukoo can't move or delete the {service} meetings of {count} upcoming bookings." },
+    "description": "Booking notice text for the title above. why is one sentence with the reason (not connected here, or the connection needs renewing), service the video service, count how many upcoming bookings have such a meeting. src/main/booking/index.js (notices)."
   },
   "booking.notices.videoCreateTitle": {
     "message": "No {service} link for a booking",

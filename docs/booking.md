@@ -58,7 +58,7 @@ A location's details (the phone number, address or meeting link) go only into th
 
 ## Video meetings
 
-Settings → Video meetings connects Zoom, Microsoft Teams and Jitsi Meet. A connected service appears as a location in the meeting type editor, after Google Meet. Each booking of that type then gets a meeting of its own. The computer that handles bookings makes it when the booking becomes an event, on a Google or a CalDAV calendar, and puts its link in the event's location and on the first line of its description, so the guest's invitation has it. The account server never sees the link.
+Settings → Video meetings connects Zoom, Microsoft Teams and Jitsi Meet. On the computer that handles bookings, a connected service appears as a location in the meeting type editor, after Google Meet; other computers keep a type's service but can't choose a new one. Each booking of that type then gets a meeting of its own. The computer that handles bookings makes it when the booking becomes an event, on a Google or a CalDAV calendar, and puts its link in the event's location and on the first line of its description, so the guest's invitation has it. The account server never sees the link.
 
 | Service | What you need | What each booking gets |
 |---|---|---|
@@ -156,7 +156,7 @@ The computer that handles bookings shows a desktop notification for each new boo
 
 The computer that turned the page on handles it. It publishes your open times when you turn the page on or change it, a minute after a change in your calendars, and at least every 30 minutes. It checks for new bookings every minute. Settings → Booking page shows "Last updated from this computer" with how long ago.
 
-Your other computers signed in to the same Rukoo account show the page, its requests and bookings, and say "Bookings are handled by …". Use this computer makes the computer you're on the one that handles bookings, for example when the other one stays off. Video services are connected per computer: when a meeting type uses one that isn't connected on the computer you're on, the notice and the row with Use this computer say which to connect first. Requests can only be answered on the computer that handles bookings. When you delete a booked event on another computer, the booking is cancelled once the handling computer next syncs.
+Your other computers signed in to the same Rukoo account show the page, its requests and bookings, and say "Bookings are handled by …". Use this computer makes the computer you're on the one that handles bookings, for example when the other one stays off. Video services are connected per computer: when a meeting type, or the meeting of an upcoming booking, uses one that isn't connected on the computer you're on, the notice and the row with Use this computer say which to connect first. Requests can only be answered on the computer that handles bookings. When you delete a booked event on another computer, the booking is cancelled once the handling computer next syncs.
 
 ## When the computer is off
 
@@ -194,7 +194,7 @@ For each booking it keeps the time, the type, the status and how it was made (th
 
 A booking is deleted 30 days after the meeting. When it is cancelled, declined or lapses, its sealed details and the email hash go at once, and the rest 30 days later. Guests read this under the booking form and in the privacy statement, at [rukoo.io/privacy](https://rukoo.io/privacy) for the default server.
 
-Your Rukoo account holds the page's settings, its key pair and which event each booking became, end-to-end encrypted like every record. Export my data leaves the key pair out.
+Your Rukoo account holds the page's settings, its key pair, which event each booking became and its video meeting, end-to-end encrypted like every record. Export my data leaves the key pair out.
 
 ## Turning it off and deleting
 

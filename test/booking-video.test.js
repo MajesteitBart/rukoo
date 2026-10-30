@@ -49,6 +49,7 @@ function fakeVideo(statuses = {}) {
   v.n = 0;
   const problem = (code, message) => Object.assign(new Error(message), { video: true, code });
   v.status = (id) => v.statuses[id] || 'off';
+  v.manages = (id) => id !== 'jitsi';
   v.create = async (id, m) => {
     v.calls.push({ op: 'create', service: id, ...m });
     if (v.fail.create) throw v.fail.create;
@@ -95,6 +96,7 @@ async function pageWith(host, location) {
 
 const bookingEvent = (fake, id) => fake.store.find((e) => e.extendedProperties && e.extendedProperties.private && e.extendedProperties.private.rukooBooking === id);
 const mapOf = (host, id) => host.account.get('booking', `map:${host.account.acct}:${id}`);
+const keptOf = (host, id) => host.account.get('booking', `meeting:${host.account.acct}:${id}`);
 const ops = (video, op) => video.calls.filter((c) => c.op === op);
 
 test('a booking whose type uses a video service gets its own meeting, with the link in the invitation and not on the page', async (t) => {
@@ -243,30 +245,63 @@ test('a meeting made before the calendar write failed is the one the retry uses'
   const fake = fakeCalendar({ fail: ({ method, url }) => (down && method === 'POST' && /\/events$/.test(url.pathname) ? { status: 503, body: { error: { code: 503, message: 'Backend Error' } } } : null) });
   const host = await computer(t, srv, { fake });
   await pageWith(host, ZOOM);
-  const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe' } });
+  const start = slot(3, 10);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
   down = true;
   await host.booking.sync();
   assert.equal(bookingEvent(host.fake, id), undefined);
   assert.equal(srv.pages.get('bart').bookings.get(id).handledVersion, 0, 'not handled: tried again');
   assert.equal(ops(host.video, 'create').length, 1);
+  // Kept in the Rukoo account, with the time it was made for.
+  assert.deepEqual(keptOf(host, id), { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1', start, end: start + 30 * 60000 });
+
+  // The guest moves the booking before the retry: the meeting moves along when the event is made.
+  srv.guestReschedule({ handle: 'bart', id, start: start + HOUR });
   down = false;
   await host.booking.sync();
   assert.equal(ops(host.video, 'create').length, 1, 'no second meeting');
+  assert.deepEqual(ops(host.video, 'update').map((x) => [x.ref.id, x.start, x.end]), [['m1', start + HOUR, start + HOUR + 30 * 60000]]);
   assert.equal(bookingEvent(host.fake, id).location, 'https://us05web.zoom.us/j/8101?pwd=p1');
-  assert.equal(mapOf(host, id).video.id, 'm1');
-  assert.deepEqual(host.booking.file.meetings, {}, 'kept only until the event exists');
+  assert.equal(Date.parse(bookingEvent(host.fake, id).start.dateTime), start + HOUR);
+  assert.deepEqual(mapOf(host, id).video, { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1' });
+  assert.equal(keptOf(host, id), undefined, 'kept only until the event exists');
 
   // A booking cancelled while its event couldn't be written yet still takes its meeting with it.
   const other = await srv.book({ handle: 'bart', type: '30min', start: slot(4, 10), guest: { name: 'Max Power', email: 'max@example.org' } });
   down = true;
   await host.booking.sync();
-  assert.deepEqual(Object.keys(host.booking.file.meetings), [other.id]);
+  assert.equal(keptOf(host, other.id).id, 'm2');
   srv.guestCancel({ handle: 'bart', id: other.id });
   down = false;
   await host.booking.sync();
   assert.equal(bookingEvent(host.fake, other.id), undefined);
   assert.deepEqual(ops(host.video, 'remove').map((x) => x.ref.id), ['m2']);
-  assert.deepEqual(host.booking.file.meetings, {});
+  assert.equal(keptOf(host, other.id), undefined);
+});
+
+test('a computer that takes over uses the meeting the other one made before the calendar write failed', async (t) => {
+  const srv = await server(t);
+  let down = false;
+  const fake = fakeCalendar({ fail: ({ method, url }) => (down && method === 'POST' && /\/events$/.test(url.pathname) ? { status: 503, body: { error: { code: 503, message: 'Backend Error' } } } : null) });
+  const desk = await computer(t, srv, { fake, name: 'desk' });
+  await pageWith(desk, ZOOM);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe' } });
+  down = true;
+  await desk.booking.sync();
+  await desk.account.sync();
+  assert.equal(ops(desk.video, 'create').length, 1);
+
+  const laptop = await computer(t, srv, { fake, signUp: false, name: 'laptop' });
+  await laptop.account.sync();
+  down = false;
+  await laptop.booking.takeover();
+  await laptop.booking.sync();
+  assert.equal(ops(laptop.video, 'create').length, 0, 'no second meeting');
+  assert.equal(bookingEvent(fake, id).location, 'https://us05web.zoom.us/j/8101?pwd=p1');
+  assert.equal(mapOf(laptop, id).video.id, 'm1');
+  // Cancelled from the laptop, the desk's meeting goes.
+  await laptop.booking.action(id, 'cancel', { notify: true });
+  assert.deepEqual(ops(laptop.video, 'remove').map((x) => x.ref.id), ['m1']);
 });
 
 test('another computer says which services it still needs before it takes over, and says so after', async (t) => {
@@ -281,6 +316,13 @@ test('another computer says which services it still needs before it takes over, 
   const other = state.notices.find((n) => n.kind === 'otherDevice');
   assert.equal(other.text, 'That computer publishes your free times and adds bookings to your calendar. Before you use this computer instead, connect Zoom here in Settings → Video meetings.');
   assert.equal(state.notices.some((n) => n.kind === 'videoMissing'), false, 'the condition notice is for the computer that handles bookings');
+  // A video service is chosen where bookings are handled; other changes are fine here, and keep the type's service.
+  const type = state.settings.types[0];
+  await assert.rejects(laptop.booking.save({ types: [{ ...type, location: { ...ZOOM, service: 'teams' } }] }), (err) => err.code === 'invalid' && err.field === 'types[0].location.kind' && /computer that handles your bookings/.test(err.message));
+  await assert.rejects(laptop.booking.save({ types: [type, { ...type, slug: 'intro', title: 'Intro' }] }), (err) => err.field === 'types[1].location.kind');
+  state = await laptop.booking.save({ intro: 'Hello there' });
+  assert.deepEqual(state.settings.types[0].location, ZOOM);
+  assert.equal(state.settings.intro, 'Hello there');
 
   state = await laptop.booking.takeover();
   assert.equal(state.thisDevice, true);
@@ -293,6 +335,33 @@ test('another computer says which services it still needs before it takes over, 
   assert.match(laptop.booking.state().notices.find((n) => n.id === `video:${a.id}`).text, /Zoom isn't connected on this computer\./);
   laptop.video.set('zoom', 'connected');
   assert.equal(laptop.booking.state().notices.some((n) => n.kind === 'videoMissing'), false);
+});
+
+test('services that only upcoming bookings still use count before and after a takeover too', async (t) => {
+  const srv = await server(t);
+  const fake = fakeCalendar();
+  const desk = await computer(t, srv, { fake, name: 'desk', video: fakeVideo({ jitsi: 'connected' }) });
+  await pageWith(desk, ZOOM);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe' } });
+  await desk.booking.sync();
+  // The type moves to Jitsi; the booking keeps its Zoom meeting.
+  const type = desk.booking.settings().types[0];
+  await desk.booking.save({ types: [{ ...type, location: { ...ZOOM, service: 'jitsi' } }] });
+  await desk.account.sync();
+
+  const laptop = await computer(t, srv, { fake, signUp: false, name: 'laptop', video: fakeVideo({ zoom: 'off', jitsi: 'connected' }) });
+  await laptop.account.sync();
+  let state = await laptop.booking.load({ refresh: true });
+  assert.deepEqual(state.video.missing, [{ service: 'zoom', name: 'Zoom', status: 'off' }]);
+  assert.match(state.notices.find((n) => n.kind === 'otherDevice').text, /connect Zoom here/);
+
+  state = await laptop.booking.takeover();
+  const notice = state.notices.find((n) => n.id === 'videoMissing:zoom');
+  assert.equal(notice.title, "Zoom meetings can't follow their bookings");
+  assert.equal(notice.text, "Zoom isn't connected on this computer. Until that's fixed, Rukoo can't move or delete the Zoom meeting of 1 upcoming booking.");
+  laptop.video.set('zoom', 'connected');
+  assert.deepEqual(laptop.booking.state().video.missing, []);
+  assert.equal(mapOf(laptop, id).video.service, 'zoom');
 });
 
 test('Jitsi gives a booking a room on meet.jit.si without an account', async (t) => {

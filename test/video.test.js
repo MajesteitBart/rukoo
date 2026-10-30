@@ -317,6 +317,19 @@ test('a sign-in can be denied, cancelled, and ignores an answer meant for anothe
   await assert.rejects(second, (err) => err.code === 'cancelled');
   assert.equal(v.state().pending, null);
 
+  // Cancel after the browser answered, while the tokens are on their way: nothing is stored.
+  s.browser = 'allow';
+  let release;
+  s.hold = (r) => (r.form.grant_type === 'authorization_code' ? new Promise((resolve) => (release = resolve)) : null);
+  const late = v.connect('zoom');
+  for (let i = 0; i < 100 && !release; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  v.cancel();
+  assert.equal(v.state().pending, null);
+  release();
+  await assert.rejects(late, (err) => err.code === 'cancelled');
+  assert.equal(v.status('zoom'), 'off');
+  s.hold = null;
+
   // A redirect with a state that isn't this sign-in's is refused; the real one still completes it.
   s.browser = 'wrong-state';
   await v.connect('zoom');
