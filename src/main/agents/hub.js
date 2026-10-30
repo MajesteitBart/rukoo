@@ -15,7 +15,10 @@ const ownskills = require('./ownskills');
 const { ChatFiles, shown: shownFile, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
 const { PdfReader } = require('../pdfread');
 const { PhoneHost } = require('./phonehost');
-const { PERMISSIONS, permissionLevel } = require('./permission');
+const { PERMISSIONS, permissionLevel, strictest } = require('./permission');
+// Agents whose tool calls are bound to their chat (resolveCall()): Claude Code by a token for each chat, Codex by its
+// thread id. agent/panel.js has the same list.
+const BOUND_AGENTS = new Set(['claude', 'codex']);
 
 const MAX_CONVERSATIONS = 150;
 // Conversations an agent opened from outside the panel (Clark on WhatsApp) have their own, smaller cap.
@@ -1147,9 +1150,17 @@ class AgentHub extends EventEmitter {
     c.permission = permission;
   }
 
-  // The level Rukoo's tools go by in this chat: its own, else the one in Settings (permission.js).
+  // The chat's level: its own, else the one in Settings (permission.js). permissionFor() says when a call gets it.
   permissionOf(c) {
     return (c && permissionLevel(c.permission)) || permissionLevel(this.cfg.data.permission) || 'ask';
+  }
+
+  // The level a turn tells the agent about. Claude Code's calls carry their chat's token and Codex's its thread, so
+  // its own level counts in their chats. Hermes and OpenClaw name the chat in each call themselves, so their chats
+  // go no further than Settings (permissionFor()); the panel offers them no looser level either.
+  turnPermission(c) {
+    const own = this.permissionOf(c);
+    return BOUND_AGENTS.has(c.agent) ? own : strictest([own, this.permissionOf(null)]);
   }
 
   // The effort a turn sends: the chat's, unless the agent's current list no longer offers it for the model.
@@ -1389,7 +1400,7 @@ class AgentHub extends EventEmitter {
       turn.notes = notes;
       const local = this.localAgent(c);
       // The instructions describe Ask. The turn names another level, and Ask again after the agent heard of another.
-      turn.permission = this.permissionOf(c);
+      turn.permission = this.turnPermission(c);
       const told = firstTurn || recap ? null : c.toldPermission;
       const permission = turn.permission !== 'ask' || (told && told !== 'ask') ? turn.permission : null;
       const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null, attached: turn.attached, local, permission });
@@ -2122,22 +2133,51 @@ class AgentHub extends EventEmitter {
   }
 
   resolveConversation(identity, args = {}, meta = {}) {
-    if (!identity) return null;
+    return this.resolveCall(identity, args, meta).conversation;
+  }
+
+  // The chat a tool call is for, and whether the call is bound to it: tied to it by something the model doesn't
+  // pick, so that the chat's own level counts (permissionFor()).
+  resolveCall(identity, args = {}, meta = {}) {
+    const none = { conversation: null, bound: false };
+    if (!identity) return none;
     const own = (id) => {
       const c = typeof id === 'string' && id ? this.conversations.get(id) : null;
       return c && c.agent === identity.agent ? c : null;
     };
     // A per-chat token speaks for its own chat only. A stale or forged conversation_id must not move its
     // calls into another chat of the same agent; only tokens without a chat (Codex, Clark) are routed by it.
-    if (identity.conversationId) return own(identity.conversationId);
-    const byArg = own(args && args.conversation_id);
-    if (byArg) return byArg;
+    if (identity.conversationId) {
+      const c = own(identity.conversationId);
+      return c ? { conversation: c, bound: true } : none;
+    }
+    // Codex's token is shared, but its thread id comes from Codex in _meta, not from the model, so it counts before
+    // conversation_id, as in phonehost.route().
     const codex = meta && isObj(meta['x-codex-turn-metadata']) ? meta['x-codex-turn-metadata'].thread_id : null;
     const threadId = (meta && meta.threadId) || codex;
     const mapped = threadId ? own(this.threads.get(String(threadId))) : null;
-    if (mapped) return mapped;
+    if (mapped) return { conversation: mapped, bound: !identity.remote };
+    // The model writes conversation_id, and the one running turn is only a guess.
+    const byArg = own(args && args.conversation_id);
+    if (byArg) return { conversation: byArg, bound: false };
     const running = [...this.turns.keys()].map((id) => this.conversations.get(id)).filter((c) => c && c.agent === identity.agent);
-    return running.length === 1 ? running[0] : null;
+    return { conversation: running.length === 1 ? running[0] : null, bound: false };
+  }
+
+  // The level a tool call goes by, once it has its chat (ensureConversation()). A chat's own level, a looser one
+  // than in Settings too, counts only for a call bound to that chat (resolveCall()). Codex, Hermes and OpenClaw use
+  // one token for all their chats, and an agent that an email talked round while it works in an Ask chat could name
+  // a Full permission one. A call found by conversation_id, by the running turn or in no chat therefore gets the
+  // strictest of that chat's level, the one in Settings, and the level of every chat the agent has a turn in now.
+  permissionFor(call) {
+    const c = (call && call.conversation) || null;
+    if (c && call.boundTo === c.id) return this.permissionOf(c);
+    const levels = [this.permissionOf(c), this.permissionOf(null)];
+    for (const id of this.turns.keys()) {
+      const busy = this.conversations.get(id);
+      if (busy && call && busy.agent === call.agent) levels.push(this.permissionOf(busy));
+    }
+    return strictest(levels);
   }
 
   // Tools that put something on screen need a conversation. A call from outside a panel chat (Clark on

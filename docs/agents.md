@@ -163,7 +163,7 @@ With "Pair and send my accounts and agent settings", the phone can fetch the fol
 - Every account with its server settings, signature and aliases, and its password or Google refresh token in plain text. When this computer can't decrypt an account's secret (it was saved under another Windows user), the account goes without it and the phone asks you for it.
 - The Google OAuth client from `google-oauth.json`, so the phone can refresh Google sign-ins.
 - Mail settings: the default account, language, theme, general signature, VIPs, spam addresses, sync interval, hidden views, dark emails, swipe actions, notifications, sort order and density.
-- Agent settings: the default agent, the shortcuts, the [permission level](#permission-level), Hermes' name, address, API key and model, OpenClaw's address, token, agent and model, the model and access of Claude Code and Codex, and Rukoo's MCP port. The phone has no permission levels yet: with Auto or Full permission here it archives, moves and marks mail without asking, and it asks before everything else.
+- Agent settings: the default agent, the shortcuts, the [permission level](#permission-level), Hermes' name, address, API key and model, OpenClaw's address, token, agent and model, the model and access of Claude Code and Codex, and Rukoo's MCP port. The phone has no permission levels yet: with Auto or Full permission here it archives, moves and marks mail without asking, and it asks before everything else, a move into Trash or Spam included.
 
 Program paths, Claude Code's config folder and the Tailscale switches describe this computer, so they stay here. After one successful fetch the window closes. "Send accounts and settings again" opens it for another ten minutes, for example after you reinstalled the app on the phone. When the phone has fetched them, Rukoo says "Sent your accounts and settings to …". The export travels over Tailscale, which encrypts it; the phone stores the secrets encrypted with a key from the Android Keystore. With "Pair only", nothing leaves this computer and you set up the phone's accounts there.
 
@@ -343,13 +343,18 @@ The permission level decides which of Rukoo's approval cards a chat shows. Setti
 |---|---|---|---|
 | Archive, move between folders, mark read or unread, star | Card | Goes ahead | Goes ahead |
 | Delete, or move into Trash | Card | Card | Goes ahead |
+| Move into Spam | Card | Card | Goes ahead |
 | Unsubscribe | Card | Card | Goes ahead |
-| An event without guests on a calendar you own | Card | Goes ahead | Goes ahead |
-| An event with guests, or on a calendar someone shared with you | Card | Card | Goes ahead, and the guests get their invitation |
+| An event without guests on your own calendar | Card | Goes ahead | Goes ahead |
+| An event with guests, or on someone else's calendar | Card | Card | Goes ahead, and the guests get their invitation |
 | `propose_action`: sending a message, a task, a note, a record elsewhere | Card | Card | Goes ahead |
 | `write_draft`: a draft in the composer | Goes ahead | Goes ahead | Goes ahead |
 
-A draft never gets a card: the composer is where you check it, nothing leaves until you send it, and the draft's card in the chat has Undo. Auto goes ahead with what only you see and what you can undo. It asks before anything other people see or that is hard to take back. Full permission shows no cards at all. That includes messages and calendar invitations the agent sends, so pick it only for agents you trust completely. What goes ahead still shows in the chat: the notice of a mail action with its Undo, the event that was added, and "Allowed without asking" with what the agent proposed.
+A draft never gets a card: the composer is where you check it, nothing leaves until you send it, and the draft's card in the chat has Undo. Auto goes ahead with what only you see and what you can undo. It asks before anything other people see or that is hard to take back. Spam is in that second group: it empties itself, Gmail's after 30 days, and a move there teaches the spam filter. Full permission shows no cards at all. That includes messages and calendar invitations the agent sends, so pick it only for agents you trust completely. What goes ahead still shows in the chat: the notice of a mail action with its Undo, the event that was added, and "Allowed without asking" with what the agent proposed.
+
+Your own calendar is your primary calendar, or one you made yourself. A calendar someone shared with you to "Make changes and manage sharing" doesn't count, even though Google gives you its owner role: a manager's calendar you look after is still hers. On a CalDAV account your own calendars are the ones in your calendar home that nobody shared with you.
+
+A chat of Claude Code or Codex can have a looser level than Settings. Rukoo knows which chat their calls come from: Claude Code gets a token for each chat, and Codex says which of its threads makes the call. Hermes and OpenClaw use one token for all their chats and name the chat in each call themselves, and an agent misled by an email could name another chat. Their chats can be stricter than Settings, not looser, and the shield's menu doesn't offer a looser level for them. A call that names its chat, or comes from outside a chat, gets the strictest of that chat's level, the one in Settings and the level of every chat the agent is working in at that moment.
 
 When the level isn't Ask, each message tells the agent the level, and the tools answer with the result instead of `waiting_for_user`. A chat set back to Ask says so once. Rukoo can't send email itself at any level; an agent sends through its own tools.
 

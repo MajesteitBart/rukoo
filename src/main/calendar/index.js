@@ -52,6 +52,21 @@ const METHODS = new Set(['popup', 'email']);
 // The demo account's own calendars; its birthdays aren't.
 const DEMO_OWNED = new Set(['personal', 'work']);
 
+// Whether a calendar is the user's own, which is where Auto adds an event without guests without asking
+// (agents/permission.js). Stricter than owned, which Google sets for its owner role: that is manager access, which a
+// manager's calendar shared with "Make changes and manage sharing" also gives, and owned keeps counting such a
+// calendar toward availability. On Google the user's own is the primary calendar, one whose id is the account's
+// address, or one whose dataOwner is; a calendar cached before Rukoo read dataOwner is not, until it is read again.
+// On CalDAV it is owned: in the user's calendar home and not one shared with them there. Anything else is not.
+function mineOf(acc, cal, kind) {
+  if (kind === 'demo') return typeof cal.owned === 'boolean' ? cal.owned : DEMO_OWNED.has(cal.id);
+  // A Google account that needs signing in again keeps its calendars from before.
+  if (kind !== 'google' && kind !== 'reconnect') return cal.owned === true;
+  const me = String((acc && acc.email) || '').trim().toLowerCase();
+  const isMe = (v) => Boolean(me) && typeof v === 'string' && v.trim().toLowerCase() === me;
+  return cal.primary === true || isMe(cal.id) || isMe(cal.dataOwner);
+}
+
 // The parts of a repeat rule Rukoo writes and reads, and what each may hold.
 const DAYNAME = '(?:[+-]?(?:[1-9]|[1-4]\\d|5[0-3]))?(?:MO|TU|WE|TH|FR|SA|SU)';
 const list = (item) => new RegExp(`^${item}(?:,${item})*$`);
@@ -345,6 +360,7 @@ class Calendars extends EventEmitter {
       timeZone: cal.timeZone || null,
       defaultReminders: Array.isArray(cal.defaultReminders) ? cal.defaultReminders : [],
       owned,
+      mine: mineOf(acc, cal, kind),
       // Read-only calendars never count by default; the eye toggle never changes it.
       availability: typeof choices.availability[key] === 'boolean' ? choices.availability[key] : Boolean(writable && (primary || owned)),
       visible: typeof choices.visible[key] === 'boolean' ? choices.visible[key] : Boolean(selected)

@@ -77,6 +77,11 @@ async function shot(name, { whole = false } = {}) {
   await setTheme('dark');
 }
 
+// Claude Code's calls are bound to their chat, so its chats can have any level (hub.js permissionFor()).
+async function useClaude() {
+  await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'claude' }));
+}
+
 async function openAgentSettings() {
   await win.click('[data-action="settings"]');
   await win.locator('.page.settings .row', { hasText: 'Claude Code, Codex and OpenClaw' }).click();
@@ -98,7 +103,7 @@ test('Settings sets the default level, plainly, and a new chat in the panel foll
   await expect(options.nth(2).locator('.rh')).toHaveText(
     'Nothing waits for your approval. Agents can send messages and calendar invitations, delete mail and change other systems without asking. Only for agents you trust completely.'
   );
-  await expect(options.nth(1).locator('.rh')).toContainText('Deleting, unsubscribing, invitations and actions in other systems still wait for you.');
+  await expect(options.nth(1).locator('.rh')).toContainText('Deleting, moving mail to Spam, unsubscribing, invitations and actions in other systems still wait for you.');
   await shot('01-settings-dialog', { whole: true });
   await options.nth(1).click();
   await expect(row.locator('.value')).toHaveText('Auto');
@@ -121,7 +126,9 @@ test('Settings sets the default level, plainly, and a new chat in the panel foll
 });
 
 test("a chat's own level: Ask shows the card, Full permission lets the proposal through, and the level survives a restart", async () => {
+  await useClaude();
   await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Claude');
   await expect(button()).toHaveAttribute('aria-label', 'Permission level: Ask');
   await expect(button().locator('[data-icon="shield"]')).toHaveCount(1);
   await chip('Plan follow-ups').click();
@@ -170,6 +177,7 @@ test("a chat's own level: Ask shows the card, Full permission lets the proposal 
 });
 
 test('Auto adds an event without guests to your own calendar without a card, and the panel speaks Dutch', async () => {
+  await useClaude();
   await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
   await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
   await openChat('Call on Thursday');
@@ -197,11 +205,57 @@ test('Auto adds an event without guests to your own calendar without a card, and
   const res = await app.evaluate(async (_e, cid) => {
     const hub = global.__semAgents;
     const id = hub.engine.listMessages({ view: 'inbox' })[0].id;
-    const out = await hub.callTool({ agent: 'clark', conversationId: cid, remote: false }, 'mail_action', { conversation_id: cid, action: 'trash', message_ids: [id] }, {});
+    const out = await hub.callTool({ agent: 'claude', conversationId: cid, remote: false }, 'mail_action', { conversation_id: cid, action: 'trash', message_ids: [id] }, {});
     return out.structuredContent;
   }, cid);
   expect(res.status).toBe('waiting_for_user');
   await expect(cards()).toHaveCount(1);
+});
+
+test('a Hermes chat offers no level looser than Settings, in English and Dutch', async () => {
+  await openChat('Call on Thursday');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('Hermes');
+  await button().click();
+  await expect(win.locator('.bui-menu .bui-menu__label')).toHaveText(['Default', 'Ask', 'Auto', 'Full permission']);
+  await expect(menuRow('Ask')).toBeEnabled();
+  for (const level of ['Auto', 'Full permission']) {
+    await expect(menuRow(level)).toBeDisabled();
+    await expect(menuRow(level).locator('.bui-menu__sub')).toHaveText('For Hermes, only in Settings');
+  }
+  await shot('08-hermes-menu');
+  await menuRow('Full permission').click({ force: true });
+  await expect(win.locator('.bui-menu')).toBeVisible();
+  await win.keyboard.press('Escape');
+  await expect.poll(async () => (await conversation()) && (await conversation()).permission).toBeFalsy();
+
+  // Settings at Auto: Auto is the default, and only Full permission stays out of reach.
+  await app.evaluate(() => global.__semAgents.updateConfig({ permission: 'auto' }));
+  await expect(button().locator('.bui-pb__opttext')).toHaveText('Auto');
+  await button().click();
+  await expect(menuRow('Auto')).toBeEnabled();
+  await expect(menuRow('Auto').locator('.bui-menu__sub')).toHaveText('Asks before deleting or what others see');
+  await expect(menuRow('Full permission')).toBeDisabled();
+  await win.keyboard.press('Escape');
+  // A stricter level for the chat counts.
+  await say('Hello');
+  await expect.poll(async () => Boolean(await conversation())).toBe(true);
+  await expect.poll(() => app.evaluate(() => global.__semAgents.turns.size), { timeout: 15000 }).toBe(0);
+  await button().click();
+  await menuRow('Ask').click();
+  await expect(button().locator('.bui-pb__opttext')).toHaveText('Ask');
+  await expect.poll(async () => (await conversation()).permission).toBe('ask');
+  // A looser level saved for the chat before shows as the default it comes down to.
+  const { id } = await conversation();
+  await app.evaluate((_e, cid) => global.__semAgents.setChoice(cid, { permission: 'full' }), id);
+  await expect.poll(async () => (await conversation()).permission).toBe('full');
+  await expect(button().locator('.bui-pb__opttext')).toHaveText('Auto');
+  await expect(button()).not.toHaveAttribute('data-tone', 'warn');
+
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
+  await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
+  await button().click();
+  await expect(menuRow('Volledige toestemming').locator('.bui-menu__sub')).toHaveText('Voor Hermes alleen in Instellingen');
+  await shot('09-hermes-menu-nl');
 });
 
 test('in a narrow panel the button keeps its shield and drops its name', async () => {

@@ -1301,6 +1301,18 @@ test('status: disabled, broken and ready adapters; tokens and identities', async
     assert.equal(hub.resolveConversation({ agent: 'codex', conversationId: null }, {}, { threadId: 'th-9' }).id, c.id);
     assert.equal(hub.resolveConversation({ agent: 'codex', conversationId: null }, {}, { 'x-codex-turn-metadata': { thread_id: 'th-9' } }).id, c.id);
     assert.equal(hub.resolveConversation({ agent: 'clark', conversationId: null }, {}, { threadId: 'th-9' }), null, 'never across agents');
+    // Codex's thread id comes from Codex, conversation_id from the model: the thread goes first, and binds the call.
+    const other = hub.create({ agent: 'codex', message: null });
+    const codex = { agent: 'codex', conversationId: null, remote: false };
+    assert.deepEqual(
+      [hub.resolveCall(codex, { conversation_id: other.id }, { threadId: 'th-9' })].map((r) => [r.conversation.id, r.bound]),
+      [[c.id, true]]
+    );
+    assert.deepEqual(
+      [hub.resolveCall(codex, { conversation_id: other.id }, {})].map((r) => [r.conversation.id, r.bound]),
+      [[other.id, false]],
+      'conversation_id alone finds the chat but does not bind the call'
+    );
   } finally {
     await hub.dispose();
     await env.engine.close();

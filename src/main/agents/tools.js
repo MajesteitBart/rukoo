@@ -480,12 +480,16 @@ async function callTool(hub, identity, name, args, meta = {}) {
   } catch (err) {
     return errorResult(`${err.message} Check the ${tool.name} input schema and try again.`);
   }
+  // boundTo: the chat something the model doesn't pick ties the call to, whose own level it may use
+  // (hub.permissionFor).
+  const { conversation, bound } = hub.resolveCall(identity, clean, meta || {});
   const call = {
     agent: identity.agent,
     identity,
     remote: Boolean(identity.remote),
     meta: meta || {},
-    conversation: hub.resolveConversation(identity, clean, meta || {})
+    conversation,
+    boundTo: bound && conversation ? conversation.id : null
   };
   // A tool call during a turn shows the agent got that turn's input. Stopping the turn stops the PDF reads it
   // started (signal), so they don't hold up another chat's.
@@ -1319,7 +1323,7 @@ async function showSources(hub, args, call) {
 function proposeAction(hub, args, call) {
   const c = hub.ensureConversation(call);
   // Full permission: no card. The chat still says what the agent goes ahead with.
-  if (!needsApproval(hub.permissionOf(c), { kind: 'proposal' })) {
+  if (!needsApproval(hub.permissionFor(call), { kind: 'proposal' })) {
     const title = untag(args.title).replace(/\s+/g, ' ').trim();
     hub.addItem(c, { type: 'notice', text: `Allowed without asking: ${title}`, tone: 'info', code: 'auto-approved', params: { title: title.slice(0, 200) }, undo: null });
     return {
@@ -1433,13 +1437,17 @@ async function mailAction(hub, args, call) {
   const spec = { action: args.action, ids, folder: args.action === 'move' ? args.folder : null, pins: ids.map((id) => pinOf(engine, id)) };
   const title = mailTitle(engine, spec);
   // A move that lands in Trash is a delete by another name, so a level that asks before deleting asks before it too.
-  const intoTrash =
-    spec.action === 'move' &&
-    accounts.some((a) => {
-      const target = resolveFolder(engine, a, args.folder);
-      return engine.publicAccount(a).folders.some((f) => f.path === target && f.role === 'trash');
-    });
-  if (!needsApproval(hub.permissionOf(c), { kind: 'mail', action: spec.action, intoTrash })) {
+  // So does a move into Spam: Spam empties itself (Gmail's after 30 days), and the move teaches the spam filter.
+  const into = new Set(
+    spec.action === 'move'
+      ? accounts.map((a) => {
+          const target = resolveFolder(engine, a, args.folder);
+          const folder = engine.publicAccount(a).folders.find((f) => f.path === target);
+          return folder ? folder.role : null;
+        })
+      : []
+  );
+  if (!needsApproval(hub.permissionFor(call), { kind: 'mail', action: spec.action, intoTrash: into.has('trash'), intoSpam: into.has('junk') })) {
     const outcome = await runNow(hub, c, title, 'mail', () => executeMail(hub, c, spec), (result, error) => {
       const action = unsafeInline(title, 'mail action');
       return error
@@ -2088,7 +2096,7 @@ async function createEvent(hub, args, call) {
     location: input.location,
     description: input.description
   };
-  if (!needsApproval(hub.permissionOf(c), { kind: 'calendar', guests: guests.length, owned: cal.owned === true })) {
+  if (!needsApproval(hub.permissionFor(call), { kind: 'calendar', guests: guests.length, mine: cal.mine === true })) {
     const label = `Add "${title}" to the calendar`;
     const outcome = await runNow(hub, c, label, 'calendar', () => executeCalendar(hub, c, spec), (result, error) =>
       error || !result.ok

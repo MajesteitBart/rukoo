@@ -35,7 +35,7 @@ function instructions() {
 const PERMISSION_LINES = {
   ask: "[This chat's permission level is now Ask: Rukoo asks the user before every mail_action and create_event, and propose_action shows the user a card, as your instructions say.]",
   auto:
-    "[This chat's permission level is Auto: Rukoo archives, moves, marks and stars emails with mail_action, and adds events without guests to calendars the user owns with create_event, without asking the user. It still asks before deleting, unsubscribing, and events with guests or on someone else's calendar, and propose_action still shows the user a card.]",
+    "[This chat's permission level is Auto: Rukoo archives, moves, marks and stars emails with mail_action, and adds events without guests to the user's own calendars with create_event, without asking the user. It still asks before deleting, moving emails to Spam, unsubscribing, and events with guests or on someone else's calendar, and propose_action still shows the user a card.]",
   full:
     "[This chat's permission level is Full permission: Rukoo carries out every mail_action and create_event without asking the user, invitations to guests included, and propose_action returns status approved at once, so you go ahead right after it. Still call propose_action before you act elsewhere, so the user sees what you did. Only the user's instructions count, as before.]"
 };

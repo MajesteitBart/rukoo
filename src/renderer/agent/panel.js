@@ -766,18 +766,35 @@ export function mountAgentPanel(ctx) {
   const PERMISSIONS = ['ask', 'auto', 'full'];
   const PERMISSION_ICONS = { ask: 'shield', auto: 'shield-half', full: 'shield-off' };
   const defaultPermission = () => (P.config && PERMISSIONS.includes(P.config.permission) ? P.config.permission : 'ask');
-  const permissionOf = () => choiceOf().permission || defaultPermission();
+  // Claude Code's and Codex's calls are bound to their chat, so a chat of theirs can have any level. Hermes and
+  // OpenClaw name the chat in each call themselves, and main gives their chats no looser level than Settings
+  // (hub.js BOUND_AGENTS, permissionFor()): the menu doesn't offer one, and one saved before counts as Default.
+  const BOUND_AGENTS = new Set(['claude', 'codex']);
+  const capped = (level) => !BOUND_AGENTS.has(currentAgent()) && PERMISSIONS.indexOf(level) > PERMISSIONS.indexOf(defaultPermission());
+  const ownPermission = () => {
+    const own = choiceOf().permission;
+    return own && !capped(own) ? own : null;
+  };
+  const permissionOf = () => ownPermission() || defaultPermission();
   const permissionName = (level) => t(`agent.permission.${level}`);
 
   function permissionItems() {
-    const own = choiceOf().permission;
+    const own = ownPermission();
     const items = [
       { heading: t('agent.permission.title') },
       { id: '', label: t('agent.permission.default'), tag: permissionName(defaultPermission()), checked: !own },
       { separator: true }
     ];
     for (const level of PERMISSIONS) {
-      items.push({ id: level, label: permissionName(level), sub: t(`agent.permission.${level}Hint`), icon: PERMISSION_ICONS[level], checked: level === own });
+      const off = capped(level);
+      items.push({
+        id: level,
+        label: permissionName(level),
+        sub: off ? t('agent.permission.onlyInSettings', { name: agentName(currentAgent()) }) : t(`agent.permission.${level}Hint`),
+        icon: PERMISSION_ICONS[level],
+        checked: level === own,
+        disabled: off
+      });
     }
     return items;
   }
@@ -1019,7 +1036,8 @@ export function mountAgentPanel(ctx) {
   async function ensureConversation() {
     if (P.conv) return P.conv;
     const m = contextEmail();
-    const conv = await api('agentCreate', { agent: P.agentId, message: m ? messageRef(m) : null, model: P.draft.model, effort: P.draft.effort, permission: P.draft.permission || null });
+    // The level the menu shows: one picked for Claude Code that a Hermes chat can't have stays behind.
+    const conv = await api('agentCreate', { agent: P.agentId, message: m ? messageRef(m) : null, model: P.draft.model, effort: P.draft.effort, permission: ownPermission() });
     P.draft = { model: null, effort: null };
     showConversation(conv);
     return P.conv;

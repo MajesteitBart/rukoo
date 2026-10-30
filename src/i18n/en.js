@@ -911,6 +911,10 @@
     "message": "Never asks, not even before sending",
     "description": "Chat panel permission menu: second line under Full permission. Sending covers messages and calendar invitations. One short line; the menu is narrow."
   },
+  "agent.permission.onlyInSettings": {
+    "message": "For {name}, only in Settings",
+    "description": "Chat panel permission menu: second line under a level that can't be picked, in a chat of Hermes or OpenClaw, for a level looser than the one in Settings > Agents. That agent's chats can be stricter than Settings but not looser; the user can pick the level for all chats in Settings. name is the agent's name, e.g. \"Hermes\". One short line; the menu is narrow."
+  },
   "agent.panel.width": {
     "message": "Chat panel width",
     "description": "Chat panel: accessible name of the divider that resizes the panel."
@@ -4204,7 +4208,7 @@
     "description": "Settings, Agents page: explanation of the Ask choice in the Permission level dialog."
   },
   "settings.agents.permissionAutoHint": {
-    "message": "Archiving, moving, marking and starring mail, and adding events without guests to your own calendars, happen without asking. Deleting, unsubscribing, invitations and actions in other systems still wait for you.",
+    "message": "Archiving, moving, marking and starring mail, and adding events without guests to your own calendars, happen without asking. Deleting, moving mail to Spam, unsubscribing, invitations and actions in other systems still wait for you.",
     "description": "Settings, Agents page: explanation of the Auto choice in the Permission level dialog."
   },
   "settings.agents.permissionFullHint": {

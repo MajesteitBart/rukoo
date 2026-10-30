@@ -2326,6 +2326,11 @@
 .bui-menu__row.is-checked .bui-menu__check {
   visibility: visible;
 }
+/* Not in BUI: a row that can't be picked, such as a permission level a chat can't have, reads quieter. */
+.bui-menu__row:disabled .bui-menu__label,
+.bui-menu__row:disabled .bui-menu__ico {
+  color: var(--ink-3);
+}
 /* Not in BUI: a row with a second line, such as a chat in the chat list with its agent and what it is doing. The
  * status mark and the check sit on the first line. 6 + 18 + 2 + 16 + 6 = 48px. */
 .bui-menu__row--two {
