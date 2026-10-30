@@ -7778,6 +7778,12 @@ button.cal-gchip-main:hover {
   height: 16px;
   flex: none;
 }
+/* A nightly version doesn't fit the sidebar; the tooltip has all of it. */
+.update-btn span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .update-btn:hover {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
