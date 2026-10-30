@@ -325,7 +325,7 @@ class FakeRun {
       ]
     });
     await this.say('Two of these belong in Todoist. ');
-    await this.tool('propose_action', {
+    const res = await this.tool('propose_action', {
       title: 'Add 2 tasks to Todoist',
       detail: 'Review Proposal-v3.pdf (due Wednesday) and send notes to Joris after the call (due Friday).',
       fields: [
@@ -334,6 +334,8 @@ class FakeRun {
       ],
       confirm_label: 'Add tasks'
     });
+    // The chat's permission level let it through without a card: go ahead now.
+    if (res.status === 'approved') return this.followUp();
     return this.say("I'll add them once you approve.");
   }
 
@@ -473,6 +475,7 @@ class FakeRun {
       location: 'Phone'
     });
     if (res.error) return this.say(`That did not work: ${res.error}`);
+    if (res.status === 'done') return this.say(`You have time on ${found.lines[0] || slot.start}. I added the call there.`);
     return this.say(`You have time on ${found.lines[0] || slot.start}. I picked the first half hour; Rukoo asks you before it adds the call.`);
   }
 

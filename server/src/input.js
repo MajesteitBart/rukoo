@@ -314,25 +314,54 @@ function location(value, field) {
   return out;
 }
 
+// The lengths a guest can pick: 1 to 10 different lengths in minutes, the default duration among them, kept shortest
+// first. Left out, the type has only its duration, as from app versions before several lengths.
+export const MAX_DURATIONS = 10;
+
+function durations(value, duration, field) {
+  if (value === undefined || value === null) return [duration];
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_DURATIONS) {
+    throw invalid(`${field} must hold 1 to ${MAX_DURATIONS} lengths in minutes.`, field);
+  }
+  const out = value.map((m, i) => {
+    const minutes = integer(m, `${field}[${i}]`, 5, 480);
+    if (minutes % 5 !== 0) throw invalid(`${field}[${i}] must be a multiple of 5 minutes.`, `${field}[${i}]`);
+    return minutes;
+  });
+  if (new Set(out).size !== out.length) throw invalid(`${field} holds a length twice.`, field);
+  if (!out.includes(duration)) throw invalid(`${field} must include duration, the default length.`, field);
+  return out.sort((a, b) => a - b);
+}
+
 function meetingType(value, field, schedules) {
   if (!isObject(value)) throw invalid(`${field} must be an object.`, field);
+  const slugText = slug(value.slug, `${field}.slug`);
+  const title = line(value.title, `${field}.title`, { min: 1, max: 100 });
+  const duration = integer(value.duration, `${field}.duration`, 5, 480);
+  if (duration % 5 !== 0) throw invalid(`${field}.duration must be a multiple of 5 minutes.`, `${field}.duration`);
+  const lengths = durations(value.durations, duration, `${field}.durations`);
+  // slotInterval left out or null: start times follow the length. With one length that is the duration, as before.
+  // With several it is the length the guest picked: stored as slotFollowsLength, with the duration as slotInterval,
+  // because a Worker rolled back to before several lengths steps by slotInterval and would never finish a day on null.
+  const follows = (value.slotInterval === undefined || value.slotInterval === null) && lengths.length > 1;
   const type = {
-    slug: slug(value.slug, `${field}.slug`),
-    title: line(value.title, `${field}.title`, { min: 1, max: 100 }),
-    duration: integer(value.duration, `${field}.duration`, 5, 480),
+    slug: slugText,
+    title,
+    duration,
+    durations: lengths,
     description: paragraph(value.description ?? '', `${field}.description`, { max: 500 }),
     location: location(value.location ?? { kind: 'none' }, `${field}.location`),
     bufferBefore: integer(value.bufferBefore ?? 0, `${field}.bufferBefore`, 0, 240),
     bufferAfter: integer(value.bufferAfter ?? 0, `${field}.bufferAfter`, 0, 240),
     minNotice: integer(value.minNotice ?? 240, `${field}.minNotice`, 0, 43200),
     horizon: integer(value.horizon ?? 30, `${field}.horizon`, 1, 90),
-    slotInterval: integer(value.slotInterval ?? value.duration, `${field}.slotInterval`, 5, 480),
+    slotInterval: value.slotInterval === undefined || value.slotInterval === null ? duration : integer(value.slotInterval, `${field}.slotInterval`, 5, 480),
+    ...(follows ? { slotFollowsLength: true } : {}),
     dailyLimit: value.dailyLimit === null || value.dailyLimit === undefined ? null : integer(value.dailyLimit, `${field}.dailyLimit`, 1, 50),
     confirm: bool(value.confirm ?? false, `${field}.confirm`),
     hidden: bool(value.hidden ?? false, `${field}.hidden`),
     schedule: value.schedule ?? 'default'
   };
-  if (type.duration % 5 !== 0) throw invalid(`${field}.duration must be a multiple of 5 minutes.`, `${field}.duration`);
   if (typeof type.schedule !== 'string' || !schedules.includes(type.schedule)) {
     throw invalid(`${field}.schedule must name a schedule in windows.`, `${field}.schedule`);
   }
@@ -514,9 +543,21 @@ export function guestBooking(body) {
     notes: body.notes === undefined || body.notes === null ? '' : paragraph(body.notes, 'notes', { max: 1000 }),
     timeZone: body.time_zone === undefined || body.time_zone === null || body.time_zone === '' ? null : zone(body.time_zone, 'time_zone'),
     via: optionalLine(body.via, 'via', 80),
-    locale: body.locale === 'nl' || body.locale === 'en' ? body.locale : null
+    locale: body.locale === 'nl' || body.locale === 'en' ? body.locale : null,
+    duration: guestDuration(body.duration)
   };
   return out;
+}
+
+// The length a guest picked, in minutes: a whole number, or digits as MCP arguments and query parameters send it.
+// null when left out, which means the type's default length. Whether the type offers it is the page's to say.
+export function guestDuration(value, field = 'duration') {
+  if (value === undefined || value === null || value === '') return null;
+  const minutes = typeof value === 'string' && /^\d{1,3}$/.test(value.trim()) ? Number(value.trim()) : value;
+  if (!Number.isInteger(minutes) || minutes < 5 || minutes > 480) {
+    throw invalid(`${field} must be the meeting's length in minutes, one the meeting type lists in durations.`, field);
+  }
+  return minutes;
 }
 
 // A type named by a guest: anything that can't be a slug is simply unknown.
@@ -541,13 +582,14 @@ export function idempotencyKey(value) {
   return text;
 }
 
-// from and to (dates, inclusive), type and time_zone for a slot listing. Defaults are the caller's.
+// from and to (dates, inclusive), type, duration and time_zone for a slot listing. Defaults are the caller's.
 export function slotQuery(params) {
   const get = (name) => {
     const v = params.get(name);
     return v === null || v === '' ? null : v;
   };
   const type = get('type') === null ? null : typeSlug(get('type'));
+  const duration = guestDuration(get('duration'));
   const timeZone = guestZone(get('time_zone'));
   const date = (name) => {
     const v = get(name);
@@ -561,7 +603,7 @@ export function slotQuery(params) {
     if (days < 0) throw invalid('to must not be before from.', 'to');
     if (days > 31) throw invalid('from and to can be at most 31 days apart.', 'to');
   }
-  return { type, from, to, timeZone };
+  return { type, duration, from, to, timeZone };
 }
 
 // The media type of a request body, lowercased, without parameters.

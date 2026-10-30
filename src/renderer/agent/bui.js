@@ -62,6 +62,10 @@ const ICONS = {
   retry: ['<path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/>', 2],
   copy: ['<rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 1.8],
   shield: ['<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>', 1.8],
+  // The chat's permission levels beside the shield (Ask): half of it guarded (Auto), and none (Full permission).
+  // Lucide's shield-half and shield-off.
+  'shield-half': ['<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 22V2"/>', 1.8],
+  'shield-off': ['<path d="m2 2 20 20"/><path d="M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71"/><path d="M9.31 3.65a12.25 12.25 0 0 0 1.93-1.37 1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.78 9.78 0 0 1-.08 1.26"/>', 1.8],
   wrench: ['<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>', 1.8],
   person: ['<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', 1.8],
   calendar: ['<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>', 1.8],
@@ -1498,14 +1502,14 @@ export function chatComposer(opts = {}, handlers = {}) {
   let dot = statusDot(null);
   const agentName = h('span');
   const agentBtn = h('button', { type: 'button', class: 'bui-pb__modelbtn', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': labels.agent || '' }, dot, agentName, icon('chevron', 11, 2.4));
-  // The model and effort menus next to the agent picker. The caller fills them (setPicker); items is a
-  // function, so a menu shows what is current when it opens.
+  // The model and effort menus next to the agent picker, and the permission level by Send. The caller fills them
+  // (setPicker); items is a function, so a menu shows what is current when it opens.
   const pickers = {};
-  for (const kind of ['model', 'effort']) {
+  for (const kind of ['model', 'effort', 'permission']) {
     const text = h('span', { class: 'bui-pb__opttext' });
-    const lead = kind === 'effort' ? gauge(null) : null;
+    const lead = kind === 'effort' ? gauge(null) : kind === 'permission' ? icon('shield', 14) : null;
     const btn = h('button', { type: 'button', class: 'bui-pb__opt', 'data-pick': kind, 'aria-haspopup': 'listbox', 'aria-expanded': 'false', hidden: true }, lead, text, icon('chevron', 11, 2.4));
-    pickers[kind] = { btn, text, lead, meter: null, items: () => [], menu: null };
+    pickers[kind] = { btn, text, lead, meter: null, icon: kind === 'permission' ? 'shield' : null, items: () => [], menu: null };
     btn.addEventListener('click', () => openPicker(kind));
   }
   const send = h('button', { type: 'button', class: 'bui-pb__send', 'aria-label': labels.send || '' }, icon('send', 16));
@@ -1515,7 +1519,7 @@ export function chatComposer(opts = {}, handlers = {}) {
   const go = h('button', { type: 'button', class: 'bui-pb__go' }, icon('send', 15));
   const more = h('button', { type: 'button', class: 'bui-pb__more', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': labels.sendOptions || null, title: labels.sendOptions || null }, icon('chevron', 11, 2.4));
   const split = h('span', { class: 'bui-pb__split', hidden: true }, go, more);
-  const row = h('div', { class: 'bui-pb__row' }, agentBtn, pickers.model.btn, pickers.effort.btn, h('span', { class: 'bui-pb__spacer' }), split, send);
+  const row = h('div', { class: 'bui-pb__row' }, agentBtn, pickers.model.btn, pickers.effort.btn, h('span', { class: 'bui-pb__spacer' }), pickers.permission.btn, split, send);
   const box = h('div', { class: 'bui-pb__box' }, files, ta, disabledRow, row);
   const el = h('div', { class: 'bui-pb' }, box);
   let menu = null;
@@ -2148,18 +2152,27 @@ export function chatComposer(opts = {}, handlers = {}) {
       renderAgent();
       updateSend();
     },
-    // kind: 'model' or 'effort'. text is what the button shows (empty: only its icon), label its accessible name,
-    // items a function that returns glideMenu items. hidden takes the button away. meter: the effort dial's level
-    // (0 to 1, null for none).
-    setPicker(kind, { text = '', label = '', items, hidden = false, meter = null } = {}) {
+    // kind: 'model', 'effort' or 'permission'. text is what the button shows (empty: only its icon), label its
+    // accessible name, items a function that returns glideMenu items. hidden takes the button away. meter: the effort
+    // dial's level (0 to 1, null for none). icon: the permission button's icon. tone 'warn' marks a level that never
+    // asks.
+    setPicker(kind, { text = '', label = '', items, hidden = false, meter = null, icon: iconName = null, tone = '' } = {}) {
       const p = pickers[kind];
       if (!p) return;
-      if (p.lead && meter !== p.meter) {
+      if (kind === 'effort' && meter !== p.meter) {
         const next = gauge(meter);
         p.lead.replaceWith(next);
         p.lead = next;
         p.meter = meter;
       }
+      if (kind === 'permission' && iconName && iconName !== p.icon) {
+        const next = icon(iconName, 14);
+        p.lead.replaceWith(next);
+        p.lead = next;
+        p.icon = iconName;
+      }
+      if (tone) p.btn.dataset.tone = tone;
+      else delete p.btn.dataset.tone;
       p.text.textContent = text;
       p.text.hidden = !text;
       p.btn.setAttribute('aria-label', label);

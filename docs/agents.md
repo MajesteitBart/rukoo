@@ -190,7 +190,7 @@ With "Pair and send my accounts and agent settings", the phone can fetch the fol
 - Every account with its server settings, signature and aliases, and its password or Google refresh token in plain text. When this computer can't decrypt an account's secret (it was saved under another Windows user), the account goes without it and the phone asks you for it.
 - The Google OAuth client from `google-oauth.json`, so the phone can refresh Google sign-ins.
 - Mail settings: the default account, language, theme, general signature, VIPs, spam addresses, sync interval, hidden views, dark emails, swipe actions, notifications, sort order and density.
-- Agent settings: the default agent, the shortcuts, whether mail actions need approval, Hermes' name, address, API key and model, OpenClaw's address, token, agent and model, the model and access of Claude Code and Codex, and Rukoo's MCP port.
+- Agent settings: the default agent, the shortcuts, the [permission level](#permission-level), Hermes' name, address, API key and model, OpenClaw's address, token, agent and model, the model and access of Claude Code and Codex, and Rukoo's MCP port. The phone has no permission levels yet: with Auto or Full permission here it archives, moves and marks mail without asking, and it asks before everything else, a move into Trash or Spam included.
 
 Program paths, Claude Code's config folder and the Tailscale switches describe this computer, so they stay here. After one successful fetch the window closes. "Send accounts and settings again" opens it for another ten minutes, for example after you reinstalled the app on the phone. When the phone has fetched them, Rukoo says "Sent your accounts and settings to …". The export travels over Tailscale, which encrypts it; the phone stores the secrets encrypted with a key from the Android Keystore. With "Pair only", nothing leaves this computer and you set up the phone's accounts there.
 
@@ -276,12 +276,12 @@ Sometimes the agent no longer has the session. By default, Claude Code deletes t
 | `get_draft` | Reads the composer, including your own edits |
 | `show_plan` | A list of steps or tasks in the chat, updated as the agent works |
 | `show_sources` | Cards for the sources the agent used. Email sources open the email |
-| `propose_action` | An approval card for something other people will see or that changes another system |
-| `mail_action` | Archive, delete, move, mark read or unread, star, or unsubscribe. Rukoo asks you first |
+| `propose_action` | An approval card for something other people will see or that changes another system. With Full permission there is no card, and the agent goes ahead |
+| `mail_action` | Archive, delete, move, mark read or unread, star, or unsubscribe. Rukoo asks you first, unless the chat's [permission level](#permission-level) lets it go ahead |
 | `read_skill` | One of the [skills](#skills), with the text files next to it. Without a name, the list of skills |
 | `list_events` | The events in your calendars between two dates, at most 92 days apart, in every account with a calendar. Without a calendar named, the calendars you show in Rukoo |
 | `find_free_time` | Open time of at least a given length in a stretch of up to 31 days, on the calendars that count toward your availability, within your working hours, your booking page's hours or any time. It names the accounts Rukoo couldn't read |
-| `create_event` | Adds an event to one of your calendars, with guests and Google Meet where the calendar allows them. Rukoo asks you first |
+| `create_event` | Adds an event to one of your calendars, with guests and Google Meet where the calendar allows them. Rukoo asks you first, unless the chat's [permission level](#permission-level) lets it go ahead |
 | `get_booking_link` | The link to your [booking page](booking.md) and to each meeting type that isn't hidden, while the page is on |
 
 Times go to the agent in ISO 8601 with your time zone's offset. All-day events have dates, and their end date is the day after the last day. A long `list_events` answer stays under about 40,000 characters, so it fits what MCP clients take from one call: descriptions are cut at 500 characters and guest lists at 10, then the list stops with `truncated` and a note that tells the agent to ask for a shorter stretch, one calendar or a query. When none of your calendars counts toward your availability, `find_free_time` says its times weren't checked against any calendar. Guests need a calendar that sends invitations itself: a Google calendar, or a CalDAV calendar whose server does. Elsewhere `create_event` refuses guests before any card appears, and the agent is told to leave them out.
@@ -355,12 +355,39 @@ Rukoo's own skills stay slash commands, because every agent has them. The quick 
 
 ## Approvals
 
-There are four kinds:
+There are four kinds. The [permission level](#permission-level) decides when the first three show a card.
 
 - **Proposals.** When an agent calls `propose_action`, Rukoo shows a card and the agent stops. If you approve, Rukoo sends the agent a new message saying so, and the agent carries it out. If you decline, the agent hears it next time you write.
-- **Mail actions.** Rukoo runs these itself after you approve, and you can undo a move from the notice that follows. In Settings → Agents you can let agents archive, move and mark mail without asking. Deleting and unsubscribing always ask.
-- **Calendar events.** When an agent calls `create_event`, Rukoo shows the event as it will be made: title, time, calendar, guests, Google Meet, place and description. Create adds exactly that, and a notice says so; Cancel adds nothing. These always ask. The agent hears the outcome with your next message. A card that is still waiting when Rukoo restarts can be answered afterwards.
+- **Mail actions.** Rukoo runs these itself after you approve, and you can undo a move from the notice that follows.
+- **Calendar events.** When an agent calls `create_event`, Rukoo shows the event as it will be made: title, time, calendar, guests, Google Meet, place and description. Create adds exactly that, and a notice says so; Cancel adds nothing. The agent hears the outcome with your next message. A card that is still waiting when Rukoo restarts can be answered afterwards.
 - **The agent's own permissions.** Claude Code and Codex ask before running commands or changing files when their access is set to "Ask before actions", the default. Their questions show up as cards in the chat. With "Full access" they don't ask. Chats from [Rukoo on your phone](#rukoo-on-your-phone) always ask, and their cards show on the phone. Hermes follows its own approval settings, and so does OpenClaw, whose approvals Rukoo doesn't see.
+
+## Permission level
+
+The permission level decides which of Rukoo's approval cards a chat shows. Settings → Agents → Permission level sets it for every chat. The shield button beside Send shows the level of the chat on screen and sets one for that chat alone; Default follows Settings again. A chat keeps its own level after a restart. Rukoo checks the level in the app itself each time an agent calls a tool, so a change counts from the agent's next action.
+
+| | Ask (default) | Auto | Full permission |
+|---|---|---|---|
+| Archive, move between folders, mark read or unread, star | Card | Goes ahead | Goes ahead |
+| Delete, or move into Trash | Card | Card | Goes ahead |
+| Move into Spam | Card | Card | Goes ahead |
+| Unsubscribe | Card | Card | Goes ahead |
+| An event without guests on your own calendar | Card | Goes ahead | Goes ahead |
+| An event with guests, or on someone else's calendar | Card | Card | Goes ahead, and the guests get their invitation |
+| `propose_action`: sending a message, a task, a note, a record elsewhere | Card | Card | Goes ahead |
+| `write_draft`: a draft in the composer | Goes ahead | Goes ahead | Goes ahead |
+
+A draft never gets a card: the composer is where you check it, nothing leaves until you send it, and the draft's card in the chat has Undo. Auto goes ahead with what only you see and what you can undo. It asks before anything other people see or that is hard to take back. Spam is in that second group: it empties itself, Gmail's after 30 days, and a move there teaches the spam filter. Full permission shows no cards at all. That includes messages and calendar invitations the agent sends, so pick it only for agents you trust completely. What goes ahead still shows in the chat: the notice of a mail action with its Undo, the event that was added, and "Allowed without asking" with what the agent proposed.
+
+Your own calendar is your primary calendar, or one you made yourself. A calendar someone shared with you to "Make changes and manage sharing" doesn't count, even though Google gives you its owner role: a manager's calendar you look after is still hers. On a CalDAV account your own calendars are the ones in your calendar home that nobody shared with you.
+
+A chat of Claude Code or Codex can have a looser level than Settings. Rukoo knows which chat their calls come from: Claude Code gets a token for each chat, and Codex says which of its threads makes the call. Hermes and OpenClaw use one token for all their chats and name the chat in each call themselves, and an agent misled by an email could name another chat. Their chats can be stricter than Settings, not looser, and the shield's menu doesn't offer a looser level for them. A call that names its chat, or comes from outside a chat, gets the strictest of that chat's level, the one in Settings and the level of every chat the agent is working in at that moment.
+
+When the level isn't Ask, each message tells the agent the level, and the tools answer with the result instead of `waiting_for_user`. A chat set back to Ask says so once. Rukoo can't send email itself at any level; an agent sends through its own tools.
+
+The level doesn't cover the agent's own permission requests. Claude Code and Codex ask before commands and file changes as their Access in Settings says, and Hermes and OpenClaw follow their own settings. Rukoo can't tell which commands can be undone, so it leaves that choice to the agent's own setting.
+
+Before the levels, Settings had "Let agents archive, move and mark mail without asking". Auto does that too, but it also adds events without asking, so Rukoo doesn't switch to it by itself: everyone starts at Ask.
 
 ## Safety
 

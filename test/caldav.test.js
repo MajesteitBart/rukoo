@@ -809,6 +809,8 @@ test('Server settings check the calendar server before saving it, and the accoun
     assert.deepEqual(view.accounts.map((a) => [a.id, a.kind, a.state, a.calendars.map((c) => c.name).join(',')]), [['c1', 'caldav', 'ready', 'Home,Shared with me']]);
     // The calendar view gets each calendar's own colour.
     assert.deepEqual(view.accounts[0].calendars.map((c) => [c.providerColor, c.color]), [['#2952a3', '#2952a3'], ['#e6c800', '#e6c800']]);
+    // The user's own, where Auto adds an event without asking: the one in the user's calendar home, not the shared one.
+    assert.deepEqual(view.accounts[0].calendars.map((c) => [c.name, c.owned, c.mine]), [['Home', true, true], ['Shared with me', false, false]]);
     assert.deepEqual(view.events.map((e) => e.title).sort(), ['Stand-up', 'Stand-up, later']);
 
     // A new event through the store, then a change to one occurrence.
