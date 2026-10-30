@@ -2762,8 +2762,10 @@ test('while the agent works, Enter steers a message into its turn and Alt+Enter 
   await expect(win.locator('.bui-menu')).toHaveCount(0);
   await input().fill('');
   await panelShot('running-steer-and-queue', { dutch: () => waiting().first().locator('.bui-queued__status', { hasText: 'Hermes leest het vóór de volgende stap' }) });
-  // The narrowest panel (app.js AGENT_MIN): the row keeps the agent, Steer and Stop on one line.
-  await win.evaluate(() => document.documentElement.style.setProperty('--agent-w', '320px'));
+  // The narrowest panel (app.js AGENT_MIN): the row keeps the agent, Steer and Stop on one line. The divider sets the
+  // width the way a user does, so the redraws of the running turn keep it.
+  await win.focus('.agent-divider');
+  for (let i = 0; i < 4; i++) await win.keyboard.press('ArrowRight');
   await expect.poll(() => pane().evaluate((el) => Math.round(el.getBoundingClientRect().width))).toBeLessThanOrEqual(322);
   await input().fill('Keep it short');
   await expect(steerButton()).toBeVisible();
@@ -2773,7 +2775,8 @@ test('while the agent works, Enter steers a message into its turn and Alt+Enter 
   expect(Math.abs(stop.y - (await steerButton().boundingBox()).y)).toBeLessThan(2);
   await panelShot('running-narrow');
   await input().fill('');
-  await win.evaluate(() => document.documentElement.style.removeProperty('--agent-w'));
+  await win.focus('.agent-divider');
+  for (let i = 0; i < 3; i++) await win.keyboard.press('ArrowLeft');
 
   // Allowed, the agent goes on: it reads the steered message at its next step and answers it in the same turn; then
   // the queued one goes as a turn of its own.
