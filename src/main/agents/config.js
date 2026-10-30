@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { PERMISSIONS } = require('./permission');
 
 const AGENT_IDS = ['clark', 'claude', 'codex', 'openclaw'];
 // Agents that keep a secret (the Hermes API key, the OpenClaw gateway token), encrypted in the file as `key`.
@@ -29,8 +30,10 @@ const SHORTCUT_PROMPT_MAX = 4000;
 const DEFAULTS = {
   version: 1,
   defaultAgent: 'clark',
-  // true: mail_action runs without an approval card (unsubscribe always asks).
-  autoMailActions: false,
+  // The permission level a chat has unless it picked its own (permission.js). Replaces autoMailActions, the switch
+  // that let mail actions other than deleting and unsubscribing run without a card: load() never turns that into
+  // Auto, which would also add events without asking.
+  permission: 'ask',
   shortcuts: null,
   clark: { enabled: true, name: 'Hermes', url: '', key: null, model: '' },
   claude: { enabled: true, exe: '', configDir: '', model: '', access: 'ask' },
@@ -239,7 +242,8 @@ class AgentConfig {
     this.data = {
       version: 1,
       defaultAgent: AGENT_IDS.includes(s.defaultAgent) ? s.defaultAgent : DEFAULTS.defaultAgent,
-      autoMailActions: s.autoMailActions === true,
+      // A file from before the levels has autoMailActions instead, and starts at Ask.
+      permission: PERMISSIONS.includes(s.permission) ? s.permission : DEFAULTS.permission,
       shortcuts: storedShortcuts(s.shortcuts),
       clark: mergeSection(DEFAULTS.clark, s.clark),
       claude: mergeSection(DEFAULTS.claude, s.claude),
@@ -294,7 +298,7 @@ class AgentConfig {
     return {
       version: 1,
       defaultAgent: d.defaultAgent,
-      autoMailActions: d.autoMailActions,
+      permission: d.permission,
       shortcuts: d.shortcuts ? clone(d.shortcuts) : null,
       clark: { ...clark, hasKey: Boolean(key) },
       claude: { ...d.claude },
@@ -335,7 +339,10 @@ class AgentConfig {
       if (!AGENT_IDS.includes(patch.defaultAgent)) throw new AgentError('invalid', 'defaultAgent must be clark, claude, codex or openclaw');
       next.defaultAgent = patch.defaultAgent;
     }
-    if ('autoMailActions' in patch) next.autoMailActions = bool(patch.autoMailActions, 'autoMailActions');
+    if ('permission' in patch) {
+      if (!PERMISSIONS.includes(patch.permission)) throw new AgentError('invalid', 'permission must be ask, auto or full');
+      next.permission = patch.permission;
+    }
     if ('shortcuts' in patch) next.shortcuts = shortcutList(patch.shortcuts);
     const section = (name, apply) => {
       if (!(name in patch)) return;

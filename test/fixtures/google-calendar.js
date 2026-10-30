@@ -143,8 +143,9 @@ function instanceOf(master, occ) {
 // and answers 409 for one it has). attendeeCap: how many guests Google sends back at most; an event with more comes
 // back with only the user's own entry and attendeesOmitted, also when maxAttendees asks for more.
 // fail answers a request before the fake looks at it; lose lets the fake carry it out and then loses the answer, as
-// on a connection that drops: fetch fails, or with a status the answer is that error instead.
-function fakeCalendar({ events = [], fail = null, lose = null, conference = 'ready', pendingReads = 1, insertUid = 'ignore', attendeeCap = Infinity } = {}) {
+// on a connection that drops: fetch fails, or with a status the answer is that error instead. more: calendars after
+// the four, such as DELEGATED.
+function fakeCalendar({ events = [], fail = null, lose = null, conference = 'ready', pendingReads = 1, insertUid = 'ignore', attendeeCap = Infinity, more = [] } = {}) {
   const calendars = [
     {
       id: 'me@example.com',
@@ -162,7 +163,8 @@ function fakeCalendar({ events = [], fail = null, lose = null, conference = 'rea
     },
     { id: 'nl#holiday@group.v.calendar.google.com', summary: 'Holidays', accessRole: 'reader', selected: false, backgroundColor: '#16a765' },
     { id: 'busy@example.com', summary: 'Free/busy only', accessRole: 'freeBusyReader' },
-    { id: 'team@example.com', summary: 'Team', accessRole: 'writerWithoutPrivateAccess', backgroundColor: '#FA573C', conferenceProperties: { allowedConferenceSolutionTypes: ['eventHangout'] } }
+    { id: 'team@example.com', summary: 'Team', accessRole: 'writerWithoutPrivateAccess', backgroundColor: '#FA573C', conferenceProperties: { allowedConferenceSolutionTypes: ['eventHangout'] } },
+    ...more
   ];
   let next = 1;
   let version = 1;
@@ -401,6 +403,15 @@ function fakeCalendar({ events = [], fail = null, lose = null, conference = 'rea
   return { fetchImpl, requests, store, calendars, find: (id, calendarId = 'me@example.com') => (find(calendarId, id) || {}).item || null };
 }
 
+// Calendars the user has the owner role on, which is manager access: Google gives it to everyone a calendar is shared
+// with to "Make changes and manage sharing". A manager's own calendar (its id is her address, and Google gives no
+// dataOwner for a primary calendar), one she made, and one the user made, whose dataOwner is the user.
+const DELEGATED = [
+  { id: 'manager@example.com', summary: 'Lotte', accessRole: 'owner', selected: true, conferenceProperties: { allowedConferenceSolutionTypes: ['hangoutsMeet'] } },
+  { id: 'board1@group.calendar.google.com', summary: 'Board', accessRole: 'owner', dataOwner: 'manager@example.com', selected: true },
+  { id: 'side1@group.calendar.google.com', summary: 'Side project', accessRole: 'owner', dataOwner: 'ME@example.com', selected: true }
+];
+
 function setup(fake, { scopes = CALENDAR_SCOPES, extra = [] } = {}) {
   const dataDir = tempDir('sem-cal-');
   fs.writeFileSync(
@@ -433,4 +444,4 @@ const at = (base, days, h, m = 0) => {
 const iso = (d) => d.toISOString();
 const day = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-module.exports = { DAY, fakeCalendar, setup, settle, monday, at, iso, day };
+module.exports = { DAY, DELEGATED, fakeCalendar, setup, settle, monday, at, iso, day };

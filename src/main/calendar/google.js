@@ -526,7 +526,11 @@ class GoogleCalendar {
         color: hexColor(c.backgroundColor),
         conference: Boolean(c.conferenceProperties && (c.conferenceProperties.allowedConferenceSolutionTypes || []).includes('hangoutsMeet')),
         defaultReminders: reminderList(c.defaultReminders),
-        owned: c.accessRole === 'owner'
+        // The owner role is manager access: anyone a calendar is shared with to "Make changes and manage sharing"
+        // has it. Who the calendar belongs to is its dataOwner, which Google gives for secondary calendars only
+        // (index.js mineOf).
+        owned: c.accessRole === 'owner',
+        dataOwner: typeof c.dataOwner === 'string' && c.dataOwner ? c.dataOwner : null
       }))
       .sort((a, b) => Number(b.primary) - Number(a.primary));
   }

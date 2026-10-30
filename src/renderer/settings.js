@@ -91,6 +91,12 @@ const ACCESS = [
   { value: 'ask', get label() { return t('settings.agents.accessAsk'); }, get hint() { return t('settings.agents.accessAskHint'); } },
   { value: 'full', get label() { return t('settings.agents.accessFull'); }, get hint() { return t('settings.agents.accessFullHint'); } }
 ];
+// The permission level a chat has unless it picked its own (main: agents/permission.js). The names are the chat panel's.
+const PERMISSION = [
+  { value: 'ask', get label() { return t('agent.permission.ask'); }, get hint() { return t('settings.agents.permissionAskHint'); } },
+  { value: 'auto', get label() { return t('agent.permission.auto'); }, get hint() { return t('settings.agents.permissionAutoHint'); } },
+  { value: 'full', get label() { return t('agent.permission.full'); }, get hint() { return t('settings.agents.permissionFullHint'); } }
+];
 const agentName = (config, id) => (id === 'clark' ? (config && config.clark && config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'openclaw' ? 'OpenClaw' : 'Codex');
 const agentStateOf = (status, id) => {
   const s = status && status[id] ? status[id].state : 'starting';
@@ -634,7 +640,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       <div class="card">
         ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(agentName(c, c.defaultAgent))}</span>`, action: 'agent-default' })}
         ${row({ title: t('settings.agents.shortcuts'), desc: t('settings.agents.shortcutsHelp'), action: 'agent-shortcuts' })}
-        ${row({ title: t('settings.agents.autoMail'), desc: t('settings.agents.autoMailHelp'), action: 'agent-auto', toggle: Boolean(c.autoMailActions) })}
+        ${row({ title: t('settings.agents.permission'), desc: t('settings.agents.permissionHelp'), value: `<span data-agent-permission>${esc(labelOf(PERMISSION, c.permission))}</span>`, action: 'agent-permission' })}
       </div>
       ${head('clark')}
       <div class="card agent-card">
@@ -819,9 +825,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         if (v && (await updateAgents({ defaultAgent: v }))) b.querySelector('[data-agent-default]').textContent = agentName(agentState.config, v);
         return;
       }
-      case 'agent-auto':
-        if (await updateAgents({ autoMailActions: !c.autoMailActions })) flip(b, Boolean(agentState.config.autoMailActions));
+      case 'agent-permission': {
+        const v = await choiceDialog(t('settings.agents.permission'), PERMISSION, c.permission, { stacked: true });
+        if (v && (await updateAgents({ permission: v }))) b.querySelector('[data-agent-permission]').textContent = labelOf(PERMISSION, agentState.config.permission);
         return;
+      }
       case 'agent-enabled':
         if (await updateAgents({ [id]: { enabled: c[id].enabled === false } })) flip(b, agentState.config[id].enabled !== false);
         return;

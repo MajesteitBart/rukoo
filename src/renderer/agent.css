@@ -2092,6 +2092,14 @@
 .bui-pb__opt[data-pick='effort'] {
   flex-shrink: 0;
 }
+/* The chat's permission level by Send: a shield per level and its short name. Full permission never asks, so its
+ * shield is orange, like other states that want your attention. */
+.bui-pb__opt[data-pick='permission'] {
+  flex-shrink: 0;
+}
+.bui-pb__opt[data-pick='permission'][data-tone='warn'] > svg:first-child {
+  color: var(--orange);
+}
 .bui-pb__opt:hover,
 .bui-pb__opt[aria-expanded='true'] {
   background: var(--hover);
@@ -2110,7 +2118,8 @@
  * their chevrons, so the model name stays readable. */
 @container (max-width: 330px) {
   .bui-pb__opt > [data-icon='chevron'],
-  .bui-pb__opt[data-pick='effort'] .bui-pb__opttext {
+  .bui-pb__opt[data-pick='effort'] .bui-pb__opttext,
+  .bui-pb__opt[data-pick='permission'] .bui-pb__opttext {
     display: none;
   }
 }
@@ -2317,6 +2326,11 @@
 .bui-menu__row.is-checked .bui-menu__check {
   visibility: visible;
 }
+/* Not in BUI: a row that can't be picked, such as a permission level a chat can't have, reads quieter. */
+.bui-menu__row:disabled .bui-menu__label,
+.bui-menu__row:disabled .bui-menu__ico {
+  color: var(--ink-3);
+}
 /* Not in BUI: a row with a second line, such as a chat in the chat list with its agent and what it is doing. The
  * status mark and the check sit on the first line. 6 + 18 + 2 + 16 + 6 = 48px. */
 .bui-menu__row--two {
@@ -2350,6 +2364,10 @@
 }
 .bui-menu__row--two .bui-menu__label {
   line-height: 18px;
+}
+/* An icon in a row with a second line sits on the first line, like the check. */
+.bui-menu__row--two .bui-menu__ico {
+  height: 18px;
 }
 .bui-menu__sub {
   overflow: hidden;

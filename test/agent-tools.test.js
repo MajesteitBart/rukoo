@@ -14,7 +14,7 @@ async function setup({ auto = false, deps = {} } = {}) {
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   await engine.syncAccount(acc.id);
-  if (auto) fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({ autoMailActions: true }));
+  if (auto) fs.writeFileSync(path.join(dir, 'agents.json'), JSON.stringify({ permission: 'auto' }));
   const unsubscribed = [];
   const hub = new AgentHub({
     engine,

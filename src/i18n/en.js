@@ -552,6 +552,10 @@
     "message": "Not done yet: {title}. {name} hears about your approval with your next message.",
     "description": "Chat transcript info line: you approved a proposal, but the follow-up turn could not start (for example the app quit). title is the proposal, name the agent."
   },
+  "agent.notices.auto-approved": {
+    "message": "Allowed without asking: {title}",
+    "description": "Chat transcript info line: the agent proposed an action in another system (propose_action) and the chat's permission level is Full permission, so Rukoo let it go ahead without an approval card. title is what the agent said it will do, e.g. \"Add 2 tasks to Todoist\" (tools.js proposeAction, agent/panel.js localizeNotice)."
+  },
   "agent.notices.new-session": {
     "message": "{name} started a new session",
     "description": "Chat panel info line (agent/panel.js localizeNotice): Claude Code or Hermes no longer had this chat's session, so it started a new one (claude.js ClaudeAdapter.turn, hermes.js HermesAdapter.session). Rukoo sends that session the email and a recap of the chat. name is the agent name."
@@ -866,6 +870,50 @@
   "agent.panel.waitFiles": {
     "message": "Wait until the files are added, then send.",
     "description": "Chat panel: why Send is off while a file you dropped, pasted or picked is still being added (tooltip of the Send button), and the notice when you pick a quick action or skill meanwhile (refreshHolding and runAction in agent/panel.js)."
+  },
+  "agent.permission.title": {
+    "message": "Permission level",
+    "description": "Chat panel: heading of the permission menu, opened from the shield button beside Send. The level decides which actions of the agent wait for your approval in this chat (permissionItems in agent/panel.js)."
+  },
+  "agent.permission.button": {
+    "message": "Permission level: {level}",
+    "description": "Chat panel: tooltip and accessible name of the shield button beside Send. level is the chat's level, e.g. \"Ask\" (refreshPickers in agent/panel.js)."
+  },
+  "agent.permission.default": {
+    "message": "Default",
+    "description": "Chat panel permission menu: first row, the chat follows the permission level in Settings > Agents. The level it comes down to shows beside it (permissionItems in agent/panel.js)."
+  },
+  "agent.permission.ask": {
+    "message": "Ask",
+    "description": "Name of the permission level where every action that changes something waits for your approval. Chat panel permission menu and button, Settings > Agents > Permission level. Keep it short: the button beside Send shows it."
+  },
+  "agent.permission.auto": {
+    "message": "Auto",
+    "description": "Name of the permission level where the agent acts alone on safe, reversible actions and asks before anything others see. Chat panel permission menu and button, Settings > Agents > Permission level. Keep it short."
+  },
+  "agent.permission.full": {
+    "message": "Full permission",
+    "description": "Name of the permission level where nothing waits for your approval. Chat panel permission menu, Settings > Agents > Permission level."
+  },
+  "agent.permission.fullShort": {
+    "message": "Full",
+    "description": "Short name of the Full permission level, on the small button beside Send in the chat panel (refreshPickers in agent/panel.js)."
+  },
+  "agent.permission.askHint": {
+    "message": "Asks before every action",
+    "description": "Chat panel permission menu: second line under Ask. One short line; the menu is narrow."
+  },
+  "agent.permission.autoHint": {
+    "message": "Asks before deleting or what others see",
+    "description": "Chat panel permission menu: second line under Auto, e.g. it still asks before deleting mail, invitations and changes in other systems. One short line; the menu is narrow."
+  },
+  "agent.permission.fullHint": {
+    "message": "Never asks, not even before sending",
+    "description": "Chat panel permission menu: second line under Full permission. Sending covers messages and calendar invitations. One short line; the menu is narrow."
+  },
+  "agent.permission.onlyInSettings": {
+    "message": "For {name}, only in Settings",
+    "description": "Chat panel permission menu: second line under a level that can't be picked, in a chat of Hermes or OpenClaw, for a level looser than the one in Settings > Agents. That agent's chats can be stricter than Settings but not looser; the user can pick the level for all chats in Settings. name is the agent's name, e.g. \"Hermes\". One short line; the menu is narrow."
   },
   "agent.panel.width": {
     "message": "Chat panel width",
@@ -1278,6 +1326,10 @@
   "agent.calendar.created": {
     "message": "Added \"{title}\" to your calendar",
     "description": "Chat transcript notice after you approved an event an agent asked for and Rukoo added it. title: the event's title."
+  },
+  "agent.calendar.createdInvited": {
+    "message": { "one": "Added \"{title}\" to your calendar and invited {count} guest", "other": "Added \"{title}\" to your calendar and invited {count} guests" },
+    "description": "Chat transcript notice after Rukoo added an event an agent asked for, with guests who got an invitation from your calendar. title: the event's title; count: how many guests."
   },
   "agent.calendar.failed": {
     "message": "Couldn't add \"{title}\" to your calendar",
@@ -4259,13 +4311,25 @@
     "message": "Runs commands without asking. Only for agents you trust completely.",
     "description": "Settings, Agents page: warning under the full access choice."
   },
-  "settings.agents.autoMail": {
-    "message": "Let agents archive, move and mark mail without asking",
-    "description": "Settings, Agents page: toggle for mail actions without an approval card."
+  "settings.agents.permission": {
+    "message": "Permission level",
+    "description": "Settings, Agents page: row that sets which actions of agents wait for your approval, as the default for chats. Opens a choice of Ask, Auto and Full permission."
   },
-  "settings.agents.autoMailHelp": {
-    "message": "Deleting and unsubscribing always ask first.",
-    "description": "Settings, Agents page: note under the mail actions toggle."
+  "settings.agents.permissionHelp": {
+    "message": "What agents may do without asking you first. A chat can pick its own level with the shield beside Send. Commands and file changes of Claude Code and Codex follow their own Access below.",
+    "description": "Settings, Agents page: explanation under the Permission level row. Access is the existing per-agent setting of Claude Code and Codex further down the page (settings.agents.access)."
+  },
+  "settings.agents.permissionAskHint": {
+    "message": "Mail actions, calendar events and actions in other systems wait for your approval. Drafts go into the composer, where you check and send them yourself.",
+    "description": "Settings, Agents page: explanation of the Ask choice in the Permission level dialog."
+  },
+  "settings.agents.permissionAutoHint": {
+    "message": "Archiving, moving, marking and starring mail, and adding events without guests to your own calendars, happen without asking. Deleting, moving mail to Spam, unsubscribing, invitations and actions in other systems still wait for you.",
+    "description": "Settings, Agents page: explanation of the Auto choice in the Permission level dialog."
+  },
+  "settings.agents.permissionFullHint": {
+    "message": "Nothing waits for your approval. Agents can send messages and calendar invitations, delete mail and change other systems without asking. Only for agents you trust completely.",
+    "description": "Settings, Agents page: warning under the Full permission choice in the Permission level dialog. It must say plainly that sending mail and invitations happens without asking."
   },
   "settings.agents.configDir": {
     "message": "Claude config folder (optional)",

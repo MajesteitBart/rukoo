@@ -250,7 +250,7 @@ export function mountAgentPanel(ctx) {
       // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
       if (AGENTS.includes(config.defaultAgent) && config.defaultAgent !== before) {
         // What was picked for the chat that has not started belongs to the agent before.
-        if (!P.conv && P.agentId !== config.defaultAgent) P.draft = { model: null, effort: null };
+        if (!P.conv && P.agentId !== config.defaultAgent) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
         P.agentId = config.defaultAgent;
       }
     } catch (err) {
@@ -632,8 +632,12 @@ export function mountAgentPanel(ctx) {
 
   // ---------- model and effort ----------
 
-  // The chat on screen's own model and effort, or what was picked for the chat that has not started yet.
-  const choiceOf = () => (P.conv ? { model: P.conv.model || null, effort: P.conv.effort || null } : P.draft);
+  // The chat on screen's own model, effort and permission level, or what was picked for the chat that has not started
+  // yet.
+  const choiceOf = () => {
+    const c = P.conv || P.draft;
+    return { model: c.model || null, effort: c.effort || null, permission: c.permission || null };
+  };
   const effortName = (e) => (hasKey(`agent.effort.${e}`) ? t(`agent.effort.${e}`) : String(e));
   // Where the effort dial's needle stands for each level, so a narrow panel still shows it without the name.
   const METER = { minimal: 0, low: 0.15, medium: 0.35, high: 0.55, xhigh: 0.75, max: 0.9, ultra: 1 };
@@ -755,6 +759,46 @@ export function mountAgentPanel(ctx) {
     return items;
   }
 
+  // ---------- permission level ----------
+
+  // Main checks the level before every mail action, event and proposal (agents/permission.js); the button by Send
+  // shows the level of the chat on screen, its own or the one in Settings.
+  const PERMISSIONS = ['ask', 'auto', 'full'];
+  const PERMISSION_ICONS = { ask: 'shield', auto: 'shield-half', full: 'shield-off' };
+  const defaultPermission = () => (P.config && PERMISSIONS.includes(P.config.permission) ? P.config.permission : 'ask');
+  // Claude Code's and Codex's calls are bound to their chat, so a chat of theirs can have any level. Hermes and
+  // OpenClaw name the chat in each call themselves, and main gives their chats no looser level than Settings
+  // (hub.js BOUND_AGENTS, permissionFor()): the menu doesn't offer one, and one saved before counts as Default.
+  const BOUND_AGENTS = new Set(['claude', 'codex']);
+  const capped = (level) => !BOUND_AGENTS.has(currentAgent()) && PERMISSIONS.indexOf(level) > PERMISSIONS.indexOf(defaultPermission());
+  const ownPermission = () => {
+    const own = choiceOf().permission;
+    return own && !capped(own) ? own : null;
+  };
+  const permissionOf = () => ownPermission() || defaultPermission();
+  const permissionName = (level) => t(`agent.permission.${level}`);
+
+  function permissionItems() {
+    const own = ownPermission();
+    const items = [
+      { heading: t('agent.permission.title') },
+      { id: '', label: t('agent.permission.default'), tag: permissionName(defaultPermission()), checked: !own },
+      { separator: true }
+    ];
+    for (const level of PERMISSIONS) {
+      const off = capped(level);
+      items.push({
+        id: level,
+        label: permissionName(level),
+        sub: off ? t('agent.permission.onlyInSettings', { name: agentName(currentAgent()) }) : t(`agent.permission.${level}Hint`),
+        icon: PERMISSION_ICONS[level],
+        checked: level === own,
+        disabled: off
+      });
+    }
+    return items;
+  }
+
   // The buttons show the chat on screen: its model (else the default in Settings) and its effort (else only the
   // icon). The effort menu goes away for a model without effort levels.
   function refreshPickers() {
@@ -775,6 +819,15 @@ export function mountAgentPanel(ctx) {
       hidden: blocked || (!effort && !effortsOf(list, model).length),
       meter: effort && effort in METER ? METER[effort] : null
     });
+    const level = permissionOf();
+    chat.setPicker('permission', {
+      text: level === 'full' ? t('agent.permission.fullShort') : permissionName(level),
+      label: t('agent.permission.button', { level: permissionName(level) }),
+      items: permissionItems,
+      hidden: blocked,
+      icon: PERMISSION_ICONS[level],
+      tone: level === 'full' ? 'warn' : ''
+    });
   }
 
   function pickChoice(kind, value) {
@@ -786,11 +839,12 @@ export function mountAgentPanel(ctx) {
       P.draft = next;
       return refreshPickers();
     }
-    // Applies from the next turn; a turn that runs now keeps what it started with.
+    // A model or effort applies from the next turn; a turn that runs now keeps what it started with. The level counts
+    // from the agent's next action, and goes alone, so the model and effort stay as main has them.
     const conv = P.conv;
     Object.assign(conv, next);
     refreshPickers();
-    api('agentSetChoice', conv.id, next)
+    api('agentSetChoice', conv.id, kind === 'permission' ? { permission: next.permission } : next)
       .then((saved) => {
         if (saved && P.conv && P.conv.id === conv.id) {
           Object.assign(P.conv, saved);
@@ -803,7 +857,7 @@ export function mountAgentPanel(ctx) {
         api('agentGet', conv.id)
           .then((c) => {
             if (c && P.conv && P.conv.id === c.id) {
-              Object.assign(P.conv, { model: c.model || null, effort: c.effort || null });
+              Object.assign(P.conv, { model: c.model || null, effort: c.effort || null, permission: c.permission || null });
               refreshPickers();
             }
           })
@@ -967,8 +1021,8 @@ export function mountAgentPanel(ctx) {
 
   function pickAgent(id) {
     if (!AGENTS.includes(id)) return;
-    // What was picked for one agent means nothing to another.
-    if (id !== currentAgent()) P.draft = { model: null, effort: null };
+    // A model or effort picked for one agent means nothing to another; the permission level does.
+    if (id !== currentAgent()) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
     P.agentId = id;
     // A conversation stays with its agent; another agent starts a new one about the same email.
     if (P.conv && P.conv.agent !== id) return showEmpty();
@@ -982,7 +1036,8 @@ export function mountAgentPanel(ctx) {
   async function ensureConversation() {
     if (P.conv) return P.conv;
     const m = contextEmail();
-    const conv = await api('agentCreate', { agent: P.agentId, message: m ? messageRef(m) : null, model: P.draft.model, effort: P.draft.effort });
+    // The level the menu shows: one picked for Claude Code that a Hermes chat can't have stays behind.
+    const conv = await api('agentCreate', { agent: P.agentId, message: m ? messageRef(m) : null, model: P.draft.model, effort: P.draft.effort, permission: ownPermission() });
     P.draft = { model: null, effort: null };
     showConversation(conv);
     return P.conv;
@@ -1397,10 +1452,13 @@ export function mountAgentPanel(ctx) {
   function localizeNotice(item) {
     const cal = item.calendar;
     if (cal && typeof cal.title === 'string' && (cal.action === 'created' || cal.action === 'failed')) {
-      return { ...item, text: cal.action === 'created' ? t('agent.calendar.created', { title: cal.title }) : t('agent.calendar.failed', { title: cal.title }) };
+      if (cal.action === 'failed') return { ...item, text: t('agent.calendar.failed', { title: cal.title }) };
+      // Guests got an invitation: said, as nobody may have seen a card with them (a permission level that never asks).
+      const guests = Number(cal.guests) || 0;
+      return { ...item, text: guests > 0 ? t('agent.calendar.createdInvited', { title: cal.title, count: guests }) : t('agent.calendar.created', { title: cal.title }) };
     }
     if (item.code && hasKey(`agent.notices.${item.code}`)) {
-      const params = item.code === 'kept-approval' || item.code === 'approval-too-long' ? { title: String((item.params && item.params.title) || '') } : {};
+      const params = ['kept-approval', 'approval-too-long', 'auto-approved'].includes(item.code) ? { title: String((item.params && item.params.title) || '') } : {};
       return { ...item, text: t(`agent.notices.${item.code}`, { name: agentName(P.conv ? P.conv.agent : currentAgent()), ...params }) };
     }
     if (item.code && (CODES.has(item.code) || item.tone === 'error')) return { ...item, text: describeError({ code: item.code }, agentName(P.conv ? P.conv.agent : currentAgent())).text };

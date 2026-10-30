@@ -1158,15 +1158,23 @@ Object.assign(api, {
   },
   agentCreate: (input) => {
     const i = agentPlain(input);
-    return agentHub().create({ agent: agentText(i.agent, 20), message: agentMessage(i.message), model: agentText(i.model, 300) || null, effort: agentText(i.effort, 20) || null });
+    return agentHub().create({
+      agent: agentText(i.agent, 20),
+      message: agentMessage(i.message),
+      model: agentText(i.model, 300) || null,
+      effort: agentText(i.effort, 20) || null,
+      permission: agentText(i.permission, 20) || null
+    });
   },
   agentModels: (agent, options) => agentHub().models(agentId(agent), { refresh: agentPlain(options).refresh === true }),
-  // A chat's model and effort; a key that is left out stays as it is, null goes back to the agent's default.
+  // A chat's model, effort and permission level; a key that is left out stays as it is, null goes back to the agent's
+  // default or, for the level, to the one in Settings.
   agentSetChoice: (id, choice) => {
     const c = agentPlain(choice);
     const pick = {};
     if ('model' in c) pick.model = agentText(c.model, 300) || null;
     if ('effort' in c) pick.effort = agentText(c.effort, 20) || null;
+    if ('permission' in c) pick.permission = agentText(c.permission, 20) || null;
     return agentHub().setChoice(agentId(id), pick);
   },
   agentSend: (id, input) => {
