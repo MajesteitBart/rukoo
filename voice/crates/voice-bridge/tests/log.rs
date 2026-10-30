@@ -294,3 +294,37 @@ fn concurrent_appends_get_distinct_consecutive_numbers() {
     let seqs: Vec<u64> = log.after(0).unwrap().iter().map(|s| s.seq).collect();
     assert_eq!(seqs, (1..=400).collect::<Vec<_>>());
 }
+
+#[test]
+fn a_meetings_events_come_with_the_head_they_are_complete_up_to() {
+    let dir = TempDir::new("log-meeting-events");
+    let log = EventLog::open(dir.path()).unwrap();
+    log.append("passage", Some(A), passage(1000)).unwrap();
+    log.append("passage", Some(B), passage(1000)).unwrap();
+    log.append(
+        "status",
+        None,
+        json!({ "recording": A, "dictating": false }),
+    )
+    .unwrap();
+    log.append("passage", Some(A), passage(2000)).unwrap();
+
+    let (head, events) = log.meeting_events(A).unwrap();
+    assert_eq!(head, 4);
+    assert_eq!(events.iter().map(|s| s.seq).collect::<Vec<_>>(), [1, 4]);
+    assert!(events.iter().all(|s| s.meeting.as_deref() == Some(A)));
+    let (head, events) = log.meeting_events("m-20261030-000000-0000").unwrap();
+    assert_eq!((head, events.len()), (4, 0));
+
+    let latest = log.latest(A, "passage").unwrap().unwrap();
+    assert_eq!((latest.seq, latest.data.clone()), (4, passage(2000)));
+    assert!(log.latest(A, "meeting.state").unwrap().is_none());
+    log.remove_meeting(A).unwrap();
+    let (head, events) = log.meeting_events(A).unwrap();
+    assert_eq!(head, 5);
+    assert_eq!(
+        events.iter().map(|s| s.event.as_str()).collect::<Vec<_>>(),
+        ["meeting.removed"]
+    );
+    assert!(log.latest(A, "passage").unwrap().is_none());
+}

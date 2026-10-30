@@ -342,6 +342,37 @@ impl EventLog {
         Ok(stored)
     }
 
+    /// Every stored event of `meeting`, oldest first, and the head they are complete up to.
+    ///
+    /// Both are read under one lock, so the events are exactly the meeting's events up to that
+    /// head: what `meeting.get` needs for its snapshot.
+    pub fn meeting_events(&self, meeting: &str) -> Result<(u64, Vec<Stored>), LogError> {
+        let db = self.lock();
+        let mut statement = db.conn.prepare_cached(
+            "SELECT seq, event, meeting, created_at, data FROM events
+             WHERE meeting = ?1 ORDER BY seq",
+        )?;
+        let rows = statement.query_map([meeting], read_row)?;
+        let mut stored = Vec::new();
+        for row in rows {
+            stored.push(row??);
+        }
+        Ok((db.head, stored))
+    }
+
+    /// The newest stored `event` of `meeting`, such as its last `meeting.state`.
+    pub fn latest(&self, meeting: &str, event: &str) -> Result<Option<Stored>, LogError> {
+        let db = self.lock();
+        let mut statement = db.conn.prepare_cached(
+            "SELECT seq, event, meeting, created_at, data FROM events
+             WHERE meeting = ?1 AND event = ?2 ORDER BY seq DESC LIMIT 1",
+        )?;
+        let found = statement
+            .query_row(params![meeting, event], read_row)
+            .optional()?;
+        found.transpose()
+    }
+
     /// The last sequence number given out, or 0.
     pub fn head(&self) -> u64 {
         self.lock().head
