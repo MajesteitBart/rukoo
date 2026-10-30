@@ -509,6 +509,25 @@ test('several lengths are saved, published and reach the other computer; a booki
   assert.equal(bookingEvent(host.fake, other.id).summary, 'Intro call: Bart and Ann Lee');
 });
 
+test('a settings record an older app stored just under the size limit keeps the page publishing', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const current = host.booking.settings();
+  // As an app from before several lengths wrote it: ten types without durations, 12,231 of the 12,288 bytes.
+  const types = Array.from({ length: 10 }, (_, i) => {
+    const { durations, ...type } = current.types[0];
+    return { ...type, slug: `type-${i}`, description: 'é'.repeat(450) };
+  });
+  const record = { ...current, intro: '', types };
+  record.intro = 'a'.repeat(12231 - Buffer.byteLength(JSON.stringify(record), 'utf8'));
+  host.account.put('booking', `settings:${host.account.acct}`, record);
+  assert.deepEqual(host.booking.settings(), record);
+  await host.booking.publish({ force: true });
+  assert.equal(srv.pages.get('bart').profile.types.length, 10);
+  assert.equal(srv.pages.get('bart').profile.intro, record.intro);
+});
+
 test('settings are checked as a whole; a refused field keeps the record as it was', async (t) => {
   const srv = await server(t);
   const host = await computer(t, srv);

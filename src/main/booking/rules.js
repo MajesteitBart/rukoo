@@ -218,11 +218,14 @@ function checkType(type, i, { meet }) {
   }
   if (loc.kind === 'googleMeet' && !meet) throw refused('noMeet', f('location.kind'));
   if (typeof loc.public !== 'boolean') throw refused('invalidType', f('location.public'));
+  const lengths = [...durations].sort((a, b) => a - b);
   const out = {
     slug: type.slug,
     title,
     duration: type.duration,
-    durations: [...durations].sort((a, b) => a - b),
+    // Only for a type with several lengths. A type with one is stored as before guests could pick, so a record an
+    // older app wrote reads back byte for byte and stays within SETTINGS_BYTES.
+    ...(lengths.length > 1 ? { durations: lengths } : {}),
     description,
     location: { kind: loc.kind, label, value, public: loc.public },
     bufferBefore: type.bufferBefore,
@@ -264,8 +267,9 @@ function parsePortable(key) {
 
 // The whole settings record checked (contracts h). Returns the record as it is stored; throws a booking error that
 // names the first field refused. o.today: the first date overrides may have, in the page's zone (older ones are
-// dropped). o.meet: whether the destination can add Google Meet.
-function checkSettings(s, { today = null, meet = false } = {}) {
+// dropped). o.meet: whether the destination can add Google Meet. o.limit: refuse a record over SETTINGS_BYTES, as a
+// save must; reading the stored record doesn't, so the booking device never stops over a size only a write can change.
+function checkSettings(s, { today = null, meet = false, limit = true } = {}) {
   if (!plain(s)) throw refused('invalidType', 'settings');
   const handle = handleProblem(s.handle);
   if (handle) throw refused(handle === 'reserved' ? 'reservedHandle' : 'invalidHandle', 'handle');
@@ -324,7 +328,7 @@ function checkSettings(s, { today = null, meet = false } = {}) {
     device: typeof s.device === 'string' && s.device.length <= 200 ? s.device : null,
     types
   };
-  if (Buffer.byteLength(JSON.stringify(out), 'utf8') > SETTINGS_BYTES) throw bookingError('tooLarge', { code: 'too_large' });
+  if (limit && Buffer.byteLength(JSON.stringify(out), 'utf8') > SETTINGS_BYTES) throw bookingError('tooLarge', { code: 'too_large' });
   return out;
 }
 

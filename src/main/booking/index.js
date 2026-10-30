@@ -370,12 +370,13 @@ class Booking extends EventEmitter {
     return acct ? this.account.get('booking', `${name}:${acct}`) : undefined;
   }
 
-  // The settings record as stored, checked; null without one or when it doesn't hold together.
+  // The settings record as stored, checked; null without one or when it doesn't hold together. Its size was checked
+  // when it was saved; a record near the limit stays readable after an update.
   settings() {
     const s = this.record('settings');
     if (!plain(s)) return null;
     try {
-      return rules.checkSettings(s, { meet: true });
+      return rules.checkSettings(s, { meet: true, limit: false });
     } catch (_) {
       return null;
     }
