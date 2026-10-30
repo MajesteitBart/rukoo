@@ -146,6 +146,27 @@ test('a gap: Rukoo asks meeting.get for the meetings it has that may still chang
   assert.equal(s2.store.cursor().after, voice.head);
 });
 
+test('a gap: a done meeting Voice deleted while Rukoo was away goes too, with its notes kept', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Finished'));
+  voice.append('passage', M1, passage('call', 1000, 'Said in a finished meeting.'));
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s1 = service(t, dir, file).init();
+  await until(() => s1.store.cursor().after === 3, 'the first replay');
+  s1.saveNotes(M1, 'My own notes.', 0);
+  s1.close();
+  // Voice deleted the meeting, and its meeting.removed is among the events that are gone.
+  voice.append('meeting.removed', M1, {});
+  for (let i = 0; i < 4; i++) voice.append('status', null, { recording: null, dictating: false });
+  voice.forget(7);
+  voice.handlers['meeting.get'] = () => ({ error: { code: 'not_found', message: 'No such meeting.' } });
+  const s2 = service(t, dir, file).init();
+  await until(() => voice.commands.some((c) => c.command === 'meeting.get' && c.args.meeting === M1), 'meeting.get for the done meeting');
+  await until(() => (s2.get(M1) || { passages: [1] }).passages.length === 0, 'its transcript to go');
+  assert.equal(s2.get(M1).notes.text, 'My own notes.');
+});
+
 test("a meeting.get answer doesn't undo the meeting's events past its head that Voice sent before it", async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
@@ -299,7 +320,8 @@ test('a missing file, a damaged one and a Voice that speaks only newer versions 
   const bridge = new VoiceBridge({ file, ...FAST }).start();
   t.after(() => bridge.close());
   assert.deepEqual([bridge.state().status, bridge.state().reason], ['absent', 'missing']);
-  fs.writeFileSync(file, '{"port":');
+  // Only the owner may read it, as Voice writes it: otherwise macOS and Linux refuse the file for its permissions first.
+  fs.writeFileSync(file, '{"port":', { mode: 0o600 });
   await until(() => bridge.state().reason === 'invalid', 'the invalid state');
   voice.writeDiscovery({ protocol: 3, minProtocol: 2 });
   await until(() => bridge.state().status === 'incompatible', 'the incompatible state');

@@ -76,7 +76,7 @@ Then Voice sends the events Rukoo missed, oldest first, and after them every new
 
 With no stored events, `head` is the last number Voice gave out, or 0, and `oldest` is `head` + 1.
 
-After a `gap`, Rukoo asks `meeting.get` for each meeting it shows that isn't `done`.
+After a `gap`, Rukoo asks `meeting.get` for each meeting it shows, also those that are `done`: Voice may have deleted one, and the `meeting.removed` that said so may be among the events Rukoo missed. A `not_found` answer counts as that `meeting.removed`.
 
 A wrong token, an unsupported version or a late or missing `hello` gets an `error` message and the connection closes:
 

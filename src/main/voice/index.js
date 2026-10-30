@@ -145,13 +145,14 @@ class VoiceService extends EventEmitter {
     const { reset, gap } = this.store.welcome(msg);
     this.statusChanged();
     if (reset) this.emit('meeting', { kind: 'list' });
-    // Voice already deleted events Rukoo missed: ask for every meeting Rukoo has that may still change.
+    // Voice already deleted events Rukoo missed: ask for every meeting Rukoo has. A done meeting can't change, but
+    // Voice may have deleted it meanwhile, and its meeting.removed may be among the events Rukoo missed.
     if (gap || this.store.damaged.size) this.refetch(gap).catch(() => {});
   }
 
   async refetch(gap) {
     const ids = new Set(this.store.damaged);
-    if (gap) for (const e of this.store.list()) if (!e.removed && e.state !== 'done') ids.add(e.id);
+    if (gap) for (const e of this.store.list()) if (!e.removed) ids.add(e.id);
     for (const id of ids) {
       if (!this.connected) return;
       const before = this.revOf(id);
