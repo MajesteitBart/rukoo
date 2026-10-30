@@ -1,11 +1,12 @@
 //! The command line.
 //!
 //! ```text
-//! rukoo-voice [--fake-engine[=<scenario>]] [--self-test <folder>] [--import-ownkey <copy of config.json>]
+//! rukoo-voice [--fake-engine[=<scenario>]] [--self-test <folder>] [--dev-hooks <folder>]
+//!             [--import-ownkey <copy of config.json>]
 //! ```
 //!
-//! `--fake-engine` and `--self-test` are development tools and only run when `RUKOO_VOICE_DATA_DIR`
-//! is set. Windows starts Voice at login without arguments.
+//! `--fake-engine`, `--self-test` and `--dev-hooks` are development tools and only run when
+//! `RUKOO_VOICE_DATA_DIR` is set. Windows starts Voice at login without arguments.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -18,9 +19,11 @@ pub struct Args {
     pub self_test: Option<PathBuf>,
     /// The only way a development copy imports Ownkey's settings: from a copy of its config.json.
     pub import_ownkey: Option<PathBuf>,
+    /// Take requests from a script in this folder ([`crate::devhook`]).
+    pub dev_hooks: Option<PathBuf>,
 }
 
-pub const USAGE: &str = "Usage: rukoo-voice [--fake-engine[=<scenario>]] [--self-test <folder>] [--import-ownkey <copy of Ownkey's config.json>]";
+pub const USAGE: &str = "Usage: rukoo-voice [--fake-engine[=<scenario>]] [--self-test <folder>] [--dev-hooks <folder>] [--import-ownkey <copy of Ownkey's config.json>]";
 
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
     let mut out = Args::default();
@@ -55,6 +58,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
                 out.fake_engine = Some(scenario);
             }
             "--self-test" => out.self_test = Some(PathBuf::from(value("a folder")?)),
+            "--dev-hooks" => out.dev_hooks = Some(PathBuf::from(value("a folder")?)),
             "--import-ownkey" => out.import_ownkey = Some(PathBuf::from(value("a path")?)),
             _ => return Err(format!("Unknown argument {arg}")),
         }
@@ -97,14 +101,17 @@ mod tests {
             "--self-test",
             "C:\\tmp\\shots",
             "--import-ownkey=C:\\tmp\\config.json",
+            "--dev-hooks=C:\\tmp\\hooks",
         ])
         .unwrap();
+        assert_eq!(args.dev_hooks, Some(PathBuf::from("C:\\tmp\\hooks")));
         assert_eq!(args.self_test, Some(PathBuf::from("C:\\tmp\\shots")));
         assert_eq!(
             args.import_ownkey,
             Some(PathBuf::from("C:\\tmp\\config.json"))
         );
         assert!(run(&["--self-test"]).is_err());
+        assert!(run(&["--dev-hooks"]).is_err());
         assert!(run(&["--import-ownkey="]).is_err());
     }
 

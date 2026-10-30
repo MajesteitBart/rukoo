@@ -10,6 +10,7 @@ mod args;
 mod capture;
 mod catalog;
 mod commands;
+mod devhook;
 mod engine;
 mod fake;
 mod logging;
@@ -50,11 +51,12 @@ fn main() {
 
 /// The development flags only run in a development copy, so they can never meet the real profile.
 fn check_dev_flags(args: &Args, dev_mode: bool) -> Result<(), String> {
-    let dev_flag = args.fake_engine.is_some() || args.self_test.is_some();
+    let dev_flag =
+        args.fake_engine.is_some() || args.self_test.is_some() || args.dev_hooks.is_some();
     if dev_flag && !dev_mode {
         return Err(
-            "--fake-engine and --self-test are for development copies. Set RUKOO_VOICE_DATA_DIR to a scratch \
-             folder first."
+            "--fake-engine, --self-test and --dev-hooks are for development copies. Set RUKOO_VOICE_DATA_DIR \
+             to a scratch folder first."
                 .to_string(),
         );
     }
@@ -258,6 +260,9 @@ fn setup(
     if let Some(out) = args.self_test {
         selftest::spawn(app.clone(), out);
     }
+    if let Some(dir) = args.dev_hooks {
+        devhook::spawn(app.clone(), dir);
+    }
 }
 
 /// Shows Settings at `page`, or where the engine says. Never call on the event loop thread.
@@ -340,6 +345,7 @@ mod tests {
             fake_engine: fake.map(str::to_string),
             self_test: self_test.then(|| PathBuf::from("shots")),
             import_ownkey: None,
+            dev_hooks: None,
         }
     }
 
@@ -351,5 +357,12 @@ mod tests {
         assert!(check_dev_flags(&args(Some("meeting"), true), true).is_ok());
         assert!(check_dev_flags(&args(None, true), true).is_err());
         assert!(check_dev_flags(&args(Some("party"), false), true).is_err());
+        // The hooks drive the real engine too, but only in a development copy.
+        let hooks = Args {
+            dev_hooks: Some(PathBuf::from("hooks")),
+            ..Args::default()
+        };
+        assert!(check_dev_flags(&hooks, false).is_err());
+        assert!(check_dev_flags(&hooks, true).is_ok());
     }
 }
