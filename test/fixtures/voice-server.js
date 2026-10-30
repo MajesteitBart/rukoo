@@ -150,7 +150,8 @@ class FakeVoice {
   upgrade(req, socket) {
     this.upgrades.push({ url: req.url, headers: req.headers });
     const origin = req.headers.origin;
-    if (origin && /^https?:/i.test(origin)) {
+    // Voice refuses any Origin: Rukoo's main process sends none, and a page can send "null" or file://.
+    if (origin !== undefined) {
       socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       return;
     }

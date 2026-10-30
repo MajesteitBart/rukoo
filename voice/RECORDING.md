@@ -21,8 +21,10 @@ The recorder lives in `voice/crates/voice-recorder`, the segment writer and read
 `meeting.json` is the app's description of the meeting. The app writes it to a temporary name and renames it into place. The recorder doesn't read it.
 
 ```json
-{ "id": "m-20261030-171203-4f2a", "title": "Weekly with Anna", "createdAt": 1793000000000, "tracks": ["mic", "call"], "sources": { "mic": "default-input", "call": "default-output" }, "screen": "off", "startedBy": "voice", "context": null, "version": 1 }
+{ "id": "m-20261030-171203-4f2a", "title": "Weekly with Anna", "createdAt": 1793000000000, "tracks": ["mic", "call"], "sources": { "mic": "default-input", "call": "default-output" }, "screen": "off", "startedBy": "voice", "context": null, "retention": "days7", "version": 1 }
 ```
+
+`retention` is how long the meeting's audio stays after it is transcribed, as Settings said when the meeting started: `days7`, `keep` or `after_transcription`. A later change in Settings applies to new meetings only, as in Ownkey. A `meeting.json` without it follows the current setting.
 
 ## Audio segments
 

@@ -984,7 +984,7 @@ impl EngineApi for FakeEngine {
         self.apply(|st, out| {
             match purpose {
                 "models" => st.settings["config"]["local"]["modelFolder"] = json!(path),
-                "recordings" => st.settings["storage"]["folder"] = json!(path),
+                // As the real engine: 0.1 keeps meetings in the data folder.
                 _ => return Err(invalid(format!("Unknown folder purpose {purpose}"))),
             }
             st.settings_changed(out);

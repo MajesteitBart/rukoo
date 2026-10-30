@@ -82,7 +82,7 @@ test('the first hello carries the token, no cursor and no Origin, and the welcom
   assert.deepEqual(status, { recording: null, dictating: false });
 });
 
-test('the fake Voice refuses a page that names an http Origin, as Voice does', async (t) => {
+test('the fake Voice refuses a page that names an Origin, as Voice does', async (t) => {
   const { voice } = await setup(t);
   const code = await new Promise((resolve) => {
     const req = http.request({ host: '127.0.0.1', port: voice.port, path: '/bridge', headers: { Connection: 'Upgrade', Upgrade: 'websocket', Origin: 'https://evil.example', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13' } });
