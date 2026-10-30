@@ -1,6 +1,6 @@
 //! The WebSocket server of PROTOCOL.md on `127.0.0.1`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use subtle::ConstantTimeEq;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{interval_at, sleep_until, timeout, timeout_at, Instant, MissedTickBehavior};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -39,8 +39,9 @@ type Source = SplitStream<Socket>;
 
 /// Events per read while replaying or catching up.
 const PAGE: usize = 500;
-/// Connections still in their upgrade or `hello`. More are dropped at once, so a local program
-/// that opens sockets and never speaks can't pile up tasks.
+/// Connections that may wait in their upgrade or `hello` at once. A new one closes the oldest,
+/// so sockets that never say hello can neither pile up tasks nor keep Rukoo out: Rukoo says
+/// hello as soon as it is upgraded.
 const MAX_PENDING: usize = 16;
 /// Commands a connection may queue while an earlier one runs.
 const COMMAND_QUEUE: usize = 32;
@@ -254,7 +255,6 @@ fn serve(
         version: version.to_owned(),
         options,
         clients: Arc::new(Semaphore::new(MAX_CLIENTS)),
-        pending: Arc::new(Semaphore::new(MAX_PENDING)),
         registry: registry.clone(),
     });
     let (shutdown, quit) = watch::channel(false);
@@ -345,7 +345,6 @@ struct Shared {
     version: String,
     options: Options,
     clients: Arc<Semaphore>,
-    pending: Arc<Semaphore>,
     registry: Arc<Mutex<Registry>>,
 }
 
@@ -394,15 +393,23 @@ impl Shared {
 
 async fn accept(listener: TcpListener, shared: Arc<Shared>, mut quit: watch::Receiver<bool>) {
     let mut connections = JoinSet::new();
+    // One per connection still in its upgrade or `hello`, oldest first. A connection drops its
+    // end when it gets past `hello` or goes away.
+    let mut pending: VecDeque<oneshot::Sender<()>> = VecDeque::new();
     loop {
         tokio::select! {
             _ = quit.changed() => break,
             accepted = listener.accept() => match accepted {
                 Ok((tcp, _)) => {
-                    let Ok(pending) = shared.pending.clone().try_acquire_owned() else {
-                        continue;
-                    };
-                    connections.spawn(connection(tcp, shared.clone(), pending, quit.clone()));
+                    pending.retain(|waiting| !waiting.is_closed());
+                    if pending.len() >= MAX_PENDING {
+                        if let Some(oldest) = pending.pop_front() {
+                            let _ = oldest.send(());
+                        }
+                    }
+                    let (evict, evicted) = oneshot::channel();
+                    pending.push_back(evict);
+                    connections.spawn(connection(tcp, shared.clone(), evicted, quit.clone()));
                 }
                 // Out of sockets or handles; give the system a moment instead of spinning.
                 Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
@@ -419,7 +426,7 @@ async fn accept(listener: TcpListener, shared: Arc<Shared>, mut quit: watch::Rec
 async fn connection(
     tcp: TcpStream,
     shared: Arc<Shared>,
-    pending: OwnedSemaphorePermit,
+    mut evicted: oneshot::Receiver<()>,
     quit: watch::Receiver<bool>,
 ) {
     let _ = tcp.set_nodelay(true);
@@ -429,17 +436,26 @@ async fn connection(
         .max_message_size(Some(MAX_RUKOO_MESSAGE))
         .max_frame_size(Some(MAX_RUKOO_MESSAGE));
     let upgrade = tokio_tungstenite::accept_hdr_async_with_config(tcp, check_upgrade, Some(config));
-    let Ok(Ok(socket)) = timeout_at(deadline, upgrade).await else {
-        return;
+    // Until `hello`, a newer connection may need the place: then this one just ends.
+    let socket = tokio::select! {
+        _ = &mut evicted => return,
+        upgraded = timeout_at(deadline, upgrade) => match upgraded {
+            Ok(Ok(socket)) => socket,
+            _ => return,
+        },
     };
     let (sink, mut source) = socket.split();
-    let admitted = match timeout_at(deadline, first_message(&mut source)).await {
+    let first = tokio::select! {
+        _ = &mut evicted => return,
+        first = timeout_at(deadline, first_message(&mut source)) => first,
+    };
+    let admitted = match first {
         Err(_) => Err((Refusal::HelloTimeout, None)),
         Ok(First::Closed) => return,
         Ok(First::Refused(refusal, said)) => Err((refusal, said)),
         Ok(First::Hello(hello)) => admit(&shared, hello),
     };
-    drop(pending);
+    drop(evicted);
     match admitted {
         Err((refusal, said)) => {
             shared.note_refusal(refusal, said);
@@ -461,25 +477,13 @@ fn check_upgrade(request: &Request, response: Response) -> Result<Response, Erro
     if request.uri().path() != BRIDGE_PATH {
         return Err(refuse_upgrade(StatusCode::NOT_FOUND));
     }
-    // Any web page can try to open a socket on 127.0.0.1, and a browser always says which page
-    // it is. Rukoo connects from its main process, which sends no Origin.
-    let from_a_page = request
-        .headers()
-        .get_all("origin")
-        .iter()
-        .any(|origin| is_web_origin(origin.as_bytes()));
-    if from_a_page {
+    // Any web page can try to open a socket on 127.0.0.1, and a browser sends an Origin with
+    // every WebSocket request: `null` from a sandboxed frame or a file, `file://` from Chrome.
+    // Rukoo connects from its main process, which sends none, so any Origin is a page.
+    if request.headers().contains_key("origin") {
         return Err(refuse_upgrade(StatusCode::FORBIDDEN));
     }
     Ok(response)
-}
-
-fn is_web_origin(origin: &[u8]) -> bool {
-    let origin = origin.trim_ascii();
-    let starts_with = |prefix: &[u8]| {
-        origin.len() >= prefix.len() && origin[..prefix.len()].eq_ignore_ascii_case(prefix)
-    };
-    starts_with(b"http://") || starts_with(b"https://")
 }
 
 fn refuse_upgrade(status: StatusCode) -> ErrorResponse {
@@ -918,17 +922,6 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn web_origins() {
-        assert!(is_web_origin(b"https://evil.example"));
-        assert!(is_web_origin(b"HTTP://localhost:3000"));
-        assert!(is_web_origin(b"  http://x "));
-        assert!(!is_web_origin(b"null"));
-        assert!(!is_web_origin(b"file://"));
-        assert!(!is_web_origin(b"httpx://a"));
-        assert!(!is_web_origin(b""));
-    }
 
     #[test]
     fn bad_commands_with_a_readable_id_get_bad_request() {

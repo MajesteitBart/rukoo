@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::io::Read;
+use std::net::TcpStream;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -327,9 +329,18 @@ fn a_fifth_client_is_refused_with_4004() {
 }
 
 #[test]
-fn a_browser_origin_is_refused_with_403() {
+fn every_origin_is_refused_with_403() {
     let bridge = Bridge::start("server-origin");
-    for origin in ["https://evil.example", "http://localhost:3000"] {
+    // Browsers send `null` from sandboxed frames, data: frames and files, and Chrome sends
+    // `file://` for a local file. Rukoo sends no Origin at all.
+    for origin in [
+        "https://evil.example",
+        "http://localhost:3000",
+        "null",
+        "file://",
+        "chrome-extension://abcdefghijklmnop",
+        "",
+    ] {
         match Client::try_connect(bridge.port(), "/bridge", &[("origin", origin)]) {
             Err(tungstenite::Error::Http(response)) => assert_eq!(response.status(), 403),
             Err(e) => panic!("{origin}: expected HTTP 403, got {e}"),
@@ -343,6 +354,46 @@ fn a_browser_origin_is_refused_with_403() {
     }
     // Rukoo's main process sends no Origin; that and the default client both connect.
     bridge.client(None, 0);
+}
+
+/// Whether the server ended `stream` within the read timeout.
+fn ended(stream: &mut TcpStream) -> bool {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut byte = [0u8; 1];
+    match stream.read(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+#[test]
+fn connections_that_never_say_hello_cant_keep_rukoo_out() {
+    // Long enough that only the server's room for new connections closes the silent ones.
+    let options = Options {
+        hello_timeout: Duration::from_secs(60),
+        ..Options::default()
+    };
+    let bridge = Bridge::start_with("server-pending", options);
+    // A program without the token fills the waiting room: sockets that never finish their
+    // upgrade, and upgraded ones that never say hello.
+    let mut raw: Vec<TcpStream> = (0..8)
+        .map(|_| TcpStream::connect(("127.0.0.1", bridge.port())).unwrap())
+        .collect();
+    let mut silent: Vec<Client> = (0..8).map(|_| Client::connect(bridge.port())).collect();
+    // Rukoo still gets in, also while new silent sockets keep coming.
+    for _ in 0..3 {
+        let (mut rukoo, _) = bridge.client(None, 0);
+        assert!(read_until_status_reply(&mut rukoo, "c-1").is_empty());
+        silent.push(Client::connect(bridge.port()));
+    }
+    // The oldest waited longest and made room.
+    assert!(ended(&mut raw[0]), "the oldest silent socket is still open");
 }
 
 #[test]
