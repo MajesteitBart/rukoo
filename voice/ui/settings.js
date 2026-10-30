@@ -677,9 +677,8 @@ function storagePage() {
     title: t('settings.storage.folder'),
     descHtml: `<span class="mono selectable">${esc(s.folder)}</span>`,
     below: `<div class="desc">${esc(t('settings.storage.usage', { size: bytes(s.usedBytes), free: bytes(s.freeBytes) }))}</div>`,
-    side: `<div class="side"><button class="btn sm secondary" data-a="open:recordings">${esc(t('common.openFolder'))}</button><button class="btn sm secondary" data-a="folder:recordings">${esc(
-      t('common.browse')
-    )}</button></div>`
+    // Voice 0.1 keeps meetings in its data folder, so there is no Browse here (API.md, settings_choose_folder).
+    side: `<div class="side"><button class="btn sm secondary" data-a="open:recordings">${esc(t('common.openFolder'))}</button></div>`
   });
   const sections = [section('local', groupTitle(t('settings.storage.local')) + card(folderRow) + (LATER ? paragraph(t('settings.storage.disk')) : ''))];
   if (LATER) sections.push(section('sync', syncSection()));
@@ -1441,9 +1440,12 @@ page.addEventListener('change', (e) => {
 // ---------- state from the app ----------
 
 function applyState(next, { first = false } = {}) {
-  if (!next || (!first && state && next.seq < state.seq)) return;
-  const relocalize = first || next.locale !== state.locale;
-  const retheme = first || next.theme !== state.theme;
+  // Each state has a seq of its own (API.md), so one that isn't newer is stale.
+  if (!next || (!first && state && next.seq <= state.seq)) return;
+  // An event can arrive before the first settings_state answers.
+  const full = first || !state;
+  const relocalize = full || next.locale !== state.locale;
+  const retheme = full || next.theme !== state.theme;
   state = next;
   if (retheme) {
     const root = document.documentElement;

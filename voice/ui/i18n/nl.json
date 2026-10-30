@@ -235,7 +235,7 @@
   "settings.meetings.transcription": "Transcriptie",
   "settings.meetings.consentWaiting": "Wacht op je toestemming. Vergaderingen worden wel opgenomen.",
   "settings.meetings.retention": "Audio bewaren",
-  "settings.meetings.retentionHelp": "Tekst blijft tot je een vergadering verwijdert. Audio is nodig om terug te luisteren en opnieuw te transcriberen.",
+  "settings.meetings.retentionHelp": "Tekst blijft tot je een vergadering verwijdert. Audio is nodig om terug te luisteren en opnieuw te transcriberen. Een wijziging geldt voor vergaderingen die je vanaf nu opneemt.",
   "settings.retention.days7": "7 dagen na de transcriptie",
   "settings.retention.keep": "Tot ik de vergadering verwijder",
   "settings.retention.afterTranscription": "Verwijderen na de transcriptie",

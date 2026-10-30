@@ -908,8 +908,8 @@
     "description": "Settings > Meetings: row and choice dialog title for how long meeting audio stays on the computer. voice/ui/settings.js (mainPage)."
   },
   "settings.meetings.retentionHelp": {
-    "message": "Text stays until you delete a meeting. Audio is needed for playback and re-transcription.",
-    "description": "Settings > Meetings: description of Keep audio. voice/ui/settings.js (mainPage)."
+    "message": "Text stays until you delete a meeting. Audio is needed for playback and re-transcription. A change applies to meetings you record from now on.",
+    "description": "Settings > Meetings: description of Keep audio. Each meeting keeps the choice it started with, so changing it never removes older meetings' audio. voice/ui/settings.js (mainPage)."
   },
   "settings.retention.days7": {
     "message": "7 days after transcription",

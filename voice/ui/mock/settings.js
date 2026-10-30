@@ -235,6 +235,8 @@ export function createMock(params) {
     const copy = snapshot();
     handlers.forEach((handler) => handler(copy));
   };
+  // For dev/check.js: sends a state exactly as given, seq included, as a misbehaving app would.
+  window.__settingsMockSend = (next) => handlers.forEach((handler) => handler(structuredClone(next)));
   const wait = (ms) => new Promise((done) => setTimeout(done, ms));
   // Tauri rejects a failed command with the command's error value; API.md defines it as { code, message }.
   const fail = (code, message) => {
@@ -331,10 +333,11 @@ export function createMock(params) {
       return null;
     },
     settings_choose_folder: ({ purpose }) => {
-      if (purpose === 'models') state.config.local.modelFolder = 'D:\\Models\\Voice';
-      else state.storage.folder = 'D:\\Meetings';
+      // As the engine: Voice 0.1 keeps meetings in its data folder.
+      if (purpose !== 'models') fail('invalid_value', "Meetings are kept in Voice's data folder in this version.");
+      state.config.local.modelFolder = 'D:\\Models\\Voice';
       emit();
-      return purpose === 'models' ? 'D:\\Models\\Voice' : 'D:\\Meetings';
+      return 'D:\\Models\\Voice';
     },
     settings_open_folder: () => null,
     settings_open_link: () => null,

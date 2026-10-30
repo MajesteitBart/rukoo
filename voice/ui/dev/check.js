@@ -126,6 +126,35 @@ check('a model in Ownkey\'s folder offers no Remove download', async ({ open, pa
   assert.match(await page.locator('.model-card').innerText(), /Shared with Ownkey\. Remove it in Ownkey\./);
 });
 
+check('Storage opens the recordings folder and offers no Browse that 0.1 would refuse', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage');
+  assert.equal(await page.locator('[data-a="open:recordings"]').count(), 1);
+  assert.equal(await page.locator('[data-a="folder:recordings"]').count(), 0);
+  // The mock answers as the engine does.
+  const refused = await page.evaluate(async () => {
+    const { invoke } = await import('./lib/bridge.js');
+    return invoke('settings_choose_folder', { purpose: 'recordings' }).then(
+      () => null,
+      (error) => error?.code
+    );
+  });
+  assert.equal(refused, 'invalid_value');
+});
+
+check('a Settings state that isn\'t newer than the shown one is dropped', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&theme=dark');
+  const row = page.locator('[data-a="toggle:dictation.readyChime"]');
+  assert.equal(await row.getAttribute('aria-checked'), 'false');
+  const shown = await mockState();
+  const stale = structuredClone(shown);
+  stale.config.dictation.readyChime = true;
+  await page.evaluate((next) => window.__settingsMockSend(next), stale);
+  await page.waitForTimeout(150);
+  assert.equal(await row.getAttribute('aria-checked'), 'false', 'same seq: built before the shown state');
+  await page.evaluate((next) => window.__settingsMockSend({ ...next, seq: next.seq + 1 }), stale);
+  await page.waitForSelector('[data-a="toggle:dictation.readyChime"][aria-checked="true"]');
+});
+
 check('a development copy can\'t import or start at login', async ({ open, page }) => {
   await open('settings.html?mock=1&lang=en&scenario=dev');
   assert.equal(await page.locator('[data-a="toggle:dictation.startAtLogin"]').isDisabled(), true);

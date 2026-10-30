@@ -127,7 +127,7 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 
 - `pill.stopButton`: the title of the native stop window, which screen readers announce.
 - `settings.title`: the Settings window's title.
-- `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`.
+- `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`. Settings 0.1 asks only for `models` (see the command below).
 - `app.tray.tooltip`, `app.tray.tooltipRecording`, `app.tray.settings`, `app.tray.startMeeting`, `app.tray.pauseMeeting`, `app.tray.resumeMeeting`, `app.tray.stopMeeting`, `app.tray.quit`: the tray.
 - `app.notify.dictationFailed`, `app.notify.rewriteFailed`, `app.notify.noTextBox`, `app.notify.meeting`, `app.notify.settings`, `app.notify.welcome`: the titles of the engine's tray notifications (`Notification.title_key`). The body comes from the engine as it is.
 
@@ -187,7 +187,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 
 | Field | Meaning |
 |---|---|
-| `seq` | +1 per state. The page drops a state older than the one it has. |
+| `seq` | +1 per state, and the app sends states in `seq` order, each built after its number was given. The page drops a state that isn't newer than the one it has. |
 | `version` | Voice's version, shown under About. |
 | `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14. |
 | `platform` | `windows`, `macos` or `linux`. |
@@ -201,7 +201,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `rukoo.discoveryPath` | The discovery file's full path (PROTOCOL.md, Where the file is). |
 | `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
 | `models` | A `ModelState` for `orukeet`, and for `nemotron` later than 0.1. |
-| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. |
+| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
 | `sync` | Later than 0.1: the last upload (epoch ms) and the files waiting. |
@@ -239,6 +239,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
 | `storage.sync.*` | later than 0.1 | | new |
+
+`meetings.retention` applies to meetings started from then on, as in Ownkey: each meeting keeps the choice it started with in its `meeting.json`, so changing it, or importing Ownkey's, never removes older meetings' audio. Meetings from before Voice stored it follow the current choice.
 
 The provider objects carry `provider`, `endpoint`, `model` and `keySaved`. `transcription` adds `language` (`auto`, `en`, `nl`, `de`, `fr`, `es`, `it`, `pt`, `pl`, `ja`, `zh`). `meetings` adds `consent`: `{ "provider": "mistral", "host": "api.mistral.ai" }` or `null`.
 
@@ -336,7 +338,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_choose_folder`
 
-`invoke('settings_choose_folder', { purpose })` → the chosen path, or `null` when the user cancelled. Opens the system's folder picker and saves the choice itself: `models` sets `local.modelFolder` (Ownkey's dialog title was "Choose model download or existing model folder"); `recordings` sets where new meetings are stored.
+`invoke('settings_choose_folder', { purpose })` → the chosen path, or `null` when the user cancelled. Opens the system's folder picker and saves the choice itself: `models` sets `local.modelFolder` (Ownkey's dialog title was "Choose model download or existing model folder"). `recordings` comes later than 0.1: Voice 0.1 keeps meetings in its data folder (`storage.folder`) and rejects it with `invalid_value`, so Settings > Storage offers Open folder there, not Browse.
 
 ### Command `settings_open_folder`
 
