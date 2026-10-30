@@ -44,7 +44,7 @@ A page has up to 10 meeting types. Each has its own link, `https://meet.rukoo.io
 | Length | 30 minutes | 15, 20, 30, 45 or 90 minutes, or 1 to 4 hours |
 | Description | Empty | Up to 500 characters, shown on the page |
 | Location | Google Meet when the calendar allows it, else none | Google Meet, phone call, in person, a meeting link (https) or none |
-| Free time before, free time after | None | 5, 10, 15, 30, 45 or 60 minutes |
+| Free time before, free time after | None | 5, 10, 15, 30, 45 or 60 minutes kept free around each booking, so guests can't book right next to your other meetings |
 | Minimum notice | 4 hours | None, 30 minutes, 1, 2, 4, 8 or 12 hours, 1 or 2 days, or a week |
 | How far ahead | 30 days | 7, 14, 30, 60 or 90 days |
 | Start times every | Same as the length | 5, 10, 15, 20, 30 or 60 minutes |
@@ -52,7 +52,7 @@ A page has up to 10 meeting types. Each has its own link, `https://meet.rukoo.io
 | Needs your approval | Off | Bookings wait as requests until you accept them |
 | Hide from the page | Off | Only people with the type's own link can book it |
 
-Everything from Free time on sits under More options.
+The fields from Free time to At most per day have a section of their own, When guests can book, which is open when the editor opens. Needs your approval and Hide from the page sit under More options. In Settings → Booking page, each meeting type's row shows its length and location, these settings where they differ from the defaults, such as "15 mins free time after" or "1 day notice", and whether it needs your approval or is hidden.
 
 A location's details (the phone number, address or meeting link) go only into the guest's invitation, unless you turn on "Show these details on the booking page". The page shows a label, such as "Phone call" or "In person, Amsterdam". Google Meet needs a Google calendar that allows Meet under Add bookings to; Google makes the Meet link when the event is created.
 

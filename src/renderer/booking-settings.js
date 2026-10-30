@@ -404,7 +404,26 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   // ---------- the page ----------
 
   const kindName = (loc) => (loc && loc.label ? loc.label : loc && loc.kind !== 'none' ? KIND_LABEL[loc.kind]() : '');
-  const typeDesc = (type) => [duration(type.duration * 60000), kindName(type.location), type.confirm ? t('settings.booking.typeConfirm') : '', type.hidden ? t('settings.booking.typeHidden') : ''].filter(Boolean).join(' · ');
+  // When guests can book a type, as far as it differs from a new type's defaults: "15 mins free time after",
+  // "1 day notice". Equal free time on both sides is one phrase.
+  const whenDesc = (type) => {
+    const d = defaultType(false);
+    const time = (m) => duration(m * 60000);
+    const out = [];
+    if (type.bufferBefore && type.bufferBefore === type.bufferAfter) out.push(t('settings.booking.rowBufferBoth', { time: time(type.bufferBefore) }));
+    else {
+      if (type.bufferBefore) out.push(t('settings.booking.rowBufferBefore', { time: time(type.bufferBefore) }));
+      if (type.bufferAfter) out.push(t('settings.booking.rowBufferAfter', { time: time(type.bufferAfter) }));
+    }
+    if (type.minNotice !== d.minNotice) out.push(type.minNotice ? t('settings.booking.rowNotice', { time: noticeLength(type.minNotice) }) : t('settings.booking.rowNoNotice'));
+    if (type.horizon !== d.horizon) out.push(t('settings.booking.rowHorizon', { count: type.horizon }));
+    if (type.slotInterval != null && type.slotInterval !== d.slotInterval) out.push(t('settings.booking.rowInterval', { time: time(type.slotInterval) }));
+    if (type.dailyLimit != null && type.dailyLimit !== d.dailyLimit) out.push(t('settings.booking.rowLimit', { count: type.dailyLimit }));
+    return out;
+  };
+  // A row that wraps breaks after a dot, not before it.
+  const typeDesc = (type) =>
+    [duration(type.duration * 60000), kindName(type.location), ...whenDesc(type), type.confirm ? t('settings.booking.typeConfirm') : '', type.hidden ? t('settings.booking.typeHidden') : ''].filter(Boolean).join(' · ');
   const hoursValue = () => {
     const s = state.settings || {};
     const calendar = app && app.settings && app.settings.calendar;
@@ -552,6 +571,13 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
 
   // ---------- meeting type ----------
 
+  // A section of the meeting type editor under a heading that folds it. Each keeps the state the user left it in
+  // while the editor is open: When guests can book starts open, More options folded.
+  const section = (name, title, body) =>
+    `<details class="booking-section booking-${name}" data-section="${name}" ${edit.open[name] ? 'open' : ''}><summary>${icons.chevronRight}<span>${esc(title)}</span></summary>
+        ${body}
+      </details>`;
+
   function typeHtml() {
     const d = edit.draft;
     const meet = meetAllowed();
@@ -575,10 +601,10 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
         <span class="field-help">${esc(t('settings.booking.locationPrivateHelp'))}</span>
       </div>
       <label data-location-label ${loc.kind === 'googleMeet' ? 'hidden' : ''}>${esc(t('settings.booking.locationLabel'))}<input type="text" name="locationLabel" value="${esc(loc.label)}" maxlength="100" autocomplete="off" placeholder="${esc(t('settings.booking.locationLabelPlaceholder'))}"/></label>
-      <details class="booking-more" ${edit.more ? 'open' : ''}><summary>${icons.chevronRight}<span>${esc(t('settings.booking.more'))}</span></summary>
-        <div class="booking-more-grid">
-          <label>${esc(t('settings.booking.bufferBefore'))}<select name="bufferBefore">${options(BUFFERS.includes(d.bufferBefore) ? BUFFERS : [...BUFFERS, d.bufferBefore], d.bufferBefore, (m) => (m ? duration(m * 60000) : t('common.values.none')))}</select></label>
-          <label>${esc(t('settings.booking.bufferAfter'))}<select name="bufferAfter">${options(BUFFERS.includes(d.bufferAfter) ? BUFFERS : [...BUFFERS, d.bufferAfter], d.bufferAfter, (m) => (m ? duration(m * 60000) : t('common.values.none')))}</select></label>
+      ${section('when', t('settings.booking.when'), `<div class="booking-grid">
+          <label>${esc(t('settings.booking.bufferBefore'))}<select name="bufferBefore" aria-describedby="booking-buffer-help">${options(BUFFERS.includes(d.bufferBefore) ? BUFFERS : [...BUFFERS, d.bufferBefore], d.bufferBefore, (m) => (m ? duration(m * 60000) : t('common.values.none')))}</select></label>
+          <label>${esc(t('settings.booking.bufferAfter'))}<select name="bufferAfter" aria-describedby="booking-buffer-help">${options(BUFFERS.includes(d.bufferAfter) ? BUFFERS : [...BUFFERS, d.bufferAfter], d.bufferAfter, (m) => (m ? duration(m * 60000) : t('common.values.none')))}</select></label>
+          <span class="field-help booking-grid-help" id="booking-buffer-help">${esc(t('settings.booking.bufferHelp'))}</span>
           <label>${esc(t('settings.booking.minNotice'))}<select name="minNotice">${options(NOTICES.includes(d.minNotice) ? NOTICES : [...NOTICES, d.minNotice].sort((a, b) => a - b), d.minNotice, noticeLength)}</select></label>
           <label>${esc(t('settings.booking.horizon'))}<select name="horizon">${options(HORIZONS.includes(d.horizon) ? HORIZONS : [...HORIZONS, d.horizon].sort((a, b) => a - b), d.horizon, (n) => t('settings.booking.days', { count: n }))}</select></label>
           <label>${esc(t('settings.booking.slotInterval'))}<select name="slotInterval"><option value=""${d.slotInterval === null ? ' selected' : ''}>${esc(t('settings.booking.slotSame'))}</option>${options(
@@ -591,12 +617,11 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
             d.dailyLimit ?? '',
             (n) => t('settings.booking.perDay', { count: n })
           )}</select></label>
-        </div>
-        <label class="inline"><input type="checkbox" name="confirm" ${d.confirm ? 'checked' : ''}/> ${esc(t('settings.booking.typeConfirm'))}</label>
+        </div>`)}
+      ${section('more', t('settings.booking.more'), `<label class="inline"><input type="checkbox" name="confirm" ${d.confirm ? 'checked' : ''}/> ${esc(t('settings.booking.typeConfirm'))}</label>
         <span class="field-help">${esc(t('settings.booking.confirmHelp'))}</span>
         <label class="inline"><input type="checkbox" name="hidden" ${d.hidden ? 'checked' : ''}/> ${esc(t('settings.booking.hide'))}</label>
-        <span class="field-help">${esc(t('settings.booking.hideHelp'))}</span>
-      </details>
+        <span class="field-help">${esc(t('settings.booking.hideHelp'))}</span>`)}
       <div class="error" data-error role="alert"></div>
       <div class="booking-form-actions">
         <button class="btn primary" type="submit">${esc(t('common.actions.save'))}</button>
@@ -841,7 +866,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
         typeForm.querySelector('[data-location-label]').hidden = kind === 'googleMeet';
         if (showValue) typeForm.querySelector('[name="locationValue"]').placeholder = KIND_VALUE[kind]();
       });
-      typeForm.querySelector('details')?.addEventListener('toggle', (e) => (edit.more = e.target.open));
+      for (const el of typeForm.querySelectorAll('details[data-section]')) el.addEventListener('toggle', () => edit && (edit.open[el.dataset.section] = el.open));
     }
     const hoursForm = page.querySelector('form[data-form="booking-hours"]');
     if (hoursForm && hours) {
@@ -1123,7 +1148,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
       const types = state.settings.types || [];
       const index = which === 'new' ? null : Number(which);
       if (index !== null && !types[index]) return true;
-      edit = { index, draft: index === null ? defaultType(meetAllowed()) : clone(types[index]), slugTouched: index !== null, more: false };
+      edit = { index, draft: index === null ? defaultType(meetAllowed()) : clone(types[index]), slugTouched: index !== null, open: { when: true, more: false } };
       go('booking-type');
       return true;
     }
