@@ -38,6 +38,16 @@ use crate::settings::SettingsRuntime;
 pub const NOTIFY_SETTINGS: &str = "app.notify.settings";
 pub const NOTIFY_WELCOME: &str = "app.notify.welcome";
 
+/// Every notification title the engine sends; voice-app checks that both catalogs have them.
+pub const NOTIFY_TITLES: &[&str] = &[
+    dictation::errors::TITLE_DICTATION,
+    dictation::errors::TITLE_REWRITE,
+    dictation::errors::TITLE_NO_TEXT_BOX,
+    meetings::controller::NOTIFY_MEETING,
+    NOTIFY_SETTINGS,
+    NOTIFY_WELCOME,
+];
+
 /// Starts Voice: loads Settings (running the first-run Ownkey import when it applies), starts the
 /// hotkeys, reattaches to a recorder that is still recording, finishes meetings that were cut off,
 /// and opens the bridge for Rukoo. Output goes to `sink` from here on.
@@ -172,6 +182,7 @@ pub fn start_with(
         SettingsRuntime::new(start_page),
     ));
     let _ = engine.set(Arc::downgrade(&core));
+    core.set_this();
 
     let cfg = core.config();
     core.svc
@@ -183,14 +194,19 @@ pub fn start_with(
             format!("Keyboard setup is incomplete. {e}"),
         ));
     }
+    // Reattaches to a recorder that still records and finalizes meetings that were cut off;
+    // both start a pipeline. Then meetings whose transcription didn't finish get one too.
     core.meetings.controller.recover();
-    core.meetings.catch_up();
+    for id in core.meetings.unfinished() {
+        core.follow(&id);
+    }
+    core.sweep();
     core.meetings.publish_status();
     if let Some(head) = core.meetings.log.as_ref().map(|log| log.head()) {
         let weak = Arc::downgrade(&core);
         let _ = std::thread::Builder::new()
-            .name("meeting-outcomes".into())
-            .spawn(move || engine::watch_outcomes(weak, head));
+            .name("engine-watch".into())
+            .spawn(move || engine::watch(weak, head));
     }
     let weak = Arc::downgrade(&core);
     let _ = std::thread::Builder::new()

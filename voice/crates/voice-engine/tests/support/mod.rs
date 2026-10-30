@@ -17,6 +17,7 @@ use voice_core::local::{
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{Hints, ProviderError, Recognized, RewriteRequest, Rewriter, SpeechToText};
 use voice_engine::meetings::controller::ControllerTiming;
+use voice_engine::meetings::PipelineOptions;
 use voice_engine::services::{
     AudioSink, Autostart, Chime, KeyState, MicStream, Microphone, Services, Speech, System,
     TextInput, Updates,
@@ -366,6 +367,11 @@ pub struct FakeSpeech {
     pub local_loads: AtomicUsize,
     pub models: Mutex<Vec<String>>,
     pub model_requests: Mutex<Vec<ProviderConfig>>,
+    /// Samples per meeting window, in order. Meetings have a recognizer of their own, so a
+    /// meeting window never takes a transcript queued for a dictation.
+    pub meeting_heard: Mutex<Vec<usize>>,
+    /// The provider of each meeting recognizer the engine built.
+    pub meeting_providers: Mutex<Vec<String>>,
 }
 
 impl FakeSpeech {
@@ -395,6 +401,19 @@ impl SpeechToText for FakeStt {
     }
 }
 
+/// Meeting windows: "Meeting words." for each.
+pub struct FakeMeetingStt(Arc<FakeSpeech>);
+
+impl SpeechToText for FakeMeetingStt {
+    fn transcribe(&self, pcm: &[i16], _hints: &Hints) -> Result<Recognized, ProviderError> {
+        lock(&self.0.meeting_heard).push(pcm.len());
+        Ok(Recognized {
+            text: "Meeting words.".into(),
+            language: None,
+        })
+    }
+}
+
 pub struct FakeRewriter(Arc<FakeSpeech>);
 
 impl Rewriter for FakeRewriter {
@@ -415,6 +434,16 @@ impl Speech for SpeechHandle {
             return Err(ProviderError::config("Select an audio model in Settings."));
         }
         Ok(Arc::new(FakeStt(Arc::clone(&self.0))))
+    }
+
+    fn meeting_recognizer(&self, cfg: &ProviderConfig) -> Result<PipelineOptions, ProviderError> {
+        lock(&self.0.meeting_providers).push(cfg.provider.clone());
+        if cfg.provider != "orukeet" && cfg.api_key.trim().is_empty() {
+            return Err(ProviderError::config("Add an API key in Settings."));
+        }
+        Ok(PipelineOptions::new(Arc::new(FakeMeetingStt(Arc::clone(
+            &self.0,
+        )))))
     }
 
     fn rewriter(&self, cfg: &ProviderConfig) -> Result<Arc<dyn Rewriter>, ProviderError> {

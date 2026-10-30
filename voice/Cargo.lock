@@ -4537,12 +4537,14 @@ name = "voice-engine"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "log",
  "serde",
  "serde_json",
  "voice-audio",
  "voice-bridge",
  "voice-core",
  "voice-input",
+ "voice-meetings",
  "voice-protocol",
  "voice-recorder",
  "windows",

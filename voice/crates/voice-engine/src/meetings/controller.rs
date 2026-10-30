@@ -7,6 +7,7 @@
 //! restarts and finishes meetings that were cut off. It never stops a recorder because the app
 //! is quitting.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,12 +19,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_bridge::ControlError;
-use voice_protocol::{StartArgs, StartedBy, Track};
+use voice_meetings::{CreateMeeting, Library};
+use voice_protocol::{ScreenMode, StartArgs, StartedBy, Track};
 use voice_recorder::control::Client;
 use voice_recorder::meeting::{self, RecorderFile};
 use voice_recorder::timeline::{self, History, Line};
-
-use super::pipeline::{CreateMeeting, Library};
 
 /// The recorder's exit codes (voice/RECORDING.md).
 const EXIT_CONFLICT: i32 = 3;
@@ -252,15 +252,16 @@ impl Controller {
     /// At start: reattaches to a recorder that still records and finishes meetings whose
     /// recorder died while the app wasn't running.
     pub fn recover(&self) {
-        for dir in self.lib.all() {
-            let path = meeting::timeline_path(&dir.path);
+        for dir in self.lib.dirs() {
+            let id = dir.id().to_string();
+            let path = meeting::timeline_path(dir.path());
             let Ok(lines) = timeline::read(&path) else {
                 continue;
             };
             if lines.is_empty() {
                 continue;
             }
-            if let Some(file) = meeting::live_recorder(&dir.path) {
+            if let Some(file) = meeting::live_recorder(dir.path()) {
                 let mut inner = self.lock();
                 if inner.is_some() {
                     continue;
@@ -269,8 +270,8 @@ impl Controller {
                 let paused = status.as_ref().is_some_and(|s| s["state"] == "paused");
                 let at_ms = status.as_ref().and_then(|s| s["t"].as_u64()).unwrap_or(0);
                 *inner = Some(Live {
-                    id: dir.id.clone(),
-                    dir: dir.path.clone(),
+                    id: id.clone(),
+                    dir: dir.path().to_path_buf(),
                     tracks: tracks_of(&lines, &self.sources),
                     child: None,
                     file,
@@ -285,18 +286,14 @@ impl Controller {
                     failed_pings: 0,
                 });
                 drop(inner);
-                self.emit(Change::Reattached {
-                    id: dir.id,
-                    paused,
-                    at_ms,
-                });
+                self.emit(Change::Reattached { id, paused, at_ms });
                 continue;
             }
             if History::from_lines(&lines).stopped {
                 continue;
             }
-            match meeting::finalize(&dir.path, "interrupted") {
-                Ok(_) => self.emit(Change::Finalized { id: dir.id }),
+            match meeting::finalize(dir.path(), "interrupted") {
+                Ok(_) => self.emit(Change::Finalized { id }),
                 Err(e) => self.emit(Change::Notify {
                     title_key: NOTIFY_MEETING,
                     body: format!("Voice couldn't finish a meeting that was cut off: {e}"),
@@ -336,19 +333,20 @@ impl Controller {
                     .iter()
                     .filter_map(|(name, _)| Track::parse(name))
                     .collect(),
-                sources: tracks.clone(),
+                sources: tracks.iter().cloned().collect::<BTreeMap<_, _>>(),
                 // Voice 0.1 doesn't record the screen, whatever was asked.
-                screen: "off".into(),
+                screen: ScreenMode::Off,
                 started_by: by,
                 context: args.context,
             })
             .map_err(|e| ControlError::failed(format!("Couldn't make the meeting folder: {e}")))?;
-        match self.launch(&dir.id, &dir.path, &tracks, false) {
+        let id = dir.id().to_string();
+        match self.launch(&id, dir.path(), &tracks, false) {
             Ok((child, file)) => {
                 let now = Instant::now();
                 *inner = Some(Live {
-                    id: dir.id.clone(),
-                    dir: dir.path,
+                    id: id.clone(),
+                    dir: dir.path().to_path_buf(),
                     tracks,
                     child: Some(child),
                     file,
@@ -364,15 +362,15 @@ impl Controller {
                 });
                 drop(inner);
                 self.emit(Change::Started {
-                    id: dir.id.clone(),
+                    id: id.clone(),
                     at_ms: 0,
                 });
-                Ok(dir.id)
+                Ok(id)
             }
             Err(e) => {
                 // A folder without a timeline holds nothing worth keeping.
-                if !meeting::timeline_path(&dir.path).exists() {
-                    let _ = fs::remove_dir_all(&dir.path);
+                if !meeting::timeline_path(dir.path()).exists() {
+                    let _ = fs::remove_dir_all(dir.path());
                 }
                 Err(ControlError::failed(format!(
                     "The recorder didn't start: {}",
@@ -496,6 +494,11 @@ impl Controller {
         let live = inner.as_ref().expect("live_for checked it");
         let mut request = json!({"cmd": "mark"});
         if let Some(label) = label {
+            // The mark event Rukoo gets allows 200 characters (PROTOCOL.md, Checking messages).
+            let label: String = label
+                .chars()
+                .take(voice_protocol::MAX_LABEL_CHARS)
+                .collect();
             request["label"] = label.into();
         }
         let reply = command(&live.file, request)?;

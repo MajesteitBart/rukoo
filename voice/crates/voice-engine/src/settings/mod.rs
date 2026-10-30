@@ -222,15 +222,15 @@ fn dictation_status(core: &Core, cfg: &Config) -> &'static str {
 }
 
 fn rukoo(core: &Core) -> Value {
-    let connected = core.meetings.rukoo_connected();
     let bridge = core.meetings.bridge.as_ref();
+    let info = bridge.map(|b| b.rukoo()).unwrap_or_default();
     json!({
-        "state": if connected { "connected" } else { "notRunning" },
-        "clientVersion": null,
-        "protocol": if connected { json!(voice_protocol::PROTOCOL) } else { Value::Null },
+        "state": if info.state.is_empty() { "notRunning" } else { info.state },
+        "clientVersion": info.client_version,
+        "protocol": info.protocol,
         "port": bridge.and_then(|b| b.port()),
         "discoveryPath": bridge.map(|b| b.discovery_path().display().to_string()),
-        "behind": null,
+        "behind": info.behind,
     })
 }
 

@@ -15,6 +15,7 @@ use voice_core::local::{
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{ProviderError, Rewriter, SpeechToText};
 use voice_input::{InputError, InsertMode, Key, TextTarget};
+use voice_meetings::PipelineOptions;
 
 use crate::api::{EngineOptions, Locale, Theme};
 use crate::meetings::controller::ControllerTiming;
@@ -46,6 +47,11 @@ pub trait Microphone: Send + Sync {
 /// Speech and rewrite providers, and the local model.
 pub trait Speech: Send + Sync {
     fn recognizer(&self, cfg: &ProviderConfig) -> Result<Arc<dyn SpeechToText>, ProviderError>;
+    /// How a meeting with this provider is transcribed. Orukeet also times its words, which
+    /// lets passages split at pauses; any other recognizer gives one passage per window.
+    fn meeting_recognizer(&self, cfg: &ProviderConfig) -> Result<PipelineOptions, ProviderError> {
+        self.recognizer(cfg).map(PipelineOptions::new)
+    }
     fn rewriter(&self, cfg: &ProviderConfig) -> Result<Arc<dyn Rewriter>, ProviderError>;
     fn list_models(
         &self,
@@ -180,6 +186,14 @@ struct SystemSpeech {
 impl Speech for SystemSpeech {
     fn recognizer(&self, cfg: &ProviderConfig) -> Result<Arc<dyn SpeechToText>, ProviderError> {
         voice_core::speech_to_text(cfg, &self.local).map(Arc::from)
+    }
+
+    fn meeting_recognizer(&self, cfg: &ProviderConfig) -> Result<PipelineOptions, ProviderError> {
+        if cfg.provider == "orukeet" {
+            // The same worker as dictation: one model in memory, one request at a time.
+            return Ok(PipelineOptions::local(self.local.clone()));
+        }
+        self.recognizer(cfg).map(PipelineOptions::new)
     }
 
     fn rewriter(&self, cfg: &ProviderConfig) -> Result<Arc<dyn Rewriter>, ProviderError> {

@@ -2,14 +2,15 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use voice_bridge::ControlError;
 use voice_core::config::{self as core_config, Config};
 use voice_core::local::ModelRegistry;
+use voice_core::{Hints, ProviderError, Recognized, SpeechToText};
 use voice_input::Key;
 use voice_protocol::{StartArgs, StartedBy};
 
@@ -19,8 +20,7 @@ use crate::api::{
 };
 use crate::dictation::Dictation;
 use crate::meetings::controller::Change;
-use crate::meetings::pipeline::PipelineOptions;
-use crate::meetings::Meetings;
+use crate::meetings::{Meetings, PipelineOptions};
 use crate::pill::{Looks, MeetingPhase, PillDriver};
 use crate::platform::CHIME_COOLDOWN;
 use crate::services::Services;
@@ -39,8 +39,11 @@ pub(crate) struct Core {
     pub meetings: Meetings,
     shutting_down: AtomicBool,
     last_chime: Mutex<Option<Instant>>,
-    rukoo: AtomicBool,
+    /// What Settings > Rukoo last showed, to tell when it changes.
+    rukoo: Mutex<Value>,
     pub settings_seq: AtomicU64,
+    /// The engine itself, for work that outlives a call: set once by `start_with`.
+    this: OnceLock<Weak<Core>>,
 }
 
 impl Core {
@@ -65,9 +68,18 @@ impl Core {
             sink,
             shutting_down: AtomicBool::new(false),
             last_chime: Mutex::new(None),
-            rukoo: AtomicBool::new(false),
+            rukoo: Mutex::new(Value::Null),
             settings_seq: AtomicU64::new(1),
+            this: OnceLock::new(),
         }
+    }
+
+    pub fn set_this(self: &Arc<Self>) {
+        let _ = self.this.set(Arc::downgrade(self));
+    }
+
+    fn this(&self) -> Option<Arc<Core>> {
+        self.this.get().and_then(Weak::upgrade)
     }
 
     pub fn config(&self) -> Arc<Config> {
@@ -140,9 +152,28 @@ impl Core {
         self.svc
             .speech
             .local_configure(self.registry(new), new.idle_timeout());
-        // Switching away from Orukeet frees its memory.
-        if old.audio_provider == "orukeet" && new.audio_provider != "orukeet" {
+        // Switching away from Orukeet frees its memory, unless meetings still use it.
+        if old.audio_provider == "orukeet"
+            && new.audio_provider != "orukeet"
+            && new.meeting_audio().provider != "orukeet"
+        {
             self.svc.speech.local_unload();
+        }
+        if old.meeting_audio() != new.meeting_audio() || old.meeting_hints() != new.meeting_hints()
+        {
+            // The pipelines were built for the old provider; they start again on the new one
+            // and continue where transcript.db says. Shutting one down waits for its call.
+            if let Some(core) = self.this() {
+                let _ = thread::Builder::new()
+                    .name("meeting-restart".into())
+                    .spawn(move || {
+                        let opts = || core.pipeline_options();
+                        core.meetings.restart(opts);
+                    });
+            }
+        } else if old.meetings_transcription_consent != new.meetings_transcription_consent {
+            // Decision 10: transcription waited for this; it needn't wait for the next poll.
+            self.meetings.wake();
         }
         let before = looks(&self.opts, &self.svc, old);
         let after = looks(&self.opts, &self.svc, new);
@@ -196,14 +227,37 @@ impl Core {
             });
     }
 
+    /// How meetings are transcribed with the current Settings: the meeting provider (Orukeet
+    /// with word timings), the dictionary as hints, and decision 10's consent gate.
     pub fn pipeline_options(self: &Arc<Self>) -> PipelineOptions {
+        let cfg = self.config();
+        let audio = cfg.meeting_audio();
+        let mut opts = match self.svc.speech.meeting_recognizer(&audio) {
+            Ok(opts) => opts,
+            // A missing key or model: the pipeline retries while the meeting records and
+            // reports this reason if it still fails after the stop.
+            Err(error) => PipelineOptions::new(Arc::new(Unavailable(error))),
+        };
+        opts.hints = cfg.meeting_hints();
         let weak = Arc::downgrade(self);
-        PipelineOptions {
-            transcription_allowed: Arc::new(move || match weak.upgrade() {
-                Some(core) => crate::meetings::transcription_allowed(&core.config()),
-                None => Err("Voice is quitting.".into()),
-            }),
-        }
+        opts.transcription_allowed = Arc::new(move || {
+            let Some(core) = weak.upgrade() else {
+                return Err("Voice is quitting.".into());
+            };
+            let cfg = core.config();
+            // Built for another provider: a restart with the new one is on its way, and no
+            // audio goes to a provider the Settings no longer name.
+            if cfg.meeting_audio() != audio {
+                return Err("The meeting provider changed; transcription starts again.".into());
+            }
+            crate::meetings::transcription_allowed(&cfg)
+        });
+        opts
+    }
+
+    /// Transcribes a meeting for Rukoo.
+    pub fn follow(self: &Arc<Self>, id: &str) {
+        self.meetings.follow(id, self.pipeline_options());
     }
 
     /// What the meeting controller reports.
@@ -212,7 +266,7 @@ impl Core {
             Change::Started { id, at_ms } => {
                 self.pill
                     .update(|p, now| p.meeting(MeetingPhase::Recording, at_ms, now));
-                self.meetings.follow(&id, self.pipeline_options());
+                self.follow(&id);
                 self.meeting_changed();
             }
             Change::Reattached { id, paused, at_ms } => {
@@ -222,7 +276,7 @@ impl Core {
                     MeetingPhase::Recording
                 };
                 self.pill.update(|p, now| p.meeting(phase, at_ms, now));
-                self.meetings.follow(&id, self.pipeline_options());
+                self.follow(&id);
                 self.meeting_changed();
             }
             Change::Paused { at_ms, .. } => {
@@ -236,16 +290,11 @@ impl Core {
                 self.meeting_changed();
             }
             Change::Clock { at_ms, mic_ok, .. } => {
-                let rukoo = self.meetings.rukoo_connected();
-                let rukoo_changed = self.rukoo.swap(rukoo, Ordering::SeqCst) != rukoo;
                 self.pill.update(|p, now| {
                     p.meeting_clock(at_ms, now);
                     p.meeting_mic(mic_ok, now);
-                    p.set_rukoo(rukoo);
                 });
-                if rukoo_changed {
-                    self.settings_changed();
-                }
+                self.rukoo_changed();
             }
             Change::Restarted { .. } => {}
             Change::Ended { at_ms, .. } => {
@@ -253,7 +302,9 @@ impl Core {
                     .update(|p, now| p.meeting(MeetingPhase::Processing, at_ms, now));
                 self.meeting_changed();
             }
-            Change::Finalized { .. } => {
+            Change::Finalized { id } => {
+                // Cut off while Voice wasn't running: what was recorded still gets transcribed.
+                self.follow(&id);
                 self.notify(
                     crate::meetings::controller::NOTIFY_MEETING,
                     "A meeting was cut off last time. Everything recorded until then is saved."
@@ -261,6 +312,37 @@ impl Core {
                 );
             }
             Change::Notify { title_key, body } => self.notify(title_key, body),
+        }
+    }
+
+    /// Tells Settings and the pill when Rukoo connects, leaves or is refused.
+    pub fn rukoo_changed(&self) {
+        let Some(bridge) = self.meetings.bridge.as_ref() else {
+            return;
+        };
+        let info = bridge.rukoo();
+        // `behind` moves with every event; Settings reads it with the next change.
+        let key = serde_json::json!([info.state, info.client_version, info.protocol]);
+        let changed = {
+            let mut last = lock(&self.rukoo);
+            let changed = *last != key;
+            *last = key;
+            changed
+        };
+        if changed {
+            let connected = info.connected();
+            self.pill.update(|p, _| p.set_rukoo(connected));
+            self.settings_changed();
+        }
+    }
+
+    /// Removes meeting audio whose retention ran out (Settings > Meetings > Keep audio).
+    pub fn sweep(&self) {
+        let removed = self.meetings.sweep(self.config().meetings_retention);
+        if !removed.is_empty() {
+            log::info!("retention: removed the audio of {}", removed.join(", "));
+            self.settings.forget_storage();
+            self.settings_changed();
         }
     }
 
@@ -284,19 +366,28 @@ impl Core {
     }
 }
 
-/// How often the pill looks for a meeting's outcome in the event log.
-const OUTCOME_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+/// How often the engine looks at meeting outcomes and at Rukoo's connection.
+const WATCH_POLL: Duration = Duration::from_secs(1);
+/// How often retention runs besides at start and after a meeting is done.
+const SWEEP_EVERY: Duration = Duration::from_secs(10 * 60);
 
-/// Shows a meeting whose transcription failed, and lets a finished one go: `meeting.state`
-/// `failed` and `done` come from the pipeline long after the recorder stopped.
-pub(crate) fn watch_outcomes(core: std::sync::Weak<Core>, mut seq: u64) {
+/// The engine's slow loop. Shows a meeting whose transcription failed and lets a finished one
+/// go (`meeting.state` `failed` and `done` come from the pipeline long after the recorder
+/// stopped), keeps Settings > Rukoo current, and runs the retention sweep.
+pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
+    let mut swept = Instant::now();
     loop {
-        thread::sleep(OUTCOME_POLL);
+        thread::sleep(WATCH_POLL);
         let Some(core) = core.upgrade() else {
             return;
         };
         if core.shutting_down() {
             return;
+        }
+        core.rukoo_changed();
+        if swept.elapsed() >= SWEEP_EVERY {
+            swept = Instant::now();
+            core.sweep();
         }
         // Borrowed from the engine each round, so the log closes as soon as the engine is gone.
         let Some(log) = core.meetings.log.as_ref() else {
@@ -318,7 +409,11 @@ pub(crate) fn watch_outcomes(core: std::sync::Weak<Core>, mut seq: u64) {
                         format!("Voice couldn't finish a meeting's transcript: {reason}. The audio is kept."),
                     );
                 }
-                Some("done") => core.pill.update(|p, _| p.meeting_gone()),
+                Some("done") => {
+                    core.pill.update(|p, _| p.meeting_gone());
+                    // "After transcription" retention removes the audio now.
+                    core.sweep();
+                }
                 _ => {}
             }
         }
@@ -482,5 +577,15 @@ impl Drop for EngineImpl {
     fn drop(&mut self) {
         // Threads hold only weak references; this ends them if the app forgot to shut down.
         self.0.shutdown();
+    }
+}
+
+/// The recognizer for a meeting provider that can't be built (a missing key or model): every
+/// window fails with the reason, which `meeting.state` `failed` carries if it never changes.
+struct Unavailable(ProviderError);
+
+impl SpeechToText for Unavailable {
+    fn transcribe(&self, _pcm: &[i16], _hints: &Hints) -> Result<Recognized, ProviderError> {
+        Err(self.0.clone())
     }
 }

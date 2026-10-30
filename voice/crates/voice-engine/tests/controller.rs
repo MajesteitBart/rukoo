@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, TempDir};
 use voice_bridge::{EventLog, MeetingControl};
-use voice_engine::meetings::bridge::{Control, Presence};
+use voice_engine::meetings::bridge::Control;
 use voice_engine::meetings::controller::{Change, Controller, ControllerOptions, ControllerTiming};
 use voice_engine::{PillPhase, StopReason};
 use voice_input::Key;
@@ -65,6 +65,14 @@ fn main() {
         (
             "a_restarted_engine_reattaches_and_stops_the_meeting",
             a_restarted_engine_reattaches_and_stops_the_meeting,
+        ),
+        (
+            "a_cut_off_meeting_is_transcribed_at_the_next_start",
+            a_cut_off_meeting_is_transcribed_at_the_next_start,
+        ),
+        (
+            "transcription_waits_for_consent_and_starts_when_it_is_given",
+            transcription_waits_for_consent_and_starts_when_it_is_given,
         ),
     ];
     let filters: Vec<String> = std::env::args()
@@ -421,7 +429,7 @@ fn a_cut_off_meeting_is_finished_at_start() {
     drop(a);
     kill(recorder_pid(&data, &id));
     assert_eq!(
-        voice_engine::meetings::pipeline::Library::open(&data)
+        voice_engine::meetings::Library::open(&data)
             .unwrap()
             .interrupted(),
         std::slice::from_ref(&id)
@@ -455,11 +463,10 @@ fn rukoo_commands_go_through_meeting_control() {
     let (c, changes) = controller(&data, timing());
     let control = Control {
         controller: Arc::clone(&c),
+        log: EventLog::open(&data).unwrap(),
         dictating: Arc::default(),
-        presence: Arc::new(Presence::default()),
     };
     assert_eq!(MeetingControl::status(&control).recording, None);
-    assert!(control.presence.connected(), "Rukoo asked for the status");
     let id = MeetingControl::start(
         &control,
         StartArgs {
@@ -485,7 +492,11 @@ fn rukoo_commands_go_through_meeting_control() {
     control.pause(&id).unwrap();
     control.resume(&id).unwrap();
     assert_eq!(control.mark(&id, Some("x")).unwrap().0, "k-1");
-    assert_eq!(control.get(&id).unwrap_err().code, ErrorCode::NotAvailable);
+    // Nothing follows this meeting here, so its snapshot is what meeting.json says.
+    let snapshot = control.get(&id).unwrap();
+    assert_eq!(snapshot["meeting"]["id"], id.as_str());
+    assert_eq!(snapshot["meeting"]["title"], "From Rukoo");
+    assert_eq!(snapshot["meeting"]["state"], "recording");
     assert_eq!(
         control.frame(&id, 0).unwrap_err().code,
         ErrorCode::NotAvailable
@@ -595,7 +606,56 @@ fn a_meeting_through_the_engine() {
             .iter()
             .any(|s| s.event == "meeting.state" && s.data["state"] == "processing")
     });
+    // voice-meetings transcribes what was recorded, then the meeting is done.
+    wait_for("meeting.state done for Rukoo", || {
+        stored(&h.data())
+            .iter()
+            .any(|s| s.event == "meeting.state" && s.data["state"] == "done")
+    });
     let events = stored(&h.data());
+    let passages: Vec<&voice_bridge::Stored> =
+        events.iter().filter(|s| s.event == "passage").collect();
+    assert!(!passages.is_empty(), "the tone was transcribed");
+    assert!(passages
+        .iter()
+        .all(|p| p.data["text"] == "Meeting words." && p.meeting.as_deref() == Some(&id)));
+    assert!(
+        passages.iter().any(|p| p.data["track"] == "mic"),
+        "the microphone has passages"
+    );
+    assert_eq!(
+        h.speech.heard().len(),
+        1,
+        "dictation's recognizer heard only the dictation"
+    );
+    assert!(!lock(&h.speech.meeting_heard).is_empty());
+    assert_eq!(lock(&h.speech.meeting_providers)[0], "orukeet");
+    // Rukoo's meeting.get has every passage the log has.
+    let control = Control {
+        controller: Controller::new(
+            ControllerOptions {
+                data_dir: h.data(),
+                recorder_exe: recorder_exe(),
+                sources: sources(),
+                timing: timing(),
+            },
+            |_| {},
+        )
+        .unwrap(),
+        log: EventLog::open(&h.data()).unwrap(),
+        dictating: Arc::default(),
+    };
+    let snapshot = control.get(&id).unwrap();
+    assert_eq!(snapshot["meeting"]["state"], "done");
+    assert_eq!(
+        snapshot["passages"].as_array().unwrap().len(),
+        passages
+            .iter()
+            .map(|p| p.data["id"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    );
+    control.controller.shutdown();
     assert!(
         events
             .iter()
@@ -640,5 +700,107 @@ fn a_restarted_engine_reattaches_and_stops_the_meeting() {
         matches!(lines(&h.data(), &id).last(), Some(Line::Stop { reason, .. }) if reason == "user")
     );
     wait_for("the recorder to exit", || !alive(pid));
+    // Two engines followed the meeting; Rukoo got each event once.
+    wait_done(&h.data(), &id);
+    assert_once(&h.data(), &id);
     again.shutdown();
+}
+
+fn wait_done(data: &Path, id: &str) {
+    wait_for("meeting.state done", || {
+        stored(data).iter().any(|s| {
+            s.meeting.as_deref() == Some(id)
+                && s.event == "meeting.state"
+                && s.data["state"] == "done"
+        })
+    });
+}
+
+/// No passage revision, mark, speaker or state reached the log twice.
+fn assert_once(data: &Path, id: &str) {
+    let mut seen = std::collections::HashSet::new();
+    for s in stored(data)
+        .iter()
+        .filter(|s| s.meeting.as_deref() == Some(id))
+    {
+        let key = match s.event.as_str() {
+            "passage" => format!("passage {} {}", s.data["id"], s.data["revision"]),
+            "mark" | "speaker" => format!("{} {}", s.event, s.data["id"]),
+            "meeting.state" => format!("state {} {}", s.data["state"], s.data["at"]),
+            other => other.to_string(),
+        };
+        assert!(seen.insert(key.clone()), "{key} reached Rukoo twice");
+    }
+}
+
+fn a_cut_off_meeting_is_transcribed_at_the_next_start() {
+    let h = engine_harness("engine-cut-off");
+    let engine = h.start();
+    let id = engine.start_meeting().unwrap();
+    wait_for("1.5 s of audio", || {
+        lines(&h.data(), &id)
+            .iter()
+            .any(|l| matches!(l, Line::Heartbeat { t, .. } if *t >= 1500))
+    });
+    let pid = recorder_pid(&h.data(), &id);
+    // Voice quits, then the recorder dies while nothing watches it.
+    engine.shutdown();
+    drop(engine);
+    kill(pid);
+
+    let again = h.start();
+    h.sink
+        .wait_note(voice_engine::meetings::controller::NOTIFY_MEETING);
+    assert!(
+        matches!(lines(&h.data(), &id).last(), Some(Line::Stop { reason, .. }) if reason == "interrupted")
+    );
+    wait_done(&h.data(), &id);
+    let events = stored(&h.data());
+    assert!(
+        events
+            .iter()
+            .any(|s| s.event == "passage" && s.meeting.as_deref() == Some(id.as_str())),
+        "what was recorded before the cut got transcribed"
+    );
+    assert!(events.iter().any(|s| s.event == "meeting.state"
+        && s.data["state"] == "processing"
+        && s.data["reason"] == "interrupted"));
+    assert_once(&h.data(), &id);
+    again.shutdown();
+}
+
+fn transcription_waits_for_consent_and_starts_when_it_is_given() {
+    let h = engine_harness("engine-consent");
+    let engine = h.start();
+    let mistral = |consent: bool| json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": "sk-test-not-a-real-key", "consent": consent});
+    engine.settings_save_provider(mistral(false)).unwrap();
+    let id = engine.start_meeting().unwrap();
+    wait_for("1 s of audio", || {
+        lines(&h.data(), &id)
+            .iter()
+            .any(|l| matches!(l, Line::Heartbeat { t, .. } if *t >= 1000))
+    });
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_for("meeting.state processing", || {
+        stored(&h.data())
+            .iter()
+            .any(|s| s.event == "meeting.state" && s.data["state"] == "processing")
+    });
+    // Decision 10: the meeting recorded, and no audio went to Mistral without consent.
+    std::thread::sleep(Duration::from_millis(1500));
+    let events = stored(&h.data());
+    assert!(!events.iter().any(|s| s.event == "passage"));
+    assert!(!events
+        .iter()
+        .any(|s| s.event == "meeting.state" && s.data["state"] == "done"));
+    assert!(lock(&h.speech.meeting_heard).is_empty());
+
+    engine.settings_save_provider(mistral(true)).unwrap();
+    wait_done(&h.data(), &id);
+    assert!(stored(&h.data()).iter().any(|s| s.event == "passage"));
+    assert_eq!(
+        lock(&h.speech.meeting_providers).last().map(String::as_str),
+        Some("mistral")
+    );
+    engine.shutdown();
 }
