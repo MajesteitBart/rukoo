@@ -76,6 +76,12 @@ When the calendar doesn't take a booking's event at first, Rukoo keeps the meeti
 
 A Zoom or Teams connection needs renewing when the service turns down the sign-in Rukoo kept. Usually someone removed Rukoo's access in the Zoom or Microsoft account, an admin withdrew it, or it went unused for too long (90 days for Zoom). Renew signs in again.
 
+### Computers with an older Rukoo
+
+Every computer signed in to your Rukoo account needs this version once a meeting type uses a video service. An older one can't read booking settings with a video location. Until it updates, it says the page's settings haven't reached it, Use this computer says the page is off, and its agent tools say the page is off and count free time in your working hours instead of your booking hours. Bookings carry on, because a video service can only be chosen on the computer that handles them. If an older computer takes over while you save such a change, Rukoo puts the type's previous location back and refuses the change.
+
+An older computer also doesn't move or delete the meetings of bookings that already have one. That can happen when meeting types stop using a video service and an older computer takes over: a booking with a Zoom or Teams meeting then keeps its meeting at the old time when it moves, and the meeting stays in Zoom or Teams when the booking is cancelled.
+
 ### Sign-ins stay on this computer
 
 Rukoo signs in to Zoom and Microsoft in your browser, with OAuth 2.0 and PKCE, and keeps the refresh token on this computer, encrypted the way a Google account's is. Your Rukoo account doesn't carry it, so each computer that handles bookings connects its own services. Disconnect forgets the sign-in on this computer; Rukoo stays listed in your Zoom or Microsoft account's connected apps until you remove it there.
