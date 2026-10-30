@@ -4004,6 +4004,11 @@ body.compose-window {
   display: flex;
   animation: pop 120ms ease;
 }
+/* The panel itself takes the drop, not what is in it. The empty state and the transcript are drawn again as the
+   agent's status and replies come in; a drop that went to an element that just left the page never reached the panel. */
+.agentpane.is-drop * {
+  pointer-events: none;
+}
 .agentpane.is-drop .bui-pb__box {
   border-color: var(--accent);
 }
