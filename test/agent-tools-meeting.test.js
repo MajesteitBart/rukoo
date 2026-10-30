@@ -20,7 +20,7 @@ let seq = 0;
 const ev = (event, meeting, data) => ({ type: 'event', seq: ++seq, event, ...(meeting ? { meeting } : {}), createdAt: Date.now(), data });
 const startedEv = (id = M, extra = {}) => ev('meeting.started', id, { title: 'Weekly with Anna', startedAt: T0, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null, ...extra });
 const passage = (track, start, text, extra = {}) =>
-  ev('passage', extra.meeting || M, { id: `${track}-${String(start).padStart(9, '0')}`, track, speaker: track === 'mic' ? 'mic' : 'call-1', start, end: start + 2000, text, revision: extra.revision || 1, dictation: extra.dictation || false, language: 'en' });
+  ev('passage', extra.meeting || M, { id: `${track}-${String(start).padStart(9, '0')}`, track, speaker: track === 'mic' ? 'mic' : 'call-1', start, end: extra.end || start + 2000, text, revision: extra.revision || 1, dictation: extra.dictation || false, language: 'en' });
 
 async function setup(t, { settings = null, withVoice = true, fake = false } = {}) {
   const dir = tempDir('rukoo-meeting-tools-');
@@ -54,6 +54,18 @@ const failure = (res) => {
   return res.content[0].text;
 };
 const meetingTag = (v, source = 'meeting') => `<unsafe_content source="${source}">${v}</unsafe_content>`;
+// Reads on as each note says until there is no more, for at most 10 pages. done: the last page said there was no more.
+async function readOn(call, args, cid = null) {
+  const seen = [];
+  for (let page = 0; page < 10; page++) {
+    const res = data(await call('read_meeting_transcript', args, cid));
+    seen.push(...untag(res.transcript).trim().split('\n').filter(Boolean));
+    if (!res.more) return { seen, done: true };
+    const [, from, to] = /with from_seconds (\d+)(?: and to_seconds (\d+))?\./.exec(res.note);
+    args = { ...(args.meeting_id ? { meeting_id: args.meeting_id } : {}), from_seconds: Number(from), ...(to ? { to_seconds: Number(to) } : {}), max_chars: args.max_chars };
+  }
+  return { seen, done: false };
+}
 // Until the chat's turn is over.
 async function settle(hub, c) {
   for (let i = 0; i < 300 && (c.status === 'running' || hub.turns.has(c.id)); i++) await new Promise((r) => setTimeout(r, 10));
@@ -220,6 +232,54 @@ test("a read from the start that goes on with the note's from_seconds moves a me
   assert.equal(next.since, 'last_read');
   assert.deepEqual(untag(next.transcript).trim().split('\n'), ['[00:00:00] Speaker 1 (revised): Line 0, transcribed again.']);
   assert.equal(hub.meetingTurn(c).fresh, 0);
+});
+
+test("going on with the note's from_seconds gets past a long passage that overlaps the next one, and moves the cursor", async (t) => {
+  const { feed, call, hub } = await setup(t);
+  // The first passage alone is over max_chars and runs on past the second's start, so the note says from_seconds 1,
+  // and a window from 1 s still holds the first passage.
+  feed([startedEv(), ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }), passage('call', 0, `First ${'y'.repeat(1100)}`, { end: 2000 }), passage('call', 1500, 'Second.', { end: 3000 })]);
+  const c = hub.create({ agent: 'claude', meeting: { id: M } });
+  const first = data(await call('read_meeting_transcript', { since: 'start', max_chars: 1000 }, c.id));
+  assert.equal(first.count, 1);
+  assert.match(first.note, /with from_seconds 1\./);
+  const { seen, done } = await readOn(call, { since: 'start', max_chars: 1000 }, c.id);
+  assert.ok(done, `still more after ${seen.length} pages`);
+  assert.deepEqual(
+    seen.map((l) => l.slice(0, 28)),
+    ['[00:00:00] Speaker 1: First ', '[00:00:01] Speaker 1: Second']
+  );
+  assert.ok(c.meeting.readSeq > 0, 'the last page moved the cursor');
+  assert.equal(hub.meetingTurn(c).fresh, 0);
+});
+
+test('passages that start in the same second come one page each, for another meeting, a call in no chat and a stretch', async (t) => {
+  const { feed, call, hub } = await setup(t);
+  const long = (n) => `Passage ${n} ${'z'.repeat(1100)}`;
+  feed([
+    startedEv(),
+    ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }),
+    passage('call', 3000, long(1), { end: 3300 }),
+    passage('call', 3400, long(2), { end: 3700 }),
+    passage('mic', 3800, long(3), { end: 4200 }),
+    passage('call', 20000, 'Later.')
+  ]);
+  const heads = (seen) => seen.map((l) => /Passage \d|Later/.exec(l)[0]);
+  // In no chat: every note says from_seconds 3 until the last of that second.
+  const none = await readOn(call, { meeting_id: M, max_chars: 1000 });
+  assert.ok(none.done, `still more after ${none.seen.length} pages`);
+  assert.deepEqual(heads(none.seen), ['Passage 1', 'Passage 2', 'Passage 3', 'Later']);
+  // In a chat about something else.
+  const other = hub.create({ agent: 'claude' });
+  const chat = await readOn(call, { meeting_id: M, since: 'start', max_chars: 1000 }, other.id);
+  assert.ok(chat.done, `still more after ${chat.seen.length} pages`);
+  assert.deepEqual(heads(chat.seen), ['Passage 1', 'Passage 2', 'Passage 3', 'Later']);
+  // A stretch's note keeps its to_seconds, and going on with both stays inside it.
+  const page = data(await call('read_meeting_transcript', { meeting_id: M, from_seconds: 0, to_seconds: 10, max_chars: 1000 }));
+  assert.match(page.note, /with from_seconds 3 and to_seconds 10\./);
+  const stretch = await readOn(call, { meeting_id: M, from_seconds: 0, to_seconds: 10, max_chars: 1000 });
+  assert.ok(stretch.done, `still more after ${stretch.seen.length} pages`);
+  assert.deepEqual(heads(stretch.seen), ['Passage 1', 'Passage 2', 'Passage 3']);
 });
 
 test('a meeting chat whose agent lost its session reads the transcript from the start again', async (t) => {
