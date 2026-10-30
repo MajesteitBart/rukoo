@@ -18,6 +18,7 @@ import { editSignature, signaturePreview } from './signature.js';
 import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
 import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
 import { calendarSettingsPages, CALENDAR_VIEWS } from './calendar-settings.js';
+import { meetingSettingsPages, MEETING_VIEWS } from './meeting-settings.js';
 import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
 import { SCHEMES, ACTIONS as KEY_ACTIONS, bindings, display, keyLabel } from './keymap.js';
 
@@ -265,6 +266,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     // The booking page's state from main: the page and the overview follow it, forms keep what is typed.
     if (type === 'booking') bookingPage.onState(payload);
     if (type === 'categories-progress') categoriesPage.onActivity(payload);
+    // Rukoo Voice connected, left or started a meeting: the Meetings row and page say so.
+    if (type === 'meeting' && payload && payload.kind === 'state') meetingPage.onState(payload.state);
   });
 
   const close = () => {
@@ -312,6 +315,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   // booking link rows beside the signature rows.
   const calendarPage = calendarSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
   const bookingPage = bookingPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
+  // Settings > Meetings (meeting-settings.js): Rukoo Voice and what Rukoo does during a meeting.
+  const meetingPage = meetingSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
   // A redraw of the screen already showing keeps its scroll position on the pages with calendar and booking rows: the
   // booking page changes while it is open, and a switch near the bottom shouldn't send the page back to the top.
   // Another page, or the booking page's setup becoming the page, starts at the top.
@@ -947,6 +952,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
       view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
       view === 'main' || view === 'account' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
+      view === 'main' || MEETING_VIEWS.includes(view) ? meetingPage.prepare() : null,
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -1011,6 +1017,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('mailbox.folders.vip'), desc: t('settings.general.vipHelp'), action: 'vips' })}
         </div>
         ${calendarGroup}
+        <div class="settings-group-title" data-i18n="settings.groups.meetings">${esc(t('settings.groups.meetings'))}</div>
+        <div class="card">${meetingPage.rowHtml()}</div>
         <div class="settings-group-title" data-i18n="settings.groups.sync">${esc(t('settings.groups.sync'))}</div>
         <div class="card">${account.rowHtml()}</div>
         <div class="settings-group-title" data-i18n="settings.groups.agents">${esc(t('settings.groups.agents'))}</div>
@@ -1201,6 +1209,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (CATEGORY_VIEWS.includes(view)) ({ title, body } = categoriesPage.view(view));
     if (CALENDAR_VIEWS.includes(view)) ({ title, body } = calendarPage.view(view));
     if (BOOKING_VIEWS.includes(view)) ({ title, body } = bookingPage.view(view));
+    if (MEETING_VIEWS.includes(view)) ({ title, body } = meetingPage.view(s));
 
     // A redraw, such as the one after each update from main, keeps the keyboard on the control with the same action.
     const focused = page.contains(document.activeElement) ? document.activeElement.dataset.a : null;
@@ -1265,6 +1274,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if ((a === 'categories' || a.startsWith('cat-')) && (await categoriesPage.click(a))) return;
     if (a.startsWith('calset-') && (await calendarPage.click(a))) return;
     if (a.startsWith('booking-') && (await bookingPage.click(a))) return;
+    if (a.startsWith('mtset-') && (await meetingPage.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'mailto-use') {

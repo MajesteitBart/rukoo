@@ -1320,8 +1320,8 @@
     "description": "Calendar view: accessible name of the section that replaces the message list and reader. src/renderer/app.js (renderShell)"
   },
   "calendar.mode.label": {
-    "message": "Mail or calendar",
-    "description": "Sidebar: accessible name of the switch at the top that chooses between the mailbox and the calendar. src/renderer/app.js (renderModeSwitch)"
+    "message": "Mail, calendar or meetings",
+    "description": "Sidebar: accessible name of the switch at the top that chooses between the mailbox, the calendar and the meetings. src/renderer/app.js (renderModeSwitch)"
   },
   "calendar.mode.mail": {
     "message": "Mail",
@@ -8156,6 +8156,642 @@
   "categories.activity.checkKey": {
     "message": "Check the key",
     "description": "Sidebar, sorting status and its panel: panel button that opens Settings > Inbox categories when the key was refused. src/renderer/sort-activity.js."
+  },
+  "meeting.title": {
+    "message": "Meetings",
+    "description": "Accessible name of the meeting view, the third mode next to Mail and Calendar. src/renderer/app.js (renderShell)"
+  },
+  "meeting.mode.label": {
+    "message": "Meetings",
+    "description": "Sidebar switch at the top: the segment that shows Rukoo Voice meetings. Short; it shares a narrow sidebar with the Mail and Calendar segments. src/renderer/app.js (renderModeSwitch)"
+  },
+  "meeting.mode.shortcut": {
+    "message": "Meetings (Ctrl+3)",
+    "description": "Tooltip of the Meetings segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+  },
+  "meeting.untitled": {
+    "message": "Meeting at {time}",
+    "description": "Meeting view, sidebar list and title bar: title of a meeting without a title or linked event; time is when it started, such as 09:31. src/renderer/meeting.js (titleOf)"
+  },
+  "meeting.untitledNoTime": {
+    "message": "Meeting",
+    "description": "Meeting view and chat panel: title of a meeting without a title, a linked event or a start time yet. src/renderer/meeting.js (titleOf)"
+  },
+  "meeting.errors.offline": {
+    "message": "Rukoo Voice isn't running, or Rukoo can't reach it.",
+    "description": "Meeting view toast: a command to Rukoo Voice failed because it is not connected (error code offline). src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.errors.timeout": {
+    "message": "Rukoo Voice didn't answer. Try again.",
+    "description": "Meeting view toast: Rukoo Voice did not answer a command in time (timeout). src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.errors.busy": {
+    "message": "Rukoo Voice is already recording a meeting.",
+    "description": "Meeting view toast: Record was clicked while another meeting records (busy). src/renderer/meeting.js (voiceError, notReadyText)"
+  },
+  "meeting.errors.not_found": {
+    "message": "Rukoo Voice doesn't have this meeting.",
+    "description": "Meeting view toast: Rukoo Voice no longer has the meeting a command named (not_found). src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.errors.not_recording": {
+    "message": "This meeting isn't recording.",
+    "description": "Meeting view toast: Stop, Pause, Resume or Mark on a meeting that no longer records (not_recording). src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.errors.not_available": {
+    "message": "Rukoo Voice can't do that for this meeting.",
+    "description": "Meeting view toast: Rukoo Voice cannot do the command for this meeting or in its version (not_available). src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.errors.failed": {
+    "message": "Rukoo Voice couldn't do that.",
+    "description": "Meeting view toast: Rukoo Voice tried a command and failed, or another error. src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.errors.bad_request": {
+    "message": "Rukoo Voice didn't understand the request. Update Rukoo Voice or Rukoo.",
+    "description": "Meeting view toast: Rukoo Voice refused a command it could not read (bad_request). src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.errors.unknown_command": {
+    "message": "This Rukoo Voice can't do that yet. Update Rukoo Voice.",
+    "description": "Meeting view toast: an older Rukoo Voice does not know the command (unknown_command). src/renderer/meeting.js (voiceError)"
+  },
+  "meeting.voice.connecting": {
+    "message": "Connecting to Rukoo Voice…",
+    "description": "Meeting view empty state heading and toast while Rukoo connects to Rukoo Voice. src/renderer/meeting.js (emptyHtml, notReadyText)"
+  },
+  "meeting.voice.updateRukoo": {
+    "message": "This Rukoo Voice is newer than Rukoo. Update Rukoo to record meetings.",
+    "description": "Meeting view and Settings > Meetings: Rukoo Voice speaks only a newer bridge protocol than this Rukoo. src/renderer/meeting.js (notReadyText), src/renderer/meeting-settings.js"
+  },
+  "meeting.voice.updateVoice": {
+    "message": "This Rukoo Voice is older than Rukoo. Update Rukoo Voice to record meetings.",
+    "description": "Meeting view and Settings > Meetings: Rukoo Voice speaks only an older bridge protocol than this Rukoo. src/renderer/meeting.js (notReadyText), src/renderer/meeting-settings.js"
+  },
+  "meeting.voice.insecure": {
+    "message": "Rukoo didn't connect: other accounts on this computer can read Rukoo Voice's connection file. Start Rukoo Voice again to fix it.",
+    "description": "Meeting view and Settings > Meetings: the discovery file of Rukoo Voice is readable by other users, so Rukoo refuses it. src/renderer/meeting.js (notReadyText), src/renderer/meeting-settings.js"
+  },
+  "meeting.voice.absent": {
+    "message": "Start Rukoo Voice to record meetings.",
+    "description": "Meeting view toast and tooltip of Record while Rukoo Voice is not running. Rukoo cannot start it itself. src/renderer/meeting.js (notReadyText)"
+  },
+  "meeting.voice.recording": {
+    "message": "Recording",
+    "description": "Sidebar status line in meeting mode while Rukoo Voice records a meeting. src/renderer/meeting.js (footStatus)"
+  },
+  "meeting.voice.connected": {
+    "message": "Voice connected",
+    "description": "Sidebar status line in meeting mode while Rukoo is connected to Rukoo Voice. Short: it shares the sidebar foot with two buttons. src/renderer/meeting.js (footStatus)"
+  },
+  "meeting.voice.version": {
+    "message": "Rukoo Voice {version}",
+    "description": "Tooltip of the sidebar status line in meeting mode; version is the version of Rukoo Voice, such as 0.1.0. src/renderer/meeting.js (footStatus)"
+  },
+  "meeting.voice.connectingShort": {
+    "message": "Connecting…",
+    "description": "Sidebar status line in meeting mode while Rukoo connects to Rukoo Voice. src/renderer/meeting.js (footStatus)"
+  },
+  "meeting.voice.offShort": {
+    "message": "Voice not running",
+    "description": "Sidebar status line in meeting mode while Rukoo is not connected to Rukoo Voice. Short: it shares the sidebar foot with two buttons. src/renderer/meeting.js (footStatus)"
+  },
+  "meeting.empty.title": {
+    "message": "Record a meeting",
+    "description": "Meeting view empty state heading while Rukoo Voice is connected and no meeting is on screen. src/renderer/meeting.js (emptyHtml)"
+  },
+  "meeting.empty.startVoice": {
+    "message": "Start Rukoo Voice to record meetings",
+    "description": "Meeting view empty state heading while Rukoo Voice is not running. Rukoo cannot start it itself. src/renderer/meeting.js (emptyHtml)"
+  },
+  "meeting.empty.cantConnect": {
+    "message": "Rukoo can't connect to Rukoo Voice",
+    "description": "Meeting view empty state heading when Rukoo Voice runs but Rukoo refuses or cannot use the connection (an update is needed, or the connection file is not private). src/renderer/meeting.js (emptyHtml)"
+  },
+  "meeting.empty.body": {
+    "message": "Rukoo Voice records your microphone and the call. The transcript shows here as people speak, next to your agent.",
+    "description": "Meeting view empty state: what recording a meeting does. src/renderer/meeting.js (emptyHtml)"
+  },
+  "meeting.empty.calendarHint": {
+    "message": "You can also record an event from its card in the calendar.",
+    "description": "Meeting view empty state: hint under the Record a meeting button. src/renderer/meeting.js (emptyHtml)"
+  },
+  "meeting.empty.voiceHint": {
+    "message": "Rukoo can't open Rukoo Voice for you. The meetings it records show here.",
+    "description": "Meeting view empty state while Rukoo Voice is not running: Rukoo cannot launch it. src/renderer/meeting.js (emptyHtml)"
+  },
+  "meeting.actions.record": {
+    "message": "Record a meeting",
+    "description": "Meeting view: sidebar button and empty state button that start a recording in Rukoo Voice. src/renderer/meeting.js (sidebarHtml, emptyHtml)"
+  },
+  "meeting.actions.mark": {
+    "message": "Mark",
+    "description": "Meeting view header button while recording: marks this moment in the meeting. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.actions.pause": {
+    "message": "Pause",
+    "description": "Meeting view header button while recording: pauses the recording. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.actions.resume": {
+    "message": "Resume",
+    "description": "Meeting view header button while paused: records again. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.actions.stop": {
+    "message": "Stop",
+    "description": "Meeting view header button while recording: the first click asks Stop recording?, the second stops. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.actions.stopConfirm": {
+    "message": "Stop recording?",
+    "description": "Meeting view header button after the first click on Stop; a second click within 3 seconds stops the recording. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.actions.marked": {
+    "message": "Marked at {time}",
+    "description": "Meeting view toast after Mark; time is the meeting time, such as 12:03. src/renderer/meeting.js (onClick)"
+  },
+  "meeting.tabs.label": {
+    "message": "What the meeting view shows",
+    "description": "Meeting view in a narrow window: accessible name of the tabs that switch between transcript, notes and details. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.tabs.transcript": {
+    "message": "Transcript",
+    "description": "Meeting view: tab in a narrow window, and accessible name of the transcript pane. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.tabs.notes": {
+    "message": "Notes",
+    "description": "Meeting view tab in a narrow window: your notes. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.tabs.details": {
+    "message": "Details",
+    "description": "Meeting view tab in a narrow window: the linked calendar event and the people. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.transcript.label": {
+    "message": "Transcript. Arrow keys move between lines; Enter corrects one.",
+    "description": "Meeting view: accessible name of the transcript list, with its keyboard use. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.transcript.latest": {
+    "message": "Latest",
+    "description": "Meeting view: button over the transcript that scrolls down to new lines after you scrolled up. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.transcript.dictating": {
+    "message": "Dictation",
+    "description": "Meeting view: tag on a transcript line you dictated into another app during the meeting. src/renderer/meeting.js (passageHtml)"
+  },
+  "meeting.transcript.dictatingHelp": {
+    "message": "You dictated this into another app. The call heard it, but it wasn't part of the conversation.",
+    "description": "Meeting view: tooltip of the Dictation tag on a transcript line. src/renderer/meeting.js (passageHtml)"
+  },
+  "meeting.transcript.corrected": {
+    "message": "Corrected by you",
+    "description": "Meeting view: note under a transcript line whose text you corrected. src/renderer/meeting.js (passageHtml)"
+  },
+  "meeting.transcript.correctLabel": {
+    "message": "Corrected text",
+    "description": "Meeting view: accessible name of the field that corrects a transcript line. src/renderer/meeting.js (editPassage)"
+  },
+  "meeting.transcript.correctHint": {
+    "message": "Enter saves, Esc cancels",
+    "description": "Meeting view: hint beside Cancel and Save while correcting a transcript line. src/renderer/meeting.js (editPassage)"
+  },
+  "meeting.transcript.correct": {
+    "message": "Correct the text",
+    "description": "Meeting view: context menu item on a transcript line that opens it for correcting. src/renderer/meeting.js (onContextMenu)"
+  },
+  "meeting.transcript.restore": {
+    "message": "Restore what was recognized",
+    "description": "Meeting view: context menu item on a corrected transcript line that brings back the text Rukoo Voice recognized. src/renderer/meeting.js (onContextMenu)"
+  },
+  "meeting.event.title": {
+    "message": "Calendar event",
+    "description": "Meeting view side column: heading of the calendar event the meeting is linked to. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.event.change": {
+    "message": "Change",
+    "description": "Meeting view side column: button that picks another calendar event for the meeting. src/renderer/meeting.js (renderEvent)"
+  },
+  "meeting.event.link": {
+    "message": "Link",
+    "description": "Meeting view side column: button that links a calendar event to a meeting without one. src/renderer/meeting.js (renderEvent)"
+  },
+  "meeting.event.none": {
+    "message": "Not linked to an event",
+    "description": "Meeting view side column: the meeting has no calendar event. src/renderer/meeting.js (renderEvent)"
+  },
+  "meeting.event.missing": {
+    "message": "The linked event isn't in your calendar any more",
+    "description": "Meeting view side column: the linked calendar event was deleted or is out of reach. src/renderer/meeting.js (renderEvent)"
+  },
+  "meeting.event.open": {
+    "message": "Open in the calendar",
+    "description": "Meeting view side column: tooltip of the linked event title, which opens it in the calendar. src/renderer/meeting.js (renderEvent)"
+  },
+  "meeting.event.around": {
+    "message": "Events around the start",
+    "description": "Meeting view: heading of the menu that links a calendar event; it lists events within 15 minutes of the start. src/renderer/meeting.js (eventMenu)"
+  },
+  "meeting.event.noneFound": {
+    "message": "No events around the start",
+    "description": "Meeting view: menu line when no calendar event lies within 15 minutes of the meeting start. src/renderer/meeting.js (eventMenu)"
+  },
+  "meeting.event.someFailed": {
+    "message": "Some calendars couldn't be read",
+    "description": "Meeting view: menu line when a calendar account failed while looking for events. src/renderer/meeting.js (eventMenu)"
+  },
+  "meeting.event.unlink": {
+    "message": "Unlink the event",
+    "description": "Meeting view: menu item that removes the link between the meeting and its calendar event. src/renderer/meeting.js (eventMenu)"
+  },
+  "meeting.speakers.title": {
+    "message": "People",
+    "description": "Meeting view side column: heading of the voices in the meeting, with their names. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.speakers.you": {
+    "message": "You",
+    "description": "Meeting view: name of your own voice (the microphone) in the transcript and the people list. src/renderer/meeting.js (speakerName)"
+  },
+  "meeting.speakers.unknown": {
+    "message": "Someone",
+    "description": "Meeting view: name of a voice Rukoo Voice has no label for yet. src/renderer/meeting.js (speakerName)"
+  },
+  "meeting.speakers.microphone": {
+    "message": "Your microphone",
+    "description": "Meeting view people list: second line under You. src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.was": {
+    "message": "Was {label}",
+    "description": "Meeting view people list: second line under a named voice; label is what Rukoo Voice called it, such as Speaker 1. src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.pick": {
+    "message": "Choose who this is",
+    "description": "Meeting view people list: second line under an unnamed voice when the linked event has guests to pick from. src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.nameIt": {
+    "message": "Give this voice a name",
+    "description": "Meeting view people list: second line under an unnamed voice without guests to pick from. src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.choose": {
+    "message": "Choose a name for {name}",
+    "description": "Meeting view people list: tooltip of a voice button that opens the name picker; name is its current name or label. src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.fromEvent": {
+    "message": "Guests of {title}",
+    "description": "Meeting view name picker: heading above the guests of the linked calendar event; title is the event title. src/renderer/meeting.js (speakerMenu)"
+  },
+  "meeting.speakers.guests": {
+    "message": "Guests",
+    "description": "Meeting view name picker: heading above the guests when the event title is unknown. src/renderer/meeting.js (speakerMenu)"
+  },
+  "meeting.speakers.someoneElse": {
+    "message": "Someone else…",
+    "description": "Meeting view name picker: item that asks for a name to type. src/renderer/meeting.js (speakerMenu)"
+  },
+  "meeting.speakers.clear": {
+    "message": "Back to {label}",
+    "description": "Meeting view name picker: item that forgets the name; label is what Rukoo Voice called the voice, such as Speaker 1. src/renderer/meeting.js (speakerMenu)"
+  },
+  "meeting.speakers.nameTitle": {
+    "message": "Who is {label}?",
+    "description": "Meeting view: title of the dialog that names a voice; label is what Rukoo Voice called it, such as Speaker 1. src/renderer/meeting.js (nameSpeaker)"
+  },
+  "meeting.speakers.namePlaceholder": {
+    "message": "Name",
+    "description": "Meeting view: placeholder of the name field in the dialog that names a voice. src/renderer/meeting.js (nameSpeaker)"
+  },
+  "meeting.speakers.none": {
+    "message": "Voices show here once someone speaks.",
+    "description": "Meeting view people list before Rukoo Voice reported any voice. src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.notes.title": {
+    "message": "Your notes",
+    "description": "Meeting view side column: heading of your notes about the meeting. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.notes.placeholder": {
+    "message": "Notes for yourself. Your agent can read them too.",
+    "description": "Meeting view: placeholder of the empty notes field. src/renderer/meeting.js (shellHtml)"
+  },
+  "meeting.notes.saved": {
+    "message": "Saved",
+    "description": "Meeting view: status beside the notes heading after Rukoo saved them. src/renderer/meeting.js (saveNotes)"
+  },
+  "meeting.notes.saving": {
+    "message": "Saving…",
+    "description": "Meeting view: status beside the notes heading while Rukoo saves them. src/renderer/meeting.js (saveNotes)"
+  },
+  "meeting.notes.failed": {
+    "message": "Not saved",
+    "description": "Meeting view: status beside the notes heading when saving failed; Rukoo tries again with the next change. src/renderer/meeting.js (saveNotes)"
+  },
+  "meeting.state.recording": {
+    "message": "Recording",
+    "description": "Meeting view header: state pill while Rukoo Voice records the meeting. src/renderer/meeting.js (stateHtml)"
+  },
+  "meeting.state.paused": {
+    "message": "Paused",
+    "description": "Meeting view header: state pill while the recording is paused. src/renderer/meeting.js (stateHtml)"
+  },
+  "meeting.state.processing": {
+    "message": "Finishing the transcript",
+    "description": "Meeting view header: state pill after the recording stopped while Rukoo Voice still transcribes. src/renderer/meeting.js (stateHtml)"
+  },
+  "meeting.state.failed": {
+    "message": "Transcript incomplete",
+    "description": "Meeting view header: state pill when Rukoo Voice could not finish the transcript; the tooltip has its reason. src/renderer/meeting.js (stateHtml)"
+  },
+  "meeting.state.removed": {
+    "message": "Deleted in Rukoo Voice",
+    "description": "Meeting view header: state pill of a meeting Rukoo Voice deleted; your notes stay. src/renderer/meeting.js (stateHtml)"
+  },
+  "meeting.head.length": {
+    "message": "How long the meeting ran",
+    "description": "Meeting view header: tooltip of the meeting clock or length. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.head.hidden": {
+    "message": "Hidden from screen recordings",
+    "description": "Meeting view header while recording: Rukoo hides its windows from screen capture (Settings > Meetings). src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.head.hiddenHelp": {
+    "message": "Rukoo's windows stay out of screen recordings and screen shares until the meeting ends.",
+    "description": "Meeting view header and title bar indicator: tooltip explaining Hidden from screen recordings. src/renderer/meeting.js (renderHead, renderIndicator)"
+  },
+  "meeting.notice.removed": {
+    "message": "Rukoo Voice deleted this meeting and its transcript. Your notes stay here.",
+    "description": "Meeting view: line under the header of a meeting Rukoo Voice deleted. src/renderer/meeting.js (renderNotice)"
+  },
+  "meeting.notice.offline": {
+    "message": "Rukoo Voice isn't connected. The transcript continues here once it is.",
+    "description": "Meeting view: line under the header of a meeting that records or is being transcribed while Rukoo Voice is not connected. src/renderer/meeting.js (renderNotice)"
+  },
+  "meeting.notice.failed": {
+    "message": "Rukoo Voice couldn't transcribe all of this meeting. The audio is still on your computer.",
+    "description": "Meeting view: line under the header when the transcript failed. src/renderer/meeting.js (renderNotice)"
+  },
+  "meeting.live.waiting": {
+    "message": "Listening. The transcript follows as people speak.",
+    "description": "Meeting view: line under an empty transcript while recording. src/renderer/meeting.js (renderLive)"
+  },
+  "meeting.live.listening": {
+    "message": "Listening…",
+    "description": "Meeting view: shimmering line after the transcript while recording. src/renderer/meeting.js (renderLive)"
+  },
+  "meeting.live.paused": {
+    "message": "Paused. Nothing is recorded until you resume.",
+    "description": "Meeting view: line after the transcript while paused. src/renderer/meeting.js (renderLive)"
+  },
+  "meeting.live.processing": {
+    "message": "Rukoo Voice is finishing the transcript…",
+    "description": "Meeting view: line after the transcript once the recording stopped and transcription goes on. src/renderer/meeting.js (renderLive)"
+  },
+  "meeting.live.nothing": {
+    "message": "Nothing was transcribed in this meeting.",
+    "description": "Meeting view: line in place of the transcript of a finished meeting without passages. src/renderer/meeting.js (renderLive)"
+  },
+  "meeting.track.mic": {
+    "message": "Microphone",
+    "description": "Meeting view transcript: the recorded track a gap or device mark is about, at the start of the mark line. src/renderer/meeting.js (markText)"
+  },
+  "meeting.track.call": {
+    "message": "Call audio",
+    "description": "Meeting view transcript: the computer audio track (the other people in the call), at the start of a gap or device mark line. src/renderer/meeting.js (markText)"
+  },
+  "meeting.track.screen": {
+    "message": "Screen",
+    "description": "Meeting view transcript: the screen track, at the start of a mark line. src/renderer/meeting.js (markText)"
+  },
+  "meeting.track.all": {
+    "message": "Recording",
+    "description": "Meeting view transcript: a mark about the whole recording, at the start of the mark line. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.user": {
+    "message": "Marked",
+    "description": "Meeting view transcript: a moment someone marked with Mark. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.userLabel": {
+    "message": "Marked: {label}",
+    "description": "Meeting view transcript: a marked moment with its label. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.dictation": {
+    "message": "You dictated into another app for {length}",
+    "description": "Meeting view transcript: a stretch you dictated into another app; length is like 18 sec. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.dictationOpen": {
+    "message": "You dictated into another app",
+    "description": "Meeting view transcript: a dictation stretch without a known end. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gapCrash": {
+    "message": "{track}: no audio for {length} while Rukoo Voice restarted",
+    "description": "Meeting view transcript: a gap after the recorder crashed and restarted; track is Microphone or Call audio, length like 12 sec. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gapDevice": {
+    "message": "{track}: no audio for {length}, the device was gone",
+    "description": "Meeting view transcript: a gap while the audio device was unplugged or failed; track is Microphone or Call audio. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gapSuspend": {
+    "message": "{track}: no audio for {length} while the computer slept",
+    "description": "Meeting view transcript: a gap while the computer was asleep; track is Microphone or Call audio. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gap": {
+    "message": "{track}: no audio for {length}",
+    "description": "Meeting view transcript: a gap without a known reason; track is Microphone or Call audio. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.unnamedDevice": {
+    "message": "an unnamed device",
+    "description": "Meeting view transcript: stands in for the device name in a device mark when Rukoo Voice gave none. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.deviceBack": {
+    "message": "{track}: {device} is back",
+    "description": "Meeting view transcript: an audio device came back; device is its name, such as Jabra Evolve2. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.deviceLost": {
+    "message": "{track}: {device} was lost",
+    "description": "Meeting view transcript: an audio device was lost. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.deviceMoved": {
+    "message": "{track}: now from {device}",
+    "description": "Meeting view transcript: the track moved to another device, such as a new default microphone. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.droppedDisk": {
+    "message": "Screen recording stopped to keep recording audio: the disk is full",
+    "description": "Meeting view transcript: Rukoo Voice dropped the screen recording because the disk filled up. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.droppedEncoder": {
+    "message": "Screen recording stopped to keep recording audio: the video encoder failed",
+    "description": "Meeting view transcript: Rukoo Voice dropped the screen recording because the encoder failed. src/renderer/meeting.js (markText)"
+  },
+  "meeting.sidebar.label": {
+    "message": "Meetings",
+    "description": "Sidebar in meeting mode: accessible name of the sidebar and of its list of meetings. src/renderer/app.js (renderShell), src/renderer/meeting.js (sidebarHtml)"
+  },
+  "meeting.sidebar.undated": {
+    "message": "Not started yet",
+    "description": "Sidebar in meeting mode: group heading of meetings Rukoo Voice has not reported a start time for yet. src/renderer/meeting.js (sidebarHtml)"
+  },
+  "meeting.sidebar.recordingTitle": {
+    "message": "{title}, recording now",
+    "description": "Sidebar in meeting mode: tooltip and accessible name of the meeting that records; title is the meeting title. src/renderer/meeting.js (sidebarHtml)"
+  },
+  "meeting.sidebar.itemTitle": {
+    "message": "{title}, {time}",
+    "description": "Sidebar in meeting mode: tooltip and accessible name of a meeting; time is when it started, such as 09:31. src/renderer/meeting.js (sidebarHtml)"
+  },
+  "meeting.sidebar.empty": {
+    "message": "No meetings yet",
+    "description": "Sidebar in meeting mode when Rukoo has no meetings. src/renderer/meeting.js (sidebarHtml)"
+  },
+  "meeting.indicator.short": {
+    "message": "Recording",
+    "description": "Title bar indicator while a meeting records but its start time is not known yet. src/renderer/meeting.js (renderIndicator)"
+  },
+  "meeting.indicator.recording": {
+    "message": "Recording {title}. Open the meeting",
+    "description": "Title bar indicator: tooltip and accessible name while a meeting records; a click opens it. title is the meeting title. src/renderer/meeting.js (renderIndicator)"
+  },
+  "meeting.indicator.paused": {
+    "message": "{title} is paused. Open the meeting",
+    "description": "Title bar indicator: tooltip and accessible name while a meeting is paused; a click opens it. src/renderer/meeting.js (renderIndicator)"
+  },
+  "calendar.event.record": {
+    "message": "Record with Rukoo Voice",
+    "description": "Event card: starts recording this event in Rukoo Voice; shown while Voice is connected, from 15 minutes before the event until it ends. src/renderer/calendar-event.js (popHtml)"
+  },
+  "agent.panel.placeholderMeeting": {
+    "message": "Ask {name} about this meeting...",
+    "description": "Chat panel input placeholder in a chat about a Rukoo Voice meeting; name is the agent name."
+  },
+  "agent.panel.meetingChip": {
+    "message": "Meeting",
+    "description": "Chat panel input: second line of the chip that shows the meeting a chat is about. src/renderer/agent/panel.js (contextChip)"
+  },
+  "agent.empty.titleMeeting": {
+    "message": "What should {name} do with this meeting?",
+    "description": "Chat panel empty state heading in meeting mode with a meeting on screen; name is the agent."
+  },
+  "agent.empty.bodyMeeting": {
+    "message": "Reads what was said so far and writes what you ask for. Sending stays with you.",
+    "description": "Chat panel empty state line under the heading with a meeting on screen."
+  },
+  "agent.empty.bodyMeetingOff": {
+    "message": "Agents can't read meetings now. Turn it on in Settings > Meetings.",
+    "description": "Chat panel empty state line with a meeting on screen while Settings > Meetings > Agents can read meetings is off."
+  },
+  "agent.meetingActions.catchup.label": {
+    "message": "Catch me up",
+    "description": "Chat panel quick action chip in a chat about a meeting: the agent sums up what was said since it last read the transcript. src/renderer/agent/actions.js (MEETING_ACTIONS)"
+  },
+  "agent.meetingActions.catchup.description": {
+    "message": "What was said since you last asked",
+    "description": "Chat panel slash command menu: one-line description of the Catch me up meeting action."
+  },
+  "agent.meetingActions.asked.label": {
+    "message": "What did they ask me?",
+    "description": "Chat panel quick action chip in a chat about a meeting: questions and requests for you in the transcript. src/renderer/agent/actions.js (MEETING_ACTIONS)"
+  },
+  "agent.meetingActions.asked.description": {
+    "message": "Questions and requests for you",
+    "description": "Chat panel slash command menu: one-line description of the What did they ask me? meeting action."
+  },
+  "agent.meetingActions.notes.label": {
+    "message": "Write the notes",
+    "description": "Chat panel quick action chip in a chat about a meeting: the agent writes the meeting notes with its own skill and stores them. src/renderer/agent/actions.js (MEETING_ACTIONS)"
+  },
+  "agent.meetingActions.notes.description": {
+    "message": "With your meeting-notes skill, where you keep notes",
+    "description": "Chat panel slash command menu: one-line description of the Write the notes meeting action."
+  },
+  "agent.meetingActions.followup.label": {
+    "message": "Draft the follow-up email",
+    "description": "Chat panel quick action chip in a chat about a meeting: the agent drafts the follow-up email in the composer. src/renderer/agent/actions.js (MEETING_ACTIONS)"
+  },
+  "agent.meetingActions.followup.description": {
+    "message": "To everyone in the meeting, as a draft",
+    "description": "Chat panel slash command menu: one-line description of the Draft the follow-up email meeting action."
+  },
+  "settings.groups.meetings": {
+    "message": "Meetings",
+    "description": "Settings overview: group heading above the Meetings row. src/renderer/settings.js"
+  },
+  "settings.meetings.title": {
+    "message": "Meetings",
+    "description": "Settings: title of the Meetings page and of its row on the overview. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.voice": {
+    "message": "Rukoo Voice",
+    "description": "Settings > Meetings: group heading above the status of Rukoo Voice. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.voiceHelp": {
+    "message": "Rukoo Voice is a separate app that records meetings on this computer. Rukoo shows its meetings in the Meetings view and can't start Rukoo Voice for you.",
+    "description": "Settings > Meetings: text under the Rukoo Voice status. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusAbsent": {
+    "message": "Not running",
+    "description": "Settings > Meetings: status pill, and the Meetings row on the overview, while Rukoo Voice is not running. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusAbsentHelp": {
+    "message": "Start Rukoo Voice to record meetings.",
+    "description": "Settings > Meetings: line under Rukoo Voice while it is not running. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusConnected": {
+    "message": "Connected",
+    "description": "Settings > Meetings: status pill while Rukoo is connected to Rukoo Voice. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusConnectedVersion": {
+    "message": "Connected, version {version}",
+    "description": "Settings > Meetings: status pill while connected; version is the version of Rukoo Voice, such as 0.1.0. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusConnectedHelp": {
+    "message": "You can record a meeting from Rukoo or from Rukoo Voice.",
+    "description": "Settings > Meetings: line under Rukoo Voice while connected and nothing records. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusRecording": {
+    "message": "A meeting is recording now.",
+    "description": "Settings > Meetings: line under Rukoo Voice while it records a meeting. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusConnecting": {
+    "message": "Connecting",
+    "description": "Settings > Meetings: status pill while Rukoo connects to Rukoo Voice. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusConnectingHelp": {
+    "message": "Rukoo found Rukoo Voice and is connecting to it.",
+    "description": "Settings > Meetings: line under Rukoo Voice while connecting. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusIncompatible": {
+    "message": "Needs an update",
+    "description": "Settings > Meetings: status pill when Rukoo and Rukoo Voice speak different bridge versions; the line under it says which to update. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.statusInsecure": {
+    "message": "Not connected",
+    "description": "Settings > Meetings: status pill when Rukoo refused the connection file of Rukoo Voice. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.privacy": {
+    "message": "During a meeting",
+    "description": "Settings > Meetings: group heading above hiding from screen recordings and agent access. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hide": {
+    "message": "Hide Rukoo from screen recordings during a meeting",
+    "description": "Settings > Meetings: switch (meetingHideWindow) that hides every Rukoo window from screen capture while a meeting records. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hideHelpWindows": {
+    "message": "While a meeting records, screen recordings and screen shares in apps such as Teams and Zoom leave Rukoo's windows out. Remote access tools that capture the screen show them black; Remote Desktop still shows them.",
+    "description": "Settings > Meetings on Windows: what hiding from screen recordings does and does not cover. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hideHelpMac": {
+    "message": "While a meeting records, Rukoo Voice and older screen recorders leave Rukoo's windows out. On macOS 15 and later, other apps' screen shares still show them.",
+    "description": "Settings > Meetings on macOS: what hiding from screen recordings does and does not cover. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hideHelpLinux": {
+    "message": "Linux has no way to hide a window from screen recordings. Keep Rukoo on a monitor you don't share or record.",
+    "description": "Settings > Meetings on Linux, in place of the switch: hiding is not possible there. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.hiddenNow": {
+    "message": "Rukoo is hidden from screen recordings now, because a meeting is recording.",
+    "description": "Settings > Meetings: note under the switches while the windows are hidden. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.agents": {
+    "message": "Agents can read meetings",
+    "description": "Settings > Meetings: switch (meetingAgentsCanRead) that lets agents read transcripts and notes through the meeting tools. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.agentsHelp": {
+    "message": "Your agents read transcripts and your meeting notes through Rukoo's meeting tools, marked as text from other people. Turned off, they get nothing from your meetings.",
+    "description": "Settings > Meetings: what the Agents can read meetings switch does. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.connection": {
+    "message": "Connection",
+    "description": "Settings > Meetings: title of the row with the connection status of Rukoo Voice; the status pill is on its right. src/renderer/meeting-settings.js"
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

@@ -248,6 +248,14 @@ function guestRows(g, start, end, row) {
 
 const cardRow = (icon, html) => `<div class="cal-pop-row"><span class="ic">${icons[icon]}</span><div>${html}</div></div>`;
 
+// Rukoo Voice can record an event from its card while Voice runs, nothing records yet and the event is about to
+// start or under way: from 15 minutes before it until it ends.
+const RECORD_BEFORE = 15 * 60 * 1000;
+function canRecord(e, now = Date.now()) {
+  const voice = ctx && ctx.voiceState ? ctx.voiceState() : null;
+  return Boolean(voice) && voice.status === 'connected' && !voice.recording && !e.allDay && now >= e.start - RECORD_BEFORE && now < e.end;
+}
+
 function popHtml(e, booking) {
   const acc = account(e.accountId);
   const cal = calendarOf(e);
@@ -268,7 +276,9 @@ function popHtml(e, booking) {
     if (booking.customLength) rows.push(cardRow('clock', esc(t('calendar.booking.customLength'))));
   }
   if (e.seriesId) rows.push(cardRow('repeat', esc(t('calendar.event.series'))));
-  if (e.meeting) rows.push(cardRow('video', `<button class="link-btn" data-href="${esc(e.meeting)}">${esc(t('calendar.event.join'))}</button>`));
+  const record = canRecord(e) ? `<button class="link-btn" data-pop="record">${esc(t('calendar.event.record'))}</button>` : '';
+  if (e.meeting) rows.push(cardRow('video', `<div class="cal-pop-links"><button class="link-btn" data-href="${esc(e.meeting)}">${esc(t('calendar.event.join'))}</button>${record}</div>`));
+  else if (record) rows.push(cardRow('mic', record));
   if (e.location) rows.push(cardRow('pin', /^https?:\/\//.test(e.location) ? linkify(e.location) : `<span class="sel">${esc(e.location)}</span>`));
   if (guests.length) {
     const shown = guests.slice(0, 8);
@@ -393,6 +403,10 @@ function popClick(ev) {
   }
   if (!e) return closePop();
   if (btn.dataset.pop === 'close') return closePop(true);
+  if (btn.dataset.pop === 'record') {
+    closePop();
+    return ctx.recordMeeting({ title: e.title || '', eventId: e.id });
+  }
   if (btn.dataset.pop === 'edit') return editEvent(e);
   if (btn.dataset.pop === 'duplicate') return duplicateEvent(e);
   if (btn.dataset.pop === 'delete') return removeEvent(e);

@@ -1,11 +1,11 @@
 import { t, getLocale } from '../i18n.js';
-// The chat panel: a conversation with Clark (Hermes), Claude Code or Codex about the open email.
-// Main runs the agents and keeps the conversations; this module draws them, follows the email
-// on screen and answers the agents' requests to write into the composer (the UI bridge).
+// The chat panel: a conversation with Clark (Hermes), Claude Code or Codex about the open email, or in meeting mode
+// about the Rukoo Voice meeting on screen. Main runs the agents and keeps the conversations; this module draws them,
+// follows the email or meeting on screen and answers the agents' requests to write into the composer (the UI bridge).
 import { icons } from '../icons.js';
 import { api, $, toast, listTime, person, hue, fileSize } from '../ui.js';
 import * as B from './bui.js';
-import { shortcutList, shortcutByKey, actionsFor, commandsFor, skillCommands } from './actions.js';
+import { shortcutList, shortcutByKey, actionsFor, commandsFor, skillCommands, MEETING_ACTIONS, meetingActionByKey } from './actions.js';
 import { replyEnvelope } from '../composer.js';
 import { expired } from './expired.js';
 
@@ -175,6 +175,8 @@ export function mountAgentPanel(ctx) {
     related: null,
     // An email opened from the panel itself (a source, a draft): the chat stays as it is.
     keepFor: null,
+    // A meeting chat picked from the chat list opens its meeting; that chat stays, not the newest one about it.
+    keepMeeting: null,
     // Rukoo's skills and the user's, for the slash commands: [{name, description, source}].
     skills: [],
     // The quick actions as the user arranged them in Settings (actions.js shortcutList), for every agent.
@@ -308,6 +310,10 @@ export function mountAgentPanel(ctx) {
 
   let chat = null;
   const contextEmail = () => (P.conv ? P.conv.message : P.detached ? null : currentEmail());
+  // The meeting a chat is about: the chat's own, or before it starts the one on screen in meeting mode.
+  const contextMeeting = () => (P.conv ? P.conv.meeting || null : currentMeeting());
+  // A meeting chat's own quick actions come first as slash commands too.
+  const meetingCommands = () => (contextMeeting() ? MEETING_ACTIONS.map((a) => ({ name: a.key, label: a.label, description: a.description, icon: a.icon })) : []);
   // The slash commands go by the email itself when it is on screen: it knows whether it can unsubscribe,
   // also for chats saved before their reference carried that.
   const slashEmail = () => {
@@ -316,7 +322,7 @@ export function mountAgentPanel(ctx) {
     return m && open && open.id === m.id ? open : m;
   };
   // The shortcuts for the email, then the skills.
-  const commands = () => [...commandsFor(slashEmail(), P.shortcuts), ...skillCommands(P.skills, P.shortcuts)];
+  const commands = () => [...meetingCommands(), ...commandsFor(slashEmail(), P.shortcuts), ...skillCommands(P.skills, P.shortcuts)];
   // Main reads the skills folders on every call, so a skill the user just added shows up the next time they type /.
   let skillsLoading = null;
   let skillsAgain = false;
@@ -343,6 +349,7 @@ export function mountAgentPanel(ctx) {
   }
   const placeholder = () => {
     const name = agentName(currentAgent());
+    if (contextMeeting()) return t('agent.panel.placeholderMeeting', { name });
     return contextEmail() ? t('agent.panel.placeholderEmail', { name }) : t('agent.panel.placeholder', { name });
   };
   // In a chat the user continued from a newer email in its thread (main's continueFrom): that email, while it is
@@ -358,15 +365,25 @@ export function mountAgentPanel(ctx) {
   // place puts it back. A chat that has started keeps its email: New chat starts one without. A chat continued
   // from a newer email shows that one next to it while it is open.
   const contextState = () => {
+    const meeting = contextMeeting();
+    if (meeting) return { meeting };
     const m = contextEmail();
     if (m) return { m, fixed: Boolean(P.conv), newer: newerOpen() };
     const open = !P.conv && P.detached ? currentEmail() : null;
     return open ? { m: open, add: true } : null;
   };
   const contextKey = (s) =>
-    s ? [s.add ? 'add' : s.fixed ? 'fixed' : 'open', s.m.id, s.m.subject, person(s.m.from), s.newer ? `${s.newer.m.id}\n${s.newer.m.subject}\n${s.newer.pending}` : ''].join('\n') : '';
+    s && s.meeting ? ['meeting', s.meeting.id, s.meeting.title || ''].join('\n') : s ? [s.add ? 'add' : s.fixed ? 'fixed' : 'open', s.m.id, s.m.subject, person(s.m.from), s.newer ? `${s.newer.m.id}\n${s.newer.m.subject}\n${s.newer.pending}` : ''].join('\n') : '';
   const contextChip = (s) => {
     if (!s) return null;
+    // A meeting stays with its chat: no x, as for an email once the chat started.
+    if (s.meeting) {
+      const badge = document.createElement('span');
+      badge.className = 'bui-entity__badge';
+      badge.setAttribute('aria-hidden', 'true');
+      badge.append(B.icon('mic', 10, 2.2));
+      return elOf(B.entityChip({ label: s.meeting.title || t('meeting.untitledNoTime'), sub: t('agent.panel.meetingChip'), monogram: badge }));
+    }
     const m = s.m;
     const subject = m.subject || t('mailbox.message.noSubject');
     if (s.add) return elOf(B.addChip({ label: t('agent.panel.addContext'), title: subject, onClick: () => attach() }));
@@ -818,6 +835,8 @@ export function mountAgentPanel(ctx) {
   // ---------- following the email on screen ----------
 
   function currentEmail() {
+    // In meeting mode the chat is about the meeting on screen, not the email that stays open behind it.
+    if (ctx.meetingMode && ctx.meetingMode()) return null;
     const m = S.message;
     return m && m.id && m.id === S.selectedId && !m.error && m.role !== 'drafts' ? m : null;
   }
@@ -842,9 +861,12 @@ export function mountAgentPanel(ctx) {
   // for it, so it checks the emails against the chat they land in. Read before this, the panel may still show the
   // chat of an email from before it was opened.
   let looking = Promise.resolve();
+  // The meeting on screen in meeting mode: {id, title, eventId}, or null.
+  const currentMeeting = () => (ctx.currentMeeting ? ctx.currentMeeting() : null);
+
   function sync() {
     const before = P.emailKey;
-    const run = syncEmail();
+    const run = ctx.meetingMode && ctx.meetingMode() ? syncMeeting() : syncEmail();
     if (P.emailKey !== before) looking = run.catch(() => {});
     return run;
   }
@@ -898,6 +920,46 @@ export function mountAgentPanel(ctx) {
     P.related = related && related.id ? { ...related, for: m.id } : null;
     if (P.conv && !otherEmail && P.conv.message && P.conv.message.id === m.id) return refreshComposer();
     // A chat about another email keeps running in the background; this email starts fresh.
+    showEmpty();
+  }
+
+  // In meeting mode the panel follows the meeting the way it follows an email: its newest chat, or a new one about it.
+  // emailKey then names the meeting, so going back to Mail follows the email again.
+  async function syncMeeting() {
+    if (!ctx.agentOpen()) return;
+    const m = currentMeeting();
+    const key = m ? `meeting:${m.id}` : 'meeting:';
+    if (key === P.emailKey) return refreshComposer();
+    P.emailKey = key;
+    P.emailId = null;
+    P.keepFor = null;
+    P.detached = false;
+    P.related = null;
+    P.draft = { model: null, effort: null };
+    // Without a meeting the chat on screen stays, as without an email.
+    if (!m) {
+      if (!P.conv) renderEmpty();
+      return refreshComposer();
+    }
+    if (P.keepMeeting === m.id && P.conv && P.conv.meeting && P.conv.meeting.id === m.id) {
+      P.keepMeeting = null;
+      return refreshComposer();
+    }
+    P.keepMeeting = null;
+    const mine = ++turn;
+    const look = ++lookups;
+    let found = null;
+    try {
+      found = await api('agentFindForMeeting', m.id);
+    } catch (_) {
+      found = null;
+    }
+    if (mine !== turn || look !== lookups) return;
+    if (found && found.id) {
+      if (P.conv && P.conv.id === found.id) return refreshComposer();
+      return openConversation(found.id);
+    }
+    if (P.conv && P.conv.meeting && P.conv.meeting.id === m.id) return refreshComposer();
     showEmpty();
   }
 
@@ -985,8 +1047,15 @@ export function mountAgentPanel(ctx) {
 
   async function ensureConversation() {
     if (P.conv) return P.conv;
-    const m = contextEmail();
-    const conv = await api('agentCreate', { agent: P.agentId, message: m ? messageRef(m) : null, model: P.draft.model, effort: P.draft.effort });
+    const meeting = contextMeeting();
+    const m = meeting ? null : contextEmail();
+    const conv = await api('agentCreate', {
+      agent: P.agentId,
+      message: m ? messageRef(m) : null,
+      meeting: meeting ? { id: meeting.id, title: meeting.title || '', eventId: meeting.eventId || null } : null,
+      model: P.draft.model,
+      effort: P.draft.effort
+    });
     P.draft = { model: null, effort: null };
     showConversation(conv);
     return P.conv;
@@ -1066,6 +1135,9 @@ export function mountAgentPanel(ctx) {
       toast(t('agent.panel.waitFiles'));
       return false;
     }
+    // In a meeting chat its own actions come first, before a shortcut with the same name.
+    const meetingAction = contextMeeting() ? meetingActionByKey(name) : null;
+    if (meetingAction) return send(meetingAction.label, meetingAction);
     const action = shortcutByKey(P.shortcuts, name);
     if (action) {
       if (action.needsEmail && !contextEmail()) {
@@ -1505,24 +1577,34 @@ export function mountAgentPanel(ctx) {
     const id = currentAgent();
     const name = agentName(id);
     const m = contextEmail();
+    const meeting = contextMeeting();
     // An email is on screen, but the user left it out: the add chip brings it back.
     const leftOut = !m && P.detached && Boolean(currentEmail());
     const state = stateOf(id);
     const box = document.createElement('div');
     box.className = 'ap-empty';
     const blocked = P.unavailable || BLOCKED.has(state);
-    const card = B.recommendationCard(
-      {
-        eyebrow: name,
-        title: blocked ? t('agent.empty.setupTitle', { name }) : m ? t('agent.empty.title', { name }) : t('agent.empty.titleNoEmail', { name }),
-        body: blocked ? t('agent.empty.setupBody', { name }) : m ? t('agent.empty.body', { name }) : leftOut ? t('agent.empty.bodyLeftOut') : t('agent.empty.bodyNoEmail', { name }),
-        actions: [],
-        icon: B.icon('sparkle', 11)
-      },
-      () => {}
-    );
+    // The user turned agents' access to meetings off (Settings > Meetings): the agent gets nothing from the meeting.
+    const meetingsOff = Boolean(S.data && S.data.settings && S.data.settings.meetingAgentsCanRead === false);
+    const title = blocked ? t('agent.empty.setupTitle', { name }) : meeting ? t('agent.empty.titleMeeting', { name }) : m ? t('agent.empty.title', { name }) : t('agent.empty.titleNoEmail', { name });
+    const body = blocked
+      ? t('agent.empty.setupBody', { name })
+      : meeting
+        ? meetingsOff
+          ? t('agent.empty.bodyMeetingOff')
+          : t('agent.empty.bodyMeeting')
+        : m
+          ? t('agent.empty.body', { name })
+          : leftOut
+            ? t('agent.empty.bodyLeftOut')
+            : t('agent.empty.bodyNoEmail', { name });
+    const card = B.recommendationCard({ eyebrow: name, title, body, actions: [], icon: B.icon('sparkle', 11) }, () => {});
     box.append(elOf(card));
-    if (!blocked) {
+    if (!blocked && meeting) {
+      const chips = elOf(B.suggestionChips(MEETING_ACTIONS.map((a) => ({ id: a.key, label: a.label, icon: a.icon })), (key) => runAction(key)));
+      chips.classList.add('ap-actions');
+      box.append(chips);
+    } else if (!blocked) {
       const list = actionsFor(m, P.shortcuts);
       const chips = B.suggestionChips(
         list.map((a) => ({ id: a.key, label: a.label, icon: a.icon })),
@@ -1785,6 +1867,13 @@ export function mountAgentPanel(ctx) {
     await openConversation(id);
     const conv = P.conv;
     if (!conv || conv.id !== id) return;
+    // A chat about a meeting opens that meeting in the meeting view, and stays on screen there.
+    if (conv.meeting && conv.meeting.id) {
+      P.keepFor = null;
+      P.keepMeeting = conv.meeting.id;
+      if (ctx.openMeeting) ctx.openMeeting(conv.meeting.id);
+      return;
+    }
     const refs = [...(conv.continued || [])].reverse().concat(conv.message ? [conv.message] : []);
     if (!refs.length) return;
     let target = null;

@@ -39,6 +39,7 @@ import { openWhatsNew } from './whats-new.js';
 import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
 import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
 import * as calendar from './calendar.js';
+import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
@@ -116,9 +117,12 @@ export const S = {
   category: null
 };
 
-// Layout preferences live in the renderer; they only matter to this window. mode: 'mail' or 'calendar'.
+// Layout preferences live in the renderer; they only matter to this window. mode: 'mail', 'calendar' or 'meeting'.
 const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, mode: 'mail', ...readPrefs() };
+const MODES = ['mail', 'calendar', 'meeting'];
+if (!MODES.includes(prefs.mode)) prefs.mode = 'mail';
 const calendarMode = () => prefs.mode === 'calendar';
+const meetingMode = () => prefs.mode === 'meeting';
 function readPrefs() {
   try {
     return JSON.parse(localStorage.getItem('rukoo.layout') || '{}');
@@ -194,6 +198,7 @@ async function refreshOnce() {
     S.composer?.retheme(data);
     agentPanel?.relocalize();
     calendar.relocalize();
+    meeting.relocalize();
   }
   // With one account, "Alle accounts" would just repeat it; show the account itself.
   if (data.accounts.length === 1) S.scope = data.accounts[0].id;
@@ -243,6 +248,7 @@ async function refreshOnce() {
     if (calendar.isOpen()) calendar.reload();
     else calendar.show();
   }
+  if (meetingMode() && !meeting.isOpen()) meeting.show();
 }
 
 // Show the newest message instead of an empty reading pane. It stays unread until you open it yourself.
@@ -401,6 +407,7 @@ function renderShell() {
       <aside class="sidebar" data-i18n-aria-label="mailbox.layout.folders" aria-label="${esc(t('mailbox.layout.folders'))}"><div class="sidebar-mode"></div><div class="sidebar-main"></div></aside>
       <div class="workspace">
         <section class="calendar" data-i18n-aria-label="calendar.title" aria-label="${esc(t('calendar.title'))}"></section>
+        <section class="meeting" data-i18n-aria-label="meeting.title" aria-label="${esc(t('meeting.title'))}" data-tab="transcript"></section>
         <section class="listpane" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}">
           <div class="list-head"></div>
           <div class="list-tools"></div>
@@ -412,8 +419,11 @@ function renderShell() {
       <div class="agent-divider" role="separator" aria-orientation="vertical" data-i18n-aria-label="agent.panel.width" aria-label="${esc(t('agent.panel.width'))}" tabindex="0"></div>
       <aside class="agentpane bui" data-i18n-aria-label="agent.panel.label" aria-label="${esc(t('agent.panel.label'))}"></aside>
     </div>`;
-    $('.titlebar-actions').innerHTML = `<button class="icon-btn sm" data-agent-toggle data-i18n-title="agent.panel.toggle" title="${esc(t('agent.panel.toggle'))}" aria-pressed="false">${icons.sparkle}</button>`;
+    // While Rukoo Voice records a meeting, its clock sits before the chat button, in every mode (meeting.js).
+    $('.titlebar-actions').innerHTML = `${meeting.indicatorHtml()}<button class="icon-btn sm" data-agent-toggle data-i18n-title="agent.panel.toggle" title="${esc(t('agent.panel.toggle'))}" aria-pressed="false">${icons.sparkle}</button>`;
     $('.titlebar-actions [data-agent-toggle]').addEventListener('click', () => toggleAgent());
+    $('.titlebar-actions [data-meeting-indicator]').addEventListener('click', (e) => openMeeting(e.currentTarget.dataset.meetingIndicator));
+    meeting.renderIndicator();
     bindSidebar();
     bindList();
     bindDivider();
@@ -432,9 +442,11 @@ function renderShell() {
   shell.classList.toggle('agent-open', Boolean(prefs.agentOpen));
   shell.classList.toggle('calendar-mode', calendarMode());
   document.body.classList.toggle('calendar-mode', calendarMode());
-  // The sidebar holds folders or calendars; its name for screen readers follows, also after a language change.
+  shell.classList.toggle('meeting-mode', meetingMode());
+  document.body.classList.toggle('meeting-mode', meetingMode());
+  // The sidebar holds folders, calendars or meetings; its name for screen readers follows, also after a language change.
   const side = shell.querySelector('.sidebar');
-  const sideLabel = calendarMode() ? 'calendar.sidebar.calendars' : 'mailbox.layout.folders';
+  const sideLabel = calendarMode() ? 'calendar.sidebar.calendars' : meetingMode() ? 'meeting.sidebar.label' : 'mailbox.layout.folders';
   side.dataset.i18nAriaLabel = sideLabel;
   side.setAttribute('aria-label', t(sideLabel));
   root.style.setProperty('--sidebar-w', `${collapsed ? RAIL_W : SIDEBAR_W}px`);
@@ -666,7 +678,7 @@ function syncStatus(accounts = calendarMode() ? calendar.syncAccounts() : scoped
 setInterval(() => {
   const el = $('.sync-status');
   if (!el || !S.data) return;
-  const status = syncStatus();
+  const status = meetingMode() ? meeting.footStatus() : syncStatus();
   el.className = `sync-status ${status.cls}`;
   el.title = status.title;
   el.querySelector('.t').textContent = status.text;
@@ -676,12 +688,13 @@ function accountAvatar(acc) {
   return `<span class="avatar acc" style="--acc:${esc(acc.color || '#6f9cf2')}" aria-hidden="true">${esc((acc.name || acc.email).trim()[0] || '?').toUpperCase()}</span>`;
 }
 
-// Mail and Calendar at the top of the sidebar. The switch stays in place, so its thumb slides.
+// Mail, Calendar and Meetings at the top of the sidebar. The switch stays in place, so its thumb slides.
 function renderModeSwitch() {
   const box = $('.sidebar-mode');
   const options = [
     { value: 'mail', label: t('calendar.mode.mail'), title: t('calendar.mode.mailShortcut'), icon: 'unread' },
-    { value: 'calendar', label: t('calendar.mode.calendar'), title: t('calendar.mode.calendarShortcut'), icon: 'calendar' }
+    { value: 'calendar', label: t('calendar.mode.calendar'), title: t('calendar.mode.calendarShortcut'), icon: 'calendar' },
+    { value: 'meeting', label: t('meeting.mode.label'), title: t('meeting.mode.shortcut'), icon: 'mic' }
   ];
   const el = box.querySelector('.segmented');
   if (el && el.dataset.language === S.data.settings.language) setSegmented(el, prefs.mode);
@@ -709,18 +722,30 @@ function renderModeSwitch() {
 }
 
 function setMode(mode) {
-  if (mode === prefs.mode || !['mail', 'calendar'].includes(mode)) return;
+  if (mode === prefs.mode || !MODES.includes(mode)) return;
+  const was = prefs.mode;
   prefs.mode = mode;
   savePrefs();
   closeMenu();
   renderShell();
   renderSidebar();
+  if (was === 'calendar') calendar.hide();
+  if (was === 'meeting') meeting.hide();
   if (mode === 'calendar') calendar.show();
+  else if (mode === 'meeting') meeting.show();
   else {
-    calendar.hide();
     renderList();
     $('.list-scroll')?.focus();
   }
+  // The chat panel follows the meeting on screen in meeting mode, and the email everywhere else.
+  agentViewChanged();
+}
+
+// The meeting view on one meeting: from the title bar's indicator, a calendar card or a new recording.
+function openMeeting(id) {
+  if (!id || !S.data || !S.data.accounts.length) return;
+  setMode('meeting');
+  meeting.open(id);
 }
 
 // A newer Rukoo on GitHub: a small button above the line over the sync status. Where this install updates itself
@@ -738,7 +763,7 @@ function updateButton() {
 }
 
 function sidebarFoot() {
-  const status = syncStatus();
+  const status = meetingMode() ? meeting.footStatus() : syncStatus();
   return `${updateButton()}${sortStatusHtml()}<div class="sidebar-foot">
       <button class="sync-status ${status.cls}" data-action="sync" title="${esc(status.title)}"><span class="dot"></span><span class="t">${esc(status.text)}</span></button>
       <button class="icon-btn" data-action="settings" data-i18n-title="settings.title.short" title="${esc(t('settings.title.short'))}">${icons.settings}</button>
@@ -750,6 +775,10 @@ function renderSidebar() {
   renderModeSwitch();
   if (calendarMode()) {
     $('.sidebar-main').innerHTML = calendar.sidebarHtml() + sidebarFoot();
+    return;
+  }
+  if (meetingMode()) {
+    $('.sidebar-main').innerHTML = meeting.sidebarHtml() + sidebarFoot();
     return;
   }
   const el = $('.sidebar-main');
@@ -857,6 +886,7 @@ function bindSidebar() {
     if (!t) return;
     if (t.dataset.mode) return setMode(t.dataset.mode);
     if (calendarMode() && calendar.sidebarClick(t)) return;
+    if (meetingMode() && meeting.sidebarClick(t)) return;
     switch (t.dataset.action) {
       case 'accounts':
         return accountMenu(t);
@@ -865,6 +895,8 @@ function bindSidebar() {
       case 'settings':
         return openSettings(ctx);
       case 'sync':
+        // In meeting mode the line says how Rukoo Voice is; Settings has the details.
+        if (meetingMode()) return openSettings(ctx, { view: 'meetings' });
         return calendarMode() ? calendar.syncNow() : syncNow();
       case 'collapse':
         if (prefs.agentOpen) prefs.sidebarWithAgent = sidebarCollapsed();
@@ -2544,13 +2576,17 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.target.closest && e.target.closest('.composer')) return;
   if (!S.data || !S.data.accounts.length) return;
-  // Ctrl+1 and Ctrl+2 switch between Mail and Calendar, as in Outlook.
-  if (ctrl && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2')) {
+  // Ctrl+1 and Ctrl+2 switch between Mail and Calendar, as in Outlook; Ctrl+3 opens the meetings.
+  if (ctrl && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2' || e.key === '3')) {
     e.preventDefault();
-    return setMode(e.key === '1' ? 'mail' : 'calendar');
+    return setMode(e.key === '1' ? 'mail' : e.key === '2' ? 'calendar' : 'meeting');
   }
   if (calendarMode()) {
     if (!e.target.closest?.('.agentpane, .bui-menu, .sort-panel') && calendar.onKey(e)) e.preventDefault();
+    return;
+  }
+  if (meetingMode()) {
+    if (!e.target.closest?.('.agentpane, .bui-menu') && meeting.onKey(e)) e.preventDefault();
     return;
   }
   // The rest follows the chosen keyboard scheme (keymap.js). Writing, searching and syncing work while typing too,
@@ -2675,6 +2711,8 @@ function drawBadge(count) {
 window.mail.on(async ({ type, payload }) => {
   if (type === 'updated') scheduleRefresh();
   if (type === 'calendar') calendar.reload();
+  // Rukoo Voice and its meetings (main.js voice block).
+  if (type === 'meeting') meeting.onEvent(payload);
   // A reminder or a booking notification was clicked: the calendar opens on that event or request, or on the day
   // when the notification names only its start.
   if (type === 'calendar-open' && payload && S.data && S.data.accounts.length) {
@@ -2769,7 +2807,7 @@ function showWhatsNew() {
 async function openSorted(id, category) {
   const accountId = decodeURIComponent(String(id).split(':')[0]);
   if (S.scope !== 'all' && S.scope !== accountId) S.scope = S.data.accounts.length > 1 ? 'all' : accountId;
-  if (calendarMode()) setMode('mail');
+  if (prefs.mode !== 'mail') setMode('mail');
   S.view = 'inbox';
   S.folder = null;
   S.category = S.categories && S.categories.categories.some((c) => c.id === category) ? category : null;
@@ -2806,9 +2844,19 @@ export const ctx = {
   redrawMail: () => {
     if (S.message) renderReader();
     S.composer?.retheme(S.data);
-  }
+  },
+  // Rukoo Voice's meetings (meeting.js): the chat panel follows the one on screen in meeting mode, and a calendar
+  // card records an event.
+  meetingMode: () => meetingMode(),
+  currentMeeting: () => (meetingMode() ? meeting.current() : null),
+  openMeeting: (id) => openMeeting(id),
+  voiceState: () => meeting.voiceState(),
+  recordMeeting: (opts) => meeting.record(opts),
+  openCalendarEvent: (id, start) => openCalendarEvent(id, start),
+  agentSync: () => agentViewChanged()
 };
 
 calendar.init(ctx);
+meeting.init(ctx);
 api('bookingState').then(applyBooking).catch(() => {});
 refresh().catch((err) => toast(err.message, 6000));

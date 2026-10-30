@@ -164,14 +164,22 @@ class VoiceService extends EventEmitter {
 
   onEvent(ev) {
     const before = this.revOf(ev.meeting);
+    const was = this.store.status();
     let change = null;
     try {
       change = this.store.apply(ev);
     } catch (err) {
       this.log('voice', `applying ${ev.event} failed: ${err.message}`);
     }
-    if (!change) return;
-    if (change.kind === 'status' || ev.event === 'meeting.state' || ev.event === 'meeting.removed') this.statusChanged();
+    // meeting.started already marks the entry recording, so the meeting.state that follows can change only the
+    // status: protection and the windows must still hear that a meeting records.
+    const now = this.store.status();
+    const moved = now.recording !== was.recording || now.dictating !== was.dictating;
+    if (!change) {
+      if (moved) this.statusChanged();
+      return;
+    }
+    if (moved || change.kind === 'status' || ev.event === 'meeting.state' || ev.event === 'meeting.removed') this.statusChanged();
     if (change.meeting) this.note(change, before);
     if (ev.event === 'meeting.started') this.linkEvent(ev.meeting).catch(() => {});
     if (ev.event === 'speaker') this.autoName(ev.meeting);
@@ -223,7 +231,8 @@ class VoiceService extends EventEmitter {
         if (d.passages.size) payload.passages = full.passages.filter((p) => d.passages.has(p.id));
         if (d.removed.size) payload.removedPassages = [...d.removed];
         if (d.marks.size) payload.marks = full.marks.filter((k) => d.marks.has(k.id));
-        if (d.speakers) payload.speakers = full.speakers.map(speakerView);
+        // With the guests of the linked event to pick from, as meetingGet gives them.
+        if (d.speakers) payload.speakers = this.speakers(id);
         if (d.notes) payload.notes = full.notes;
       }
       this.emit('meeting', payload);
@@ -242,7 +251,8 @@ class VoiceService extends EventEmitter {
     if (!full) return null;
     return {
       meeting: summary(full.meeting, this.now()),
-      speakers: full.speakers.map(speakerView),
+      // Each with the guests of the linked event the meeting view offers as names.
+      speakers: this.speakers(id),
       passages: full.passages,
       marks: full.marks,
       frames: full.frames,
