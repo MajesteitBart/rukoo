@@ -1039,7 +1039,19 @@ impl EngineApi for FakeEngine {
     fn folder_path(&self, folder: Folder) -> Option<PathBuf> {
         Some(match folder {
             Folder::Logs => voice_core::paths::logs_dir(&self.data_dir),
-            Folder::Models => voice_core::paths::models_dir(&self.data_dir),
+            // As the real engine: the folder chosen in Settings, else Voice's own models/.
+            Folder::Models => {
+                let chosen = self.lock().settings["config"]["local"]["modelFolder"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if chosen.is_empty() {
+                    voice_core::paths::models_dir(&self.data_dir)
+                } else {
+                    PathBuf::from(chosen)
+                }
+            }
             Folder::Recordings => {
                 PathBuf::from(self.lock().settings["storage"]["folder"].as_str()?)
             }

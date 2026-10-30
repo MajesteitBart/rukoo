@@ -392,20 +392,20 @@ mod tests {
                 .code,
             "invalid_value"
         );
-        let recordings = scratch("recordings");
+        let models = scratch("models");
         engine
-            .settings_set_folder("recordings", recordings.clone())
+            .settings_set_folder("models", models.clone())
             .unwrap();
-        ops::open_folder(&*engine, &shell, "recordings").unwrap();
+        ops::open_folder(&*engine, &shell, "models").unwrap();
         assert_eq!(
             *shell.opened.lock().unwrap(),
-            vec![recordings.display().to_string()]
+            vec![models.display().to_string()]
         );
         engine
-            .settings_set_folder("recordings", recordings.join("missing"))
+            .settings_set_folder("models", models.join("missing"))
             .unwrap();
         assert_eq!(
-            ops::open_folder(&*engine, &shell, "recordings")
+            ops::open_folder(&*engine, &shell, "models")
                 .unwrap_err()
                 .code,
             "not_found"
