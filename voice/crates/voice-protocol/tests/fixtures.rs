@@ -74,8 +74,19 @@ fn expected_output(name: &str, input: &Value) -> Value {
         "hello with a cursor and an unknown field" => {
             object.remove("future");
         }
-        "start a meeting with the defaults" => {
+        "start a meeting with the defaults"
+        | "start a meeting with null arguments, which count as left out"
+        | "status request with null args, which count as {}" => {
             object.insert("args".into(), json!({}));
+        }
+        "hello with a null clientVersion, which counts as left out" => {
+            object.remove("clientVersion");
+        }
+        "list with a null limit, which counts as left out" => {
+            object.insert("args".into(), json!({ "limit": 50 }));
+        }
+        "status event with a null meeting, which counts as left out" => {
+            object.remove("meeting");
         }
         _ => {}
     }

@@ -16,7 +16,7 @@ use crate::message::{
 };
 use crate::{
     is_instance, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT, MAX_CONTEXT_BYTES,
-    MAX_ID_CHARS, MAX_TITLE_CHARS,
+    MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_TITLE_CHARS,
 };
 
 /// A message that breaks a rule. `reason` names the field, as the fixtures do.
@@ -75,8 +75,8 @@ pub fn validate_discovery(value: &Value) -> Result<Discovery, Invalid> {
         return invalid("protocol");
     };
     let f = Fields(object);
-    let protocol = f.u32("protocol")?;
-    let min_protocol = f.u32("minProtocol")?;
+    let protocol = f.version("protocol")?;
+    let min_protocol = f.version("minProtocol")?;
     if min_protocol > protocol {
         return invalid("minProtocol");
     }
@@ -105,7 +105,7 @@ pub fn validate_discovery(value: &Value) -> Result<Discovery, Invalid> {
 }
 
 fn hello(f: &Fields) -> Checked<Hello> {
-    let protocol = f.u32("protocol")?;
+    let protocol = f.version("protocol")?;
     let token = f.token("token")?;
     let client = f.short_text("client")?;
     let client_version = f.optional_string("clientVersion")?;
@@ -125,7 +125,7 @@ fn hello(f: &Fields) -> Checked<Hello> {
 }
 
 fn welcome(f: &Fields) -> Checked<Welcome> {
-    let protocol = f.u32("protocol")?;
+    let protocol = f.version("protocol")?;
     let voice_version = f.string("voiceVersion")?.to_owned();
     let instance = f.instance("instance")?;
     let head = f.uint("head")?;
@@ -223,7 +223,8 @@ fn meeting_state(f: &Fields) -> Checked<MeetingStateChange> {
     if state.has_ended() && ended_at.is_none() {
         return invalid("endedAt");
     }
-    if state.needs_reason() && reason.is_none() {
+    // An empty reason says nothing; Rukoo refuses it as it refuses a missing one.
+    if state.needs_reason() && reason.as_deref().is_none_or(str::is_empty) {
         return invalid("reason");
     }
     Ok(MeetingStateChange {
@@ -237,7 +238,11 @@ fn meeting_state(f: &Fields) -> Checked<MeetingStateChange> {
 fn passage(f: &Fields) -> Checked<Passage> {
     let id = f.string("id")?;
     let track = f.named("track", Track::parse)?;
-    let speaker = f.nullable_string("speaker")?.map(str::to_owned);
+    // A speaker is an id, and ids aren't empty.
+    let speaker = match f.nullable_string("speaker")? {
+        Some("") => return invalid("speaker"),
+        speaker => speaker.map(str::to_owned),
+    };
     let start = f.uint("start")?;
     let end = f.uint("end")?;
     let text = f.string("text")?.to_owned();
@@ -317,7 +322,10 @@ fn command(f: &Fields) -> Checked<Command> {
         },
         commands::MEETING_MARK => CommandBody::MeetingMark {
             meeting: a.meeting("meeting")?,
-            label: a.optional_string("label")?,
+            label: match a.optional_string("label")? {
+                Some(label) if label.chars().count() > MAX_LABEL_CHARS => return invalid("label"),
+                label => label,
+            },
         },
         commands::MEETING_LIST => CommandBody::MeetingList {
             limit: match a.optional_uint("limit")? {
@@ -432,6 +440,14 @@ impl<'a> Fields<'a> {
 
     fn u32(&self, key: &str) -> Checked<u32> {
         u32::try_from(self.uint(key)?).map_err(|_| Invalid::new(key))
+    }
+
+    /// A protocol version: versions count from 1.
+    fn version(&self, key: &str) -> Checked<u32> {
+        match self.u32(key)? {
+            0 => invalid(key),
+            version => Ok(version),
+        }
     }
 
     fn optional_uint(&self, key: &str) -> Checked<Option<u64>> {

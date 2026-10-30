@@ -41,6 +41,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Includes the two recorder tests voice/AGENTS.md requires: a hard kill and a lost microphone mid-meeting.
       - run: cargo test --workspace
+      # Rukoo's real bridge client against Voice's real bridge server (the voice-bridge `serve` example, built above).
+      # It needs Node's global WebSocket (Node 22 or later) and no npm packages.
+      - name: Bridge interop between Rukoo and Voice
+        working-directory: .
+        env:
+          RUKOO_VOICE_INTEROP: '1'
+        run: node --test test/voice-interop.test.js
 
   linux:
     runs-on: ubuntu-22.04

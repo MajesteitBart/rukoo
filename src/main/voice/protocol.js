@@ -15,6 +15,8 @@ const RUKOO_MESSAGE_MAX = 1024 * 1024;
 const DISCOVERY_MAX = 4096;
 const CONTEXT_MAX = 16 * 1024;
 const TITLE_MAX = 200;
+// A mark's label, like a title. PROTOCOL.md leaves it open; the shared vectors settle it.
+const LABEL_MAX = 200;
 
 const MEETING_ID = /^m-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -38,6 +40,8 @@ class Invalid extends Error {
 
 const isObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined;
+// An optional field that is null counts as left out, as Voice reads it (voice/fixtures/protocol-vectors.json).
+const given = (o, k) => has(o, k) && o[k] !== null;
 
 function check(ok, reason) {
   if (!ok) throw new Invalid(reason);
@@ -49,9 +53,19 @@ function int(o, k, min = 0) {
   return o[k];
 }
 
+// Lengths count characters (code points), as Voice counts them, not UTF-16 units: an emoji is one character. Counts
+// no further than one past `upTo`, so a long passage isn't walked for a short limit.
+function chars(s, upTo) {
+  let n = 0;
+  for (const _ of s) if (++n > upTo) break;
+  return n;
+}
+
 function str(o, k, { min = 0, max = Infinity, nullable = false } = {}) {
   if (nullable && has(o, k) && o[k] === null) return null;
-  check(has(o, k) && typeof o[k] === 'string' && o[k].length >= min && o[k].length <= max, k);
+  check(has(o, k) && typeof o[k] === 'string', k);
+  const s = o[k];
+  check((min === 0 || chars(s, min) >= min) && (max === Infinity || chars(s, max) <= max), k);
   return o[k];
 }
 
@@ -91,25 +105,26 @@ function hello(m) {
   str(m, 'client', { min: 1, max: 64 });
   pattern(m, 'instance', INSTANCE, { nullable: true });
   int(m, 'after', 0);
-  if (has(m, 'clientVersion')) str(m, 'clientVersion');
+  if (given(m, 'clientVersion')) str(m, 'clientVersion');
 }
 
 const COMMAND_ARGS = {
   'meeting.start': (a) => {
-    if (has(a, 'title')) str(a, 'title', { max: TITLE_MAX });
-    if (has(a, 'tracks')) tracks(a);
-    if (has(a, 'screen')) oneOf(a, 'screen', SCREENS);
-    if (has(a, 'context')) check(isObj(a.context) && JSON.stringify(a.context).length <= CONTEXT_MAX, 'context');
+    if (given(a, 'title')) str(a, 'title', { max: TITLE_MAX });
+    if (given(a, 'tracks')) tracks(a);
+    if (given(a, 'screen')) oneOf(a, 'screen', SCREENS);
+    // 16 KiB of compact JSON in UTF-8, as Voice measures it.
+    if (given(a, 'context')) check(isObj(a.context) && Buffer.byteLength(JSON.stringify(a.context), 'utf8') <= CONTEXT_MAX, 'context');
   },
   'meeting.stop': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.pause': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.resume': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.mark': (a) => {
     pattern(a, 'meeting', MEETING_ID);
-    if (has(a, 'label')) str(a, 'label', { nullable: true, max: TITLE_MAX });
+    if (given(a, 'label')) str(a, 'label', { max: LABEL_MAX });
   },
   'meeting.list': (a) => {
-    if (has(a, 'limit')) int(a, 'limit', 1);
+    if (given(a, 'limit')) int(a, 'limit', 1);
   },
   'meeting.get': (a) => pattern(a, 'meeting', MEETING_ID),
   'frame.get': (a) => {
@@ -122,7 +137,7 @@ const COMMAND_ARGS = {
 function command(m) {
   str(m, 'id', { min: 1, max: 64 });
   str(m, 'command', { min: 1 });
-  if (!has(m, 'args')) m = { ...m, args: {} };
+  if (!given(m, 'args')) m = { ...m, args: {} };
   check(isObj(m.args), 'args');
   const args = COMMAND_ARGS[m.command];
   if (args) args(m.args);
@@ -160,8 +175,9 @@ const EVENT_DATA = {
   'meeting.state': (d) => {
     const state = oneOf(d, 'state', STATES);
     int(d, 'at', 0);
-    if (ENDED.has(state)) int(d, 'endedAt', 0);
+    if (ENDED.has(state) || given(d, 'endedAt')) int(d, 'endedAt', 0);
     if (WITH_REASON.has(state)) str(d, 'reason', { min: 1 });
+    else if (given(d, 'reason')) str(d, 'reason');
   },
   speaker: (d) => {
     str(d, 'id', { min: 1 });
@@ -196,7 +212,7 @@ const EVENT_DATA = {
     int(d, 'at', 0);
     int(d, 'width', 0);
     int(d, 'height', 0);
-    str(d, 'text', { nullable: true });
+    str(d, 'text');
   },
   'meeting.removed': () => {}
 };
@@ -206,7 +222,7 @@ function event(m) {
   str(m, 'event', { min: 1 });
   int(m, 'createdAt', 0);
   check(isObj(m.data), 'data');
-  if (MEETING_EVENTS.has(m.event) || has(m, 'meeting')) pattern(m, 'meeting', MEETING_ID);
+  if (MEETING_EVENTS.has(m.event) || given(m, 'meeting')) pattern(m, 'meeting', MEETING_ID);
   const data = EVENT_DATA[m.event];
   if (data) data(m.data);
 }
@@ -218,6 +234,7 @@ function reply(m) {
   else {
     check(isObj(m.error), 'error');
     check(typeof m.error.code === 'string' && m.error.code !== '' && typeof m.error.message === 'string', 'error');
+    check(!given(m.error, 'meeting') || (typeof m.error.meeting === 'string' && MEETING_ID.test(m.error.meeting)), 'error');
   }
 }
 
@@ -285,6 +302,7 @@ module.exports = {
   RUKOO_MESSAGE_MAX,
   DISCOVERY_MAX,
   TITLE_MAX,
+  LABEL_MAX,
   CONTEXT_MAX,
   TRACKS,
   SCREENS,

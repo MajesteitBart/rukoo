@@ -45,6 +45,9 @@ pub const PONG_TIMEOUT: Duration = Duration::from_secs(20);
 pub const DEFAULT_LIST_LIMIT: u64 = 50;
 /// The longest `title` `meeting.start` accepts, in characters.
 pub const MAX_TITLE_CHARS: usize = 200;
+/// The longest `label` `meeting.mark` accepts, in characters. PROTOCOL.md leaves it open; the
+/// shared vectors hold it at the title's limit, which Rukoo already kept to.
+pub const MAX_LABEL_CHARS: usize = 200;
 /// The largest `context` `meeting.start` accepts, in bytes of compact JSON.
 pub const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 /// The longest command id and `client` name, in characters.
