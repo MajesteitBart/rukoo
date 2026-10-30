@@ -340,10 +340,11 @@ class Categories(
     }
 
     fun setEnabled(on: Boolean): CategoriesState {
-        // Turned on here: the sort below is the one; the records it writes don't start another.
+        // Turned on here: the sort below is the one; the records it writes don't start another. The setting goes first,
+        // so no record the presets write says categories are still off when the records' listener reads it later.
         enabledSeen.set(on)
-        if (on) seed()
         putSettings(enabled = on)
+        if (on) seed()
         changed()
         if (on) soon(0, user = true)
         return state.value
