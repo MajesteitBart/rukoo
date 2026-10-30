@@ -790,10 +790,16 @@ test("a booked event's card shows the guest's details as text, and Cancel bookin
   await openCalendar();
   await fakeBooking();
   const accountId = await demoAccount();
+  // Next week's Thursday: a booking this week would be over from Thursday afternoon on, and its card rightly offers
+  // a plain Delete then.
+  const thisThursday = await column(3).evaluate((el) => Number(el.dataset.calCol));
+  await win.click('[data-cal="next"]');
+  await expect.poll(() => column(3).evaluate((el) => Number(el.dataset.calCol))).toBeGreaterThan(thisThursday);
   const thursday = await column(3).evaluate((el) => Number(el.dataset.calCol));
   const make = (title, start, bookingId) =>
     app.evaluate(({}, [accountId, title, start, bookingId]) => global.__semCalendars.create({ accountId, calendarId: 'personal', title, location: '', description: '', allDay: false, start, end: start + 1800000 }, { bookingId }), [accountId, title, start, bookingId]);
   const start = await timeOn(thursday, 12);
+  expect(start).toBeGreaterThan(Date.now());
   await make('Intro call', start, 'Kq0bAAAAAAAAAAAAAAAAAA');
   const older = await timeOn(thursday, 13, 30);
   await make('Earlier intro', older, 'Zz9zAAAAAAAAAAAAAAAAAA');
