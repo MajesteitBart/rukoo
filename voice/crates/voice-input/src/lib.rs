@@ -1,1 +1,189 @@
-//! voice-input for Rukoo Voice.
+//! Input for Rukoo Voice dictation on Windows: push-to-talk hotkeys, text
+//! insertion, selection capture and the focused window.
+//!
+//! Other platforms compile and return [`InputError::Unsupported`]; the
+//! platform-neutral parts ([`HotkeyPoller::spawn_with`], [`PushToTalk`],
+//! [`target::classify`]) work everywhere.
+//!
+//! The behavior ports Ownkey for Windows. Where Voice differs on purpose
+//! (clipboard restore, Shift+Enter for newlines), the code says so.
+
+use std::fmt;
+use std::time::Duration;
+
+#[cfg_attr(not(windows), allow(dead_code))]
+mod clipboard;
+mod hotkeys;
+mod keys;
+mod ptt;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod strokes;
+pub mod target;
+
+#[cfg(not(windows))]
+mod unsupported;
+#[cfg(not(windows))]
+use unsupported as sys;
+#[cfg(windows)]
+mod win;
+#[cfg(windows)]
+use win as sys;
+
+pub use hotkeys::{HotkeyEvent, HotkeyPoller, Stopper, POLL_INTERVAL};
+pub use keys::{Key, UnknownKey};
+pub use ptt::{Action, HotkeyConfig, Mode, PushToTalk};
+pub use target::{TextTarget, WindowInfo};
+
+/// How [`insert_text`] gets text into the focused app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InsertMode {
+    /// Through the clipboard with Ctrl+V. Ownkey's default.
+    Paste,
+    /// Key by key, for apps where pasting fails.
+    Type,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InputError {
+    /// Not available on this platform yet.
+    Unsupported,
+    /// Windows inserted fewer key events than were sent. User Interface
+    /// Privilege Isolation does that for a window of an app that runs as
+    /// administrator.
+    Blocked,
+    /// Another app kept the clipboard open.
+    ClipboardBusy,
+    /// A clipboard call failed, with the system's message.
+    Clipboard(String),
+    /// Something else failed, with a message for the user.
+    System(String),
+}
+
+impl fmt::Display for InputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InputError::Unsupported => {
+                f.write_str("Typing and hotkeys aren't supported on this platform yet.")
+            }
+            InputError::Blocked => {
+                f.write_str("Windows blocked typing into an app that runs as administrator.")
+            }
+            InputError::ClipboardBusy => {
+                f.write_str("Another app is using the clipboard. Try again.")
+            }
+            InputError::Clipboard(message) => write!(f, "Could not use the clipboard: {message}"),
+            InputError::System(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for InputError {}
+
+/// Inserts `text` into the focused app. Empty text does nothing.
+///
+/// [`InsertMode::Paste`] takes a snapshot of the clipboard, puts the text on
+/// it hidden from clipboard history and cloud clipboard, and presses Ctrl+V.
+/// It returns right away; 600 ms later a background thread puts the
+/// snapshot back, unless something else was copied by then. The next paste
+/// or [`capture_selection`] waits for that restore, and so does
+/// [`wait_for_clipboard_restore`], which the app should call before quitting.
+///
+/// [`InsertMode::Type`] sends each character as a Unicode key event, 5 ms
+/// apart, and a newline as Shift+Enter. It doesn't touch the clipboard.
+///
+/// The keys go to whatever has focus, with any keys the user is holding.
+/// Inserting while Right Alt is held for the next recording turns Ctrl+V
+/// into AltGr+V, as it did in Ownkey; the caller decides whether to wait.
+pub fn insert_text(text: &str, mode: InsertMode) -> Result<(), InputError> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    match mode {
+        InsertMode::Paste => sys::paste_text(text),
+        InsertMode::Type => sys::type_text(text),
+    }
+}
+
+/// Copies the selection in the focused app with Ctrl+C and returns its text,
+/// then puts the user's clipboard back.
+///
+/// Like Ownkey it makes two attempts, each waiting up to `timeout` for the
+/// app to copy (Ownkey waited 500 ms), so the worst case is about twice the
+/// timeout plus 0.2 s. `Ok(None)` when nothing with text was copied. Don't
+/// call it while a key that changes Ctrl+C is held: see
+/// [`Key::can_copy_while_held`].
+pub fn capture_selection(timeout: Duration) -> Result<Option<String>, InputError> {
+    sys::capture_selection(timeout)
+}
+
+/// Waits until a pending clipboard restore from [`insert_text`] has finished.
+pub fn wait_for_clipboard_restore() {
+    sys::wait_for_clipboard_restore();
+}
+
+/// The foreground window, or `None` when there is none (for example on the
+/// secure desktop) or on other platforms.
+pub fn foreground_window() -> Option<WindowInfo> {
+    sys::foreground_window()
+}
+
+/// Whether the focused window looks like it takes text.
+pub fn text_target() -> TextTarget {
+    foreground_window().map_or(TextTarget::Unknown, |window| window.target)
+}
+
+/// Whether a key is physically held right now. Always `false` on other
+/// platforms.
+pub fn is_key_down(key: Key) -> bool {
+    sys::is_key_down(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_text_inserts_nothing_in_either_mode() {
+        // Returns before any platform call, so this touches nothing.
+        assert_eq!(insert_text("", InsertMode::Paste), Ok(()));
+        assert_eq!(insert_text("", InsertMode::Type), Ok(()));
+    }
+
+    #[test]
+    fn errors_read_as_user_messages() {
+        assert_eq!(
+            InputError::Blocked.to_string(),
+            "Windows blocked typing into an app that runs as administrator."
+        );
+        assert_eq!(
+            InputError::Clipboard("Access is denied.".into()).to_string(),
+            "Could not use the clipboard: Access is denied."
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn other_platforms_say_unsupported() {
+        assert_eq!(
+            insert_text("x", InsertMode::Paste),
+            Err(InputError::Unsupported)
+        );
+        assert_eq!(
+            insert_text("x", InsertMode::Type),
+            Err(InputError::Unsupported)
+        );
+        assert_eq!(
+            capture_selection(Duration::from_millis(1)),
+            Err(InputError::Unsupported)
+        );
+        assert_eq!(foreground_window(), None);
+        assert_eq!(text_target(), TextTarget::Unknown);
+        assert!(!is_key_down(Key::F13));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        assert_eq!(
+            HotkeyPoller::spawn(vec![Key::F13], tx).unwrap_err(),
+            InputError::Unsupported
+        );
+    }
+}
