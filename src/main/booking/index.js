@@ -846,14 +846,15 @@ class Booking extends EventEmitter {
       const settings = rules.checkSettings(next, { today: rules.todayIn(next.timeZone, this.now()), meet });
       let on = this.status() === 'on';
       // A video service is chosen on the computer that handles bookings, where it has to be connected. That one runs
-      // a Rukoo that knows the location, so a computer from before video services never handles a page that has one.
-      // Who handles them is asked fresh, as another computer may have taken over since this one last looked; when the
-      // server can't say, the change doesn't go.
-      const chosen = on ? newVideo(current, settings) : -1;
-      if (chosen >= 0) {
+      // a Rukoo that knows the location; a computer from before video services can't read the settings once a type
+      // has one, so it must not be the one (docs/booking.md). Who handles them is asked fresh, as another computer may
+      // have taken over since this one last looked, and again once the change is up (videoStays); when the server
+      // can't say, the change doesn't go.
+      const chosen = on ? newVideo(current, settings) : [];
+      if (chosen.length) {
         this.setPage(await this.call('GET', '/v1/booking'));
         on = this.status() === 'on';
-        if (on && !this.thisDevice()) throw rules.bookingError('videoElsewhere', { code: 'invalid', field: `types[${chosen}].location.kind` });
+        if (on && !this.thisDevice()) throw rules.bookingError('videoElsewhere', { code: 'invalid', field: `types[${chosen[0]}].location.kind` });
       }
       if (settings.handle !== current.handle && on) {
         // A rename goes to the server first; when it is refused the record keeps the old handle. Changes the old
@@ -868,9 +869,34 @@ class Booking extends EventEmitter {
         const merged = rules.mergeSettings(pulled || current, patch);
         return { ...merged, url: page && page.handle === settings.handle && page.url ? page.url : merged.url };
       });
+      if (chosen.length && on && written) await this.videoStays(current, settings, chosen);
       if (on && this.thisDevice() && written) await this.publish({ force: true, settings: written }).catch(unlessStale);
       return this.state();
     }).finally(() => this.changed());
+  }
+
+  // After a save that chose a video service (chosen: those types' indexes in settings): whether this computer still
+  // handles bookings, now that the change is up. Another one may have taken over between the question before it and
+  // the push, and may run a Rukoo from before video services. When one did, or the server can't say, those types get
+  // back the location they had before (none for a type the save added), and the save is refused. Other changes stay.
+  async videoStays(before, settings, chosen) {
+    let failure = null;
+    try {
+      this.setPage(await this.call('GET', '/v1/booking'));
+      if (this.status() !== 'on' || this.thisDevice()) return;
+    } catch (err) {
+      unlessStale(err);
+      failure = err;
+    }
+    const was = new Map((Array.isArray(before.types) ? before.types : []).filter(plain).map((x) => [x.slug, x.location]));
+    const picked = new Map(chosen.map((i) => [settings.types[i].slug, settings.types[i].location.service]));
+    const none = { kind: 'none', label: '', value: '', public: false };
+    const back = (x) => (plain(x) && picked.has(x.slug) && plain(x.location) && x.location.kind === 'video' && x.location.service === picked.get(x.slug) ? { ...x, location: was.get(x.slug) || none } : x);
+    await this.writeSettings((pulled) => {
+      const s = pulled || settings;
+      return { ...s, types: s.types.map(back) };
+    });
+    throw failure || rules.bookingError('videoElsewhere', { code: 'invalid', field: `types[${chosen[0]}].location.kind` });
   }
 
   // Turns the page off (contracts g): the server deletes the page and its bookings and keeps the handle for this
@@ -2014,14 +2040,14 @@ function videoProblem(service, op, err) {
   return { service, op, reason: 'failed', error: String((err && err.message) || '').slice(0, 300) };
 }
 
-// The index of the first meeting type whose video service the settings choose anew (a new type, or another location
-// or service than the record has for its slug); -1 when there is none.
+// The indexes of the meeting types whose video service the settings choose anew (a new type, or another location or
+// service than the record has for its slug).
 function newVideo(current, settings) {
   const before = new Map((plain(current) && Array.isArray(current.types) ? current.types : []).filter(plain).map((x) => [x.slug, x.location]));
-  return settings.types.findIndex((x) => {
-    if (x.location.kind !== 'video') return false;
+  return settings.types.flatMap((x, i) => {
+    if (x.location.kind !== 'video') return [];
     const was = before.get(x.slug);
-    return !plain(was) || was.kind !== 'video' || was.service !== x.location.service;
+    return !plain(was) || was.kind !== 'video' || was.service !== x.location.service ? [i] : [];
   });
 }
 

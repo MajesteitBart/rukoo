@@ -445,6 +445,34 @@ test('a meeting whose move failed is moved on a later pass, and keeps its old ti
   assert.equal(mapOf(host, id).video.start, start + HOUR);
 });
 
+test('a video service chosen while another computer takes over is put back and refused', async (t) => {
+  const srv = await server(t);
+  const fake = fakeCalendar();
+  const desk = await computer(t, srv, { fake, name: 'desk' });
+  await desk.booking.enable(ENABLE);
+  const laptop = await computer(t, srv, { fake, signUp: false, name: 'laptop' });
+  await laptop.account.sync();
+  const type = desk.booking.settings().types[0];
+  const before = type.location;
+  // The laptop takes over after the desk checked who handles bookings, before its change is up.
+  const write = desk.booking.writeSettings.bind(desk.booking);
+  let once = true;
+  desk.booking.writeSettings = async (change) => {
+    if (once) {
+      once = false;
+      await laptop.booking.takeover();
+    }
+    return write(change);
+  };
+  await assert.rejects(desk.booking.save({ types: [{ ...type, title: 'Chat', location: ZOOM }] }), (err) => err.code === 'invalid' && err.field === 'types[0].location.kind');
+  assert.equal(desk.booking.thisDevice(), false);
+  assert.deepEqual(desk.booking.settings().types[0].location, before, 'the location it had');
+  assert.equal(desk.booking.settings().types[0].title, 'Chat', 'the rest of the change stays');
+  // The laptop, which now handles bookings, reads the same.
+  await laptop.account.sync();
+  assert.deepEqual(laptop.booking.settings().types[0].location, before);
+});
+
 test('a video service chosen just after another computer took over is refused, also before this one noticed', async (t) => {
   const srv = await server(t);
   const fake = fakeCalendar();
