@@ -1,5 +1,6 @@
 [package]
 name = "voice-meetings"
+description = "Meeting library, transcript store, live transcription and retention of Rukoo Voice"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +9,14 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+voice-audio = { path = "../voice-audio" }
+voice-bridge = { path = "../voice-bridge" }
+voice-core = { path = "../voice-core" }
+voice-protocol = { path = "../voice-protocol" }
+voice-recorder = { path = "../voice-recorder" }
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
