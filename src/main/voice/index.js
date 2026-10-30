@@ -64,6 +64,8 @@ class VoiceService extends EventEmitter {
   constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, emitMs = EMIT_MS, now = Date.now, log = () => {} } = {}) {
     super();
     this.store = new VoiceStore({ dataDir, now, log });
+    // A meeting file found damaged when a meeting is read: Voice sends the meeting again while it is connected.
+    this.store.onDamaged = () => this.recoverDamaged();
     this.bridge = new VoiceBridge({ file: discovery, clientVersion: appVersion, cursor: () => this.store.cursor(), WebSocket, log, ...bridge });
     this.hide = hide;
     this.protect = protect;
@@ -148,6 +150,28 @@ class VoiceService extends EventEmitter {
     // Voice already deleted events Rukoo missed: ask for every meeting Rukoo has. A done meeting can't change, but
     // Voice may have deleted it meanwhile, and its meeting.removed may be among the events Rukoo missed.
     if (gap || this.store.damaged.size) this.refetch(gap).catch(() => {});
+  }
+
+  // One refetch of the damaged meetings at a time. Damage found while one runs is fetched when it ends. It starts on
+  // the next turn, so the read that found the damage finishes first.
+  recoverDamaged() {
+    if (!this.connected || !this.store.damaged.size) return;
+    if (this.recovering) {
+      this.recoverAgain = true;
+      return;
+    }
+    this.recovering = true;
+    setImmediate(() => {
+      this.refetch(false)
+        .catch(() => {})
+        .finally(() => {
+          this.recovering = false;
+          if (this.recoverAgain) {
+            this.recoverAgain = false;
+            this.recoverDamaged();
+          }
+        });
+    });
   }
 
   async refetch(gap) {

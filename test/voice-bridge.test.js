@@ -167,6 +167,32 @@ test('a gap: a done meeting Voice deleted while Rukoo was away goes too, with it
   assert.equal(s2.get(M1).notes.text, 'My own notes.');
 });
 
+test('a meeting file found damaged when the meeting opens is fetched from Voice again', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  voice.append('meeting.started', M1, started('Read later'));
+  voice.append('passage', M1, passage('call', 1000, 'Kept by Voice.'));
+  voice.append('meeting.state', M1, { state: 'done', at: 5000, endedAt: Date.now() });
+  const s1 = service(t, dir, file).init();
+  await until(() => s1.store.cursor().after === 3, 'the first replay');
+  s1.close();
+  // voice.json is fine and a partial replay brings nothing, but the meeting's own file is damaged.
+  fs.writeFileSync(path.join(dir, 'data', 'meetings', `${M1}.json`), '{"passages":');
+  voice.handlers['meeting.get'] = () => ({
+    meeting: { id: M1, ...started('Read later'), state: 'done', endedAt: Date.now() },
+    speakers: [{ id: 'call-1', track: 'call', label: 'Speaker 1' }],
+    passages: [passage('call', 1000, 'Kept by Voice.')],
+    marks: [],
+    head: voice.head
+  });
+  const s2 = service(t, dir, file).init();
+  await until(() => s2.connected, 'the connection');
+  assert.equal(voice.commands.filter((c) => c.command === 'meeting.get').length, 0, 'nothing to fetch before the meeting is read');
+  s2.get(M1);
+  await until(() => ((s2.get(M1) || {}).passages || []).length === 1, 'the meeting from Voice');
+  assert.equal(s2.get(M1).passages[0].text, 'Kept by Voice.');
+});
+
 test("a meeting.get answer doesn't undo the meeting's events past its head that Voice sent before it", async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
