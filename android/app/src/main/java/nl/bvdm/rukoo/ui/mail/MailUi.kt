@@ -21,6 +21,7 @@ import nl.bvdm.rukoo.mail.model.DeleteOutcome
 import nl.bvdm.rukoo.mail.model.DeleteResult
 import nl.bvdm.rukoo.mail.model.Moved
 import nl.bvdm.rukoo.mail.model.UnsubscribeResult
+import nl.bvdm.rukoo.mail.model.ViewKind
 import nl.bvdm.rukoo.ui.Mailto
 import nl.bvdm.rukoo.ui.components.RkToastState
 
@@ -186,12 +187,18 @@ class MailUi(
         }
     }
 
-    fun markAllRead(view: MailView) {
+    /**
+     * Marks what the list shows read. With inbox categories, Inbox leaves out the categories it doesn't show, and a
+     * category's [tab] marks only its own mail (desktop's markAllRead with a category).
+     */
+    fun markAllRead(view: MailView, tab: String? = null) {
         scope.launch {
             try {
                 // The unread ones in the view are marked by id rather than through markAllRead, so a sync landing
                 // in between can't make Undo mark a different set unread again than the one this changed.
-                val unread = mail.listMessages(view).filter { it.unread }.map { it.id }
+                val all = mail.listMessages(view).filter { it.unread }
+                val listed = categories?.takeIf { view.kind == ViewKind.INBOX }?.let { ListModel.categoryRows(all, it.lookup(mail.accounts.value, all), tab, inbox = true) } ?: all
+                val unread = listed.map { it.id }
                 if (unread.isEmpty()) return@launch toasts.showToast(strings.get(R.string.mailbox_actions_already_read))
                 mail.setFlags(unread, unread = false)
                 offerFlagUndo(unread, unread = false)

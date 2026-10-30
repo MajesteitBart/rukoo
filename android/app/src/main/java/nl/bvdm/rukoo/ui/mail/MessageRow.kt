@@ -36,18 +36,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-
-
-
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
@@ -56,6 +55,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.categories.Category
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MessageSummary
 import nl.bvdm.rukoo.settings.SwipeAction
@@ -65,6 +65,7 @@ import nl.bvdm.rukoo.ui.components.AvatarSize
 import nl.bvdm.rukoo.ui.components.RkIcon
 import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.icons.RukooIcons
+import nl.bvdm.rukoo.ui.settings.categoryColor
 import nl.bvdm.rukoo.ui.theme.AccountColors
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.RukooEasing
@@ -81,11 +82,16 @@ data class RowLook(
     val selecting: Boolean,
     val open: Boolean,
     val checked: Boolean,
-    /** Several accounts in one list: the short account label as a pill. */
+    /**
+     * Several accounts in one list: the account as a dot in [accountColor] on the sender's picture, so it can't be taken
+     * for a category's label; the short account label is what a screen reader says for it.
+     */
     val accountLabel: String? = null,
     val accountColor: String? = null,
     /** Searching all folders, or Starred: the folder as a pill. */
     val folderLabel: String? = null,
+    /** The email's inbox category in a list that mixes them (ListModel.rowCategory): a pill in its color. */
+    val category: Category? = null,
 )
 
 /** What a swipe does: its [action] (for the color and label behind the row) and the work itself. */
@@ -202,7 +208,7 @@ fun MessageRow(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = if (look.compact) Alignment.CenterVertically else Alignment.Top,
                 ) {
-                    Lead(m, look, stacked, actions)
+                    Lead(m, look, stacked, actions, ring = fill)
                     Body(m, line, time, look, stack, stacked, actions)
                 }
                 if (m.unread) {
@@ -216,6 +222,19 @@ fun MessageRow(
                             .background(c.accent, CircleShape),
                     )
                 }
+                // A stack's other emails have no picture, and the phone has no hover to show it as desktop does: with
+                // several accounts, the account dot stands alone in the gutter, on the sender's line.
+                val stackedAccount = look.accountLabel?.takeIf { stacked && !look.selecting }
+                if (stackedAccount != null) {
+                    AccountDot(
+                        stackedAccount,
+                        look.accountColor,
+                        fill,
+                        Modifier
+                            .offset { IntOffset((dx + with(density) { 18.dp.toPx() }).roundToInt(), 0) }
+                            .then(if (look.compact) Modifier.align(Alignment.CenterStart) else Modifier.padding(top = 12.dp)),
+                    )
+                }
             }
             if (stack != null && !stack.open) PaperEdge()
         }
@@ -225,27 +244,56 @@ fun MessageRow(
 // The row springs back or flies out over 200ms with the app curve (app.js:1336-1340).
 private val SwipeSpec = tween<Float>(200, easing = RukooEasing.App)
 
+/** The sender's picture, or the checkbox while selecting. [ring] is the row's fill, which rings the account dot. */
 @Composable
-private fun Lead(m: MessageSummary, look: RowLook, stacked: Boolean, actions: RowActions) {
+private fun Lead(m: MessageSummary, look: RowLook, stacked: Boolean, actions: RowActions, ring: Color) {
+    // A stack's other emails: no picture; MessageRow puts the account dot in their gutter.
     if (stacked) return
     val selectLabel = stringResource(R.string.mailbox_message_select)
+    val account = look.accountLabel?.takeIf { !look.selecting }
     if (look.compact) {
-        if (look.selecting) MailCheckbox(look.checked, Modifier.rkClickable(RoundedCornerShape(5.dp), onClick = actions.toggleChecked), description = selectLabel)
+        when {
+            look.selecting -> MailCheckbox(look.checked, Modifier.rkClickable(RoundedCornerShape(5.dp), onClick = actions.toggleChecked), description = selectLabel)
+            // Compact rows have no picture (desktop's 18px lead without its avatar): the dot stands alone.
+            account != null -> Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) { AccountDot(account, look.accountColor, ring) }
+        }
         return
     }
-    Box(
-        Modifier
-            .size(AvatarSize.Large)
-            .rkClickable(CircleShape, onClickLabel = selectLabel, onClick = actions.toggleChecked),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (look.selecting) {
-            MailCheckbox(look.checked, description = selectLabel)
-        } else {
-            val who = ListModel.avatarOf(m)
-            Avatar(who.name, who.address, size = AvatarSize.Large)
+    // Not clipped itself, so the account dot can sit over the picture's edge.
+    Box(Modifier.size(AvatarSize.Large)) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .rkClickable(CircleShape, onClickLabel = selectLabel, onClick = actions.toggleChecked),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (look.selecting) {
+                MailCheckbox(look.checked, description = selectLabel)
+            } else {
+                val who = ListModel.avatarOf(m)
+                Avatar(who.name, who.address, size = AvatarSize.Large)
+            }
         }
+        // 2dp past the picture's corner, as desktop's right: -2px; bottom: -2px, plus the 2dp ring.
+        if (account != null) AccountDot(account, look.accountColor, ring, Modifier.align(Alignment.BottomEnd).offset(4.dp, 4.dp))
     }
+}
+
+/**
+ * The account of an email in a list of several accounts (styles.css .lead .acc-dot): an 11dp dot in its color, ringed
+ * in the row's own fill so it stands apart from the picture in each state of the row.
+ */
+@Composable
+private fun AccountDot(label: String, color: String?, ring: Color, modifier: Modifier = Modifier) {
+    val description = stringResource(R.string.mailbox_message_account, label)
+    Box(
+        modifier
+            .size(15.dp)
+            .background(ring, CircleShape)
+            .padding(2.dp)
+            .background(AccountColors.parse(color), CircleShape)
+            .semantics { contentDescription = description },
+    )
 }
 
 @Composable
@@ -291,17 +339,7 @@ private fun androidx.compose.foundation.layout.RowScope.Body(
                 Text(time, style = Rk.type.meta, color = c.text3, maxLines = 1)
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                m.subject.ifBlank { stringResource(R.string.mailbox_message_no_subject) },
-                style = if (unread) Rk.type.text13.semibold else Rk.type.text13,
-                color = if (unread) c.text else c.text2,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Pills(m, look)
-        }
+        SubjectLine(m, look)
         if (!look.compact) {
             Text(
                 ListModel.cleanPreview(m.preview),
@@ -315,20 +353,78 @@ private fun androidx.compose.foundation.layout.RowScope.Body(
     }
 }
 
+/**
+ * The subject, then the pills and the star (app.js itemHtml .line2). The pills give way before the subject does: they
+ * shrink, each ending in an ellipsis, and never take more than 60% of the line (styles.css .flags), so a narrow row
+ * with VIP, folder and category pills still shows some of the subject. The star keeps its size.
+ */
 @Composable
-private fun Pills(m: MessageSummary, look: RowLook) {
+private fun SubjectLine(m: MessageSummary, look: RowLook) {
     val c = Rk.colors
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (m.vip) Pill(stringResource(R.string.mailbox_message_vip), background = c.accentSoft, color = c.accent, strong = true)
-        look.folderLabel?.let { Pill(it) }
-        look.accountLabel?.let { label ->
-            Pill(label, dot = AccountColors.parse(look.accountColor))
+    val unread = m.unread
+    val pills = buildList<@Composable () -> Unit> {
+        if (m.vip) add { Pill(stringResource(R.string.mailbox_message_vip), background = c.accentSoft, color = c.accent, strong = true) }
+        look.folderLabel?.let { add { Pill(it) } }
+        look.category?.let { cat ->
+            add {
+                val color = categoryColor(cat.color)
+                // The wash is lighter on dark, so the name keeps 4.5:1 (styles.css --cat-tint).
+                Pill(cat.name, background = mix(c.chip, color, if (c.isDark) 0.11f else 0.16f), dot = color)
+            }
         }
-        if (m.starred) RkIcon(RukooIcons.StarFilled, stringResource(R.string.mailbox_filters_starred), Modifier.padding(start = 2.dp), size = 15.dp, tint = c.star)
+    }
+    Layout(
+        contents = listOf(
+            {
+                Text(
+                    m.subject.ifBlank { stringResource(R.string.mailbox_message_no_subject) },
+                    style = if (unread) Rk.type.text13.semibold else Rk.type.text13,
+                    color = if (unread) c.text else c.text2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            { pills.forEach { it() } },
+            { if (m.starred) RkIcon(RukooIcons.StarFilled, stringResource(R.string.mailbox_filters_starred), Modifier.padding(start = 2.dp), size = 15.dp, tint = c.star) },
+        ),
+    ) { (subjectPart, pillParts, starPart), constraints ->
+        val line = constraints.maxWidth
+        val gap = 4.dp.roundToPx()
+        val star = starPart.firstOrNull()?.measure(Constraints())
+        val flags = pillParts.size + (if (star != null) 1 else 0)
+        val gaps = gap * (flags - 1).coerceAtLeast(0)
+        val room = if (constraints.hasBoundedWidth) (line * 0.6f).toInt() - gaps - (star?.width ?: 0) else Constraints.Infinity
+        val widths = ListModel.pillWidths(pillParts.map { it.maxIntrinsicWidth(constraints.maxHeight) }, room.coerceAtLeast(0))
+        val placed = pillParts.mapIndexed { i, p -> p.measure(Constraints(maxWidth = widths[i])) }
+        val flagsWidth = placed.sumOf { it.width } + (star?.width ?: 0) + gaps
+        // The subject fills what is left, as Modifier.weight(1f) did, with a little air before the pills.
+        val subjectWidth = (line - flagsWidth - if (flags > 0) 6.dp.roundToPx() else 0).coerceAtLeast(0)
+        val subject = subjectPart.first().measure(Constraints.fixedWidth(subjectWidth))
+        val height = maxOf(subject.height, placed.maxOfOrNull { it.height } ?: 0, star?.height ?: 0)
+        layout(line, height) {
+            subject.placeRelative(0, (height - subject.height) / 2)
+            var x = line - flagsWidth
+            for (p in placed) {
+                p.placeRelative(x, (height - p.height) / 2)
+                x += p.width + gap
+            }
+            star?.placeRelative(x, (height - star.height) / 2)
+        }
     }
 }
 
-/** A list pill (styles.css:1025-1055): 11px, `chip` fill, `text2`, 5dp corners; the account pill has a dot. */
+/** [over] mixed into [base] by [amount] in sRGB, as CSS color-mix(in srgb, over amount, base) does. */
+private fun mix(base: Color, over: Color, amount: Float): Color = Color(
+    red = base.red + (over.red - base.red) * amount,
+    green = base.green + (over.green - base.green) * amount,
+    blue = base.blue + (over.blue - base.blue) * amount,
+    alpha = base.alpha + (over.alpha - base.alpha) * amount,
+)
+
+/**
+ * A list pill (styles.css:1025-1055): 11px, `chip` fill, `text2`, 5dp corners. A category's pill has a dot in its color
+ * on a wash of it (.pill.cat).
+ */
 @Composable
 private fun Pill(text: String, background: Color = Rk.colors.chip, color: Color = Rk.colors.text2, strong: Boolean = false, dot: Color? = null) {
     Row(
