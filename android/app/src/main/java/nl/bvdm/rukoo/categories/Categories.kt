@@ -72,6 +72,53 @@ data class CategoryLookup(val of: Map<String, String> = emptyMap(), val hiddenCa
     }
 }
 
+/** What a new inbox email's notification does: show, stay away (its category is muted), or wait for Jev's answer. */
+enum class MailNotice { SHOW, MUTE, WAIT }
+
+/** [MailNotice] for one email, with its key, which Jev's answer for it comes with ([NoticeListener.answered]). */
+data class NoticeDecision(val what: MailNotice, val key: String? = null)
+
+/**
+ * What deciding notifications needs, worked out once for many emails ([NoticeCategories.noticeContext]): the categories
+ * muted on this phone that exist (none while categories are off), how to place an email, whether Jev can be asked
+ * now, and whether a re-sort follows the running sort.
+ */
+class NoticeContext internal constructor(
+    val muted: Set<String>,
+    internal val placing: Categories.Placing? = null,
+    internal val jev: Boolean = false,
+    internal val again: Boolean = false,
+) {
+    companion object {
+        /** Nothing muted: every notification shows at once. */
+        val NONE = NoticeContext(emptySet())
+    }
+}
+
+/**
+ * What a waiting notification listens to (mail/sync/MailNotices): Jev's answer for an email came in, by the email's
+ * key, or something changed that decides for every waiting email: categories or Jev on or off, a new key, a key
+ * refused, TypeSafe busy, a category muted, added or removed. Called on the categories' own threads, never while they
+ * hold a lock.
+ */
+interface NoticeListener {
+    fun answered(key: String)
+
+    fun reconsider()
+}
+
+/** How notifications go by category (desktop's notice() and noticeContext()); Categories, or a fake in tests. */
+interface NoticeCategories {
+    fun noticeContext(): NoticeContext
+
+    /** What [m]'s notification does now; [jev] false lets the category it has now decide, without waiting. */
+    fun notice(m: MessageSummary, ctx: NoticeContext, jev: Boolean = true): NoticeDecision
+
+    fun addNoticeListener(listener: NoticeListener)
+
+    fun removeNoticeListener(listener: NoticeListener)
+}
+
 data class JevState(val on: Boolean = false, val hasKey: Boolean = false, val error: String? = null, val model: String = Jev.MODEL)
 
 /** A sender whose mail always goes to one category. */
@@ -85,6 +132,8 @@ data class CategoriesState(
     val categories: List<Category> = emptyList(),
     val jev: JevState = JevState(),
     val senders: List<SenderRule> = emptyList(),
+    /** Categories whose new mail sends no notification on this phone, in the categories' order. */
+    val muted: List<String> = emptyList(),
     val signedIn: Boolean = false,
     val limit: Int = Categories.MAX_CATEGORIES,
 )
@@ -158,11 +207,12 @@ interface CategoryMail {
 }
 
 /**
- * categories.json: what stays on this phone: Jev's switch and key (encrypted like mail passwords), and the emails a
- * re-sort still has to do ([redo]), so a restart doesn't forget them.
+ * categories.json: what stays on this phone: Jev's switch and key (encrypted like mail passwords), the emails a
+ * re-sort still has to do ([redo]), so a restart doesn't forget them, and the categories whose notifications are off
+ * ([muted]), as desktop keeps them per computer.
  */
 @Serializable
-data class LocalCategories(val jev: LocalJev? = null, val redo: List<String> = emptyList())
+data class LocalCategories(val jev: LocalJev? = null, val redo: List<String> = emptyList(), val muted: List<String> = emptyList())
 
 @Serializable
 data class LocalJev(val on: Boolean = false, val key: String? = null, val error: String? = null)
@@ -187,7 +237,7 @@ class Categories(
     scope: CoroutineScope,
     private val clock: Clock = Clock.System,
     private val sortAfterMs: Long = SORT_AFTER,
-) {
+) : NoticeCategories {
     // Its own supervisor, off the main thread: a sort reads every inbox email.
     private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default)
     private val lock = Any()
@@ -225,6 +275,12 @@ class Categories(
      */
     internal val redo = HashSet<String>()
 
+    /** The emails the running sort has for Jev, by key, until each one's answer is in: their notifications wait. Under [lock]. */
+    private val asking = HashSet<String>()
+
+    /** Waiting notifications (MailNotices), told about Jev's answers and changes that decide for all of them. */
+    private val noticeListeners = java.util.concurrent.CopyOnWriteArrayList<NoticeListener>()
+
     private val _state = MutableStateFlow(CategoriesState())
     val state: StateFlow<CategoriesState> = _state.asStateFlow()
 
@@ -255,6 +311,9 @@ class Categories(
                 // sorted, as when the switch here is turned on.
                 val enabled = settings().enabled
                 if (enabled && !enabledSeen.getAndSet(true)) soon(0) else if (!enabled) enabledSeen.set(false)
+                // Categories turned on or off, or one added or removed, here or on another device: notifications
+                // waiting for Jev are decided again. Not for each email's category, which comes with every answer.
+                if ("category" in collections || "setting" in collections) reconsider()
             }
         }
         this.scope.launch {
@@ -364,6 +423,7 @@ class Categories(
             senders = account.list("sender")
                 .mapNotNull { (k, v) -> (v as? JsonObject).text("category")?.takeIf { it in ids }?.let { SenderRule(k, it) } }
                 .sortedWith { a, b -> collator.compare(a.address, b.address) },
+            muted = mutedIds().let { muted -> list.map { it.id }.filter { it in muted } },
             signedIn = account.signedIn,
         )
     }
@@ -388,9 +448,17 @@ class Categories(
 
     /**
      * A new category ([id] null) or changes to one. [inbox] false keeps its mail out of Inbox itself; true shows it,
-     * and the record leaves the field out, as records before it did; null leaves it as it is.
+     * and the record leaves the field out, as records before it did; null leaves it as it is. [notify] turns its
+     * notifications on or off on this phone, apart from the synced record (setNotify), also for a new category.
      */
-    fun saveCategory(id: String? = null, name: TextEdit = TextEdit.Keep, description: TextEdit = TextEdit.Keep, color: String? = null, inbox: Boolean? = null): CategoriesState {
+    fun saveCategory(
+        id: String? = null,
+        name: TextEdit = TextEdit.Keep,
+        description: TextEdit = TextEdit.Keep,
+        color: String? = null,
+        inbox: Boolean? = null,
+        notify: Boolean? = null,
+    ): CategoriesState {
         val list = list()
         val was = id?.let { account.get("category", it) }
         if (id != null && was == null) throw CategoryException("invalid")
@@ -421,7 +489,9 @@ class Categories(
             }
         }
         account.put("category", key, value)
+        val muting = notify != null && mute(key, !notify)
         changed()
+        if (muting) reconsider()
         return state.value
     }
 
@@ -431,6 +501,8 @@ class Categories(
         if (list.size <= 1) throw CategoryException("last")
         account.remove("category", id)
         if (settings().unsure == id) putSettings(unsure = list.first { it.id != id }.id)
+        // Its notifications setting goes with it.
+        mute(id, false)
         changed()
         return state.value
     }
@@ -587,12 +659,19 @@ class Categories(
         for ((acc, messages) in mail.inboxes()) {
             for (m in messages) {
                 val key = key(acc, m)
-                if (account.get("override", key) != null) continue
-                if (!again && synchronized(lock) { key !in redo } && account.get("classification", key) != null) continue
-                out += Item(acc, m, key)
+                if (toSort(key, again)) out += Item(acc, m, key)
             }
         }
         return out.sortedByDescending { it.m.date }
+    }
+
+    /**
+     * Whether a sort takes up an email, by its key: not one a person moved, and not sorted yet, unless it is sorted
+     * again ([again], or still on the re-sort list). [unsorted] and [jevSoon] both go by this.
+     */
+    private fun toSort(key: String, again: Boolean): Boolean {
+        if (account.get("override", key) != null) return false
+        return again || synchronized(lock) { key in redo } || account.get("classification", key) == null
     }
 
     /**
@@ -740,6 +819,8 @@ class Categories(
         var cancelled = false
         val queue = Any()
         val asked = forJev.size
+        // Their notifications wait for these answers (MailNotices), each until its own is in.
+        synchronized(lock) { forJev.forEach { asking += it.key } }
         coroutineScope {
             repeat(JEV_AT_ONCE) {
                 launch(Dispatchers.IO) {
@@ -794,12 +875,18 @@ class Categories(
                         } catch (e: Throwable) {
                             later(item.key)
                             synchronized(queue) { if (stop == null) stop = e }
+                        } finally {
+                            synchronized(lock) { asking -= item.key }
+                            answered(item.key)
                         }
                     }
                 }
             }
         }
         for (item in forJev) later(item.key)
+        // What a stop or a change of settings left in the queue no longer waits for this sort; a failure says so itself
+        // below (jevFailed).
+        if (synchronized(lock) { asking.isNotEmpty().also { asking.clear() } }) reconsider()
         val stillWanted = jevWanted()
         progress { if (it.running) it.copy(running = false, sorted = sorted, waiting = if (stillWanted) waiting + (it.asked - it.answered) else 0, finishedAt = clock.now()) else it }
         if (jevGeneration == generation) {
@@ -856,6 +943,8 @@ class Categories(
             saveLocal()
         }
         changed()
+        // A refused key or TypeSafe busy: notifications waiting for Jev don't wait any longer.
+        reconsider()
         publishActivity()
     }
 
@@ -878,12 +967,87 @@ class Categories(
         changed()
         // Jev off: nothing waits for it any more; a new key: the next sort counts what does.
         if (!j.on) progress { it.copy(waiting = 0) } else publishActivity()
+        reconsider()
         if (j.on) soon(0, user = true)
         return state.value
     }
 
     /** Whether Jev sorts mail on this phone, which the privacy page names. */
     val jevOn: Boolean get() = state.value.jev.on
+
+    // ---- notifications ----
+
+    /** Categories whose new mail sends no notification. On this phone only, like Settings > Notifications. */
+    fun mutedIds(): List<String> = synchronized(lock) { local.muted }
+
+    /** Notifications for a category's new mail on this phone, on or off. */
+    fun setNotify(id: String, on: Boolean): CategoriesState {
+        if (list().none { it.id == id }) throw CategoryException("invalid")
+        val changedNow = mute(id, !on)
+        changed()
+        if (changedNow) reconsider()
+        return state.value
+    }
+
+    /** Puts [id] on or off the muted list, on disk; whether that changed anything. */
+    private fun mute(id: String, muted: Boolean): Boolean = synchronized(lock) {
+        if ((id in local.muted) == muted) return@synchronized false
+        local = local.copy(muted = if (muted) local.muted + id else local.muted - id)
+        saveLocal()
+        true
+    }
+
+    override fun noticeContext(): NoticeContext {
+        val placing = placing()
+        val ids = mutedIds()
+        val muted = placing?.order?.filterTo(LinkedHashSet()) { it in ids }.orEmpty()
+        return NoticeContext(
+            muted = muted,
+            placing = placing,
+            jev = muted.isNotEmpty() && jevKey() != null,
+            again = synchronized(lock) { followUp?.again == true },
+        )
+    }
+
+    /**
+     * 'WAIT' while Jev's answer for the email is still to come; 'MUTE' when its category is muted; else 'SHOW'. Only
+     * while a category is muted does this look at the email at all, so with nothing muted notifications stay at once.
+     */
+    override fun notice(m: MessageSummary, ctx: NoticeContext, jev: Boolean): NoticeDecision {
+        val placing = ctx.placing
+        if (ctx.muted.isEmpty() || placing == null || m.role != FolderRole.INBOX) return NoticeDecision(MailNotice.SHOW)
+        val acc = mail.accounts.firstOrNull { it.id == m.accountId } ?: return NoticeDecision(MailNotice.SHOW)
+        val key = key(acc, m)
+        if (jev && jevSoon(acc, m, key, ctx, placing)) return NoticeDecision(MailNotice.WAIT, key)
+        return NoticeDecision(if (placed(acc, m, key, placing) in ctx.muted) MailNotice.MUTE else MailNotice.SHOW, key)
+    }
+
+    /**
+     * Whether Jev's answer for an email is still to come: the running sort has it for Jev, or the next sort takes it up
+     * ([toSort], as [unsorted] does) and sends it to Jev because the rules aren't sure. A correction or a sender rule
+     * places the email whatever Jev answers; mail without its headers yet waits for them, not for Jev.
+     */
+    private fun jevSoon(acc: Account, m: MessageSummary, key: String, ctx: NoticeContext, placing: Placing): Boolean {
+        if (!ctx.jev) return false
+        if (account.get("override", key) != null) return false
+        val sender = (account.get("sender", lower(m.from.address)) as? JsonObject).text("category")
+        if (sender != null && sender in placing.ids) return false
+        if (synchronized(lock) { key in asking }) return true
+        if (m.signals == null || !toSort(key, ctx.again)) return false
+        return byRules(acc, m, placing.order, placing.unsure).strength != Strength.STRONG
+    }
+
+    override fun addNoticeListener(listener: NoticeListener) {
+        noticeListeners += listener
+    }
+
+    override fun removeNoticeListener(listener: NoticeListener) {
+        noticeListeners -= listener
+    }
+
+    private fun answered(key: String) = noticeListeners.forEach { l -> runCatching { l.answered(key) }.onFailure { AppLog.w(TAG, "notice listener failed", it) } }
+
+    private fun reconsider() = noticeListeners.forEach { l -> runCatching { l.reconsider() }.onFailure { AppLog.w(TAG, "notice listener failed", it) } }
 
     /** Stops everything this started: timers, a running sort, and listening to the account and the mail. */
     fun close() {

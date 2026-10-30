@@ -50,6 +50,10 @@
     <string name="settings_categories_color">Kleur</string>
     <string name="settings_categories_inbox">Tonen in Postvak IN</string>
     <string name="settings_categories_inbox_help">Staat dit uit, dan blijft deze mail uit Postvak IN en telt hij daar niet mee als ongelezen. Je vindt hem onder de categorie bij de mappen, en zoeken vindt hem nog steeds.</string>
+    <string name="settings_categories_notify">Meldingen</string>
+    <string name="settings_categories_notify_help">Toon een melding bij nieuwe mail in deze categorie. Deze keuze blijft op deze telefoon.</string>
+    <string name="settings_categories_notify_blocked">Meldingen staan uit voor alle nieuwe mail, dus ook deze categorie blijft stil. Zet eerst Nieuwe mail aan onder Meldingen in de instellingen.</string>
+    <string name="settings_categories_notify_off">Meldingen uit</string>
     <string name="settings_categories_restore">Tekst van Rukoo gebruiken</string>
     <string name="settings_categories_delete_title">%1$s verwijderen?</string>
     <string name="settings_categories_delete_help">De mail ervan gaat naar de andere categorieën. Afzenderregels ervoor werken niet meer.</string>

@@ -30,9 +30,9 @@ A search covers every category, as it always does, so it still finds this mail. 
 
 ## Notifications
 
-Each category has a **Notifications** switch in its dialog, under Settings → General → Inbox categories. It starts on. Turn it off, and new mail in that category shows no desktop notification; a bell with a line through it marks the category in the list. The switch is set per computer, like Settings → General → Notifications, so a phone and a computer can differ. Rukoo for Android doesn't have it yet.
+Each category has a **Notifications** switch in its dialog, under Settings → General → Inbox categories (on the phone, Settings → Inbox categories). It starts on. Turn it off, and new mail in that category shows no notification; a bell with a line through it marks the category in the list. The switch is set per device, like Settings → General → Notifications, so a phone and a computer can differ.
 
-While a category's notifications are off and Jev is on, the notification for an email the rules aren't sure about waits for Jev and follows the category Jev gives it. After 20 seconds without an answer, the category the email has by then decides. Rukoo decides straight away for mail the rules are sure about, and when Jev is off, waits for TypeSafe or stopped because TypeSafe refused the key. While every category notifies, notifications come at once, as without categories. The taskbar badge still counts all new mail.
+While a category's notifications are off and Jev is on, the notification for an email the rules aren't sure about waits for Jev and follows the category Jev gives it. After 20 seconds without an answer, the category the email has by then decides. Rukoo decides straight away for mail the rules are sure about, and when Jev is off, waits for TypeSafe or stopped because TypeSafe refused the key. While every category notifies, notifications come at once, as without categories. The taskbar badge still counts all new mail. On the phone, mail that waited for Jev joins its account's notification without a second sound, and a background sync waits for it before it ends.
 
 ## Moving mail
 

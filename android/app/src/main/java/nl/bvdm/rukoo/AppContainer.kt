@@ -41,6 +41,7 @@ import nl.bvdm.rukoo.desktop.DesktopLink
 import nl.bvdm.rukoo.desktop.HttpDesktopLink
 import nl.bvdm.rukoo.mail.MailEngine
 import nl.bvdm.rukoo.mail.demo.PreviewMailEngine
+import nl.bvdm.rukoo.mail.sync.MailNotices
 import nl.bvdm.rukoo.mcp.AndroidMcpController
 import nl.bvdm.rukoo.mcp.McpController
 import nl.bvdm.rukoo.mcp.PageOpener
@@ -109,15 +110,20 @@ class AppContainer(context: Context) : AppServices {
 
     override val drafts = DraftStore(File(appContext.filesDir, DraftStore.FILE_NAME))
 
+    // The categories read the engine, so the notifications ask for them only once mail arrives.
+    private val realMail by lazy { nl.bvdm.rukoo.mail.MailModule.create(appContext, appScope, settings, settingsSnapshot, http, categories = { categories }) }
+
     // The preview engine and hub stand in until the real ones land (tracks A and C swap them in here).
     override val mail: MailEngine by lazy {
         if (BuildConfig.USE_PREVIEW_MAIL) {
             PreviewMailEngine(clock, appContext.cacheDir, resources = appContext.resources)
         } else {
-            // The categories read the engine, so the notifications ask for them only once mail arrives.
-            nl.bvdm.rukoo.mail.MailModule.create(appContext, appScope, settings, settingsSnapshot, http, categories = { categories })
+            realMail.engine
         }
     }
+
+    /** New-mail notifications, which may wait for Jev's categories; null with the preview engine, which sends none. */
+    val mailNotices: MailNotices? get() = if (BuildConfig.USE_PREVIEW_MAIL) null else realMail.notices
 
     override val agents: AgentHub by lazy {
         if (BuildConfig.USE_PREVIEW_AGENTS) {
