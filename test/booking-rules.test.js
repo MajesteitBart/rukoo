@@ -38,8 +38,14 @@ test('opened details pass only when every field is plain and matches the booking
   const v = vectors.seal[0];
   const row = { type: v.plaintext.type, bookedStart: v.plaintext.start, bookedEnd: v.plaintext.end };
   const ok = rules.checkGuest(v.plaintextJson, row);
-  assert.deepEqual(ok, { name: 'Jane Doe', email: 'jane@example.com', notes: 'Kickoff', timeZone: 'Europe/Amsterdam', locale: 'en', via: '' });
+  assert.deepEqual(ok, { name: 'Jane Doe', email: 'jane@example.com', notes: 'Kickoff', timeZone: 'Europe/Amsterdam', locale: 'en', via: '', manageKey: v.plaintext.manageKey });
   const bad = (change) => rules.checkGuest(JSON.stringify({ ...v.plaintext, ...change }), row);
+  // A manage key that isn't 43 characters of base64url is left out; the guest's details still pass.
+  for (const manageKey of [undefined, null, 42, '', 'short', `${v.plaintext.manageKey}A`, `${v.plaintext.manageKey.slice(0, 42)}=`, `${v.plaintext.manageKey.slice(0, 42)}/`, `${v.plaintext.manageKey.slice(0, 41)}\n`]) {
+    const guest = bad({ manageKey });
+    assert.equal(guest && guest.name, 'Jane Doe', String(manageKey));
+    assert.equal(guest.manageKey, null, String(manageKey));
+  }
   assert.equal(bad({ name: 'x'.repeat(81) }), null);
   assert.equal(bad({ name: 'Jane\u0007Doe' }), null);
   assert.equal(bad({ name: '' }), null);
@@ -53,6 +59,29 @@ test('opened details pass only when every field is plain and matches the booking
   assert.equal(rules.checkGuest('not json', row), null);
   // A rescheduled booking is checked against the times it was made for.
   assert.ok(rules.checkGuest(v.plaintextJson, { ...row, start: row.bookedStart + 3600000 }));
+});
+
+test("the guest's links are built only from a plain page address, a booking id and a manage key that pass their checks", () => {
+  const id = 'Rf63vMqqWdS0MICDAHKmrw';
+  const key = vectors.seal[0].plaintext.manageKey;
+  // The shapes the manage page links to; server/test/booking-invitation-links.test.js opens them on the server.
+  assert.deepEqual(rules.guestLinks('https://meet.rukoo.io/bart', { id, slug: '30min', key }), {
+    reschedule: `https://meet.rukoo.io/bart/30min?reschedule=${id}&k=${key}`,
+    manage: `https://meet.rukoo.io/bart/booking/${id}?k=${key}`
+  });
+  assert.equal(rules.guestLinks('https://meet.rukoo.io/bart/', { id, slug: '30min', key }).manage, `https://meet.rukoo.io/bart/booking/${id}?k=${key}`);
+  assert.equal(rules.guestLinks('http://127.0.0.1:8787/meet/bart', { id, slug: '30min', key }).manage, `http://127.0.0.1:8787/meet/bart/booking/${id}?k=${key}`);
+  // Without a slug the page has, only the manage page.
+  assert.deepEqual(rules.guestLinks('https://meet.rukoo.io/bart', { id, slug: null, key }), { reschedule: null, manage: `https://meet.rukoo.io/bart/booking/${id}?k=${key}` });
+  assert.equal(rules.guestLinks('https://meet.rukoo.io/bart', { id, slug: 'Bad Slug', key }).reschedule, null);
+  // An address that isn't plain https (or http on this computer), or carries a query, a fragment or text.
+  for (const url of ['', null, 'http://meet.example/bart', 'javascript:alert(1)//', 'ftp://meet.example/bart', 'https://meet.example/bart?x=1', 'https://meet.example/bart#top', 'https://meet.example/bart now', 'https://meet.example/bart\nCall me', 'https://meet.example/"bart"', `https://meet.example/${'a'.repeat(300)}`, 'meet.example/bart']) {
+    assert.equal(rules.guestLinks(url, { id, slug: '30min', key }), null, String(url));
+  }
+  // A booking id or key of the wrong shape.
+  for (const bad of [{ id: 'short', key }, { id: `${id}&x=1`, key }, { id, key: 'short' }, { id, key: `${key}&x` }, { id, key: null }]) {
+    assert.equal(rules.guestLinks('https://meet.rukoo.io/bart', { slug: '30min', ...bad }), null, JSON.stringify(bad));
+  }
 });
 
 test('<acct> is the trimmed, lowercased email hashed, as in the shared vectors', () => {

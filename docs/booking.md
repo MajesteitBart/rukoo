@@ -73,11 +73,15 @@ An event is busy when it shows as busy and you haven't declined it. Invitations 
 A booking becomes an event in the calendar under Add bookings to:
 
 - The title is the type, your name and the guest's: "30 minute meeting: Sanne de Vries and Jane Doe". Rukoo shortens the guest's name to at most four words and 40 characters of letters, spaces, apostrophes, hyphens and periods.
-- The description is the type's description and a line "Booked via" with your link.
+- The description is the type's description, then the guest's two links in the page's language: "Pick another time" and "Cancel booking". They open the guest's own pages for the booking, the same ones they saw after booking.
 - The location comes from the type, or Google Meet.
 - The guest is invited by address. Google, or the CalDAV server, sends the invitation from your account.
 
 The guest's note, the assistant that booked and the guest's time zone stay out of the event, so nothing a guest typed goes out in mail from your address, apart from the shortened name in the title. Rukoo shows them on the event's card, and the note and the assistant in the bookings list too.
+
+The two links carry the key to the booking. Anyone who has them can move or cancel it: the guest, your calendar provider, anyone you add to the event later and anyone the invitation is forwarded to. Opening a link changes nothing; cancelling takes a press on Cancel booking on the page. The links keep working when you or the guest move the booking, because the event keeps its description and the booking keeps its key. Rukoo checks the key and your page's address before it writes them. When either doesn't pass, the event gets neither line and the booking goes through as usual. Rukoo doesn't keep the key in your Rukoo account: it opens it from the guest's sealed details when it makes the event.
+
+Events Rukoo made before it added these links keep their "Booked via" line, because changing them could mail their guests again. The links are text in the description, not buttons: Google or the CalDAV server writes the invitation's mail, and each mail app decides whether an address shows as a link.
 
 When a new booking overlaps an event that came after Rukoo last published your times, Rukoo keeps both and shows a notice with Keep and Cancel booking.
 
@@ -95,7 +99,7 @@ Cancel booking, on the event's card (or `Delete`) or in the bookings list, cance
 
 When you move or resize a booked event in Rukoo, or move it in Google Calendar or another app, the booking moves along and the guest's confirmation page shows the new time. When you change only the length, the booking keeps its own and the card says "Length changed in your calendar". When you delete the event in another app, or the guest declines your calendar's invitation, Rukoo cancels the booking at its next check and shows a notice.
 
-The guest cancels or picks another time from the page they saw after booking, or through the API, and can move a booking twice. Rukoo then moves or removes the event, and your calendar mails the guest.
+The guest cancels or picks another time with the links in the invitation, from the page they saw after booking, or through the API, and can move a booking twice. Rukoo then moves or removes the event, and your calendar mails the guest.
 
 ## Email footer and composer
 
@@ -159,7 +163,7 @@ Deleting your Rukoo account checks your password, then turns the booking page of
 
 ## For guests and their assistants
 
-A booking page is at `https://meet.rukoo.io/<handle>`, and each meeting type at `https://meet.rukoo.io/<handle>/<type>`. The page shows the host, their introduction, the meeting types and the next open times. Pick a day and a time, then fill in your name, email and an optional note. The page is in English and Dutch, shows times in your time zone with a choice of 12 or 24 hours, and works without JavaScript. The page you get after booking shows the time in your zone and the host's, an `.ics` file, Cancel and Pick another time. Keep its address: it carries the key to your booking. The invitation comes from the host's calendar.
+A booking page is at `https://meet.rukoo.io/<handle>`, and each meeting type at `https://meet.rukoo.io/<handle>/<type>`. The page shows the host, their introduction, the meeting types and the next open times. Pick a day and a time, then fill in your name, email and an optional note. The page is in English and Dutch, shows times in your time zone with a choice of 12 or 24 hours, and works without JavaScript. The page you get after booking shows the time in your zone and the host's, an `.ics` file, Cancel and Pick another time. Keep its address: it carries the key to your booking. The invitation comes from the host's calendar and has the same two links, so anyone you forward it to can move or cancel the booking too.
 
 Assistants have four ways in, all English:
 

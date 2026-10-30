@@ -39,12 +39,14 @@ Settings → Rukoo account → **What's stored and shared** shows this for the s
 | --- | --- |
 | Whoever runs the server | Your email address, your device names and platforms, when each device last connected, and your records, encrypted. While your booking page is on, also what the page publishes and the bookings made on it |
 | The hosting company (Cloudflare for the server in this repository) | The same, plus IP addresses in its request logs |
-| Your mail providers | Nothing from the account |
+| Your mail providers | Nothing from the account. A booking page's events are in your calendar, and they hold the guest's links to move or cancel the booking (see below) |
 | Anyone else | Nothing. Rukoo uses no analytics, advertising or tracking services |
 
 The server sees how many records you have, how large they are and when they change. It can't see your categories, your corrections, which email went where or anything in your mail. Your booking page's settings, its key pair and the record of which event each booking became are records too, encrypted like the rest.
 
 Turning a booking page on changes what the server sees, because it has to offer times and take bookings while your computers are off. It then keeps your name, introduction, time zone and meeting types, your open hours and the busy times within them (to the quarter hour, without titles), and each booking's time, type and status, readable. A guest's name, email, note and assistant name pass through the server readable at the moment of booking. The server then seals them to a key only your devices hold and keeps only that sealed copy, so a later leak of its storage doesn't reveal them. The operator, or someone who broke into the server at that moment, could read them then. [Booking page](booking.md#what-the-server-sees-and-keeps) has the details.
+
+Each booking also gives the guest a key to move or cancel it. The server keeps only a hash of it, and your Rukoo account doesn't hold it. Your computer opens it from the sealed details and puts it in the booking's event as two links, so your calendar provider gets it too, and so does everyone who sees the invitation: the guest, people you add to the event later and anyone it is forwarded to. Any of them can move or cancel the booking. [Booking page](booking.md#where-bookings-go) says more.
 
 Cloudflare is a company in the United States. The server in this repository keeps its data in the EU by default (`JURISDICTION` in `server/wrangler.jsonc`), but as a US company Cloudflare falls under US law, also for data stored in the EU. The page in Settings shows where the server you use keeps its data.
 

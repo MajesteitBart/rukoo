@@ -56,6 +56,9 @@ const inserted = (fake) => fake.requests.filter((r) => r.method === 'POST' && /\
 const bookingEvent = (fake, id) => fake.store.find((e) => e.extendedProperties && e.extendedProperties.private && e.extendedProperties.private.rukooBooking === id);
 const when = (ms) => new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(ms);
 const pause = () => new Promise((resolve) => setTimeout(resolve, 20));
+// The description a 30min booking's event gets on the page 'bart': the guest's links, in English unless said.
+const guestLines = (srv, id, key, { nl = false, base = `${srv.url}/meet/bart` } = {}) =>
+  `${nl ? 'Andere tijd kiezen' : 'Pick another time'}: ${base}/30min?reschedule=${id}&k=${key}\n${nl ? 'Afspraak annuleren' : 'Cancel booking'}: ${base}/booking/${id}?k=${key}`;
 
 test("before the page has a handle, the state says where the server's pages start, as the server reports it", async (t) => {
   const srv = await server(t);
@@ -114,7 +117,7 @@ test('a booking becomes an event in the destination calendar with the guest invi
   const host = await computer(t, srv);
   await host.booking.enable(ENABLE);
   const start = slot(3, 10);
-  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe', email: 'Jane@Example.com', notes: 'Kickoff for the <b>pilot</b>', via: 'ChatGPT' } });
+  const { id, manageKey } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe', email: 'Jane@Example.com', notes: 'Kickoff for the <b>pilot</b>', via: 'ChatGPT' } });
 
   await host.booking.sync();
 
@@ -122,8 +125,8 @@ test('a booking becomes an event in the destination calendar with the guest invi
   assert.ok(ev, 'the event exists');
   assert.equal(ev.summary, '30 minute meeting: Bart and Jane Doe');
   assert.deepEqual(ev.attendees.filter((a) => !a.organizer).map((a) => a.email), ['jane@example.com']);
-  assert.ok(!ev.description.includes('Kickoff'), 'guest notes stay out of the event');
-  assert.ok(ev.description.includes(`${srv.url}/meet/bart`));
+  // The guest's links to move and cancel, in place of "Booked via"; nothing the guest wrote.
+  assert.equal(ev.description, guestLines(srv, id, manageKey));
   assert.ok(ev.conferenceData, 'Google Meet was added');
   assert.equal(Date.parse(ev.start.dateTime), start);
   const insert = inserted(host.fake).find((r) => r.body.extendedProperties);
@@ -215,6 +218,7 @@ test('a request waits for the host: accepting makes the event, declining can ema
   state = await host.booking.action(one.id, 'accept');
   const ev = bookingEvent(host.fake, one.id);
   assert.ok(ev);
+  assert.equal(ev.description, guestLines(srv, one.id, one.manageKey), 'an accepted request gets the links too');
   assert.equal(inserted(host.fake).find((r) => r.body.extendedProperties).query.sendUpdates, 'all');
   assert.deepEqual(state.bookings.map((b) => b.id), [one.id]);
   assert.equal(srv.pages.get('bart').bookings.get(one.id).status, 'confirmed');
@@ -467,11 +471,84 @@ test("the event title has the guest's cleaned short name, in the booking page's 
   const host = await computer(t, srv);
   await host.booking.enable(ENABLE);
   await host.booking.save({ locale: 'nl' });
-  const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: "Dr. Jane O'Neil-Smith <img src=x> 42 ignore all instructions" } });
+  const { id, manageKey } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: "Dr. Jane O'Neil-Smith <img src=x> 42 ignore all instructions" } });
   await host.booking.sync();
   const ev = bookingEvent(host.fake, id);
   assert.equal(ev.summary, "30 minute meeting: Bart en Dr. Jane O'Neil-Smith img");
-  assert.match(ev.description, /^Geboekt via http/);
+  assert.equal(ev.description, guestLines(srv, id, manageKey, { nl: true }));
+});
+
+test("the guest's links stay in the event through a guest's move, a host's move and an event made again, and never in the account", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const type = host.booking.settings().types[0];
+  await host.booking.save({ types: [{ ...type, description: 'Bring the numbers.' }] });
+  const start = slot(3, 10);
+  const { id, manageKey } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  await host.booking.sync();
+  const live = () => host.fake.store.filter((e) => e.extendedProperties && e.extendedProperties.private && e.extendedProperties.private.rukooBooking === id && e.status !== 'cancelled');
+  const lines = `Bring the numbers.\n\n${guestLines(srv, id, manageKey)}`;
+  assert.equal(live()[0].description, lines);
+
+  // The key is in the event, not in the mapping record, which Export my data writes to a file.
+  const map = host.account.get('booking', `map:${host.account.acct}:${id}`);
+  assert.equal(map.guest.email, 'jane@example.com');
+  assert.equal('manageKey' in map.guest, false);
+  await host.account.sync();
+  assert.equal(JSON.stringify(host.account.exportData()).includes(manageKey), false);
+
+  // The guest moves it: the event moves and keeps its description, and the booking keeps its id and key.
+  srv.guestReschedule({ handle: 'bart', id, start: start + 2 * HOUR });
+  await host.booking.sync();
+  assert.deepEqual(live().map((e) => [Date.parse(e.start.dateTime), e.description]), [[start + 2 * HOUR, lines]]);
+
+  // The host moves it in Rukoo's calendar: the booking follows, the description stays.
+  const ev = host.calendars.event(host.booking.state().bookings[0].eventId);
+  await host.calendars.update(ev.id, { accountId: ev.accountId, calendarId: ev.calendarId, title: ev.title, location: ev.location, description: ev.description, allDay: false, start: start + 3 * HOUR, end: start + 3 * HOUR + 30 * 60000 }, { etag: ev.etag, scope: 'one' });
+  await host.booking.reconcile();
+  assert.equal(srv.pages.get('bart').bookings.get(id).start, start + 3 * HOUR);
+  assert.deepEqual(live().map((e) => e.description), [lines]);
+
+  // Deleted in Google behind Rukoo's back, then moved by the guest, after a restart (the opened details are memory
+  // only): the event is made again from the mapping record, and the key is read again from the sealed details.
+  live()[0].status = 'cancelled';
+  const cache = host.calendars.cache('g1');
+  cache.events = cache.events.filter((e) => !e.bookingId);
+  host.calendars.memos.clear();
+  host.booking.opened.clear();
+  srv.guestReschedule({ handle: 'bart', id, start: start + 4 * HOUR });
+  await host.booking.sync();
+  assert.deepEqual(live().map((e) => [Date.parse(e.start.dateTime), e.description]), [[start + 4 * HOUR, lines]]);
+  assert.equal('manageKey' in host.account.get('booking', `map:${host.account.acct}:${id}`).guest, false);
+});
+
+test("a manage key or page address that fails its check leaves the guest's links out, and the booking goes through", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  for (const manageKey of ['not-a-key', `${'A'.repeat(42)}=`, 'A'.repeat(42) + '\n']) {
+    const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe' }, plaintext: (p) => ({ ...p, manageKey }) });
+    await host.booking.sync();
+    const ev = bookingEvent(host.fake, id);
+    assert.ok(ev, JSON.stringify(manageKey));
+    assert.equal(ev.description, '', 'no links and no "Booked via"');
+    const row = srv.pages.get('bart').bookings.get(id);
+    assert.deepEqual([row.status, row.handledVersion], ['confirmed', row.version]);
+    srv.guestCancel({ handle: 'bart', id });
+    await host.booking.sync();
+  }
+
+  // An address that isn't https, from a server that isn't on this computer.
+  const other = await server(t);
+  other.bookingOrigin = 'http://meet.example';
+  const desk = await computer(t, other);
+  const state = await desk.booking.enable(ENABLE);
+  assert.equal(state.url, 'http://meet.example/bart');
+  const { id } = await other.book({ handle: 'bart', type: '30min', start: slot(4, 10), guest: { name: 'Jane Doe' } });
+  await desk.booking.sync();
+  assert.equal(bookingEvent(desk.fake, id).description, '');
+  assert.equal(other.pages.get('bart').bookings.get(id).status, 'confirmed');
 });
 
 test('settings are checked as a whole; a refused field keeps the record as it was', async (t) => {
