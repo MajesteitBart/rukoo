@@ -380,6 +380,50 @@ test("the kept meeting is on disk before the calendar write starts", async (t) =
   assert.equal(mapOf(host, id).video.id, 'm1');
 });
 
+test('while the disk refuses the kept meeting, the event waits, also on a retry that reuses it', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await pageWith(host, ZOOM);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe' } });
+  const flush = host.account.flush.bind(host.account);
+  host.account.flush = () => false;
+  await host.booking.sync();
+  await host.booking.sync();
+  assert.equal(bookingEvent(host.fake, id), undefined, 'no event while the meeting is only in memory');
+  assert.equal(srv.pages.get('bart').bookings.get(id).handledVersion, 0, 'tried again');
+  assert.equal(ops(host.video, 'create').length, 1, 'the retry reuses the kept meeting');
+  assert.deepEqual(host.booking.state().notices.filter((n) => n.kind === 'video'), [], 'not a booking without a link');
+  host.account.flush = flush;
+  await host.booking.sync();
+  assert.equal(bookingEvent(host.fake, id).location, 'https://us05web.zoom.us/j/8101?pwd=p1');
+  assert.equal(mapOf(host, id).video.id, 'm1');
+  assert.equal(keptOf(host, id), undefined);
+  assert.equal(ops(host.video, 'create').length, 1);
+});
+
+test("a meeting the service couldn't delete keeps its notice when the booking's other meeting is deleted", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await pageWith(host, ZOOM);
+  const start = slot(3, 10);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  await host.booking.sync();
+  // A second meeting kept for the booking besides the one in its mapping record.
+  host.account.put('booking', `meeting:${host.account.acct}:${id}`, { service: 'zoom', id: 'm9', url: 'https://us05web.zoom.us/j/8109?pwd=p9', start, end: start + 30 * 60000 });
+  const remove = host.video.remove;
+  host.video.remove = async (ref) => {
+    if (ref.id === 'm1') {
+      host.video.calls.push({ op: 'remove', ref });
+      throw Object.assign(new Error("Rukoo couldn't reach Zoom."), { video: true, code: 'network' });
+    }
+    return remove(ref);
+  };
+  await host.booking.action(id, 'cancel', { notify: true });
+  assert.deepEqual(ops(host.video, 'remove').map((x) => x.ref.id), ['m1', 'm9']);
+  assert.equal(keptOf(host, id), undefined, 'the deleted one is forgotten');
+  assert.equal(host.booking.state().notices.find((n) => n.id === `video:${id}`).title, 'Zoom meeting not deleted');
+});
+
 test("a host's move moves the meeting when handled fails, and the mapping keeps the meeting's own time", async (t) => {
   const srv = await server(t);
   const host = await computer(t, srv);

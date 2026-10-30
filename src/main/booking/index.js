@@ -1444,6 +1444,10 @@ class Booking extends EventEmitter {
       if (!ev) {
         const input = this.eventInput(row, guest, settings, dest);
         meeting = await this.meetingFor(row, guest, settings, input);
+        // The kept meeting is on disk before the calendar write starts, not with the account's own save a second
+        // later: after a crash in between, the retry would make a second meeting. When the disk refuses, the event
+        // waits for the next try.
+        if (meeting && !this.account.flush()) throw Object.assign(new Error(''), { code: 'not_saved' });
         // The booking's meeting is its one link, also when the type has used Google Meet since.
         if (meeting) delete input.addMeet;
         ev = await this.after(this.calendars.create(withMeeting(input, meeting && meeting.ref, { locale: settings.locale, name: videoName(meeting && meeting.ref) }), { notify: row.notify, bookingId: row.id, uid: row.uid }));
@@ -1563,12 +1567,10 @@ class Booking extends EventEmitter {
     return { ref: refOf(v), start: v.start, end: v.end };
   }
 
-  // Written to disk at once, not with the account's own save a second later: a crash before the calendar write must
-  // not lose the only record of a meeting the service has.
+  // createEvent writes it to disk before the calendar write.
   keepMeeting(id, { ref, start, end }) {
     this.live();
     this.account.put('booking', this.keptKey(id), { ...refOf(ref), start, end });
-    this.account.flush();
   }
 
   // Only once the meeting is in the booking's mapping record, or the service deleted it: otherwise nothing would know
@@ -1630,21 +1632,25 @@ class Booking extends EventEmitter {
   }
 
   // A booking that ended takes its meeting with it: the one in its mapping record, and one kept for an event that
-  // never got written. One the service couldn't delete stays, with a notice.
+  // never got written. One the service couldn't delete stays, with a notice; the booking's other video notices go
+  // only once every meeting is deleted.
   async endMeeting(row, map, name) {
     if (!this.video) return;
     const kept = this.keptMeeting(row.id);
-    const refs = [videoOf(map), kept].filter(Boolean).map((m) => m.ref);
-    for (const ref of refs.filter((r, i) => refs.findIndex((x) => sameMeeting(x, r)) === i)) {
+    const all = [videoOf(map), kept].filter(Boolean).map((m) => m.ref);
+    const refs = all.filter((r, i) => all.findIndex((x) => sameMeeting(x, r)) === i);
+    let failed = null;
+    for (const ref of refs) {
       try {
         await this.after(this.video.remove(ref));
         this.dropKept(row.id, ref);
-        this.dropNotices(row.id, ['video']);
       } catch (err) {
         unlessStale(err);
-        this.addNotice('video', row, name, videoProblem(ref.service, 'delete', err));
+        failed = failed || { ref, err };
       }
     }
+    if (failed) this.addNotice('video', row, name, videoProblem(failed.ref.service, 'delete', failed.err));
+    else if (refs.length) this.dropNotices(row.id, ['video']);
   }
 
   // The video services that can't do their part on this computer, because they aren't connected here or the sign-in
