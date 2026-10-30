@@ -500,16 +500,21 @@ fn a_recorder_that_holds_the_meeting_without_answering_keeps_it_live() {
     let dir = TempDir::new("busy");
     let data = dir.join("data");
     let mut timing = timing();
-    // Room to take the timeline between the kill and the first restart.
-    timing.backoff = vec![Duration::from_millis(1_500); 3];
+    // Room to take the timeline between the kill and the first restart; the later ones are
+    // quick, so giving up would come soon.
+    timing.backoff = [1_500, 100, 100]
+        .into_iter()
+        .map(Duration::from_millis)
+        .collect();
     let (c, changes) = controller(&data, timing);
     let id = c.start(StartArgs::default(), StartedBy::Voice).unwrap();
     wait_clock(&c, 500);
     kill(recorder_pid(&data, &id));
     let held = hold_timeline(&data, &id);
 
-    // Three restarts, all refused as busy, used to end the meeting as interrupted.
-    std::thread::sleep(Duration::from_secs(8));
+    // Three restarts, all refused as busy, used to end the meeting as interrupted after about
+    // four seconds.
+    std::thread::sleep(Duration::from_secs(7));
     assert_eq!(
         count(&changes, |c| matches!(c, Change::Ended { .. })),
         0,
@@ -518,8 +523,9 @@ fn a_recorder_that_holds_the_meeting_without_answering_keeps_it_live() {
     );
     assert_eq!(c.current().map(|r| r.id), Some(id.clone()));
 
+    // Stop finds the meeting held for a few seconds, then free.
     let release = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(5));
         drop(held);
     });
     c.stop(None, "user").unwrap();
