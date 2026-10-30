@@ -2555,6 +2555,26 @@
     "message": "What you have written will be lost.",
     "description": "composer > discard. src/renderer/composer.js (discard)"
   },
+  "composer.edit.cut": {
+    "message": "Cut",
+    "description": "Menu item: cuts the selected text to the clipboard. Context menu on the message text in the composer (right-click, the context menu key or Shift+F10). src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.copy": {
+    "message": "Copy",
+    "description": "Menu item: copies the selected text to the clipboard. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.paste": {
+    "message": "Paste",
+    "description": "Menu item: pastes what is on the clipboard, with its formatting. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.pastePlain": {
+    "message": "Paste as plain text",
+    "description": "Menu item: pastes the clipboard's text without its formatting, so it takes on the style of the text around it. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.selectAll": {
+    "message": "Select all",
+    "description": "Menu item: selects all of the message text. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
   "composer.errors.autosave": {
     "message": "Autosave failed",
     "description": "composer > errors. src/renderer/composer.js (saveDraft)"
@@ -2710,6 +2730,14 @@
   "composer.send.noSubjectTitle": {
     "message": "No subject",
     "description": "composer > send. src/renderer/composer.js (send)"
+  },
+  "composer.spelling.add": {
+    "message": "Add to dictionary",
+    "description": "Menu item: adds the right-clicked misspelled word to the spell checker's dictionary, so it is no longer underlined. Context menu on a misspelled word in the composer, under the spelling suggestions. src/renderer/editmenu.js (open)"
+  },
+  "composer.spelling.none": {
+    "message": "No suggestions",
+    "description": "Disabled menu row where the spelling suggestions go, when the spell checker has none for the right-clicked misspelled word. Context menu on a misspelled word in the composer. src/renderer/editmenu.js (open)"
   },
   "composer.status.defaultAccount": {
     "message": "{address} is now the default account",

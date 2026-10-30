@@ -2,8 +2,9 @@ import { t, localize, translate, getLanguage } from './i18n.js';
 // The message editor. It runs inline in the main window's reading pane, or on its own in a
 // compose window (compose.js). Either way it saves drafts as you write.
 import { icons } from './icons.js';
-import { api, esc, $, toast, dialog, confirmDialog, showMenu, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN } from './ui.js';
+import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN } from './ui.js';
 import { fillFrame } from './mailframe.js';
+import { editMenu } from './editmenu.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
 import { FREE_LENGTHS, FREE_RANGES, pcZone, freeRange, zoneOptions, duration } from './calendar-shared.js';
 import { mountMentions, outgoingHtml } from './mentions.js';
@@ -926,7 +927,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const placeFloatBar = () => {
     const sel = window.getSelection();
     const range = sel.rangeCount ? sel.getRangeAt(0) : null;
-    if (!range || range.collapsed || !editor.contains(range.commonAncestorContainer) || closing || closed) {
+    // An open menu keeps it hidden: the selection a right-click makes can report after the menu has opened.
+    if (!range || range.collapsed || !editor.contains(range.commonAncestorContainer) || closing || closed || menuOpen()) {
       floatBar.hidden = true;
       return;
     }
@@ -954,6 +956,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     placeFloatBar();
   });
   $('.composer-scroll', page).addEventListener('scroll', () => (floatBar.hidden = true));
+  // Right-click in the text: spelling suggestions, cut, copy and paste. A right-click on a misspelled word selects it,
+  // which brings up the formatting bar; the menu hides it again.
+  cleanups.push(editMenu(editor, { onOpen: () => (floatBar.hidden = true) }));
 
   // ----- clicks -----
 

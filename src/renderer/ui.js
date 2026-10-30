@@ -208,6 +208,9 @@ export function runToastAction() {
 
 let openMenu = null;
 let menuReturn = null;
+// How many menus have opened so far. A menu that waits for an answer compares it, so a menu that opened and closed in
+// between still counts as newer.
+let menusOpened = 0;
 
 // What finds the anchor's copy after a redraw: its id, else its data attributes, which say what a button does (the
 // data-i18n ones only name its label), else its tag and classes, as the mail frame has nothing else.
@@ -256,6 +259,7 @@ export function closeMenu({ refocus = false } = {}) {
 }
 
 export const menuOpen = () => Boolean(openMenu);
+export const menuCount = () => menusOpened;
 
 // items: [{ label, sub, action, icon, shortcut, danger, checked, disabled }] or { separator: true } or { heading }.
 // sub is an optional quieter second line under the label, such as an account's address under its name.
@@ -319,6 +323,7 @@ export function showMenu(anchor, items, { above = false, at = null, align = 'rig
     menu.classList.add('scrolls');
   }
   openMenu = menu;
+  menusOpened++;
   menuReturn = returnPoint(anchor);
   menu.addEventListener('keydown', (e) => {
     const buttons = [...menu.querySelectorAll('button:not(:disabled)')];
