@@ -374,6 +374,56 @@ for (const [button, kept] of [["Don't save", false], ['Save', true]]) {
   });
 }
 
+// A downloaded update (main's installer.js) whose installer only writes to the quit log.
+async function updateReady() {
+  await app.evaluate(({}, file) => {
+    const fs = process.mainModule.require('fs');
+    global.__semUpdates.available = { version: '9.9.9', name: 'v9.9.9', url: 'https://github.com/MajesteitBart/rukoo/releases/tag/v9.9.9', feed: 'https://github.com/MajesteitBart/rukoo/releases/download/v9.9.9/' };
+    Object.assign(global.__semInstaller, {
+      kind: 'nsis',
+      status: 'ready',
+      version: '9.9.9',
+      updater: { install: (silent, restart) => (fs.appendFileSync(file, `install ${silent ? 'silent' : 'asking'}${restart ? ' restart' : ''}\n`), true) }
+    });
+  }, quitLog);
+}
+
+test('Restart to update asks about a draft first: Cancel installs nothing, Save installs after every window has closed', async () => {
+  await inlineDraft('Before the update', 'Some words');
+  await watchQuit();
+  await updateReady();
+  await win.evaluate(() => window.mail.call('updatesInstall'));
+  await expect(win.locator('.scrim')).toContainText('Save draft?');
+  await win.click('.scrim .buttons button:text-is("Cancel")');
+  await expect(win.locator('.composer .editor')).toContainText('Some words');
+  await win.waitForTimeout(1000);
+  expect(running).toBe(true);
+  expect(fs.readFileSync(quitLog, 'utf8')).not.toContain('install');
+
+  // Restart again, and keep the draft this time.
+  fs.rmSync(quitLog, { force: true });
+  await win.evaluate(() => window.mail.call('updatesInstall'));
+  await expect(win.locator('.scrim')).toContainText('Save draft?');
+  await answerAndQuit(win, 'Save');
+  expect(await quitEvents()).toEqual([...QUIT_AFTER_QUESTION, 'install silent restart']);
+  expect(savedDrafts()).toContain('Before the update');
+});
+
+test('a plain quit installs a downloaded update without restarting; switched back to Stable, it installs nothing', async () => {
+  await watchQuit();
+  await updateReady();
+  // Back on Stable, nothing is offered any more; the downloaded nightly stays put.
+  await app.evaluate(() => (global.__semUpdates.available = null));
+  await trayMenu('quit');
+  expect(await quitEvents()).not.toContain('install silent');
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await watchQuit();
+  await updateReady();
+  await trayMenu('quit');
+  expect((await quitEvents()).at(-1)).toBe('install silent');
+});
+
 test('a save that fails during a quit keeps Rukoo running with the draft', async () => {
   await inlineDraft('Cannot be saved', 'Some words');
   await app.evaluate(() => {
