@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,8 @@ pub(crate) struct Core {
     /// What Settings > Rukoo last showed, to tell when it changes.
     rukoo: Mutex<Value>,
     pub settings_seq: AtomicU64,
+    /// Settings states go out one at a time, each built after its `seq` was given.
+    emitting: Mutex<()>,
     /// The engine itself, for work that outlives a call: set once by `start_with`.
     this: OnceLock<Weak<Core>>,
 }
@@ -70,6 +72,7 @@ impl Core {
             last_chime: Mutex::new(None),
             rukoo: Mutex::new(Value::Null),
             settings_seq: AtomicU64::new(1),
+            emitting: Mutex::new(()),
             this: OnceLock::new(),
         }
     }
@@ -175,6 +178,10 @@ impl Core {
             // Decision 10: transcription waited for this; it needn't wait for the next poll.
             self.meetings.wake();
         }
+        // Keep audio applies to meetings started from now on; each keeps the choice it began with.
+        self.meetings
+            .library()
+            .set_retention(new.meetings_retention);
         let before = looks(&self.opts, &self.svc, old);
         let after = looks(&self.opts, &self.svc, new);
         if before != after || old.pill_hide_from_capture != new.pill_hide_from_capture {
@@ -183,11 +190,14 @@ impl Core {
         }
     }
 
-    /// Sends the whole Settings state with a new `seq`.
+    /// Sends the whole Settings state with a new `seq`. One at a time: a state is built after its
+    /// `seq` is given and sent before the next one is, so a state built from older Settings never
+    /// carries the newest `seq` (API.md, `seq`). Callers hold none of the locks the state reads.
     pub fn settings_changed(&self) {
         if self.shutting_down() {
             return;
         }
+        let _emitting = lock(&self.emitting);
         self.settings_seq.fetch_add(1, Ordering::SeqCst);
         self.sink.settings(crate::settings::state(self));
     }
@@ -265,7 +275,7 @@ impl Core {
         match change {
             Change::Started { id, at_ms } => {
                 self.pill
-                    .update(|p, now| p.meeting(MeetingPhase::Recording, at_ms, now));
+                    .update(|p, now| p.meeting(&id, MeetingPhase::Recording, at_ms, now));
                 self.follow(&id);
                 self.meeting_changed();
             }
@@ -275,18 +285,18 @@ impl Core {
                 } else {
                     MeetingPhase::Recording
                 };
-                self.pill.update(|p, now| p.meeting(phase, at_ms, now));
+                self.pill.update(|p, now| p.meeting(&id, phase, at_ms, now));
                 self.follow(&id);
                 self.meeting_changed();
             }
-            Change::Paused { at_ms, .. } => {
+            Change::Paused { id, at_ms } => {
                 self.pill
-                    .update(|p, now| p.meeting(MeetingPhase::Paused, at_ms, now));
+                    .update(|p, now| p.meeting(&id, MeetingPhase::Paused, at_ms, now));
                 self.meeting_changed();
             }
-            Change::Resumed { at_ms, .. } => {
+            Change::Resumed { id, at_ms } => {
                 self.pill
-                    .update(|p, now| p.meeting(MeetingPhase::Recording, at_ms, now));
+                    .update(|p, now| p.meeting(&id, MeetingPhase::Recording, at_ms, now));
                 self.meeting_changed();
             }
             Change::Clock { at_ms, mic_ok, .. } => {
@@ -297,9 +307,9 @@ impl Core {
                 self.rukoo_changed();
             }
             Change::Restarted { .. } => {}
-            Change::Ended { at_ms, .. } => {
+            Change::Ended { id, at_ms, .. } => {
                 self.pill
-                    .update(|p, now| p.meeting(MeetingPhase::Processing, at_ms, now));
+                    .update(|p, now| p.meeting(&id, MeetingPhase::Processing, at_ms, now));
                 self.meeting_changed();
             }
             Change::Finalized { id } => {
@@ -336,7 +346,9 @@ impl Core {
         }
     }
 
-    /// Removes meeting audio whose retention ran out (Settings > Meetings > Keep audio).
+    /// Removes meeting audio whose retention ran out. Each meeting keeps the Settings > Meetings >
+    /// Keep audio it started with; the current choice counts only for meetings from before Voice
+    /// stored it.
     pub fn sweep(&self) {
         let removed = self.meetings.sweep(self.config().meetings_retention);
         if !removed.is_empty() {
@@ -361,10 +373,30 @@ impl Core {
         self.meetings.shutdown();
         self.pill.update(|p, _| p.clear());
         self.pill.stop();
-        self.svc.speech.shutdown();
+        // A meeting window that ignored its shutdown can still hold the local worker while the
+        // model loads (up to 180 s) or a window transcribes. Quitting waits for it only so long:
+        // Windows ends the worker with the app, because it runs in a kill-on-close job.
+        let speech = Arc::clone(&self.svc.speech);
+        let (stopped, wait) = mpsc::channel();
+        let stopping = thread::Builder::new()
+            .name("speech-shutdown".into())
+            .spawn(move || {
+                speech.shutdown();
+                let _ = stopped.send(());
+            });
+        match stopping {
+            Ok(_) => {
+                let _ = wait.recv_timeout(SPEECH_SHUTDOWN_WAIT);
+            }
+            Err(_) => self.svc.speech.shutdown(),
+        }
         self.svc.input.wait_for_clipboard_restore();
     }
 }
+
+/// How long quitting waits for the local model to stop. Longer than its own 2 s quit grace, so a
+/// worker that is merely idle always gets to quit cleanly.
+const SPEECH_SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 
 /// How often the engine looks at meeting outcomes and at Rukoo's connection.
 const WATCH_POLL: Duration = Duration::from_secs(1);
@@ -398,11 +430,16 @@ pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
             if stored.event != voice_protocol::events::MEETING_STATE {
                 continue;
             }
+            let Some(id) = stored.meeting.as_deref() else {
+                continue;
+            };
             let at = stored.data["at"].as_u64().unwrap_or(0);
+            // A meeting can record while an earlier one still transcribes: these outcomes are
+            // the earlier one's, and the pill keeps showing the one that records.
             match stored.data["state"].as_str() {
                 Some("failed") => {
                     core.pill
-                        .update(|p, now| p.meeting(MeetingPhase::Failed, at, now));
+                        .update(|p, now| p.meeting(id, MeetingPhase::Failed, at, now));
                     let reason = stored.data["reason"].as_str().unwrap_or_default();
                     core.notify(
                         crate::meetings::controller::NOTIFY_MEETING,
@@ -410,7 +447,7 @@ pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
                     );
                 }
                 Some("done") => {
-                    core.pill.update(|p, _| p.meeting_gone());
+                    core.pill.update(|p, _| p.meeting_gone(id));
                     // "After transcription" retention removes the audio now.
                     core.sweep();
                 }

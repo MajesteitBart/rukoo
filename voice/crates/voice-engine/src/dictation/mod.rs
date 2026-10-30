@@ -22,11 +22,13 @@ use voice_input::{
     HotkeyConfig, HotkeyEvent, HotkeyPoller, InputError, InsertMode, Key, Mode, PushToTalk,
     TextTarget,
 };
+use voice_recorder::meeting::RecorderFile;
 
 use self::errors::Step;
 use self::level::LevelMeter;
 use crate::api::{Activity, PillPhase};
 use crate::engine::Core;
+use crate::meetings::tap::{self, TapEnd};
 use crate::pill::{self, notices};
 use crate::services::{AudioSink, MicStream};
 
@@ -43,6 +45,8 @@ const REWRITE_SETTLE: Duration = Duration::from_millis(50);
 /// The longest an insertion waits for the user to let go of a hotkey.
 const DEFER_LIMIT: Duration = Duration::from_secs(300);
 const DEFER_POLL: Duration = Duration::from_millis(20);
+/// How often a dictation tries again to tell a restarting meeting recorder about itself.
+const MARK_RETRY: Duration = Duration::from_millis(100);
 
 pub(crate) struct Dictation {
     ptt: Mutex<PushToTalk>,
@@ -63,8 +67,8 @@ struct Recording {
     stream: Option<Box<dyn MicStream>>,
     captured: Arc<Mutex<Captured>>,
     selection: Arc<Selection>,
-    /// The meeting whose recorder was told about this dictation.
-    meeting: Option<String>,
+    /// The meeting recorder that was told about this dictation; `end` goes there.
+    marked: Option<RecorderFile>,
 }
 
 struct Captured {
@@ -282,18 +286,15 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         closed: false,
     }));
     let make_sink = || audio_sink(Arc::downgrade(core), id, Arc::clone(&captured));
-    let mut meeting = None;
-    let opened = match core.meetings.open_tap(make_sink()) {
-        Some(Ok(stream)) => {
-            meeting = core.meetings.controller.dictation("start");
-            Ok(stream)
-        }
+    let on_end = tap_ended(core, id, Arc::clone(&captured));
+    let opened = match core.meetings.open_tap(make_sink(), on_end) {
+        Some(Ok(stream)) => Ok(stream),
         // The recorder's tap failed: dictation still works on its own capture.
         Some(Err(_)) | None => core.svc.microphone.open(make_sink()),
     };
     match opened {
         Ok(stream) => {
-            *lock(&this.mic_error) = None;
+            let recovered = lock(&this.mic_error).take().is_some();
             *lock(&this.recording) = Some(Recording {
                 id,
                 mode,
@@ -301,8 +302,13 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
                 stream: Some(stream),
                 captured,
                 selection,
-                meeting,
+                marked: None,
             });
+            mark(core, id);
+            if recovered {
+                // Settings shows "no microphone" until it hears otherwise.
+                core.settings_changed();
+            }
         }
         Err(message) => {
             let first_failure = lock(&this.mic_error).replace(message.clone()).is_none();
@@ -327,6 +333,115 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
             }
         }
     }
+}
+
+/// Tells the meeting that records the microphone that this dictation is on it (decision 9), so
+/// Rukoo's agent knows these words weren't said in the call. That holds whatever the dictation
+/// reads from: the recorder's tap, or Voice's own capture when the tap failed or the recorder
+/// restarts. While it restarts, a thread tries again until the recorder answers or the key is up.
+fn mark(core: &Arc<Core>, id: u64) {
+    if try_mark(core, id) != Marking::Later {
+        return;
+    }
+    let weak = Arc::downgrade(core);
+    let _ = thread::Builder::new()
+        .name("dictation-mark".into())
+        .spawn(move || loop {
+            thread::sleep(MARK_RETRY);
+            let Some(core) = weak.upgrade() else {
+                return;
+            };
+            if core.shutting_down() || try_mark(&core, id) != Marking::Later {
+                return;
+            }
+        });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Marking {
+    /// Marked, or nothing to mark: no meeting records the microphone, or the key is up.
+    Done,
+    /// A meeting records the microphone but its recorder can't be told yet.
+    Later,
+}
+
+fn try_mark(core: &Core, id: u64) -> Marking {
+    let this = &core.dictation;
+    let pending = lock(&this.recording)
+        .as_ref()
+        .is_some_and(|r| r.id == id && r.marked.is_none());
+    if !pending {
+        return Marking::Done;
+    }
+    let later = || {
+        if core.meetings.records_mic() {
+            Marking::Later
+        } else {
+            Marking::Done
+        }
+    };
+    // `None` while the recorder restarts or stops, and without a meeting that records the mic.
+    let Some(file) = core.meetings.controller.tap() else {
+        return later();
+    };
+    if tap::dictation(&file, "start").is_err() {
+        // It died a moment ago; the watchdog restarts it or ends the meeting.
+        return later();
+    }
+    let mut recording = lock(&this.recording);
+    match recording.as_mut().filter(|r| r.id == id) {
+        Some(r) => r.marked = Some(file),
+        None => {
+            // Let go while the recorder answered: the stretch ends right away.
+            drop(recording);
+            let _ = tap::dictation(&file, "end");
+        }
+    }
+    Marking::Done
+}
+
+/// Runs when the recorder ends the tap while the key may still be held: the meeting stopped or
+/// its recorder died. The rest of the dictation comes from Voice's own capture into the same
+/// buffer, so nothing said after that is lost, and a restarted recorder is told about it again.
+fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEnd {
+    let weak = Arc::downgrade(core);
+    Box::new(move || {
+        let Some(core) = weak.upgrade() else {
+            return;
+        };
+        if core.shutting_down() {
+            return;
+        }
+        let this = &core.dictation;
+        match lock(&this.recording).as_mut().filter(|r| r.id == id) {
+            // The stretch ended with that recorder.
+            Some(r) => r.marked = None,
+            None => return,
+        }
+        let sink = audio_sink(Arc::downgrade(&core), id, captured);
+        match core.svc.microphone.open(sink) {
+            Ok(stream) => {
+                let old = match lock(&this.recording).as_mut().filter(|r| r.id == id) {
+                    Some(r) => r.stream.replace(stream),
+                    // Let go meanwhile: the new capture closes again.
+                    None => Some(stream),
+                };
+                // The tap, closed from its own reader thread.
+                drop(old);
+                mark(&core, id);
+            }
+            Err(message) => {
+                // Nothing arrives any more: "No audio detected" until the key is up.
+                core.pill.update(|p, _| p.no_audio(id, true));
+                core.notify(
+                    errors::TITLE_DICTATION,
+                    format!(
+                        "The meeting's microphone ended and Voice's own didn't open: {message}"
+                    ),
+                );
+            }
+        }
+    })
 }
 
 /// What the microphone calls with every block.
@@ -387,8 +502,8 @@ fn stop_recording(core: &Arc<Core>) {
     };
     // Closing the stream first, so no audio arrives after the release is handled.
     drop(recording.stream.take());
-    if recording.meeting.is_some() {
-        core.meetings.controller.dictation("end");
+    if let Some(file) = recording.marked.take() {
+        let _ = tap::dictation(&file, "end");
     }
     core.meetings.set_dictating(false);
     let (pcm, heard, meter) = {

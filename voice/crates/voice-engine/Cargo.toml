@@ -39,3 +39,8 @@ windows = { version = "=0.62.2", features = [
 [[test]]
 name = "controller"
 harness = false
+
+# The same, for meetings through the whole engine: the pill, dictation during a meeting, retention.
+[[test]]
+name = "meetings"
+harness = false

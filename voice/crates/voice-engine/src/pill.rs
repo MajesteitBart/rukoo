@@ -103,6 +103,9 @@ struct Dictation {
 
 #[derive(Clone, Debug)]
 struct Meeting {
+    /// Which meeting this is. A meeting can start while the previous one still transcribes, and
+    /// that one's outcome must not touch it.
+    id: String,
     state: MeetingPhase,
     at_ms: u64,
     anchor: Instant,
@@ -129,6 +132,10 @@ impl Meeting {
     fn compact_at(&self) -> Option<Instant> {
         (self.state == MeetingPhase::Recording && self.notice.is_none())
             .then(|| self.changed_at + COMPACT_AFTER)
+    }
+
+    fn live(&self) -> bool {
+        matches!(self.state, MeetingPhase::Recording | MeetingPhase::Paused)
     }
 }
 
@@ -287,7 +294,17 @@ impl Pill {
 
     // Meetings ----------------------------------------------------------------------------
 
-    pub fn meeting(&mut self, state: MeetingPhase, at_ms: u64, now: Instant) {
+    /// Meeting `id` is in `state`. A failure of another meeting never covers a meeting that
+    /// records: it shows only when the pill has no live meeting.
+    pub fn meeting(&mut self, id: &str, state: MeetingPhase, at_ms: u64, now: Instant) {
+        if state == MeetingPhase::Failed
+            && self
+                .meeting
+                .as_ref()
+                .is_some_and(|m| m.id != id && m.live())
+        {
+            return;
+        }
         let (notice, notice_until, until) = match state {
             MeetingPhase::Recording | MeetingPhase::Paused => (None, None, None),
             MeetingPhase::Processing => (None, None, Some(now + SAVING_HOLD)),
@@ -300,13 +317,16 @@ impl Pill {
         let keep_mic = self
             .meeting
             .as_ref()
-            .filter(|_| matches!(state, MeetingPhase::Recording | MeetingPhase::Paused))
+            .filter(|m| {
+                m.id == id && matches!(state, MeetingPhase::Recording | MeetingPhase::Paused)
+            })
             .map(|m| (m.mic_lost, m.notice.clone(), m.notice_until));
         let (mic_lost, notice, notice_until) = match keep_mic {
             Some((true, kept, kept_until)) => (true, kept, kept_until),
             _ => (false, notice, notice_until),
         };
         self.meeting = Some(Meeting {
+            id: id.to_string(),
             state,
             at_ms,
             anchor: now,
@@ -319,13 +339,12 @@ impl Pill {
         });
     }
 
-    /// The meeting ended without anything to show (`done` after the saving hold).
-    pub fn meeting_gone(&mut self) {
-        if self
-            .meeting
-            .as_ref()
-            .is_some_and(|m| m.until.is_none() || m.state == MeetingPhase::Recording)
-        {
+    /// Meeting `id` ended without anything to show (`done` after the saving hold). Another
+    /// meeting on the pill stays.
+    pub fn meeting_gone(&mut self, id: &str) {
+        if self.meeting.as_ref().is_some_and(|m| {
+            m.id == id && (m.until.is_none() || m.state == MeetingPhase::Recording)
+        }) {
             self.meeting = None;
         }
     }
@@ -776,7 +795,7 @@ mod tests {
     #[test]
     fn the_meeting_pill_compacts_resends_and_pauses() {
         let (mut pill, t0) = start();
-        pill.meeting(MeetingPhase::Recording, 0, t0);
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
         let s = pill.take(t0).unwrap();
         let m = s.meeting.unwrap();
         assert_eq!(s.phase, PillPhase::Meeting);
@@ -797,7 +816,7 @@ mod tests {
         assert_eq!(s.meeting.unwrap().at_ms, 64_000);
         // Paused: never compact, and the clock keeps running.
         let t1 = t0 + ms(70_000);
-        pill.meeting(MeetingPhase::Paused, 70_000, t1);
+        pill.meeting("m-a", MeetingPhase::Paused, 70_000, t1);
         let s = pill.take(t1).unwrap();
         assert_eq!(s.meeting.as_ref().unwrap().state, "paused");
         assert!(!s.meeting.unwrap().compact);
@@ -813,7 +832,7 @@ mod tests {
     fn stopping_takes_two_clicks_within_three_seconds() {
         let (mut pill, t0) = start();
         assert!(!pill.stop_click(t0), "no meeting, nothing to stop");
-        pill.meeting(MeetingPhase::Recording, 0, t0);
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
         pill.take(t0);
         assert!(!pill.stop_click(t0 + ms(100)));
         assert!(
@@ -844,7 +863,7 @@ mod tests {
     #[test]
     fn dictation_in_a_meeting_hides_the_stop_button_then_returns_to_the_meeting() {
         let (mut pill, t0) = start();
-        pill.meeting(MeetingPhase::Recording, 0, t0);
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
         pill.take(t0);
         pill.press(1, Activity::Dictate, false);
         let s = pill.take(t0).unwrap();
@@ -860,24 +879,64 @@ mod tests {
     #[test]
     fn saving_shows_then_hides_and_failure_shows_its_notice() {
         let (mut pill, t0) = start();
-        pill.meeting(MeetingPhase::Recording, 0, t0);
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
         pill.take(t0);
-        pill.meeting(MeetingPhase::Processing, 9000, t0 + ms(9000));
+        pill.meeting("m-a", MeetingPhase::Processing, 9000, t0 + ms(9000));
         let s = pill.take(t0 + ms(9000)).unwrap();
         let m = s.meeting.unwrap();
         assert_eq!((m.state.as_str(), m.stop_enabled), ("processing", false));
         assert!(!pill.take(t0 + ms(9000) + SAVING_HOLD).unwrap().visible);
 
-        pill.meeting(MeetingPhase::Failed, 100, t0 + ms(20_000));
+        pill.meeting("m-a", MeetingPhase::Failed, 100, t0 + ms(20_000));
         let s = pill.take(t0 + ms(20_000)).unwrap();
         assert_eq!(s.notice.unwrap().key, "pill.meetingFailed");
         assert!(!pill.take(t0 + ms(20_000) + FAILED_HOLD).unwrap().visible);
     }
 
     #[test]
+    fn an_earlier_meeting_s_outcome_never_touches_the_one_that_records() {
+        let (mut pill, t0) = start();
+        // Meeting A stopped and still transcribes while B records.
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
+        pill.meeting("m-a", MeetingPhase::Processing, 5000, t0 + ms(5000));
+        pill.meeting("m-b", MeetingPhase::Recording, 0, t0 + ms(6000));
+        pill.take(t0 + ms(6000));
+        let t1 = t0 + ms(30_000);
+        pill.meeting_gone("m-a");
+        pill.meeting("m-a", MeetingPhase::Failed, 5000, t1);
+        let s = pill.take(t1).unwrap();
+        let m = s.meeting.unwrap();
+        assert_eq!(
+            (s.phase, m.state.as_str()),
+            (PillPhase::Meeting, "recording")
+        );
+        assert!(m.stop_enabled && s.notice.is_none());
+        assert!(
+            pill.take(t1 + FAILED_HOLD).is_none(),
+            "nothing to hide once A's failure would have ended"
+        );
+        assert_eq!(pill.current().meeting.unwrap().state, "recording");
+        assert!(
+            !pill.stop_click(t1 + FAILED_HOLD),
+            "the stop key still asks"
+        );
+        assert!(pill.stop_click(t1 + FAILED_HOLD + ms(100)), "and stops B");
+        // B's own outcome does reach it.
+        pill.meeting("m-b", MeetingPhase::Processing, 9000, t1 + ms(10_000));
+        pill.meeting_gone("m-b");
+        let s = pill.take(t1 + ms(10_000)).unwrap();
+        assert_eq!(s.meeting.unwrap().state, "processing", "saving shows first");
+        assert!(!pill.take(t1 + ms(10_000) + SAVING_HOLD).unwrap().visible);
+        // With nothing recording, an earlier meeting's failure shows.
+        pill.meeting("m-a", MeetingPhase::Failed, 5000, t1 + ms(20_000));
+        let s = pill.take(t1 + ms(20_000)).unwrap();
+        assert_eq!(s.notice.unwrap().key, "pill.meetingFailed");
+    }
+
+    #[test]
     fn a_lost_microphone_shows_until_it_comes_back() {
         let (mut pill, t0) = start();
-        pill.meeting(MeetingPhase::Recording, 0, t0);
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
         pill.take(t0);
         pill.meeting_mic(false, t0 + ms(5000));
         let s = pill.take(t0 + ms(5000)).unwrap();
@@ -888,7 +947,7 @@ mod tests {
         );
         assert!(pill.take(t0 + ms(20_000)).is_none());
         // Pausing keeps the notice.
-        pill.meeting(MeetingPhase::Paused, 21_000, t0 + ms(21_000));
+        pill.meeting("m-a", MeetingPhase::Paused, 21_000, t0 + ms(21_000));
         assert_eq!(
             pill.take(t0 + ms(21_000)).unwrap().notice.unwrap().key,
             "pill.micLost"

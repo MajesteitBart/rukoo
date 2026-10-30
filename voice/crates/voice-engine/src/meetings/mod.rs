@@ -15,7 +15,7 @@ use voice_bridge::EventLog;
 use voice_core::config::{Config, Retention};
 use voice_core::consent::ConsentState;
 use voice_meetings::{Pipeline, PipelineHandle};
-use voice_protocol::MeetingState;
+use voice_protocol::{MeetingState, Track};
 
 pub use voice_meetings::{Library, PipelineOptions, PipelineState};
 
@@ -174,9 +174,26 @@ impl Meetings {
     }
 
     /// The meeting's microphone for a dictation, or `None` without a meeting.
-    pub fn open_tap(&self, on_audio: AudioSink) -> Option<Result<Box<dyn MicStream>, String>> {
+    pub fn open_tap(
+        &self,
+        on_audio: AudioSink,
+        on_end: tap::TapEnd,
+    ) -> Option<Result<Box<dyn MicStream>, String>> {
         let file = self.controller.tap()?;
-        Some(tap::open(&file, on_audio).map(|tap| Box::new(tap) as Box<dyn MicStream>))
+        Some(
+            tap::open_until(&file, on_audio, on_end).map(|tap| Box::new(tap) as Box<dyn MicStream>),
+        )
+    }
+
+    /// Whether a meeting records the microphone now, also while its recorder restarts.
+    pub fn records_mic(&self) -> bool {
+        let Some(recording) = self.controller.current() else {
+            return false;
+        };
+        self.library()
+            .dir(&recording.id)
+            .and_then(|dir| dir.meeting().ok())
+            .is_some_and(|meeting| meeting.tracks.contains(&Track::Mic))
     }
 
     /// Stops transcribing, the watchdog and the bridge. A recorder that records goes on.

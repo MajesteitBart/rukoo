@@ -398,6 +398,11 @@ pub struct FakeSpeech {
     pub local_state: Mutex<LocalState>,
     pub local_load: Mutex<Option<ProviderError>>,
     pub local_loads: AtomicUsize,
+    /// How long loading Orukeet takes, as for a first load that checks the model.
+    pub local_load_delay: Mutex<Duration>,
+    /// How long `shutdown` blocks, as behind a meeting window that holds the worker.
+    pub shutdown_delay: Mutex<Duration>,
+    pub shutdowns: AtomicUsize,
     pub models: Mutex<Vec<String>>,
     pub model_requests: Mutex<Vec<ProviderConfig>>,
     /// Samples per meeting window, in order. Meetings have a recognizer of their own, so a
@@ -506,6 +511,8 @@ impl Speech for SpeechHandle {
 
     fn local_load(&self, _registry: ModelRegistry) -> Result<(), ProviderError> {
         self.0.local_loads.fetch_add(1, Ordering::SeqCst);
+        let delay = *lock(&self.0.local_load_delay);
+        thread::sleep(delay);
         match lock(&self.0.local_load).clone() {
             Some(error) => Err(error),
             None => {
@@ -544,7 +551,11 @@ impl Speech for SpeechHandle {
         ))
     }
 
-    fn shutdown(&self) {}
+    fn shutdown(&self) {
+        self.0.shutdowns.fetch_add(1, Ordering::SeqCst);
+        let delay = *lock(&self.0.shutdown_delay);
+        thread::sleep(delay);
+    }
 }
 
 // The rest -----------------------------------------------------------------------------------

@@ -338,63 +338,65 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
     };
     let consent = save["consent"].as_bool().unwrap_or(false);
 
-    let current = core.config();
-    let mut next = (*current).clone();
-    // A key is never carried to another provider: `null` keeps it only for the same one.
-    let keep = |saved_provider: &str, saved_key: &str| match &api_key {
-        None if saved_provider == provider => saved_key.to_string(),
-        None => String::new(),
-        Some(key) => key.clone(),
+    // The form's fields only, so they go onto whatever Settings hold when it is saved: a change
+    // saved meanwhile, for instance while Orukeet loads, stays.
+    let apply = |cfg: &mut Config| {
+        // A key is never carried to another provider: `null` keeps it only for the same one.
+        let keep = |saved_provider: &str, saved_key: &str| match &api_key {
+            None if saved_provider == provider => saved_key.to_string(),
+            None => String::new(),
+            Some(key) => key.clone(),
+        };
+        match purpose {
+            Purpose::Dictation => {
+                cfg.audio_api_key = if local {
+                    String::new()
+                } else {
+                    keep(&cfg.audio_provider, &cfg.audio_api_key)
+                };
+                cfg.audio_provider = provider.clone();
+                cfg.audio_endpoint = endpoint.clone();
+                cfg.audio_model = model.clone();
+                // Orukeet ignores the language; Ownkey saved it only for a cloud provider.
+                if let Some(language) = language.clone().filter(|_| !local) {
+                    cfg.language = language;
+                }
+            }
+            Purpose::Rewrite => {
+                cfg.rewrite_api_key = keep(&cfg.rewrite_provider, &cfg.rewrite_api_key);
+                cfg.rewrite_provider = provider.clone();
+                cfg.rewrite_endpoint = endpoint.clone();
+                cfg.rewrite_model = model.clone();
+            }
+            Purpose::Meetings => {
+                cfg.meetings_audio_api_key = if local {
+                    String::new()
+                } else {
+                    keep(&cfg.meetings_audio_provider, &cfg.meetings_audio_api_key)
+                };
+                cfg.meetings_audio_provider = provider.clone();
+                cfg.meetings_audio_endpoint = endpoint.clone();
+                cfg.meetings_audio_model = model.clone();
+                cfg.meetings_transcription_consent = None;
+                if consent {
+                    // Stored only where Ownkey's rule asks for it: a cloud provider on another host.
+                    cfg.grant_meeting_consent();
+                }
+            }
+        }
     };
-    match purpose {
-        Purpose::Dictation => {
-            next.audio_api_key = if local {
-                String::new()
-            } else {
-                keep(&current.audio_provider, &current.audio_api_key)
-            };
-            next.audio_provider = provider.clone();
-            next.audio_endpoint = endpoint.clone();
-            next.audio_model = model.clone();
-            // Orukeet ignores the language; Ownkey saved it only for a cloud provider.
-            if let Some(language) = language.filter(|_| !local) {
-                next.language = language;
-            }
-        }
-        Purpose::Rewrite => {
-            next.rewrite_api_key = keep(&current.rewrite_provider, &current.rewrite_api_key);
-            next.rewrite_provider = provider.clone();
-            next.rewrite_endpoint = endpoint.clone();
-            next.rewrite_model = model.clone();
-        }
-        Purpose::Meetings => {
-            next.meetings_audio_api_key = if local {
-                String::new()
-            } else {
-                keep(
-                    &current.meetings_audio_provider,
-                    &current.meetings_audio_api_key,
-                )
-            };
-            next.meetings_audio_provider = provider.clone();
-            next.meetings_audio_endpoint = endpoint.clone();
-            next.meetings_audio_model = model.clone();
-            next.meetings_transcription_consent = None;
-            if consent {
-                // Stored only where Ownkey's rule asks for it: a cloud provider on another host.
-                next.grant_meeting_consent();
-            }
-        }
-    }
-    // A broken model never becomes active: Orukeet loads and is checked before the save.
+    // A broken model never becomes active: Orukeet loads and is checked before the save. That can
+    // take seconds, so it runs outside Settings' lock, with the model folder the form would save.
     if purpose == Purpose::Dictation && local {
+        let mut next = (*core.config()).clone();
+        apply(&mut next);
         core.svc
             .speech
             .local_load(core.registry(&next))
             .map_err(|e| provider_error(&e))?;
     }
-    core.commit(move |cfg| {
-        *cfg = next;
+    core.commit(|cfg| {
+        apply(cfg);
         Ok(())
     })
 }

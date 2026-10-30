@@ -5,11 +5,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use voice_bridge::EventLog;
+use voice_core::config::Retention;
 use voice_protocol::{
     events, MeetingId, MeetingState, MeetingStateChange, MeetingSummary, Object, ScreenMode,
     StartedBy, Track,
@@ -24,8 +26,14 @@ pub const MEETINGS: &str = "meetings";
 pub const MEETING_FILE: &str = "meeting.json";
 /// The version of `meeting.json`, as in voice/RECORDING.md.
 pub const FORMAT_VERSION: u32 = 1;
+/// The `meeting.json` field with Settings > Meetings > Keep audio as it was when the meeting
+/// started: `days7`, `keep` or `after_transcription`. See [`MeetingDir::retention`].
+pub const RETENTION_FIELD: &str = "retention";
 
 /// `meeting.json`: the app's description of a meeting, written once before the recorder starts.
+///
+/// The file also holds [`RETENTION_FIELD`] when the library had one to stamp; it is read on its
+/// own, so a file without it, from before Voice stored it, reads the same.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingFile {
@@ -122,6 +130,15 @@ impl MeetingDir {
         self.audio_dir().is_dir()
     }
 
+    /// How long this meeting's audio is kept, as chosen when it started (Ownkey kept it per
+    /// meeting too, so changing the setting never removes older meetings' audio). `None` for a
+    /// meeting from before Voice stored it, or an unreadable `meeting.json`.
+    pub fn retention(&self) -> Option<Retention> {
+        let bytes = fs::read(self.path.join(MEETING_FILE)).ok()?;
+        let value: Value = serde_json::from_slice(&bytes).ok()?;
+        serde_json::from_value(value.get(RETENTION_FIELD)?.clone()).ok()
+    }
+
     /// Whether the timeline ends with `stop`. Reads only the end of the file.
     pub fn stopped(&self) -> bool {
         last_line(&self.path.join(timeline::FILE_NAME))
@@ -133,6 +150,8 @@ impl MeetingDir {
 #[derive(Clone, Debug)]
 pub struct Library {
     root: PathBuf,
+    /// The retention new meetings get in `meeting.json`; clones share it.
+    retention: Arc<Mutex<Option<Retention>>>,
 }
 
 impl Library {
@@ -140,11 +159,23 @@ impl Library {
     pub fn open(data_dir: &Path) -> io::Result<Library> {
         let root = data_dir.join(MEETINGS);
         fs::create_dir_all(&root)?;
-        Ok(Library { root })
+        Ok(Library {
+            root,
+            retention: Arc::default(),
+        })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The audio retention every meeting made from now on keeps: Settings > Meetings > Keep
+    /// audio. The app sets it at start and whenever the setting changes.
+    pub fn set_retention(&self, retention: Retention) {
+        *self
+            .retention
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(retention);
     }
 
     /// Makes the folder and `meeting.json` of a new meeting. The id is new: when the folder of
@@ -173,7 +204,19 @@ impl Library {
                 context: args.context.clone(),
                 version: FORMAT_VERSION,
             };
-            if let Err(e) = write_atomic(&path.join(MEETING_FILE), &file) {
+            let retention = *self
+                .retention
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let written = serde_json::to_value(&file)
+                .map_err(io::Error::other)
+                .and_then(|mut value| {
+                    if let Some(retention) = retention {
+                        value[RETENTION_FIELD] = json!(retention);
+                    }
+                    write_atomic(&path.join(MEETING_FILE), &value)
+                });
+            if let Err(e) = written {
                 let _ = fs::remove_dir_all(&path);
                 return Err(e);
             }

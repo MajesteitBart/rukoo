@@ -287,12 +287,41 @@ fn a_microphone_that_won_t_open_fails_and_the_next_press_works() {
     wait_for("the settings status", || {
         engine.settings_state()["dictation"]["status"] == "noMic"
     });
+    // About a second after the start the engine first checks Rukoo's connection and sends a
+    // state; after that, only the microphone can tell an open Settings window something new.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(h.sink.last_settings()["dictation"]["status"], "noMic");
     h.keys.up(Key::F13);
     h.speech.say("works again");
     h.hold(Key::F13);
     wait_for("the insertion", || h.input.texts() == ["works again"]);
     assert_eq!(engine.settings_state()["dictation"]["status"], "ready");
+    // An open Settings window only follows what is sent: it hears that the microphone works.
+    wait_for("Settings to be told the microphone works", || {
+        h.sink.last_settings()["dictation"]["status"] == "ready"
+    });
     engine.shutdown();
+}
+
+#[test]
+fn quitting_waits_for_a_busy_local_model_only_so_long() {
+    let h = Harness::new("quit-busy-worker");
+    h.config(json!({}));
+    // A meeting window holds the local worker while it checks and loads the model.
+    *lock(&h.speech.shutdown_delay) = Duration::from_secs(30);
+    let engine = h.start();
+    let started = std::time::Instant::now();
+    engine.shutdown();
+    let took = started.elapsed();
+    assert_eq!(
+        h.speech.shutdowns.load(Ordering::SeqCst),
+        1,
+        "the model was told to stop"
+    );
+    assert!(
+        took < Duration::from_secs(10),
+        "Quit took {took:?}; Windows ends the worker with the app"
+    );
 }
 
 #[test]

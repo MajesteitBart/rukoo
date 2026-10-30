@@ -172,6 +172,8 @@ pub fn start_with(
             format!("Voice couldn't open its meetings folder: {e}"),
         )
     })?;
+    // Before the bridge opens, so a meeting Rukoo starts at once keeps it too.
+    controller.library().set_retention(cfg.meetings_retention);
     let meetings = Meetings::new(controller, log, discovery, &options.version);
     let core = Arc::new(Core::new(
         options,

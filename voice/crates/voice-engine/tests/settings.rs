@@ -3,6 +3,7 @@
 mod support;
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, TempDir};
@@ -290,6 +291,86 @@ fn orukeet_is_loaded_before_it_becomes_the_dictation_provider() {
     );
     assert_eq!(cfg.audio_api_key, "", "Orukeet keeps no key");
     assert_eq!(h.speech.local_loads.load(Ordering::SeqCst), 2);
+    engine.shutdown();
+}
+
+#[test]
+fn a_change_saved_while_orukeet_loads_is_kept() {
+    let h = Harness::new("save-during-load");
+    h.config(json!({
+        "audio_provider": "mistral", "audio_api_key": SECRET,
+        "audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "audio_model": "voxtral-mini-latest"
+    }));
+    // The first load checks the 487 MB model, which takes a while.
+    *lock(&h.speech.local_load_delay) = Duration::from_millis(800);
+    let engine = h.start();
+    let saving = std::thread::spawn({
+        let engine = engine.clone();
+        move || {
+            save(
+                &engine,
+                json!({"target": "transcription", "provider": "orukeet", "apiKey": null}),
+            )
+        }
+    });
+    wait_for("Orukeet to load", || {
+        h.speech.local_loads.load(Ordering::SeqCst) == 1
+    });
+    // Meanwhile the user saves another page and flips a switch.
+    let mistral = json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": SECRET, "consent": true});
+    save(&engine, mistral).unwrap();
+    engine
+        .settings_set("dictation.pasteMode", json!(false))
+        .unwrap();
+    saving.join().unwrap().unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.audio_provider, "orukeet");
+    assert!(
+        !cfg.paste_mode,
+        "the switch flipped during the load stays off"
+    );
+    assert_eq!(cfg.meetings_audio_provider, "mistral");
+    assert_eq!(cfg.meetings_audio_api_key, SECRET);
+    assert!(cfg.meetings_transcription_consent.is_some());
+    assert_eq!(
+        engine.settings_state()["config"]["dictation"]["pasteMode"],
+        false
+    );
+    engine.shutdown();
+}
+
+#[test]
+fn every_settings_state_goes_out_with_the_next_seq() {
+    let h = Harness::new("seq-order");
+    h.config(json!({}));
+    let engine = h.start();
+    lock(&h.sink.settings).clear();
+    // Many threads change Settings' state at once, as a download, a save and Rukoo's watcher do.
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let engine = engine.clone();
+            std::thread::spawn(move || {
+                for _ in 0..25 {
+                    engine.settings_check_updates();
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let seqs: Vec<u64> = lock(&h.sink.settings)
+        .iter()
+        .map(|state| state["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs.len(), 8 * 25 * 2);
+    for pair in seqs.windows(2) {
+        assert_eq!(
+            pair[1],
+            pair[0] + 1,
+            "a state went out out of order or with a seq already used"
+        );
+    }
     engine.shutdown();
 }
 

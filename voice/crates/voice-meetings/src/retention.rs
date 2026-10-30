@@ -4,6 +4,9 @@
 //! Only `audio/` goes; the transcript, the timeline and the meeting's events stay. Audio is
 //! removed only after the meeting is `done`, counted from the moment it became done, so a
 //! meeting that was cut off and never transcribed never loses its audio.
+//!
+//! Each meeting follows the retention it started with, kept in its `meeting.json` (Ownkey's
+//! `create_meeting` stored it the same way), so a changed setting applies to new meetings only.
 
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,8 +20,9 @@ use crate::library::Library;
 /// Seven days, for [`Retention::Days7`].
 pub const WEEK_MS: u64 = 7 * 86_400_000;
 
-/// Removes the audio of every meeting whose retention has run out. `retention_of` gives a
-/// meeting's setting by id. Returns the meetings whose audio went.
+/// Removes the audio of every meeting whose retention has run out. A meeting's retention is the
+/// one in its `meeting.json`; `retention_of` gives it by id for a meeting from before Voice
+/// stored it there. Returns the meetings whose audio went.
 ///
 /// Run it at start, after a meeting is done, and every minute or so.
 pub fn retention_sweep(
@@ -42,7 +46,7 @@ pub fn retention_sweep_at(
             continue;
         }
         let id = dir.id().as_str();
-        let retention = retention_of(id);
+        let retention = dir.retention().unwrap_or_else(|| retention_of(id));
         if retention == Retention::Keep {
             continue;
         }
@@ -157,5 +161,43 @@ mod tests {
             .path()
             .join("meeting.json")
             .is_file());
+    }
+
+    #[test]
+    fn each_meeting_keeps_the_retention_it_started_with() {
+        let tmp = TempDir::new("retention-stamped");
+        let lib = Library::open(tmp.path()).unwrap();
+        let log = EventLog::open(tmp.path()).unwrap();
+        let states = ["recording", "processing", "done"];
+        // Recorded before Voice stored the retention: it follows the setting.
+        let older = meeting(&lib, &log, &states);
+        lib.set_retention(Retention::Keep);
+        let kept = meeting(&lib, &log, &states);
+        lib.set_retention(Retention::Days7);
+        let week = meeting(&lib, &log, &states);
+        assert_eq!(lib.dir(&older).unwrap().retention(), None);
+        assert_eq!(lib.dir(&kept).unwrap().retention(), Some(Retention::Keep));
+        assert_eq!(lib.dir(&week).unwrap().retention(), Some(Retention::Days7));
+        let raw: serde_json::Value = serde_json::from_slice(
+            &fs::read(lib.dir(&kept).unwrap().path().join("meeting.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(raw["retention"], "keep");
+        assert!(lib.dir(&kept).unwrap().meeting().is_ok());
+
+        let has_audio = |id: &str| lib.dir(id).unwrap().has_audio();
+        let done_at = log
+            .latest(&week, events::MEETING_STATE)
+            .unwrap()
+            .unwrap()
+            .created_at;
+        // The user now picks "Remove after transcription": only the meeting without its own
+        // choice follows it.
+        let now = |ms| retention_sweep_at(&lib, &log, |_| Retention::AfterTranscription, ms);
+        assert_eq!(now(done_at + 1000), vec![older]);
+        assert!(has_audio(&kept) && has_audio(&week));
+        assert_eq!(now(done_at + WEEK_MS), vec![week]);
+        assert!(now(done_at + 520 * WEEK_MS).is_empty());
+        assert!(has_audio(&kept), "kept until the user deletes the meeting");
     }
 }
