@@ -250,6 +250,13 @@ test('the nightly channel offers nightly builds, and a downloaded update restart
   // A failed download falls back to the release page.
   await install('failed', 0);
   await expect(win.locator('.update-btn')).toHaveText(`Update to ${NIGHTLY}`);
+  // A nightly version is wider than the sidebar: the label ends in an ellipsis inside the button.
+  const label = await win.locator('.update-btn').evaluate((b) => {
+    const span = b.querySelector('span');
+    const inside = span.getBoundingClientRect().right <= b.getBoundingClientRect().right - parseFloat(getComputedStyle(b).paddingRight) + 0.5;
+    return { cut: span.scrollWidth > span.clientWidth, inside };
+  });
+  expect(label).toEqual({ cut: true, inside: true });
 });
 
 test("after the guide, the sidebar and a panel show what Jev is doing, and when it has to wait", async () => {

@@ -1916,12 +1916,19 @@ export function mountAgentPanel(ctx) {
     return types.includes(MAIL_IDS) ? 'mail' : types.includes('Files') ? 'files' : null;
   };
   const droppable = () => Boolean(chat) && !chat.el.classList.contains('is-disabled');
-  pane.addEventListener('dragover', (e) => {
+  // Taken on dragenter as well as dragover. When the element under the pointer changes on the last update before the
+  // drop, Chromium sends it a dragenter and no dragover, and a dragenter left alone refuses the drop: the email or file
+  // was lost without a word. It changes when the pointer has just reached the panel, when is-drop makes the panel
+  // itself the target (styles.css), and when the panel draws its contents again, as it does when the agent's status
+  // comes in.
+  const accept = (e) => {
     if (!dragged(e) || !droppable()) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     pane.classList.add('is-drop');
-  });
+  };
+  pane.addEventListener('dragenter', accept);
+  pane.addEventListener('dragover', accept);
   pane.addEventListener('dragleave', (e) => {
     if (!e.relatedTarget || !pane.contains(e.relatedTarget)) pane.classList.remove('is-drop');
   });

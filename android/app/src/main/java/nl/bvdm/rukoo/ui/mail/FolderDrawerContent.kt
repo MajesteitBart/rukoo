@@ -25,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -36,10 +37,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.categories.CategoriesState
 import nl.bvdm.rukoo.mail.model.FolderRole
@@ -151,6 +154,16 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
     val noCategories = remember { MutableStateFlow(CategoriesState()) }
     val catState by (categories?.state ?: noCategories).collectAsStateWithLifecycle()
     val subs = if (categories != null && catState.enabled) catState.categories else emptyList()
+    // Inbox's count leaves out the unread mail of categories it doesn't show (desktop's inboxUnread); their own
+    // count is the Unread view's. Worked out from the unread inbox mail while one is hidden.
+    val hiding = subs.any { !it.inbox }
+    val noVersion = remember { MutableStateFlow(0L) }
+    val recordsVersion by (app.services.account?.version ?: noVersion).collectAsStateWithLifecycle()
+    val unreadFlow = remember(scope, hiding) { if (hiding) mail.messages(MailView(ViewKind.UNREAD, scope)) else flowOf(emptyList()) }
+    val unread by unreadFlow.collectAsStateWithLifecycle(emptyList())
+    val inboxUnread by produceState<Int?>(null, unread, catState, recordsVersion, hiding, accounts) {
+        value = if (hiding && categories != null) withContext(Dispatchers.Default) { ListModel.inboxUnread(unread, categories.lookup(accounts, unread)) } else null
+    }
 
     Column(modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
         // The account switch (styles.css:655-694).
@@ -192,7 +205,7 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
             if (kind == ViewKind.ARCHIVE && !hasArchive) continue
             if (kind == ViewKind.JUNK && !hasJunk) continue
             val view = MailView(kind, scope)
-            val n = (counts.views[kind] ?: 0) + if (kind == ViewKind.DRAFTS) localCount else 0
+            val n = (inboxUnread?.takeIf { kind == ViewKind.INBOX } ?: counts.views[kind] ?: 0) + if (kind == ViewKind.DRAFTS) localCount else 0
             val inbox = kind == ViewKind.INBOX && subs.isNotEmpty()
             NavItem(
                 label = viewTitle(view, folders),
@@ -209,6 +222,7 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
                         category = cat.color,
                         selected = nav.view == view && nav.category == cat.id,
                         onClick = { pickCategory(view, cat.id) },
+                        hidden = !cat.inbox,
                     )
                 }
             }
@@ -278,6 +292,8 @@ private fun NavItem(
     strong: Boolean = false,
     // An inbox category: its color dot, indented under Inbox.
     category: String? = null,
+    // A category Inbox doesn't show: a crossed-out eye after its name.
+    hidden: Boolean = false,
 ) {
     val c = Rk.colors
     Row(
@@ -297,14 +313,20 @@ private fun NavItem(
                 category != null -> CategoryDot(category, size = 8.dp)
             }
         }
-        Text(
-            label,
-            style = if (selected) Rk.type.text13.semibold else Rk.type.text13,
-            color = if (selected) c.text else c.text2,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = if (selected) Rk.type.text13.semibold else Rk.type.text13,
+                color = if (selected) c.text else c.text2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (hidden) {
+                Spacer(Modifier.size(6.dp))
+                RkIcon(RukooIcons.EyeOff, stringResource(R.string.mailbox_categories_hidden), size = 14.dp, tint = c.text3)
+            }
+        }
         if (count != null) {
             Text(
                 count.toString(),

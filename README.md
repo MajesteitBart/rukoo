@@ -41,7 +41,7 @@ More in [Mail](docs/mail.md) and [Inbox categories](docs/categories.md).
 - The calendar (`Ctrl+2`) shows your Google calendars and the CalDAV calendars of IMAP accounts together, by month, week, day or what's coming.
 - Drag on the grid to create an event, and drag events to move or resize them. Events can have guests, repeats, reminders and their own time zone. Google calendars add Meet links.
 - The availability panel (`A`) lists your open time across your calendars. The composer's calendar button inserts the same list into a message.
-- A booking page such as `https://meet.rukoo.io/sanne` lets people, and their AI assistants, pick a time with you. Each booking lands in your calendar, which sends the invitation.
+- A booking page such as `https://meet.rukoo.io/sanne` lets people, and their AI assistants, pick a time with you. Each booking lands in your calendar, which sends the invitation, and can get its own Zoom, Microsoft Teams or Jitsi Meet link.
 
 More in [Calendar](docs/calendar.md) and [Booking page](docs/booking.md).
 

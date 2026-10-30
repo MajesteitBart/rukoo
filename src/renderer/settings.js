@@ -19,6 +19,7 @@ import { accountPages, ACCOUNT_VIEWS } from './rukoo-account.js';
 import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
 import { calendarSettingsPages, CALENDAR_VIEWS } from './calendar-settings.js';
 import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
+import { videoPages, VIDEO_VIEWS } from './video-settings.js';
 import { SCHEMES, ACTIONS as KEY_ACTIONS, bindings, display, keyLabel } from './keymap.js';
 
 // Settings > Keyboard shortcuts: the schemes by the name of their app (keymap.js).
@@ -270,6 +271,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (type === 'categories') categoriesPage.onState(payload);
     // The booking page's state from main: the page and the overview follow it, forms keep what is typed.
     if (type === 'booking') bookingPage.onState(payload);
+    if (type === 'video') videoPage.onState(payload);
     if (type === 'categories-progress') categoriesPage.onActivity(payload);
   });
 
@@ -318,6 +320,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   // booking link rows beside the signature rows.
   const calendarPage = calendarSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
   const bookingPage = bookingPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
+  // Settings > Video meetings (video-settings.js), beside the booking page.
+  const videoPage = videoPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
   // A redraw of the screen already showing keeps its scroll position on the pages with calendar and booking rows: the
   // booking page changes while it is open, and a switch near the bottom shouldn't send the page back to the top.
   // Another page, or the booking page's setup becoming the page, starts at the top.
@@ -955,6 +959,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || view === 'rukoo-privacy' || CATEGORY_VIEWS.includes(view) ? categoriesPage.prepare() : null,
       view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
       view === 'main' || view === 'account' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
+      view === 'main' || VIDEO_VIEWS.includes(view) ? videoPage.prepare(view) : null,
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -988,7 +993,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const footerRow = bookingPage.footerRow(s);
       const calendarGroup = `
         <div class="settings-group-title" data-i18n="settings.groups.calendar">${esc(t('settings.groups.calendar'))}</div>
-        <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}</div>`;
+        <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}${videoPage.rowHtml()}</div>`;
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
@@ -1209,6 +1214,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (CATEGORY_VIEWS.includes(view)) ({ title, body } = categoriesPage.view(view));
     if (CALENDAR_VIEWS.includes(view)) ({ title, body } = calendarPage.view(view));
     if (BOOKING_VIEWS.includes(view)) ({ title, body } = bookingPage.view(view));
+    if (VIDEO_VIEWS.includes(view)) ({ title, body } = videoPage.view(view));
 
     // A redraw, such as the one after each update from main, keeps the keyboard on the control with the same action.
     const focused = page.contains(document.activeElement) ? document.activeElement.dataset.a : null;
@@ -1273,6 +1279,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if ((a === 'categories' || a.startsWith('cat-')) && (await categoriesPage.click(a))) return;
     if (a.startsWith('calset-') && (await calendarPage.click(a))) return;
     if (a.startsWith('booking-') && (await bookingPage.click(a))) return;
+    if (a.startsWith('video-') && (await videoPage.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'mailto-use') {

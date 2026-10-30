@@ -16,9 +16,8 @@ const PASSWORD = 'a long enough password';
 const HANDLE = 'demo-user';
 const DAY = 86400000;
 
-test.beforeEach(async () => {
-  server = await startAccountServer();
-  dataDir = tempDir('rukoo-booking-e2e-');
+// Rukoo on this test's profile and account server; a second launch is a restart.
+async function launch() {
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', RUKOO_ACCOUNT_SERVER: server.url };
   delete env.ELECTRON_RUN_AS_NODE;
   // The session is stored with safeStorage, which needs the real keyring on Linux (see the IMAP tests).
@@ -32,6 +31,12 @@ test.beforeEach(async () => {
       global.__opened = url;
     };
   });
+}
+
+test.beforeEach(async () => {
+  server = await startAccountServer();
+  dataDir = tempDir('rukoo-booking-e2e-');
+  await launch();
   await win.waitForSelector('.provider-grid');
   await win.click('[data-s="demo"]');
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
@@ -169,13 +174,14 @@ test('meeting types and available hours are edited on the page and published', a
   await expect(form.locator('[data-location]')).toBeVisible();
   await form.locator('[name="locationValue"]').fill('+31 6 1234 5678');
   await form.locator('[name="locationLabel"]').fill('Phone call');
-  await form.locator('.booking-more summary').click();
+  // Minimum notice is in sight; approval is under More options.
   await form.locator('[name="minNotice"]').selectOption('1440');
+  await form.locator('.booking-more summary').click();
   await form.locator('[name="confirm"]').check();
   await form.locator('button[type=submit]').click();
   await expect(page().locator('h1')).toHaveText('Booking page');
   await expect(types.first().locator('.title')).toHaveText('Intro call');
-  await expect(types.first().locator('.desc')).toHaveText('45 mins · Phone call · Needs your approval');
+  await expect(types.first().locator('.desc')).toHaveText('45 mins · Phone call · 1 day notice · Needs your approval');
   const saved = (await booking()).settings.types[0];
   expect(saved).toMatchObject({ slug: '30min', title: 'Intro call', duration: 45, minNotice: 1440, confirm: true, location: { kind: 'phone', value: '+31 6 1234 5678', label: 'Phone call', public: false } });
   // Published without the private number.
@@ -245,6 +251,65 @@ test('meeting types and available hours are edited on the page and published', a
   // The published open time has nothing on the blocked date.
   const from = new Date(`${date}T00:00:00`).getTime();
   await expect.poll(() => published().windows.default.some(([a, b]) => a < from + DAY && b > from)).toBe(false);
+});
+
+test('free time, notice and limits are open in a section of their own, show on the row when changed and stay after a restart', async () => {
+  await pageOn();
+  await openBookingPage();
+  const types = () => page().locator('[data-a^="booking-type:"]:not([data-a="booking-type:new"])');
+  const form = () => page().locator('form[data-form="booking-type"]');
+  await expect(types().first().locator('.desc')).toHaveText('30 mins');
+
+  // The editor opens with When guests can book open; More options is folded and holds only approval and hiding.
+  await types().first().click();
+  const when = form().locator('[data-section="when"]');
+  await expect(when).toHaveAttribute('open', '');
+  await expect(when.locator('summary')).toHaveText('When guests can book');
+  for (const name of ['bufferBefore', 'bufferAfter', 'minNotice', 'horizon', 'slotInterval', 'dailyLimit']) await expect(when.locator(`[name="${name}"]`)).toBeVisible();
+  await expect(when.locator('#booking-buffer-help')).toHaveText("Keeps time free around each booking, so guests can't book right next to your other meetings.");
+  await expect(when.locator('[name="bufferBefore"]')).toHaveAttribute('aria-describedby', 'booking-buffer-help');
+  const more = form().locator('[data-section="more"]');
+  await expect(more).not.toHaveAttribute('open', '');
+  expect(await more.locator('input, select, textarea').evaluateAll((els) => els.map((el) => el.name))).toEqual(['confirm', 'hidden']);
+
+  await when.locator('[name="bufferBefore"]').selectOption('10');
+  await when.locator('[name="bufferAfter"]').selectOption('15');
+  await when.locator('[name="minNotice"]').selectOption('0');
+  await when.locator('[name="horizon"]').selectOption('60');
+  await when.locator('[name="slotInterval"]').selectOption('15');
+  await when.locator('[name="dailyLimit"]').selectOption('3');
+  await form().locator('button[type=submit]').click();
+  await expect(page().locator('h1')).toHaveText('Booking page');
+  await expect(types().first().locator('.desc')).toHaveText('30 mins · 10 mins free time before · 15 mins free time after · No minimum notice · Up to 60 days ahead · Start times every 15 mins · At most 3 a day');
+  const saved = { bufferBefore: 10, bufferAfter: 15, minNotice: 0, horizon: 60, slotInterval: 15, dailyLimit: 3 };
+  expect((await booking()).settings.types[0]).toMatchObject(saved);
+  await expect.poll(() => published().profile.types[0].dailyLimit).toBe(3);
+  expect(published().profile.types[0]).toMatchObject(saved);
+
+  // Reopened, the editor has what was saved. The same free time on both sides is one phrase on the row.
+  await types().first().click();
+  await expect(form().locator('[name="bufferAfter"]')).toHaveValue('15');
+  await expect(form().locator('[name="minNotice"]')).toHaveValue('0');
+  await form().locator('[name="bufferBefore"]').selectOption('15');
+  await form().locator('button[type=submit]').click();
+  const desc = '30 mins · 15 mins free time before and after · No minimum notice · Up to 60 days ahead · Start times every 15 mins · At most 3 a day';
+  await expect(types().first().locator('.desc')).toHaveText(desc);
+  // A new type at the defaults shows only its length.
+  await page().locator('[data-a="booking-type:new"]').click();
+  await form().locator('[name="title"]').fill('Quick chat');
+  await form().locator('button[type=submit]').click();
+  await expect(types()).toHaveCount(2);
+  await expect(types().nth(1).locator('.desc')).toHaveText('30 mins');
+
+  // After a restart the row and the editor still have them.
+  await closeApp(app);
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await openBookingPage();
+  await expect(types().first().locator('.desc')).toHaveText(desc);
+  await types().first().click();
+  await expect(form().locator('[data-section="when"]')).toHaveAttribute('open', '');
+  for (const [name, value] of Object.entries({ ...saved, bufferBefore: 15 })) await expect(form().locator(`[name="${name}"]`)).toHaveValue(String(value));
 });
 
 test('requests are accepted or declined and bookings cancelled from the page; guest text stays text', async () => {
@@ -395,7 +460,7 @@ test('the page and the overview keep their place while the booking state comes i
   expect(await top()).toBe(overview);
 });
 
-test('in Dutch, a date inside a sentence keeps its lowercase weekday, and a publish a moment ago is "zojuist"', async () => {
+test('in Dutch, a date inside a sentence keeps its lowercase weekday, a publish a moment ago is "zojuist", and a type row says what it changes', async () => {
   await pageOn();
   await server.book({ handle: HANDLE, type: '30min', start: slot(4, 10), guest: { name: 'Ann Example' }, status: 'pending' });
   await call('bookingSync');
@@ -410,6 +475,13 @@ test('in Dutch, a date inside a sentence keeps its lowercase weekday, and a publ
   state.publishing.lastAt = Date.now() - 10000;
   await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'booking', payload: s }), state);
   await expect(page().locator('[data-booking-publish]')).toHaveText('Laatst bijgewerkt vanaf deze computer: zojuist');
+  // A meeting type's row names what it changes, and its editor opens on Wanneer gasten kunnen boeken.
+  await call('bookingSave', { types: [{ ...state.settings.types[0], bufferAfter: 15, minNotice: 1440, dailyLimit: 1 }] });
+  const type = page().locator('[data-a="booking-type:0"]');
+  await expect(type.locator('.desc')).toHaveText('30 min · 15 min vrije tijd erna · Minimaal 1 dag van tevoren · Hooguit 1 per dag');
+  await type.click();
+  await expect(page().locator('[data-section="when"] summary')).toHaveText('Wanneer gasten kunnen boeken');
+  await expect(page().locator('#booking-buffer-help')).toHaveText('Houdt tijd vrij rond elke afspraak, zodat gasten niet direct aansluitend op je andere afspraken kunnen boeken.');
 });
 
 test('a notice button acts on its own notice, named by id', async () => {

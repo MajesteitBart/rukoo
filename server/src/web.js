@@ -8,7 +8,7 @@
 
 import { DEFAULT_LOCALES, html, text } from './booking-text.js';
 import { randomBytes, toBase64url } from './bytes.js';
-import { bookerPath, bookingPrefix, clientNetwork, config, fontDir, limitRate } from './config.js';
+import { bookerPath, bookingPrefix, clientNetwork, config, fontDir, iconDir, limitRate } from './config.js';
 import { NOINDEX, meetText, redirect } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -141,6 +141,7 @@ function context(request, env, url, handle, profile, source = url.searchParams, 
     base: `${bookingPrefix(env, url)}/${handle}`,
     script: bookerPath(env, url),
     fonts: fontDir(env, url),
+    icons: iconDir(env, url),
     operator: config(env, url).operator,
     weekStart: weekStartOf(locale),
     languageLink: (l) => {

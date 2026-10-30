@@ -5,9 +5,10 @@
 import { agentData, llmsTxt, siteLlmsTxt, wantsMarkdown } from './agent-text.js';
 import * as api from './api.js';
 import { BOOKER_JS } from './booker-script.js';
-import { bookerPath, bookingOrigins, bookingPrefix, checkConfig, clientNetwork, fontDir, limitRate } from './config.js';
+import { bookerPath, bookingOrigins, bookingPrefix, checkConfig, clientNetwork, fontDir, iconDir, limitRate } from './config.js';
 import { FONT_FILES } from './fonts.js';
-import { NOINDEX, READ_CORS, meetEmpty, meetFont, meetJson, meetText, redirect } from './http.js';
+import { NOINDEX, READ_CORS, meetEmpty, meetFont, meetIcon, meetJson, meetText, redirect } from './http.js';
+import { ICON_FILES } from './icons.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
 import { mcp } from './mcp.js';
@@ -34,7 +35,7 @@ async function route(request, env, url) {
   checkConfig(env);
   const prefix = bookingPrefix(env, url);
   const path = url.pathname;
-  // The path after the prefix: /<handle>…, /mcp, /assets/fonts/…, and at the root /booker.js and /llms.txt.
+  // The path after the prefix: /<handle>…, /mcp, /assets/…, and at the root /booker.js, the icons and /llms.txt.
   const sub = path.slice(prefix.length);
   const method = request.method;
   const reading = method === 'GET' || method === 'HEAD';
@@ -45,6 +46,10 @@ async function route(request, env, url) {
   const fonts = fontDir(env, url);
   if (reading && path.startsWith(fonts) && Object.hasOwn(FONT_FILES, path.slice(fonts.length))) {
     return meetFont(FONT_FILES[path.slice(fonts.length)], method);
+  }
+  const icons = iconDir(env, url);
+  if (reading && path.startsWith(icons) && Object.hasOwn(ICON_FILES, path.slice(icons.length))) {
+    return meetIcon(ICON_FILES[path.slice(icons.length)], method);
   }
   if (!prefix && sub === '/llms.txt' && reading) {
     return meetText(200, siteLlmsTxt(env, url), 'text/markdown; charset=utf-8', READ_CORS, method);

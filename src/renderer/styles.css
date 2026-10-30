@@ -3386,6 +3386,85 @@ body.compose-window {
   font-size: 12px;
   opacity: 1;
 }
+/* @-mentions: the people to mention, under the @ in the text (mentions.js), and the mention itself. */
+.suggest.mention-suggest {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  animation: pop 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: top left;
+}
+/* mentions.js caps the height to the window; the options scroll and the line under them stays. */
+.mention-list {
+  position: relative;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.mention-suggest [role='option'] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* The keyboard's row, which Enter picks: the selected-row grey, which still shows on the raised dark surface. */
+.mention-suggest [role='option'].active {
+  background: var(--sel);
+}
+.mention-suggest .avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+}
+.mention-who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mention-who > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-name {
+  font-weight: 500;
+}
+.mention-tag {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+.mention-hint {
+  flex: none;
+  padding: 6px 8px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.editor a.mention {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--link);
+  text-decoration: none;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+@media (prefers-reduced-motion: reduce) {
+  .suggest.mention-suggest {
+    animation: none;
+  }
+}
 .compose-body {
   padding: 16px 0 4px;
   cursor: text;
@@ -3924,6 +4003,11 @@ body.compose-window {
 .agentpane.is-drop .ap-drop {
   display: flex;
   animation: pop 120ms ease;
+}
+/* The panel itself takes the drop, not what is in it. The empty state and the transcript are drawn again as the
+   agent's status and replies come in; a drop that went to an element that just left the page never reached the panel. */
+.agentpane.is-drop * {
+  pointer-events: none;
 }
 .agentpane.is-drop .bui-pb__box {
   border-color: var(--accent);
@@ -4587,7 +4671,9 @@ body.compose-window {
   flex: none;
   align-self: center;
 }
-.booking-warn {
+/* Also a row's second line, whose own color would win in the dark theme. */
+.booking-warn,
+.row .desc.booking-warn {
   color: var(--warn);
 }
 :root.light .booking-warn {
@@ -4620,6 +4706,45 @@ body.compose-window {
 .booking-device .btn {
   align-self: center;
 }
+/* Settings > Video meetings: a service's state as a dot, its buttons on the right. */
+.video-service {
+  gap: 8px 14px;
+  flex-wrap: wrap;
+}
+.video-service .text {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.video-dot {
+  width: 8px;
+  height: 8px;
+  margin: 0 2px;
+  border-radius: 50%;
+  flex: none;
+  align-self: center;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+.video-dot[data-state='connected'] {
+  background: var(--ok);
+  box-shadow: none;
+}
+.video-dot[data-state='renew'] {
+  background: var(--warn);
+  box-shadow: none;
+}
+.video-dot[data-state='spacer'] {
+  visibility: hidden;
+}
+.video-dot[data-state='busy'] {
+  box-shadow: inset 0 0 0 1.5px var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .video-dot[data-state='busy'] {
+    animation: none;
+  }
+}
 .booking-form-actions {
   display: flex;
   align-items: center;
@@ -4649,46 +4774,64 @@ body.compose-window {
 [data-location-label][hidden] {
   display: none;
 }
-/* The meeting type's advanced fields: folded under a summary that turns its chevron when open. */
-.booking-more {
+/* The meeting type editor's sections (When guests can book, More options): a hairline above, and a heading that
+   folds the section and turns its chevron when open. */
+.booking-section {
   display: grid;
   gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  container: booking-section / inline-size;
 }
-.booking-more summary {
+.booking-section summary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   width: max-content;
+  max-width: 100%;
   padding: 4px 6px 4px 2px;
   border-radius: 6px;
-  color: var(--text-2);
-  font-size: 13px;
-  font-weight: 500;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
   cursor: pointer;
   list-style: none;
 }
-.booking-more summary::-webkit-details-marker {
+.booking-section summary::-webkit-details-marker {
   display: none;
 }
-.booking-more summary:hover {
-  color: var(--text);
-}
-.booking-more summary svg {
+.booking-section summary svg {
+  flex: none;
   width: 15px;
   height: 15px;
-  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+  color: var(--text-3);
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), color 120ms ease;
 }
-.booking-more[open] summary svg {
+.booking-section summary:hover svg {
+  color: var(--text);
+}
+.booking-section[open] summary svg {
   transform: rotate(90deg);
 }
-.booking-more[open] > :not(summary) {
+.booking-section[open] > :not(summary) {
   animation: fade 200ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.booking-more-grid {
+/* Fields in the pairs they form (free time; notice and how far ahead; start times and the limit), with a full-width
+   help line under a pair. One column where two don't fit, at a narrow window or a high zoom. */
+.booking-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
   margin-top: 4px;
+}
+.form .booking-grid-help {
+  grid-column: 1 / -1;
+  margin-top: -7px;
+}
+@container booking-section (max-width: 440px) {
+  .booking-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .booking-day {
   gap: 12px;
@@ -4732,10 +4875,10 @@ body.compose-window {
 }
 @media (prefers-reduced-motion: reduce) {
   .booking-done,
-  .booking-more[open] > :not(summary) {
+  .booking-section[open] > :not(summary) {
     animation: none;
   }
-  .booking-more summary svg,
+  .booking-section summary svg,
   .calset-swatch {
     transition: none;
   }
@@ -7777,6 +7920,12 @@ button.cal-gchip-main:hover {
   width: 16px;
   height: 16px;
   flex: none;
+}
+/* A nightly version doesn't fit the sidebar; the tooltip has all of it. */
+.update-btn span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .update-btn:hover {
   background: color-mix(in srgb, var(--accent) 16%, transparent);

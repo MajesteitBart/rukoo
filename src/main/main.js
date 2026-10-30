@@ -23,6 +23,7 @@ const { Engine } = require('./engine');
 const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
+const { VideoServices } = require('./video');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
@@ -98,6 +99,8 @@ let logos = null;
 let engine = null;
 let calendars = null;
 let google = null;
+// Zoom, Microsoft Teams and Jitsi Meet for booked meetings (video/index.js).
+let video = null;
 let account = null;
 let categories = null;
 let mailNotices = null;
@@ -372,6 +375,39 @@ function harden(w) {
   });
 }
 
+// The spelling a window's last right-click in a text field found, by its webContents: { word, suggestions }.
+const spelling = new WeakMap();
+
+// Right-click in a text field. Only this event knows whether the word under the pointer is misspelled and what could
+// replace it, so it goes to the window, which draws its own menu (the composer's text, editmenu.js); other fields
+// ignore it. The word and its suggestions stay here for the pick: a window can replace the word with one of them or
+// add that word to the dictionary, and nothing else. An email's frame stops its contextmenu event for its own menu,
+// so its right-clicks never get here.
+function forwardEditMenu(w) {
+  const contents = w.webContents;
+  contents.on('context-menu', async (_event, params) => {
+    if (!params.isEditable) return;
+    const word = params.misspelledWord || '';
+    const found = { word, suggestions: word ? (params.dictionarySuggestions || []).slice(0, 5) : [] };
+    spelling.set(contents, found);
+    // Paste is on when the clipboard holds something. A clipboard that can't be read leaves it on, as Ctrl+V would
+    // still try.
+    const types = await Promise.resolve()
+      .then(() => clipboard.read())
+      .then(
+        (items) => items.flatMap((item) => item.types),
+        () => null
+      );
+    // A later right-click came in while the clipboard was read: only its answer goes, so the window never pairs this
+    // word with the place it was right-clicked last.
+    if (contents.isDestroyed() || spelling.get(contents) !== found) return;
+    contents.send('mail:event', {
+      type: 'edit-menu',
+      payload: { ...found, canPaste: !types || types.length > 0, canPastePlain: !types || types.includes('text/plain') }
+    });
+  });
+}
+
 // One zoom level for the main window and every compose window. Settings follows it through the 'zoom' event;
 // nothing else in the windows depends on it, so it is saved without the 'updated' redraw.
 function setZoom(level) {
@@ -528,6 +564,7 @@ function openComposeWindow(input) {
   composeWindows.set(id, { win: w, opts, draftId: opts.mode === 'draft' ? opts.id : null });
   w.on('closed', () => composeWindows.delete(id));
   harden(w);
+  forwardEditMenu(w);
   watchZoom(w);
   watchQuit(w);
   if (!process.env.SEM_HIDDEN) windowState.track('compose', w);
@@ -602,6 +639,7 @@ const api = {
   list: (opts) => engine.listMessages(opts),
   counts: (scope) => engine.counts(scope),
   contacts: () => engine.contacts(),
+  threadContacts: (accountId, ids) => engine.threadContacts(accountText(accountId, 200), Array.isArray(ids) ? ids.slice(0, 200).map((id) => accountText(id, 1000)) : []),
   get: (id) => engine.getMessage(id),
   setFlags: (id, flags) => engine.setFlags(id, flags),
   archive: (id) => engine.archive(id),
@@ -1013,6 +1051,29 @@ const api = {
   bookingDetails: (id) => booking.details(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id) ? id : ''),
   bookingSync: () => booking.sync(),
   bookingTakeover: () => booking.takeover(),
+  // Video services for bookings (video/index.js), connected on this computer only.
+  videoState: () => video.state(),
+  videoConnect: async (id) => {
+    const state = await video.connect(accountText(id, 20));
+    showWindow();
+    return state;
+  },
+  videoCancel: () => video.cancel(),
+  videoDisconnect: (id) => video.disconnect(accountText(id, 20)),
+  videoRoom: (id, input) => {
+    const i = plainObject(input);
+    return video.setRoom(accountText(id, 20), { on: typeof i.on === 'boolean' ? i.on : undefined, server: typeof i.server === 'string' ? i.server.slice(0, 400) : undefined });
+  },
+  videoImportClient: async (id) => {
+    const service = accountText(id, 20);
+    const res = await dialog.showOpenDialog(win, {
+      title: t('settings.video.importTitle', { service: video.name(service) }),
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (res.canceled || !res.filePaths[0]) return video.state();
+    return video.importClient(service, res.filePaths[0]);
+  },
   categoriesActivity: () => categories.activity(),
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
@@ -1178,9 +1239,25 @@ Object.assign(api, {
 
 // Calls that act on the window that makes them.
 const windowApi = {
-  // copy: the reader's context menu, for the selection in the email frame it has just focused.
+  // copy: the reader's context menu, for the selection in the email frame it has just focused. cut, paste and
+  // pasteAndMatchStyle (paste as plain text): the composer's context menu, for its text (editmenu.js).
   nativeEdit: (sender, action) => {
-    if (['undo', 'redo', 'selectAll', 'copy'].includes(action)) sender[action]();
+    if (['undo', 'redo', 'selectAll', 'copy', 'cut', 'paste', 'pasteAndMatchStyle'].includes(action)) sender[action]();
+  },
+  // The spelling part of the composer's context menu: one of the suggestions forwardEditMenu sent for the word that
+  // was right-clicked, or that word into the dictionary. Either one is used once.
+  replaceMisspelling: (sender, word) => {
+    const found = spelling.get(sender);
+    if (!found || typeof word !== 'string' || !found.suggestions.includes(word)) throw new Error('invalid');
+    spelling.delete(sender);
+    sender.replaceMisspelling(word);
+    return true;
+  },
+  addToDictionary: (sender) => {
+    const found = spelling.get(sender);
+    if (!found || !found.word) throw new Error('invalid');
+    spelling.delete(sender);
+    return sender.session.addWordToSpellCheckerDictionary(found.word);
   },
   // Save image as, from an email's context menu; the dialog belongs to the window it was asked in.
   saveImage: async (sender, src) => {
@@ -1222,6 +1299,8 @@ function windowError(err) {
   if (err && err.booking === true && typeof err.code === 'string') {
     return typeof err.field === 'string' ? { code: err.code.slice(0, 40), field: err.field.slice(0, 200) } : { code: err.code.slice(0, 40) };
   }
+  // Video errors (video/oauth.js videoError) pass their code, so a sign-in the user cancelled isn't shown as a failure.
+  if (err && err.video === true && typeof err.code === 'string') return { code: err.code.slice(0, 40) };
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
@@ -1272,6 +1351,7 @@ function createWindow({ hidden = false } = {}) {
   });
   updateApplicationMenu();
   harden(win);
+  forwardEditMenu(win);
   watchZoom(win);
   watchQuit(win);
   win.on('focus', () => {
@@ -1400,7 +1480,12 @@ app.whenReady().then(() => {
   categories.on('changed', () => broadcast('categories', categories.state()));
   categories.on('progress', (activity) => broadcast('categories-progress', activity));
   mailNotices = new MailNotices({ categories, show: showMailNotices });
-  booking = new Booking({ account, calendars, engine, secrets, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
+  // Sign-ins to Zoom and Microsoft Teams stay on this computer; their OAuth clients come from SEM_* variables or a
+  // client file next to google-oauth.json (docs/booking.md).
+  video = new VideoServices({ dataDir: path.join(app.getPath('userData'), 'data'), configDir: app.getPath('userData'), secrets, openBrowser: (url) => shell.openExternal(url) }).init();
+  if (process.env.SEM_HIDDEN) global.__semVideo = video;
+  video.on('changed', (s) => broadcast('video', s));
+  booking = new Booking({ account, calendars, engine, secrets, video, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
   if (process.env.SEM_HIDDEN) global.__semBooking = booking;
   booking.on('state', (s) => broadcast('booking', s));
   // Deleting the Rukoo account turns the booking page off first, and stops when that fails (decision 22).

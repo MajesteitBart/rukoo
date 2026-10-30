@@ -133,6 +133,18 @@ class CategoriesTest {
     }
 
     @Test
+    fun `a list's lookup gives each inbox email its category, and nothing while categories are off`() {
+        val s = setup(inbox())
+        val sent = msg(8, Address("Me", "me@work.example"), "Re: hi", 8).copy(id = "acc1:Sent:8", folder = "Sent", role = FolderRole.SENT)
+        val list = s.mail.inbox + sent
+        assertEquals(CategoryLookup.NONE, s.cats.lookup(listOf(s.acc), list))
+        s.cats.setEnabled(true)
+        val lookup = s.cats.lookup(listOf(s.acc), list)
+        assertEquals(s.cats.of(listOf(s.acc), list), lookup.of)
+        assertEquals(listOf("needs-you", "promotions", "updates", null), list.map { lookup[it] })
+    }
+
+    @Test
     fun `mail cached before its headers were fetched waits to be sorted`() = runBlocking {
         val s = setup(inbox())
         s.mail.inbox = s.mail.inbox.mapIndexed { i, m -> if (i == 0) m.copy(signals = null) else m }
@@ -751,6 +763,47 @@ class CategoriesTest {
         val made = state.categories.last()
         assertEquals(40, made.name.length)
         assertTrue(made.color.startsWith("#"))
+    }
+
+    @Test
+    fun `Show in Inbox is a field of the synced record, false only when off`() {
+        val s = setup(inbox())
+        s.cats.setEnabled(true)
+        fun record() = s.account.get("category", "promotions") as JsonObject
+        assertTrue(s.cats.list().all { it.inbox })
+        // A newer app's field stays, also when the switch changes.
+        s.account.put("category", "promotions", JsonObject(record() + ("future" to kotlinx.serialization.json.JsonPrimitive(1))))
+        var state = s.cats.saveCategory("promotions", inbox = false)
+        assertFalse(state.categories.first { it.id == "promotions" }.inbox)
+        assertEquals("false", record()["inbox"]?.jsonPrimitive?.content)
+        assertEquals("1", record()["future"]?.jsonPrimitive?.content)
+        // Editing the name leaves the switch as it is, as the computer set it.
+        state = s.cats.saveCategory("promotions", name = TextEdit.To("Offers"))
+        assertFalse(state.categories.first { it.id == "promotions" }.inbox)
+        assertEquals(setOf("promotions"), s.cats.lookup(listOf(s.acc), s.mail.inbox).hiddenCategories)
+        // Shown again, the record leaves the field out, as records before it did.
+        s.cats.saveCategory("promotions", inbox = true)
+        assertFalse("inbox" in record())
+        assertTrue(s.cats.list().first { it.id == "promotions" }.inbox)
+        // Only the JSON false hides; what another app may write otherwise shows.
+        for (odd in listOf(kotlinx.serialization.json.JsonPrimitive("false"), kotlinx.serialization.json.JsonPrimitive(0), kotlinx.serialization.json.JsonNull)) {
+            s.account.put("category", "promotions", JsonObject(record() + ("inbox" to odd)))
+            assertTrue("$odd shows", s.cats.list().first { it.id == "promotions" }.inbox)
+        }
+    }
+
+    @Test
+    fun `a hidden category's mail is known to the lookup while categories are on`() {
+        val s = setup(inbox())
+        s.cats.setEnabled(true)
+        s.cats.saveCategory("updates", inbox = false)
+        s.cats.saveCategory(name = TextEdit.To("Kids"), inbox = false)
+        val lookup = s.cats.lookup(listOf(s.acc), s.mail.inbox)
+        assertEquals(2, lookup.hiddenCategories.size)
+        assertEquals(listOf(false, false, true), s.mail.inbox.map(lookup::hidden))
+        // Off, nothing is hidden: Inbox shows all of it, as without categories.
+        s.cats.setEnabled(false)
+        assertEquals(CategoryLookup.NONE, s.cats.lookup(listOf(s.acc), s.mail.inbox))
     }
 
     @Test

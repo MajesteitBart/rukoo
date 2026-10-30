@@ -74,7 +74,7 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | `override` | the same key as `classification` | `{ category, at }` | last write wins |
 | `sender` | a lowercased sender address | `{ category, at }` | last write wins |
 | `setting` | a setting's name, such as `categories` | that setting's value, such as `{ enabled, unsure, seeded }` | last write wins |
-| `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became | see [Booking pages](#booking-pages) | last write wins |
+| `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became; `meeting:<acct>:<bookingId>`, a video meeting made for a booking whose event isn't written yet | see [Booking pages](#booking-pages) | last write wins |
 | `bookingkey` | `<acct>` | the booking page's key pair: `{ current, keys: { <keyId>: { privatePkcs8, publicRaw, createdAt } } }` | first write wins (`ifAbsent`) |
 
 `<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device leaves `bookingkey` out of "Export my data" and removes it locally when it signs out.
@@ -465,16 +465,16 @@ The server works out the open times; devices only publish windows and busy times
 
 The paths in this section are relative to the booking base, which depends on `BOOKING_ORIGIN`:
 
-| `BOOKING_ORIGIN` | Booking base | Pages | MCP | Script |
+| `BOOKING_ORIGIN` | Booking base | Pages | MCP | Script and icons |
 |---|---|---|---|---|
-| set, such as `https://meet.rukoo.io` | its root | `https://meet.rukoo.io/<handle>…` | `/mcp` | `/booker.js` |
-| empty (self-hosted servers, tests) | `/meet` on every address of the server | `https://<server>/meet/<handle>…` | `/meet/mcp` | `/meet/assets/booker.js` |
+| set, such as `https://meet.rukoo.io` | its root | `https://meet.rukoo.io/<handle>…` | `/mcp` | `/booker.js`, `/favicon.svg`, … |
+| empty (self-hosted servers, tests) | `/meet` on every address of the server | `https://<server>/meet/<handle>…` | `/meet/mcp` | `/meet/assets/booker.js`, `/meet/assets/favicon.svg`, … |
 
 With `BOOKING_ORIGIN` set:
 
-- At the root of `BOOKING_ORIGIN`, the account API (`/v1/…`), `/privacy` and `/` work as on any address. `/llms.txt` is a site-level guide for assistants: what a booking link is, that each page has its own guide at `/<handle>/llms.txt`, the MCP endpoint and the JSON API in two lines, with no host's text. `/mcp`, `/booker.js` and `/assets/fonts/…` are as below. Any other path is a handle; one nobody has gets the same 404 as below. The address can be shared with a website that answers its own paths first (rukoo.io was, before the pages moved to meet.rukoo.io; see `server/README.md`), which is why the website's paths are reserved handles.
-- On every address, `/meet` and `/meet/…` redirect to the same path at the root of `BOOKING_ORIGIN` without `/meet`, the query kept: `301` for GET and HEAD, with `access-control-allow-origin: *` so a cross-site read can follow it, and `308` for every other method, so a client sends its POST again there. `/meet/mcp` goes to `/mcp`, `/meet/assets/booker.js` to `/booker.js` and `/meet/assets/fonts/…` to `/assets/fonts/…`. Old links keep working this way.
-- On an address in `BOOKING_FORMER_ROOTS`, where the pages lived at the root before, a GET or HEAD without an `Authorization` header redirects (`301`) to the same path at the root of `BOOKING_ORIGIN`, `/meet` taken off when it has one; `/`, `/privacy` and the account API stay. Every other request to the pages, such as a form post, a JSON write, an MCP call, a read with a manage key, a guest's manage page and calendar file (`/<handle>/booking/<id>`), or the pages' script and fonts, is answered there as at `BOOKING_ORIGIN`, with `BOOKING_ORIGIN`'s addresses in the answer: a form's post and the manage page it leads to must stay on the form's origin (`form-action 'self'` covers the whole navigation), and clients drop `Authorization` on a redirect to another origin. A page opened before the move still books, moves and cancels. Without a valid `BOOKING_ORIGIN` the setting does nothing.
+- At the root of `BOOKING_ORIGIN`, the account API (`/v1/…`), `/privacy` and `/` work as on any address. `/llms.txt` is a site-level guide for assistants: what a booking link is, that each page has its own guide at `/<handle>/llms.txt`, the MCP endpoint and the JSON API in two lines, with no host's text. `/mcp`, `/booker.js`, the icons and `/assets/fonts/…` are as below. Any other path is a handle; one nobody has gets the same 404 as below. The address can be shared with a website that answers its own paths first (rukoo.io was, before the pages moved to meet.rukoo.io; see `server/README.md`), which is why the website's paths are reserved handles.
+- On every address, `/meet` and `/meet/…` redirect to the same path at the root of `BOOKING_ORIGIN` without `/meet`, the query kept: `301` for GET and HEAD, with `access-control-allow-origin: *` so a cross-site read can follow it, and `308` for every other method, so a client sends its POST again there. `/meet/mcp` goes to `/mcp`, `/meet/assets/booker.js` and the icons under `/meet/assets/` to the same name at the root, and `/meet/assets/fonts/…` to `/assets/fonts/…`. Old links keep working this way.
+- On an address in `BOOKING_FORMER_ROOTS`, where the pages lived at the root before, a GET or HEAD without an `Authorization` header redirects (`301`) to the same path at the root of `BOOKING_ORIGIN`, `/meet` taken off when it has one; `/`, `/privacy` and the account API stay. Every other request to the pages, such as a form post, a JSON write, an MCP call, a read with a manage key, a guest's manage page and calendar file (`/<handle>/booking/<id>`), or the pages' script, icons and fonts, is answered there as at `BOOKING_ORIGIN`, with `BOOKING_ORIGIN`'s addresses in the answer: a form's post and the manage page it leads to must stay on the form's origin (`form-action 'self'` covers the whole navigation), and clients drop `Authorization` on a redirect to another origin. A page opened before the move still books, moves and cancels. Without a valid `BOOKING_ORIGIN` the setting does nothing.
 - On the server's other addresses nothing else of the booking pages answers: `/<handle>` and `/llms.txt` are `404`, like any unknown path. The account API keeps working on every address, so devices that still sync with an older address are fine.
 - `BOOKING_ORIGIN` must be an `http` or `https` origin. Anything else counts as empty.
 
@@ -482,7 +482,7 @@ With `BOOKING_ORIGIN` set:
 
 Every public route's response sends:
 
-- `cache-control: no-store` (except the font files), `x-content-type-options: nosniff`, `referrer-policy: same-origin`: other websites never get a page's address, which can hold a manage key or a guest's name and email, and the pages' own requests keep their origin
+- `cache-control: no-store` (except the font and icon files), `x-content-type-options: nosniff`, `referrer-policy: same-origin`: other websites never get a page's address, which can hold a manage key or a guest's name and email, and the pages' own requests keep their origin
 - `content-security-policy: default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
 
 | Routes | Also |
@@ -728,6 +728,10 @@ The pages' only script (`text/javascript`, served from the server itself for `sc
 #### `GET /assets/fonts/<file>`
 
 Inter, the typeface the app uses (SIL Open Font License 1.1, `server/src/fonts/Inter-LICENSE.txt`): `inter-latin-opsz-normal.woff2` and `inter-latin-ext-opsz-normal.woff2`, as `font/woff2` with `cache-control: public, max-age=31536000, immutable`. Under `BOOKING_ORIGIN` the website may answer these paths first with the same files; without it they are at `/meet/assets/fonts/<file>`. Other names are `404`.
+
+#### `GET /favicon.svg`, `/favicon.ico`, `/apple-touch-icon.png`
+
+Rukoo's icon for the browser tab, bookmarks and home-screen shortcuts, linked from every page's `<head>`. `favicon.svg` (`image/svg+xml`) draws the head lighter under `prefers-color-scheme: dark`, so it stays visible on a dark tab bar; `favicon.ico` (`image/x-icon`, 16 and 32 pixels) is for browsers without SVG icons; `apple-touch-icon.png` (`image/png`, 180 pixels) has a white background. All three come with `cache-control: public, max-age=86400`. They are at the root of `BOOKING_ORIGIN`, where a browser also looks for `/favicon.ico` by itself, and at `/meet/assets/<file>` without it. Other names are `404`.
 
 ### Limits
 
