@@ -919,6 +919,58 @@
   user-select: text;
   animation: bui-fade-up 300ms var(--ease-out-strong) both;
 }
+/* A message that waits: the bubble with a dashed edge, like other things that aren't there yet, and a quiet line
+ * under it that says when it goes, with its actions. */
+.bui-queued {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.bui-queued .bui-ub {
+  color: var(--ink-2);
+  outline: 1px dashed var(--line-strong);
+  outline-offset: -1px;
+}
+.bui-queued__line {
+  display: flex;
+  max-width: 100%;
+  min-height: 22px;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.bui-queued__ico {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+.bui-queued__status {
+  min-width: 0;
+  margin-right: 2px;
+  text-wrap: pretty;
+}
+.bui-queued__btn {
+  display: flex;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--ink-3);
+  transition:
+    color 120ms var(--ease-default),
+    background-color 120ms var(--ease-default);
+}
+.bui-queued__btn:hover:enabled {
+  background: var(--hover);
+  color: var(--ink);
+}
+.bui-queued__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .bui-sys {
   display: flex;
   align-items: center;
@@ -2144,6 +2196,61 @@
 .bui-pb__send:enabled:active {
   scale: 0.94;
 }
+/* While the agent works and the input holds a message: Stop steps back to a ring, so the split button beside it is
+ * the one filled control. */
+.bui-pb__send.is-quiet:enabled {
+  background: var(--surface);
+  color: var(--ink-2);
+  box-shadow: var(--shadow-btn);
+}
+.bui-pb__send.is-quiet:enabled:hover {
+  color: var(--ink);
+}
+/* Steer (or Queue) and the chevron with both, as one pill-cornered control of two buttons. */
+.bui-pb__split {
+  display: flex;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--surface);
+  animation: bui-pop-in 160ms var(--ease-out-strong) both;
+}
+.bui-pb__split[hidden] {
+  display: none;
+}
+.bui-pb__go,
+.bui-pb__more {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  transition: background-color 150ms var(--ease-default);
+}
+.bui-pb__go {
+  width: 30px;
+  border-radius: 8px 0 0 8px;
+}
+.bui-pb__more {
+  width: 20px;
+  border-radius: 0 8px 8px 0;
+  /* A hairline between the two halves, in the control's own ink. */
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--surface) 22%, transparent);
+}
+.bui-pb__go:hover:enabled,
+.bui-pb__more:hover,
+.bui-pb__more[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--surface) 14%, transparent);
+}
+.bui-pb__go:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.bui-pb__go:enabled:active,
+.bui-pb__more:active {
+  scale: 0.94;
+}
 .bui-pb__menu {
   position: absolute;
   left: 0;
@@ -2291,6 +2398,15 @@
 }
 .bui-menu__row:focus-visible {
   outline: none;
+}
+/* A row that can't be picked now: its name dims, and the line under it, which can say why, stays readable. */
+.bui-menu__row:disabled {
+  cursor: default;
+}
+.bui-menu__row:disabled .bui-menu__ico,
+.bui-menu__row:disabled .bui-menu__top,
+.bui-menu__row:disabled > .bui-menu__label {
+  opacity: 0.45;
 }
 .bui-menu__ico {
   display: flex;

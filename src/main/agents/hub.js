@@ -31,6 +31,9 @@ const MAX_TEXT = 40000;
 // yet; see continueFrom(). At most MAX_NEWER of them go along with one message (loadNewer()).
 const MAX_CONTINUED = 20;
 const MAX_NEWER = 3;
+// Messages that can wait in one chat while the agent works (see hold()).
+const MAX_QUEUE = 20;
+const QUEUE_STATES = new Set(['queued', 'steering']);
 // References a chat keeps per email for the thread check (keepThread()); the newest are at the end.
 const MAX_REFERENCES = 50;
 // How a turn the user has not seen ended (watch()).
@@ -80,6 +83,7 @@ const ERROR_TEXT = {
 const rand = (n = 6) => crypto.randomBytes(n).toString('base64url').replace(/[-_]/g, '').slice(0, n).toLowerCase().padEnd(n, '0');
 const newConversationId = () => `c_${Date.now().toString(36)}_${rand(6)}`;
 const newItemId = () => `i_${rand(10)}`;
+const newQueueId = () => `q_${rand(10)}`;
 const clip = (v, max) => String(v == null ? '' : v).slice(0, max);
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest();
 const isObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
@@ -162,6 +166,8 @@ class AgentHub extends EventEmitter {
     this.sending = new Map();
     this.approvals = new Map();
     this.followUps = new Map();
+    // How each chat's last turn ended ('done', 'stopped' or 'error'): only after 'done' does its queue move on.
+    this.lastOutcome = new Map();
     this.tokens = [];
     this.convTokens = new Map();
     this.remoteHash = null;
@@ -482,6 +488,8 @@ class AgentHub extends EventEmitter {
       c.toldPermission = permissionLevel(c.toldPermission);
       // Saved before files could be attached: none.
       c.files = Array.isArray(c.files) ? c.files.filter((f) => isObj(f) && typeof f.id === 'string' && typeof f.file === 'string') : [];
+      // Messages that waited when Rukoo quit wait again, until the user sends one: the turn they waited for is gone.
+      c.queue = cleanQueue(c.queue);
       // A turn cannot survive a restart: close whatever was still open.
       for (const item of c.items) {
         if (item.type === 'assistant' && item.status === 'streaming') item.status = 'stopped';
@@ -496,7 +504,8 @@ class AgentHub extends EventEmitter {
     }
     // The files of chats that are gone. Not while a file Rukoo couldn't read is kept aside: its chats may come
     // back, and their files with them. After the next save the store alone would say they are gone.
-    if (!broken && !this.keptAside()) this.files.prune([...this.conversations.values()].map((c) => [c.id, c.files]));
+    // A waiting message's files are in the chat's folder already.
+    if (!broken && !this.keptAside()) this.files.prune([...this.conversations.values()].map((c) => [c.id, [...c.files, ...c.queue.flatMap((e) => e.files)]]));
   }
 
   keptAside() {
@@ -892,6 +901,8 @@ class AgentHub extends EventEmitter {
       continued: [],
       // Files the user attached to its messages, in the chat's folder (chatfiles.js); read_chat_file reads them.
       files: [],
+      // Messages the user sent while the agent worked, oldest first, that are not in the transcript yet (hold()).
+      queue: [],
       items: []
     };
     // Picked before the chat started.
@@ -933,6 +944,7 @@ class AgentHub extends EventEmitter {
       w.resolve('cancel');
     }
     this.followUps.delete(c.id);
+    this.lastOutcome.delete(c.id);
     const token = this.convTokens.get(c.id);
     if (token) this.revokeToken(token);
     this.convTokens.delete(c.id);
@@ -1178,10 +1190,13 @@ class AgentHub extends EventEmitter {
   // A refusal throws at once, before anything changes. A message with files then returns a promise: the files are
   // copied into the chat's folder without blocking (chatfiles.keep), the chat is busy meanwhile, and the message
   // shows in the chat only once they are there. A failed copy rejects it and leaves the chat as it was.
-  send(id, { text, action = null, display = null, skill = null, files = [], emails = [] } = {}) {
+  // mode: what happens to a message sent while the chat is busy (hold()). 'steer' hands it to the agent before its
+  // next step, 'queue' sends it after the turn. Without one, a busy chat refuses the message.
+  send(id, { text, action = null, display = null, skill = null, files = [], emails = [], mode = null } = {}) {
     const c = this.mustGet(id);
     if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
-    if (this.turns.has(c.id) || this.sending.has(c.id)) throw new AgentError('busy', 'a turn is running');
+    const busy = this.turns.has(c.id) || this.sending.has(c.id);
+    if (busy && mode !== 'steer' && mode !== 'queue') throw new AgentError('busy', 'a turn is running');
     if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
     if (skill) {
       const s = this.skills.get(skill);
@@ -1203,6 +1218,7 @@ class AgentHub extends EventEmitter {
     // tags for the agent (runTurn gets them); the user's line and the chat title show the text alone.
     const line = display ? context.untag(shown) : shown;
     const message = { body, action, shown, line, mails };
+    if (busy) return this.hold(c, message, staged, mode);
     if (!staged.length) return this.begin(c, message, []);
     // Removed while its files were copied: what was copied goes with the chat's folder, whichever way the copy went.
     const removed = () => {
@@ -1243,7 +1259,8 @@ class AgentHub extends EventEmitter {
     const firstTurn = !c.delivered;
     // The agent's new session has not had the chat yet: the email and a recap go along again.
     const recap = !firstTurn && c.needsRecap === true;
-    if (kept.length) c.files = [...(c.files || []), ...kept];
+    // A message that steered before (its files went to the chat then) and came back to the queue brings them again.
+    this.addFiles(c, kept);
     // A chat is named after its first message, or after what it brought when it has no text.
     const naming = !c.title;
     if (naming) c.title = clip((line.trim() ? line : [...kept.map((f) => f.name), ...mails.map((m) => m.subject)].join(', ')).replace(/\s+/g, ' ').trim(), 80);
@@ -1278,8 +1295,15 @@ class AgentHub extends EventEmitter {
       stopTimer: null,
       forceStop: null,
       // What the user attached to this message; runTurn adds the start of each file's text.
-      attached: kept.length || mails.length ? { files: kept, emails: mails } : null
+      attached: kept.length || mails.length ? { files: kept, emails: mails } : null,
+      // What runTurn hands the adapter, once it does; ready settles then, or when the turn ends before (steer()).
+      handle: null,
+      ready: null,
+      markReady: null
     };
+    turn.ready = new Promise((resolve) => {
+      turn.markReady = resolve;
+    });
     this.turns.set(c.id, turn);
     this.setStatus(c, 'running');
     this.runTurn(c, turn, { text: body, action, firstTurn, recap, display: shown }).catch((err) => this.finishTurn(turn, { status: 'error', error: toError(err) }));
@@ -1439,6 +1463,10 @@ class AgentHub extends EventEmitter {
         // Optional for adapters: the agent no longer has this chat's session, and the adapter starts a new one.
         // Await it before sending input, which then carries the email and a recap of the chat.
         startOver: () => this.startOver(c, turn, handle, { text, ready: firstTurn || recap }),
+        // For adapters that steer (steer()): the agent took in the message with this id, as part of this turn.
+        steered: (id) => this.onSteered(c, turn, id),
+        // Whether the hub still follows this turn: a steer that waits for the agent to be ready stops waiting.
+        isOpen: () => !turn.closed,
         signal: turn.controller.signal
       };
       const forced = new Promise((resolve) => {
@@ -1446,7 +1474,11 @@ class AgentHub extends EventEmitter {
       });
       // Never start the agent for a turn that is already stopped.
       if (turn.controller.signal.aborted) result = { status: 'stopped' };
-      else result = await Promise.race([adapter.runTurn(handle), forced]);
+      else {
+        turn.handle = handle;
+        turn.markReady(true);
+        result = await Promise.race([adapter.runTurn(handle), forced]);
+      }
     } catch (err) {
       result = { status: 'error', error: toError(err) };
     }
@@ -1751,11 +1783,24 @@ class AgentHub extends EventEmitter {
     if (turn.closed) return;
     turn.closed = true;
     clearTimeout(turn.stopTimer);
+    // Steers still waiting for the agent to be ready stop waiting (deliverSteer()).
+    if (turn.markReady) turn.markReady(false);
     if (this.turns.get(turn.cid) === turn) this.turns.delete(turn.cid);
     const c = this.conversations.get(turn.cid);
     const status = ['done', 'stopped', 'error'].includes(result && result.status) ? result.status : 'error';
     this.expireTurnApprovals(turn);
     if (!c) return;
+    this.lastOutcome.set(c.id, status);
+    // A message that steered but that the agent never took in (the turn ended first, or was stopped) goes back to the
+    // queue, ahead of the ones that waited for the turn to end: the user wanted it sooner. So does one that was to
+    // steer once its files were in (hold()), in the order sent.
+    const back = c.queue.filter((e) => e.state === 'steering' || (e.state === 'copying' && turn.copyingSteers && turn.copyingSteers.has(e)));
+    if (back.length) {
+      for (const e of back) if (e.state === 'steering') e.state = 'queued';
+      c.queue = [...back, ...c.queue.filter((e) => !back.includes(e))];
+      this.touch(c);
+      this.emitQueue(c);
+    }
     const now = Date.now();
     for (const item of c.items) {
       if (!turn.items.has(item.id)) continue;
@@ -1780,17 +1825,20 @@ class AgentHub extends EventEmitter {
     if (error && ['offline', 'unauthorized', 'not-configured', 'not-installed', 'spawn-failed'].includes(error.code)) {
       this.refreshStatus().catch(() => {});
     }
-    this.nextFollowUp(c.id);
+    // After a stop or an error the waiting messages stay where they are, until the user sends one or another message:
+    // Stop means stop, and after an error the next message would likely meet the same problem.
+    this.nextFollowUp(c.id, { queue: status === 'done' });
   }
 
   // An approval that waited for the chat to be free (onProposal) goes now: its turn ended, or a message's files
-  // failed to copy.
-  nextFollowUp(cid) {
+  // failed to copy. Without one, and with queue set, the next message the user queued goes (nextQueued()).
+  nextFollowUp(cid, { queue: andQueue = false } = {}) {
     if (this.disposed) return;
     const queue = this.followUps.get(cid);
     const next = queue && queue.shift();
     if (queue && !queue.length) this.followUps.delete(cid);
     if (next) setImmediate(() => this.sendFollowUp(cid, next));
+    else if (andQueue) setImmediate(() => this.nextQueued(cid));
   }
 
   sendFollowUp(cid, message) {
@@ -1835,6 +1883,291 @@ class AgentHub extends EventEmitter {
     c.notes.push(`The user approved: ${message.display}. You were not told until now, so it has not been done; check with the user before you carry it out.`);
     const title = context.untag(message.display);
     this.addItem(c, { type: 'notice', text: `Not done yet: ${title}. ${this.agentName(c.agent)} hears about your approval with your next message.`, tone: 'info', code: 'kept-approval', params: { title: title.slice(0, 200) }, undo: null });
+  }
+
+  // ---------- messages sent while the agent works ----------
+  //
+  // A message the user sends while the chat is busy waits in c.queue, oldest first, as {id, state, at, text (what
+  // the user sees), body (what the agent gets), shown, action, files, emails, fallback}. 'queued' waits for the turn
+  // to end; 'steering' went to the agent, which takes it in before its next step, and then it joins the transcript
+  // (onSteered()). After a turn that ended normally the next queued message goes as a turn of its own. After Stop,
+  // an error or a restart they wait until the user sends one of them, or another message. 'copying' keeps the place
+  // of a message whose files are still being copied (hold()): the panel doesn't see it yet, and the messages behind
+  // it wait for it.
+  //
+  // An adapter that can take a message during a turn has steer(turn, {id, input, text, files}), which resolves true
+  // once the agent will get it in this turn, and calls turn.steered(id) when the agent takes it in. canSteer(), when
+  // it has one, says whether it can right now (a Hermes server without the steer route can't).
+
+  canSteer(agent) {
+    const a = this.adapters.get(agent);
+    if (!a || typeof a.steer !== 'function') return false;
+    return typeof a.canSteer === 'function' ? a.canSteer() !== false : true;
+  }
+
+  emitQueue(c) {
+    this.emitEvent({ kind: 'conversation', conversation: { id: c.id, queue: shownQueue(c.queue) } });
+  }
+
+  // The chat as the panel gets it (agentGet): without the messages whose files are still being copied.
+  forPanel(id) {
+    const c = this.get(id);
+    return c && c.queue.some((e) => e.state === 'copying') ? { ...c, queue: shownQueue(c.queue) } : c;
+  }
+
+  // Files the chat keeps, each once.
+  addFiles(c, kept) {
+    const have = new Set((c.files || []).map((f) => f.id));
+    const add = (kept || []).filter((f) => !have.has(f.id));
+    if (add.length) c.files = [...(c.files || []), ...add];
+  }
+
+  // A message sent while the chat is busy (send() with a mode). 'steer' hands it to the agent now (steerEntry());
+  // anything else waits for the turn to end. Quick actions and skills always wait: each starts a task of its own.
+  // Its files go into the chat's folder at once, so a message that waits through a restart keeps them; as with
+  // send(), the promise settles once they are there. It takes its place in the queue when the user sends it, so a
+  // message sent after it, without files, can't get ahead of it while its files are copied.
+  hold(c, message, staged, mode) {
+    if (c.queue.length >= MAX_QUEUE) throw new AgentError('invalid', `at most ${MAX_QUEUE} messages can wait`);
+    const startsSkill = !message.action && this.namesOwnSkill(c.agent, message.body);
+    const steer = mode === 'steer' && !message.action && !startsSkill;
+    const entry = {
+      id: newQueueId(),
+      state: staged.length ? 'copying' : 'queued',
+      at: Date.now(),
+      text: message.line,
+      body: message.body,
+      shown: message.shown,
+      action: message.action || null,
+      files: [],
+      emails: message.mails,
+      // Set when it was meant to steer but the agent can't take it during this turn.
+      fallback: false,
+      // It names one of the agent's own skills, so it never steers (namesOwnSkill()).
+      startsSkill
+    };
+    c.queue.push(entry);
+    this.touch(c);
+    // The steers of a turn go one by one in the order sent (steerEntry()); one whose files are being copied keeps its
+    // turn among them.
+    let slot = null;
+    const ready = (kept) => {
+      entry.files = kept;
+      entry.state = 'queued';
+      this.touch(c);
+      // Its turn among the steers is still to come: it goes then (deliverSteer()).
+      if (slot && slot.turn === this.turns.get(c.id) && !slot.turn.closed) {
+        entry.state = 'steering';
+        this.emitQueue(c);
+      } else if (steer) this.steerEntry(c, entry);
+      else this.emitQueue(c);
+      const result = { conversationId: c.id, queued: entry.id, state: entry.state };
+      // The turn ended while the files were copied. After a normal end the queue moves on, this message included;
+      // after Stop or an error it waits, like the rest.
+      this.moveOn(c);
+      return result;
+    };
+    if (!staged.length) return ready([]);
+    const done = this.files.keep(c.id, staged).then(
+      async (kept) => {
+        if (this.conversations.get(c.id) !== c) {
+          this.files.remove(c.id);
+          throw new AgentError('invalid', 'unknown conversation');
+        }
+        if (this.disposed) {
+          this.dropEntry(c, entry);
+          await this.files.discard(c.id, kept);
+          throw new AgentError('stopped', 'Rukoo is closing');
+        }
+        return ready(kept);
+      },
+      (err) => {
+        // Not sent after all: the messages it held back go on.
+        this.dropEntry(c, entry);
+        this.moveOn(c);
+        throw err;
+      }
+    );
+    if (steer) slot = this.steerEntry(c, entry, done);
+    return done;
+  }
+
+  // Whether a message names one of the agent's own skills ($name). The adapter starts those the agent's own way, and
+  // only with the message a turn starts with (mentionedSkills()): steered, the agent would get "$name" as plain text.
+  // So such a message waits for a turn of its own, as a skill from the / menu does. The list is the one the $ menu
+  // loaded; before there is one, any $name counts.
+  namesOwnSkill(agent, text) {
+    const entry = this.skillLists.get(agent);
+    const list = entry && entry.value;
+    if (!list) return ownskills.hasMention(text);
+    return ownskills.mentionsIn(text, (list.skills || []).map((s) => s.name)).length > 0;
+  }
+
+  // Takes out a message whose files didn't make it into the chat's folder.
+  dropEntry(c, entry) {
+    const at = c.queue.indexOf(entry);
+    if (at < 0) return;
+    c.queue.splice(at, 1);
+    this.touch(c);
+  }
+
+  // After a turn that ended normally, the queue moves on once the chat is free.
+  moveOn(c) {
+    if (!this.turns.has(c.id) && !this.sending.has(c.id) && this.lastOutcome.get(c.id) === 'done') this.nextQueued(c.id);
+  }
+
+  // Hands a waiting message to the agent during the turn. With an agent that can't take it, it stays queued and says
+  // so (fallback). Before the turn has started (its message's files are still copied) it goes after that turn.
+  // copying: the promise of a message whose own files are still being copied (hold()), which settles once they are
+  // in. The message takes its turn among the steers now and goes once they are in; returns {turn} when it did.
+  steerEntry(c, entry, copying = null) {
+    const turn = this.turns.get(c.id);
+    if (!turn || !this.canSteer(c.agent)) {
+      // Decided once its files are in (hold()).
+      if (copying) return null;
+      entry.fallback = !this.canSteer(c.agent);
+      this.touch(c);
+      this.emitQueue(c);
+      return null;
+    }
+    if (!copying) {
+      entry.state = 'steering';
+      entry.fallback = false;
+      this.touch(c);
+      this.emitQueue(c);
+    }
+    const wait = copying && copying.catch(() => {});
+    if (copying) (turn.copyingSteers = turn.copyingSteers || new Set()).add(entry);
+    // One after another, in the order the user sent them.
+    turn.steering = (turn.steering || Promise.resolve())
+      .then(() => wait)
+      .then(() => this.deliverSteer(c, turn, entry))
+      .catch((err) => this.log('hub', 'steering failed:', err && err.message));
+    return { turn };
+  }
+
+  async deliverSteer(c, turn, entry) {
+    // The adapter gets it once it runs the turn; a turn still loading its email can end before that.
+    if (!(await turn.ready) || turn.closed || entry.state !== 'steering' || !c.queue.includes(entry)) return;
+    const adapter = this.adapters.get(c.agent);
+    // The agent can read the files with read_chat_file as soon as it has the message.
+    if (entry.files.length) {
+      this.addFiles(c, entry.files);
+      this.touch(c);
+    }
+    const files = entry.files.length ? await this.files.forTurn(c.id, entry.files, { signal: turn.controller.signal }) : [];
+    if (turn.closed || entry.state !== 'steering') return;
+    const attached = files.length || entry.emails.length ? { files, emails: entry.emails } : null;
+    const input = context.steerText({ text: entry.body, attached, local: this.localAgent(c) });
+    let taken = false;
+    try {
+      taken = Boolean(
+        await adapter.steer(turn.handle, {
+          id: entry.id,
+          input,
+          text: entry.body,
+          files: files.filter((f) => !f.missing).map(({ id, name, type, kind, size, path: file, inline }) => ({ id, name, type, kind, size, path: file, inline: Boolean(inline) }))
+        })
+      );
+    } catch (err) {
+      this.log('hub', 'the adapter did not take a steer:', err && err.message);
+    }
+    if (taken || turn.closed || entry.state !== 'steering') return;
+    // The agent can't take it during this turn after all: it goes after the turn, and says why.
+    entry.state = 'queued';
+    entry.fallback = true;
+    this.touch(c);
+    this.emitQueue(c);
+  }
+
+  // The agent took in a message that steered: it joins the transcript here, where the agent read it. What the agent
+  // said or thought before it ends here, so its answer to the message comes below it.
+  onSteered(c, turn, id) {
+    if (turn.closed || this.conversations.get(c.id) !== c) return;
+    const at = c.queue.findIndex((e) => e.id === id && e.state === 'steering');
+    if (at < 0) return;
+    const [entry] = c.queue.splice(at, 1);
+    // Read: an answer from the adapter that comes after this can't put it back (deliverSteer()).
+    entry.state = 'read';
+    turn.reached = true;
+    const now = Date.now();
+    if (turn.thinking && turn.thinking.status === 'running') {
+      Object.assign(turn.thinking, { status: 'done', endedAt: now });
+      this.updateItem(c, turn.thinking);
+    }
+    turn.thinking = null;
+    if (turn.assistant && turn.assistant.status === 'streaming') {
+      turn.assistant.status = 'done';
+      this.updateItem(c, turn.assistant);
+    }
+    turn.assistant = null;
+    this.addItem(c, {
+      type: 'user',
+      text: entry.text,
+      action: null,
+      steered: true,
+      ...(entry.files.length ? { files: entry.files.map(shownFile) } : {}),
+      ...(entry.emails.length ? { emails: entry.emails } : {})
+    });
+    this.emitQueue(c);
+  }
+
+  // The next waiting message (or the one named) goes as a turn of its own, when the chat is free. A message whose
+  // files are still being copied holds back the ones behind it; it goes once they are in (hold()).
+  nextQueued(cid, entryId = null) {
+    if (this.disposed) return null;
+    const c = this.conversations.get(cid);
+    if (!c || this.turns.has(cid) || this.sending.has(cid) || this.cfg.data[c.agent].enabled === false) return null;
+    const at = entryId ? c.queue.findIndex((e) => e.state === 'queued' && e.id === entryId) : c.queue.findIndex((e) => e.state === 'queued' || e.state === 'copying');
+    if (at < 0 || c.queue[at].state !== 'queued') return null;
+    const [entry] = c.queue.splice(at, 1);
+    this.emitQueue(c);
+    return this.begin(c, { body: entry.body, action: entry.action, shown: entry.shown, line: entry.text, mails: entry.emails }, entry.files);
+  }
+
+  // "Send now" on a waiting message: while the agent works it steers, otherwise it goes as the next turn.
+  sendQueued(id, entryId) {
+    const c = this.mustGet(id);
+    if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
+    const entry = c.queue.find((e) => e.id === entryId && e.state === 'queued');
+    if (!entry) throw new AgentError('invalid', 'unknown queued message');
+    if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
+    if (this.turns.has(c.id) || this.sending.has(c.id)) {
+      // A quick action, or a message that starts one of the agent's own skills, waits for a turn of its own.
+      if (entry.action || entry.startsSkill) throw new AgentError('busy', 'a turn is running');
+      this.steerEntry(c, entry);
+      return { conversationId: c.id, queued: entry.id, state: entry.state };
+    }
+    return this.nextQueued(c.id, entry.id);
+  }
+
+  // Takes a waiting message out of the queue: Remove, or Edit, which puts it back in the input. With restage, its
+  // files are staged again for chips there; otherwise they go. A file the agent already got (a steer that came back)
+  // stays with the chat. A message that is steering is the agent's already.
+  async unqueue(id, entryId, { restage = false } = {}) {
+    const c = this.mustGet(id);
+    const at = c.queue.findIndex((e) => e.id === entryId && e.state === 'queued');
+    if (at < 0) throw new AgentError('invalid', 'unknown queued message');
+    const [entry] = c.queue.splice(at, 1);
+    this.touch(c);
+    this.emitQueue(c);
+    const given = new Set(c.files.map((f) => f.id));
+    const own = entry.files.filter((f) => !given.has(f.id));
+    let files = [];
+    // Edit stages every file again; a copy the chat already has (a steer that came back) stays where it is.
+    if (restage && entry.files.length) {
+      const back = new Map();
+      for (const [list, keep] of [
+        [own, false],
+        [entry.files.filter((f) => given.has(f.id)), true]
+      ]) {
+        const staged = list.length ? await this.files.restage(c.id, list, { keep }) : [];
+        list.forEach((f, i) => back.set(f.id, staged[i]));
+      }
+      files = entry.files.map((f) => back.get(f.id));
+    } else if (own.length) await this.files.discard(c.id, own);
+    const emails = entry.emails.map(({ id: mailId, subject, from, messageId }) => ({ id: mailId, subject, from, messageId: messageId || null }));
+    return { text: entry.text, action: entry.action, files, emails };
   }
 
   // ---------- approvals ----------
@@ -2413,7 +2746,8 @@ class AgentHub extends EventEmitter {
     try {
       // force and fresh mean the same: skip the adapter's 30 s status cache (Test connection).
       const s = await withTimeout(a.status({ force, fresh: force }), 12000);
-      return { state: s && STATES.has(s.state) ? s.state : 'unknown', detail: clip((s && s.detail) || '', 300) };
+      // steer: the agent can take a message during its turn; the panel's Send offers Steer for it.
+      return { state: s && STATES.has(s.state) ? s.state : 'unknown', detail: clip((s && s.detail) || '', 300), steer: this.canSteer(id) };
     } catch (err) {
       return { state: 'unknown', detail: clip(err && (err.detail || err.message), 300) };
     }
@@ -2448,6 +2782,37 @@ class AgentHub extends EventEmitter {
     this.emitEvent({ kind: 'agents', status: this.statuses });
     return this.statuses[agent];
   }
+}
+
+// The waiting messages the panel shows: not those whose files are still being copied (hold()).
+function shownQueue(list) {
+  return list.filter((e) => e.state !== 'copying');
+}
+
+// A chat's waiting messages as conversations.json has them. Each waits as 'queued' after a restart: the turn a
+// steering one was for is gone. One that doesn't hold together is dropped, and so is one whose files were still
+// being copied when Rukoo quit: they never made it, and the user never saw it waiting.
+function cleanQueue(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const e of list) {
+    if (!isObj(e) || typeof e.id !== 'string' || !e.id || typeof e.text !== 'string' || typeof e.body !== 'string' || e.state === 'copying') continue;
+    if (out.length >= MAX_QUEUE) break;
+    out.push({
+      id: e.id,
+      state: 'queued',
+      at: Number(e.at) || 0,
+      text: e.text,
+      body: e.body,
+      shown: typeof e.shown === 'string' ? e.shown : e.text,
+      action: typeof e.action === 'string' && e.action ? e.action : null,
+      files: Array.isArray(e.files) ? e.files.filter((f) => isObj(f) && typeof f.id === 'string' && typeof f.file === 'string') : [],
+      emails: Array.isArray(e.emails) ? e.emails.filter((m) => isObj(m) && typeof m.id === 'string' && m.id) : [],
+      fallback: false,
+      startsSkill: e.startsSkill === true
+    });
+  }
+  return out;
 }
 
 function oneLine(v) {
