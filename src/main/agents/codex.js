@@ -17,6 +17,8 @@ const STOP_WAIT = 10000;
 const START_WAIT = 30000;
 // A turn that needs a restarted app-server waits this long at most for the other Codex turns to finish.
 const IDLE_WAIT_MS = 10 * 60 * 1000;
+// How long turn/steer may take to answer.
+const STEER_TIMEOUT = 15000;
 const ESCALATE =
   'When the sandbox blocks a command you need (writing files, network access), request escalated permissions so the user can approve it in Rukoo.';
 
@@ -130,6 +132,7 @@ function turnError(error) {
 // The turn's text, then each image the user attached that goes along with the message, each right after a line
 // that says which file it is and that it is untrusted data: Codex reads a local image itself. Codex takes no other
 // files as input; they are in its working folder, and the text says where.
+// A steered message ({input, files}) takes the same shape.
 function turnInput(turn) {
   const input = [{ type: 'text', text: turn.input, text_elements: [] }];
   for (const f of Array.isArray(turn.files) ? turn.files : []) {
@@ -379,6 +382,20 @@ class CodexAdapter {
       }
     } finally {
       this.busy--;
+    }
+  }
+
+  // A message the user sent while the turn runs (hub.js steerEntry()). turn/steer adds it to the turn under way, and
+  // Codex reads it at its next step (verified with 0.165: a userMessage item for it follows at once and the turn goes
+  // on). turn/steer needs the turn's id, so this waits until Codex has started the turn.
+  async steer(turn, { id, input, files }) {
+    const end = Date.now() + this.startWait;
+    for (;;) {
+      const run = [...this.runs.values()].find((r) => r.turn === turn);
+      if (run && (run.ended || run.stopping)) return false;
+      if (run && run.turnId) return run.steer({ id, input, files });
+      if (this.disposed || (turn.signal && turn.signal.aborted) || (typeof turn.isOpen === 'function' && !turn.isOpen()) || Date.now() > end) return false;
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
 
@@ -735,6 +752,11 @@ class Run {
     this.stopping = false;
     this.errored = false;
     this.ended = false;
+    // Steered messages Codex has not shown as a userMessage item yet ({id}), in the order sent; the user messages
+    // seen, and whether the turn's own came by.
+    this.steers = [];
+    this.userSeen = new Set();
+    this.ownSeen = false;
     this.done = new Promise((resolve) => {
       this.resolve = resolve;
     });
@@ -756,6 +778,37 @@ class Run {
     this.stopping = true;
     if (this.turnId) this.interrupt();
     this.stopTimer = setTimeout(() => this.adapter.forceStop(this), this.adapter.stopWait);
+  }
+
+  async steer({ id, input, files }) {
+    if (this.ended || this.stopping || this.server.exited) return false;
+    const entry = { id };
+    // Before the request: the userMessage item can come before its answer.
+    this.steers.push(entry);
+    try {
+      await this.server.request('turn/steer', { threadId: this.threadId, expectedTurnId: this.turnId, input: turnInput({ input, files }), clientUserMessageId: id }, STEER_TIMEOUT);
+      return true;
+    } catch (err) {
+      this.adapter.log(`codex: turn/steer refused: ${err.message}`);
+      const at = this.steers.indexOf(entry);
+      if (at >= 0) this.steers.splice(at, 1);
+      return false;
+    }
+  }
+
+  // A user message in the turn: its own, which comes first, or a steered one, which Codex reads now. A steered one
+  // names the id it was sent with (clientId); without it, they go in the order sent. Each comes as item/started and
+  // item/completed.
+  userMessage(item) {
+    if (!item.id || this.userSeen.has(item.id)) return;
+    this.userSeen.add(item.id);
+    const at = item.clientId ? this.steers.findIndex((s) => s.id === item.clientId) : -1;
+    const own = at < 0 && !this.ownSeen;
+    this.ownSeen = true;
+    if (own || !this.steers.length) return;
+    if (at < 0 && item.clientId) return;
+    const [s] = this.steers.splice(at < 0 ? 0 : at, 1);
+    if (typeof this.turn.steered === 'function') this.turn.steered(s.id);
   }
 
   interrupt() {
@@ -835,6 +888,7 @@ class Run {
 
   itemStarted(item) {
     if (!item.id) return;
+    if (item.type === 'userMessage') return this.userMessage(item);
     const entry = this.track(item);
     if (item.type === 'reasoning') {
       this.thinking.add(item.id);
@@ -850,6 +904,7 @@ class Run {
 
   itemCompleted(item) {
     if (!item.id) return;
+    if (item.type === 'userMessage') return this.userMessage(item);
     const entry = this.items.get(item.id) || this.track(item);
     if (item.type === 'agentMessage') {
       const phase = item.phase || entry.phase;

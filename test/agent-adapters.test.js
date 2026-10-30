@@ -85,6 +85,11 @@ function startingOver(turn) {
   };
   return turn;
 }
+// The hub's steered(), recorded among the turn's events, so a test sees where in the turn the agent read a message.
+function steering(turn) {
+  turn.steered = (id) => turn.events.push({ type: 'steered', id });
+  return turn;
+}
 const texts = (turn) => turn.events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
 const ofType = (turn, type) => turn.events.filter((e) => e.type === type);
 async function waitFor(check, ms = 5000) {
@@ -273,7 +278,8 @@ function hermesServer() {
       state.requests.push({ method: req.method, path: url.pathname, query: url.search, headers: req.headers, body: data });
       if (url.pathname === '/health') return json(res, 200, { status: 'ok', platform: 'hermes-agent', version: '0.21.5' });
       if (req.headers.authorization !== `Bearer ${KEY}`) return json(res, 401, { error: { message: 'Invalid API key' } });
-      if (url.pathname === '/v1/capabilities') return json(res, 200, { features: { run_submission: true, run_events_sse: true } });
+      // "noSteer": a Hermes from before POST /v1/runs/{id}/steer.
+      if (url.pathname === '/v1/capabilities') return json(res, 200, { features: { run_submission: true, run_events_sse: true, ...(state.noSteer ? {} : { run_steer: true }) } });
       // The model menu's sources, shaped as in Hermes 0.21 (gateway/platforms/api_server.py, hermes_cli/inventory.py):
       // the profile with its model_routes aliases, and the picker inventory of the providers it has credentials for.
       // "noOptions": an older Hermes without the inventory.
@@ -349,7 +355,7 @@ function hermesServer() {
         state.keys = state.keys || new Map();
         if (key && state.keys.has(key)) return json(res, 202, { run_id: state.keys.get(key), status: 'started', replayed: true });
         const id = `run_${state.nextRun++}`;
-        state.runs.set(id, { input: data.input, session: data.session_id, stopped: false, approval: null, connects: 0, polls: 0 });
+        state.runs.set(id, { input: data.input, session: data.session_id, stopped: false, approval: null, connects: 0, polls: 0, steers: [], onSteer: null });
         if (key) state.keys.set(key, id);
         // "lost reply": Hermes takes the run, but its answer never reaches Rukoo.
         if (/lost reply/.test(data.input) && state.posts === 1) return res.destroy();
@@ -370,9 +376,25 @@ function hermesServer() {
         const output = /boundary/.test(r.input) ? 'Thursday at 10 works.' : 'The answer is 42.';
         return json(res, 200, { object: 'hermes.run', run_id: status[1], status: 'completed', output });
       }
-      m = url.pathname.match(/^\/v1\/runs\/([^/]+)\/(events|approval|stop)$/);
+      m = url.pathname.match(/^\/v1\/runs\/([^/]+)\/(events|approval|stop|steer)$/);
       const run = m && state.runs.get(m[1]);
       if (!run) return json(res, 404, { error: { message: 'Run not found' } });
+      // Shaped as Hermes' _handle_steer_run (api_server_runs.py, October 2026): 409 once the run no longer runs.
+      if (m[2] === 'steer') {
+        if (state.noSteer) return json(res, 404, { error: { message: 'Not found' } });
+        // "lateRefusal": the run's tool call ends while the steer is out, and then the steer is refused.
+        if (state.lateRefusal) {
+          if (run.onSteer) run.onSteer();
+          await sleep(200);
+          return json(res, 409, { error: { message: `Run is not currently accepting steer input: ${m[1]}`, code: 'run_not_accepting_steer' } });
+        }
+        if (run.stopped || run.ended) return json(res, 409, { error: { message: `Run is not currently accepting steer input: ${m[1]}`, code: 'run_not_accepting_steer' } });
+        run.steers.push(String(data.input || '').trim());
+        if (run.onSteer) run.onSteer();
+        // "slowAccept": Hermes takes it, delivers it and ends the run before this answer arrives.
+        if (state.slowAccept) await sleep(400);
+        return json(res, 200, { object: 'hermes.run.steer', run_id: m[1], accepted: true });
+      }
       if (m[2] === 'stop') {
         // A server that is still unwell: "deaf" refuses the first two stops, "mute" every one, "locked" every one
         // with an auth error (which says nothing about whether the run ended).
@@ -422,6 +444,28 @@ function hermesServer() {
 
   async function script(run) {
     const input = run.input;
+    // Hermes takes a steered message after the tool calls under way ("steer tool"); a run that ends without another
+    // tool call returns it as pending_steer ("steer late").
+    const steered = () =>
+      new Promise((resolve) => {
+        if (run.steers.length) resolve();
+        else run.onSteer = resolve;
+      });
+    if (/steer tool/.test(input)) {
+      return [
+        { event: 'tool.started', tool: 'terminal', preview: 'sleep 1' },
+        async () => (await steered(), { event: 'tool.completed', tool: 'terminal', duration: 1, error: false, preview: '' }),
+        () => ({ event: 'message.delta', delta: `read: ${run.steers.join(' | ')}` }),
+        () => ((run.ended = true), { event: 'run.completed', output: `read: ${run.steers.join(' | ')}`, completed: true })
+      ];
+    }
+    if (/steer late/.test(input)) {
+      return [
+        { event: 'message.delta', delta: 'An answer ' },
+        async () => (await steered(), { event: 'message.delta', delta: 'without tools.' }),
+        () => ((run.ended = true), { event: 'run.completed', output: 'An answer without tools.', completed: true, pending_steer: run.steers.join('\n') })
+      ];
+    }
     if (/tool/.test(input)) {
       return [
         { event: 'tool.started', tool: 'terminal', preview: 'echo rukoo-probe' },
@@ -739,6 +783,119 @@ test('hermes: stop asks the server to stop the run and resolves stopped', async 
   }
 });
 
+test('hermes: a steered message goes to the run, and counts as read once the tool call under way ends', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+    assert.equal((await adapter.status({ force: true })).state, 'ready');
+    assert.equal(adapter.canSteer(), true, 'the server lists run_steer');
+    const turn = steering(fakeTurn(conv(), 'steer tool please'));
+    const done = adapter.runTurn(turn);
+    await waitFor(() => ofType(turn, 'tool-start').length === 1);
+    assert.equal(await adapter.steer(turn, { id: 'q_1', input: '  use the work account  ' }), true);
+    assert.deepEqual(await done, { status: 'done' });
+    const post = h.state.requests.find((r) => /\/steer$/.test(r.path));
+    assert.deepEqual(post.body, { input: 'use the work account' });
+    assert.deepEqual(
+      turn.events.filter((e) => ['tool-end', 'steered', 'text'].includes(e.type)).map((e) => e.type),
+      ['tool-end', 'steered', 'text']
+    );
+    assert.deepEqual(ofType(turn, 'steered').map((e) => e.id), ['q_1']);
+    // The run is over: nothing to steer, and no request goes out.
+    turn.isOpen = () => false;
+    const before = h.state.requests.length;
+    assert.equal(await adapter.steer(turn, { id: 'q_2', input: 'late' }), false);
+    assert.equal(h.state.requests.length, before);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: a steered message the run ended without reaching comes back as pending_steer and is not read', async () => {
+  const h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+    const turn = steering(fakeTurn(conv(), 'steer late please'));
+    const done = adapter.runTurn(turn);
+    await waitFor(() => texts(turn).length > 0);
+    assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'and the invoice' }), true);
+    assert.deepEqual(await done, { status: 'done' });
+    assert.equal(ofType(turn, 'steered').length, 0, 'the hub queues it again');
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: a steer refused after a tool call ended while it was out is not counted as read', async () => {
+  const h = await hermesServer();
+  h.state.lateRefusal = true;
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+    const turn = steering(fakeTurn(conv(), 'steer tool please'));
+    const done = adapter.runTurn(turn);
+    await waitFor(() => ofType(turn, 'tool-start').length === 1);
+    assert.equal(await adapter.steer(turn, { id: 'q_refused', input: 'use the work account' }), false);
+    assert.deepEqual(await done, { status: 'done' });
+    assert.ok(ofType(turn, 'tool-end').length === 1, 'the tool call ended while the steer was out');
+    assert.equal(ofType(turn, 'steered').length, 0, 'the hub keeps it queued');
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: a steer Hermes delivered in a run that ended before its acceptance came in counts as read, once', async () => {
+  const h = await hermesServer();
+  h.state.slowAccept = true;
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+    const turn = steering(fakeTurn(conv(), 'steer tool please'));
+    const done = adapter.runTurn(turn);
+    await waitFor(() => ofType(turn, 'tool-start').length === 1);
+    const steered = adapter.steer(turn, { id: 'q_1', input: 'use the work account' });
+    assert.deepEqual(await done, { status: 'done' });
+    assert.equal(await steered, true);
+    assert.deepEqual(ofType(turn, 'steered').map((e) => e.id), ['q_1'], 'the run waited for the acceptance before it ended');
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: pending_steer is the tail of the accepted messages, so one that is part of another’s text still counts as read', () => {
+  const adapter = new HermesAdapter({ id: 'clark', config: () => ({}) });
+  const settle = (texts, pending) => {
+    const turn = steering(fakeTurn(conv(), 'x'));
+    const state = { steers: texts.map((text, i) => ({ id: `q_${i}`, text, taken: false })) };
+    adapter.settleSteers(turn, state, pending);
+    return ofType(turn, 'steered').map((e) => e.id);
+  };
+  assert.deepEqual(settle(['summarize', 'summarize in Dutch'], 'summarize in Dutch'), ['q_0']);
+  assert.deepEqual(settle(['a', 'b', 'c'], 'b\nc'), ['q_0']);
+  assert.deepEqual(settle(['a', 'b'], ''), ['q_0', 'q_1'], 'nothing held: the agent got both');
+  assert.deepEqual(settle(['a', 'b'], undefined), ['q_0', 'q_1']);
+  assert.deepEqual(settle(['a', 'b'], 'something else'), [], 'held text that matches no tail: none counts as read');
+});
+
+test('hermes: a server without the steer route can’t steer, and a steer it refuses says so', async () => {
+  const h = await hermesServer();
+  h.state.noSteer = true;
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+    assert.equal(adapter.canSteer(), true, 'unknown until a status check');
+    await adapter.status({ force: true });
+    assert.equal(adapter.canSteer(), false);
+    adapter.steerCap = null;
+    const turn = fakeTurn(conv(), 'stop me');
+    const done = adapter.runTurn(turn);
+    await waitFor(() => texts(turn).length > 0);
+    assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'hello?' }), false);
+    assert.equal(adapter.canSteer(), false, 'a 404 tells the same');
+    turn.controller.abort();
+    assert.deepEqual(await done, { status: 'stopped' });
+  } finally {
+    h.server.close();
+  }
+});
+
 test('hermes: a dropped stream resumes from Last-Event-ID without repeating events', async () => {
   const h = await hermesServer();
   try {
@@ -1014,6 +1171,64 @@ test('claude: stop sends an interrupt; a withdrawn permission request expires it
   pending.controller.abort();
   assert.deepEqual(await running, { status: 'stopped' });
   assert.deepEqual(expired, [[c.id, 'i_1']]);
+});
+
+test('claude: a message steered in during a tool call is read after it, within the turn', async (t) => {
+  const { adapter, read } = claudeAdapter();
+  t.after(() => adapter.dispose());
+  const turn = steering(fakeTurn(conv(), 'tool step please'));
+  const done = adapter.runTurn(turn);
+  await waitFor(() => ofType(turn, 'tool-start').length === 1);
+  assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'use the work account', files: [] }), true);
+  assert.deepEqual(await done, { status: 'done' });
+  assert.ok(read()[0].argv.includes('--replay-user-messages'));
+  // Claude Code echoes it after the tool result, which is when it joins the transcript; the answer follows.
+  assert.deepEqual(
+    turn.events.filter((e) => ['tool-start', 'tool-end', 'steered', 'text'].includes(e.type)).map((e) => (e.type === 'steered' ? `steered:${e.id}` : e.type)),
+    ['tool-start', 'tool-end', 'steered:q_1', 'text']
+  );
+  assert.equal(texts(turn), 'read: use the work account');
+  const users = read()
+    .filter((e) => e.stdin)
+    .map((e) => JSON.parse(e.stdin))
+    .filter((m) => m.type === 'user');
+  assert.equal(users.length, 2);
+  assert.deepEqual(users[1].message.content, [{ type: 'text', text: 'use the work account' }]);
+});
+
+test('claude: a message steered in during an answer without tools gets the turn Claude Code starts for it', async (t) => {
+  const { adapter } = claudeAdapter();
+  t.after(() => adapter.dispose());
+  const turn = steering(fakeTurn(conv(), 'brief answer'));
+  const done = adapter.runTurn(turn);
+  await waitFor(() => texts(turn).length > 0);
+  assert.equal(await adapter.steer(turn, { id: 'q_2', input: 'and say hello', files: [] }), true);
+  assert.deepEqual(await done, { status: 'done' });
+  // The first answer, then the message, then the answer to it: one turn for Rukoo.
+  assert.equal(texts(turn), 'one two three four Hello één ✓');
+  const at = turn.events.findIndex((e) => e.type === 'steered');
+  assert.ok(at > 0);
+  assert.ok(turn.events.slice(0, at).some((e) => e.type === 'text') && turn.events.slice(at).some((e) => e.type === 'text'));
+  // The turn is over: nothing to steer.
+  turn.isOpen = () => false;
+  assert.equal(await adapter.steer(turn, { id: 'q_3', input: 'late', files: [] }), false);
+});
+
+test('claude: Stop with a steered message Claude Code hasn’t read ends the process, so the message never runs', async (t) => {
+  const { adapter, read } = claudeAdapter();
+  t.after(() => adapter.dispose());
+  const turn = steering(fakeTurn(conv(), 'slow stream'));
+  const done = adapter.runTurn(turn);
+  await waitFor(() => texts(turn).length > 10);
+  assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'never mind', files: [] }), true);
+  const child = adapter.sessions.get('c_test_1').child;
+  turn.controller.abort();
+  assert.deepEqual(await done, { status: 'stopped' });
+  assert.equal(ofType(turn, 'steered').length, 0);
+  await waitFor(() => child.exitCode !== null || child.signalCode !== null);
+  assert.equal(adapter.sessions.size, 0);
+  // An interrupt would have made Claude Code run the message next.
+  assert.ok(!read().some((e) => e.stdin && JSON.parse(e.stdin).request && JSON.parse(e.stdin).request.subtype === 'interrupt'));
 });
 
 test('claude: errors, a crash and a lost session', async (t) => {
@@ -1484,6 +1699,29 @@ test('codex: stop interrupts the turn; failures report once', async (t) => {
   assert.equal(result.status, 'error');
   assert.equal(result.error.code, 'rate-limited');
   assert.equal(ofType(fail, 'error').length, 1);
+});
+
+test('codex: turn/steer adds a message to the turn under way; Codex reads it, and a finished turn takes none', async (t) => {
+  const { adapter, sent } = codexAdapter();
+  t.after(() => adapter.dispose());
+  const c = conv();
+  const turn = steering(fakeTurn(c, 'slow'));
+  const done = adapter.runTurn(turn);
+  await waitFor(() => texts(turn).length > 10);
+  assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'stop counting', files: [] }), true);
+  assert.deepEqual(await done, { status: 'done' });
+  const [steer] = sent('turn/steer');
+  assert.equal(steer.params.threadId, c.provider.threadId);
+  assert.equal(steer.params.clientUserMessageId, 'q_1');
+  assert.equal(typeof steer.params.expectedTurnId, 'string');
+  assert.deepEqual(steer.params.input, [{ type: 'text', text: 'stop counting', text_elements: [] }]);
+  // The turn's own message is not taken for it; the steered one is, before the answer to it.
+  assert.deepEqual(ofType(turn, 'steered').map((e) => e.id), ['q_1']);
+  const at = turn.events.findIndex((e) => e.type === 'steered');
+  assert.ok(turn.events.slice(at).some((e) => e.type === 'text' && /read: stop counting/.test(e.delta)));
+  turn.isOpen = () => false;
+  assert.equal(await adapter.steer(turn, { id: 'q_2', input: 'late', files: [] }), false);
+  assert.equal(sent('turn/steer').length, 1);
 });
 
 test('codex: a crash fails the turn, the next turn restarts the server and resumes the thread', async (t) => {

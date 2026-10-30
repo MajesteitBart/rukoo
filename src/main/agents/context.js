@@ -276,7 +276,17 @@ function turnText({ conversation, text, firstTurn, notes = [], message = null, o
   return out.join('\n');
 }
 
-const KINDS = { text: 'text file', pdf: 'PDF', image: 'image', file: 'file' };
+// A message the user sent while the agent was working, which the agent takes in during its turn (Steer, hub.js
+// steerEntry()). The agent has the chat already, so it gets the user's text and what they attached to it, without
+// the chat's header or notes; those wait for the next turn.
+function steerText({ text, attached = null, local = false }) {
+  const lines = attachedLines(attached, local);
+  const own = String(text || '');
+  if (!lines.length) return own;
+  return [...lines, '', own.trim() ? own : '[The user sent this without a message.]'].join('\n');
+}
+
+const KINDS ={ text: 'text file', pdf: 'PDF', image: 'image', file: 'file' };
 // Why the PDF reader (pdfread.js) got no text. busy: a PDF of the user's message that waited too long for a reader.
 const PDF_FAILED = {
   timeout: 'reading it took longer than Rukoo allows',
@@ -364,6 +374,7 @@ function skillTurn(skill) {
 module.exports = {
   instructions,
   turnText,
+  steerText,
   skillTurn,
   emailBlock,
   recap,

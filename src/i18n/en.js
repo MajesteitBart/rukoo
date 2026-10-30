@@ -855,6 +855,58 @@
     "message": "Stop",
     "description": "Chat panel input: label of the button that stops the agent while it works."
   },
+  "agent.panel.steer": {
+    "message": "Steer",
+    "description": "Chat panel input, while the agent works: the way of sending that hands your message to the agent during its current turn, so it can change course. Label of the main part of the split send button and of its menu row (chatComposer in agent/bui.js). Short verb."
+  },
+  "agent.panel.steerHint": {
+    "message": "{name} reads it before its next step",
+    "description": "Chat panel, while the agent works: what Steer does, under Steer in the send menu and in the button's tooltip; also the line under a steered message that the agent has not read yet. name is the agent name."
+  },
+  "agent.panel.queue": {
+    "message": "Queue",
+    "description": "Chat panel input, while the agent works: the way of sending that holds your message until the agent's current turn is over and then sends it. Menu row in the send menu, and the main button for an agent that can't take a message during its turn. Short verb."
+  },
+  "agent.panel.queueHint": {
+    "message": "Sends when {name} is done",
+    "description": "Chat panel, while the agent works: what Queue does, under Queue in the send menu and in the button's tooltip; also the line under a queued message at the end of the conversation. name is the agent name."
+  },
+  "agent.panel.cantSteer": {
+    "message": "{name} can't read messages while it works",
+    "description": "Chat panel send menu: why Steer is off for this agent (OpenClaw, or a Hermes server without the steer route); its messages are queued instead. name is the agent name."
+  },
+  "agent.panel.sendOptions": {
+    "message": "Send options",
+    "description": "Chat panel input, while the agent works: accessible name and tooltip of the chevron beside the send button, which opens the menu with Steer and Queue."
+  },
+  "agent.queue.list": {
+    "message": "Messages waiting to be sent",
+    "description": "Chat panel: accessible name of the list at the end of the conversation with the messages you sent while the agent worked that are not in the conversation yet (showQueue in agent/panel.js)."
+  },
+  "agent.queue.fallback": {
+    "message": "{name} can't read messages while it works. This one sends when {name} is done.",
+    "description": "Chat panel: line under a message you meant to steer, which waits instead because the agent can't take a message during its turn. name is the agent name."
+  },
+  "agent.queue.held": {
+    "message": "Not sent yet",
+    "description": "Chat panel: line under a waiting message once the agent stopped working without sending it (you pressed Stop, the turn failed, or Rukoo restarted). It waits until you send it, edit it or remove it."
+  },
+  "agent.queue.sendNow": {
+    "message": "Send now",
+    "description": "Chat panel: button under a waiting message, while the agent is idle, that sends it as the next message."
+  },
+  "agent.queue.steerNow": {
+    "message": "Steer now",
+    "description": "Chat panel: button under a queued message, while the agent works, that hands it to the agent during the current turn instead of after it."
+  },
+  "agent.queue.edit": {
+    "message": "Edit",
+    "description": "Chat panel: button under a waiting message that takes it out of the queue and puts its text and attachments back in the input."
+  },
+  "agent.queue.remove": {
+    "message": "Remove",
+    "description": "Chat panel: button under a waiting message that takes it out of the queue without sending it."
+  },
   "agent.panel.toggle": {
     "message": "Chat with an agent (Ctrl+J)",
     "description": "Title bar button tooltip that opens or closes the chat panel."

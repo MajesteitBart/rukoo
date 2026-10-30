@@ -102,6 +102,33 @@ The bell shows how many chats have a reply ready or wait for you. It turns orang
 
 Pick a chat to open it together with its email. For a chat you continued from a newer email, that's the newest one. If the email has moved since, Rukoo finds it again by its Message-ID. Opening a chat marks its reply as read. A chat you stopped yourself doesn't count as news. Rukoo keeps which replies you haven't read in `conversations.json`, so they're still marked after a restart.
 
+## While the agent works
+
+You can keep typing while the agent answers. A message you send then goes one of two ways:
+
+- **Steer** (Enter): the message goes to the agent now, and the agent reads it before its next step, such as after the tool call it is running. Use it to change course without stopping, as in "use the work account" while the agent signs in to the wrong one.
+- **Queue** (Alt+Enter): the message waits, and goes as your next message once the agent is done.
+
+The button beside Stop does what Enter does, and its chevron offers both, with their keys. Stop stays where it is. A quick action or a skill you start while the agent works always waits, because each starts a task of its own.
+
+Enter steers because Codex CLI and Claude Code both hand a message typed during a turn to the agent before its next step. Codex steers on Enter and queues on Tab ([openai/codex#13595](https://github.com/openai/codex/issues/13595): "Steering injects the prompt at the end of current tool call"). Claude Code passes a message typed while Claude runs tool calls to Claude "as soon as those tool calls finish, within the same turn" ([interactive mode](https://code.claude.com/docs/en/interactive-mode#queue-messages-while-claude-works)). Rukoo keeps Tab for moving the focus and for picking from the `/` and `$` menus, so Queue is Alt+Enter.
+
+Messages that aren't in the conversation yet show at its end, with a dashed edge:
+
+- A steered message says "Claude reads it before its next step" until the agent takes it in. It then joins the conversation where the agent read it, and what the agent says next comes below it.
+- A queued message says "Sends when Claude is done", with Steer now, Edit and Remove. Edit takes it out of the queue and puts its text, files and emails back in the input.
+
+After a turn that ended normally, the queued messages go one by one, each as a turn of its own. After Stop or an error they wait, marked "Not sent yet": Stop means stop, and after an error the next message would likely run into the same problem. Send now sends one of them. A message you type then goes first, and the queue continues once its turn ends normally. A steered message the agent hadn't taken in when the turn ended goes back into the queue, ahead of the others. A chat keeps its queue while you look at another chat, and works through it in the background. Rukoo saves the queue with the chat: after a restart the messages wait, with their files, until you send one. A chat holds at most 20 waiting messages.
+
+| Agent | Steer | How it works |
+|---|---|---|
+| Claude Code | Yes | Rukoo writes the message to Claude Code's input while the turn runs. Claude Code takes it in after the tool calls under way and echoes it then (`--replay-user-messages`). During an answer without tool calls it can't: it finishes the answer, then answers the message right after, which Rukoo shows as part of the same turn. Stop with a steered message Claude Code hasn't taken in closes its process, because after an interrupt Claude Code runs what it holds; the next message resumes the session. Verified with Claude Code 2.1.312 |
+| Codex | Yes | `turn/steer` adds the message to the turn under way. Codex takes it in at once and goes on; an answer it was streaming stops there. Verified with Codex 0.165 |
+| Hermes Agent | When the server has `POST /v1/runs/{id}/steer` (`run_steer` in `/v1/capabilities`) | Hermes adds the message after the tool calls under way. A run that ends before another tool call returns it as `pending_steer`, and Rukoo sends it as your next message. A Hermes without the route queues |
+| OpenClaw | No | The Chat Completions endpoint takes no input during a turn. The message queues, and the panel says why |
+
+A steered message carries your text and what you attached. The notes Rukoo keeps for the agent, such as your decisions on cards and the outcome of mail actions, wait for the next turn. Rukoo on your phone doesn't offer Steer or Queue yet.
+
 ## How each agent connects
 
 | Agent | Connection | Needs |

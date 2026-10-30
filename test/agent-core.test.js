@@ -424,6 +424,302 @@ test('a proposal approved while a turn runs waits for that turn, then follows up
   }
 });
 
+// ---------- messages sent while the agent works ----------
+
+// An agent that runs each turn until it is stopped (one whose text says "quick" ends at once) and takes every steer
+// without ever reading it.
+function stubbornAgent() {
+  const agent = {
+    received: [],
+    steered: [],
+    async status() {
+      return { state: 'ready', detail: '' };
+    },
+    // Ends the running turn normally.
+    done: null,
+    runTurn(turn) {
+      agent.received.push({ text: turn.text, files: turn.files });
+      if (/quick/.test(turn.text)) return Promise.resolve({ status: 'done' });
+      return new Promise((resolve) => {
+        agent.done = () => resolve({ status: 'done' });
+        turn.signal.addEventListener('abort', () => resolve({ status: 'stopped' }), { once: true });
+      });
+    },
+    async steer(turn, s) {
+      agent.steered.push(s);
+      return true;
+    },
+    async dispose() {}
+  };
+  return agent;
+}
+
+test('while the agent works, Steer hands a message over within the turn and Queue sends it after the turn', async () => {
+  const env = await demo();
+  const { hub, events } = fakeHub(env);
+  await hub.start();
+  try {
+    const c = hub.create({ agent: 'claude' });
+    hub.send(c.id, { text: 'first question' });
+    assert.throws(() => hub.send(c.id, { text: 'no mode' }), /busy/, 'a message without a mode still waits for nobody');
+    assert.equal(hub.send(c.id, { text: 'also check the attachment', mode: 'steer' }).state, 'steering');
+    assert.equal(hub.send(c.id, { text: 'then summarize', mode: 'queue' }).state, 'queued');
+    assert.deepEqual(
+      c.queue.map((e) => [e.text, e.state]),
+      [
+        ['also check the attachment', 'steering'],
+        ['then summarize', 'queued']
+      ]
+    );
+    assert.ok(events.some((e) => e.kind === 'conversation' && e.conversation.id === c.id && Array.isArray(e.conversation.queue)), 'the panel hears of the queue');
+    const fake = hub.adapters.get('claude');
+    await until(() => fake.received.length === 2, 20000);
+    await idle(hub, c.id);
+    assert.deepEqual(
+      fake.received.map((r) => r.text),
+      ['first question', 'then summarize'],
+      'the queued message is a turn of its own; the steered one is not'
+    );
+    assert.equal(fake.steers.at(-1).input, 'also check the attachment');
+    // The steered message sits inside the first turn, where the agent read it, and the agent answered it there.
+    const users = c.items.filter((i) => i.type === 'user').map((i) => [i.text, i.steered === true]);
+    assert.deepEqual(users, [
+      ['first question', false],
+      ['also check the attachment', true],
+      ['then summarize', false]
+    ]);
+    const at = c.items.findIndex((i) => i.steered);
+    const next = c.items.findIndex((i) => i.text === 'then summarize');
+    assert.ok(c.items.slice(at, next).some((i) => i.type === 'assistant' && /You also said: "also check the attachment"/.test(i.text)));
+    assert.deepEqual(c.queue, []);
+    assert.equal(c.status, 'idle');
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('after Stop the waiting messages wait, a steer the agent never read first; Send now, Remove and Edit act on them', async () => {
+  const env = await demo();
+  const agent = stubbornAgent();
+  const { hub } = fakeHub(env, { adapters: { clark: agent } });
+  await hub.start();
+  try {
+    const c = hub.create({ agent: 'clark' });
+    hub.send(c.id, { text: 'work on it' });
+    hub.send(c.id, { text: 'quick question after', mode: 'queue' });
+    hub.send(c.id, { text: 'one more thing', mode: 'steer' });
+    await until(() => agent.steered.length === 1);
+    assert.equal(agent.steered[0].input, 'one more thing');
+    assert.equal(c.queue[1].state, 'steering');
+    hub.stop(c.id);
+    await idle(hub, c.id);
+    assert.deepEqual(
+      c.queue.map((e) => [e.text, e.state]),
+      [
+        ['one more thing', 'queued'],
+        ['quick question after', 'queued']
+      ],
+      'back in the queue, ahead of the one that waited for the turn'
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(agent.received.length, 1, 'after Stop nothing goes by itself');
+
+    // Send now on the second: it goes as a turn; after that turn ended normally the queue moves on.
+    hub.sendQueued(c.id, c.queue[1].id);
+    await until(() => agent.received.length === 3);
+    assert.deepEqual(
+      agent.received.map((r) => r.text),
+      ['work on it', 'quick question after', 'one more thing']
+    );
+    assert.deepEqual(c.queue, []);
+
+    // While that turn runs: Remove takes a message out and its file goes; Edit gives the input its text and files.
+    const staged = hub.stageFile('notes.txt', Buffer.from('hello notes'));
+    const res = await hub.send(c.id, { text: 'with a file', files: [staged.id], mode: 'queue' });
+    assert.equal(res.state, 'queued');
+    const copy = hub.files.path(c.id, c.queue[0].files[0]);
+    assert.ok(fs.existsSync(copy), 'its file is in the chat folder while it waits');
+    const edited = await hub.unqueue(c.id, res.queued, { restage: true });
+    assert.equal(edited.text, 'with a file');
+    assert.equal(edited.files.length, 1);
+    assert.equal(edited.files[0].name, 'notes.txt');
+    assert.ok(hub.files.pending([edited.files[0].id]), 'staged again for the input');
+    assert.equal(fs.existsSync(copy), false);
+    hub.send(c.id, { text: 'drop me', mode: 'queue' });
+    await hub.unqueue(c.id, c.queue[0].id);
+    assert.deepEqual(c.queue, []);
+    await assert.rejects(hub.unqueue(c.id, 'q_missing'), (err) => err.code === 'invalid' && /unknown queued message/.test(err.detail));
+    hub.stop(c.id);
+    await idle(hub, c.id);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('a queued message whose files are copied while the turn ends waits after Stop, and goes after a normal end', async () => {
+  const env = await demo();
+  const agent = stubbornAgent();
+  const { hub } = fakeHub(env, { adapters: { clark: agent } });
+  await hub.start();
+  try {
+    // The copy of the message's file waits until the test lets it go.
+    const keep = hub.files.keep.bind(hub.files);
+    let release = null;
+    hub.files.keep = (cid, staged) => new Promise((resolve) => (release = resolve)).then(() => keep(cid, staged));
+    const c = hub.create({ agent: 'clark' });
+
+    hub.send(c.id, { text: 'work on it' });
+    const sent = hub.send(c.id, { text: 'with a file', files: [hub.stageFile('a.txt', Buffer.from('a')).id], mode: 'queue' });
+    await until(() => Boolean(release));
+    hub.stop(c.id);
+    await idle(hub, c.id);
+    release();
+    assert.equal((await sent).state, 'queued');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(
+      agent.received.map((r) => r.text),
+      ['work on it'],
+      'after Stop it waits'
+    );
+    assert.deepEqual(
+      c.queue.map((e) => e.text),
+      ['with a file']
+    );
+    await hub.unqueue(c.id, c.queue[0].id);
+
+    // The same after a normal end: it goes.
+    release = null;
+    hub.send(c.id, { text: 'work again' });
+    const second = hub.send(c.id, { text: 'with another file', files: [hub.stageFile('b.txt', Buffer.from('b')).id], mode: 'queue' });
+    await until(() => Boolean(release));
+    agent.done();
+    await idle(hub, c.id);
+    release();
+    await second;
+    await until(() => agent.received.length === 3);
+    assert.equal(agent.received[2].text, 'with another file');
+    assert.equal(agent.received[2].files[0].name, 'b.txt');
+    hub.stop(c.id);
+    await idle(hub, c.id);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('Edit on a steer that came back to the queue gives the input its files too; the chat keeps its copy', async () => {
+  const env = await demo();
+  const agent = stubbornAgent();
+  const { hub } = fakeHub(env, { adapters: { clark: agent } });
+  await hub.start();
+  try {
+    const c = hub.create({ agent: 'clark' });
+    hub.send(c.id, { text: 'work on it' });
+    const res = await hub.send(c.id, { text: 'see this', files: [hub.stageFile('notes.txt', Buffer.from('notes')).id], mode: 'steer' });
+    await until(() => agent.steered.length === 1);
+    const file = c.queue[0].files[0];
+    assert.ok(c.files.some((f) => f.id === file.id), 'the agent could read it during the turn');
+    hub.stop(c.id);
+    await idle(hub, c.id);
+    const back = await hub.unqueue(c.id, res.queued, { restage: true });
+    assert.equal(back.text, 'see this');
+    assert.deepEqual(
+      back.files.map((f) => f.name),
+      ['notes.txt']
+    );
+    assert.ok(hub.files.pending([back.files[0].id]), 'staged for the input');
+    assert.ok(fs.existsSync(hub.files.path(c.id, file)), 'the chat keeps the copy it gave the agent');
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('an agent that can’t take a message during its turn queues a steer and says so', async () => {
+  const env = await demo();
+  const make = (opts) => new FakeAdapter({ ...opts, scale: 0.02 });
+  const { hub } = fakeHub(env, { adapters: { clark: make, claude: make, codex: make, openclaw: make } });
+  await hub.start();
+  try {
+    assert.equal((await hub.status()).openclaw.steer, false);
+    assert.equal((await hub.status()).claude.steer, true);
+    const c = hub.create({ agent: 'openclaw' });
+    hub.send(c.id, { text: 'hello' });
+    const res = hub.send(c.id, { text: 'and this', mode: 'steer' });
+    assert.equal(res.state, 'queued');
+    assert.equal(c.queue[0].fallback, true, 'the panel says why it waits');
+    const fake = hub.adapters.get('openclaw');
+    await until(() => fake.received.length === 2, 20000);
+    await idle(hub, c.id);
+    assert.equal(fake.received[1].text, 'and this');
+    // A quick action never steers: it starts a task of its own.
+    const d = hub.create({ agent: 'claude' });
+    hub.send(d.id, { text: 'hello' });
+    assert.equal(hub.send(d.id, { text: 'Summarize', action: 'summary', mode: 'steer' }).state, 'queued');
+    await until(() => hub.adapters.get('claude').received.length === 2, 20000);
+    await idle(hub, d.id);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('waiting messages survive a restart with their files, and wait until the user sends one', async () => {
+  const env = await demo();
+  const agent = stubbornAgent();
+  const first = fakeHub(env, { adapters: { clark: agent } });
+  await first.hub.start();
+  const c = first.hub.create({ agent: 'clark' });
+  first.hub.send(c.id, { text: 'work on it' });
+  const staged = first.hub.stageFile('notes.txt', Buffer.from('hello notes'));
+  await first.hub.send(c.id, { text: 'with a file', files: [staged.id], mode: 'queue' });
+  first.hub.send(c.id, { text: 'steered, never read', mode: 'steer' });
+  await until(() => agent.steered.length === 1);
+  const file = c.queue[0].files[0];
+  await first.hub.dispose();
+
+  const { hub } = fakeHub(env);
+  await hub.start();
+  try {
+    const again = hub.get(c.id);
+    assert.deepEqual(
+      again.queue.map((e) => [e.text, e.state]),
+      [
+        ['steered, never read', 'queued'],
+        ['with a file', 'queued']
+      ]
+    );
+    assert.ok(fs.existsSync(hub.files.path(c.id, file)), 'the start-up clean-up keeps a waiting message’s file');
+    assert.equal(hub.turns.size, 0, 'nothing goes by itself after a restart');
+    hub.sendQueued(c.id, again.queue[1].id);
+    const fake = hub.adapters.get('clark');
+    await until(() => fake.received.length === 1, 20000);
+    assert.equal(fake.received[0].text, 'with a file');
+    assert.equal(fake.received[0].files[0].name, 'notes.txt');
+    // That turn ended normally, so the other one follows.
+    await until(() => fake.received.length === 2, 20000);
+    await idle(hub, c.id);
+    assert.equal(fake.received[1].text, 'steered, never read');
+    assert.ok(again.files.some((f) => f.id === file.id));
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('steerText: the user’s text, with what they attached and no chat header', () => {
+  assert.equal(context.steerText({ text: 'use the work account' }), 'use the work account');
+  const files = [{ id: 'f_1', name: 'notes.txt', kind: 'text', size: 11, text: 'hello notes' }];
+  const out = context.steerText({ text: 'see this', attached: { files, emails: [] }, local: false });
+  assert.match(out, /^\[The user attached a file to this message\./);
+  assert.match(out, /<unsafe_content source="file" file_id="f_1" filename="notes.txt">\nhello notes\n<\/unsafe_content>/);
+  assert.ok(out.endsWith('\n\nsee this'));
+  assert.ok(!out.includes('Rukoo conversation'));
+  assert.ok(context.steerText({ text: '', attached: { files, emails: [] } }).endsWith('[The user sent this without a message.]'));
+});
+
 test('email text an agent quotes in a proposal keeps its tags when Rukoo repeats the proposal; the user sees none', async () => {
   const env = await demo();
   const steps = [];
@@ -1230,7 +1526,7 @@ test('status: disabled, broken and ready adapters; tokens and identities', async
   try {
     await until(() => events.some((e) => e.kind === 'agents'));
     const s = await hub.status();
-    assert.deepEqual(s.clark, { state: 'offline', detail: 'ECONNREFUSED' });
+    assert.deepEqual(s.clark, { state: 'offline', detail: 'ECONNREFUSED', steer: false });
     assert.equal(s.claude.state, 'ready');
     assert.deepEqual(s.codex, { state: 'unknown', detail: 'Cannot find module ./codex' });
     await hub.updateConfig({ claude: { enabled: false } });
@@ -1372,7 +1668,9 @@ test('status: a probe that answers late does not undo a newer one', async () => 
       codex: (o) => new FakeAdapter({ ...o, scale: 0 })
     }
   });
-  const ready = { state: 'ready', detail: 'Hermes 0.21.5' };
+  const answer = { state: 'ready', detail: 'Hermes 0.21.5' };
+  // The hub adds whether the agent can take a message during its turn; this stub has no steer().
+  const ready = { ...answer, steer: false };
   const lastClark = () => events.filter((e) => e.kind === 'agents').at(-1).status.clark;
   const settle = () => new Promise((r) => setTimeout(r, 20));
   await hub.start();
@@ -1382,7 +1680,7 @@ test('status: a probe that answers late does not undo a newer one', async () => 
     hub.setSecret('clark', 'fixed-key');
     await until(() => probes.length === 2);
     assert.equal(probes[1].force, true);
-    probes[1].resolve(ready);
+    probes[1].resolve(answer);
     await until(() => events.some((e) => e.kind === 'agents' && e.status.clark && e.status.clark.state === 'ready'));
     probes[0].resolve({ state: 'unauthorized', detail: 'The server refused the API key' });
     await settle();
@@ -1392,7 +1690,7 @@ test('status: a probe that answers late does not undo a newer one', async () => 
     // The same for Test: a refresh that started before it answers after it.
     const refresh = hub.refreshStatus();
     const tested = hub.test('clark');
-    probes[3].resolve(ready);
+    probes[3].resolve(answer);
     assert.deepEqual(await tested, ready);
     probes[2].resolve({ state: 'offline', detail: 'ECONNREFUSED' });
     assert.deepEqual((await refresh).clark, ready, 'the late refresh answers with the newest status');
@@ -1403,7 +1701,7 @@ test('status: a probe that answers late does not undo a newer one', async () => 
     const cached = hub.refreshStatus();
     probes[5].resolve({ state: 'offline', detail: 'cached' });
     await cached;
-    probes[4].resolve(ready);
+    probes[4].resolve(answer);
     assert.deepEqual(await testing, ready);
     assert.deepEqual(hub.statuses.clark, ready);
     assert.deepEqual(lastClark(), ready);
@@ -1453,7 +1751,7 @@ test('adapter modules load one by one: a broken one only marks that agent unknow
     const s = await hub.status();
     assert.deepEqual(s.clark, { state: 'unknown', detail: 'half-written' });
     assert.deepEqual(s.claude, { state: 'unknown', detail: 'ClaudeAdapter not exported' });
-    assert.deepEqual(s.codex, { state: 'ready', detail: 'stub' }, 'found by the Adapter suffix');
+    assert.deepEqual(s.codex, { state: 'ready', detail: 'stub', steer: false }, 'found by the Adapter suffix');
   } finally {
     restore.forEach((r) => r());
     await hub.dispose();

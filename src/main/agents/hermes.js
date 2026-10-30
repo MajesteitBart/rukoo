@@ -33,6 +33,8 @@ const POLL_MISSES = 20;
 const STOP_RETRY = 30000;
 // How long a quit waits for the answer to a run start that is still out.
 const QUIT_ANSWER_MS = 1000;
+// How long a steered message waits for Hermes to take the run it is for.
+const STEER_WAIT = 30000;
 
 // The effort levels a run's model_options.reasoning.effort takes (Hermes 0.21 also knows minimal and ultra, which
 // few models have; it ignores a level a model lacks).
@@ -104,6 +106,87 @@ class HermesAdapter {
     this.submitting = new Set();
     // run id → state of a run Rukoo no longer follows whose stop Hermes has not taken yet (see keepStopping).
     this.unstopped = new Map();
+    // Whether the server takes a message during a run (run_steer in /v1/capabilities); unknown until a status check.
+    this.steerCap = null;
+  }
+
+  canSteer() {
+    return this.steerCap !== false;
+  }
+
+  // A message the user sent while the run goes on (hub.js steerEntry()). Hermes keeps it and adds it as a user
+  // message after the tool calls under way; one that a run ends without reaching comes back as pending_steer
+  // (settleSteers()). Read from Hermes' api_server_runs.py and agent/interrupt_control.py (October 2026). This waits
+  // until Hermes took the run: the steer goes to the run's id.
+  async steer(turn, { id, input }) {
+    const end = Date.now() + STEER_WAIT;
+    let state = null;
+    for (;;) {
+      state = [...this.runs.values()].find((s) => s.turn === turn) || null;
+      if (state) break;
+      if ((turn.signal && turn.signal.aborted) || (typeof turn.isOpen === 'function' && !turn.isOpen()) || Date.now() > end) return false;
+      await sleep(50, turn.signal);
+    }
+    if (state.terminal || state.stopping) return false;
+    const text = String(input || '').trim();
+    // The run can end before Hermes' answer comes in; follow() waits for it before it settles the run's steers.
+    const posting = (async () => {
+      let res = null;
+      try {
+        res = await this.request('POST', `/v1/runs/${encodeURIComponent(state.runId)}/steer`, { body: { input: text }, server: state.server });
+      } catch (err) {
+        this.log(`hermes: steer failed: ${err.detail || describe(err)}`);
+      }
+      // 404: a Hermes without the route; 409: the run no longer takes one (it is ending, or stopped).
+      if (!res || !res.ok) {
+        if (res && res.status === 404) this.steerCap = false;
+        return false;
+      }
+      // Only once Hermes holds it does a tool call that ends count as its delivery (takeSteers()).
+      state.steers.push({ id, text, taken: false });
+      return true;
+    })();
+    state.posting.add(posting);
+    try {
+      return await posting;
+    } finally {
+      state.posting.delete(posting);
+    }
+  }
+
+  // Hermes adds the messages it holds after a batch of tool calls ends, before the model's next request. The stream
+  // doesn't say when, so a tool call that ends counts: what was steered in before it is the agent's now.
+  takeSteers(turn, state) {
+    for (const s of state.steers) {
+      if (s.taken) continue;
+      s.taken = true;
+      if (typeof turn.steered === 'function') turn.steered(s.id);
+    }
+  }
+
+  // The run ended. pending_steer holds the text Hermes still held: what it took after it last handed its messages
+  // to the agent, which it does with all it holds at once, joined with line breaks. So the messages it never
+  // delivered are the last ones accepted, in order; the hub queues them again, and the agent got the others. When
+  // the text matches no such run of messages, every message not yet counted stays unread: sending one twice is
+  // better than losing one.
+  settleSteers(turn, state, pending) {
+    const held = typeof pending === 'string' ? pending.trim() : '';
+    let unread = 0;
+    if (held) {
+      unread = -1;
+      for (let n = state.steers.length; n > 0; n--) {
+        if (state.steers.slice(-n).map((s) => s.text).join('\n') === held) {
+          unread = n;
+          break;
+        }
+      }
+    }
+    state.steers.forEach((s, i) => {
+      const read = unread >= 0 ? i < state.steers.length - unread : false;
+      if (s.taken || !read) return;
+      s.taken = true;
+      if (typeof turn.steered === 'function') turn.steered(s.id);
+    });
   }
 
   settings() {
@@ -294,6 +377,8 @@ class HermesAdapter {
       if (features.run_submission === false || features.run_events_sse === false) {
         return { state: 'unknown', detail: 'This Hermes version has no Runs API' };
       }
+      // POST /v1/runs/{id}/steer: an older Hermes has neither the route nor the flag.
+      this.steerCap = features.run_steer === true;
       const version = health.data && health.data.version;
       return { state: 'ready', detail: version ? `Hermes ${version}` : 'Hermes' };
     } catch (err) {
@@ -438,6 +523,10 @@ class HermesAdapter {
     const state = {
       runId,
       server,
+      // The turn, for steer(); the messages steered into the run ({id, text, taken}), and the steer requests still out.
+      turn,
+      steers: [],
+      posting: new Set(),
       lastSeq: -1,
       terminal: null,
       // All text the run streamed, and the part since the last tool call.
@@ -504,6 +593,12 @@ class HermesAdapter {
     for (const key of Object.values(state.open).flat()) turn.emit({ type: 'tool-end', key, error: false });
     const t = state.terminal;
     if (!t) return { status: 'stopped' };
+    // A stop can drop what Hermes held without a trace, so only a run that ran its course says what reached the agent.
+    // A steer Hermes took just before the end counts too: its answer is awaited first (each request has a deadline).
+    if (t.status !== 'stopped') {
+      if (state.posting.size) await Promise.allSettled([...state.posting]);
+      if (state.steers.length) this.settleSteers(turn, state, t.pendingSteer);
+    }
     // The final output can hold more than what streamed (the connection dropped part-way, or only an earlier
     // segment streamed): add what is missing.
     if (t.status === 'done' && t.output) {
@@ -563,9 +658,11 @@ class HermesAdapter {
     const res = await this.request('GET', `/v1/runs/${encodeURIComponent(state.runId)}`, { server: state.server });
     if (!res.ok || !res.data) return null;
     const d = res.data;
-    if (d.status === 'completed') return { status: 'done', output: d.output || '' };
-    if (d.status === 'cancelled') return { status: 'stopped' };
-    if (d.status === 'failed' || d.status === 'interrupted') return { status: 'error', error: this.failure(d) };
+    // Steered text the run ended without reaching rides on its status too.
+    const pendingSteer = typeof d.pending_steer === 'string' ? d.pending_steer : '';
+    if (d.status === 'completed') return { status: 'done', output: d.output || '', pendingSteer };
+    if (d.status === 'cancelled') return { status: 'stopped', pendingSteer };
+    if (d.status === 'failed' || d.status === 'interrupted') return { status: 'error', error: this.failure(d), pendingSteer };
     if (['queued', 'running', 'waiting_for_approval', 'stopping'].includes(d.status)) return { status: 'running' };
     return null;
   }
@@ -666,6 +763,7 @@ class HermesAdapter {
         if (error && data.preview) end.detail = clip(data.preview, 200);
         state.segment = '';
         turn.emit(end);
+        if (state.steers.length) this.takeSteers(turn, state);
         return;
       }
       case 'subagent.start': {
@@ -700,15 +798,15 @@ class HermesAdapter {
         return;
       }
       case 'run.completed':
-        state.terminal = { status: 'done', output: typeof data.output === 'string' ? data.output : '' };
+        state.terminal = { status: 'done', output: typeof data.output === 'string' ? data.output : '', pendingSteer: data.pending_steer };
         if (data.usage) turn.emit({ type: 'usage', ...data.usage });
         return;
       case 'run.cancelled':
-        state.terminal = { status: 'stopped' };
+        state.terminal = { status: 'stopped', pendingSteer: data.pending_steer };
         return;
       case 'run.failed':
       case 'run.interrupted':
-        state.terminal = { status: 'error', error: this.failure(data) };
+        state.terminal = { status: 'error', error: this.failure(data), pendingSteer: data.pending_steer };
         return;
       case 'error':
         state.terminal = { status: 'error', error: { code: 'unknown', detail: clip(data.message || 'Hermes reported an error', 200) } };

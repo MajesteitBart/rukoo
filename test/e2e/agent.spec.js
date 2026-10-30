@@ -2689,3 +2689,168 @@ test('shortcuts: the user hides, orders, edits and adds them in Settings; new ch
   await closeSettings();
   await expect(chips()).toHaveText(['Draft a reply', 'Brief me', 'Plan follow-ups', 'Tell the team', 'Update systems', 'Summarize']);
 });
+
+// ---------- messages sent while the agent works (RUK-102) ----------
+
+// Verification captures for the issue, outside Git: the panel in both themes, and in Dutch.
+const RUK_SHOTS = path.join(__dirname, '..', '..', 'tmp', 'screenshots', 'RUK-102');
+const waiting = () => transcript().locator('.ap-queue .bui-queued');
+const steerButton = () => win.locator('.agentpane .bui-pb__go');
+const sendOptions = () => win.locator('.agentpane .bui-pb__more');
+const stopButton = () => win.locator('.agentpane .bui-pb__send');
+const sentTexts = (agent = 'clark') => app.evaluate((_e, agent) => global.__semAgents.adapters.get(agent).received.map((r) => r.text), agent);
+
+async function panelShot(name, { dutch = null } = {}) {
+  fs.mkdirSync(RUK_SHOTS, { recursive: true });
+  for (const theme of ['dark', 'light']) {
+    await setTheme(theme);
+    await win.waitForTimeout(400);
+    await pane().screenshot({ path: path.join(RUK_SHOTS, `${name}-${theme}.png`) });
+  }
+  if (dutch) {
+    await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
+    await expect(dutch()).toBeVisible();
+    await win.waitForTimeout(300);
+    await pane().screenshot({ path: path.join(RUK_SHOTS, `${name}-light-nl.png`) });
+    await win.evaluate(() => window.mail.call('updateSettings', { language: 'en' }));
+    await expect(win.locator('html')).toHaveAttribute('lang', 'en');
+  }
+  await setTheme('dark');
+}
+
+test('while the agent works, Enter steers a message into its turn and Alt+Enter queues one for after it', async () => {
+  await openChat('Call on Thursday');
+  await say('Add the proposal task; ask for approval first');
+  const card = transcript().locator('.bui-approval');
+  await expect(card).toContainText('Waiting for you');
+  // Nothing typed: Stop alone, where Send was.
+  await expect(stopButton()).toHaveClass(/is-stop/);
+  await expect(steerButton()).toBeHidden();
+
+  // Typed while it works: Steer beside a quieter Stop. Enter steers.
+  await input().fill('Use the work account');
+  await expect(steerButton()).toBeVisible();
+  await expect(steerButton()).toHaveAttribute('aria-label', 'Steer');
+  await expect(stopButton()).toHaveClass(/is-quiet/);
+  await input().press('Enter');
+  await expect(waiting()).toHaveCount(1);
+  await expect(waiting().first().locator('.bui-ub')).toHaveText('Use the work account');
+  await expect(waiting().first().locator('.bui-queued__status')).toHaveText('Hermes reads it before its next step');
+  await expect(waiting().first().locator('button')).toHaveCount(0);
+  await expect(steerButton()).toBeHidden();
+
+  // Alt+Enter queues: it goes when the agent is done, and can be steered now, edited or removed until then.
+  await input().fill('Then summarize it in one line');
+  await input().press('Alt+Enter');
+  await expect(waiting()).toHaveCount(2);
+  await expect(waiting().nth(1).locator('.bui-queued__status')).toHaveText('Sends when Hermes is done');
+  await expect(waiting().nth(1).getByRole('button')).toHaveCount(3);
+  await expect(waiting().nth(1).getByRole('button', { name: 'Steer now' })).toBeVisible();
+  await expect(waiting().nth(1).getByRole('button', { name: 'Edit' })).toBeVisible();
+  await expect(waiting().nth(1).getByRole('button', { name: 'Remove' })).toBeVisible();
+
+  // The chevron offers both, with their keys, by keyboard too.
+  await input().fill('Draft the reply after that');
+  await sendOptions().focus();
+  await win.keyboard.press('Enter');
+  const menuRows = win.locator('.bui-menu .bui-menu__row');
+  await expect(menuRows.locator('.bui-menu__label')).toHaveText(['Steer', 'Queue']);
+  await expect(menuRows.locator('.bui-menu__tag')).toHaveText(['Enter', 'Alt+Enter']);
+  await expect(menuRows.locator('.bui-menu__sub')).toHaveText(['Hermes reads it before its next step', 'Sends when Hermes is done']);
+  await panelShot('running-send-menu');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.bui-menu')).toHaveCount(0);
+  await input().fill('');
+  await panelShot('running-steer-and-queue', { dutch: () => waiting().first().locator('.bui-queued__status', { hasText: 'Hermes leest het vóór de volgende stap' }) });
+  // The narrowest panel (app.js AGENT_MIN): the row keeps the agent, Steer and Stop on one line.
+  await win.evaluate(() => document.documentElement.style.setProperty('--agent-w', '320px'));
+  await expect.poll(() => pane().evaluate((el) => Math.round(el.getBoundingClientRect().width))).toBeLessThanOrEqual(322);
+  await input().fill('Keep it short');
+  await expect(steerButton()).toBeVisible();
+  const row = await win.locator('.agentpane .bui-pb__row').boundingBox();
+  const stop = await stopButton().boundingBox();
+  expect(stop.x + stop.width).toBeLessThanOrEqual(row.x + row.width + 1);
+  expect(Math.abs(stop.y - (await steerButton().boundingBox()).y)).toBeLessThan(2);
+  await panelShot('running-narrow');
+  await input().fill('');
+  await win.evaluate(() => document.documentElement.style.removeProperty('--agent-w'));
+
+  // Allowed, the agent goes on: it reads the steered message at its next step and answers it in the same turn; then
+  // the queued one goes as a turn of its own.
+  await card.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect(transcript()).toContainText('You also said: "Use the work account". Noted.', { timeout: 15000 });
+  await expect(transcript()).toContainText('You asked: "Then summarize it in one line"', { timeout: 15000 });
+  await expect(waiting()).toHaveCount(0);
+  await expect(transcript().locator('.bui-ub')).toHaveText(['Add the proposal task; ask for approval first', 'Use the work account', 'Then summarize it in one line']);
+  expect(await sentTexts()).toEqual(['Add the proposal task; ask for approval first', 'Then summarize it in one line']);
+  const steered = await app.evaluate(() => global.__semAgents.adapters.get('clark').steers.map((s) => s.input));
+  expect(steered).toEqual(['Use the work account']);
+  await expect.poll(() => app.evaluate(() => global.__semAgents.list()[0].status), { timeout: 10000 }).toBe('idle');
+  await panelShot('after-steer-and-queue');
+});
+
+test('after Stop the queued messages wait, through a restart: Edit takes one back, Remove drops one, Send now sends one', async () => {
+  await openChat('Call on Thursday');
+  await say('Add the proposal task; ask for approval first');
+  await expect(transcript().locator('.bui-approval')).toContainText('Waiting for you');
+  for (const text of ['First waiting', 'Second waiting', 'Third waiting']) {
+    await input().fill(text);
+    await input().press('Alt+Enter');
+    await expect(waiting().filter({ hasText: text })).toHaveCount(1);
+  }
+  await stopButton().click();
+  await expect(stopButton()).not.toHaveClass(/is-stop/);
+  await expect(waiting().locator('.bui-queued__status')).toHaveText(['Not sent yet', 'Not sent yet', 'Not sent yet']);
+  await expect(waiting().first().getByRole('button', { name: 'Send now' })).toBeVisible();
+  await win.waitForTimeout(600);
+  expect(await sentTexts()).toEqual(['Add the proposal task; ask for approval first']);
+  await panelShot('stopped-waiting', { dutch: () => waiting().first().locator('.bui-queued__status', { hasText: 'Nog niet verstuurd' }) });
+
+  // Edit: back in the input, out of the list.
+  await waiting().filter({ hasText: 'Second waiting' }).getByRole('button', { name: 'Edit' }).click();
+  await expect.poll(inputValue).toBe('Second waiting');
+  await expect(waiting()).toHaveCount(2);
+  await input().fill('');
+  // Remove: gone.
+  await waiting().filter({ hasText: 'Third waiting' }).getByRole('button', { name: 'Remove' }).click();
+  await expect(waiting()).toHaveCount(1);
+
+  // A restart keeps what waits, and still sends nothing by itself.
+  await app.close();
+  await launch();
+  await item('Call on Thursday').click();
+  if (!(await pane().isVisible())) await win.keyboard.press('Control+j');
+  await expect(waiting()).toHaveCount(1);
+  await expect(waiting().locator('.bui-ub')).toHaveText('First waiting');
+  await expect(waiting().locator('.bui-queued__status')).toHaveText('Not sent yet');
+  await waiting().getByRole('button', { name: 'Send now' }).click();
+  await expect(transcript()).toContainText('You asked: "First waiting"', { timeout: 15000 });
+  await expect(waiting()).toHaveCount(0);
+  expect(await sentTexts()).toEqual(['First waiting']);
+});
+
+test('with an agent that can’t take a message during its turn, Enter queues and the send menu says why', async () => {
+  await openChat('Call on Thursday');
+  await win.click('.agentpane .bui-pb__modelbtn');
+  await win.locator('.bui-menu .bui-menu__row', { hasText: 'OpenClaw' }).click();
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('OpenClaw');
+  await say('Add the proposal task; ask for approval first');
+  const card = transcript().locator('.bui-approval');
+  await expect(card).toContainText('Waiting for you');
+  await input().fill('And check the invoice too');
+  await expect(steerButton()).toHaveAttribute('aria-label', 'Queue');
+  await sendOptions().click();
+  const steerRow = win.locator('.bui-menu .bui-menu__row[data-id="steer"]');
+  await expect(steerRow).toBeDisabled();
+  await expect(steerRow.locator('.bui-menu__sub')).toHaveText("OpenClaw can't read messages while it works");
+  await expect(win.locator('.bui-menu .bui-menu__row[data-id="queue"] .bui-menu__tag')).toHaveText('Enter');
+  await panelShot('cant-steer-menu');
+  await win.keyboard.press('Escape');
+  await input().press('Enter');
+  await expect(waiting()).toHaveCount(1);
+  await expect(waiting().locator('.bui-queued__status')).toHaveText('Sends when OpenClaw is done');
+  await expect(waiting().getByRole('button', { name: 'Steer now' })).toHaveCount(0);
+  await card.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect(transcript()).toContainText('You asked: "And check the invoice too"', { timeout: 15000 });
+  expect(await sentTexts('openclaw')).toEqual(['Add the proposal task; ask for approval first', 'And check the invoice too']);
+});

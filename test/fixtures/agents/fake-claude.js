@@ -19,6 +19,8 @@ const flag = (name) => {
 };
 const resume = flag('resume');
 const sessionId = resume || flag('session-id') || crypto.randomUUID();
+// --replay-user-messages: each message from stdin is echoed when it is taken in, as Claude Code 2.1.312 does.
+const replay = args.includes('--replay-user-messages');
 
 const out = (msg) => process.stdout.write(JSON.stringify({ ...msg, session_id: sessionId, uuid: crypto.randomUUID() }) + '\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -101,6 +103,23 @@ async function approveTool(spec) {
   result();
 }
 
+// "tool step": a tool call that runs for a moment. A message that comes in meanwhile is taken in after its result,
+// within the turn, as Claude Code does (verified with 2.1.312), and the answer says it read it.
+async function toolStep() {
+  stream({ type: 'message_start', message: { id: 'msg_g', role: 'assistant', content: [] } });
+  stream({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_glob', name: 'Glob', input: {} } });
+  stream({ type: 'content_block_stop', index: 0 });
+  out({ type: 'assistant', message: { id: 'msg_g', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_glob', name: 'Glob', input: { pattern: '*.txt' } }] }, parent_tool_use_id: null });
+  await Promise.race([sleep(400), interrupted]);
+  if (interruptRequested) return result({ subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', result: '' });
+  out({ type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_glob', type: 'tool_result', content: 'a.txt' }] }, parent_tool_use_id: null });
+  const taken = inbox.splice(0);
+  for (const msg of taken) echo(msg);
+  stream({ type: 'message_start', message: { id: 'msg_h', role: 'assistant', content: [] } });
+  await textBlock(0, [taken.length ? `read: ${taken.map(textOf).join(' | ')}` : 'found a.txt']);
+  result();
+}
+
 async function slow() {
   stream({ type: 'message_start', message: { id: 'msg_5', role: 'assistant', content: [] } });
   const parts = Array.from({ length: 200 }, (_, i) => `${i} `);
@@ -131,13 +150,38 @@ async function turn(text) {
   }
   if (/hang/.test(text)) return; // never answers, not even an interrupt
   if (/fail/.test(text)) return result({ subtype: 'success', is_error: true, result: 'API Error: 429 rate limit reached', api_error_status: 429 });
+  if (/tool step/.test(text)) return toolStep();
   if (/approve/.test(text)) return approve();
+  // "brief": a short answer that streams for a moment, without a tool call to take a message in at.
+  if (/brief/.test(text)) {
+    stream({ type: 'message_start', message: { id: 'msg_b', role: 'assistant', content: [] } });
+    await textBlock(0, ['one ', 'two ', 'three ', 'four '], 80);
+    return result();
+  }
   if (/slow/.test(text)) return slow();
   if (/cancel/.test(text)) return cancelApproval();
   return hello();
 }
 
+// Messages from stdin not taken in yet, oldest first. A turn takes the next one; a tool step takes those that came in
+// meanwhile; after a turn, one still waiting starts the next turn without being asked, as Claude Code does.
+const inbox = [];
+const textOf = (msg) => msg.message.content.map((c) => c.text || '').join('');
+const echo = (msg) => replay && out({ type: 'user', message: msg.message, parent_tool_use_id: null, isReplay: true });
 let queue = Promise.resolve();
+let running = false;
+function pump() {
+  if (running) return;
+  running = true;
+  queue = (async () => {
+    while (inbox.length) {
+      const msg = inbox.shift();
+      echo(msg);
+      await turn(textOf(msg));
+    }
+    running = false;
+  })();
+}
 let buffer = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
@@ -156,8 +200,8 @@ process.stdin.on('data', (chunk) => {
     } else if (msg.type === 'control_response') {
       if (pending && msg.response.request_id === pending.requestId) pending.resolve(msg);
     } else if (msg.type === 'user') {
-      const text = msg.message.content.map((c) => c.text).join('');
-      queue = queue.then(() => turn(text));
+      inbox.push(msg);
+      pump();
     }
   }
 });

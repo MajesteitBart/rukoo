@@ -39,6 +39,7 @@ async function runTurn(threadId, turnId, text) {
   const started = (it) => notify('item/started', { item: it, ...base, startedAtMs: Date.now() });
   const completed = (it) => notify('item/completed', { item: it, ...base, completedAtMs: Date.now() });
   const finish = (status, error = null) => {
+    state.done = true;
     notify('thread/status/changed', { threadId, status: { type: 'idle' } });
     notify('turn/completed', { threadId, turn: { id: turnId, items: [], itemsView: 'summary', status, error, startedAt: 1, completedAt: 2, durationMs: 1000 } });
   };
@@ -50,6 +51,10 @@ async function runTurn(threadId, turnId, text) {
   };
   notify('thread/status/changed', { threadId, status: { type: 'active', activeFlags: [] } });
   notify('turn/started', { threadId, turn: { id: turnId, items: [], status: 'inProgress', error: null } });
+  // The turn's own message, as 0.165 reports it (without a clientId, when turn/start gave none).
+  const own = item('userMessage', { content: [{ type: 'text', text, text_elements: [] }], clientId: null });
+  started(own);
+  completed(own);
 
   if (/crash/.test(text)) {
     process.stderr.write('codex: fatal crash\n');
@@ -62,9 +67,15 @@ async function runTurn(threadId, turnId, text) {
   if (/slow/.test(text)) {
     const msg = item('agentMessage', { text: '', phase: 'final_answer' });
     started(msg);
-    for (let i = 0; i < 400 && !state.interrupted; i++) {
+    for (let i = 0; i < 400 && !state.interrupted && !state.steers.length; i++) {
       notify('item/agentMessage/delta', { ...base, itemId: msg.id, delta: `${i} ` });
       await sleep(20);
+    }
+    // A steered message: 0.165 drops the answer under way (no item/completed for it), shows the message, and the turn
+    // goes on with an answer to it.
+    if (state.steers.length && !state.interrupted) {
+      await answer([`read: ${state.steers.join(' | ')}`]);
+      return finish('completed');
     }
     // The real server sends no item/completed for what was running when interrupted.
     return finish(state.interrupted ? 'interrupted' : 'completed');
@@ -185,7 +196,7 @@ function handle(msg) {
     case 'turn/start': {
       if (!threads.has(p.threadId)) return send({ id: msg.id, error: { code: -32600, message: 'thread not found' } });
       const turnId = crypto.randomUUID();
-      turns.set(turnId, { interrupted: false });
+      turns.set(turnId, { interrupted: false, done: false, steers: [], threadId: p.threadId });
       const text = (p.input || []).map((i) => i.text).join('');
       // "refuse start": Codex refuses the turn before it starts, so none of its overrides take.
       if (/refuse start/.test(text)) return send({ id: msg.id, error: { code: -32600, message: 'turn could not start' } });
@@ -244,6 +255,19 @@ function handle(msg) {
       const state = turns.get(p.turnId);
       if (state) state.interrupted = true;
       return send({ id: msg.id, result: {} });
+    }
+    // Adds input to the turn under way (0.165): refused unless expectedTurnId is that turn. The message shows as a
+    // userMessage item with the clientUserMessageId it came with.
+    case 'turn/steer': {
+      const state = turns.get(p.expectedTurnId);
+      if (!state || state.done || state.interrupted || state.threadId !== p.threadId) return send({ id: msg.id, error: { code: -32600, message: 'no active turn to steer' } });
+      const text = (p.input || []).map((i) => i.text || '').join('');
+      send({ id: msg.id, result: { turnId: p.expectedTurnId } });
+      const it = { type: 'userMessage', id: `userMessage_${crypto.randomBytes(3).toString('hex')}`, content: p.input, clientId: p.clientUserMessageId || null };
+      notify('item/started', { item: it, threadId: p.threadId, turnId: p.expectedTurnId, startedAtMs: Date.now() });
+      notify('item/completed', { item: it, threadId: p.threadId, turnId: p.expectedTurnId, completedAtMs: Date.now() });
+      state.steers.push(text);
+      return;
     }
     case 'thread/delete':
       threads.delete(p.threadId);

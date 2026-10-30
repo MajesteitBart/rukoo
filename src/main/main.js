@@ -1152,9 +1152,14 @@ Object.assign(api, {
       skill: agentText(i.skill, 64) || null,
       // Tokens of staged files (agentPickFiles, agentAddFile) and Rukoo ids of emails.
       files: agentList(i.files).map(agentId),
-      emails: agentList(i.emails).map(agentMailId)
+      emails: agentList(i.emails).map(agentMailId),
+      // While the agent works: 'steer' hands the message over before its next step, 'queue' sends it after the turn.
+      mode: i.mode === 'steer' || i.mode === 'queue' ? i.mode : null
     });
   },
+  // A message that waits in the chat: send it now, or take it out (Remove, or Edit with restage for the input).
+  agentSendQueued: (id, entryId) => agentHub().sendQueued(agentId(id), agentId(entryId)),
+  agentUnqueue: (id, entryId, options) => agentHub().unqueue(agentId(id), agentId(entryId), { restage: agentPlain(options).restage === true }),
   // The chat's paperclip opens main's own dialog, so Rukoo reads only what the user picked there. room: how many
   // more files the message takes (chatfiles.stagePaths). Read one by one, in the order picked, without blocking: a
   // file on a slow or network drive must not hold up the windows or any other request.
