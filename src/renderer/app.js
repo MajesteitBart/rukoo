@@ -165,8 +165,12 @@ function searchingAll() {
   return Boolean(S.query.trim()) && S.searchScope !== 'view';
 }
 
-// An .ics file opened before the first state came in waits for it, so its card is in the user's language.
-let pendingInviteFile = null;
+// The .ics files main has opened and this window has yet to show (inviteFiles in main.js). Only once the first state
+// is in, so the card is in the user's language.
+async function takeInviteFiles() {
+  if (!S.data) return;
+  for (const token of await api('inviteFiles').catch(() => [])) openInviteFile(token, { openEvent: openCalendarEvent });
+}
 
 // Open in calendar on an invitation's card.
 function openCalendarEvent(id, start) {
@@ -184,10 +188,7 @@ async function refreshOnce() {
   setLanguage(data.settings.language);
   renderedLanguage = data.settings.language;
   localize();
-  if (first && pendingInviteFile) {
-    openInviteFile(pendingInviteFile, { openEvent: openCalendarEvent });
-    pendingInviteFile = null;
-  }
+  if (first) takeInviteFiles();
   if (languageChanged) {
     if (S.message) renderReader();
     S.composer?.retheme(data);
@@ -2667,10 +2668,7 @@ window.mail.on(async ({ type, payload }) => {
   // Its notices come translated from main, so a language change asks for them again.
   if (type === 'booking') applyBooking(payload);
   // An .ics file opened with Rukoo, or an .ics attachment: its card.
-  if (type === 'invite-file' && payload && typeof payload.token === 'string') {
-    if (S.data) openInviteFile(payload.token, { openEvent: openCalendarEvent });
-    else pendingInviteFile = payload.token;
-  }
+  if (type === 'invite-file') takeInviteFiles();
   if (type === 'language') api('bookingState').then(applyBooking).catch(() => {});
   if (type === 'categories') {
     S.categories = payload;

@@ -670,7 +670,7 @@ const api = {
     if (isIcs(a)) {
       try {
         const acc = engine.messageAccount(id);
-        send('invite-file', { token: invitations.openText(a.content.toString('utf8'), safeName(a.filename), acc ? acc.id : null) });
+        showInviteFile(invitations.openText(a.content.toString('utf8'), safeName(a.filename), acc ? acc.id : null));
         return true;
       } catch (_) {
         // Not an event Rukoo can show.
@@ -844,6 +844,7 @@ const api = {
     }),
   // An invitation's card in the reader or for an .ics file. source: { id } of an email, or { file }: an opened file's
   // token. The answer goes through the calendar that has the event, or else by email (calendar/invitations.js).
+  inviteFiles: () => inviteFiles.splice(0),
   inviteState: (source) => invitations.state(inviteSource(source)),
   inviteAnswer: (source, response) => invitations.answer(inviteSource(source), String(response)),
   inviteAdd: (source, target) => {
@@ -1244,10 +1245,18 @@ app.on('open-file', (event, file) => {
   icsQueue.accept(file);
 });
 
+// The cards the main window has yet to show. It takes them when told (invite-file) and after its first state, so a
+// file Rukoo starts with isn't lost when the message comes before the window listens.
+const inviteFiles = [];
+function showInviteFile(token) {
+  inviteFiles.push(token);
+  send('invite-file');
+}
+
 function openIcsFile(file) {
   showWindow();
   try {
-    send('invite-file', { token: invitations.openFile(file) });
+    showInviteFile(invitations.openFile(file));
   } catch (_) {
     dialog.showMessageBox(win, { type: 'warning', message: t('errors.invite.unreadable'), detail: file, buttons: [t('common.actions.ok')] }).catch(() => {});
   }
