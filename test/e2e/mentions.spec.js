@@ -235,6 +235,11 @@ test('the sent mail links mentions of people in To and Cc, and names someone in 
   await newMessage();
   await addRecipient(win, 'to', 'joris@example.com');
   await addRecipient(win, 'bcc', 'sanne@example.com');
+  // Someone in Bcc without a name: the mention reads the part before the @.
+  await win.fill('[data-rinput="bcc"]', 'hidden@example.org');
+  await win.keyboard.press('Enter');
+  await expect(chips(win, 'bcc')).toHaveCount(2);
+  await expect(chips(win, 'bcc').last()).toHaveText('hidden@example.org');
   await win.fill('[data-field="subject"]', 'Mentions out');
   await win.click('.composer .editor');
   await win.keyboard.type('@jo');
@@ -243,6 +248,10 @@ test('the sent mail links mentions of people in To and Cc, and names someone in 
   await win.keyboard.type('and @sa');
   await expect(win.locator('.mention-suggest .mention-tag')).toHaveText(['Bcc']);
   await win.keyboard.press('Enter');
+  await win.keyboard.type('and @hid');
+  await expect(names(win)).toHaveText(['hidden@example.org']);
+  await win.keyboard.press('Enter');
+  await expect(mentions(win)).toHaveText(['@Joris Bakker', '@Sanne de Vries', '@hidden']);
   await expect(chips(win, 'cc')).toHaveCount(0);
   await win.click('[data-c="send"]');
   await expect(win.locator('.composer')).toHaveCount(0, { timeout: 10000 });
@@ -251,10 +260,12 @@ test('the sent mail links mentions of people in To and Cc, and names someone in 
   const sent = await stored('sent', 'Mentions out');
   expect(sent.html).toContain('<a href="mailto:joris@example.com" class="mention">@Joris Bakker</a>');
   expect(sent.html).toContain('<span class="mention">@Sanne de Vries</span>');
+  expect(sent.html).toContain('<span class="mention">@hidden</span>');
   expect(sent.html).not.toContain('sanne@example.com');
+  expect(sent.html).not.toContain('hidden@example.org');
   expect(sent.html).not.toContain('contenteditable');
   // The plain-text part reads as written.
-  expect(sent.text).toContain('@Joris Bakker and @Sanne de Vries');
+  expect(sent.text).toContain('@Joris Bakker and @Sanne de Vries and @hidden');
   expect(sent.text).not.toContain('mailto');
 });
 
@@ -288,6 +299,42 @@ test('the compose window suggests the thread too, and fits a narrow window', asy
   const width = await popup.evaluate(() => window.innerWidth);
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(width);
+});
+
+test('in a low compose window at 200 percent the list fits and scrolls to the active option', async () => {
+  await launch();
+  const people = ['Anna', 'Bram', 'Cees', 'Dirk', 'Eva', 'Fleur'].map((name) => ({ name: `${name} Visser`, address: `${name.toLowerCase()}@example.com` }));
+  const [popup] = await Promise.all([app.waitForEvent('window'), win.evaluate((to) => window.mail.call('openCompose', { mode: 'new', to }), people)]);
+  await popup.waitForSelector('.composer .editor');
+  await app.evaluate(({ BrowserWindow }) => {
+    const compose = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('compose.html'));
+    compose.setSize(560, 460);
+    compose.webContents.setZoomFactor(2);
+  });
+  await expect.poll(() => popup.evaluate(() => window.innerHeight)).toBeLessThan(240);
+  await popup.click('.composer .editor');
+  await popup.keyboard.type('@');
+  await expect(names(popup)).toHaveText(people.map((p) => p.name));
+  const fits = () =>
+    popup.evaluate(() => {
+      const r = document.querySelector('.mention-suggest').getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight && r.left >= 0 && r.right <= window.innerWidth;
+    });
+  expect(await fits()).toBe(true);
+  const listEl = list(popup);
+  expect(await listEl.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  // Up from the first option wraps to the last, which scrolls into view.
+  await popup.keyboard.press('ArrowUp');
+  const last = popup.locator('.mention-suggest [role="option"]').last();
+  await expect(last).toHaveAttribute('aria-selected', 'true');
+  const shown = await last.evaluate((el) => {
+    const box = el.closest('[role="listbox"]').getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    return r.top >= box.top - 1 && r.bottom <= box.bottom + 1;
+  });
+  expect(shown).toBe(true);
+  await popup.keyboard.press('Enter');
+  await expect(mentions(popup)).toHaveText(['@Fleur Visser']);
 });
 
 test('the suggestions and the Cc notice speak Dutch', async () => {

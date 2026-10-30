@@ -74,5 +74,15 @@ export function rankPeople({ query = '', thread = [], contacts = [], own = [], l
   return [...fromThread, ...fromBook].slice(0, limit);
 }
 
-// The text of a mention: @ and the name, or the address when there is no name.
-export const mentionLabel = (person) => `@${String(person.name || '').trim() || person.address}`;
+// The text of a mention: @ and the name, or the part of the address before the @ when there is no name. The address
+// itself stays out of the text: the link carries it, and a mention of someone in Bcc goes out without the link.
+export const mentionLabel = (person) => `@${String(person.name || '').trim() || String(person.address || '').split('@')[0]}`;
+
+// A mention's text without the address in it, for someone the recipients can't see: a name that is the address
+// ("sanne@example.com") keeps only the part before the @.
+export function withoutAddress(text, address) {
+  const a = String(address || '').trim();
+  if (!a.includes('@')) return text;
+  const local = a.split('@')[0];
+  return String(text).split(new RegExp(a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')).join(local);
+}

@@ -96,8 +96,16 @@ test('the thread comes first, the address book after, without duplicates or your
   assert.equal(rankPeople({ query: '', thread: Array.from({ length: 9 }, (_, i) => ({ name: `P${i}`, address: `p${i}@example.com` })) }).length, 6);
 });
 
-test('a mention reads @ and the name, or the address without one', async () => {
+test('a mention reads @ and the name, or the part of the address before the @ without one', async () => {
   const { mentionLabel } = await load();
   assert.equal(mentionLabel({ name: 'Sanne de Vries', address: 'sanne@example.com' }), '@Sanne de Vries');
-  assert.equal(mentionLabel({ name: ' ', address: 'info@example.com' }), '@info@example.com');
+  assert.equal(mentionLabel({ name: ' ', address: 'info@example.com' }), '@info');
+});
+
+test('a mention of someone the recipients cannot see loses the address from its text', async () => {
+  const { withoutAddress } = await load();
+  assert.equal(withoutAddress('@Sanne@Example.com', 'sanne@example.com'), '@sanne', 'in any case');
+  assert.equal(withoutAddress('@Sanne (sanne@example.com)', 'sanne@example.com'), '@Sanne (sanne)');
+  assert.equal(withoutAddress('@Sanne de Vries', 'sanne@example.com'), '@Sanne de Vries');
+  assert.equal(withoutAddress('@a+b@x.example', 'a+b@x.example'), '@a+b', 'characters with a meaning in patterns');
 });

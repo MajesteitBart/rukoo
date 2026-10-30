@@ -4,7 +4,7 @@ import { t } from './i18n.js';
 // Gmail send mentions, and adds the person to Cc when they aren't on the email yet. Deleting a mention leaves the
 // recipients as they are. Both entry points use this through composer.js.
 import { api, esc, avatar, toast } from './ui.js';
-import { mentionToken, rankPeople, mentionLabel } from './mention-match.js';
+import { mentionToken, rankPeople, mentionLabel, withoutAddress } from './mention-match.js';
 
 const MENTION = 'a.mention[href^="mailto:" i]';
 // Where no mention starts: links (mentions too), quoted mail, the signature and code.
@@ -31,7 +31,8 @@ export function lockMentions(root) {
 
 // The text as it goes into a draft or the sent mail: the editor's HTML, with the mentions unlocked. sendTo: when
 // sending, the addresses in To and Cc. A mention of anyone else (in Bcc, or taken off the email) goes out as plain
-// "@Name", so the text doesn't give away an address the recipients can't see. Without mentions the HTML is untouched.
+// "@Name", without the address in the link or the text, so it doesn't give away an address the recipients can't see.
+// Without mentions the HTML is untouched.
 export function outgoingHtml(editor, sendTo = null) {
   if (!editor.querySelector('a.mention')) return editor.innerHTML;
   // A copy in a document of its own: exact, and its images don't load again.
@@ -44,10 +45,11 @@ export function outgoingHtml(editor, sendTo = null) {
     if (prev && prev.nodeType === Node.TEXT_NODE && /\S\u00a0$/.test(prev.data)) prev.data = `${prev.data.slice(0, -1)} `;
     const next = a.nextSibling;
     if (next && next.nodeType === Node.TEXT_NODE && /^\u00a0\S/.test(next.data)) next.data = ` ${next.data.slice(1)}`;
-    if (sendTo && !sendTo.has(mentionAddress(a))) {
+    const address = mentionAddress(a);
+    if (sendTo && !sendTo.has(address)) {
       const span = copy.ownerDocument.createElement('span');
       span.className = 'mention';
-      span.textContent = a.textContent;
+      span.textContent = withoutAddress(a.textContent, address);
       a.replaceWith(span);
     }
   }
@@ -144,14 +146,20 @@ export function mountMentions({ editor, st, getData, listen, onClose, addCc, cha
   const setActive = (i) => {
     if (!open) return;
     open.active = i;
-    open.list.querySelectorAll('[role="option"]').forEach((el, j) => {
+    const list = open.list;
+    list.querySelectorAll('[role="option"]').forEach((el, j) => {
       el.classList.toggle('active', j === i);
       el.setAttribute('aria-selected', String(j === i));
+      // A list cut short by a low window scrolls the active option into view, and only the list.
+      if (j !== i) return;
+      if (el.offsetTop < list.scrollTop) list.scrollTop = el.offsetTop;
+      else if (el.offsetTop + el.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = el.offsetTop + el.offsetHeight - list.clientHeight;
     });
     editor.setAttribute('aria-activedescendant', optionId(i));
   };
 
-  // Under the @, or above it where the window has no room below; never wider than the window.
+  // Under the @, or above it where the window has more room there; never wider or taller than the window, so a low
+  // window or a high zoom gets a list that scrolls.
   const place = () => {
     if (!open) return;
     const { box, token } = open;
@@ -166,9 +174,16 @@ export function mountMentions({ editor, st, getData, listen, onClose, addCc, cha
     const width = Math.min(320, window.innerWidth - 16);
     box.style.width = `${width}px`;
     box.style.left = `${Math.max(8, Math.min(at.left - 10, window.innerWidth - width - 8))}px`;
+    box.style.maxHeight = '';
+    const full = box.offsetHeight;
     const below = at.bottom + 6;
-    const fits = below + box.offsetHeight <= window.innerHeight - 8;
-    box.style.top = `${fits ? below : Math.max(8, at.top - box.offsetHeight - 6)}px`;
+    const roomBelow = window.innerHeight - 8 - below;
+    const roomAbove = at.top - 6 - 8;
+    const down = full <= roomBelow || roomBelow >= roomAbove;
+    const height = Math.min(full, Math.max(48, down ? roomBelow : roomAbove));
+    box.style.maxHeight = `${height}px`;
+    box.style.top = `${Math.max(8, down ? Math.min(below, window.innerHeight - 8 - height) : at.top - 6 - height)}px`;
+    if (open.list.children[open.active]) setActive(open.active);
   };
 
   // Where someone is on the email already, or that picking them adds them to Cc.
