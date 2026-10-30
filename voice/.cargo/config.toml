@@ -1,4 +1,4 @@
 # Link the C runtime statically so the recorder and the local worker run without the VC++ redistributable.
-# tauri-build already does the same for the app.
+# voice-app's build.rs turns off tauri-build's own runtime setting, so this flag covers the app too.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

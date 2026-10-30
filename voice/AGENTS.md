@@ -32,6 +32,14 @@ Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local spe
 - The live paired run is the acceptance test for meetings: `node voice/scripts/live-meeting.mjs`, or with `--skip-build` after a build. It makes SAPI speech, runs Voice and a hidden Rukoo on the demo account, and checks passages on both tracks before the stop, the pill, Rukoo's window protection, a Voice restart mid-meeting, a killed recorder, processing then done, `meeting.get`, and a meeting started from Voice. It takes about two minutes and stops every process it started by process id. The report is `tmp\live\<time>\report.json` and the captures go to `tmp\live-shots\`. Voice's pill and Settings show on the desktop while it runs, without taking focus.
 - `--fake-engine[=idle|meeting|dictation|cycle|first-run]` runs the windows against scripted states, and `--self-test <folder>` with it captures both pages in both themes and languages. Both refuse to run without `RUKOO_VOICE_DATA_DIR`.
 
+## Package
+
+`powershell -File voice\scripts\package.ps1` builds the three release programs and writes `voice\target\package\Rukoo-Voice-Setup-<version>.exe`, a per-user installer into `%LOCALAPPDATA%\Programs\Rukoo Voice`, plus `Rukoo-Voice-Portable-<version>.zip` and `SHA256SUMS.txt`. It needs Node for `npx`, 7-Zip and the Visual Studio C++ build tools. It checks the installer by unpacking it, never by installing it: an installed Voice answers Right Alt and Right Ctrl, the same keys as the installed Ownkey.
+
+After a dependency change it stops until you run it once with `-UpdateNotices` and commit the updated `THIRD_PARTY_NOTICES.md`. The icons come from `voice/crates/voice-app/icons/mark.js`; `npx electron voice/crates/voice-app/icons/make-icons.js` renders them again.
+
+Releases: bump the workspace version in `voice/Cargo.toml`, merge, then push a `voice-v<version>` tag from main. `.github/workflows/voice-release.yml` attaches the installer, the zip and the checksums to a draft release that is never marked Latest. 0.1 is unsigned, so SmartScreen warns about the installer.
+
 ## What makes this project special?
 
 - **A meeting can't be repeated.** Losing a recording is the worst failure Voice can have. The crash safety rules in README.md are hard requirements. The recorder never depends on transcription, the UI or Rukoo. A hard kill at any moment leaves files that open. Two CI tests prove it: one hard-kills the recorder halfway through a meeting, the other removes the microphone during one, and both check that the timeline is complete up to that point. Add them with the first recorder code, and don't merge recorder changes without them.
