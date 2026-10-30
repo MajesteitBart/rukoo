@@ -13,7 +13,7 @@
 const { EventEmitter } = require('events');
 const { VoiceStore } = require('./store');
 const { VoiceBridge, VoiceError } = require('./bridge');
-const { isMeetingId, TITLE_MAX } = require('./protocol');
+const { isMeetingId, TITLE_MAX, LABEL_MAX } = require('./protocol');
 const { candidateEvents, suggest, WINDOW_MS } = require('./speakers');
 const { bridgePathHere } = require('./paths');
 
@@ -23,6 +23,15 @@ const LINK_WITHIN_MS = 12 * 60 * 60 * 1000;
 const EVENT_ID_MAX = 4000;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// At most max characters, counted as the protocol counts them (code points), and never half of one. Voice can't read
+// a lone surrogate, so a command that carries one gets no answer at all. A cut in UTF-16 units before this one can
+// leave half an emoji at the end: that half goes.
+function clipChars(s, max) {
+  return Array.from(s.replace(/[\uD800-\uDBFF]$/, '').toWellFormed())
+    .slice(0, max)
+    .join('');
+}
 
 // What the meeting list and a delta say about a meeting.
 function summary(e, now = Date.now()) {
@@ -68,6 +77,8 @@ class VoiceService extends EventEmitter {
     this.lastRecording = null;
     this.deltas = new Map();
     this.deltaTimer = null;
+    // The meetings whose meeting.get is on its way, each with the events for it applied meanwhile (refetch()).
+    this.waiting = new Set();
     this.closed = false;
   }
 
@@ -144,13 +155,18 @@ class VoiceService extends EventEmitter {
     for (const id of ids) {
       if (!this.connected) return;
       const before = this.revOf(id);
+      // The meeting's events that arrive before the answer: those past its head are newer than the snapshot.
+      const waiting = { id, events: [] };
+      this.waiting.add(waiting);
       try {
         const snap = await this.bridge.command('meeting.get', { meeting: id });
-        const change = this.store.applySnapshot(id, snap);
+        const change = this.store.applySnapshot(id, snap, waiting.events);
         if (change) this.note(change, before);
       } catch (err) {
         // Voice doesn't have it any more: as if it said meeting.removed.
         if (err.code === 'not_found' && this.store.remove(id)) this.note({ meeting: id, kind: 'removed' }, before);
+      } finally {
+        this.waiting.delete(waiting);
       }
     }
     this.statusChanged();
@@ -168,6 +184,7 @@ class VoiceService extends EventEmitter {
     let change = null;
     try {
       change = this.store.apply(ev);
+      for (const w of this.waiting) if (w.id === ev.meeting) w.events.push(ev);
     } catch (err) {
       this.log('voice', `applying ${ev.event} failed: ${err.message}`);
     }
@@ -289,7 +306,8 @@ class VoiceService extends EventEmitter {
   async start(opts = {}) {
     this.mustConnect();
     const args = {};
-    if (typeof opts.title === 'string' && opts.title.trim()) args.title = opts.title.trim().slice(0, TITLE_MAX);
+    const title = typeof opts.title === 'string' ? clipChars(opts.title.trim(), TITLE_MAX) : '';
+    if (title) args.title = title;
     if (typeof opts.screen === 'string') args.screen = opts.screen;
     if (Array.isArray(opts.tracks) && opts.tracks.length) args.tracks = opts.tracks;
     const eventId = typeof opts.eventId === 'string' && opts.eventId ? opts.eventId.slice(0, EVENT_ID_MAX) : null;
@@ -340,7 +358,8 @@ class VoiceService extends EventEmitter {
   async mark(id, label = null) {
     this.mustConnect();
     const args = { meeting: id };
-    if (typeof label === 'string' && label.trim()) args.label = label.trim().slice(0, TITLE_MAX);
+    const text = typeof label === 'string' ? clipChars(label.trim(), LABEL_MAX) : '';
+    if (text) args.label = text;
     return this.bridge.command('meeting.mark', args);
   }
 

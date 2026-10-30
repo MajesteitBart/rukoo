@@ -175,6 +175,63 @@ test('a damaged voice.json or meeting file is kept aside, never overwritten, and
   assert.equal(fs.readdirSync(dir).filter((n) => n.startsWith('voice.json.bad-')).length, 1, 'the kept copy stays');
 });
 
+test("with voice.json lost, a meeting's next change still counts above every change in its own file", () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  const events = script().slice(0, 6);
+  for (const e of events) s.apply(e);
+  s.close();
+  let last = s;
+  for (const [n, damage] of [[1, '{not json'], [2, null]]) {
+    // What a meeting chat's cursor can hold after the agent read it all.
+    const top = Math.max(...last.meeting(M).passages.map((p) => p.changed));
+    if (damage) fs.writeFileSync(path.join(dir, 'voice.json'), damage);
+    else fs.rmSync(path.join(dir, 'voice.json'));
+    const again = store(dir);
+    assert.equal(again.cursor().after, 0, 'Voice replays everything');
+    for (const e of events) again.apply(e);
+    again.apply(passage('call', 90000 + n * 1000, `Said after loss ${n}.`));
+    const p = again.meeting(M).passages.find((x) => x.text === `Said after loss ${n}.`);
+    assert.ok(p.changed > top, `${p.changed} > ${top}`);
+    again.close();
+    last = again;
+  }
+});
+
+test("a snapshot doesn't undo the meeting's events past its head that Rukoo applied before the snapshot came", () => {
+  const s = store();
+  const at = (e, n) => ({ ...e, seq: n });
+  const later = [
+    at(passage('call', 4000, 'After the head.'), 4),
+    at(ev('mark', M, { id: 'k-9', kind: 'user', at: 4500, until: null, track: null, detail: null, label: null }), 5),
+    at(ev('meeting.state', M, { state: 'processing', at: 5000, endedAt: 1793000005000, reason: 'user' }), 6)
+  ];
+  s.apply(at(started(), 1));
+  s.apply(at(passage('call', 1000, 'Before the head.'), 2));
+  for (const e of later) s.apply(e);
+  s.correct(M, 'call-000004000', 'After the head, corrected.');
+  const snap = {
+    meeting: { id: M, title: 'Weekly with Anna', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'rukoo', context: null, state: 'recording', endedAt: null },
+    speakers: [],
+    passages: [{ ...passage('call', 1000, 'Before the head.').data }],
+    marks: [],
+    head: 3
+  };
+  assert.ok(s.applySnapshot(M, snap, [at(passage('call', 1000, 'Before the head.'), 2), ...later]));
+  const m = s.meeting(M);
+  assert.deepEqual(m.passages.map((p) => p.text), ['Before the head.', 'After the head, corrected.']);
+  assert.deepEqual(m.marks.map((k) => k.id), ['k-9']);
+  assert.equal(m.meeting.state, 'processing');
+  // With every event at or before its head, the snapshot is the whole meeting.
+  assert.ok(s.applySnapshot(M, { ...snap, head: 6 }, later));
+  assert.deepEqual(s.meeting(M).passages.map((p) => p.text), ['Before the head.']);
+  assert.equal(s.meeting(M).meeting.state, 'recording');
+  // A meeting Voice removed after the snapshot stays removed.
+  s.apply(at(ev('meeting.removed', M, {}), 7));
+  assert.equal(s.applySnapshot(M, snap, [at(ev('meeting.removed', M, {}), 7)]), null);
+  assert.equal(s.meeting(M), null);
+});
+
 test('welcome: another instance resets the cursor, a gap or full replay goes back to before the oldest event', () => {
   const s = store();
   const base = { type: 'welcome', protocol: 1, voiceVersion: '0.1.0', head: 40, status: { recording: null, dictating: false } };

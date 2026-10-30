@@ -146,6 +146,60 @@ test('a gap: Rukoo asks meeting.get for the meetings it has that may still chang
   assert.equal(s2.store.cursor().after, voice.head);
 });
 
+test("a meeting.get answer doesn't undo the meeting's events past its head that Voice sent before it", async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const at = Date.now();
+  voice.append('meeting.started', M1, started('Racing', at));
+  voice.append('passage', M1, passage('call', 1000, 'Before the head.'));
+  const s1 = service(t, dir, file).init();
+  await until(() => s1.store.cursor().after === 2, 'the first replay');
+  s1.close();
+  for (let i = 0; i < 3; i++) voice.append('status', null, { recording: null, dictating: false });
+  voice.forget(5);
+  // Voice reads the snapshot at its head, and the transcript goes on: those events go out before the answer.
+  voice.handlers['meeting.get'] = function () {
+    const head = this.head;
+    this.append('passage', M1, passage('call', 4000, 'After the head.'));
+    this.append('meeting.state', M1, { state: 'processing', at: 5000, endedAt: at + 5000, reason: 'user' });
+    return { meeting: { id: M1, ...started('Racing', at), state: 'recording', endedAt: null }, speakers: [], passages: [passage('call', 1000, 'Before the head.')], marks: [], head };
+  };
+  const s2 = service(t, dir, file);
+  let refetched = false;
+  s2.on('meeting', (p) => {
+    if (p.kind === 'list') refetched = true;
+  });
+  s2.init();
+  await until(() => refetched, 'the snapshot');
+  const m = s2.get(M1);
+  assert.deepEqual(m.passages.map((p) => p.text), ['Before the head.', 'After the head.']);
+  assert.equal(m.meeting.state, 'processing');
+  assert.equal(s2.store.cursor().after, voice.head);
+});
+
+test('a title or label cut at its limit never ends in half an emoji, which Voice could not read', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const s = service(t, dir, file, { hide: () => false }).init();
+  await until(() => s.connected, 'the connection');
+  const sent = [];
+  const onText = voice.onText.bind(voice);
+  voice.onText = (peer, text) => {
+    sent.push(text);
+    return onText(peer, text);
+  };
+  const emoji = '\u{1F600}';
+  const first = await s.start({ title: `${'a'.repeat(199)}${emoji} and more` });
+  await s.mark(first.meetingId, `${'b'.repeat(199)}${emoji}${emoji}`);
+  await s.stop(first.meetingId);
+  // main cuts in UTF-16 units first, which can leave the first half of an emoji at the end.
+  await s.start({ title: `${emoji.repeat(149)}${emoji[0]}` });
+  const args = voice.commands.filter((c) => c.command === 'meeting.start' || c.command === 'meeting.mark').map((c) => c.args.title || c.args.label);
+  assert.deepEqual(args, [`${'a'.repeat(199)}${emoji}`, `${'b'.repeat(199)}${emoji}`, emoji.repeat(149)]);
+  assert.equal(sent.length, 4);
+  for (const text of sent) assert.doesNotMatch(text, /\\ud[89a-f][0-9a-f]{2}/i, 'no lone surrogate goes out');
+});
+
 test('a new Voice data folder: the cursor starts again from its first event, and Rukoo keeps the meetings it had', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();

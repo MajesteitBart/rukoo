@@ -12,7 +12,8 @@
 //
 // tick is Rukoo's own change counter: every change to a passage or mark takes the next number. It orders what the
 // agent has read (read_meeting_transcript's cursor) and what the renderer has shown, and unlike Voice's seq it never
-// starts again when Voice's data folder does.
+// starts again when Voice's data folder does. When voice.json is lost it resumes, for each meeting, above the ticks
+// in that meeting's file before the meeting changes again (data()).
 
 const fs = require('fs');
 const path = require('path');
@@ -170,6 +171,14 @@ class VoiceStore {
     if (!raw && !create && !this.index.meetings[id]) return null;
     m = raw ? normalizeMeeting(id, raw) : emptyMeeting(id);
     this.cache.set(id, m);
+    // voice.json can be lost, set aside or older than this file (a crash between the two saves) while a chat's
+    // cursor still holds this file's ticks: the meeting's next change must still count as new.
+    let top = 0;
+    for (const v of [...Object.values(m.passages), ...Object.values(m.marks)]) top = Math.max(top, int(v.changed), int(v.added));
+    if (top > this.index.tick) {
+      this.index.tick = top;
+      this.indexDirty = true;
+    }
     return m;
   }
 
@@ -399,8 +408,15 @@ class VoiceStore {
 
   // meeting.get's answer: the current version of everything up to its head. What Rukoo has that the snapshot lacks
   // was removed meanwhile. Items Voice sent that don't pass the protocol's checks are left out, as events would be.
-  applySnapshot(id, snap) {
+  // later: the events for this meeting Rukoo applied while the answer was on its way. Voice sends its replies and its
+  // events separately, so those past head can come first: they are newer than the snapshot and apply again on top.
+  applySnapshot(id, snap, later = []) {
     if (!isMeetingId(id) || !isObj(snap)) return null;
+    const head = Number.isInteger(snap.head) ? snap.head : Infinity;
+    const newer = later.filter((ev) => ev.meeting === id && ev.seq > head);
+    // Voice removed the meeting after the snapshot, and Rukoo did too.
+    if (newer.some((ev) => ev.event === 'meeting.removed')) return null;
+    const fresh = new Set(newer.filter((ev) => ev.event === 'passage' || ev.event === 'mark').map((ev) => `${ev.event}:${ev.data.id}`));
     const ok = (event, data) => validate('voice', { type: 'event', seq: 1, event, meeting: id, createdAt: 0, data }).ok;
     const meeting = isObj(snap.meeting) ? snap.meeting : {};
     const e = this.ensureEntry(id);
@@ -433,7 +449,7 @@ class VoiceStore {
       if (this.passage(id, { ...p, revision: Math.max(p.revision, 1) })) touched = true;
     }
     for (const pid of Object.keys(m.passages)) {
-      if (!keep.has(pid)) {
+      if (!keep.has(pid) && !fresh.has(`passage:${pid}`)) {
         delete m.passages[pid];
         delete m.corrections[pid];
         touched = true;
@@ -446,11 +462,13 @@ class VoiceStore {
       if (this.mark(id, k)) touched = true;
     }
     for (const kid of Object.keys(m.marks)) {
-      if (!marks.has(kid)) {
+      if (!marks.has(kid) && !fresh.has(`mark:${kid}`)) {
         delete m.marks[kid];
         touched = true;
       }
     }
+    // Applying an event twice gives the same result, so what Rukoo had from them comes back as it was.
+    for (const ev of newer) if (this.apply(ev)) touched = true;
     this.damaged.delete(id);
     if (!changed && !touched) return null;
     this.meetingChanged(id);
