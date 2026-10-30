@@ -17,11 +17,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The Electron tests run one at a time (workers: 1), so Windows and Linux split them over three runners. Shard 1
+        # has the slow agent tests; shard 2 also runs the unit tests and shard 3 builds the packages.
         include:
           - os: windows-latest
             arch: x64
+            shard: 1
+          - os: windows-latest
+            arch: x64
+            shard: 2
+          - os: windows-latest
+            arch: x64
+            shard: 3
           - os: ubuntu-22.04
             arch: x64
+            shard: 1
+          - os: ubuntu-22.04
+            arch: x64
+            shard: 2
+          - os: ubuntu-22.04
+            arch: x64
+            shard: 3
           - os: macos-15
             arch: arm64
           - os: macos-15-intel
@@ -40,10 +56,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+        if: runner.os == 'macOS' || matrix.shard == 2
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb openbox dbus-x11 gnome-keyring libsecret-tools libgtk-3-0 libnss3 libasound2 libgbm1 libnotify4 libsecret-1-0
-      - run: npm run test:e2e
+      # --fully-parallel splits by test rather than by file, so agent.spec.js and app.spec.js don't share a shard.
+      # With one worker the tests still run one at a time.
+      - run: npm run test:e2e -- --shard=${{ matrix.shard }}/3 --fully-parallel
         if: runner.os == 'Windows'
       - name: Test Linux desktop interactions
         if: runner.os == 'Linux'
@@ -78,13 +97,13 @@ jobs:
             test "$(timeout 15s secret-tool lookup application rukoo-ci)" = ready
             secret-tool clear application rukoo-ci
             sleep 1
-            npm run test:e2e
+            npm run test:e2e -- --shard=${{ matrix.shard }}/3 --fully-parallel
           '
       - name: Test native macOS desktop interactions
         if: runner.os == 'macOS'
         run: npx playwright test test/e2e/macos.spec.js
       - name: Build Windows or Linux packages
-        if: runner.os != 'macOS'
+        if: runner.os != 'macOS' && matrix.shard == 3
         run: npm run dist -- --${{ matrix.arch }} --publish never
       - name: Build ad-hoc signed macOS test packages
         if: runner.os == 'macOS'
@@ -125,7 +144,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-${{ matrix.os }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
