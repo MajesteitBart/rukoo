@@ -60,9 +60,12 @@ class OAuthFlow {
     this.openBrowser = openBrowser;
     this.fetch = fetchImpl;
     this.pending = null;
+    // Counts sign-ins and cancels, so one cancelled while it still opens its port stops there.
+    this.generation = 0;
   }
 
   cancel() {
+    this.generation += 1;
     if (this.pending) this.pending();
   }
 
@@ -70,21 +73,26 @@ class OAuthFlow {
   // Returns the token answer, with redirectUri.
   async signIn(provider, client) {
     this.cancel();
+    const mine = this.generation;
     const name = provider.name;
     const verifier = base64url(crypto.randomBytes(48));
     const challenge = base64url(crypto.createHash('sha256').update(verifier).digest());
     const state = base64url(crypto.randomBytes(24));
     const path = provider.path || '';
     let deliver = () => {};
+    // This sign-in's cancel. A newer sign-in replaces it, and this one's end mustn't clear the newer one's.
+    let cancelMine = null;
     const loop = await listen(provider.host, (req, res) => deliver(req, res));
     const redirectUri = `http://${provider.host}:${loop.port}${path}`;
     try {
+      if (this.generation !== mine) throw videoError('cancelled', t('errors.video.cancelled', { service: name }));
       const code = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(videoError('timeout', t('errors.video.timeout', { service: name }))), SIGN_IN_TIMEOUT);
-        this.pending = () => {
+        cancelMine = () => {
           clearTimeout(timer);
           reject(videoError('cancelled', t('errors.video.cancelled', { service: name })));
         };
+        this.pending = cancelMine;
         deliver = (req, res) => {
           const url = new URL(req.url, `http://${provider.host}:${loop.port}`);
           if (url.pathname !== (path || '/')) {
@@ -116,7 +124,7 @@ class OAuthFlow {
       const tokens = await this.token(provider, client, { grant_type: 'authorization_code', code, redirect_uri: redirectUri, code_verifier: verifier });
       return { ...tokens, redirectUri };
     } finally {
-      this.pending = null;
+      if (this.pending === cancelMine) this.pending = null;
       loop.close();
     }
   }

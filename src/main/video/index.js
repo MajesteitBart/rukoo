@@ -149,6 +149,9 @@ class VideoServices extends EventEmitter {
     if (a.kind === 'room') return this.setRoom(id, { on: true });
     const client = this.client(id);
     if (!client) throw videoError('unavailable', t('errors.video.notConfigured', { service: a.name }));
+    // A second Connect cancels the first sign-in; only the latest one clears the pending state when it ends.
+    const attempt = {};
+    this.attempt = attempt;
     this.pending = id;
     this.emit('changed', this.state());
     try {
@@ -166,7 +169,7 @@ class VideoServices extends EventEmitter {
       this.file.accounts[id] = { email: profile.email, name: profile.name, secret, at: this.now(), renew: false };
       this.tokens.set(id, grant);
     } finally {
-      if (this.pending === id) this.pending = null;
+      if (this.attempt === attempt) this.pending = null;
       this.changed();
     }
     return this.state();

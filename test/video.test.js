@@ -307,6 +307,16 @@ test('a sign-in can be denied, cancelled, and ignores an answer meant for anothe
   await assert.rejects(signing, (err) => err.code === 'cancelled');
   assert.equal(v.state().pending, null);
 
+  // Connect pressed again while a sign-in is open: the first one ends, the second still shows as open.
+  const first = v.connect('zoom');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = v.connect('zoom');
+  await assert.rejects(first, (err) => err.code === 'cancelled');
+  assert.equal(v.state().pending, 'zoom');
+  v.cancel();
+  await assert.rejects(second, (err) => err.code === 'cancelled');
+  assert.equal(v.state().pending, null);
+
   // A redirect with a state that isn't this sign-in's is refused; the real one still completes it.
   s.browser = 'wrong-state';
   await v.connect('zoom');
