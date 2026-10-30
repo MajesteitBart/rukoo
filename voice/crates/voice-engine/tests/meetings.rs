@@ -48,8 +48,8 @@ fn main() {
             a_dictation_while_the_recorder_restarts_is_still_marked,
         ),
         (
-            "a_dictation_whose_recorder_dies_is_marked_on_the_next_one",
-            a_dictation_whose_recorder_dies_is_marked_on_the_next_one,
+            "a_dictation_whose_recorder_dies_twice_is_marked_on_each_next_one",
+            a_dictation_whose_recorder_dies_twice_is_marked_on_each_next_one,
         ),
         (
             "each_meeting_keeps_the_retention_it_started_with",
@@ -302,7 +302,7 @@ fn a_dictation_while_the_recorder_restarts_is_still_marked() {
     engine.shutdown();
 }
 
-fn a_dictation_whose_recorder_dies_is_marked_on_the_next_one() {
+fn a_dictation_whose_recorder_dies_twice_is_marked_on_each_next_one() {
     let h = harness("dictation-recorder-dies", json!({}));
     let engine = h.start();
     let id = engine.start_meeting().unwrap();
@@ -322,6 +322,20 @@ fn a_dictation_whose_recorder_dies_is_marked_on_the_next_one() {
     wait_for("the dictation marked on it", || {
         dictation_since_restart(&h.data(), &id) == ["start"]
     });
+    // It dies again with the key still down. Voice's own capture has no tap to end, so only the
+    // restart itself can tell the next recorder.
+    kill(recorder_pid(&h.data(), &id));
+    wait_for("the second restarted recorder", || {
+        sessions(&h.data(), &id) == 3
+    });
+    wait_for("the dictation marked on that one too", || {
+        dictation_since_restart(&h.data(), &id) == ["start"]
+    });
+    assert_eq!(
+        h.mic.opens.load(Ordering::SeqCst),
+        1,
+        "Voice's own capture carries on"
+    );
     h.keys.up(Key::F13);
     wait_for("the stretch to end", || {
         dictation_since_restart(&h.data(), &id) == ["start", "end"]

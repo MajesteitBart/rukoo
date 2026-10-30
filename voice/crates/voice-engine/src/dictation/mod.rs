@@ -45,7 +45,7 @@ const REWRITE_SETTLE: Duration = Duration::from_millis(50);
 /// The longest an insertion waits for the user to let go of a hotkey.
 const DEFER_LIMIT: Duration = Duration::from_secs(300);
 const DEFER_POLL: Duration = Duration::from_millis(20);
-/// How often a dictation tries again to tell a restarting meeting recorder about itself.
+/// How often a held dictation checks that the meeting's current recorder knows about it.
 const MARK_RETRY: Duration = Duration::from_millis(100);
 
 pub(crate) struct Dictation {
@@ -338,9 +338,11 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
 /// Tells the meeting that records the microphone that this dictation is on it (decision 9), so
 /// Rukoo's agent knows these words weren't said in the call. That holds whatever the dictation
 /// reads from: the recorder's tap, or Voice's own capture when the tap failed or the recorder
-/// restarts. While it restarts, a thread tries again until the recorder answers or the key is up.
+/// restarts. Until the key is up, a thread checks which recorder the dictation told and tells
+/// each one that takes over after a crash: the new session ends the dead one's dictation itself
+/// (RECORDING.md), and on Voice's own capture no tap ends to say the recorder changed.
 fn mark(core: &Arc<Core>, id: u64) {
-    if try_mark(core, id) != Marking::Later {
+    if try_mark(core, id) != Marking::Watch {
         return;
     }
     let weak = Arc::downgrade(core);
@@ -351,7 +353,7 @@ fn mark(core: &Arc<Core>, id: u64) {
             let Some(core) = weak.upgrade() else {
                 return;
             };
-            if core.shutting_down() || try_mark(&core, id) != Marking::Later {
+            if core.shutting_down() || try_mark(&core, id) != Marking::Watch {
                 return;
             }
         });
@@ -359,50 +361,57 @@ fn mark(core: &Arc<Core>, id: u64) {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Marking {
-    /// Marked, or nothing to mark: no meeting records the microphone, or the key is up.
+    /// Nothing more to mark: no meeting records the microphone, or the key is up.
     Done,
-    /// A meeting records the microphone but its recorder can't be told yet.
-    Later,
+    /// A meeting records the microphone: its recorder may not answer yet, or may restart before
+    /// the key is up.
+    Watch,
 }
 
 fn try_mark(core: &Core, id: u64) -> Marking {
     let this = &core.dictation;
-    let pending = lock(&this.recording)
-        .as_ref()
-        .is_some_and(|r| r.id == id && r.marked.is_none());
-    if !pending {
-        return Marking::Done;
-    }
-    let later = || {
+    let marked = match lock(&this.recording).as_ref().filter(|r| r.id == id) {
+        Some(r) => r.marked.clone(),
+        None => return Marking::Done,
+    };
+    let watch = || {
         if core.meetings.records_mic() {
-            Marking::Later
+            Marking::Watch
         } else {
             Marking::Done
         }
     };
     // `None` while the recorder restarts or stops, and without a meeting that records the mic.
     let Some(file) = core.meetings.controller.tap() else {
-        return later();
+        return watch();
     };
+    if marked.as_ref() == Some(&file) {
+        return Marking::Watch;
+    }
+    // Not told yet, or told a recorder that has died since.
     if tap::dictation(&file, "start").is_err() {
         // It died a moment ago; the watchdog restarts it or ends the meeting.
-        return later();
+        return watch();
     }
     let mut recording = lock(&this.recording);
     match recording.as_mut().filter(|r| r.id == id) {
-        Some(r) => r.marked = Some(file),
+        Some(r) => {
+            r.marked = Some(file);
+            Marking::Watch
+        }
         None => {
             // Let go while the recorder answered: the stretch ends right away.
             drop(recording);
             let _ = tap::dictation(&file, "end");
+            Marking::Done
         }
     }
-    Marking::Done
 }
 
 /// Runs when the recorder ends the tap while the key may still be held: the meeting stopped or
 /// its recorder died. The rest of the dictation comes from Voice's own capture into the same
-/// buffer, so nothing said after that is lost, and a restarted recorder is told about it again.
+/// buffer, so nothing said after that is lost, and a restarted recorder is told about it again
+/// by the thread [`mark`] started at the press.
 fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEnd {
     let weak = Arc::downgrade(core);
     Box::new(move || {
@@ -428,7 +437,8 @@ fn tap_ended(core: &Arc<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> TapEn
                 };
                 // The tap, closed from its own reader thread.
                 drop(old);
-                mark(&core, id);
+                // A recorder that lost its device but lives on is told at once.
+                try_mark(&core, id);
             }
             Err(message) => {
                 // Nothing arrives any more: "No audio detected" until the key is up.
