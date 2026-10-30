@@ -81,12 +81,14 @@ pub struct LocalStatus {
     pub worker_pid: Option<u32>,
 }
 
-/// A transcription with Orukeet's word pieces and their start times in seconds.
+/// A transcription with Orukeet's word pieces, their start times and their lengths in seconds.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Timed {
     pub text: String,
     pub tokens: Vec<String>,
     pub timestamps: Vec<f64>,
+    /// Aligned with `tokens`; empty when the worker doesn't send them.
+    pub durations: Vec<f64>,
     pub ms: u64,
 }
 
@@ -288,7 +290,20 @@ impl LocalEngine {
         self.unload();
     }
 
+    /// A meeting window with its word timings. The caller has cut the audio already (windows of
+    /// at most 28 s plus context, as Ownkey's `transcribe_timed`), so the worker doesn't split it
+    /// again at 15 s.
     pub fn transcribe_timed(&self, pcm: &[i16], hints: &Hints) -> Result<Timed, ProviderError> {
+        self.transcribe_with(pcm, hints, false)
+    }
+
+    /// `split`: let the worker cut audio over 15 s itself, as dictation needs.
+    fn transcribe_with(
+        &self,
+        pcm: &[i16],
+        hints: &Hints,
+        split: bool,
+    ) -> Result<Timed, ProviderError> {
         let audio_seconds = pcm.len() as f64 / 16_000.0;
         let mut bytes = Vec::with_capacity(pcm.len() * 2);
         for sample in pcm {
@@ -300,7 +315,10 @@ impl LocalEngine {
             worker.next_id += 1;
             let id = worker.next_id;
             let timeout = options.transcribe_timeout + Duration::from_secs_f64(audio_seconds);
-            let request = json!({"op": "transcribe", "id": id, "rate": 16000, "bytes": bytes.len(), "hotwords": hotwords});
+            let mut request = json!({"op": "transcribe", "id": id, "rate": 16000, "bytes": bytes.len(), "hotwords": hotwords});
+            if !split {
+                request["split"] = Value::Bool(false);
+            }
             let reply = request_reply(slot, &request, &bytes, timeout)?;
             if reply.get("id").and_then(Value::as_u64) != Some(id) {
                 kill(slot);
@@ -320,6 +338,11 @@ impl LocalEngine {
                     .get("timestamps")
                     .and_then(Value::as_array)
                     .map(|stamps| stamps.iter().filter_map(Value::as_f64).collect())
+                    .unwrap_or_default(),
+                durations: reply
+                    .get("durations")
+                    .and_then(Value::as_array)
+                    .map(|lengths| lengths.iter().filter_map(Value::as_f64).collect())
                     .unwrap_or_default(),
                 ms: reply.get("ms").and_then(Value::as_u64).unwrap_or(0),
             })
@@ -500,7 +523,7 @@ impl LocalEngine {
 
 impl SpeechToText for LocalEngine {
     fn transcribe(&self, pcm: &[i16], hints: &Hints) -> Result<Recognized, ProviderError> {
-        let timed = self.transcribe_timed(pcm, hints)?;
+        let timed = self.transcribe_with(pcm, hints, true)?;
         Ok(Recognized {
             text: timed.text,
             language: None,

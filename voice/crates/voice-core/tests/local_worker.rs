@@ -111,13 +111,16 @@ fn fake_worker() {
                         "ok": true,
                         "id": id,
                         "text": format!(
-                            " {} samples|{}|loads {loads}|pid {}|threads {threads} ",
+                            " {} samples|{}|loads {loads}|pid {}|threads {threads}|split {} ",
                             audio.len() / 2,
                             hotwords.join(","),
-                            std::process::id()
+                            std::process::id(),
+                            // Left out means split, as in the real worker.
+                            request["split"].as_bool().unwrap_or(true)
                         ),
                         "tokens": ["\u{2581}hello", "\u{2581}world"],
                         "timestamps": [0.12, 0.48],
+                        "durations": [0.3, 0.25],
                         "ms": 3
                     }),
                 }
@@ -265,7 +268,11 @@ fn timed_results_carry_tokens() {
     assert!(timed.text.starts_with("800 samples"));
     assert_eq!(timed.tokens, vec!["\u{2581}hello", "\u{2581}world"]);
     assert_eq!(timed.timestamps, vec![0.12, 0.48]);
+    assert_eq!(timed.durations, vec![0.3, 0.25]);
     assert_eq!(timed.ms, 3);
+    // A meeting window is cut already; dictation lets the worker split long audio.
+    assert!(timed.text.ends_with("split false"), "{}", timed.text);
+    assert_eq!(echo(&engine, &Hints::default())[5], "split true");
 }
 
 fn a_missing_model_never_starts_the_worker() {

@@ -36,7 +36,7 @@ impl TimedSpeechToText for LocalEngine {
             text: timed.text,
             tokens: timed.tokens,
             timestamps: timed.timestamps,
-            durations: Vec::new(),
+            durations: timed.durations,
             language: None,
         })
     }
