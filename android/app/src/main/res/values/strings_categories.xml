@@ -31,6 +31,8 @@
         <item quantity="one">%1$d unread</item>
         <item quantity="other">%1$d unread</item>
     </plurals>
+    <!-- What a screen reader says for the crossed-out eye beside a category whose Show in Inbox switch is off, in the folder drawer and in Settings > Inbox categories. -->
+    <string name="mailbox_categories_hidden">Not shown in Inbox</string>
 
     <!-- Settings -->
     <string name="settings_general_categories">Inbox categories</string>
@@ -51,6 +53,9 @@
     <string name="settings_categories_description">What belongs here</string>
     <string name="settings_categories_description_help">Rukoo, and Jev when it is on, read this to decide which mail goes here. Name the kinds of mail and senders.</string>
     <string name="settings_categories_color">Color</string>
+    <!-- The switch in the category dialog; off keeps the category's mail out of Inbox itself. Inbox is mailbox_folders_inbox. -->
+    <string name="settings_categories_inbox">Show in Inbox</string>
+    <string name="settings_categories_inbox_help">When off, this mail stays out of Inbox and its unread count. You find it under the category in the folders, and search still finds it.</string>
     <string name="settings_categories_restore">Use Rukoo\'s text</string>
     <string name="settings_categories_delete_title">Delete %1$s?</string>
     <string name="settings_categories_delete_help">Its mail goes to the other categories. Sender rules for it stop working.</string>

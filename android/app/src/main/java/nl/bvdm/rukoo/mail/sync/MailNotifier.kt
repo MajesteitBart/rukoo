@@ -98,7 +98,8 @@ class WaitingMail(private val file: File? = null) {
  * New-mail notifications on the `mail` channel: one per account, summarizing what arrived since the
  * app was last on screen (desktop main.js:192-215 shows up to three, then a count). Nothing is shown
  * while Rukoo is on screen or when the user turned mail notifications off. A tap opens the message
- * (one new) or the account's inbox (several), through MainActivity's extras.
+ * (one new) or the account's inbox (several), through MainActivity's extras. The number the launcher badge may show
+ * is [badge] of what a notification lists: the mail Inbox shows, without the categories it leaves out.
  */
 class MailNotifier(
     private val context: Context,
@@ -106,6 +107,7 @@ class MailNotifier(
     private val enabled: () -> Boolean,
     private val foreground: () -> Boolean,
     private val waiting: WaitingMail = WaitingMail(),
+    private val badge: (List<MessageSummary>) -> Int = { it.size },
 ) {
     private fun allowed(): Boolean {
         if (!enabled() || foreground()) return false
@@ -150,6 +152,23 @@ class MailNotifier(
             } else {
                 post(account, list, quietly = true)
             }
+        }
+    }
+
+    /**
+     * The badge's number again, for notifications in the shade whose mail changed category: Show in Inbox turned off
+     * for one, or Jev put an email in a category Inbox doesn't show. Nothing makes a sound.
+     */
+    @Synchronized
+    fun recount(accounts: List<Account>) {
+        val numbers = runCatching {
+            context.getSystemService(NotificationManager::class.java)?.activeNotifications.orEmpty().filter { it.tag == TAG }.associate { it.id to it.notification.number }
+        }.getOrDefault(emptyMap())
+        for (accountId in waiting.accountIds) {
+            val number = numbers[notificationId(accountId)] ?: continue
+            val list = waiting.of(accountId)
+            val account = accounts.firstOrNull { it.id == accountId } ?: continue
+            if (list.isNotEmpty() && badge(list) != number) post(account, list, quietly = true)
         }
     }
 
@@ -204,7 +223,8 @@ class MailNotifier(
             .setContentIntent(pending)
             .setWhen(newest.date)
             .setShowWhen(true)
-            .setNumber(list.size)
+            // The launcher badge counts what Inbox shows; the notification still lists all of it.
+            .setNumber(badge(list))
             // Taking a read message off makes no sound; new mail does.
             .setOnlyAlertOnce(quietly)
             .setSilent(quietly)

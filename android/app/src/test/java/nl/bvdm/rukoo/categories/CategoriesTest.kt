@@ -766,6 +766,47 @@ class CategoriesTest {
     }
 
     @Test
+    fun `Show in Inbox is a field of the synced record, false only when off`() {
+        val s = setup(inbox())
+        s.cats.setEnabled(true)
+        fun record() = s.account.get("category", "promotions") as JsonObject
+        assertTrue(s.cats.list().all { it.inbox })
+        // A newer app's field stays, also when the switch changes.
+        s.account.put("category", "promotions", JsonObject(record() + ("future" to kotlinx.serialization.json.JsonPrimitive(1))))
+        var state = s.cats.saveCategory("promotions", inbox = false)
+        assertFalse(state.categories.first { it.id == "promotions" }.inbox)
+        assertEquals("false", record()["inbox"]?.jsonPrimitive?.content)
+        assertEquals("1", record()["future"]?.jsonPrimitive?.content)
+        // Editing the name leaves the switch as it is, as the computer set it.
+        state = s.cats.saveCategory("promotions", name = TextEdit.To("Offers"))
+        assertFalse(state.categories.first { it.id == "promotions" }.inbox)
+        assertEquals(setOf("promotions"), s.cats.lookup(listOf(s.acc), s.mail.inbox).hiddenCategories)
+        // Shown again, the record leaves the field out, as records before it did.
+        s.cats.saveCategory("promotions", inbox = true)
+        assertFalse("inbox" in record())
+        assertTrue(s.cats.list().first { it.id == "promotions" }.inbox)
+        // Only the JSON false hides; what another app may write otherwise shows.
+        for (odd in listOf(kotlinx.serialization.json.JsonPrimitive("false"), kotlinx.serialization.json.JsonPrimitive(0), kotlinx.serialization.json.JsonNull)) {
+            s.account.put("category", "promotions", JsonObject(record() + ("inbox" to odd)))
+            assertTrue("$odd shows", s.cats.list().first { it.id == "promotions" }.inbox)
+        }
+    }
+
+    @Test
+    fun `a hidden category's mail is known to the lookup while categories are on`() {
+        val s = setup(inbox())
+        s.cats.setEnabled(true)
+        s.cats.saveCategory("updates", inbox = false)
+        s.cats.saveCategory(name = TextEdit.To("Kids"), inbox = false)
+        val lookup = s.cats.lookup(listOf(s.acc), s.mail.inbox)
+        assertEquals(2, lookup.hiddenCategories.size)
+        assertEquals(listOf(false, false, true), s.mail.inbox.map(lookup::hidden))
+        // Off, nothing is hidden: Inbox shows all of it, as without categories.
+        s.cats.setEnabled(false)
+        assertEquals(CategoryLookup.NONE, s.cats.lookup(listOf(s.acc), s.mail.inbox))
+    }
+
+    @Test
     fun `the last category stays`() {
         val s = setup(inbox())
         s.cats.setEnabled(true)

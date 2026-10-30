@@ -139,7 +139,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
     val byId = remember(catState) { catState.categories.associateBy { it.id } }
     val tab = nav.category?.takeIf { id -> tabsOn && id in byId }
     // The list in the category on screen; the quick filters and their counts work on it.
-    val inTab = remember(all, tab, lookup) { ListModel.categoryRows(all, lookup, tab) }
+    val inTab = remember(all, tab, lookup, tabsOn) { ListModel.categoryRows(all, lookup, tab, inbox = tabsOn) }
     val messages = remember(inTab, filter) { ListModel.applyFilter(inTab, filter) }
     val byDate = settings.sort == SortOrder.DATE_DESC || settings.sort == SortOrder.DATE_ASC
     val now = remember(all) { System.currentTimeMillis() }
@@ -439,7 +439,7 @@ private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSumm
                 RkDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     RkMenuItem(stringResource(R.string.mailbox_actions_read_all), icon = RukooIcons.MailOpen, onClick = {
                         menu = false
-                        app.mailUi.markAllRead(view)
+                        app.mailUi.markAllRead(view, category?.id)
                     })
                     RkMenuItem(stringResource(R.string.mailbox_actions_sync), icon = RukooIcons.Sync, onClick = {
                         menu = false

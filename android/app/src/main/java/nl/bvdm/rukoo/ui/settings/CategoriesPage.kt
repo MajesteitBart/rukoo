@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -30,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -50,8 +52,10 @@ import nl.bvdm.rukoo.categories.TextEdit
 import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.RkButton
 import nl.bvdm.rukoo.ui.components.RkButtonKind
+import nl.bvdm.rukoo.ui.components.RkIcon
 import nl.bvdm.rukoo.ui.components.RkIconButton
 import nl.bvdm.rukoo.ui.components.RkLinkButton
+import nl.bvdm.rukoo.ui.components.RkSwitch
 import nl.bvdm.rukoo.ui.components.RkTextField
 import nl.bvdm.rukoo.ui.components.SectionTitle
 import nl.bvdm.rukoo.ui.components.SettingsCard
@@ -229,13 +233,14 @@ fun CategoriesPage(app: AppViewModel) {
                 adding = false
                 editing = null
             },
-            onSave = { name, description, color ->
+            onSave = { name, description, color, inbox ->
                 // A preset keeps following the language until its text is changed.
                 val nameEdit = if (c?.preset != null && name == c.name && !c.customName) TextEdit.Keep else if (name.isEmpty()) TextEdit.Reset else TextEdit.To(name)
                 val descriptionEdit = if (c?.preset != null && description == c.description && !c.customDescription) TextEdit.Keep else if (description.isEmpty()) TextEdit.Reset else TextEdit.To(description)
-                cats.saveCategory(c?.id, nameEdit, descriptionEdit, color)
+                cats.saveCategory(c?.id, nameEdit, descriptionEdit, color, inbox = inbox)
             },
-            onRestore = { c?.let { attempt { cats.saveCategory(it.id, TextEdit.Reset, TextEdit.Reset) } } },
+            // "Use Rukoo's text" keeps what the switch was set to.
+            onRestore = { inbox -> c?.let { attempt { cats.saveCategory(it.id, TextEdit.Reset, TextEdit.Reset, inbox = inbox) } } },
             onDelete = { c?.let { attempt { cats.removeCategory(it.id) } } },
         )
     }
@@ -294,7 +299,14 @@ private fun CategoryRow(c: Category, canUp: Boolean, canDown: Boolean, onEdit: (
         ) {
             CategoryDot(c.color)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(c.name, style = Rk.type.text13_5.medium, color = Rk.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(c.name, style = Rk.type.text13_5.medium, color = Rk.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    // A category Inbox doesn't show: a crossed-out eye after its name, as in the folder drawer.
+                    if (!c.inbox) {
+                        Spacer(Modifier.size(6.dp))
+                        RkIcon(RukooIcons.EyeOff, stringResource(R.string.mailbox_categories_hidden), size = 14.dp, tint = Rk.colors.text3)
+                    }
+                }
                 if (c.description.isNotEmpty()) Text(c.description, style = Rk.type.text12_5, color = Rk.colors.text2, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -304,8 +316,8 @@ private fun CategoryRow(c: Category, canUp: Boolean, canDown: Boolean, onEdit: (
 }
 
 /**
- * Edits a category, or makes a new one ([category] null): name, what belongs there, and its color. Delete and "Use
- * Rukoo's text" sit on the left, as on desktop.
+ * Edits a category, or makes a new one ([category] null): name, what belongs there, its color, and whether Inbox shows
+ * its mail. Delete and "Use Rukoo's text" sit on the left, as on desktop.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -313,14 +325,15 @@ private fun CategoryDialog(
     category: Category?,
     canDelete: Boolean,
     onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit,
-    onRestore: () -> Unit,
+    onSave: (name: String, description: String, color: String, inbox: Boolean) -> Unit,
+    onRestore: (inbox: Boolean) -> Unit,
     onDelete: () -> Unit,
 ) {
     val c = Rk.colors
     var name by remember { mutableStateOf(category?.name.orEmpty()) }
     var description by remember { mutableStateOf(category?.description.orEmpty()) }
     var color by remember { mutableStateOf(category?.color ?: Categories.COLORS[0]) }
+    var inbox by remember { mutableStateOf(category?.inbox != false) }
     var error by remember { mutableStateOf<Throwable?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     val needName = remember { CategoryException("need_name") }
@@ -377,13 +390,19 @@ private fun CategoryDialog(
                     }
                 }
             }
+            DialogSwitch(
+                title = stringResource(R.string.settings_categories_inbox),
+                help = stringResource(R.string.settings_categories_inbox_help),
+                checked = inbox,
+                onCheckedChange = { inbox = it },
+            )
             error?.let { ErrorLine(categoryErrorText(it)) }
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Delete and Use Rukoo's text on the left, as desktop's dialog has them; Delete in red.
                 if (category != null && canDelete) RkLinkButton(stringResource(R.string.common_actions_delete), { confirmDelete = true }, color = c.danger)
                 if (category?.preset != null && (category.customName || category.customDescription)) {
                     RkLinkButton(stringResource(R.string.settings_categories_restore), {
-                        onRestore()
+                        onRestore(inbox)
                         onDismiss()
                     })
                 }
@@ -394,7 +413,7 @@ private fun CategoryDialog(
                         error = needName
                     } else {
                         try {
-                            onSave(name.trim(), description.trim(), color)
+                            onSave(name.trim(), description.trim(), color, inbox)
                             onDismiss()
                         } catch (e: Exception) {
                             error = e
@@ -417,6 +436,30 @@ private fun CategoryDialog(
                 onDismiss()
             },
         )
+    }
+}
+
+/**
+ * A switch in the category dialog (styles.css .cat-inbox): its label with a line of help under it, and the switch.
+ * Disabled, the switch keeps its state, dimmed, and the help says why.
+ */
+@Composable
+private fun DialogSwitch(title: String, help: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, enabled: Boolean = true) {
+    val shape = Rk.shapes.control
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, interactionSource = null, indication = Rk.indication(shape), onValueChange = onCheckedChange)
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = Rk.type.text13_5.medium, color = Rk.colors.text)
+            Text(help, style = Rk.type.text12_5, color = Rk.colors.text2)
+        }
+        RkSwitch(checked, null, enabled = enabled)
     }
 }
 

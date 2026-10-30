@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,7 +41,10 @@ import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MessageSummary
 
-/** One inbox category as Settings and the tabs show it. A [preset] nobody renamed takes its texts from the translations. */
+/**
+ * One inbox category as Settings and the tabs show it. A [preset] nobody renamed takes its texts from the translations.
+ * [inbox]: whether Inbox itself shows its mail (Show in Inbox), a field of the synced record; its own tab always does.
+ */
 data class Category(
     val id: String,
     val preset: String?,
@@ -49,14 +54,18 @@ data class Category(
     val customDescription: Boolean,
     val color: String,
     val order: Int,
+    val inbox: Boolean = true,
 )
 
 /**
- * The categories of a list of mail, worked out once for all of it (desktop's categoryOf): each inbox email's category
- * by id. Empty while categories are off.
+ * The categories of a list of mail, worked out once for all of it (desktop's categoryOf and hiddenCategories): each
+ * inbox email's category by id, and the categories Inbox itself leaves out. Empty while categories are off.
  */
-data class CategoryLookup(val of: Map<String, String> = emptyMap()) {
+data class CategoryLookup(val of: Map<String, String> = emptyMap(), val hiddenCategories: Set<String> = emptySet()) {
     operator fun get(m: MessageSummary): String? = of[m.id]
+
+    /** Whether Inbox itself leaves [m] out, because Show in Inbox is off for its category. */
+    fun hidden(m: MessageSummary): Boolean = hiddenCategories.isNotEmpty() && of[m.id] in hiddenCategories
 
     companion object {
         val NONE = CategoryLookup()
@@ -227,6 +236,12 @@ class Categories(
 
     private val file get() = File(dir, "categories.json")
 
+    /**
+     * Fires when what the categories hold changed, here or on another device: a category, a stored category, a
+     * correction, a sender rule or the settings. Mail's category can be different afterwards.
+     */
+    val changes: Flow<Unit> get() = account.records.filter { collections -> collections.any { it in COLLECTIONS } }.map { }
+
     init {
         local = runCatching { JsonFiles.read(file, LocalCategories.serializer(), LocalCategories()) }.getOrElse { LocalCategories() }
         redo += local.redo
@@ -312,6 +327,8 @@ class Categories(
                 customDescription = description != null,
                 color = v.text("color") ?: CategoryRules.PRESET_COLORS[preset] ?: COLORS[0],
                 order = v.number("order")?.toInt() ?: 0,
+                // A record without the field is shown, as records before it were; only false keeps it out.
+                inbox = !(v?.get("inbox") as? JsonPrimitive).isFalse(),
             )
         }.sortedWith { a, b -> if (a.order != b.order) a.order.compareTo(b.order) else collator.compare(a.id, b.id) }
     }
@@ -369,8 +386,11 @@ class Categories(
         return state.value
     }
 
-    /** A new category ([id] null) or changes to one. */
-    fun saveCategory(id: String? = null, name: TextEdit = TextEdit.Keep, description: TextEdit = TextEdit.Keep, color: String? = null): CategoriesState {
+    /**
+     * A new category ([id] null) or changes to one. [inbox] false keeps its mail out of Inbox itself; true shows it,
+     * and the record leaves the field out, as records before it did; null leaves it as it is.
+     */
+    fun saveCategory(id: String? = null, name: TextEdit = TextEdit.Keep, description: TextEdit = TextEdit.Keep, color: String? = null, inbox: Boolean? = null): CategoriesState {
         val list = list()
         val was = id?.let { account.get("category", it) }
         if (id != null && was == null) throw CategoryException("invalid")
@@ -389,11 +409,16 @@ class Categories(
         if (key !in CategoryRules.PRESETS && newName == null) throw CategoryException("need_name")
         val value = buildJsonObject {
             // Fields a newer app may have added stay as they were.
-            old?.forEach { (k, v) -> if (k !in setOf("name", "description", "color", "order")) put(k, v) }
+            old?.forEach { (k, v) -> if (k !in setOf("name", "description", "color", "order", "inbox")) put(k, v) }
             put("name", newName?.let(::JsonPrimitive) ?: JsonNull)
             put("description", newDescription?.let(::JsonPrimitive) ?: JsonNull)
             put("color", newColor)
             put("order", order)
+            when (inbox) {
+                false -> put("inbox", false)
+                true -> Unit
+                null -> old?.get("inbox")?.let { put("inbox", it) }
+            }
         }
         account.put("category", key, value)
         changed()
@@ -458,14 +483,20 @@ class Categories(
     /** The category of each of [messages] by id, for the inbox mail among them; nothing when categories are off. */
     fun of(accounts: List<Account>, messages: List<MessageSummary>): Map<String, String> = placing()?.let { of(accounts, messages, it) }.orEmpty()
 
-    /** [of] for a list on screen, as one [CategoryLookup]; [CategoryLookup.NONE] while categories are off. */
+    /**
+     * [of] for a list on screen, with the categories Inbox leaves out, as one [CategoryLookup]; [CategoryLookup.NONE]
+     * while categories are off.
+     */
     fun lookup(accounts: List<Account>, messages: List<MessageSummary>): CategoryLookup {
         val placing = placing() ?: return CategoryLookup.NONE
-        return CategoryLookup(of(accounts, messages, placing))
+        return CategoryLookup(of(accounts, messages, placing), placing.hidden)
     }
 
-    /** The categories as placing an email needs them, worked out once for many (desktop's context()). */
-    internal class Placing(val order: List<String>, val ids: Set<String>, val unsure: String)
+    /**
+     * The categories as placing an email needs them, worked out once for many (desktop's context()), with the ones
+     * whose Show in Inbox is off ([hidden]).
+     */
+    internal class Placing(val order: List<String>, val ids: Set<String>, val unsure: String, val hidden: Set<String>)
 
     /** Null while categories are off or there are none. */
     private fun placing(): Placing? {
@@ -475,7 +506,7 @@ class Categories(
         if (list.isEmpty()) return null
         val order = list.map { it.id }
         val ids = order.toSet()
-        return Placing(order, ids, if (s.unsure in ids) s.unsure else list[0].id)
+        return Placing(order, ids, if (s.unsure in ids) s.unsure else list[0].id, list.filterNot { it.inbox }.mapTo(HashSet()) { it.id })
     }
 
     private fun of(accounts: List<Account>, messages: List<MessageSummary>, placing: Placing): Map<String, String> {
@@ -890,6 +921,9 @@ class Categories(
             MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
         private fun JsonObject?.flag(name: String): Boolean = (this?.get(name) as? JsonPrimitive)?.let { !it.isString && it.content == "true" } == true
+
+        /** The JSON false itself, as JavaScript's `=== false` takes it; not "false", 0 or null. */
+        private fun JsonPrimitive?.isFalse(): Boolean = this != null && !isString && content == "false"
 
         /** A string field that JavaScript reads as true: present, a string, not empty. */
         private fun JsonObject?.text(name: String): String? = (this?.get(name) as? JsonPrimitive)?.takeIf { it.isString && it.content.isNotEmpty() }?.content

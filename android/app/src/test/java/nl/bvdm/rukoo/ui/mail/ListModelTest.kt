@@ -116,6 +116,21 @@ class ListModelTest {
     }
 
     @Test
+    fun inboxLeavesOutAHiddenCategoryWhichItsTabSearchAndCountsStillKnow() {
+        val list = listOf(msg("1", "sanne@x.nl", 3, unread = true), msg("2", "news@shop.nl", 2, unread = true), msg("3", "app@x.nl", 1))
+        val lookup = CategoryLookup(mapOf("1" to "needs-you", "2" to "promotions", "3" to "updates"), hiddenCategories = setOf("promotions"))
+        // Inbox itself: without Promotions.
+        assertEquals(listOf("1", "3"), ListModel.categoryRows(list, lookup, tab = null, inbox = true).map { it.id })
+        // Its own tab still shows all of it.
+        assertEquals(listOf("2"), ListModel.categoryRows(list, lookup, tab = "promotions", inbox = true).map { it.id })
+        // A search, VIP and Unread aren't Inbox itself: everything.
+        assertEquals(list, ListModel.categoryRows(list, lookup, tab = null, inbox = false))
+        // Inbox's unread count in the drawer leaves it out too.
+        assertEquals(1, ListModel.inboxUnread(list.filter { it.unread }, lookup))
+        assertEquals(2, ListModel.inboxUnread(list.filter { it.unread }, lookup.copy(hiddenCategories = emptySet())))
+    }
+
+    @Test
     fun pillsShrinkInProportionBeforeTheSubjectDoes() {
         // Room enough: each as wide as it needs.
         assertEquals(listOf(30, 80), ListModel.pillWidths(listOf(30, 80), 150))

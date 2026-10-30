@@ -68,9 +68,19 @@ object ListModel {
     /** Counts after each quick filter's label, over the loaded list. */
     fun filterCount(list: List<MessageSummary>, filter: ListFilter): Int = if (filter == ListFilter.ALL) 0 else applyFilter(list, filter).size
 
-    /** The list in the category tab on screen (app.js categoryRows): a category's [tab] shows its own mail, else all of it. */
-    fun categoryRows(list: List<MessageSummary>, lookup: CategoryLookup, tab: String?): List<MessageSummary> =
-        if (tab != null) list.filter { lookup[it] == tab } else list
+    /**
+     * The list in the category tab on screen (app.js categoryRows): a category's [tab] shows its own mail. Inbox itself
+     * ([inbox]: the inbox with nothing searched) leaves out the categories whose Show in Inbox is off; search, VIP and
+     * Unread still show them.
+     */
+    fun categoryRows(list: List<MessageSummary>, lookup: CategoryLookup, tab: String?, inbox: Boolean = false): List<MessageSummary> = when {
+        tab != null -> list.filter { lookup[it] == tab }
+        inbox && lookup.hiddenCategories.isNotEmpty() -> list.filterNot(lookup::hidden)
+        else -> list
+    }
+
+    /** Unread mail in Inbox for its count in the folder drawer: [unread] (the Unread view's mail) without hidden categories. */
+    fun inboxUnread(unread: List<MessageSummary>, lookup: CategoryLookup): Int = unread.count { !lookup.hidden(it) }
 
     /**
      * The category label a row shows (app.js rowCategory): an inbox email's category in a list that mixes them, such as

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import nl.bvdm.rukoo.categories.Categories
 import nl.bvdm.rukoo.core.SecretBox
 import nl.bvdm.rukoo.mail.google.GoogleAuth
 import nl.bvdm.rukoo.mail.google.GoogleClientStore
@@ -21,7 +22,10 @@ import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.settings.SettingsStore
 import okhttp3.OkHttpClient
 
-/** Builds the real mail engine with Google sign-in, background sync and new-mail notifications. */
+/**
+ * Builds the real mail engine with Google sign-in, background sync and new-mail notifications. [categories] are made
+ * after the engine, which they read; the notifications ask for them once mail arrives.
+ */
 @OptIn(FlowPreview::class)
 object MailModule {
     private const val PRUNE_DELAY_MS = 1_000L
@@ -32,6 +36,7 @@ object MailModule {
         settings: SettingsStore,
         settingsSnapshot: StateFlow<AppSettings>,
         http: OkHttpClient,
+        categories: () -> Categories? = { null },
     ): RukooMailEngine {
         val app = context.applicationContext
         MimeComposer.ensureMailcap()
@@ -44,14 +49,16 @@ object MailModule {
         val dir = File(app.filesDir, "mail")
         val google = GoogleAuth(GoogleClientStore(File(dir, "google-client.json"), SecretBox), http, strings)
         val background = MailBackground(app, scope, settingsSnapshot)
+        lateinit var engine: RukooMailEngine
         val notifier = MailNotifier(
             app,
             strings,
             enabled = { settingsSnapshot.value.notifyMail },
             foreground = { background.foreground },
             waiting = WaitingMail(File(dir, WaitingMail.FILE_NAME)),
+            // The launcher badge leaves out the categories Inbox doesn't show, as desktop's taskbar badge does.
+            badge = { list -> categories()?.lookup(engine.accounts.value, list)?.let { lookup -> list.count { !lookup.hidden(it) } } ?: list.size },
         )
-        lateinit var engine: RukooMailEngine
         engine = RukooMailEngine(
             dir = dir,
             attachmentsDir = File(app.cacheDir, "attachments"),
@@ -78,6 +85,11 @@ object MailModule {
                 val gone = ids.filter { id -> runCatching { engine.summary(id)?.unread != true }.getOrDefault(false) }.toSet()
                 if (gone.isNotEmpty()) notifier.prune(gone, engine.accounts.value)
             }
+        }
+        // A category leaving Inbox, or mail moving into one that did, changes what the badge counts.
+        scope.launch(Dispatchers.Default) {
+            val cats = runCatching { categories() }.getOrNull() ?: return@launch
+            cats.changes.debounce(PRUNE_DELAY_MS).collect { notifier.recount(engine.accounts.value) }
         }
         return engine
     }

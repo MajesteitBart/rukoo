@@ -114,7 +114,8 @@ class AppContainer(context: Context) : AppServices {
         if (BuildConfig.USE_PREVIEW_MAIL) {
             PreviewMailEngine(clock, appContext.cacheDir, resources = appContext.resources)
         } else {
-            nl.bvdm.rukoo.mail.MailModule.create(appContext, appScope, settings, settingsSnapshot, http)
+            // The categories read the engine, so the notifications ask for them only once mail arrives.
+            nl.bvdm.rukoo.mail.MailModule.create(appContext, appScope, settings, settingsSnapshot, http, categories = { categories })
         }
     }
 

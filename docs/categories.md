@@ -22,11 +22,11 @@ Each email goes to one category. When several fit, the one higher in the list wi
 
 ## Keeping a category out of Inbox
 
-Each category has a **Show in Inbox** switch in its dialog under Settings → Inbox categories. It is on for every category until you turn it off. Then that category's mail leaves Inbox itself, both for one account and for All inboxes, and a crossed-out eye marks the category under Inbox in the sidebar and in Settings. The category itself still shows all its mail and its own unread count.
+Each category has a **Show in Inbox** switch in its dialog under Settings → Inbox categories. It is on for every category until you turn it off. Then that category's mail leaves Inbox itself, both for one account and for All inboxes, and a crossed-out eye marks the category under Inbox in the sidebar (on the phone, the folder drawer) and in Settings. The category itself still shows all its mail and its own unread count.
 
-Its unread mail no longer counts toward Inbox: not in the sidebar's Inbox count, the counts per account, the taskbar badge or the tray icon. That holds for both badge settings, new mail and unread mail. Unread mail older than the messages Rukoo keeps for the inbox has no category, so it keeps counting. **Mark all as read** in Inbox marks only what Inbox lists.
+Its unread mail no longer counts toward Inbox: not in the sidebar's Inbox count, the counts per account, the taskbar badge or the tray icon. That holds for both badge settings, new mail and unread mail. Unread mail older than the messages Rukoo keeps for the inbox has no category, so it keeps counting. On the phone, the folder drawer's Inbox count and the number on the launcher badge leave it out. **Mark all as read** in Inbox marks only what Inbox lists, and in a category only that category's mail.
 
-A search covers every category, as it always does, so it still finds this mail. The Unread and VIP views also still show it. The switch is part of the category, so with a Rukoo account every computer follows it.
+A search covers every category, as it always does, so it still finds this mail. The Unread and VIP views also still show it, and so do its notifications. The switch is part of the category, so with a Rukoo account every computer and phone follows it.
 
 ## Notifications
 
@@ -69,4 +69,4 @@ Click the line for the details: how far the sort is, with an estimate of the tim
 
 - Categories apply to the inbox, in the newest messages Rukoo keeps for it.
 - Without Jev, mail from people is split only by whether you're in To or Cc, so Needs you and To read are a rough guess.
-- Rukoo for Android doesn't have Show in Inbox yet: the phone's Inbox shows every category. Editing a category on the phone keeps the switch as the computer set it.
+- On the phone, a new-mail notification that lists only mail of a hidden category can still put a dot on the launcher icon: Android badges every notification, and only the number leaves that mail out.
