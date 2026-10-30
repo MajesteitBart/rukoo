@@ -1107,7 +1107,7 @@ Object.assign(api, {
   agentPhoneUnpair: (id) => agentHub().phoneUnpair(agentId(id)),
   agentPhoneAllowExport: (id) => agentHub().phoneAllowExport(agentId(id)),
   agentList: () => agentHub().list(),
-  agentGet: (id) => agentHub().get(agentId(id)),
+  agentGet: (id) => agentHub().forPanel(agentId(id)),
   agentFindFor: (ref) => {
     const r = agentPlain(ref);
     return agentHub().findFor({ id: agentText(r.id, 2000), messageId: agentText(r.messageId, 1000), accountId: agentText(r.accountId, 200) || null });

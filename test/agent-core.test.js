@@ -625,6 +625,162 @@ test('a queued message whose files are copied while the turn ends waits after St
   }
 });
 
+// The copies of a message's files wait until the test lets them go (gate.go) or fails them (gate.fail).
+function holdCopies(hub) {
+  const keep = hub.files.keep.bind(hub.files);
+  const copies = { gate: null };
+  hub.files.keep = (cid, staged) => new Promise((go, fail) => (copies.gate = { go, fail })).then(() => keep(cid, staged));
+  return copies;
+}
+
+test('a message keeps its place while its files are copied: one sent after it without files waits behind it, also when the turn ends meanwhile', async () => {
+  const env = await demo();
+  const agent = stubbornAgent();
+  const { hub, events } = fakeHub(env, { adapters: { clark: agent } });
+  await hub.start();
+  try {
+    const copies = holdCopies(hub);
+    const c = hub.create({ agent: 'clark' });
+    hub.send(c.id, { text: 'work on it' });
+    const first = hub.send(c.id, { text: 'with a file', files: [hub.stageFile('a.txt', Buffer.from('a')).id], mode: 'queue' });
+    await until(() => Boolean(copies.gate));
+    assert.equal(hub.send(c.id, { text: 'without one', mode: 'queue' }).state, 'queued');
+    // The panel sees the one it can act on; the other one shows once its file is in.
+    assert.deepEqual(
+      hub.forPanel(c.id).queue.map((e) => e.text),
+      ['without one']
+    );
+    const shown = events.filter((e) => e.kind === 'conversation' && e.conversation.id === c.id && Array.isArray(e.conversation.queue)).at(-1);
+    assert.deepEqual(
+      shown.conversation.queue.map((e) => e.text),
+      ['without one']
+    );
+    agent.done();
+    await until(() => !hub.turns.has(c.id) || agent.received.length > 1);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(
+      agent.received.map((r) => r.text),
+      ['work on it'],
+      'the turn ended normally, and the message without files waits for the one sent before it'
+    );
+    copies.gate.go();
+    assert.equal((await first).state, 'queued');
+    await until(() => agent.received.length === 2);
+    assert.equal(agent.received[1].text, 'with a file');
+    assert.deepEqual(
+      agent.received[1].files.map((f) => f.name),
+      ['a.txt']
+    );
+    agent.done();
+    await until(() => agent.received.length === 3);
+    assert.equal(agent.received[2].text, 'without one');
+
+    // A copy that fails takes its message out, and the ones it held back go on.
+    copies.gate = null;
+    const failed = hub.send(c.id, { text: 'with a broken file', files: [hub.stageFile('b.txt', Buffer.from('b')).id], mode: 'queue' });
+    await until(() => Boolean(copies.gate));
+    hub.send(c.id, { text: 'after the broken one', mode: 'queue' });
+    agent.done();
+    await until(() => !hub.turns.has(c.id) || agent.received.length > 3);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(agent.received.length, 3);
+    copies.gate.fail(new Error('disk full'));
+    await assert.rejects(failed, /disk full/);
+    await until(() => agent.received.length === 4);
+    assert.equal(agent.received[3].text, 'after the broken one');
+    assert.deepEqual(c.queue, []);
+    hub.stop(c.id);
+    await idle(hub, c.id);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('a steer whose files are copied keeps its turn among the steers, also when the turn ends meanwhile', async () => {
+  const env = await demo();
+  const agent = stubbornAgent();
+  const { hub } = fakeHub(env, { adapters: { clark: agent } });
+  await hub.start();
+  try {
+    const copies = holdCopies(hub);
+    const c = hub.create({ agent: 'clark' });
+    hub.send(c.id, { text: 'work on it' });
+    const first = hub.send(c.id, { text: 'see this', files: [hub.stageFile('a.txt', Buffer.from('a')).id], mode: 'steer' });
+    await until(() => Boolean(copies.gate));
+    assert.equal(hub.send(c.id, { text: 'and this', mode: 'steer' }).state, 'steering');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(agent.steered.length, 0, 'it waits for the one sent before it');
+    copies.gate.go();
+    assert.equal((await first).state, 'steering');
+    await until(() => agent.steered.length === 2);
+    assert.deepEqual(
+      agent.steered.map((s) => [s.text, s.files.map((f) => f.name)]),
+      [
+        ['see this', ['a.txt']],
+        ['and this', []]
+      ]
+    );
+    hub.stop(c.id);
+    await idle(hub, c.id);
+    for (const e of [...c.queue]) await hub.unqueue(c.id, e.id);
+
+    // The turn ends normally while the first one's file is copied: both go back to the queue in the order sent, and
+    // the first goes once its file is in.
+    copies.gate = null;
+    hub.send(c.id, { text: 'work again' });
+    const again = hub.send(c.id, { text: 'see that', files: [hub.stageFile('b.txt', Buffer.from('b')).id], mode: 'steer' });
+    await until(() => Boolean(copies.gate));
+    hub.send(c.id, { text: 'and that', mode: 'steer' });
+    agent.done();
+    await until(() => !hub.turns.has(c.id) || agent.received.length > 2);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(
+      agent.received.map((r) => r.text),
+      ['work on it', 'work again']
+    );
+    copies.gate.go();
+    await again;
+    await until(() => agent.received.length === 3);
+    assert.equal(agent.received[2].text, 'see that');
+    agent.done();
+    await until(() => agent.received.length === 4);
+    assert.equal(agent.received[3].text, 'and that');
+    hub.stop(c.id);
+    await idle(hub, c.id);
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
+test('a message whose files were still copied when Rukoo quit is gone after a restart, and holds nothing back', async () => {
+  const env = await demo();
+  const agent = stubbornAgent();
+  const first = fakeHub(env, { adapters: { clark: agent } });
+  await first.hub.start();
+  const copies = holdCopies(first.hub);
+  const c = first.hub.create({ agent: 'clark' });
+  first.hub.send(c.id, { text: 'work on it' });
+  const lost = first.hub.send(c.id, { text: 'with a file', files: [first.hub.stageFile('a.txt', Buffer.from('a')).id], mode: 'queue' });
+  lost.catch(() => {});
+  await until(() => Boolean(copies.gate));
+  first.hub.send(c.id, { text: 'without one', mode: 'queue' });
+  await first.hub.dispose();
+
+  const { hub } = fakeHub(env, { adapters: { clark: instantAgent() } });
+  await hub.start();
+  try {
+    assert.deepEqual(
+      hub.get(c.id).queue.map((e) => [e.text, e.state]),
+      [['without one', 'queued']]
+    );
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
 test('Edit on a steer that came back to the queue gives the input its files too; the chat keeps its copy', async () => {
   const env = await demo();
   const agent = stubbornAgent();
