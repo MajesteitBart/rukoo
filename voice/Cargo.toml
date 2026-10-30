@@ -9,6 +9,7 @@ members = [
   "crates/voice-local",
   "crates/voice-bridge",
   "crates/voice-meetings",
+  "crates/voice-engine",
   "crates/voice-app",
 ]
 
