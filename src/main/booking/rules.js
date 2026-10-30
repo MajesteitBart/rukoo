@@ -29,7 +29,11 @@ const RESERVED_HANDLES = new Set(
     .split(' ')
 );
 const RESERVED_SLUGS = new Set('api mcp booking bookings llms openapi ics assets manage prepare'.split(' '));
-const LOCATIONS = ['googleMeet', 'phone', 'inPerson', 'link', 'none'];
+const LOCATIONS = ['googleMeet', 'video', 'phone', 'inPerson', 'link', 'none'];
+// The video services a 'video' location can name (src/main/video), with the name the page shows. Each booking gets
+// its own meeting, made when it becomes an event, so there is no link to show beforehand. The server knows such a
+// location only as a link with the service's name as its label.
+const VIDEO_SERVICES = { jitsi: 'Jitsi Meet', zoom: 'Zoom', teams: 'Microsoft Teams' };
 // The settings record before sealing, in UTF-8 bytes (contracts g).
 const SETTINGS_BYTES = 12288;
 const MAX_TYPES = 10;
@@ -143,7 +147,8 @@ function typeWithDefaults(type, base) {
       kind: own(loc, 'kind') ? loc.kind : b.kind,
       label: own(loc, 'label') ? loc.label : b.label,
       value: own(loc, 'value') ? loc.value : b.value,
-      public: own(loc, 'public') ? loc.public : b.public
+      public: own(loc, 'public') ? loc.public : b.public,
+      service: own(loc, 'service') ? loc.service : b.service
     },
     bufferBefore: pick('bufferBefore'),
     bufferAfter: pick('bufferAfter'),
@@ -183,13 +188,15 @@ function checkType(type, i, { meet }) {
     if (!url || url.protocol !== 'https:') throw refused('invalidType', f('location.value'));
   }
   if (loc.kind === 'googleMeet' && !meet) throw refused('noMeet', f('location.kind'));
+  if (loc.kind === 'video' && !own(VIDEO_SERVICES, loc.service)) throw refused('invalidType', f('location.service'));
   if (typeof loc.public !== 'boolean') throw refused('invalidType', f('location.public'));
   const out = {
     slug: type.slug,
     title,
     duration: type.duration,
     description,
-    location: { kind: loc.kind, label, value, public: loc.public },
+    // A video service's link is made per booking: nothing to keep or show beforehand.
+    location: loc.kind === 'video' ? { kind: 'video', label, value: '', public: false, service: loc.service } : { kind: loc.kind, label, value, public: loc.public },
     bufferBefore: type.bufferBefore,
     bufferAfter: type.bufferAfter,
     minNotice: type.minNotice,
@@ -315,7 +322,8 @@ function mergeSettings(current, patch) {
 // What a type looks like on the page (contracts h): the private location value only when the host made it public,
 // the slot interval as a number.
 function publishedType(type, { confirm = false } = {}) {
-  const location = { kind: type.location.kind, label: type.location.label };
+  const video = type.location.kind === 'video';
+  const location = video ? { kind: 'link', label: type.location.label || VIDEO_SERVICES[type.location.service] } : { kind: type.location.kind, label: type.location.label };
   if (type.location.public && type.location.value) location.value = type.location.value;
   return {
     slug: type.slug,
@@ -421,6 +429,7 @@ module.exports = {
   SETTINGS_BYTES,
   RESERVED_HANDLES,
   RESERVED_SLUGS,
+  VIDEO_SERVICES,
   bookingError,
   handleProblem,
   slugProblem,

@@ -173,3 +173,22 @@ test('settings merge per the save rules and are checked whole', () => {
   assert.throws(() => rules.checkSettings({ ...base, contact: 'line one\nline two' }), (err) => err.field === 'contact');
   assert.throws(() => rules.checkSettings({ ...base, handle: 'Bart' }), (err) => err.field === 'handle' && err.code === 'invalid');
 });
+
+test('a video service as location names a known service, keeps no details, and is published as a link with its name', () => {
+  const base = { v: 1, handle: 'bart', url: '', name: 'Bart', intro: '', timeZone: 'Europe/Amsterdam', locale: 'en', contact: null, dailyCap: 20, hours: { custom: false, weekly: null }, overrides: {}, destination: null, device: null, types: [rules.defaultType('en')] };
+  const typeWith = (location) => ({ ...base, types: [{ ...base.types[0], location }] });
+  // Details and "show on the page" don't apply: the link is made per booking.
+  const checked = rules.checkSettings(typeWith({ kind: 'video', service: 'zoom', label: '', value: 'https://zoom.us/j/1', public: true }));
+  assert.deepEqual(checked.types[0].location, { kind: 'video', label: '', value: '', public: false, service: 'zoom' });
+  assert.throws(() => rules.checkSettings(typeWith({ kind: 'video', service: 'skype', label: '', value: '', public: false })), (err) => err.field === 'types[0].location.service');
+  assert.throws(() => rules.checkSettings(typeWith({ kind: 'video', label: '', value: '', public: false })), (err) => err.field === 'types[0].location.service');
+  // Other kinds keep their shape, without a service.
+  assert.deepEqual(rules.checkSettings(typeWith({ kind: 'phone', service: 'zoom', label: '', value: '+31 20 123 4567', public: false })).types[0].location, { kind: 'phone', label: '', value: '+31 20 123 4567', public: false });
+
+  // The server takes it as a link, labelled with the service's name unless the host wrote a label.
+  assert.deepEqual(rules.publishedType(checked.types[0]).location, { kind: 'link', label: 'Zoom' });
+  const labelled = rules.checkSettings(typeWith({ kind: 'video', service: 'teams', label: 'Teams call', value: '', public: false })).types[0];
+  assert.deepEqual(rules.publishedType(labelled).location, { kind: 'link', label: 'Teams call' });
+  // A type made from defaults keeps the service it was given.
+  assert.equal(rules.typeWithDefaults({ location: { kind: 'video', service: 'jitsi' } }, rules.defaultType('en')).location.service, 'jitsi');
+});

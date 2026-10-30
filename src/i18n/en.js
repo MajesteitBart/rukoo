@@ -3143,6 +3143,66 @@
     "message": "You signed in as {signedInEmail}, but this account is {accountEmail}.",
     "description": "errors > google. src/main/engine.js"
   },
+  "errors.video.connection": {
+    "message": "Rukoo couldn't reach {service}. Check your internet connection and try again.",
+    "description": "A video service didn't answer, while signing in or making a booking's meeting. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/video/oauth.js, src/main/video/index.js"
+  },
+  "errors.video.cancelled": {
+    "message": "Signing in to {service} was cancelled.",
+    "description": "The user cancelled the browser sign-in to a video service in Settings > Video meetings. service is Zoom or Microsoft Teams. src/main/video/oauth.js"
+  },
+  "errors.video.denied": {
+    "message": "{service} didn't give Rukoo access.",
+    "description": "The user declined access on the video service's sign-in page. service is Zoom or Microsoft Teams. src/main/video/oauth.js"
+  },
+  "errors.video.timeout": {
+    "message": "Signing in to {service} took too long. Try again.",
+    "description": "The browser sign-in to a video service wasn't finished within five minutes. service is Zoom or Microsoft Teams. src/main/video/oauth.js"
+  },
+  "errors.video.notConfigured": {
+    "message": "{service} needs an OAuth app before you can connect it. The booking page guide explains how to add one.",
+    "description": "Connect was asked for a video service without an OAuth client in this copy of Rukoo. service is Zoom or Microsoft Teams. The guide is docs/booking.md. src/main/video/index.js"
+  },
+  "errors.video.invalidClient": {
+    "message": "This file has no client_id for {service}.",
+    "description": "The client file chosen in Settings > Video meetings doesn't hold an OAuth client ID. client_id is the JSON field name; keep it as is. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.noRefreshToken": {
+    "message": "{service} didn't give Rukoo lasting access. Try connecting again.",
+    "description": "The video service's sign-in returned no refresh token, so Rukoo couldn't make meetings later. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.expired": {
+    "message": "The {service} connection needs renewing in Settings → Video meetings.",
+    "description": "The stored sign-in to a video service was refused, expired or revoked. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.notConnected": {
+    "message": "{service} isn't connected on this computer.",
+    "description": "A booking's meeting type uses a video service that isn't connected on the computer that handles bookings. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/video/index.js"
+  },
+  "errors.video.gone": {
+    "message": "{service} no longer has this meeting.",
+    "description": "A booking's video meeting was deleted in the service itself before Rukoo could move it. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.refused": {
+    "message": "{service} refused the request: {reason}",
+    "description": "A video service turned down making, moving or deleting a booking's meeting. service is Zoom or Microsoft Teams; reason is the service's own message, often in English. src/main/video/index.js"
+  },
+  "errors.video.request": {
+    "message": "{service} answered with an error: {reason}",
+    "description": "A video service failed while signing in or handling a booking's meeting. service is Zoom or Microsoft Teams; reason is the service's own message or an HTTP status. src/main/video/oauth.js, src/main/video/index.js"
+  },
+  "errors.video.noLink": {
+    "message": "{service} made the meeting but sent no link for it.",
+    "description": "A video service's answer to making a meeting had no join link. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.jitsiServer": {
+    "message": "Enter the address of a Jitsi server, starting with https://.",
+    "description": "Settings > Video meetings: the Jitsi server address entered isn't an https address. src/main/video/jitsi.js"
+  },
+  "errors.video.unknown": {
+    "message": "Rukoo doesn't know this video service.",
+    "description": "A window or a booking named a video service this version of Rukoo doesn't have. src/main/video/index.js"
+  },
   "errors.message.missing": {
     "message": "Message not found.",
     "description": "errors > message. src/main/engine.js"
@@ -5229,6 +5289,114 @@
     "message": "Week, working hours, reminders and which calendars count",
     "description": "Settings overview: second line of the Calendar row. src/renderer/calendar-settings.js"
   },
+  "settings.video.title": {
+    "message": "Video meetings",
+    "description": "Title of Settings > Video meetings, where Zoom, Microsoft Teams and Jitsi Meet are connected for bookings, and of its row on the Settings overview. src/renderer/video-settings.js"
+  },
+  "settings.video.rowNone": {
+    "message": "Give each booking its own Zoom, Teams or Jitsi link",
+    "description": "Settings overview: second line of the Video meetings row while no service is connected. src/renderer/video-settings.js"
+  },
+  "settings.video.rowConnected": {
+    "message": "Connected: {services}",
+    "description": "Settings overview: second line of the Video meetings row. services lists the connected ones, such as 'Zoom and Jitsi Meet'. src/renderer/video-settings.js"
+  },
+  "settings.video.intro": {
+    "message": "Connect a service, then choose it as a meeting type's location on your booking page. Each booking then gets its own meeting link in the guest's invitation.",
+    "description": "Settings > Video meetings: text at the top. src/renderer/video-settings.js"
+  },
+  "settings.video.thisComputer": {
+    "message": "Sign-ins stay on this computer. When another computer handles your bookings, connect the services there too.",
+    "description": "Settings > Video meetings: note under the services. src/renderer/video-settings.js"
+  },
+  "settings.video.services": {
+    "message": "Services",
+    "description": "Settings > Video meetings: group heading above the list of services. src/renderer/video-settings.js"
+  },
+  "settings.video.jitsiHelp": {
+    "message": "No account needed. Each booking gets its own room, with a name nobody can guess.",
+    "description": "Settings > Video meetings: line under Jitsi Meet, which has a switch. src/renderer/video-settings.js"
+  },
+  "settings.video.jitsiServer": {
+    "message": "Jitsi server",
+    "description": "Settings > Video meetings: the row and dialog title for the Jitsi server the rooms are on. src/renderer/video-settings.js"
+  },
+  "settings.video.jitsiServerHelp": {
+    "message": "Leave empty to use meet.jit.si.",
+    "description": "Settings > Video meetings: help in the Jitsi server dialog. src/renderer/video-settings.js"
+  },
+  "settings.video.zoomHelp": {
+    "message": "Makes a meeting in your Zoom account for each booking.",
+    "description": "Settings > Video meetings: line under Zoom while it isn't connected. src/renderer/video-settings.js"
+  },
+  "settings.video.teamsHelp": {
+    "message": "Makes a Teams meeting for each booking. Needs a work or school account with Microsoft Teams.",
+    "description": "Settings > Video meetings: line under Microsoft Teams while it isn't connected. src/renderer/video-settings.js"
+  },
+  "settings.video.connectedAs": {
+    "message": "Connected as {account}",
+    "description": "Settings > Video meetings: line under a connected Zoom or Teams. account is the address or name of the signed-in account. src/renderer/video-settings.js"
+  },
+  "settings.video.connectedPlain": {
+    "message": "Connected",
+    "description": "Settings > Video meetings: line under a connected Zoom or Teams when the service didn't say which account. src/renderer/video-settings.js"
+  },
+  "settings.video.renewHelp": {
+    "message": "The connection stopped working. Renew it to keep adding links to bookings.",
+    "description": "Settings > Video meetings: line under Zoom or Teams when its stored sign-in was refused or expired. src/renderer/video-settings.js"
+  },
+  "settings.video.unavailable": {
+    "message": "This copy of Rukoo has no {service} app to sign in with. Add a client file, as the booking page guide explains.",
+    "description": "Settings > Video meetings: line under Zoom or Teams when no OAuth client is configured. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.pending": {
+    "message": "Finish signing in to {service} in your browser.",
+    "description": "Settings > Video meetings: line under Zoom or Teams while its browser sign-in is open. src/renderer/video-settings.js"
+  },
+  "settings.video.connect": {
+    "message": "Connect",
+    "description": "Settings > Video meetings: button that signs in to Zoom or Microsoft Teams in the browser. src/renderer/video-settings.js"
+  },
+  "settings.video.renew": {
+    "message": "Renew",
+    "description": "Settings > Video meetings: button that signs in to Zoom or Teams again after the connection stopped working. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnect": {
+    "message": "Disconnect",
+    "description": "Settings > Video meetings: button that forgets the sign-in to Zoom or Teams on this computer. src/renderer/video-settings.js"
+  },
+  "settings.video.addClient": {
+    "message": "Add client file…",
+    "description": "Settings > Video meetings: button that opens a file picker for a Zoom or Microsoft OAuth client file (JSON). src/renderer/video-settings.js"
+  },
+  "settings.video.importTitle": {
+    "message": "Choose the {service} client file",
+    "description": "Title of the file picker for a video service's OAuth client file. service is Zoom or Microsoft Teams. src/main/main.js (videoImportClient)"
+  },
+  "settings.video.connected": {
+    "message": "{service} connected",
+    "description": "Toast after signing in to a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnected": {
+    "message": "{service} disconnected",
+    "description": "Toast after disconnecting a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.clientAdded": {
+    "message": "Client file added",
+    "description": "Toast after a video service's OAuth client file was chosen and stored. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnectTitle": {
+    "message": "Disconnect {service}?",
+    "description": "Title of the confirmation before disconnecting a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnectConfirm": {
+    "message": "Rukoo forgets the sign-in on this computer. New bookings that use {service} go in your calendar without a link until you connect it again. Meetings already made stay.",
+    "description": "Text of the confirmation before disconnecting a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.serverSaved": {
+    "message": "Jitsi server saved",
+    "description": "Toast after changing the Jitsi server in Settings > Video meetings. src/renderer/video-settings.js"
+  },
   "settings.calendar.week": {
     "message": "Week and working hours",
     "description": "Settings > Calendar: group heading. src/renderer/calendar-settings.js"
@@ -5665,6 +5833,10 @@
     "message": "That computer publishes your open times and adds bookings to your calendar. Use this one instead if that computer stays off.",
     "description": "Booking page: help under the other computer's name. src/renderer/booking-settings.js"
   },
+  "settings.booking.otherDeviceVideo": {
+    "message": "Before you use this computer, connect {services} here in Video meetings, or new bookings get no meeting link.",
+    "description": "Booking page: warning under the other computer's name when meeting types use video services that aren't connected on this computer. services lists them, such as 'Zoom and Microsoft Teams'. src/renderer/booking-settings.js"
+  },
   "settings.booking.takeover": {
     "message": "Use this computer",
     "description": "Booking page button: this computer becomes the one that handles bookings. src/renderer/booking-settings.js"
@@ -5952,6 +6124,22 @@
   "settings.booking.meetUnavailable": {
     "message": "Google Meet needs a Google calendar that allows Meet under Add bookings to.",
     "description": "Meeting type editor: why Google Meet can't be chosen. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoRenewOption": {
+    "message": "{service} (needs renewing)",
+    "description": "Meeting type editor: a Location option for a video service whose connection stopped working on this computer. service is Zoom or Microsoft Teams. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoOffOption": {
+    "message": "{service} (not connected here)",
+    "description": "Meeting type editor: the Location option of a type whose video service isn't connected on this computer. service is Zoom, Microsoft Teams or Jitsi Meet. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoHelp": {
+    "message": "Each booking gets its own {service} link in the guest's invitation. The page shows only the label.",
+    "description": "Meeting type editor: help under Location when a video service is chosen. service is Zoom, Microsoft Teams or Jitsi Meet. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoNone": {
+    "message": "To give each booking its own meeting link, connect Zoom, Microsoft Teams or Jitsi Meet in Settings → Video meetings.",
+    "description": "Meeting type editor: help under Location while no video service is connected on this computer. src/renderer/booking-settings.js"
   },
   "settings.booking.linkHttps": {
     "message": "A meeting link starts with https://.",
@@ -6665,6 +6853,10 @@
     "message": "Booked via {url}",
     "description": "Last line of a booked event's description, in the booking page's language; guests see it in their invitation. url is the booking page. src/main/booking/index.js (eventInput)."
   },
+  "booking.event.video": {
+    "message": "Join with {service}: {url}",
+    "description": "First line of a booked event's description when its meeting type uses a video service, in the booking page's language; guests see it in their invitation. service is Zoom, Microsoft Teams or Jitsi Meet; url the meeting's link. src/main/video/index.js (withMeeting)."
+  },
   "booking.decline.subject": {
     "message": "{type} on {when}",
     "description": "Subject of the optional email to a guest whose request the host declined, in the booking page's language. type is the meeting type, when the requested time. src/main/booking/index.js (declineMail)."
@@ -6745,6 +6937,10 @@
     "message": "Open",
     "description": "Booking notice button: open the booked event or request. src/main/booking/index.js (notices)."
   },
+  "booking.notices.actions.video": {
+    "message": "Video meetings",
+    "description": "Booking notice button: opens Settings > Video meetings to connect or renew a video service. src/main/booking/index.js (notices)."
+  },
   "booking.notices.handleLostTitle": {
     "message": "Your booking page's address is gone",
     "description": "Booking notice title: another account now owns the page's address. src/main/booking/index.js (notices)."
@@ -6760,6 +6956,10 @@
   "booking.notices.otherDeviceText": {
     "message": "That computer publishes your free times and adds bookings to your calendar.",
     "description": "Booking notice text on a computer that isn't the booking device. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.otherDeviceVideoText": {
+    "message": "That computer publishes your free times and adds bookings to your calendar. Before you use this computer instead, connect {services} here in Settings → Video meetings.",
+    "description": "Booking notice text on a computer that isn't the booking device, when meeting types use video services that aren't connected on this computer. services lists them, such as 'Zoom and Microsoft Teams'. src/main/booking/index.js (notices)."
   },
   "booking.notices.otherDeviceUnknown": {
     "message": "another computer",
@@ -6832,6 +7032,54 @@
   "booking.notices.destinationText": {
     "message": "The calendar for bookings, in {email}, isn't on this computer. New and moved bookings get no event and no invitation until you choose another calendar in Settings → Booking page.",
     "description": "Booking notice text when the destination calendar is missing on the booking device. email is the mail account the calendar belongs to. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoMissingTitle": {
+    "message": "No {service} links for new bookings",
+    "description": "Booking notice title on the booking device: a meeting type uses a video service that can't make meetings on this computer. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoMissingText": {
+    "message": "{service} isn't connected on this computer, so new bookings of {types} go in your calendar without a link. Connect it in Settings → Video meetings.",
+    "description": "Booking notice text when a video service a meeting type uses isn't connected on the booking device. service is Zoom, Microsoft Teams or Jitsi Meet; types lists the meeting types' titles. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoRenewText": {
+    "message": "The {service} connection on this computer needs renewing, so new bookings of {types} go in your calendar without a link. Renew it in Settings → Video meetings.",
+    "description": "Booking notice text when the sign-in to a video service a meeting type uses stopped working on the booking device. service is Zoom or Microsoft Teams; types lists the meeting types' titles. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoCreateTitle": {
+    "message": "No {service} link for a booking",
+    "description": "Booking notice title: Rukoo couldn't make the video meeting for a new booking. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoCreateText": {
+    "message": "Rukoo couldn't make a {service} meeting for {type} with {guest} on {when}, so the booking is in your calendar without a link. {why} Add a link to the event yourself, or cancel the booking.",
+    "description": "Booking notice text when a new booking's video meeting couldn't be made. service is the video service, type the meeting type, guest the cleaned short name, when the day and time, why one sentence with the reason. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoUpdateTitle": {
+    "message": "{service} meeting not moved",
+    "description": "Booking notice title: a booking moved, but its video meeting couldn't be moved along. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoUpdateText": {
+    "message": "{type} with {guest} moved to {when}, but Rukoo couldn't move its {service} meeting. {why} The link in the invitation still works; change the meeting's time in {service} if you need to.",
+    "description": "Booking notice text when a moved booking's video meeting kept its old time. type is the meeting type, guest the cleaned short name, when the new day and time, service the video service, why one sentence with the reason. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoDeleteTitle": {
+    "message": "{service} meeting not deleted",
+    "description": "Booking notice title: a booking was cancelled, but its video meeting couldn't be deleted. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoDeleteText": {
+    "message": "{type} with {guest} on {when} is cancelled, but Rukoo couldn't delete its {service} meeting. {why} You can delete it in {service} yourself.",
+    "description": "Booking notice text when a cancelled booking's video meeting is still there. type is the meeting type, guest the cleaned short name, when the day and time, service the video service, why one sentence with the reason. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoWhyRenew": {
+    "message": "The {service} connection on this computer needs renewing.",
+    "description": "Reason sentence inside a video booking notice: the stored sign-in stopped working. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoWhyOff": {
+    "message": "{service} isn't connected on this computer.",
+    "description": "Reason sentence inside a video booking notice: the service isn't connected on the booking device. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoWhyFailed": {
+    "message": "{service} didn't answer as expected.",
+    "description": "Reason sentence inside a video booking notice when the service gave no message. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
   },
   "booking.notices.overlapTitle": {
     "message": "A booking overlaps another event",

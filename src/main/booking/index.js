@@ -16,6 +16,7 @@ const { openWindows, workWeekly } = require('../calendar/availability');
 const { zonedParts, zonedInstant, addDays, isZone, pcZone } = require('../calendar/zone');
 const rules = require('./rules');
 const keys = require('./keys');
+const { withMeeting } = require('../video');
 
 const MINUTE = 60000;
 const HOUR = 60 * MINUTE;
@@ -128,12 +129,14 @@ function cleanPage(p) {
 }
 
 class Booking extends EventEmitter {
-  // timing: { auto } (false in tests: no timers start by themselves) and the delays above, for tests.
-  constructor({ account, calendars, engine, secrets = null, dataDir, notify = () => {}, now = Date.now, timing = {} }) {
+  // timing: { auto } (false in tests: no timers start by themselves) and the delays above, for tests. video: the video
+  // services on this computer (src/main/video), which make a meeting for each booking whose type uses one.
+  constructor({ account, calendars, engine, secrets = null, video = null, dataDir, notify = () => {}, now = Date.now, timing = {} }) {
     super();
     this.account = account;
     this.calendars = calendars;
     this.engine = engine;
+    this.video = video;
     this.secrets = secrets;
     this.dataDir = dataDir;
     this.notifyHost = notify;
@@ -179,6 +182,8 @@ class Booking extends EventEmitter {
     this.calendars.on('changed', (c) => this.calendarChanged(c));
     this.calendars.on('synced', () => this.soon('publish', this.timing.publishAfter));
     if (typeof this.engine.on === 'function') this.engine.on('calendar-settings', () => this.soon('publish', this.timing.publishAfter));
+    // A video service connected or lost here changes the notices about it.
+    if (this.video && typeof this.video.on === 'function') this.video.on('changed', () => this.broadcast());
     if (this.timing.auto) {
       this.timers.tick = setInterval(() => this.tick().catch(() => {}), POLL_EVERY);
       if (this.timers.tick.unref) this.timers.tick.unref();
@@ -598,7 +603,9 @@ class Booking extends EventEmitter {
       requests: status === 'signed_out' ? [] : rows.filter((r) => r.status === 'pending').sort((a, b) => a.start - b.start).map((r) => this.item(r)),
       notices: status === 'signed_out' ? [] : this.notices(),
       today: page && page.today ? { ...page.today } : null,
-      busy: this.running > 0
+      busy: this.running > 0,
+      // The video services the meeting types use that can't make meetings on this computer.
+      video: { missing: signedIn ? this.videoMissing(settings).map(({ service, name, status }) => ({ service, name, status })) : [] }
     };
   }
 
@@ -647,7 +654,10 @@ class Booking extends EventEmitter {
     const action = (a) => ({ action: a, label: t(`booking.notices.actions.${a}`) });
     if (this.file.lost) add({ id: 'handleLost', kind: 'handleLost', tone: 'error', title: t('booking.notices.handleLostTitle'), text: t('booking.notices.handleLostText', { handle: (page && page.handle) || '' }), actions: [action('dismiss')] });
     if (on && page.device && !thisDevice) {
-      add({ id: 'otherDevice', kind: 'otherDevice', tone: 'info', title: t('booking.notices.otherDeviceTitle', { device: page.device.name || t('booking.notices.otherDeviceUnknown') }), text: t('booking.notices.otherDeviceText'), actions: [action('takeover'), action('dismiss')] });
+      // Use this computer moves the meetings too: it says which services still have to be connected here.
+      const missing = this.videoMissing(settings);
+      const text = missing.length ? t('booking.notices.otherDeviceVideoText', { services: listText(missing.map((m) => m.name)) }) : t('booking.notices.otherDeviceText');
+      add({ id: 'otherDevice', kind: 'otherDevice', tone: 'info', title: t('booking.notices.otherDeviceTitle', { device: page.device.name || t('booking.notices.otherDeviceUnknown') }), text, actions: [action('takeover'), action('dismiss')] });
     }
     if (on) {
       const key = this.keyState();
@@ -671,6 +681,10 @@ class Booking extends EventEmitter {
           add({ id: 'destination', kind: 'destination', tone: 'error', title: t('booking.notices.destinationTitle'), text: t('booking.notices.destinationText', { email: dest.email }), actions: [action('dismiss')] });
         }
         if (!this.file.publish.ok) add({ id: 'publishFailed', kind: 'publishFailed', tone: 'error', title: t('booking.notices.publishFailedTitle'), text: t('booking.notices.publishFailedText', { error: this.file.publish.error || '' }), actions: [action('dismiss')] });
+        for (const m of this.videoMissing(settings)) {
+          const text = m.status === 'renew' ? 'booking.notices.videoRenewText' : 'booking.notices.videoMissingText';
+          add({ id: `videoMissing:${m.service}`, kind: 'videoMissing', tone: 'warn', title: t('booking.notices.videoMissingTitle', { service: m.name }), text: t(text, { service: m.name, types: listText(m.types) }), actions: [action('video'), action('dismiss')] });
+        }
         // Bookings ahead whose guest details didn't open here: the guests have their answer from the page, and the
         // host has nothing in the calendar. A new one brings the notice back after a dismiss (since).
         const unopened = Object.keys(this.file.unopened).filter((id) => this.file.rows[id] && ACTIVE.has(this.file.rows[id].status) && this.file.rows[id].end > now);
@@ -710,16 +724,26 @@ class Booking extends EventEmitter {
         return { ...base, tone: 'info', title: t('booking.notices.guestDeclinedTitle', params), text: t('booking.notices.guestDeclinedText', params), actions: [action('dismiss')] };
       case 'hostDeleted':
         return { ...base, tone: 'info', title: t('booking.notices.hostDeletedTitle'), text: t('booking.notices.hostDeletedText', params), actions: [action('dismiss')] };
+      case 'video': {
+        // A meeting the video service didn't make, move or delete (op), and why: the sign-in needs renewing, the
+        // service isn't connected here, or what the service said.
+        const service = rules.VIDEO_SERVICES[n.service] || n.service || '';
+        const why = n.reason === 'renew' ? t('booking.notices.videoWhyRenew', { service }) : n.reason === 'off' ? t('booking.notices.videoWhyOff', { service }) : n.error || t('booking.notices.videoWhyFailed', { service });
+        const op = { update: 'Update', delete: 'Delete' }[n.op] || 'Create';
+        const p = { ...params, service, why };
+        return { ...base, tone: 'warn', title: t(`booking.notices.video${op}Title`, p), text: t(`booking.notices.video${op}Text`, p), actions: op === 'Delete' ? [action('video'), action('dismiss')] : [action('video'), action('open'), action('dismiss')] };
+      }
       default:
         return null;
     }
   }
 
-  addNotice(kind, row, name) {
+  // extra: what the notice's text needs besides the booking (a video notice's service and reason).
+  addNotice(kind, row, name, extra = {}) {
     this.live();
     const id = `${kind}:${row.id}`;
     this.file.notices = this.file.notices.filter((n) => n.id !== id);
-    this.file.notices.push({ id, kind, bookingId: row.id, type: row.type, start: row.start, name: name || '', at: this.now() });
+    this.file.notices.push({ ...extra, id, kind, bookingId: row.id, type: row.type, start: row.start, name: name || '', at: this.now() });
     delete this.file.dismissed[id];
   }
 
@@ -1219,6 +1243,8 @@ class Booking extends EventEmitter {
         // A request the guest withdrew: it never had an event, so a notification says so and no notice is kept.
         this.tell('cancelled', row, guest, { start: row.start }, 'withdrawn');
       }
+      // Its meeting goes too, also one made for an event that never got written.
+      await this.endMeeting(row, (map && map.video) || this.meetings()[row.id], rules.shortName(guest && guest.name));
       this.dropNotices(row.id, ['overlap']);
     } else this.dropNotices(row.id, ['overlap']);
     await this.handled(row);
@@ -1367,14 +1393,24 @@ class Booking extends EventEmitter {
     this.own.add(row.id);
     try {
       let ev = await this.findEvent(row, dest.accountId);
-      if (!ev) ev = await this.after(this.calendars.create(this.eventInput(row, guest, settings, dest), { notify: row.notify, bookingId: row.id, uid: row.uid }));
+      // A meeting made for this booking before its event was: kept, so a retry doesn't make a second one.
+      let meeting = this.meetings()[row.id] || null;
+      if (!ev) {
+        const input = this.eventInput(row, guest, settings, dest);
+        meeting = await this.meetingFor(row, guest, settings, input);
+        ev = await this.after(this.calendars.create(withMeeting(input, meeting, { locale: settings.locale, name: videoName(meeting) }), { notify: row.notify, bookingId: row.id, uid: row.uid }));
+      }
       // Made for an earlier time of this booking (an answer that got lost, then the guest moved it): it goes to this one.
-      else if (ev.start !== row.start || ev.end !== row.end) ev = await this.moveTo(await this.intoCache(ev), row);
+      else if (ev.start !== row.start || ev.end !== row.end) {
+        ev = await this.moveTo(await this.intoCache(ev), row);
+        await this.moveMeeting(row, meeting, guest);
+      }
       const acc = this.engine.accounts.find((a) => a.id === ev.accountId);
       // uid: the one the calendar gave the event (Google may ignore the booking's), kept before handled tells the
       // server, so a handled that fails still has it the next time. The booking's own when the server can't take it.
       const uid = typeof ev.uid === 'string' && UID.test(ev.uid) ? ev.uid : row.uid;
-      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid, version: row.version, type: row.type, start: row.start, end: row.end, guest, customLength: false });
+      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid, version: row.version, type: row.type, start: row.start, end: row.end, guest, customLength: false, ...(meeting ? { video: meeting } : {}) });
+      delete this.meetings()[row.id];
       return ev;
     } finally {
       this.own.delete(row.id);
@@ -1426,12 +1462,17 @@ class Booking extends EventEmitter {
     try {
       const ev = await this.writableEvent(map, { start: Math.min(map.start, row.start), end: Math.max(map.end, row.end) });
       if (!ev) {
-        // Gone from the calendar, as a fresh read showed: the booking is still on, so it gets its event again.
+        // Gone from the calendar, as a fresh read showed: the booking is still on, so it gets its event again, with
+        // the meeting it had.
         this.account.remove('booking', this.mapKey(row.id));
-        return this.createEvent(row, guest, settings);
+        if (map.video) this.meetings()[row.id] = map.video;
+        const made = await this.createEvent(row, guest, settings);
+        await this.moveMeeting(row, map.video, guest);
+        return made;
       }
       const out = await this.moveTo(ev, row);
       this.writeMap({ ...map, version: row.version, start: row.start, end: row.end, customLength: false, calendarId: out.calendarId, eventId: out.eventId });
+      await this.moveMeeting(row, map.video, guest);
       return out;
     } finally {
       this.own.delete(row.id);
@@ -1455,6 +1496,84 @@ class Booking extends EventEmitter {
     } finally {
       this.own.delete(map.id);
     }
+  }
+
+  // ---------- video meetings ----------
+
+  // Meetings made for bookings whose events aren't made yet, by booking id: a retry after a failed calendar write
+  // takes the same meeting. Only on this computer, in booking.json; the mapping record keeps it once the event exists.
+  meetings() {
+    if (!plain(this.file.meetings)) this.file.meetings = {};
+    return this.file.meetings;
+  }
+
+  // The meeting a booking's event gets when its type uses a video service: { service, id, url }. null for another
+  // location, or when the service can't make one: the event then goes in without a link, and a notice says why and
+  // what to do. input: the event, for the meeting's title and zone.
+  async meetingFor(row, guest, settings, input) {
+    const type = settings.types.find((x) => x.slug === row.type);
+    const loc = type && type.location;
+    if (!loc || loc.kind !== 'video') return null;
+    const kept = this.meetings()[row.id];
+    if (kept && kept.service === loc.service) return kept;
+    try {
+      if (!this.video) throw Object.assign(new Error(''), { code: 'off' });
+      const made = await this.after(this.video.create(loc.service, { title: input.title, start: row.start, end: row.end, timeZone: input.timeZone }));
+      this.meetings()[row.id] = made;
+      this.persist();
+      return made;
+    } catch (err) {
+      unlessStale(err);
+      this.addNotice('video', row, rules.shortName(guest && guest.name), videoProblem(loc.service, 'create', err));
+      return null;
+    }
+  }
+
+  // A booking's meeting at its new time. A failure leaves the meeting and its link as they were, with a notice.
+  async moveMeeting(row, ref, guest) {
+    if (!ref || !this.video) return;
+    const settings = this.settings();
+    const zone = settings && isZone(settings.timeZone) ? settings.timeZone : pcZone();
+    try {
+      await this.after(this.video.update(ref, { start: row.start, end: row.end, timeZone: zone }));
+    } catch (err) {
+      unlessStale(err);
+      this.addNotice('video', row, rules.shortName(guest && guest.name), videoProblem(ref.service, 'update', err));
+    }
+  }
+
+  // A booking that ended takes its meeting with it. One the service couldn't delete stays, with a notice.
+  async endMeeting(row, ref, name) {
+    if (!ref || !this.video) return;
+    try {
+      await this.after(this.video.remove(ref));
+      delete this.meetings()[row.id];
+      this.dropNotices(row.id, ['video']);
+    } catch (err) {
+      unlessStale(err);
+      this.addNotice('video', row, name, videoProblem(ref.service, 'delete', err));
+    }
+  }
+
+  // The video services the meeting types use that can't make a meeting on this computer: not connected here, or the
+  // sign-in needs renewing. Each with its status and the titles of the types that use it.
+  videoMissing(settings) {
+    if (!settings) return [];
+    const by = new Map();
+    for (const type of settings.types) {
+      const loc = type.location;
+      if (loc.kind !== 'video') continue;
+      let status = 'off';
+      try {
+        status = this.video ? this.video.status(loc.service) : 'off';
+      } catch (_) {
+        status = 'off';
+      }
+      if (status === 'connected') continue;
+      if (!by.has(loc.service)) by.set(loc.service, { service: loc.service, name: videoName(loc), status, types: [] });
+      by.get(loc.service).types.push(type.title);
+    }
+    return [...by.values()];
   }
 
   // A new or moved booking that overlaps something else on fresh busy data keeps its event; the host decides.
@@ -1556,6 +1675,7 @@ class Booking extends EventEmitter {
             next = { ...next, version: moved.version, start: moved.start, end: moved.end };
             this.writeMap(next);
             await this.handled(moved);
+            await this.moveMeeting(moved, map.video, map.guest);
             continue;
           }
           if (next.calendarId !== map.calendarId || next.eventId !== map.eventId || Boolean(map.customLength) !== custom) this.writeMap(next);
@@ -1578,6 +1698,8 @@ class Booking extends EventEmitter {
     if (map) this.writeMap({ ...map, version: next.version, cancelled: true });
     this.dropNotices(row.id, ['overlap', 'mailBudget']);
     await this.handled(next).catch(unlessStale);
+    // Its meeting goes too, also one made for an event that never got written.
+    await this.endMeeting(next, (map && map.video) || this.meetings()[row.id], rules.shortName(map && map.guest && map.guest.name));
     return next;
   }
 
@@ -1623,6 +1745,7 @@ class Booking extends EventEmitter {
       this.opened.delete(id);
       this.moves.delete(id);
     }
+    for (const id of Object.keys(this.meetings())) if (!this.file.rows[id]) delete this.file.meetings[id];
     this.file.notices = this.file.notices.filter((n) => this.file.rows[n.bookingId] && now - n.at < KEEP);
     const acct = this.acct;
     if (!acct || !this.thisDevice()) return;
@@ -1782,6 +1905,30 @@ function byBooking(events) {
 function eventFor(list, map) {
   if (!list || !list.length) return null;
   return (map && list.find((e) => e.calendarId === map.calendarId && e.eventId === map.eventId)) || list[0];
+}
+
+// The name of the video service a meeting or a location names: 'Zoom'.
+function videoName(x) {
+  const id = x && x.service;
+  return rules.VIDEO_SERVICES[id] || String(id || '');
+}
+
+// What a video notice keeps about a failure: the sign-in needs renewing, the service isn't connected here ('off', also
+// without an OAuth client), or what the service said.
+function videoProblem(service, op, err) {
+  const code = err && err.code;
+  if (code === 'renew') return { service, op, reason: 'renew' };
+  if (code === 'off' || code === 'unavailable') return { service, op, reason: 'off' };
+  return { service, op, reason: 'failed', error: String((err && err.message) || '').slice(0, 300) };
+}
+
+// A list in a sentence, in the interface language: 'Zoom and Microsoft Teams'.
+function listText(list) {
+  try {
+    return new Intl.ListFormat(getLocale(), { type: 'conjunction' }).format(list);
+  } catch (_) {
+    return list.join(', ');
+  }
 }
 
 // A booking's time for the host, in the interface language and the PC's zone: 'Tue 3 Nov, 10:00'.
