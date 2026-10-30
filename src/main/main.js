@@ -16,7 +16,8 @@ const {
   nativeImage,
   Notification,
   Menu,
-  screen
+  screen,
+  session
 } = require('electron');
 const { Engine } = require('./engine');
 const { cleanSignatureHtml } = require('./signature');
@@ -26,14 +27,17 @@ const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
 const { oneClickUnsubscribe } = require('./net');
+const { mailImage } = require('./mailimage');
 const { nextZoom, zoomKey } = require('./zoom');
 const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
-const { windowChrome, MailtoQueue, MacMailClient, macMenu } = require('./desktop');
+const { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu } = require('./desktop');
+const { Invitations } = require('./calendar/invitations');
+const invite = require('./calendar/invite');
 // ---- agents ----
-const { clipboard, powerMonitor } = require('electron');
+const { clipboard, ClipboardItem, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
 const { Categories } = require('./categories');
@@ -120,6 +124,8 @@ let agentGate = null;
 // The booking service and the reminder runner. Null until they are made after the categories, so calendarFree can already ask.
 let booking = null;
 let reminders = null;
+// Invitations in email and .ics files (calendar/invitations.js).
+let invitations = null;
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -562,6 +568,9 @@ async function tempAttachment(id, index) {
   return file;
 }
 
+// An image in an email, fetched through the windows' session (see mailimage.js).
+const emailImage = (src) => mailImage(src, { fetch: (url, opts) => session.defaultSession.fetch(url, opts) });
+
 async function printHtml(html) {
   const printer = new BrowserWindow({ show: false, webPreferences: { javascript: false, sandbox: true } });
   await printer.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
@@ -678,6 +687,16 @@ const api = {
   },
   openAttachment: async (id, index) => {
     const a = await engine.attachment(id, index);
+    // An .ics file opens as an invitation card in Rukoo itself; one that holds no event goes to the system's app.
+    if (isIcs(a)) {
+      try {
+        const acc = engine.messageAccount(id);
+        showInviteFile(invitations.openText(a.content.toString('utf8'), safeName(a.filename), acc ? acc.id : null));
+        return true;
+      } catch (_) {
+        // Not an event Rukoo can show.
+      }
+    }
     if (RISKY.test(safeName(a.filename))) {
       const res = await dialog.showMessageBox(win, {
         type: 'warning',
@@ -761,6 +780,32 @@ const api = {
     if (!installer || installer.status !== 'ready' || !updates.available || installer.version !== updates.available.version) return false;
     restartForUpdate = true;
     app.quit();
+    return true;
+  },
+  // The context menu in an email. Copy image: the image as a data: URL, which the reader turns into a PNG for
+  // copyImage, since PNG is the one image type the clipboard takes. Open image: a copy in the default image viewer.
+  copyText: async (text) => {
+    if (typeof text !== 'string' || !text || text.length > 100000) throw new Error('invalid');
+    await clipboard.writeText(text);
+    return true;
+  },
+  imageData: async (src) => {
+    const img = await emailImage(src);
+    return `data:${img.type};base64,${img.content.toString('base64')}`;
+  },
+  copyImage: async (png) => {
+    const image = /^data:image\/png;base64,/.test(String(png || '')) ? nativeImage.createFromDataURL(png) : null;
+    if (!image || image.isEmpty()) throw new Error(t('errors.image.unsupported'));
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([image.toPNG()], { type: 'image/png' }) })]);
+    return true;
+  },
+  openImage: async (src) => {
+    const img = await emailImage(src);
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-mail-')), img.name);
+    fs.writeFileSync(file, img.content);
+    markOfTheWeb(file);
+    const err = await shell.openPath(file);
+    if (err) throw new Error(err);
     return true;
   },
   // Only the release page that was found opens; the renderer can't pass another address.
@@ -855,6 +900,15 @@ const api = {
       etag: calendarEtag(opts),
       seriesEtag: calendarSeriesEtag(opts)
     }),
+  // An invitation's card in the reader or for an .ics file. source: { id } of an email, or { file }: an opened file's
+  // token. The answer goes through the calendar that has the event, or else by email (calendar/invitations.js).
+  inviteFiles: () => inviteFiles.splice(0),
+  inviteState: (source) => invitations.state(inviteSource(source)),
+  inviteAnswer: (source, response) => invitations.answer(inviteSource(source), String(response)),
+  inviteAdd: (source, target) => {
+    const to = plainObject(target);
+    return invitations.add(inviteSource(source), { accountId: accountText(to.accountId, 200), calendarId: calendarCalendarId(to.calendarId) });
+  },
   calendarRespond: (id, response, opts) => calendars.respond(calendarEventId(id), String(response), { series: plainObject(opts).series === true }),
   calendarSeries: (id) => calendars.series(calendarEventId(id)),
   calendarMove: (id, calendarId, opts) => calendars.move(calendarEventId(id), calendarCalendarId(calendarId), { notify: plainObject(opts).notify === true }),
@@ -1115,8 +1169,19 @@ Object.assign(api, {
 
 // Calls that act on the window that makes them.
 const windowApi = {
+  // copy: the reader's context menu, for the selection in the email frame it has just focused.
   nativeEdit: (sender, action) => {
-    if (['undo', 'redo', 'selectAll'].includes(action)) sender[action]();
+    if (['undo', 'redo', 'selectAll', 'copy'].includes(action)) sender[action]();
+  },
+  // Save image as, from an email's context menu; the dialog belongs to the window it was asked in.
+  saveImage: async (sender, src) => {
+    const img = await emailImage(src);
+    const owner = BrowserWindow.fromWebContents(sender) || win;
+    const res = await dialog.showSaveDialog(owner, { defaultPath: path.join(app.getPath('downloads'), img.name) });
+    if (res.canceled || !res.filePath) return false;
+    fs.writeFileSync(res.filePath, img.content);
+    markOfTheWeb(res.filePath);
+    return res.filePath;
   },
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
@@ -1239,15 +1304,49 @@ mailtoQueue.accept(mailto.fromArgs(process.argv));
 app.on('open-url', (event, url) => {
   if (mailtoQueue.accept(url)) event.preventDefault();
 });
+
+// An .ics file Rukoo was opened with: its card shows in the main window, once that is up.
+const icsQueue = new FileQueue(openIcsFile);
+icsQueue.accept(icsFromArgs(process.argv));
+app.on('open-file', (event, file) => {
+  if (!/[.]ics$/i.test(String(file || ''))) return;
+  event.preventDefault();
+  icsQueue.accept(file);
+});
+
+// The cards the main window has yet to show. It takes them when told (invite-file) and after its first state, so a
+// file Rukoo starts with isn't lost when the message comes before the window listens.
+const inviteFiles = [];
+function showInviteFile(token) {
+  inviteFiles.push(token);
+  send('invite-file');
+}
+
+function openIcsFile(file) {
+  showWindow();
+  try {
+    showInviteFile(invitations.openFile(file));
+  } catch (_) {
+    dialog.showMessageBox(win, { type: 'warning', message: t('errors.invite.unreadable'), detail: file, buttons: [t('common.actions.ok')] }).catch(() => {});
+  }
+}
+
+const isIcs = (a) => invite.isCalendarType(a.contentType) || /[.]ics$/i.test(String(a.filename || ''));
+const inviteSource = (source) => {
+  const s = plainObject(source);
+  return { id: accountText(s.id, 2000) || undefined, file: accountText(s.file, 100) || undefined };
+};
 app.on('activate', () => {
   if (engine && windowState) showWindow();
 });
 
 // Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
 // the main window stays where it was, in the tray too.
-app.on('second-instance', (e, argv) => {
+app.on('second-instance', (e, argv, workingDirectory) => {
   const link = mailto.fromArgs(argv);
+  const file = link ? null : icsFromArgs(argv, workingDirectory);
   if (link) mailtoQueue.accept(link);
+  else if (file) icsQueue.accept(file);
   else if (engine && windowState) showWindow();
 });
 
@@ -1273,6 +1372,8 @@ app.whenReady().then(() => {
   });
   engine.on('new-mail', notify);
   calendars = new Calendars({ engine });
+  invitations = new Invitations({ engine, calendars, dataDir: path.join(app.getPath('userData'), 'data') });
+  if (process.env.SEM_HIDDEN) global.__semInvitations = invitations;
   if (process.env.SEM_HIDDEN) global.__semCalendars = calendars;
   calendars.on('updated', () => send('calendar'));
   // A fork points the app at its own account server with package.json's rukoo.accountServer; tests and development
@@ -1356,7 +1457,10 @@ app.whenReady().then(() => {
   applyTheme();
   createWindow();
   // After the main window shows, so the compose window comes up in front of it.
-  win.once('ready-to-show', () => mailtoQueue.start());
+  win.once('ready-to-show', () => {
+    mailtoQueue.start();
+    icsQueue.start();
+  });
   refreshMailClient().catch(() => {});
   updateTray();
   scheduleSync();

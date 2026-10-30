@@ -24,6 +24,21 @@ The dialog adds the place and the description. Under More it has the repeat, rem
 
 You add and remove guests, with suggestions from your contacts, and mark them optional. That works on Google calendars and on CalDAV calendars whose server sends the invitations. Guests only get an email from Google when you say so. You answer invitations with Yes, Maybe or No. Google calendars that allow it get a Google Meet switch, and the event's card a button to join the call.
 
+### Invitations by email
+
+An email with an invitation shows a card above its text: the event, its time and place, the guests and Yes, Maybe or No. Where the answer goes depends on where the event is:
+
+- When one of your calendars has the event and can answer it, the answer goes through that calendar. Google puts invitations into your Google calendar as they arrive and tells the organizer. A CalDAV server that sends invitations does the same. The card says so, and Open in calendar shows the event.
+- Otherwise Rukoo emails the answer to the organizer, from the account the invitation came to, as other mail apps do: an iCalendar reply that Google Calendar, Outlook and Apple Calendar read. The card names the address it goes to, and remembers the answer.
+
+Rukoo only counts an event in your calendar as the invitation's when it has the same organizer and you are among its guests with the address the invitation went to. An invitation sent to a mailing list is answered from the account it came to.
+
+Add to calendar puts a copy of the event in a calendar you pick, without its guests. Later changes from the organizer don't reach that copy. A series with moved or cancelled occurrences can't be copied, since its rule alone would give the wrong dates. A cancellation shows as cancelled, without answers. A guest's answer to your own event shows who answered what.
+
+### .ics files
+
+Rukoo opens .ics files: an invitation's `invite.ics`, or a file you open with Rukoo from Explorer. The installer adds Rukoo under "Open with" for .ics files and in Settings → Apps → Default apps, where you can make it the default; the app that opens them now stays the default until you change it. The file shows as the same card in a dialog, with Add to calendar, and Yes, Maybe and No when it invites one of your accounts.
+
 ## Repeats
 
 Events repeat every day, every weekday, weekly, monthly on a date or on the first to fourth or last weekday, yearly, or by your own rule with an interval, weekdays and an end. Changing, moving or deleting one occurrence asks whether that goes for this event, this and following events, or all events. A rule the dialog can't edit shows as "Custom rule, kept" and stays as it is.
@@ -102,7 +117,8 @@ Rukoo keeps the weeks you looked at in `%APPDATA%\Rukoo Mail\data\calendar` and 
 
 - Calendars of Microsoft accounts aren't supported yet ([#17](https://github.com/MajesteitBart/rukoo/issues/17)).
 - Guests can't be added on a CalDAV calendar whose server doesn't send invitations.
-- An invitation in the mail shows as an ordinary email, without buttons to answer it. Answer it on the event in the calendar.
+- An answer to an invitation that goes by email doesn't change a copy of the event in a CalDAV calendar whose server doesn't send invitations. A counter-proposal (a new time) can't be sent.
+- The portable build adds itself under "Open with" for .ics files only when you choose Rukoo for email links in Settings.
 - A booking reaches your calendar, and the guest the invitation, when Rukoo runs on the computer that handles your booking page. Until then the server holds it. See [Booking page](booking.md#one-computer-handles-bookings).
 - Rukoo for Android has no calendar yet.
 

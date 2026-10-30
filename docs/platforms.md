@@ -47,10 +47,10 @@ Linux builds target x64 desktops. The `.deb` is for Ubuntu and Debian; the AppIm
 
 ```bash
 # Install the Debian package:
-sudo apt install ./Rukoo-Mail-2.1.0-amd64.deb
+sudo apt install ./Rukoo-Mail-2.1.2-amd64.deb
 # Or run the portable build:
-chmod +x Rukoo-Mail-2.1.0-x86_64.AppImage
-./Rukoo-Mail-2.1.0-x86_64.AppImage
+chmod +x Rukoo-Mail-2.1.2-x86_64.AppImage
+./Rukoo-Mail-2.1.2-x86_64.AppImage
 ```
 
 Use the version in your downloaded filename. AppImages need FUSE 2; where FUSE is unavailable, `--appimage-extract-and-run` runs without mounting. Run Rukoo as your desktop user and keep Chromium's sandbox on; the Debian package includes Electron's sandbox setup. Some distributions restrict unprivileged user namespaces, so prefer the installed package when a portable build can't start under the system's sandbox policy.

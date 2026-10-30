@@ -99,6 +99,8 @@ export const icons = {
   booking: p('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4M9 15l2 2 4-4"/>'),
   // Duplicate an event: two sheets.
   copy: p('<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/>'),
+  // Select all in an email: lines of text inside a dashed frame.
+  selectAll: p('<path d="M4 7.5V6a2 2 0 0 1 2-2h1.5M10.5 4h3M16.5 4H18a2 2 0 0 1 2 2v1.5M20 10.5v3M20 16.5V18a2 2 0 0 1-2 2h-1.5M13.5 20h-3M7.5 20H6a2 2 0 0 1-2-2v-1.5M4 13.5v-3M8.5 9.5h7M8.5 12h7M8.5 14.5h4.5"/>'),
   // A time zone, such as a booking guest's.
   globe: p('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.5 5.2 3.5 8.5s-1.2 6.1-3.5 8.5c-2.3-2.4-3.5-5.2-3.5-8.5s1.2-6.1 3.5-8.5z"/>'),
   // The conflict line: something overlaps.

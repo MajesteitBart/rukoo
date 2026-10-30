@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const en = require('../src/i18n/en');
-const { MailClient, NAME, PROG_ID, SETTINGS_URL } = require('../src/main/mailclient');
+const { MailClient, NAME, PROG_ID, ICS_ID, SETTINGS_URL } = require('../src/main/mailclient');
 
 const EXE = 'C:\\Program Files\\Rukoo Mail\\Rukoo Mail.exe';
 
@@ -22,6 +22,11 @@ test('the registration starts Rukoo with the link after "--", and lists it as an
   assert.equal(value(`Classes\\${PROG_ID}\\shell\\open\\command`, null), `"${EXE}" -- "%1"`);
   assert.equal(value(`Clients\\Mail\\${NAME}\\Capabilities\\URLAssociations`, 'mailto'), PROG_ID);
   assert.equal(value('RegisteredApplications', NAME), `Software\\Clients\\Mail\\${NAME}\\Capabilities`);
+  // .ics files: Rukoo under "Open with" and in Default apps; the default itself stays as the user set it.
+  assert.equal(value(`Classes\\${ICS_ID}\\shell\\open\\command`, null), `"${EXE}" -- "%1"`);
+  assert.equal(value('Classes\\.ics\\OpenWithProgids', ICS_ID), '');
+  assert.equal(value(`Clients\\Mail\\${NAME}\\Capabilities\\FileAssociations`, '.ics'), ICS_ID);
+  assert.ok(!calls.some((a) => a[1].endsWith('Classes\\.ics') && a.includes('/ve')), 'the .ics default is left alone');
   assert.ok(calls.every((a) => a[0] === 'add' && a[1].startsWith('HKCU\\Software\\') && a.at(-1) === '/f'));
   assert.equal(SETTINGS_URL, 'ms-settings:defaultapps?registeredAppUser=Rukoo%20Mail');
 });

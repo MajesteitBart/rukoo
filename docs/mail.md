@@ -45,6 +45,8 @@ The mail keeps a readable width, and the grey canvas of newsletters is cleared. 
 
 HTML mail renders in a sandboxed frame with scripts stripped. In dark mode Rukoo recolours HTML mail; you can switch that off.
 
+Right-click in an email for a menu that fits what's under the pointer. A link opens in the browser or copies its address; a mailto: link starts a new message or copies the email address. An image opens in the default image viewer, copies to the clipboard or saves as a file. Inline images work too, and so do images on the web, as long as they're PNG, JPEG, GIF, WebP, BMP or ICO. SVG images are left out because they can carry script. Selected text copies as it does with `Ctrl+C`, and Select all selects the whole email. The quoted email in a reply has the same menu. In the dark theme, plain-text mail copies as plain text, so it doesn't paste as light grey text on a white page.
+
 ## Writing
 
 New mail, replies and forwards open in the reading pane, with Send at the bottom right. A button moves the message into a window of its own, which remembers its size and position. Formatting appears above selected text, or as a row you switch on. Earlier mail in a reply waits behind a "···" pill and can be left out. The composer has recipient autocomplete, Cc and Bcc, attachments by picker or drag and drop, links and inline images.
