@@ -296,6 +296,10 @@ describe('the landing page', () => {
 
 describe('the booker', () => {
   it('shows a month, its open days as links and the chosen day’s times; refuses nothing it can’t read', async () => {
+    // Today at noon, frozen. The page and the expected arrows read one clock, so a month can't end between them, and
+    // on a month's last evening this month still has times for the junk months below to fall back to.
+    const now = zonedInstant(amsterdam(Date.now()).date, '12:00', 'Europe/Amsterdam');
+    vi.setSystemTime(now);
     const { handle } = await host(signup);
     const day = amsterdam(slotAhead(3)).date;
     const month = day.slice(0, 7);
@@ -313,7 +317,6 @@ describe('the booker', () => {
     expect(html).toMatch(/<section class="times" data-status="16 open times on \w+ \d+ \w+">/);
     // The arrows reach from this month to the month the booking window ends in. Late in a month the day three days
     // ahead is in the next one, which then has an earlier month and, the window ending before it does, no later one.
-    const now = Date.now();
     const hasPrev = month > amsterdam(now).date.slice(0, 7);
     const hasNext = month < amsterdam(now + meetingType().horizon * DAY).date.slice(0, 7);
     expect(html.includes(`href="/meet/${handle}/30min?month=${addMonths(month, -1)}" data-swap="prev"`)).toBe(hasPrev);
