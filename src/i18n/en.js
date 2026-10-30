@@ -5741,6 +5741,38 @@
     "message": "Hidden",
     "description": "Meeting type description: the type isn't listed on the page. src/renderer/booking-settings.js"
   },
+  "settings.booking.rowBufferBefore": {
+    "message": "{time} free time before",
+    "description": "Meeting type's row on the booking page, shown when the type keeps time free before a booking; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowBufferAfter": {
+    "message": "{time} free time after",
+    "description": "Meeting type's row on the booking page, shown when the type keeps time free after a booking; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowBufferBoth": {
+    "message": "{time} free time before and after",
+    "description": "Meeting type's row on the booking page, when the free time before and after a booking are the same; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowNotice": {
+    "message": "{time} notice",
+    "description": "Meeting type's row on the booking page, when its minimum notice isn't the default 4 hours; time is a length such as \"1 day\" or \"30 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowNoNotice": {
+    "message": "No minimum notice",
+    "description": "Meeting type's row on the booking page, when guests can book it right up to its start. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowHorizon": {
+    "message": { "one": "Up to {count} day ahead", "other": "Up to {count} days ahead" },
+    "description": "Meeting type's row on the booking page, when it can be booked more or fewer days ahead than the default 30; count is the number of days. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowInterval": {
+    "message": "Start times every {time}",
+    "description": "Meeting type's row on the booking page, when the offered start times have their own step; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowLimit": {
+    "message": { "one": "At most {count} a day", "other": "At most {count} a day" },
+    "description": "Meeting type's row on the booking page, when the type has a limit of bookings per day; count is the limit. src/renderer/booking-settings.js"
+  },
   "settings.booking.addType": {
     "message": "Add meeting type",
     "description": "Booking page row that adds a meeting type (up to 10). src/renderer/booking-settings.js"
@@ -5897,9 +5929,13 @@
     "message": "A meeting link starts with https://.",
     "description": "Meeting type editor: error for a link that isn't https. src/renderer/booking-settings.js"
   },
+  "settings.booking.when": {
+    "message": "When guests can book",
+    "description": "Meeting type editor: heading of the section, open when the editor opens, with free time before and after, minimum notice, how far ahead, start times and the limit per day. src/renderer/booking-settings.js"
+  },
   "settings.booking.more": {
     "message": "More options",
-    "description": "Meeting type editor: folded section with buffers, notice, window, interval, limit, approval and hidden. src/renderer/booking-settings.js"
+    "description": "Meeting type editor: folded section with Needs your approval and Hide from the page. src/renderer/booking-settings.js"
   },
   "settings.booking.bufferBefore": {
     "message": "Free time before",
@@ -5908,6 +5944,10 @@
   "settings.booking.bufferAfter": {
     "message": "Free time after",
     "description": "Meeting type editor: buffer after a booking. src/renderer/booking-settings.js"
+  },
+  "settings.booking.bufferHelp": {
+    "message": "Keeps time free around each booking, so guests can't book right next to your other meetings.",
+    "description": "Meeting type editor: help under Free time before and Free time after, for hosts who look for buffers. src/renderer/booking-settings.js"
   },
   "settings.booking.minNotice": {
     "message": "Minimum notice",
