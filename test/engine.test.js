@@ -32,6 +32,27 @@ test('demo account syncs folders and inbox', async () => {
   await engine.close();
 });
 
+// RUK-101: @-mentions in the composer suggest the thread's people first.
+test('thread contacts are the people on the messages a reply refers to and on the replies to them', async () => {
+  const { engine, acc } = await freshEngine();
+  const call = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+  assert.ok(call.messageId);
+  assert.deepEqual(
+    engine.threadContacts(acc.id, [call.messageId]),
+    [
+      { name: 'Sanne de Vries', address: 'sanne@example.com' },
+      { name: 'Joris Bakker', address: 'joris@example.com' }
+    ],
+    'the sent reply to Sanne is newest; Joris was on the Cc of her message; your own address is left out'
+  );
+  // References come with or without angle brackets, in any case.
+  assert.equal(engine.threadContacts(acc.id, [call.messageId.replace(/[<>]/g, '').toUpperCase()]).length, 2);
+  assert.deepEqual(engine.threadContacts(acc.id, ['<unknown@example.com>']), []);
+  assert.deepEqual(engine.threadContacts(acc.id, []), []);
+  assert.deepEqual(engine.threadContacts('no-such-account', [call.messageId]), []);
+  await engine.close();
+});
+
 // #99: the cache keeps the newest 300 inbox messages; the server counts the unread mail older than those.
 test('unread counts include the inbox mail older than the cache, as the server counted it', async () => {
   const { engine, acc, dir } = await freshEngine();
