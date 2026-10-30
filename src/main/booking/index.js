@@ -52,6 +52,9 @@ const UID = /^[\x21-\x7e]{1,255}$/;
 const plain = (v) => Boolean(v && typeof v === 'object' && !Array.isArray(v));
 const lower = (s) => String(s || '').trim().toLowerCase();
 const num = (v) => (Number.isSafeInteger(v) ? v : null);
+// A type's title for a booking from start to end: a title Rukoo made names the length the guest picked
+// (rules.titleFor), in the event, the bookings list, notifications and the decline mail.
+const bookedTitle = (type, start, end) => rules.titleFor(type, Math.round((end - start) / MINUTE));
 
 // A job whose Rukoo session ended while it waited: a sign-out, or another account signed in. It stops without
 // another write; what it still had in hand belongs to the session that ended.
@@ -549,7 +552,7 @@ class Booking extends EventEmitter {
       id: row.id,
       status: row.status,
       type: row.type,
-      typeTitle: type ? type.title : row.type,
+      typeTitle: type ? bookedTitle(type, row.start, row.end) : row.type,
       start: row.start,
       end: row.end,
       channel: row.channel,
@@ -697,7 +700,8 @@ class Booking extends EventEmitter {
   // Notices about one booking, kept until dismissed: their text is made in the current language each time.
   storedNotice(n, settings, action) {
     const type = settings && settings.types.find((x) => x.slug === n.type);
-    const params = { type: type ? type.title : n.type || '', guest: n.name || t('booking.notifications.someone'), when: whenText(n.start) };
+    // Notices stored before they kept their end have the type's own title.
+    const params = { type: type ? (n.end ? bookedTitle(type, n.start, n.end) : type.title) : n.type || '', guest: n.name || t('booking.notifications.someone'), when: whenText(n.start) };
     const base = { id: n.id, kind: n.kind, bookingId: n.bookingId };
     switch (n.kind) {
       case 'overlap':
@@ -719,7 +723,7 @@ class Booking extends EventEmitter {
     this.live();
     const id = `${kind}:${row.id}`;
     this.file.notices = this.file.notices.filter((n) => n.id !== id);
-    this.file.notices.push({ id, kind, bookingId: row.id, type: row.type, start: row.start, name: name || '', at: this.now() });
+    this.file.notices.push({ id, kind, bookingId: row.id, type: row.type, start: row.start, end: row.end, name: name || '', at: this.now() });
     delete this.file.dismissed[id];
   }
 
@@ -1262,7 +1266,7 @@ class Booking extends EventEmitter {
     this.live();
     const settings = this.settings();
     const type = settings && settings.types.find((x) => x.slug === row.type);
-    const params = { guest: rules.shortName(guest && guest.name) || t('booking.notifications.someone'), type: type ? type.title : row.type, when: whenText(row.start) };
+    const params = { guest: rules.shortName(guest && guest.name) || t('booking.notifications.someone'), type: type ? bookedTitle(type, row.start, row.end) : row.type, when: whenText(row.start) };
     const keysFor = {
       new: ['booking.notifications.newTitle', 'booking.notifications.newBody'],
       request: ['booking.notifications.requestTitle', 'booking.notifications.requestBody'],
@@ -1292,7 +1296,8 @@ class Booking extends EventEmitter {
     const type = settings.types.find((x) => x.slug === row.type) || { title: row.type, description: '', location: { kind: 'none', label: '', value: '' } };
     const locale = settings.locale;
     const name = rules.shortName(guest.name);
-    const title = name ? translate(locale, 'booking.event.title', { type: type.title, host: settings.name, guest: name }) : translate(locale, 'booking.event.titleNoGuest', { type: type.title, host: settings.name });
+    const typeTitle = bookedTitle(type, row.start, row.end);
+    const title = name ? translate(locale, 'booking.event.title', { type: typeTitle, host: settings.name, guest: name }) : translate(locale, 'booking.event.titleNoGuest', { type: typeTitle, host: settings.name });
     const url = settings.url || (this.file.page && this.file.page.url) || '';
     const description = [type.description, url ? translate(locale, 'booking.event.description', { url }) : ''].filter(Boolean).join('\n\n');
     const loc = type.location;
@@ -1733,8 +1738,9 @@ class Booking extends EventEmitter {
     const tag = locale === 'nl' ? 'nl-NL' : 'en-GB';
     const when = new Intl.DateTimeFormat(tag, { timeZone: isZone(guest.timeZone) ? guest.timeZone : settings.timeZone, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(row.start);
     const url = settings.url || (this.file.page && this.file.page.url) || '';
-    const subject = translate(locale, 'booking.decline.subject', { type: type ? type.title : row.type, when });
-    const text = [message || translate(locale, 'booking.decline.body', { type: type ? type.title : row.type, when }), url ? translate(locale, 'booking.decline.again', { url }) : ''].filter(Boolean).join('\n\n');
+    const typeTitle = type ? bookedTitle(type, row.start, row.end) : row.type;
+    const subject = translate(locale, 'booking.decline.subject', { type: typeTitle, when });
+    const text = [message || translate(locale, 'booking.decline.body', { type: typeTitle, when }), url ? translate(locale, 'booking.decline.again', { url }) : ''].filter(Boolean).join('\n\n');
     this.live();
     await this.after(this.engine.send({ accountId: dest.accountId, to: [{ name: '', address: guest.email }], subject, text }));
   }

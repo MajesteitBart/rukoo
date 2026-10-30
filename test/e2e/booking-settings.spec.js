@@ -168,7 +168,10 @@ test('meeting types and available hours are edited on the page and published', a
   await form.locator('[name="title"]').fill('Intro call');
   // An existing type keeps its link name when the title changes.
   await expect(form.locator('[name="slug"]')).toHaveValue('30min');
-  await form.locator('[name="duration"]').selectOption('45');
+  // One length, 45 minutes, in place of 30: there is no default to pick.
+  await form.locator('[name="durations"][value="45"]').check();
+  await form.locator('[name="durations"][value="30"]').uncheck();
+  await expect(form.locator('[data-default-length]')).toBeHidden();
   await expect(form.locator('[data-location]')).toBeHidden();
   await form.locator('[name="locationKind"]').selectOption('phone');
   await expect(form.locator('[data-location]')).toBeVisible();
@@ -195,7 +198,8 @@ test('meeting types and available hours are edited on the page and published', a
   await form.locator('[name="title"]').fill('Quick chat');
   await expect(form.locator('[name="slug"]')).toHaveValue('quick-chat');
   await expect(form.locator('[data-slug-url]')).toHaveText(`${server.url}/meet/${HANDLE}/quick-chat`);
-  await form.locator('[name="duration"]').selectOption('15');
+  await form.locator('[name="durations"][value="15"]').check();
+  await form.locator('[name="durations"][value="30"]').uncheck();
   await form.locator('button[type=submit]').click();
   await expect(types).toHaveCount(2);
   await expect.poll(() => published().profile.types.map((x) => x.slug)).toEqual(['30min', 'quick-chat']);
@@ -310,6 +314,65 @@ test('free time, notice and limits are open in a section of their own, show on t
   await types().first().click();
   await expect(form().locator('[data-section="when"]')).toHaveAttribute('open', '');
   for (const [name, value] of Object.entries({ ...saved, bufferBefore: 15 })) await expect(form().locator(`[name="${name}"]`)).toHaveValue(String(value));
+});
+
+test('a meeting type offers several durations with a default, published and kept after a restart', async () => {
+  await pageOn();
+  await openBookingPage();
+  const types = () => page().locator('[data-a^="booking-type:"]:not([data-a="booking-type:new"])');
+  const form = () => page().locator('form[data-form="booking-type"]');
+  const box = (m) => form().locator(`[name="durations"][value="${m}"]`);
+  const checked = () => form().locator('[name="durations"]').evaluateAll((els) => els.filter((el) => el.checked).map((el) => Number(el.value)));
+  await types().first().click();
+  await expect(form().locator('.booking-lengths legend')).toHaveText('Available durations');
+  expect(await checked()).toEqual([30]);
+  // With one length there is no default to pick, and that one can't go.
+  await expect(form().locator('[data-default-length]')).toBeHidden();
+  await box(30).click();
+  await expect(box(30)).toBeChecked();
+  await expect(form().locator('[data-error]')).toHaveText('Pick at least one duration.');
+
+  // 15 minutes and an hour too: Default duration lists the three with 30 still picked, and the title Rukoo gave the
+  // type follows, as its 30 minutes no longer cover it.
+  await box(15).check();
+  await box(60).check();
+  await expect(form().locator('[data-error]')).toHaveText('');
+  const choice = form().locator('[name="duration"]');
+  await expect(choice).toBeVisible();
+  await expect(choice.locator('option')).toHaveText(['15 mins', '30 mins', '1 hr']);
+  await expect(choice).toHaveValue('30');
+  await expect(form().locator('[name="title"]')).toHaveValue('Meeting');
+  // A default that goes moves to the nearest length left.
+  await choice.selectOption('60');
+  await box(60).uncheck();
+  await expect(choice).toHaveValue('30');
+  await box(60).check();
+  await choice.selectOption('60');
+  await form().locator('button[type=submit]').click();
+  await expect(page().locator('h1')).toHaveText('Booking page');
+  await expect(types().first().locator('.title')).toHaveText('Meeting');
+  await expect(types().first().locator('.desc')).toHaveText('15 mins, 30 mins or 1 hr');
+  expect((await booking()).settings.types[0]).toMatchObject({ title: 'Meeting', duration: 60, durations: [15, 30, 60] });
+  await expect.poll(() => published().profile.types[0].durations).toEqual([15, 30, 60]);
+  expect(published().profile.types[0]).toMatchObject({ duration: 60, slotInterval: null });
+
+  // After a restart the editor has them; back to one length, the default goes and the title names that length.
+  await closeApp(app);
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await openBookingPage();
+  await expect(types().first().locator('.desc')).toHaveText('15 mins, 30 mins or 1 hr');
+  await types().first().click();
+  expect(await checked()).toEqual([15, 30, 60]);
+  await expect(form().locator('[name="duration"]')).toHaveValue('60');
+  await box(15).uncheck();
+  await box(30).uncheck();
+  await expect(form().locator('[data-default-length]')).toBeHidden();
+  await expect(form().locator('[name="title"]')).toHaveValue('60 minute meeting');
+  await form().locator('button[type=submit]').click();
+  await expect(types().first().locator('.title')).toHaveText('60 minute meeting');
+  await expect.poll(() => published().profile.types[0].durations).toEqual([60]);
+  expect(published().profile.types[0]).toMatchObject({ duration: 60, slotInterval: 60 });
 });
 
 test('requests are accepted or declined and bookings cancelled from the page; guest text stays text', async () => {

@@ -2,7 +2,8 @@
 // server (script-src 'self'). The pages work without it. With it:
 //   - a page that showed the host's zone, or the locale's clock, opens again in the browser's zone and with the clock
 //     this browser picked before. It runs in <head>, so the times never show in the wrong zone first.
-//   - days and months load without a full reload; the new times are announced through the page's live region.
+//   - days, months and the meeting's lengths load without a full reload; the new times are announced through the
+//     page's live region.
 // Any failure leaves the page as the server wrote it, and a failed load falls back to opening the link.
 //
 // The booking form's tz is always the zone the page was written in. It never takes the browser's zone directly: a
@@ -68,7 +69,18 @@ export const BOOKER_JS = String.raw`(function () {
   var swapped = false;
   var pending = null;
 
-  // A day or month without a full reload: the same address from the server, its booker put in place of this one.
+  // The same element from the page the server sent, in place of this page's own, when both have it.
+  function replace(doc, id) {
+    var mine = document.getElementById(id);
+    var theirs = doc.getElementById(id);
+    if (!mine || !theirs) return null;
+    theirs = document.importNode(theirs, true);
+    mine.parentNode.replaceChild(theirs, mine);
+    return theirs;
+  }
+
+  // A day, month or length without a full reload: the same address from the server, its booker put in place of this
+  // one.
   function swap(href, key) {
     var box = document.getElementById('booker');
     if (!box) {
@@ -91,22 +103,22 @@ export const BOOKER_JS = String.raw`(function () {
         next = document.importNode(next, true);
         next.setAttribute('data-swapped', '');
         box.parentNode.replaceChild(next, box);
-        // The zone picker sits beside the booker and keeps the month and day in its form, so it changes with it.
+        // The zone picker sits beside the booker and keeps the month and day in its form, so it changes with it; so do
+        // the lengths, whose links keep them too and mark the one picked.
         var zone = document.getElementById('zone');
-        var nextZone = doc.getElementById('zone');
-        if (zone && nextZone) {
-          nextZone = document.importNode(nextZone, true);
-          nextZone.open = zone.open;
-          zone.parentNode.replaceChild(nextZone, zone);
-        }
+        var open = zone ? zone.open : false;
+        var nextZone = replace(doc, 'zone');
+        if (nextZone) nextZone.open = open;
+        var lengths = replace(doc, 'lengths');
         history.pushState({ booker: true }, '', href);
         swapped = true;
         var times = next.querySelector('.times');
         var live = document.getElementById('live');
         if (live && times) live.textContent = times.getAttribute('data-status') || '';
-        var day = key !== 'prev' && key !== 'next';
+        var length = key.indexOf('length-') === 0;
+        var day = key !== 'prev' && key !== 'next' && !length;
         var safe = window.CSS && CSS.escape ? CSS.escape(key) : key;
-        var focus = next.querySelector('[data-swap="' + safe + '"]') || next.querySelector(day ? '#times-title' : '#month-title');
+        var focus = (length && lengths ? lengths : next).querySelector('[data-swap="' + safe + '"]') || next.querySelector(day ? '#times-title' : '#month-title');
         if (focus) {
           if (focus.tagName !== 'A') focus.setAttribute('tabindex', '-1');
           focus.focus();
@@ -129,7 +141,7 @@ export const BOOKER_JS = String.raw`(function () {
       if (!target || !target.closest) return;
       var clock = target.closest('a[data-clock]');
       if (clock) remember(clock.getAttribute('data-clock'));
-      var link = target.closest('#booker a[data-swap]');
+      var link = target.closest('#booker a[data-swap], #lengths a[data-swap]');
       if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       if (!window.fetch || !window.DOMParser || !window.history || !history.pushState) return;
       event.preventDefault();

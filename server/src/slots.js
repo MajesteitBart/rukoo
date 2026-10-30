@@ -7,16 +7,37 @@ const MINUTE = 60000;
 const pad = (n) => String(n).padStart(2, '0');
 export const PENDING_HOLD = 48 * 60 * 60 * 1000;
 
-// The meeting type a guest asked for: by slug (hidden types too), or the only visible one when none was named.
-// Returns { type } or { error: 'unknown_type' | 'type_required', visible: [slugs] }.
-export function resolveType(profile, slug) {
+// The lengths a guest can pick for a type, shortest first. A profile published before types had several lengths has
+// only duration.
+export function lengths(type) {
+  return Array.isArray(type.durations) && type.durations.length ? type.durations : [type.duration];
+}
+
+// The type as booked at one of its lengths: duration is that length, and so is the step between start times when the
+// host left it to follow the length (slotInterval null).
+export function withLength(type, minutes) {
+  if (minutes === type.duration) return type;
+  return { ...type, duration: minutes };
+}
+
+// The meeting type a guest asked for: by slug (hidden types too), or the only visible one when none was named. With
+// duration (minutes), the type at that length; without it, at its default length.
+// Returns { type } or { error: 'unknown_type' | 'type_required', visible: [slugs] } or { error: 'unknown_duration',
+// durations: [minutes] }.
+export function resolveType(profile, slug, duration = null) {
   const visible = profile.types.filter((t) => !t.hidden).map((t) => t.slug);
+  let type = null;
   if (slug) {
-    const type = profile.types.find((t) => t.slug === slug);
-    return type ? { type } : { error: 'unknown_type', visible };
+    type = profile.types.find((t) => t.slug === slug);
+    if (!type) return { error: 'unknown_type', visible };
+  } else if (visible.length === 1) {
+    type = profile.types.find((t) => t.slug === visible[0]);
+  } else {
+    return { error: visible.length ? 'type_required' : 'unknown_type', visible };
   }
-  if (visible.length === 1) return { type: profile.types.find((t) => t.slug === visible[0]) };
-  return { error: visible.length ? 'type_required' : 'unknown_type', visible };
+  if (duration === null || duration === undefined) return { type };
+  const offered = lengths(type);
+  return offered.includes(duration) ? { type: withLength(type, duration) } : { error: 'unknown_duration', durations: offered };
 }
 
 // Wall-clock candidates: every interval minutes from local midnight on each host-local day, as { start, date }, for
@@ -97,13 +118,13 @@ export function merge(list) {
   return out;
 }
 
-// A booking keeps its length when it moves, also after the host changed its type's duration. Its new time is checked
-// as its own type with the booking's length (end - start); buffers, interval, notice and limits stay the type's. A
-// booking of another type, or none, leaves the type as it is.
+// A booking keeps its length when it moves: the length the guest picked, also after the host changed its type's
+// lengths. Its new time is checked as its own type with the booking's length (end - start); buffers, notice and limits
+// stay the type's, and so does the step between start times unless it follows the length. A booking of another type,
+// or none, leaves the type as it is.
 export function movingType(type, booking) {
   if (!booking || booking.type !== type.slug) return type;
-  const duration = (booking.end - booking.start) / MINUTE;
-  return duration === type.duration ? type : { ...type, duration };
+  return withLength(type, (booking.end - booking.start) / MINUTE);
 }
 
 // When a pending request lapses: 48 hours after it was made, or its start minus the type's minimum notice.
@@ -123,7 +144,8 @@ export function openSlots({ profile, windows, busy, bookings, type, from, to, no
   const list = candidates({
     windows: windows[type.schedule] ?? [],
     timeZone: profile.timeZone,
-    interval: type.slotInterval,
+    // null: start times follow the meeting's length, the one picked when the type has several.
+    interval: type.slotInterval ?? type.duration,
     duration: type.duration,
     from: lo,
     to: hi

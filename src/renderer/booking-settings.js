@@ -85,6 +85,7 @@ const defaultType = (meet) => ({
   slug: '',
   title: '',
   duration: 30,
+  durations: [30],
   description: '',
   location: { kind: meet ? 'googleMeet' : 'none', label: '', value: '', public: false },
   bufferBefore: 0,
@@ -97,6 +98,25 @@ const defaultType = (meet) => ({
   hidden: false
 });
 const options = (list, value, label) => list.map((v) => `<option value="${esc(v)}"${String(v) === String(value) ? ' selected' : ''}>${esc(label(v))}</option>`).join('');
+// The lengths a guest can pick on a type, shortest first; a record from before there were several has only duration.
+const lengthsOf = (type) => (Array.isArray(type.durations) && type.durations.length ? [...type.durations].sort((a, b) => a - b) : [type.duration]);
+// "15 min, 30 min or 1 hr", in the interface language.
+const lengthsText = (list) => {
+  const parts = list.map((m) => duration(m * 60000));
+  try {
+    return new Intl.ListFormat(getLocale(), { type: 'disjunction' }).format(parts);
+  } catch (_) {
+    return parts.join(', ');
+  }
+};
+// The title Rukoo gives a type, in the page's language (src/main/booking/rules.js): "30 minute meeting" with one
+// length, "Meeting" with several. A title still equal to one Rukoo gave follows the lengths in the editor.
+const madeTitle = (locale, lengths) => (lengths.length > 1 ? translate(locale, 'booking.defaults.typeTitleAny') : translate(locale, 'booking.defaults.typeTitle', { minutes: lengths[0] }));
+const isMadeTitle = (locale, title, lengths) => title === madeTitle(locale, lengths) || lengths.some((m) => title === madeTitle(locale, [m]));
+// The default length when the old one is no longer offered: the nearest one, the shorter of two as near.
+const nearestLength = (lengths, old) => [...lengths].sort((a, b) => Math.abs(a - old) - Math.abs(b - old) || a - b)[0];
+// The Default duration choices: the lengths picked under Available durations.
+const defaultOptions = (lengths, value) => options(lengths, value, (m) => duration(m * 60000));
 
 // pages: what settings.js needs. row: its row helper; go, back and rerender: its navigation; current(): the page on
 // top; promptDialog: its text prompt.
@@ -423,7 +443,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   };
   // A row that wraps breaks after a dot, not before it.
   const typeDesc = (type) =>
-    [duration(type.duration * 60000), kindName(type.location), ...whenDesc(type), type.confirm ? t('settings.booking.typeConfirm') : '', type.hidden ? t('settings.booking.typeHidden') : ''].filter(Boolean).join(' · ');
+    [lengthsText(lengthsOf(type)), kindName(type.location), ...whenDesc(type), type.confirm ? t('settings.booking.typeConfirm') : '', type.hidden ? t('settings.booking.typeHidden') : ''].filter(Boolean).join(' · ');
   const hoursValue = () => {
     const s = state.settings || {};
     const calendar = app && app.settings && app.settings.calendar;
@@ -583,13 +603,23 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const meet = meetAllowed();
     const loc = d.location;
     const showValue = loc.kind !== 'none' && loc.kind !== 'googleMeet';
-    const lengths = LENGTHS.includes(d.duration) ? LENGTHS : [...LENGTHS, d.duration].sort((a, b) => a - b);
+    // Every length the editor offers, with any the type has that isn't among them.
+    const picked = lengthsOf(d);
+    const lengths = [...new Set([...LENGTHS, ...picked])].sort((a, b) => a - b);
     const base = (state.url || '').replace(/\/$/, '');
     return `<div class="card"><form class="form booking-type" data-form="booking-type" novalidate>
       <label>${esc(t('settings.booking.typeTitle'))}<input type="text" name="title" value="${esc(d.title)}" maxlength="100" autocomplete="off"/></label>
       <label>${esc(t('settings.booking.typeSlug'))}<input type="text" name="slug" value="${esc(d.slug)}" maxlength="40" spellcheck="false" autocomplete="off" aria-describedby="booking-slug-url"/>
         <span class="field-help" id="booking-slug-url" data-slug-url>${esc(`${base}/${d.slug}`)}</span></label>
-      <label>${esc(t('settings.booking.typeLength'))}<select name="duration">${options(lengths, d.duration, (m) => duration(m * 60000))}</select></label>
+      <fieldset class="booking-lengths" aria-describedby="booking-lengths-help">
+        <legend>${esc(t('settings.booking.typeLengths'))}</legend>
+        <div class="booking-length-options">${lengths
+          .map((m) => `<label class="booking-length"><input type="checkbox" name="durations" value="${m}"${picked.includes(m) ? ' checked' : ''}/><span>${esc(duration(m * 60000))}</span></label>`)
+          .join('')}</div>
+        <span class="field-help" id="booking-lengths-help">${esc(t('settings.booking.typeLengthsHelp'))}</span>
+      </fieldset>
+      <label data-default-length ${picked.length > 1 ? '' : 'hidden'}>${esc(t('settings.booking.typeDefaultLength'))}<select name="duration" aria-describedby="booking-default-help">${defaultOptions(picked, d.duration)}</select>
+        <span class="field-help" id="booking-default-help">${esc(t('settings.booking.typeDefaultLengthHelp'))}</span></label>
       <label>${esc(t('settings.booking.typeDescription'))}<textarea name="description" maxlength="500" rows="3">${esc(d.description)}</textarea></label>
       <label>${esc(t('settings.booking.location'))}<select name="locationKind">${KINDS.map(
         (k) => `<option value="${k}"${k === loc.kind ? ' selected' : ''}${k === 'googleMeet' && !meet && loc.kind !== 'googleMeet' ? ' disabled' : ''}>${esc(KIND_LABEL[k]())}</option>`
@@ -637,11 +667,18 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const f = new FormData(form);
     const num = (name, fallback) => (f.get(name) === '' || f.get(name) === null ? fallback : Number(f.get(name)));
     const kind = String(f.get('locationKind') || 'none');
+    const durations = f
+      .getAll('durations')
+      .map(Number)
+      .sort((a, b) => a - b);
+    const chosen = num('duration', durations[0]);
     return {
       ...edit.draft,
       title: String(f.get('title') || '').trim(),
       slug: String(f.get('slug') || '').trim(),
-      duration: num('duration', 30),
+      durations,
+      // The default is one of the lengths picked; the field follows them as they change (fill()).
+      duration: durations.includes(chosen) ? chosen : durations[0],
       description: String(f.get('description') || '').trim(),
       location: {
         kind,
@@ -867,6 +904,29 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
         if (showValue) typeForm.querySelector('[name="locationValue"]').placeholder = KIND_VALUE[kind]();
       });
       for (const el of typeForm.querySelectorAll('details[data-section]')) el.addEventListener('toggle', () => edit && (edit.open[el.dataset.section] = el.open));
+      // Available durations: at least one stays picked, Default duration lists the ones picked and shows only with
+      // several, and a title Rukoo gave follows them ("30 minute meeting", "Meeting").
+      let shown = lengthsOf(edit.draft);
+      typeForm.addEventListener('change', (e) => {
+        if (e.target.name !== 'durations') return;
+        const boxes = [...typeForm.querySelectorAll('[name="durations"]')];
+        const error = typeForm.querySelector('[data-error]');
+        if (!boxes.some((b) => b.checked)) {
+          e.target.checked = true;
+          if (error) error.textContent = t('settings.booking.lengthsNeeded');
+          return;
+        }
+        if (error && error.textContent === t('settings.booking.lengthsNeeded')) error.textContent = '';
+        const next = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+        const select = typeForm.querySelector('[name="duration"]');
+        const old = Number(select.value);
+        select.innerHTML = defaultOptions(next, next.includes(old) ? old : nearestLength(next, old));
+        typeForm.querySelector('[data-default-length]').hidden = next.length < 2;
+        const locale = (state.settings && state.settings.locale) || getLanguage();
+        const title = typeForm.querySelector('[name="title"]');
+        if (isMadeTitle(locale, title.value.trim(), shown)) title.value = madeTitle(locale, next);
+        shown = next;
+      });
     }
     const hoursForm = page.querySelector('form[data-form="booking-hours"]');
     if (hoursForm && hours) {
@@ -972,6 +1032,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const type = readType(form);
     const stop = (field, message) => fail(form, { field, message });
     if (!type.title) return stop('title', t('settings.booking.titleNeeded'));
+    if (!type.durations.length) return stop('durations', t('settings.booking.lengthsNeeded'));
     if (!SLUG.test(type.slug) || RESERVED_SLUGS.has(type.slug)) return stop('slug', t('settings.booking.slugHelp'));
     const types = clone(state.settings.types || []);
     if (types.some((x, i) => x.slug === type.slug && i !== edit.index)) return stop('slug', t('settings.booking.slugTaken'));

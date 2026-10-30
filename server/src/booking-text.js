@@ -41,6 +41,7 @@ export const TEXT = {
     'landing.noWeek': 'No open times in the next {days} days.',
 
     'type.minutes': '{n} min',
+    'type.hours': '{n} h',
     'type.approval': '{host} confirms each booking',
     'type.location.googleMeet': 'Google Meet',
     'type.location.phone': 'Phone call',
@@ -66,6 +67,7 @@ export const TEXT = {
     'booker.clock': 'Clock',
     'booker.clock12': '12 h',
     'booker.clock24': '24 h',
+    'booker.length': 'Length',
 
     'form.title': 'Your details',
     'form.filled': 'Your assistant filled this in. Check the details and press Book.',
@@ -87,6 +89,7 @@ export const TEXT = {
     'form.noNearest': 'There are no other open times right now.',
     'form.other': 'Pick another time',
     'form.badSlot': 'That time couldn’t be read. Pick a time below.',
+    'form.badLength': 'That length isn’t offered any more. Pick a length and a time below.',
     'form.already': 'You already booked this time with {email}. The page you saw after booking has the link to change it, and the invitation comes from {host}’s calendar.',
     'form.alreadyNoInvitation': 'You already booked this time with {email}. The page you saw after booking has the link to change it.',
 
@@ -174,6 +177,7 @@ export const TEXT = {
     'landing.noWeek': 'De komende {days} dagen zijn er geen tijden vrij.',
 
     'type.minutes': '{n} min',
+    'type.hours': '{n} uur',
     'type.approval': '{host} bevestigt elke afspraak zelf',
     'type.location.googleMeet': 'Google Meet',
     'type.location.phone': 'Telefoongesprek',
@@ -199,6 +203,7 @@ export const TEXT = {
     'booker.clock': 'Klok',
     'booker.clock12': '12 uur',
     'booker.clock24': '24 uur',
+    'booker.length': 'Duur',
 
     'form.title': 'Je gegevens',
     'form.filled': 'Je assistent heeft dit ingevuld. Controleer de gegevens en klik op Boeken.',
@@ -220,6 +225,7 @@ export const TEXT = {
     'form.noNearest': 'Er zijn nu geen andere tijden vrij.',
     'form.other': 'Kies een andere tijd',
     'form.badSlot': 'Die tijd kon niet worden gelezen. Kies hieronder een tijd.',
+    'form.badLength': 'Die duur wordt niet meer aangeboden. Kies hieronder een duur en een tijd.',
     'form.already': 'Je hebt deze tijd al geboekt met {email}. Op de pagina die je na het boeken zag, staat de link om de afspraak te wijzigen. De uitnodiging komt uit de agenda van {host}.',
     'form.alreadyNoInvitation': 'Je hebt deze tijd al geboekt met {email}. Op de pagina die je na het boeken zag, staat de link om de afspraak te wijzigen.',
 

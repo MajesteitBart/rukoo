@@ -12,6 +12,7 @@ import {
   dayText,
   findBooking,
   isoIn,
+  lengthsText,
   links,
   listSlots,
   loadPage,
@@ -20,6 +21,7 @@ import {
   visibleTypes,
   whenText
 } from './public.js';
+import { lengths } from './slots.js';
 
 const GUEST_RESCHEDULES = 2;
 
@@ -55,13 +57,21 @@ function notAccepting(page) {
   return answer(409, errorBody('not_accepting', message, extra), {}, name);
 }
 
-function slotJson(l, slug, start, duration, zone) {
+// type: the type at the length the start is for. named: that length when it isn't the type's default, so the
+// prepared link opens the form at it.
+function slotJson(l, type, start, zone, named = null) {
   return {
     start: isoIn(start, zone),
     start_utc: utcIso(start),
-    end: isoIn(start + duration * 60000, zone),
-    book_url: l.prepare(slug, start)
+    end: isoIn(start + type.duration * 60000, zone),
+    book_url: l.prepare(type.slug, start, named)
   };
+}
+
+// The length a type's starts are for when it isn't the type's default length as published, else null.
+function namedLength(page, type) {
+  const listed = page?.profile?.types.find((t) => t.slug === type.slug);
+  return listed && listed.duration !== type.duration ? type.duration : null;
 }
 
 // Turns a failure from the Booking object (or public.js) into the public answer.
@@ -84,9 +94,17 @@ export function failure(result, ctx) {
       );
     case 'type_required':
       return answer(400, errorBody('invalid', `This page has several meeting types. Send type as one of: ${result.visible.join(', ')}.`, { field: 'type' }));
+    case 'unknown_duration':
+      return answer(
+        400,
+        errorBody('invalid', `This meeting type is ${lengthsText(result.durations)} long. Send duration as one of: ${result.durations.join(', ')}, or leave it out for the default.`, {
+          field: 'duration'
+        })
+      );
     case 'slot_taken': {
       const type = result.type;
-      const alternatives = type ? (result.alternatives ?? []).map((s) => slotJson(l, type.slug, s, type.duration, zone ?? result.page.profile.timeZone)) : [];
+      const named = type ? namedLength(result.page, type) : null;
+      const alternatives = type ? (result.alternatives ?? []).map((s) => slotJson(l, type, s, zone ?? result.page.profile.timeZone, named)) : [];
       const message = alternatives.length
         ? "That time isn't open (any more). Pick one of the alternatives and send its start exactly as listed."
         : "That time isn't open (any more), and there are no other open times right now.";
@@ -110,6 +128,7 @@ function typeJson(l, t) {
     slug: t.slug,
     title: t.title,
     duration: t.duration,
+    durations: lengths(t),
     description: t.description,
     location,
     needs_approval: t.needsApproval,
@@ -157,10 +176,12 @@ export async function getSlots(env, url, handle, params) {
   const l = links(env, url, handle);
   if (!result.ok) return failure(result, { l });
   const { type, timeZone, page } = result;
-  const slots = result.starts.map((s) => slotJson(l, type.slug, s, type.duration, timeZone));
+  const named = namedLength(page, type);
+  const slots = result.starts.map((s) => slotJson(l, type, s, timeZone, named));
   let message;
   if (slots.length) {
-    message = `${slots.length} open time${slots.length === 1 ? '' : 's'}. Send one of these start values exactly as listed to book.`;
+    const length = lengths(type).length > 1 ? ` for ${type.duration} minutes` : '';
+    message = `${slots.length} open time${slots.length === 1 ? '' : 's'}${length}. Send one of these start values exactly as listed${named ? `, with duration ${named},` : ''} to book.`;
   } else {
     message = `No open times between ${result.from} and ${result.to}.${result.nextFrom ? ` Try from ${result.nextFrom}.` : ''}`;
     if (page.profile.contact) message += ` ${page.profile.name} left a note for this case; see contact.`;
@@ -170,6 +191,7 @@ export async function getSlots(env, url, handle, params) {
     {
       type: type.slug,
       duration: type.duration,
+      durations: lengths(type),
       time_zone: timeZone,
       from: result.from,
       to: result.to,
@@ -192,6 +214,7 @@ export function bookingJson(booking, page, zone) {
     status: booking.status,
     type: booking.type,
     type_title: type ? type.title : booking.type,
+    duration: Math.round((booking.end - booking.start) / 60000),
     start: isoIn(booking.start, zone),
     start_utc: utcIso(booking.start),
     end: isoIn(booking.end, zone),

@@ -5885,9 +5885,25 @@
     "message": "Another meeting type already uses this name.",
     "description": "Meeting type editor: error for a name in the link another type has. src/renderer/booking-settings.js"
   },
-  "settings.booking.typeLength": {
-    "message": "Length",
-    "description": "Meeting type editor: the meeting's length. src/renderer/booking-settings.js"
+  "settings.booking.typeLengths": {
+    "message": "Available durations",
+    "description": "Meeting type editor: heading over the lengths a guest can pick from on the booking page, each a toggle such as 15 min or 1 hr. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeLengthsHelp": {
+    "message": "Guests pick one on the booking page. With one, the page shows no choice.",
+    "description": "Meeting type editor: help under Available durations. src/renderer/booking-settings.js"
+  },
+  "settings.booking.lengthsNeeded": {
+    "message": "Pick at least one duration.",
+    "description": "Meeting type editor: error when no duration is selected under Available durations. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeDefaultLength": {
+    "message": "Default duration",
+    "description": "Meeting type editor: which of the available durations is selected when a guest opens the booking page. Shown when more than one is selected. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeDefaultLengthHelp": {
+    "message": "Selected when a guest opens the page, and the length Insert my free times uses.",
+    "description": "Meeting type editor: help under Default duration. Insert my free times is the composer's calendar menu item. src/renderer/booking-settings.js"
   },
   "settings.booking.typeDescription": {
     "message": "Description",
@@ -6650,8 +6666,12 @@
     "description": "Booking page error: the list of bookings from the account server breaks the protocol's order rules. src/main/booking/index.js (fetchRows)."
   },
   "booking.defaults.typeTitle": {
-    "message": "30 minute meeting",
-    "description": "Booking page: title of the first meeting type, in the booking page's language. src/main/booking/rules.js (defaultType)."
+    "message": "{minutes} minute meeting",
+    "description": "Booking page: the title Rukoo gives a meeting type of one length, in the booking page's language, such as the first type's \"30 minute meeting\". minutes is the length. The event of a booking at another length gets this title with that length. src/main/booking/rules.js (defaultType, titleFor); src/renderer/booking-settings.js (meeting type editor)."
+  },
+  "booking.defaults.typeTitleAny": {
+    "message": "Meeting",
+    "description": "Booking page: the title Rukoo gives a meeting type once guests can pick from several lengths, replacing a title such as \"30 minute meeting\" it made before, in the booking page's language. src/renderer/booking-settings.js (meeting type editor)."
   },
   "booking.event.title": {
     "message": "{type}: {host} and {guest}",
