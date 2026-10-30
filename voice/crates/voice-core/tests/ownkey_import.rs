@@ -200,7 +200,18 @@ fn live_transcription_allow_carries_consent_over() {
     );
     let mut cfg = Config::defaults(false);
     let report = import(&path).unwrap().apply(&mut cfg, false);
-    assert_eq!(cfg.meetings_audio_provider, "same");
+    // Voice has no "same as dictation": the import resolves it to the provider it followed.
+    assert_eq!(cfg.meetings_audio_provider, "mistral");
+    assert_eq!(cfg.meetings_audio_api_key, "k");
+    assert_eq!(
+        cfg.meetings_audio_endpoint,
+        "https://api.mistral.ai/v1/audio/transcriptions"
+    );
+    assert_eq!(cfg.meetings_audio_model, cfg.audio_model);
+    assert_eq!(
+        report.item("meetings").unwrap().text,
+        "Meeting transcription Mistral, keep audio 7 days after transcription"
+    );
     assert_eq!(
         cfg.meetings_transcription_consent,
         Some(Consent {

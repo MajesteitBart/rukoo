@@ -420,6 +420,26 @@ impl Config {
         Duration::from_secs_f64(self.local_model_idle_timeout_minutes.max(0.0) * 60.0)
     }
 
+    /// Replaces "same as dictation" with the dictation provider it follows, its key, endpoint
+    /// and model. Voice has no "same" choice (decision 10): it would move meeting audio to the
+    /// cloud whenever someone changed the dictation provider. Consent stays valid, because it
+    /// names the same provider and host. Returns whether anything changed.
+    pub fn resolve_same_meeting_provider(&mut self) -> bool {
+        if self.meetings_audio_provider != SAME_AS_DICTATION {
+            return false;
+        }
+        self.meetings_audio_provider = self.audio_provider.clone();
+        self.meetings_audio_api_key = self.audio_api_key.clone();
+        if self.audio_provider == "orukeet" {
+            self.meetings_audio_endpoint.clear();
+            self.meetings_audio_model = ORUKEET_MODEL_ID.into();
+        } else {
+            self.meetings_audio_endpoint = self.audio_endpoint.clone();
+            self.meetings_audio_model = self.audio_model.clone();
+        }
+        true
+    }
+
     /// Whether meeting audio may go to the meeting provider.
     pub fn meeting_consent(&self) -> ConsentState {
         consent::state(

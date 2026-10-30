@@ -248,8 +248,19 @@ impl LocalEngine {
         lock(&self.inner.options).registry = registry;
     }
 
+    /// Where the model is looked for now.
+    pub fn registry(&self) -> ModelRegistry {
+        lock(&self.inner.options).registry.clone()
+    }
+
     pub fn set_idle_timeout(&self, timeout: Duration) {
         lock(&self.inner.options).idle_timeout = timeout;
+    }
+
+    /// Starts the worker and loads the model now, waiting for the answer. Settings uses it to
+    /// check a model before it becomes the dictation provider, so a broken model never does.
+    pub fn load(&self) -> Result<(), ProviderError> {
+        self.with_worker(|_, _| Ok(()))
     }
 
     /// Starts the worker and loads the model in the background, so loading overlaps a

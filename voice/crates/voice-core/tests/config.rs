@@ -571,3 +571,34 @@ fn provider_form_problems() {
         None
     );
 }
+
+#[test]
+fn same_as_dictation_resolves_to_the_dictation_provider() {
+    let mut cfg = Config::defaults(false);
+    cfg.audio_api_key = "audio-key".into();
+    cfg.audio_model = "voxtral-mini-latest".into();
+    cfg.switch_meeting_provider("same");
+    cfg.meetings_transcription_consent = Some(Consent {
+        provider: "mistral".into(),
+        host: "api.mistral.ai".into(),
+    });
+    assert!(cfg.resolve_same_meeting_provider());
+    assert_eq!(cfg.meetings_audio_provider, "mistral");
+    assert_eq!(cfg.meetings_audio_api_key, "audio-key");
+    assert_eq!(cfg.meetings_audio_endpoint, cfg.audio_endpoint);
+    assert_eq!(cfg.meetings_audio_model, "voxtral-mini-latest");
+    // The agreement named this provider and host, so it still holds.
+    assert_eq!(cfg.meeting_consent(), ConsentState::Granted);
+    // A second call changes nothing, and a dictation change no longer moves meetings.
+    assert!(!cfg.resolve_same_meeting_provider());
+    cfg.switch_audio_provider("openai");
+    assert_eq!(cfg.meeting_audio().provider, "mistral");
+
+    let mut local = Config::defaults(false);
+    local.switch_audio_provider("orukeet");
+    local.switch_meeting_provider("same");
+    assert!(local.resolve_same_meeting_provider());
+    assert_eq!(local.meetings_audio_provider, "orukeet");
+    assert_eq!(local.meetings_audio_endpoint, "");
+    assert_eq!(local.meetings_audio_model, "orukeet-onnx-int8");
+}

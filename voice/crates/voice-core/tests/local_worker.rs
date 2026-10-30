@@ -434,6 +434,34 @@ fn preload_starts_loading_before_the_audio_arrives() {
     assert_eq!(echo[3], format!("pid {pid}"));
 }
 
+fn load_checks_the_model_before_any_audio() {
+    let (_data, engine) = engine_with_model("load-now");
+    engine.load().unwrap();
+    let status = engine.status();
+    assert_eq!(status.state, LocalState::Loaded);
+    assert!(status.worker_pid.is_some());
+    // The next transcription reuses that load.
+    assert_eq!(echo(&engine, &Hints::default())[2], "loads 1");
+
+    let data = TempDir::new("load-bad");
+    let bad = options(data.path(), BAD_TOKENS);
+    install_model(&bad.registry.own_dir(&bad.model), BAD_TOKENS);
+    let broken = LocalEngine::new(bad);
+    let error = broken.load().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::LocalMissingModel);
+    assert_eq!(broken.status().state, LocalState::Error);
+
+    let empty = TempDir::new("load-missing");
+    let without_model = options(empty.path(), GOOD_TOKENS);
+    let registry = without_model.registry.clone();
+    let missing = LocalEngine::new(without_model);
+    assert_eq!(
+        missing.load().unwrap_err().kind,
+        ErrorKind::LocalMissingModel
+    );
+    assert_eq!(missing.registry(), registry);
+}
+
 fn a_new_model_folder_reloads_in_the_same_worker() {
     let (data, engine) = engine_with_model("folder");
     let before = echo(&engine, &Hints::default());
@@ -624,6 +652,10 @@ fn run_tests() {
         (
             "preload_starts_loading_before_the_audio_arrives",
             preload_starts_loading_before_the_audio_arrives,
+        ),
+        (
+            "load_checks_the_model_before_any_audio",
+            load_checks_the_model_before_any_audio,
         ),
         (
             "a_new_model_folder_reloads_in_the_same_worker",

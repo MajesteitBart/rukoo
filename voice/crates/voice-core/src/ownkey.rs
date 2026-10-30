@@ -270,11 +270,9 @@ impl ImportResult {
         cfg.meetings_audio_model = ownkey.meetings_audio_model.clone();
         cfg.meetings_retention = ownkey.meetings_retention;
         cfg.meetings_auto_speakers = ownkey.meetings_auto_speakers;
-        let meeting_choice = if ownkey.meetings_audio_provider == SAME_AS_DICTATION {
-            "same as dictation".to_string()
-        } else {
-            provider_label(&ownkey.meetings_audio_provider).to_string()
-        };
+        // Voice has no "same as dictation" (voice/ui/API.md): it becomes the provider it pointed at.
+        cfg.resolve_same_meeting_provider();
+        let meeting_choice = provider_label(&cfg.meetings_audio_provider).to_string();
         report.add(
             "meetings",
             true,
