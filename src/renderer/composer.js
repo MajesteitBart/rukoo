@@ -6,6 +6,7 @@ import { api, esc, $, toast, dialog, confirmDialog, showMenu, person, formatAddr
 import { fillFrame } from './mailframe.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
 import { FREE_LENGTHS, FREE_RANGES, pcZone, freeRange, zoneOptions, duration } from './calendar-shared.js';
+import { mountMentions, outgoingHtml } from './mentions.js';
 
 const EMAIL_RE = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
 // Autosave this long after the last change.
@@ -50,7 +51,7 @@ const addressList = (list) => (Array.isArray(list) ? uniq(list.slice(0, 100).map
 // A reopened draft goes into this document itself, so it is parsed in an inert
 // document and reduced to plain content: no style sheets, scripts, form controls,
 // app class names, data attributes (the composer acts on those) or fixed positioning
-// that could cover the editor.
+// that could cover the editor. The signature and @-mentions keep their class.
 function cleanDraftHtml(html) {
   const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
   doc.querySelectorAll('style, link, meta, script, noscript, iframe, frame, object, embed, base, form, title, template, button, input, select, textarea').forEach((n) => n.remove());
@@ -58,7 +59,7 @@ function cleanDraftHtml(html) {
     for (const attr of [...el.attributes]) {
       const name = attr.name.toLowerCase();
       if (name.startsWith('on') || name.startsWith('data-') || name === 'id' || name === 'contenteditable' || name === 'tabindex') el.removeAttribute(attr.name);
-      else if (name === 'class' && attr.value !== 'signature') el.removeAttribute(attr.name);
+      else if (name === 'class' && attr.value !== 'signature' && attr.value !== 'mention') el.removeAttribute(attr.name);
       else if ((name === 'href' || name === 'src') && /^\s*(javascript|vbscript|data:text\/html)/i.test(attr.value)) el.removeAttribute(attr.name);
     }
     if (el.style && /fixed|sticky|absolute/i.test(el.style.position)) el.style.position = '';
@@ -1093,8 +1094,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
 
   // ----- saving, sending, closing -----
 
-  function payload(attachmentList = st.attachments) {
-    let html = editor.innerHTML;
+  // sending: the payload for Send rather than a draft, which links mentions only to people in To and Cc.
+  function payload(attachmentList = st.attachments, { sending = false } = {}) {
+    let html = outgoingHtml(editor, sending ? new Set([...st.to, ...st.cc].map((a) => String(a.address || '').toLowerCase())) : null);
     if ((st.original || st.quoted) && st.include) {
       const head = esc(st.original ? quoteHeader(st.original) : st.quoted.head).replace(/\n/g, '<br>');
       const quoted = st.original ? st.original.html || '' : st.quoted.html;
@@ -1263,7 +1265,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       page.inert = true;
       await saving;
       await settleAttachments();
-      await api('send', payload());
+      await api('send', payload(undefined, { sending: true }));
       done = true;
       gone = true;
       finish(inline ? t('composer.status.sent') : null);
@@ -1533,6 +1535,22 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     page.dispatchEvent(new CustomEvent('agent-undo', { bubbles: true, detail: { key, writeIds } }));
     return true;
   }
+
+  // ----- @-mentions -----
+
+  mountMentions({
+    editor,
+    st,
+    getData: () => data,
+    listen,
+    onClose: (fn) => cleanups.push(fn),
+    changed,
+    addCc: (person) => {
+      st.cc.push(person);
+      showField('cc', true);
+      renderRecipients('cc');
+    }
+  });
 
   if (!inline) {
     // The window's close button: keep the window open while there are unsaved changes and ask instead.

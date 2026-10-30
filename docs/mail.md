@@ -57,6 +57,10 @@ Signatures are plain text or formatted. Paste one from another mail app or a web
 
 The composer's calendar button inserts your [booking link](booking.md) or a list of your free times, and a line under your signature can carry the link.
 
+Type `@` and a name in the text to mention someone. The suggestions start with the people in the thread: the email's recipients, the people on the email you answer, and the rest of the conversation as far as Rukoo has synced it. People from the rest of your synced mail come after them. Arrow keys move through the list, and Enter or Tab picks. Picking someone puts "@Name" in the text, or the part of the address before the @ for someone without a name, and adds them to Cc if they aren't on the email yet. Someone already in To, Cc or Bcc only gets the mention. Deleting a mention leaves the recipients as they are. An email address you type, quoted mail and your signature never open the list. A comma or colon typed right after a mention replaces the space after it, so "@Bob:" comes out as written.
+
+In the sent email a mention is a mailto: link to that person, as Outlook and Gmail send them, and the plain-text part reads "@Name". Only people in To or Cc get the link. A mention of someone in Bcc goes out as plain text without their address, so the other recipients don't see it. Saved drafts keep their mentions.
+
 ## Swipe, quick actions and keyboard
 
 Settings → General → Swipe and quick actions chooses what a swipe right and a swipe left do on touch screens: mark read or unread, archive, delete, star, or move to a folder or a category. It also adds up to four buttons that show on an email under the mouse.

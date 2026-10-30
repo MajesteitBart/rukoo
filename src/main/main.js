@@ -602,6 +602,7 @@ const api = {
   list: (opts) => engine.listMessages(opts),
   counts: (scope) => engine.counts(scope),
   contacts: () => engine.contacts(),
+  threadContacts: (accountId, ids) => engine.threadContacts(accountText(accountId, 200), Array.isArray(ids) ? ids.slice(0, 200).map((id) => accountText(id, 1000)) : []),
   get: (id) => engine.getMessage(id),
   setFlags: (id, flags) => engine.setFlags(id, flags),
   archive: (id) => engine.archive(id),

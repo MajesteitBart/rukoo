@@ -2635,6 +2635,34 @@
     "message": "Insert link",
     "description": "composer > link. src/renderer/composer.js (insertLink)"
   },
+  "composer.mentions.addedCc": {
+    "message": "{name} added to Cc",
+    "description": "Toast after picking someone to @-mention who wasn't a recipient yet: the composer adds them to Cc. {name} is the person's name, or their email address when there is none. src/renderer/mentions.js (pick)"
+  },
+  "composer.mentions.addsCc": {
+    "message": "Adds to Cc",
+    "description": "Read by screen readers for a person in the @-mention suggestions who isn't a recipient yet: picking them adds them to Cc. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.hint": {
+    "message": "People who aren't on the email yet go to Cc",
+    "description": "Quiet line under the @-mention suggestions in the composer, shown while picking someone would add them as a recipient. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.inBcc": {
+    "message": "Already in Bcc",
+    "description": "Tooltip of the Bcc tag on a person in the @-mention suggestions who is already a Bcc recipient, and read by screen readers. Picking them only inserts the mention. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.inCc": {
+    "message": "Already in Cc",
+    "description": "Tooltip of the Cc tag on a person in the @-mention suggestions who is already a Cc recipient, and read by screen readers. Picking them only inserts the mention. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.inTo": {
+    "message": "Already in To",
+    "description": "Tooltip of the To tag on a person in the @-mention suggestions who is already a To recipient, and read by screen readers. Picking them only inserts the mention. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.label": {
+    "message": "People to mention",
+    "description": "Accessible name of the suggestion list that opens when you type @ and a name in the composer's text. src/renderer/mentions.js (draw)"
+  },
   "composer.quote.date": {
     "message": "Date: {date}",
     "description": "composer > quote. src/renderer/composer.js (quoteHeader)"

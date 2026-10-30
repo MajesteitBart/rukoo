@@ -62,6 +62,7 @@ The renderer runs sandboxed with context isolation. It can only call the methods
 | `src/renderer/app.js` | The main window: sidebar, list, reading pane, selection, undo |
 | `src/renderer/composer.js` | The editor, inline or in a window, with autosave, the calendar button and the booking link under the signature |
 | `src/renderer/compose.js` | The compose window around the editor |
+| `src/renderer/mentions.js`, `mention-match.js` | @-mentions in the editor: the suggestion list, the mention and the Cc it adds; which text is a mention and who fits it |
 | `src/renderer/calendar.js` | The month, week, day and upcoming views, the grid and its drags, the sidebar and the keys |
 | `src/renderer/calendar-shared.js`, `calendar-event.js` | State and date helpers the calendar views share; the event card, the quick popover and the event dialog |
 | `src/renderer/calendar-free.js`, `calendar-settings.js`, `booking-settings.js` | The availability panel, Settings → Calendar and Settings → Booking page |
