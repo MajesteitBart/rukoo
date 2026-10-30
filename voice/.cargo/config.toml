@@ -1,0 +1,4 @@
+# Link the C runtime statically so the recorder and the local worker run without the VC++ redistributable.
+# tauri-build already does the same for the app.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

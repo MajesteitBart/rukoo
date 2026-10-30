@@ -11,6 +11,10 @@ name = "voice-audio"
 version = "0.1.0"
 
 [[package]]
+name = "voice-bridge"
+version = "0.1.0"
+
+[[package]]
 name = "voice-core"
 version = "0.1.0"
 

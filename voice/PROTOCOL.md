@@ -1,6 +1,6 @@
 # Rukoo Voice bridge protocol, version 1
 
-Rukoo Voice records meetings and Rukoo shows them. This document is the contract between the two: how Rukoo finds Voice, how it connects, and the events and commands they exchange. Voice implements it in `voice/crates/voice-protocol` and `voice/crates/voice-meetings`, Rukoo in `src/main/voice/`. A change here needs the matching change on both sides in the same pull request, and both sides test against the same examples in [fixtures/protocol-vectors.json](fixtures/protocol-vectors.json).
+Rukoo Voice records meetings and Rukoo shows them. This document is the contract between the two: how Rukoo finds Voice, how it connects, and the events and commands they exchange. Voice implements it in `voice/crates/voice-protocol` and `voice/crates/voice-bridge`, Rukoo in `src/main/voice/`. A change here needs the matching change on both sides in the same pull request, and both sides test against the same examples in [fixtures/protocol-vectors.json](fixtures/protocol-vectors.json).
 
 Your agent never talks to Voice. It reaches a meeting through Rukoo's MCP tools.
 
@@ -49,7 +49,7 @@ An empty variable counts as unset. A Voice started with `RUKOO_VOICE_DATA_DIR` a
 
 ## Connecting
 
-Rukoo opens `ws://127.0.0.1:<port>/bridge` and sends `hello` as its first message, within 5 seconds:
+Rukoo opens `ws://127.0.0.1:<port>/bridge` and sends `hello` as its first message, within 5 seconds. Voice refuses the upgrade with HTTP 403 when the request carries an `Origin` header with an `http` or `https` address, because any web page in a browser can try to open a socket on `127.0.0.1`. Rukoo connects from its main process, which sends no `Origin`.
 
 ```json
 { "type": "hello", "protocol": 1, "token": "…", "client": "rukoo", "clientVersion": "2.2.0", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041 }
