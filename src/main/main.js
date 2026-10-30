@@ -385,18 +385,22 @@ function forwardEditMenu(w) {
   contents.on('context-menu', async (_event, params) => {
     if (!params.isEditable) return;
     const word = params.misspelledWord || '';
-    const suggestions = word ? (params.dictionarySuggestions || []).slice(0, 5) : [];
-    spelling.set(contents, { word, suggestions });
+    const found = { word, suggestions: word ? (params.dictionarySuggestions || []).slice(0, 5) : [] };
+    spelling.set(contents, found);
     // Paste is on when the clipboard holds something. A clipboard that can't be read leaves it on, as Ctrl+V would
     // still try.
-    const types = await clipboard.read().then(
-      (items) => items.flatMap((item) => item.types),
-      () => null
-    );
-    if (contents.isDestroyed()) return;
+    const types = await Promise.resolve()
+      .then(() => clipboard.read())
+      .then(
+        (items) => items.flatMap((item) => item.types),
+        () => null
+      );
+    // A later right-click came in while the clipboard was read: only its answer goes, so the window never pairs this
+    // word with the place it was right-clicked last.
+    if (contents.isDestroyed() || spelling.get(contents) !== found) return;
     contents.send('mail:event', {
       type: 'edit-menu',
-      payload: { word, suggestions, canPaste: !types || types.length > 0, canPastePlain: !types || types.includes('text/plain') }
+      payload: { ...found, canPaste: !types || types.length > 0, canPastePlain: !types || types.includes('text/plain') }
     });
   });
 }

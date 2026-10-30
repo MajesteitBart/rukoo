@@ -34,7 +34,8 @@ test.afterEach(async () => {
   removeDir(dataDir);
 });
 
-// The spelling main reports for the next right-clicks in every open window: { word, suggestions }, or null for none.
+// The spelling main reports for the next right-clicks in every open window: { word, suggestions }, or null for none,
+// or a list with one of those for each right-click in turn.
 const spelling = (spell) =>
   app.evaluate(({ BrowserWindow, session }, spell) => {
     global.__spell = spell;
@@ -50,8 +51,9 @@ const spelling = (spell) =>
       contents.__spellStub = true;
       const where = /compose\.html$/.test(contents.getURL()) ? 'compose' : 'main';
       contents.prependListener('context-menu', (_event, params) => {
-        params.misspelledWord = global.__spell ? global.__spell.word : '';
-        params.dictionarySuggestions = global.__spell ? global.__spell.suggestions : [];
+        const spell = Array.isArray(global.__spell) ? global.__spell.shift() : global.__spell;
+        params.misspelledWord = spell ? spell.word : '';
+        params.dictionarySuggestions = spell ? spell.suggestions : [];
       });
       contents.replaceMisspelling = (word) => {
         global.__spellCalls.push({ replace: word, where });
@@ -146,6 +148,40 @@ test('a misspelled word gets its suggestions in the reading pane, and a pick rep
   await pick(win, 'Add to dictionary');
   await expect.poll(spellCalls).toEqual([{ replace: 'This', where: 'main' }, { add: 'Rukoo' }]);
   expect(await editorFocused(win)).toBe(true);
+});
+
+// Main reads the clipboard before it answers a right-click, so two quick right-clicks can have their answers on the way
+// at once. Only the last one's answer counts: the Subject's spelling never opens over the text.
+test('a late answer for an earlier right-click opens nothing over the text', async () => {
+  await launch('en');
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  await spelling([{ word: 'Subjcet', suggestions: ['Subject'] }, { word: 'Thsi', suggestions: ['This'] }]);
+  await win.fill('[data-field="subject"]', 'Subjcet');
+  await write(win, 'Thsi is the plan.');
+  // Every clipboard read waits until the test lets it finish.
+  await app.evaluate(({ clipboard }) => {
+    const read = clipboard.read.bind(clipboard);
+    global.__reads = [];
+    clipboard.read = () => new Promise((resolve) => global.__reads.push(() => resolve(read())));
+  });
+  const reads = () => app.evaluate(() => global.__reads.length);
+  const finish = (i) => app.evaluate((_, i) => global.__reads[i](), i);
+
+  await win.locator('.composer [data-field="subject"]').click({ button: 'right' });
+  await expect.poll(reads).toBe(1);
+  const at = await select(win, 'Thsi');
+  await win.mouse.click(at.x, at.y, { button: 'right' });
+  await expect.poll(reads).toBe(2);
+  // The Subject's answer comes first, while the text waits for its own.
+  await finish(0);
+  await win.waitForTimeout(300);
+  await expect(menu(win)).toHaveCount(0);
+  await finish(1);
+  expect(await labels(win)).toEqual(['This', 'Add to dictionary', 'Cut', 'Copy', 'Paste', 'Paste as plain text', 'Select all']);
+  await pick(win, 'This');
+  await expect.poll(() => editorText(win)).toBe('This is the plan.');
+  expect(await spellCalls()).toEqual([{ replace: 'This', where: 'main' }]);
 });
 
 test('cut, copy, paste, paste as plain text and select all act on the text in the reading pane', async () => {
