@@ -116,6 +116,11 @@ The computer that turned the page on handles it. It publishes your open times wh
 
 Your other computers signed in to the same Rukoo account show the page, its requests and bookings, and say "Bookings are handled by …". Use this computer makes the computer you're on the one that handles bookings, for example when the other one stays off. Requests can only be answered on the computer that handles bookings. When you delete a booked event on another computer, the booking is cancelled once the handling computer next syncs.
 
+Update Rukoo on every computer before you give a meeting type more than one available duration. A Rukoo version from before several durations doesn't know them, and Rukoo doesn't warn you about it:
+
+- When the older version handles bookings, it publishes each type with its default duration only: shortly after it syncs a change to the page's settings, and again at least every 30 minutes. Guests can't pick the other durations, while Settings → Booking page on an updated computer still lists them. They come back once the computer that handles bookings is updated, or when an updated computer takes over with Use this computer.
+- When the older version writes the page's settings, it drops the other durations, and every type keeps only its default duration, on all your computers. It writes them when you save anything under Settings → Booking page on that computer, turn the page on there or click Use this computer there, and when it records a new address for the page. Pick the durations again on an updated computer afterwards.
+
 ## When the computer is off
 
 The server keeps offering the times it last got and takes bookings. A guest reads that the invitation comes from your calendar, usually within minutes, and that it can take longer while your computer is off. The booking holds either way. When Rukoo runs again, it adds the bookings to your calendar and the invitations go out.
@@ -208,5 +213,5 @@ The default server is set up the second way, with its pages at `meet.rukoo.io`. 
 - Bookings reach your calendar, and guests their invitation, only while Rukoo runs on the computer that handles bookings.
 - Microsoft calendars can't take bookings yet ([#17](https://github.com/MajesteitBart/rukoo/issues/17)), and neither can CalDAV calendars whose server doesn't send invitations.
 - Booking notifications have no setting of their own yet.
-- A Rukoo version from before several durations keeps only each type's default duration when it saves the page's settings, on any of your computers.
+- A computer with a Rukoo version from before several durations offers and keeps only each type's default duration, without a warning ([One computer handles bookings](#one-computer-handles-bookings)).
 - Rukoo for Android doesn't show or change the booking page. Its `get_booking_link` tool gives agents your link.
