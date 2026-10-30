@@ -512,7 +512,7 @@ impl Recorder {
                 "{}: the recorder fell behind; audio was lost",
                 track.name
             ));
-            self.close_segment(i, false);
+            self.close_segment(i, None);
             self.tracks[i].cover_from = Some(self.clock.now());
         }
         let track = &mut self.tracks[i];
@@ -620,12 +620,17 @@ impl Recorder {
     }
 
     fn pause(&mut self) -> u64 {
+        // The pause happens now. Every track is closed at this moment, however long the others take to reach the
+        // disk, so a padded call track meets the pause line instead of stopping a sync short of it.
+        let at = self.clock.now();
+        let mut t = at;
         for i in 0..self.tracks.len() {
-            self.close_segment(i, true);
+            if let Some(end) = self.close_segment(i, Some(at)) {
+                t = t.max(end);
+            }
             self.tracks[i].cover_from = None;
         }
         self.paused = true;
-        let t = self.clock.now();
         self.journal.write(Line::Pause { t });
         t
     }
@@ -734,13 +739,13 @@ impl Recorder {
 
     /// The device failed: end the segment, then drop the stream and retry every second.
     fn lose(&mut self, i: usize, error: String) {
-        self.close_segment(i, false);
+        self.close_segment(i, None);
         self.mark_lost(i, error);
     }
 
     /// The stream must be rebuilt, usually on a new default device.
     fn rebuild(&mut self, i: usize, reason: String) {
-        self.close_segment(i, false);
+        self.close_segment(i, None);
         // Drop the old stream before opening the new one.
         self.tracks[i].state = State::Lost {
             error: reason,
@@ -811,7 +816,7 @@ impl Recorder {
         let (from, before) = self.heartbeat;
         let mut was_lost = Vec::with_capacity(self.tracks.len());
         for i in 0..self.tracks.len() {
-            self.close_segment(i, false);
+            self.close_segment(i, None);
             was_lost.push(matches!(self.tracks[i].state, State::Lost { .. }));
             self.tracks[i].state = State::Lost {
                 error: "The computer was asleep.".into(),
@@ -835,6 +840,10 @@ impl Recorder {
 
     fn pad(&mut self, i: usize, threshold_ms: u64) {
         let now = self.clock.now();
+        self.pad_until(i, now, threshold_ms);
+    }
+
+    fn pad_until(&mut self, i: usize, now: u64, threshold_ms: u64) {
         let track = &self.tracks[i];
         let Some(covered) = track.covered_end() else {
             return;
@@ -950,9 +959,9 @@ impl Recorder {
         });
     }
 
-    /// Writes what's pending and ends the segment. With `pad`, a healthy loopback track is
-    /// first padded up to now.
-    fn close_segment(&mut self, i: usize, pad: bool) {
+    /// Writes what's pending and ends the segment. With `pad_to`, a healthy loopback track is
+    /// first padded up to that meeting time. Returns where the closed segment's audio ends, in ms.
+    fn close_segment(&mut self, i: usize, pad_to: Option<u64>) -> Option<u64> {
         // The resampler holds back about a millisecond; it belongs to this segment.
         if let State::Open(live) = &mut self.tracks[i].state {
             let tail = live.resampler.flush();
@@ -960,12 +969,18 @@ impl Recorder {
                 self.tracks[i].pending.extend_from_slice(&tail);
             }
         }
-        if pad {
-            self.pad(i, 0);
+        if let Some(t) = pad_to {
+            self.pad_until(i, t, 0);
         }
+        let end = self.tracks[i]
+            .segment
+            .as_ref()
+            .and(self.tracks[i].covered_end())
+            .map(|samples| samples.div_ceil(SAMPLES_PER_MS));
         self.flush_pending(i);
         self.end_segment(i);
         self.tracks[i].pending.clear();
+        end
     }
 
     /// The disk refused audio: end the segment with what it holds and treat the track like a
@@ -1008,11 +1023,15 @@ impl Recorder {
             reason: "interrupted".into(),
             reply: None,
         });
+        // The recording ends here, for every track at once, however long the closing syncs take; stopping the
+        // streams afterwards can take a while too.
+        let (at, wall) = (self.clock.now(), wall_ms());
+        let mut t = at;
         for i in 0..self.tracks.len() {
-            self.close_segment(i, true);
+            if let Some(end) = self.close_segment(i, Some(at)) {
+                t = t.max(end);
+            }
         }
-        // The recording ends here; stopping the streams afterwards can take a while.
-        let (t, wall) = (self.clock.now(), wall_ms());
         for track in &mut self.tracks {
             track.state = State::Lost {
                 error: "Stopped.".into(),
