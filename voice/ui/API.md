@@ -195,11 +195,11 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `config` | Every setting, see below. API keys and the bucket secret appear only as `keySaved` flags; `secret` is always `""`. |
 | `providers` | Voice-core's provider registry in Ownkey's order (ownkey-providers.md 2): `audio` is OpenAI, Google, Mistral, Custom, Orukeet; `rewrite` is OpenAI, Anthropic, Google, Mistral, Ollama, OpenRouter, Custom. `endpoints` are the presets, the first is the default. The page translates the labels of `custom` and `orukeet` and shows the brand names for the rest. |
 | `dictation.status` | `ready`, `loadingModel`, `modelMissing`, `noKey` or `noMic`: the status on the top page. |
-| `rukoo.state` | `connected`, `notRunning`, `rukooOutdated` or `voiceOutdated` (from `unsupported_protocol`, PROTOCOL.md Versioning), `refused` (a client sent a wrong token). |
+| `rukoo.state` | `connected`, `notRunning`, `rukooOutdated` or `voiceOutdated` (from `unsupported_protocol`, PROTOCOL.md Versioning), `refused` (a client sent a wrong token). A refusal shows until a client connects again. |
 | `rukoo.clientVersion`, `rukoo.protocol` | From the connected client's `hello`, or `null`. |
 | `rukoo.port` | The bridge's port on 127.0.0.1, or `null` before it listens. |
 | `rukoo.discoveryPath` | The discovery file's full path (PROTOCOL.md, Where the file is). |
-| `rukoo.behind` | The event log's head minus the connected client's `after`, or `null`. |
+| `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
 | `models` | A `ModelState` for `orukeet`, and for `nemotron` later than 0.1. |
 | `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
