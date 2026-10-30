@@ -1,0 +1,1373 @@
+{
+  "common.back": {
+    "message": "Back",
+    "description": "Settings: the back button in the page bar of every sub-page, also its tooltip. voice/ui/settings.js (render)."
+  },
+  "common.cancel": {
+    "message": "Cancel",
+    "description": "Settings: button that closes a dialog without a change. voice/ui/settings.js (dialog, choose)."
+  },
+  "common.close": {
+    "message": "Close",
+    "description": "Settings: button that closes an information dialog, such as Licenses or Error details. voice/ui/settings.js (dialog)."
+  },
+  "common.save": {
+    "message": "Save",
+    "description": "Settings: the filled button of a provider form, which checks and saves provider, key, endpoint and model together. voice/ui/settings.js (providerForm)."
+  },
+  "common.remove": {
+    "message": "Remove",
+    "description": "Settings: button beside \"Key saved\" that deletes the saved API key at once. voice/ui/settings.js (providerForm)."
+  },
+  "common.replace": {
+    "message": "Replace",
+    "description": "Settings: button beside \"Key saved\" that shows an empty field for a new API key. voice/ui/settings.js (providerForm)."
+  },
+  "common.browse": {
+    "message": "Browse",
+    "description": "Settings: button that opens the system's folder picker, for the model folder and the recordings folder. voice/ui/settings.js (modelCard, storagePage)."
+  },
+  "common.openFolder": {
+    "message": "Open folder",
+    "description": "Settings: button that shows a folder in Explorer, such as the folder of Rukoo's discovery file. voice/ui/settings.js (rukooPage, storagePage)."
+  },
+  "common.refresh": {
+    "message": "Refresh",
+    "description": "Settings: button beside the Model field that asks the provider which models it has. voice/ui/settings.js (providerForm)."
+  },
+  "common.loading": {
+    "message": "Loading…",
+    "description": "Settings: the Refresh button's label while the model list loads. voice/ui/settings.js (providerForm)."
+  },
+  "common.on": {
+    "message": "On",
+    "description": "Settings: value of a row whose feature is switched on, such as Filler words. voice/ui/settings.js (mainPage)."
+  },
+  "common.off": {
+    "message": "Off",
+    "description": "Settings: value of a row whose feature is off, and the \"no key\" choice in key lists (Rewrite key, Stop key). voice/ui/settings.js (mainPage, keyChoice)."
+  },
+  "common.system": {
+    "message": "System",
+    "description": "Settings > General: the Language or Theme choice that follows Windows. voice/ui/settings.js (mainPage)."
+  },
+  "common.errorDetails": {
+    "message": "Error details",
+    "description": "Settings: link button after a failure, and the title of the dialog that shows the full error text from the app, which stays in English. voice/ui/settings.js (errorDetails)."
+  },
+  "pill.arming": {
+    "message": "Starting",
+    "description": "Pill: dictation key pressed, the microphone is opening. Short; the pill holds about 220px of text. voice/ui/pill.js (viewOf)."
+  },
+  "pill.listening": {
+    "message": "Listening",
+    "description": "Pill: the microphone records while the user holds the dictation key. voice/ui/pill.js (viewOf)."
+  },
+  "pill.listeningEdit": {
+    "message": "Say the edit",
+    "description": "Pill: the microphone records while the user holds the rewrite key over selected text and says what should change. voice/ui/pill.js (viewOf)."
+  },
+  "pill.noAudio": {
+    "message": "No audio detected",
+    "description": "Pill: the user holds the key, but the microphone heard nothing for 5 seconds. Cleared at the first sound. voice/ui/pill.js (viewOf)."
+  },
+  "pill.loadingModel": {
+    "message": "Loading model",
+    "description": "Pill: key released, and the local Orukeet model loads into memory before it can transcribe. voice/ui/pill.js (viewOf)."
+  },
+  "pill.transcribing": {
+    "message": "Transcribing",
+    "description": "Pill: key released, the speech is being turned into text. Shown with a moving shimmer. voice/ui/pill.js (viewOf)."
+  },
+  "pill.rewriting": {
+    "message": "Rewriting",
+    "description": "Pill: the rewrite provider polishes the dictation or edits the selected text. voice/ui/pill.js (viewOf)."
+  },
+  "pill.inserted": {
+    "message": {
+      "one": "Inserted {count} word",
+      "other": "Inserted {count} words"
+    },
+    "description": "Pill: the dictated text was typed into the app with focus. {count}: number of words. voice/ui/pill.js (viewOf)."
+  },
+  "pill.rewrote": {
+    "message": "Rewrote the selection",
+    "description": "Pill: the selected text was replaced with the rewritten text. voice/ui/pill.js (viewOf)."
+  },
+  "pill.nothingHeard": {
+    "message": "Nothing heard",
+    "description": "Pill: the user released the key, but the recording held no speech, so nothing was typed. voice/ui/pill.js (viewOf)."
+  },
+  "pill.selectTextBox": {
+    "message": "Select a text box",
+    "description": "Pill: no text field had focus when the user pressed the dictation key. Recording continues. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.selectText": {
+    "message": "Select text first",
+    "description": "Pill error: the rewrite key was pressed without selected text. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.selectionTooLong": {
+    "message": "Selection too long",
+    "description": "Pill error: the selected text is too long to rewrite. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.offline": {
+    "message": "No connection",
+    "description": "Pill error: the provider couldn't be reached over the network. The full error goes to a tray notification. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.noKey": {
+    "message": "Add an API key",
+    "description": "Pill error: the chosen cloud provider has no API key in Settings. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.auth": {
+    "message": "API key refused",
+    "description": "Pill error: the provider rejected the API key (HTTP 401 or 403). voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.timeout": {
+    "message": "The provider didn't answer",
+    "description": "Pill error: the provider took too long to answer. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.mic": {
+    "message": "Microphone unavailable",
+    "description": "Pill error: Voice couldn't open the microphone. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.model": {
+    "message": "Model failed to load",
+    "description": "Pill error: the local Orukeet model couldn't load. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.modelMissing": {
+    "message": "Model missing",
+    "description": "Pill error: Orukeet is chosen but its files aren't downloaded. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.blocked": {
+    "message": "Can't type into this app",
+    "description": "Pill error: Windows blocked typing into an app that runs as administrator. voice/ui/pill.js (viewOf)."
+  },
+  "pill.error.generic": {
+    "message": "Try again",
+    "description": "Pill error: any other failure. The full error goes to a tray notification. voice/ui/pill.js (viewOf)."
+  },
+  "pill.meeting.recording": {
+    "message": "Recording",
+    "description": "Pill: a meeting is recording; the elapsed time follows. voice/ui/pill.js (viewOf)."
+  },
+  "pill.meeting.paused": {
+    "message": "Paused",
+    "description": "Pill: the meeting is paused; the elapsed time follows and keeps running. voice/ui/pill.js (viewOf)."
+  },
+  "pill.meeting.confirmStop": {
+    "message": "Stop?",
+    "description": "Pill: the stop button after the first click; a second click within 3 seconds stops the meeting. Very short: it sits inside a 28px button. voice/ui/pill.js (viewOf)."
+  },
+  "pill.meeting.saving": {
+    "message": "Saving",
+    "description": "Pill: the meeting stopped and Voice closes the recording. Transcription continues in the background. voice/ui/pill.js (viewOf)."
+  },
+  "pill.meetingFailed": {
+    "message": "Couldn't save the meeting",
+    "description": "Pill error: the meeting couldn't be finished. voice/ui/pill.js (viewOf)."
+  },
+  "pill.micLost": {
+    "message": "Microphone lost",
+    "description": "Pill: the microphone disappeared during a meeting, for example an unplugged headset. The call audio keeps recording. voice/ui/pill.js (viewOf)."
+  },
+  "pill.micBack": {
+    "message": "Microphone back",
+    "description": "Pill: the microphone works again after \"Microphone lost\". voice/ui/pill.js (viewOf)."
+  },
+  "pill.videoDropped.disk": {
+    "message": "Screen stopped: disk full",
+    "description": "Pill: Voice stopped recording the screen to keep the audio, because the disk is full. Not used in Voice 0.1. voice/ui/pill.js (viewOf)."
+  },
+  "pill.videoDropped.encoder": {
+    "message": "Screen recording stopped",
+    "description": "Pill: Voice stopped recording the screen because the video encoder failed. Not used in Voice 0.1. voice/ui/pill.js (viewOf)."
+  },
+  "pill.stopButton": {
+    "message": "Stop recording",
+    "description": "Pill: accessible name of the stop button. The app also uses it as the title of the native window over the button. voice/ui/pill.js (renderButton)."
+  },
+  "pill.dev": {
+    "message": "Dev",
+    "description": "Pill: small tag after the label in a development copy, so testers can tell it from the installed app. voice/ui/pill.js (render)."
+  },
+  "app.tray.tooltip": {
+    "message": "Rukoo Voice",
+    "description": "Tray icon tooltip while no meeting records. Product name. Read by voice-app (see voice/ui/API.md, \"Strings the app reads\")."
+  },
+  "app.tray.tooltipRecording": {
+    "message": "Rukoo Voice is recording a meeting",
+    "description": "Tray icon tooltip while a meeting records or is paused. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.tray.settings": {
+    "message": "Settings",
+    "description": "Tray menu item that opens the Settings window. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.tray.startMeeting": {
+    "message": "Record a meeting",
+    "description": "Tray menu item that starts recording a meeting. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.tray.pauseMeeting": {
+    "message": "Pause meeting",
+    "description": "Tray menu item while a meeting records. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.tray.resumeMeeting": {
+    "message": "Resume meeting",
+    "description": "Tray menu item while a meeting is paused. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.tray.stopMeeting": {
+    "message": "Stop meeting and save",
+    "description": "Tray menu item while a meeting records or is paused. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.tray.quit": {
+    "message": "Quit Rukoo Voice",
+    "description": "Tray menu item that quits the app. A recording meeting keeps recording in its own process. Read by voice-app (see voice/ui/API.md)."
+  },
+  "settings.title": {
+    "message": "Rukoo Voice Settings",
+    "description": "Settings: the window title. The app sets it on the native window too. voice/ui/settings.html; voice/ui/settings.js (applyLanguage)."
+  },
+  "settings.main.title": {
+    "message": "Rukoo Voice",
+    "description": "Settings: heading of the top page. Product name. voice/ui/settings.js (mainPage)."
+  },
+  "settings.groups.dictation": {
+    "message": "Dictation",
+    "description": "Settings: group title above the dictation rows on the top page. voice/ui/settings.js (mainPage)."
+  },
+  "settings.groups.meetings": {
+    "message": "Meetings",
+    "description": "Settings: group title above the meeting rows on the top page, and an area in the Ownkey import report. voice/ui/settings.js (mainPage, importPage)."
+  },
+  "settings.groups.general": {
+    "message": "General",
+    "description": "Settings: group title above Language and Theme. voice/ui/settings.js (mainPage)."
+  },
+  "settings.groups.about": {
+    "message": "About",
+    "description": "Settings: group title above updates, the Ownkey import, logs, licenses and version. voice/ui/settings.js (mainPage)."
+  },
+  "settings.status.dictation": {
+    "message": "Dictation",
+    "description": "Settings > Status: title of the row that says whether dictation works. voice/ui/settings.js (mainPage)."
+  },
+  "settings.status.dictationHelp": {
+    "message": "Hold {key} to dictate. Hold {rewriteKey} to change selected text.",
+    "description": "Settings > Status: description of the Dictation row. {key}, {rewriteKey}: key names such as \"Right Alt\", shown as keyboard keys. voice/ui/settings.js (mainPage)."
+  },
+  "settings.status.dictationHelpNoRewrite": {
+    "message": "Hold {key} to dictate.",
+    "description": "Settings > Status: description of the Dictation row when the rewrite key is off. {key}: a key name shown as a keyboard key. voice/ui/settings.js (mainPage)."
+  },
+  "settings.status.ready": {
+    "message": "Ready",
+    "description": "Settings > Status: green status of the Dictation row. voice/ui/settings.js (dictationStatus)."
+  },
+  "settings.status.loadingModel": {
+    "message": "Loading model",
+    "description": "Settings > Status: orange status while Orukeet loads into memory. voice/ui/settings.js (dictationStatus)."
+  },
+  "settings.status.modelMissing": {
+    "message": "Model missing",
+    "description": "Settings > Status: red status when Orukeet is chosen but not downloaded; the row opens Transcription. voice/ui/settings.js (dictationStatus)."
+  },
+  "settings.status.noKey": {
+    "message": "Add an API key",
+    "description": "Settings > Status: red status when the cloud provider has no API key; the row opens Transcription. voice/ui/settings.js (dictationStatus)."
+  },
+  "settings.status.noMic": {
+    "message": "No microphone",
+    "description": "Settings > Status: red status when Windows reports no microphone. voice/ui/settings.js (dictationStatus)."
+  },
+  "settings.status.rukoo": {
+    "message": "Rukoo",
+    "description": "Settings > Status: title of the row with the connection to Rukoo Mail; it opens the Rukoo page. Product name. voice/ui/settings.js (mainPage)."
+  },
+  "settings.status.ownkey": {
+    "message": "Ownkey is running",
+    "description": "Settings > Status: warning row when Ownkey for Windows runs and listens on one of Voice's keys. voice/ui/settings.js (mainPage)."
+  },
+  "settings.status.ownkeyHelp": {
+    "message": "Ownkey also answers {keys}. Quit Ownkey or choose other keys.",
+    "description": "Settings > Status: description of the Ownkey warning. {keys}: one or more key names joined as a list, such as \"Right Alt and Right Ctrl\". voice/ui/settings.js (mainPage)."
+  },
+  "settings.rukoo.connected": {
+    "message": "Connected",
+    "description": "Settings: green status of the Rukoo row; Rukoo is connected to Voice. voice/ui/settings.js (rukooStatus)."
+  },
+  "settings.rukoo.notRunning": {
+    "message": "Rukoo isn't running",
+    "description": "Settings: grey status of the Rukoo row; no Rukoo is connected. voice/ui/settings.js (rukooStatus)."
+  },
+  "settings.rukoo.rukooOutdated": {
+    "message": "Rukoo needs an update",
+    "description": "Settings: orange status when Rukoo speaks an older bridge protocol than Voice accepts. voice/ui/settings.js (rukooStatus)."
+  },
+  "settings.rukoo.voiceOutdated": {
+    "message": "Voice needs an update",
+    "description": "Settings: orange status when Rukoo speaks a newer bridge protocol than this Voice. voice/ui/settings.js (rukooStatus)."
+  },
+  "settings.rukoo.refused": {
+    "message": "Connection refused",
+    "description": "Settings: red status when a client connected with the wrong token. voice/ui/settings.js (rukooStatus)."
+  },
+  "settings.dictation.key": {
+    "message": "Dictation key",
+    "description": "Settings > Dictation: row and choice dialog title for the key the user holds to dictate. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.keyHelp": {
+    "message": "Hold to record, release to type.",
+    "description": "Settings > Dictation: description of Dictation key. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.paste": {
+    "message": "Paste mode",
+    "description": "Settings > Dictation: switch for inserting text through the clipboard instead of typing it key by key. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.pasteHelp": {
+    "message": "Inserts text through the clipboard and puts your clipboard back afterwards. Faster, and more reliable in most apps.",
+    "description": "Settings > Dictation: description of Paste mode. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.chime": {
+    "message": "Ready chime",
+    "description": "Settings > Dictation: switch for a short sound when the microphone is ready. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.chimeHelp": {
+    "message": "A short ping when the microphone is ready.",
+    "description": "Settings > Dictation: description of Ready chime. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.login": {
+    "message": "Start at login",
+    "description": "Settings > Dictation: switch that starts Voice when the user signs in to Windows. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.loginHelp": {
+    "message": "Voice waits in the tray when you sign in.",
+    "description": "Settings > Dictation: description of Start at login. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.loginDev": {
+    "message": "A development copy never starts at login.",
+    "description": "Settings > Dictation: description of Start at login in a development copy, where the switch is disabled. voice/ui/settings.js (mainPage)."
+  },
+  "settings.dictation.transcription": {
+    "message": "Transcription",
+    "description": "Settings > Dictation: row that opens the Transcription page; also that page's title and an area in the Ownkey import report. voice/ui/settings.js (mainPage, transcriptionPage, importPage)."
+  },
+  "settings.dictation.dictionary": {
+    "message": "Dictionary",
+    "description": "Settings > Dictation: row that opens the Dictionary page; also that page's title and an area in the Ownkey import report. voice/ui/settings.js (mainPage, dictionaryPage, importPage)."
+  },
+  "settings.dictation.fillers": {
+    "message": "Filler words",
+    "description": "Settings > Dictation: row that opens the Filler words page; also that page's title and an area in the Ownkey import report. voice/ui/settings.js (mainPage, fillersPage, importPage)."
+  },
+  "settings.dictation.rewriting": {
+    "message": "Rewriting",
+    "description": "Settings > Dictation: row that opens the Rewriting page; also that page's title and an area in the Ownkey import report. voice/ui/settings.js (mainPage, rewritingPage, importPage)."
+  },
+  "settings.rewriting.valuePolish": {
+    "message": "Polish on",
+    "description": "Settings > Dictation: value of the Rewriting row when auto-rewrite is on and the rewrite key is off. voice/ui/settings.js (rewritingValue)."
+  },
+  "settings.rewriting.valueEdits": {
+    "message": "Voice edits only",
+    "description": "Settings > Dictation: value of the Rewriting row when only the rewrite key is on. voice/ui/settings.js (rewritingValue)."
+  },
+  "settings.rewriting.valueBoth": {
+    "message": "Polish and voice edits",
+    "description": "Settings > Dictation: value of the Rewriting row when auto-rewrite and the rewrite key are both on. voice/ui/settings.js (rewritingValue)."
+  },
+  "settings.pill.edge": {
+    "message": "Pill position",
+    "description": "Settings > Dictation: row and choice dialog title for where the pill (the small status bar during dictation) appears. voice/ui/settings.js (mainPage)."
+  },
+  "settings.pill.bottom": {
+    "message": "Bottom of the screen",
+    "description": "Settings > Dictation > Pill position: choice. voice/ui/settings.js (mainPage)."
+  },
+  "settings.pill.top": {
+    "message": "Top of the screen",
+    "description": "Settings > Dictation > Pill position: choice. voice/ui/settings.js (mainPage)."
+  },
+  "settings.pill.hide": {
+    "message": "Hide the pill from screen sharing",
+    "description": "Settings > Dictation: switch that keeps the pill out of screen shares and recordings. voice/ui/settings.js (mainPage)."
+  },
+  "settings.pill.hideHelp": {
+    "message": "Keeps the pill out of screen shares and screen recordings.",
+    "description": "Settings > Dictation: description of Hide the pill from screen sharing. voice/ui/settings.js (mainPage)."
+  },
+  "settings.provider.custom": {
+    "message": "Custom (OpenAI-compatible)",
+    "description": "Settings: provider choice for a server that speaks OpenAI's API, such as LM Studio. voice/ui/settings.js (providerLabel)."
+  },
+  "settings.provider.orukeet": {
+    "message": "Local (Orukeet)",
+    "description": "Settings > Transcription: provider choice for the local Orukeet model, and the Transcription row's value. voice/ui/settings.js (providerLabel)."
+  },
+  "settings.provider.orukeetMeetings": {
+    "message": "On this computer (Orukeet)",
+    "description": "Settings > Meeting transcription: the default provider choice, which keeps meeting audio on the computer. voice/ui/settings.js (providerLabel)."
+  },
+  "settings.provider.provider": {
+    "message": "Provider",
+    "description": "Settings: label of the provider list in a provider form. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.apiKey": {
+    "message": "API key",
+    "description": "Settings: label of the API key field in a provider form. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.keySaved": {
+    "message": "Key saved",
+    "description": "Settings: shown instead of the API key field when a key is saved. The key itself never reaches the window. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.keyPlaceholder": {
+    "message": "Paste your API key",
+    "description": "Settings: placeholder of the empty API key field. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.keyOptional": {
+    "message": "Leave it blank when the server doesn't need a key.",
+    "description": "Settings: help under the API key field for Custom and Ollama, whose local servers often need no key. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.endpoint": {
+    "message": "Endpoint",
+    "description": "Settings: label of the endpoint URL field in a provider form. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.model": {
+    "message": "Model",
+    "description": "Settings: label of the model field in a provider form. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.modelPlaceholder": {
+    "message": "Model ID",
+    "description": "Settings: placeholder of the empty model field. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.modelsFound": {
+    "message": {
+      "one": "{count} model found",
+      "other": "{count} models found"
+    },
+    "description": "Settings: line under the Model field after Refresh. {count}: number of models the provider listed. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.noModels": {
+    "message": "No models were returned by {provider}.",
+    "description": "Settings: line under the Model field when Refresh found nothing. {provider}: provider name such as Mistral. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.modelsFailed": {
+    "message": "Couldn't list models: {error}",
+    "description": "Settings: line under the Model field when Refresh failed. {error}: the app's English error text. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.needAudio": {
+    "message": "Choose an audio endpoint and model before saving.",
+    "description": "Settings > Transcription: Save refused because the endpoint or model is empty. voice/ui/settings.js (validateProvider)."
+  },
+  "settings.provider.needRewrite": {
+    "message": "Choose a rewrite endpoint and model before saving.",
+    "description": "Settings > Rewriting: Save refused because the endpoint or model is empty. voice/ui/settings.js (validateProvider)."
+  },
+  "settings.provider.needMeeting": {
+    "message": "Choose an endpoint and model for meeting transcription before saving.",
+    "description": "Settings > Meeting transcription: Save refused because the endpoint or model is empty. voice/ui/settings.js (validateProvider)."
+  },
+  "settings.provider.loadingOrukeet": {
+    "message": "Loading Orukeet",
+    "description": "Settings: status beside Save while the app loads and checks Orukeet before it saves. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.saving": {
+    "message": "Saving…",
+    "description": "Settings: status beside Save while the app saves. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.saved": {
+    "message": "Saved",
+    "description": "Settings: green status beside Save after saving. voice/ui/settings.js (providerForm)."
+  },
+  "settings.provider.failed": {
+    "message": "Couldn't save",
+    "description": "Settings: red status beside Save when saving failed; Error details follows. voice/ui/settings.js (providerForm)."
+  },
+  "settings.transcription.intro": {
+    "message": "Where your voice becomes text: on this computer with Orukeet, or through a provider with your own key.",
+    "description": "Settings > Transcription: paragraph at the top of the page. voice/ui/settings.js (transcriptionPage)."
+  },
+  "settings.transcription.speechToText": {
+    "message": "Speech to text",
+    "description": "Settings > Transcription: group title above the provider form. voice/ui/settings.js (transcriptionPage)."
+  },
+  "settings.transcription.language": {
+    "message": "Language",
+    "description": "Settings > Transcription: label of the spoken-language list. voice/ui/settings.js (providerForm)."
+  },
+  "settings.transcription.languageAuto": {
+    "message": "Automatic",
+    "description": "Settings > Transcription > Language: the provider detects the language itself. voice/ui/settings.js (providerForm)."
+  },
+  "settings.transcription.languageHelp": {
+    "message": "Auto works for most people. Set a language when the audio provider keeps guessing wrong.",
+    "description": "Settings > Transcription: help under Language. voice/ui/settings.js (providerForm)."
+  },
+  "settings.transcription.languageOrukeet": {
+    "message": "Orukeet recognizes the language by itself.",
+    "description": "Settings > Transcription: help under the disabled Language list when Orukeet is chosen. voice/ui/settings.js (providerForm)."
+  },
+  "settings.orukeet.title": {
+    "message": "Orukeet on this computer",
+    "description": "Settings > Transcription: group title of the local model card, shown when Local (Orukeet) is chosen. voice/ui/settings.js (modelCard)."
+  },
+  "settings.orukeet.about": {
+    "message": "Orukeet by Oruk AI, based on NVIDIA Parakeet TDT 0.6B v3. Audio never leaves this computer. Rewriting still sends text to your rewrite provider; for offline use, choose local Ollama or turn rewriting off.",
+    "description": "Settings > Transcription: paragraph in the Orukeet card. voice/ui/settings.js (modelCard)."
+  },
+  "settings.orukeet.licence": {
+    "message": "Weights under CC BY-SA 4.0. The license and attribution stay with the download.",
+    "description": "Settings > Transcription: license line at the end of the Orukeet card. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.page": {
+    "message": "Model page",
+    "description": "Settings: link to the model's page on Hugging Face, in a model card. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.files": {
+    "message": "Model files",
+    "description": "Settings: title of the row with the model's status and folder in a model card. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.progress": {
+    "message": "{stage} · {percent}%",
+    "description": "Settings: model status during a download. {stage}: Downloading, Verifying or Extracting. {percent}: a whole number. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.downloading": {
+    "message": "Downloading",
+    "description": "Settings: model download stage. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.verifying": {
+    "message": "Verifying",
+    "description": "Settings: model download stage while Voice checks the files against their pinned checksums. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.extracting": {
+    "message": "Extracting",
+    "description": "Settings: model download stage while Voice unpacks the archive. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.loading": {
+    "message": "Loading",
+    "description": "Settings: model status while the model loads into memory. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.loadFailed": {
+    "message": "Loading failed",
+    "description": "Settings: red status of a model that failed to load; the app's English error follows on the next line, cut at 180 characters, with all of it behind Error details. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.failed": {
+    "message": "Download failed",
+    "description": "Settings: red status of a model whose download or checksum check failed; the app's English error follows on the next line. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.active": {
+    "message": "Active · {state}",
+    "description": "Settings: model status when this model is the chosen provider. {state}: Loaded, Not loaded, Loading or Error. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.state.loaded": {
+    "message": "Loaded",
+    "description": "Settings: {state} of \"Active · {state}\": the model is in memory. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.state.unloaded": {
+    "message": "Not loaded",
+    "description": "Settings: {state} of \"Active · {state}\": the model loads on the next dictation. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.state.loading": {
+    "message": "Loading",
+    "description": "Settings: {state} of \"Active · {state}\". voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.state.error": {
+    "message": "Error",
+    "description": "Settings: {state} of \"Active · {state}\"; Error details shows why. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.installed": {
+    "message": "Installed · Not active",
+    "description": "Settings: model status when the files are there but another provider is chosen. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.unavailable": {
+    "message": "Installed · Unavailable",
+    "description": "Settings: model status when the files are there but the runtime can't use them. voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.missing": {
+    "message": "Model missing · {size} download",
+    "description": "Settings: model status before a download. {size}: download size such as \"487 MB\". voice/ui/settings.js (modelStatus)."
+  },
+  "settings.model.download": {
+    "message": "Download",
+    "description": "Settings: filled button in a model card that downloads the model. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.cancel": {
+    "message": "Cancel download",
+    "description": "Settings: button in a model card while it downloads. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.remove": {
+    "message": "Remove download",
+    "description": "Settings: button in a model card that deletes a model Voice downloaded itself. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.removeTitle": {
+    "message": "Remove {model}?",
+    "description": "Settings: title of the dialog that confirms Remove download. {model}: model name such as Orukeet. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.removeBody": {
+    "message": "Voice deletes the model files from its own folder. You can download them again later.",
+    "description": "Settings: body of the dialog that confirms Remove download. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.inOwnkey": {
+    "message": "Shared with Ownkey. Remove it in Ownkey.",
+    "description": "Settings: note in a model card instead of Remove download, when the model is in Ownkey's folder. Voice never deletes Ownkey's files. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.folder": {
+    "message": "Model folder",
+    "description": "Settings > Transcription: title of the row with the folder Voice downloads Orukeet to or reads it from. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.folderHelp": {
+    "message": "Download here, or choose a folder that already contains the extracted model files.",
+    "description": "Settings > Transcription: description of Model folder. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.folderAuto": {
+    "message": "Automatic: Ownkey's models first, then Voice's own folder",
+    "description": "Settings > Transcription: value of Model folder when the user chose no folder. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.folderReset": {
+    "message": "Use automatic",
+    "description": "Settings > Transcription: button that clears a chosen model folder. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.idle": {
+    "message": "Unload after idle",
+    "description": "Settings > Transcription: label of the minutes field. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.idleHelp": {
+    "message": "Minutes without dictation before the model leaves memory. 0 keeps it loaded.",
+    "description": "Settings > Transcription: help under Unload after idle. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.idleInvalid": {
+    "message": "Enter zero or a positive number of minutes, up to 1440.",
+    "description": "Settings > Transcription: error under Unload after idle. voice/ui/settings.js (modelCard)."
+  },
+  "settings.model.minutes": {
+    "message": "minutes",
+    "description": "Settings > Transcription: unit after the Unload after idle field. voice/ui/settings.js (modelCard)."
+  },
+  "settings.dictionary.intro": {
+    "message": "Names and terms typed the way you spell them.",
+    "description": "Settings > Dictionary: paragraph at the top of the page. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.words": {
+    "message": {
+      "one": "{count} word",
+      "other": "{count} words"
+    },
+    "description": "Settings > Dictionary: count of recognizer hints, joined with the corrections count by \" · \" in the group title and on the Dictionary row. voice/ui/settings.js (dictionaryCount)."
+  },
+  "settings.dictionary.corrections": {
+    "message": {
+      "one": "{count} correction",
+      "other": "{count} corrections"
+    },
+    "description": "Settings > Dictionary: count of corrections, after the words count. voice/ui/settings.js (dictionaryCount)."
+  },
+  "settings.dictionary.vocabulary": {
+    "message": "Vocabulary",
+    "description": "Settings > Dictionary: group title while the dictionary is empty. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.correct": {
+    "message": "Correct a misspelling",
+    "description": "Settings > Dictionary: switch that turns the add form from one word into a misspelling and its correction. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.correctHelp": {
+    "message": "Off: the recognizer prefers this spelling. On: the misspelling is replaced after transcription.",
+    "description": "Settings > Dictionary: description of Correct a misspelling. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.word": {
+    "message": "Word or name",
+    "description": "Settings > Dictionary: label of the field for a new word. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.wordPlaceholder": {
+    "message": "Add a new word",
+    "description": "Settings > Dictionary: placeholder of the field for a new word. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.from": {
+    "message": "Misspelling",
+    "description": "Settings > Dictionary: label of the field for what the recognizer types wrong. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.to": {
+    "message": "Correct spelling",
+    "description": "Settings > Dictionary: label of the field for what should be typed instead. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.addWord": {
+    "message": "Add word",
+    "description": "Settings > Dictionary: filled button that adds the word. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.addCorrection": {
+    "message": "Add correction",
+    "description": "Settings > Dictionary: filled button that adds the correction. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.needWord": {
+    "message": "Type a word or name first.",
+    "description": "Settings > Dictionary: error when Add word is pressed with an empty field. voice/ui/settings.js (addEntry)."
+  },
+  "settings.dictionary.needBoth": {
+    "message": "Fill in both the misspelling and the correct spelling.",
+    "description": "Settings > Dictionary: error when a correction misses one side. voice/ui/settings.js (addEntry)."
+  },
+  "settings.dictionary.identical": {
+    "message": "The two spellings are identical.",
+    "description": "Settings > Dictionary: error when both sides of a correction are the same. voice/ui/settings.js (addEntry)."
+  },
+  "settings.dictionary.hint": {
+    "message": "Hint",
+    "description": "Settings > Dictionary: tag on a word that is passed to the recognizer as a hint. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.fix": {
+    "message": "Fix",
+    "description": "Settings > Dictionary: tag on a correction that replaces a misspelling after transcription. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.removeEntry": {
+    "message": "Remove {entry}",
+    "description": "Settings > Dictionary: accessible name and tooltip of the trash button on an entry. {entry}: the word, or the misspelling. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.empty": {
+    "message": "Nothing here yet. Add names, products, and terms the recognizer gets wrong.",
+    "description": "Settings > Dictionary: shown instead of the list while it is empty. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.how": {
+    "message": "How the dictionary is used",
+    "description": "Settings > Dictionary: group title above the explanation. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.howWords": {
+    "message": "Words are passed to the recognizer as hints, so it prefers your spelling: Orukeet on this computer, Mistral, OpenAI, and custom endpoints. Gemini gets them in its instruction.",
+    "description": "Settings > Dictionary: explanation of words. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.dictionary.howCorrections": {
+    "message": "Corrections replace whole words after transcription, ignoring case. They work with every provider and run before any AI rewrite.",
+    "description": "Settings > Dictionary: explanation of corrections. voice/ui/settings.js (dictionaryPage)."
+  },
+  "settings.fillers.intro": {
+    "message": "Clean hesitations out of dictation without an AI model.",
+    "description": "Settings > Filler words: paragraph at the top of the page. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.remove": {
+    "message": "Remove filler words",
+    "description": "Settings > Filler words: main switch. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.removeHelp": {
+    "message": "Drops clear hesitations before the text is typed. Words with meaning, such as \"like\", \"well\", and \"dus\", stay.",
+    "description": "Settings > Filler words: description of the main switch. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.languages": {
+    "message": "Languages",
+    "description": "Settings > Filler words: group title above one switch per language; each row lists that language's filler words. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.custom": {
+    "message": "Extra words to remove",
+    "description": "Settings > Filler words: label of the field for the user's own filler words. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.customHelp": {
+    "message": "Comma-separated, whole words only. Handy for a personal tic such as \"basically\".",
+    "description": "Settings > Filler words: help under Extra words to remove. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.customPlaceholder": {
+    "message": "basically, actually",
+    "description": "Settings > Filler words: placeholder of Extra words to remove; examples of the user's own filler words in this language. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.preview": {
+    "message": "Preview",
+    "description": "Settings > Filler words: group title above a sample sentence before and after cleaning. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.heard": {
+    "message": "Heard",
+    "description": "Settings > Filler words > Preview: label of the sample as the recognizer heard it. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.fillers.typed": {
+    "message": "Typed",
+    "description": "Settings > Filler words > Preview: label of the sample as Voice would type it. voice/ui/settings.js (fillersPage)."
+  },
+  "settings.rewriting.intro": {
+    "message": "Optional AI polish for dictation, and voice edits for selected text.",
+    "description": "Settings > Rewriting: paragraph at the top of the page. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.textModel": {
+    "message": "Text model",
+    "description": "Settings > Rewriting: group title above the rewrite provider form. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.textModelHelp": {
+    "message": "Its own provider, key, endpoint, and model. For custom servers, enter the full endpoint URL and a model ID, or use Refresh to list models. Leave the key blank when the server doesn't need one.",
+    "description": "Settings > Rewriting: paragraph under Text model. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.polish": {
+    "message": "Dictation polish",
+    "description": "Settings > Rewriting: group title above auto-rewrite, tone, formatting and instructions. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.auto": {
+    "message": "Auto-rewrite dictation",
+    "description": "Settings > Rewriting: switch that sends every dictation through the rewrite provider. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.autoHelp": {
+    "message": "Grammar, tone, and self-corrections such as \"Tuesday, no, Thursday\". Adds a round trip to the rewrite provider.",
+    "description": "Settings > Rewriting: description of Auto-rewrite dictation. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.tone": {
+    "message": "Tone",
+    "description": "Settings > Rewriting: row and choice dialog title for the tone of rewritten text. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.tone.auto": {
+    "message": "Auto",
+    "description": "Settings > Rewriting > Tone: the provider keeps the tone of the dictation. voice/ui/settings.js (TONES)."
+  },
+  "settings.tone.professional": {
+    "message": "Professional",
+    "description": "Settings > Rewriting > Tone: choice. voice/ui/settings.js (TONES)."
+  },
+  "settings.tone.casual": {
+    "message": "Casual",
+    "description": "Settings > Rewriting > Tone: choice. voice/ui/settings.js (TONES)."
+  },
+  "settings.tone.friendly": {
+    "message": "Friendly",
+    "description": "Settings > Rewriting > Tone: choice. voice/ui/settings.js (TONES)."
+  },
+  "settings.tone.concise": {
+    "message": "Concise",
+    "description": "Settings > Rewriting > Tone: choice. voice/ui/settings.js (TONES)."
+  },
+  "settings.rewriting.formatting": {
+    "message": "Smart formatting",
+    "description": "Settings > Rewriting: switch. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.formattingHelp": {
+    "message": "Paragraphs and bullet lists where the content asks for them.",
+    "description": "Settings > Rewriting: description of Smart formatting. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.instructions": {
+    "message": "Custom instructions",
+    "description": "Settings > Rewriting: label of the field with the user's own instruction for the rewrite provider. Saved when the field loses focus. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.instructionsPlaceholder": {
+    "message": "Never use em dashes. Keep greetings.",
+    "description": "Settings > Rewriting: placeholder of Custom instructions; an example instruction. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.voiceEdits": {
+    "message": "Voice edits",
+    "description": "Settings > Rewriting: group title above Rewrite key. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.key": {
+    "message": "Rewrite key",
+    "description": "Settings > Rewriting: row and choice dialog title for the key the user holds over selected text to edit it by voice. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.keyHelp": {
+    "message": "Select text, hold this key, and say what should change. Must differ from the dictation key.",
+    "description": "Settings > Rewriting: description of Rewrite key. voice/ui/settings.js (rewritingPage)."
+  },
+  "settings.rewriting.sameKey": {
+    "message": "Choose a key other than the dictation key.",
+    "description": "Settings: error when the app refuses a key that another Voice key already uses. voice/ui/settings.js (setValue)."
+  },
+  "settings.meetings.screen": {
+    "message": "Screen recording",
+    "description": "Settings > Meetings: segmented control for what Voice records of the screen. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.screenHelp": {
+    "message": "What Voice records of your screen in a new meeting. Change it per meeting in Rukoo.",
+    "description": "Settings > Meetings: description of Screen recording. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.screenFrames": {
+    "message": "Frames",
+    "description": "Settings > Meetings > Screen recording: segment for still frames when the screen changes. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.screenVideo": {
+    "message": "Video",
+    "description": "Settings > Meetings > Screen recording: segment for full video. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.transcription": {
+    "message": "Transcription",
+    "description": "Settings > Meetings: row that opens Meeting transcription; its value is the provider. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.consentWaiting": {
+    "message": "Waiting for your consent. Meetings still record.",
+    "description": "Settings > Meetings: description of the Transcription row when a cloud provider is chosen without consent. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.retention": {
+    "message": "Keep audio",
+    "description": "Settings > Meetings: row and choice dialog title for how long meeting audio stays on the computer. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.retentionHelp": {
+    "message": "Text stays until you delete a meeting. Audio is needed for playback and re-transcription.",
+    "description": "Settings > Meetings: description of Keep audio. voice/ui/settings.js (mainPage)."
+  },
+  "settings.retention.days7": {
+    "message": "7 days after transcription",
+    "description": "Settings > Meetings > Keep audio: choice, the default. voice/ui/settings.js (RETENTION)."
+  },
+  "settings.retention.keep": {
+    "message": "Until I delete the meeting",
+    "description": "Settings > Meetings > Keep audio: choice. voice/ui/settings.js (RETENTION)."
+  },
+  "settings.retention.afterTranscription": {
+    "message": "Remove after transcription",
+    "description": "Settings > Meetings > Keep audio: choice. voice/ui/settings.js (RETENTION)."
+  },
+  "settings.meetings.stopKey": {
+    "message": "Stop key",
+    "description": "Settings > Meetings: row and choice dialog title for a key that stops the meeting. Off by default. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.stopKeyHelp": {
+    "message": "Stops the meeting without using the mouse.",
+    "description": "Settings > Meetings: description of Stop key. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.speakers": {
+    "message": "Speaker labels",
+    "description": "Settings > Meetings: row that opens Speaker labels; also that page's title. Hidden in Voice 0.1. voice/ui/settings.js (mainPage, speakersPage)."
+  },
+  "settings.meetings.storage": {
+    "message": "Storage",
+    "description": "Settings > Meetings: row that opens Storage; also that page's title. voice/ui/settings.js (mainPage, storagePage)."
+  },
+  "settings.meetings.storageValue": {
+    "message": "{free} free · meetings use {size}",
+    "description": "Settings > Meetings: value of the Storage row. {free}, {size}: sizes such as \"120 GB\". voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetingTranscription.title": {
+    "message": "Meeting transcription",
+    "description": "Settings: title of the page with the meeting transcription provider. voice/ui/settings.js (meetingTranscriptionPage)."
+  },
+  "settings.meetingTranscription.intro": {
+    "message": "Voice transcribes while you talk, from the recorded audio. Orukeet keeps the audio on this computer. A cloud provider receives the audio over your own key, and only after you agree below.",
+    "description": "Settings > Meeting transcription: paragraph at the top of the page. voice/ui/settings.js (meetingTranscriptionPage)."
+  },
+  "settings.consent.title": {
+    "message": "Voice sends meeting audio to {provider}",
+    "description": "Settings > Meeting transcription: heading of the disclosure shown for a cloud provider. {provider}: provider name such as Mistral. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.intro": {
+    "message": "The recorded tracks go to {provider} in short pieces while the meeting records, over your own key. Pause stops sending new audio. Choose Orukeet to keep the audio on this computer.",
+    "description": "Settings > Meeting transcription: first paragraph of the disclosure. {provider}: provider name. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.provider": {
+    "message": "Provider",
+    "description": "Settings > Meeting transcription: label in the disclosure; the value is provider and model. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.server": {
+    "message": "Server",
+    "description": "Settings > Meeting transcription: label in the disclosure; the value is the endpoint's host name. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.sent": {
+    "message": "Sent",
+    "description": "Settings > Meeting transcription: label in the disclosure for what goes to the provider. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.sentValue": {
+    "message": "Your microphone and the call audio, as recorded",
+    "description": "Settings > Meeting transcription: what goes to the provider. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.notSent": {
+    "message": "Not sent",
+    "description": "Settings > Meeting transcription: label in the disclosure for what stays on the computer. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.notSentValue": {
+    "message": "Your notes and agent chats in Rukoo",
+    "description": "Settings > Meeting transcription: what never goes to the transcription provider. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.kept": {
+    "message": "Kept by the provider",
+    "description": "Settings > Meeting transcription: label in the disclosure for retention at the provider. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.keptValue": {
+    "message": "Set by its data policy. Voice has no control after upload.",
+    "description": "Settings > Meeting transcription: retention at the provider. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.agree": {
+    "message": "Send meeting audio to {provider} at {host}",
+    "description": "Settings > Meeting transcription: the consent checkbox. Saved with the form. {provider}: provider name. {host}: the endpoint's host name, such as api.mistral.ai. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.again": {
+    "message": "Another provider or server asks again.",
+    "description": "Settings > Meeting transcription: line under the consent checkbox. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.waiting": {
+    "message": "Without your consent, meetings still record. Transcription waits until you agree.",
+    "description": "Settings > Meeting transcription: line under the checkbox while it is not checked. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.speakers.about": {
+    "message": "Who said what, from NVIDIA Nemotron 3 Diarization running on this computer. It separates up to eight voices per track; audio never leaves this computer. Without the model, passages keep their Microphone and Call audio labels.",
+    "description": "Settings > Speaker labels: paragraph in the model card. Hidden in Voice 0.1. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.live": {
+    "message": "Label speakers during the meeting",
+    "description": "Settings > Speaker labels: switch. Hidden in Voice 0.1. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.licence": {
+    "message": "Weights under the OpenMDW License 1.1. Runs through NVIDIA NeMo-Speech.cpp.",
+    "description": "Settings > Speaker labels: license line. Hidden in Voice 0.1. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.storage.local": {
+    "message": "On this computer",
+    "description": "Settings > Storage: group title. voice/ui/settings.js (storagePage)."
+  },
+  "settings.storage.folder": {
+    "message": "Recordings folder",
+    "description": "Settings > Storage: row with the folder that holds meeting audio and transcripts. voice/ui/settings.js (storagePage)."
+  },
+  "settings.storage.usage": {
+    "message": "Uses {size}. {free} free on this drive.",
+    "description": "Settings > Storage: line under the recordings folder. {size}, {free}: sizes such as \"2.4 GB\". voice/ui/settings.js (storagePage)."
+  },
+  "settings.storage.disk": {
+    "message": "When the disk fills up, Voice drops the video first, then the frames, and never the audio.",
+    "description": "Settings > Storage: paragraph about a full disk. Hidden in Voice 0.1, which records no screen. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.title": {
+    "message": "Sync to your bucket",
+    "description": "Settings > Storage: switch for uploading meetings to the user's own S3-compatible storage. Hidden in Voice 0.1. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.help": {
+    "message": "Encrypted on this computer before upload. Video uploads after the meeting.",
+    "description": "Settings > Storage: description of the sync switch. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.service": {
+    "message": "Service",
+    "description": "Settings > Storage: label of the storage service list. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.other": {
+    "message": "Other S3-compatible",
+    "description": "Settings > Storage: storage service choice. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.endpoint": {
+    "message": "Endpoint URL",
+    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.region": {
+    "message": "Region",
+    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.bucket": {
+    "message": "Bucket",
+    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.prefix": {
+    "message": "Folder in the bucket",
+    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.accessKey": {
+    "message": "Access key ID",
+    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.secretKey": {
+    "message": "Secret access key",
+    "description": "Settings > Storage: field label; a saved secret shows as Key saved. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.test": {
+    "message": "Test connection",
+    "description": "Settings > Storage: button. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.testOk": {
+    "message": "Connected to the bucket",
+    "description": "Settings > Storage: result of Test connection. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.encrypted": {
+    "message": "Encrypted on this computer before upload",
+    "description": "Settings > Storage: static row. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.videoAfter": {
+    "message": "Video uploads after the meeting",
+    "description": "Settings > Storage: static row. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.recovery": {
+    "message": "Save the encryption key",
+    "description": "Settings > Storage: row that shows the key once. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.recoveryHelp": {
+    "message": "Without this key, nobody can open the files in your bucket, you included.",
+    "description": "Settings > Storage: description of Save the encryption key. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.sync.waiting": {
+    "message": {
+      "one": "{count} file waiting",
+      "other": "{count} files waiting"
+    },
+    "description": "Settings > Storage: upload queue. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+  },
+  "settings.rukoo.connection": {
+    "message": "Connection",
+    "description": "Settings > Rukoo: group title. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.version": {
+    "message": "Rukoo {version} · protocol {protocol}",
+    "description": "Settings > Rukoo: description of the status row while connected. {version}: Rukoo's version such as 2.2.0. {protocol}: bridge protocol number. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.notRunningHelp": {
+    "message": "Start Rukoo to see your meetings next to your agent.",
+    "description": "Settings > Rukoo: description of the status row while no Rukoo is connected. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.rukooOutdatedHelp": {
+    "message": "Update Rukoo to use it with this version of Voice.",
+    "description": "Settings > Rukoo: description of the status row for Rukoo needs an update. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.voiceOutdatedHelp": {
+    "message": "Update Voice to use it with this version of Rukoo.",
+    "description": "Settings > Rukoo: description of the status row for Voice needs an update. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.refusedHelp": {
+    "message": "The token didn't match. Make a new token if this keeps happening.",
+    "description": "Settings > Rukoo: description of the status row for Connection refused. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.address": {
+    "message": "Address",
+    "description": "Settings > Rukoo: row with the bridge's local address, such as 127.0.0.1:49821. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.file": {
+    "message": "Discovery file",
+    "description": "Settings > Rukoo: row with the path of the file through which Rukoo finds Voice. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.behind": {
+    "message": "Events Rukoo hasn't received",
+    "description": "Settings > Rukoo: row whose value is a count; helpful when the transcript in Rukoo looks behind. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.token": {
+    "message": "Token",
+    "description": "Settings > Rukoo: row about the secret in the discovery file that Rukoo connects with. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.newToken": {
+    "message": "Make a new token",
+    "description": "Settings > Rukoo: button that replaces the token in the discovery file. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.newTokenHelp": {
+    "message": "Disconnects Rukoo, which reconnects with the new token. For when the token may have leaked.",
+    "description": "Settings > Rukoo: description of Make a new token. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.newTokenDone": {
+    "message": "New token made",
+    "description": "Settings > Rukoo: line after Make a new token succeeded. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.rukoo.about": {
+    "message": "Rukoo finds Voice through this file. Only your user account can read it. Meetings need Rukoo; dictation works without it.",
+    "description": "Settings > Rukoo: paragraph under the connection card. voice/ui/settings.js (rukooPage)."
+  },
+  "settings.general.language": {
+    "message": "Language",
+    "description": "Settings > General: row and choice dialog title for the interface language. Its choices are System and the languages' own names. voice/ui/settings.js (mainPage)."
+  },
+  "settings.general.theme": {
+    "message": "Theme",
+    "description": "Settings > General: row and choice dialog title for light or dark; applies to Settings and the pill. voice/ui/settings.js (mainPage)."
+  },
+  "settings.theme.light": {
+    "message": "Light",
+    "description": "Settings > General > Theme: choice. voice/ui/settings.js (THEMES)."
+  },
+  "settings.theme.dark": {
+    "message": "Dark",
+    "description": "Settings > General > Theme: choice. voice/ui/settings.js (THEMES)."
+  },
+  "settings.updates.title": {
+    "message": "Check for updates",
+    "description": "Settings > About: switch for the daily update check, off by default. voice/ui/settings.js (mainPage)."
+  },
+  "settings.updates.help": {
+    "message": "Voice asks GitHub for new Voice releases once a day. GitHub sees your IP address.",
+    "description": "Settings > About: description of Check for updates. voice/ui/settings.js (mainPage)."
+  },
+  "settings.updates.checkNow": {
+    "message": "Check now",
+    "description": "Settings > About: row that checks for a newer Voice right away, also with the switch off. voice/ui/settings.js (mainPage)."
+  },
+  "settings.updates.checking": {
+    "message": "Checking…",
+    "description": "Settings > About: value of Check now while it runs. voice/ui/settings.js (updatesValue)."
+  },
+  "settings.updates.available": {
+    "message": "Voice {version} is available",
+    "description": "Settings > About: value of Check now when a newer Voice exists. {version}: such as 0.2.0. voice/ui/settings.js (updatesValue)."
+  },
+  "settings.updates.upToDate": {
+    "message": "Voice is up to date",
+    "description": "Settings > About: value of Check now when no newer Voice exists. voice/ui/settings.js (updatesValue)."
+  },
+  "settings.updates.failed": {
+    "message": "Couldn't reach GitHub. Try again later.",
+    "description": "Settings > About: value of Check now when the check failed. voice/ui/settings.js (updatesValue)."
+  },
+  "settings.about.import": {
+    "message": "Import from Ownkey",
+    "description": "Settings > About: row that opens the Ownkey import page; also that page's title. voice/ui/settings.js (mainPage, importPage)."
+  },
+  "settings.about.importedOn": {
+    "message": "Imported on {date}",
+    "description": "Settings > About: value of Import from Ownkey. {date}: a date and time. voice/ui/settings.js (mainPage)."
+  },
+  "settings.about.notImported": {
+    "message": "Not imported",
+    "description": "Settings > About: value of Import from Ownkey before any import; also the group title of the settings Voice didn't take over. voice/ui/settings.js (mainPage, importPage)."
+  },
+  "settings.about.logs": {
+    "message": "Open the logs folder",
+    "description": "Settings > About: row that shows Voice's log files in Explorer. voice/ui/settings.js (mainPage)."
+  },
+  "settings.about.licenses": {
+    "message": "Licenses",
+    "description": "Settings > About: row and dialog title for third-party licenses. voice/ui/settings.js (mainPage, licensesDialog)."
+  },
+  "settings.about.version": {
+    "message": "Version",
+    "description": "Settings > About: static row with Voice's version. voice/ui/settings.js (mainPage)."
+  },
+  "settings.about.dev": {
+    "message": "Development copy",
+    "description": "Settings > About: description of Version in a development copy (RUKOO_VOICE_DATA_DIR set). voice/ui/settings.js (mainPage)."
+  },
+  "settings.licenses.inter": {
+    "message": "Inter typeface by Rasmus Andersson, under the SIL Open Font License 1.1.",
+    "description": "Settings > About > Licenses: line in the dialog. voice/ui/settings.js (licensesDialog)."
+  },
+  "settings.licenses.orukeet": {
+    "message": "Orukeet speech model by Oruk AI, based on NVIDIA Parakeet TDT 0.6B v3. Weights under CC BY-SA 4.0.",
+    "description": "Settings > About > Licenses: line in the dialog. voice/ui/settings.js (licensesDialog)."
+  },
+  "settings.licenses.nemotron": {
+    "message": "Nemotron 3 Diarization by NVIDIA, under the OpenMDW License 1.1, run through NeMo-Speech.cpp.",
+    "description": "Settings > About > Licenses: line in the dialog. Hidden in Voice 0.1. voice/ui/settings.js (licensesDialog)."
+  },
+  "settings.licenses.beautifulUi": {
+    "message": "Parts of the interface follow Beautiful UI by Shane Levine, under the MIT License.",
+    "description": "Settings > About > Licenses: line in the dialog. voice/ui/settings.js (licensesDialog)."
+  },
+  "settings.import.config": {
+    "message": "Ownkey's settings",
+    "description": "Settings > Import from Ownkey: row that says whether Ownkey's config file exists. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.found": {
+    "message": "Found at {path}",
+    "description": "Settings > Import from Ownkey: description of Ownkey's settings. {path}: such as %APPDATA%\\Ownkey\\config.json. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.notFound": {
+    "message": "Not found",
+    "description": "Settings > Import from Ownkey: description of Ownkey's settings when the file doesn't exist. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.last": {
+    "message": "Last import",
+    "description": "Settings > Import from Ownkey: row with the date of the last import. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.never": {
+    "message": "Never",
+    "description": "Settings > Import from Ownkey: value of Last import before any import. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.models": {
+    "message": "Models in Ownkey's folder",
+    "description": "Settings > Import from Ownkey: row listing the models Voice found in Ownkey's model folder. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.modelsHelp": {
+    "message": "Voice uses them without downloading them again.",
+    "description": "Settings > Import from Ownkey: line under the list of models. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.noModels": {
+    "message": "None",
+    "description": "Settings > Import from Ownkey: value of Models in Ownkey's folder when it has none. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.tookOver": {
+    "message": "What Voice took over",
+    "description": "Settings > Import from Ownkey: group title above the import report, one row per area. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.keys": {
+    "message": "Keys",
+    "description": "Settings > Import from Ownkey: report area for the dictation and rewrite keys. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.keysValue": {
+    "message": "Dictation {key}, rewrite {rewriteKey}",
+    "description": "Settings > Import from Ownkey: the imported keys. {key}, {rewriteKey}: key names, or Off. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.keyImported": {
+    "message": "{provider} key imported",
+    "description": "Settings > Import from Ownkey: an API key came over. Never shows any part of the key. {provider}: provider name. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.fillersOn": {
+    "message": "On for {languages}",
+    "description": "Settings > Import from Ownkey: filler words were on. {languages}: language names joined as a list. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.retention": {
+    "message": "Keep audio: {retention}",
+    "description": "Settings > Import from Ownkey: the imported audio retention. {retention}: one of the Keep audio choices. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.consentKept": {
+    "message": "Consent to send meeting audio carried over",
+    "description": "Settings > Import from Ownkey: Ownkey always allowed live cloud transcription, so Voice keeps that consent. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.consentAsk": {
+    "message": "Asks for consent again",
+    "description": "Settings > Import from Ownkey: a cloud meeting provider came over without consent; Settings asks again. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.notSet": {
+    "message": "Not set in Ownkey",
+    "description": "Settings > Import from Ownkey: an area Ownkey's settings didn't have. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.summaries": {
+    "message": "Summaries and remote analysis",
+    "description": "Settings > Import from Ownkey: a setting Voice didn't take over. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.summariesWhy": {
+    "message": "Rukoo's agent writes the meeting notes now, so Voice sends no meeting text to a rewrite provider.",
+    "description": "Settings > Import from Ownkey: why summaries weren't taken over. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.run": {
+    "message": "Import",
+    "description": "Settings > Import from Ownkey: filled button before the first import. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.again": {
+    "message": "Import again",
+    "description": "Settings > Import from Ownkey: filled button after an earlier import, and the confirm button of its dialog. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.readOnly": {
+    "message": "The import only reads Ownkey's files. Ownkey keeps working with its own settings.",
+    "description": "Settings > Import from Ownkey: line beside the import button. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.confirmTitle": {
+    "message": "Replace Voice's settings with Ownkey's?",
+    "description": "Settings > Import from Ownkey: title of the dialog before Import again. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.confirmBody": {
+    "message": "Your Voice dictionary and keys are overwritten.",
+    "description": "Settings > Import from Ownkey: body of the dialog before Import again. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.dev": {
+    "message": "In development, the import runs only with --import-ownkey <copy>.",
+    "description": "Settings > Import from Ownkey: note in a development copy, where the button is disabled. Keep \"--import-ownkey\" as it is: it's a command-line option. voice/ui/settings.js (importPage)."
+  },
+  "settings.import.failed": {
+    "message": "Couldn't import: {error}",
+    "description": "Settings > Import from Ownkey: line after a failed import. {error}: the app's English error text. voice/ui/settings.js (importPage)."
+  },
+  "settings.keys.rightAlt": {
+    "message": "Right Alt",
+    "description": "Settings: key name in key lists and descriptions. Also AltGr on many layouts. voice/ui/settings.js (keyName)."
+  },
+  "settings.keys.rightCtrl": {
+    "message": "Right Ctrl",
+    "description": "Settings: key name in key lists and descriptions. voice/ui/settings.js (keyName)."
+  },
+  "settings.keys.rightShift": {
+    "message": "Right Shift",
+    "description": "Settings: key name in key lists and descriptions. voice/ui/settings.js (keyName)."
+  },
+  "settings.keys.pause": {
+    "message": "Pause",
+    "description": "Settings: key name of the Pause/Break key, as printed on most keyboards. voice/ui/settings.js (keyName)."
+  },
+  "settings.keys.scrollLock": {
+    "message": "Scroll Lock",
+    "description": "Settings: key name, as printed on most keyboards. voice/ui/settings.js (keyName)."
+  },
+  "settings.keys.usedDictation": {
+    "message": "Used for dictation",
+    "description": "Settings: hint beside a disabled key in a key list; the dictation key already uses it. voice/ui/settings.js (keyChoice)."
+  },
+  "settings.keys.usedRewrite": {
+    "message": "Used for voice edits",
+    "description": "Settings: hint beside a disabled key in a key list; the rewrite key already uses it. voice/ui/settings.js (keyChoice)."
+  },
+  "settings.keys.usedStop": {
+    "message": "Stops meetings",
+    "description": "Settings: hint beside a disabled key in a key list; the stop key already uses it. voice/ui/settings.js (keyChoice)."
+  },
+  "settings.keys.ownkey": {
+    "message": "Ownkey answers this key too",
+    "description": "Settings: hint beside a key that the running Ownkey also listens on. voice/ui/settings.js (keyChoice)."
+  },
+  "settings.keys.dev": {
+    "message": "Development copies start with F13 and F14, so they don't answer Ownkey's keys.",
+    "description": "Settings: note at the top of a key list in a development copy. voice/ui/settings.js (keyChoice)."
+  },
+  "settings.errors.failed": {
+    "message": "Couldn't change this setting.",
+    "description": "Settings: dialog body when the app refused a change; Error details shows why. voice/ui/settings.js (setValue)."
+  }
+}

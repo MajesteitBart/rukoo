@@ -1,0 +1,145 @@
+/* Rukoo Voice design tokens. The values are copied from Rukoo: src/renderer/styles.css (:root and :root.light)
+   and src/renderer/agent.css (.bui and :root.light .bui, moved to :root here). Keep them in sync;
+   test/voice-ui-tokens.test.js fails when a copied value drifts. Dark is the default, light is :root.light. */
+
+/* ---------- fonts ---------- */
+
+/* Inter, bundled with its licence in fonts/. The packaged app never fetches a font from the network. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(fonts/inter-latin-ext-opsz-normal.woff2) format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(fonts/inter-latin-opsz-normal.woff2) format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ---------- tokens ---------- */
+
+:root {
+  /* styles.css :root */
+  --bg: #141519;
+  --panel: #1b1c21;
+  --panel-2: #212228;
+  --raised: #25262d;
+  --border: #2a2c33;
+  --border-strong: #3a3d47;
+  --hover: #23252c;
+  --active: #2c2f38;
+  --sel: #2c2f38;
+  --chip: #2a2c34;
+  --text: #ecedf1;
+  --text-2: #a7adba;
+  --text-3: #7a808e;
+  --accent: #7aa5f5;
+  --accent-soft: rgba(122, 165, 245, 0.15);
+  --link: #8ab0ff;
+  --primary: #e9ecf5;
+  --on-primary: #15171c;
+  --danger: #ff6b6b;
+  --ok: #4ccf8b;
+  --warn: #f5b84c;
+  --focus: #7aa5f5;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --font: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Inter', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+
+  /* agent.css .bui */
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+  --line-soft: color-mix(in srgb, var(--border) 60%, transparent);
+  --field: var(--chip);
+  --green: oklch(0.705 0.154 153.814);
+  --green-tint: oklch(0.705 0.154 153.814 / 0.14);
+  --orange: oklch(0.746 0.156 55.642);
+  --orange-tint: oklch(0.746 0.156 55.642 / 0.14);
+  --red: oklch(0.666 0.18 21.433);
+  --red-tint: oklch(0.666 0.18 21.433 / 0.14);
+  --bui-shadow-xs: 0 0 4px 0 #0000000a;
+  --bui-shadow-sm: 0 18px 47px 0 #00000008, 0 7.5px 19px 0 #00000005, 0 4px 10.5px 0 #00000005, 0 2.3px 5.8px 0 #00000003,
+    0 1.2px 3.1px 0 #00000003, 0 0.5px 1.3px 0 #00000003;
+  --bui-shadow-md: 0 17.54px 23.39px 0 #0000000a, 0 9.4px 12.5px 0 #00000008, 0 5.25px 7px 0 #00000005,
+    0 2.79px 3.72px -2px #00000003, 0 1.16px 1.5px 0 #00000003;
+  --bui-shadow-lg: 0 25px 50px 0 #0000000d, 0 12px 24px 0 #0000000a, 0 6px 12px 0 #00000008, 0 3px 6px 0 #00000005,
+    0 1.5px 3px 0 #00000005;
+  --shadow-hairline: 0 0 0 1px var(--line);
+  --shadow-btn: 0 0 0 1px oklch(1 0 0 / 0.1), 0 1px 2px oklch(0 0 0 / 0.3);
+  --shadow-card: 0 0 0 1px oklch(1 0 0 / 0.11), 0 1px 2px oklch(0 0 0 / 0.2), 0 2px 6px oklch(0 0 0 / 0.2);
+  --shadow-raised: 0 0 0 1px oklch(1 0 0 / 0.13), 0 2px 10px oklch(0 0 0 / 0.22);
+  --shadow-overlay: 0 0 0 1px oklch(1 0 0 / 0.15), 0 8px 28px oklch(0 0 0 / 0.34);
+  --shadow-inset-field: inset 0 1px 2px oklch(0 0 0 / 0.4);
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --radius-window: 14px;
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-link: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+
+  /* Voice only. The pill is a 36px pill on the raised surface with the overlay elevation. */
+  --pill-h: 36px;
+  --pill-bg: var(--raised);
+  --pill-shadow: 0 0 0 1px oklch(1 0 0 / 0.15), 0 8px 28px oklch(0 0 0 / 0.34);
+  color-scheme: dark;
+}
+
+:root.light {
+  /* styles.css :root.light */
+  --bg: #f3f4f6;
+  --panel: #ffffff;
+  --panel-2: #f8f9fb;
+  --raised: #ffffff;
+  --border: #e6e8ec;
+  --border-strong: #d2d6de;
+  --hover: #f2f3f6;
+  --active: #ebedf1;
+  --sel: #ebedf1;
+  --chip: #eff1f4;
+  --text: #16181d;
+  --text-2: #565c69;
+  --text-3: #868b98;
+  --accent: #2f66d6;
+  --accent-soft: rgba(47, 102, 214, 0.1);
+  --link: #2f63c8;
+  --primary: #1c2340;
+  --on-primary: #ffffff;
+  --danger: #d23b3b;
+  --ok: #1f9d5c;
+  --warn: #c27c00;
+  --focus: #2f66d6;
+  --shadow: 0 12px 32px rgba(20, 24, 40, 0.14), 0 2px 6px rgba(20, 24, 40, 0.06);
+  --shadow-sm: 0 1px 2px rgba(20, 24, 40, 0.07), 0 0 0 1px rgba(20, 24, 40, 0.06);
+
+  /* agent.css :root.light .bui */
+  --green: oklch(0.603 0.155 150.883);
+  --green-tint: oklch(0.958 0.017 159.118);
+  --orange: oklch(0.689 0.179 49.902);
+  --orange-tint: oklch(0.964 0.021 67.581);
+  --red: oklch(0.621 0.192 23.042);
+  --red-tint: oklch(0.956 0.017 17.462);
+  --shadow-btn: 0 0 0 1px var(--line-strong), var(--bui-shadow-xs);
+  --shadow-card: 0 0 0 1px var(--line), var(--bui-shadow-sm);
+  --shadow-raised: 0 0 0 1px var(--line), var(--bui-shadow-md);
+  --shadow-overlay: 0 0 0 1px var(--line), var(--bui-shadow-lg);
+  --shadow-inset-field: inset 0 1px 2px oklch(0 0 0 / 0.12);
+
+  /* Voice only. --shadow-overlay without its widest layer (0 25px 50px), so the shadow fits the window's 40px
+     bottom margin, and a --border-strong ring, so a white pill keeps its edge over a white document. */
+  --pill-shadow: 0 0 0 1px var(--border-strong), 0 12px 24px 0 #0000000a, 0 6px 12px 0 #00000008,
+    0 3px 6px 0 #00000005, 0 1.5px 3px 0 #00000005;
+  color-scheme: light;
+}
