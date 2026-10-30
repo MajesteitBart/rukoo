@@ -188,6 +188,22 @@ test('max_chars stops early with more, and reading again gets the rest without r
   assert.match(start.note, /with from_seconds \d+/);
 });
 
+test('a first passage longer than max_chars comes back whole, and the next read goes on after it', async (t) => {
+  const { feed, call, hub } = await setup(t);
+  const long = `Start of a long turn ${'y'.repeat(1450)} end of the long turn.`;
+  feed([startedEv(), ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }), passage('call', 0, long), passage('call', 60000, 'The next passage.')]);
+  const c = hub.create({ agent: 'claude', meeting: { id: M } });
+  const first = data(await call('read_meeting_transcript', { max_chars: 1000 }, c.id));
+  assert.equal(first.count, 1);
+  assert.match(untag(first.transcript), /end of the long turn\./, 'nothing is cut from the passage');
+  assert.equal(first.more, true);
+  assert.match(first.note, /longer than max_chars/);
+  const second = data(await call('read_meeting_transcript', { max_chars: 1000 }, c.id));
+  assert.equal(second.count, 1);
+  assert.match(untag(second.transcript), /The next passage\./);
+  assert.equal(second.more, false);
+});
+
 test('which meeting: the named one, else the chat\'s, else the one recording, else the newest; unknown ones are named tagged', async (t) => {
   const { feed, call, hub } = await setup(t);
   assert.match(failure(await call('read_meeting_transcript')), /Rukoo has no meetings yet/);
