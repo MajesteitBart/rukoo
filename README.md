@@ -61,7 +61,7 @@ More in [Agents](docs/agents.md).
 
 The interface is in English and Dutch. You choose during setup or in Settings → General → Language.
 
-Every six hours Rukoo asks GitHub whether a newer release exists, and shows an Update button when there is one. That request shows GitHub your IP address. Settings → About turns the check off.
+Every six hours Rukoo asks GitHub whether a newer release exists. That request shows GitHub your IP address. The Windows installer and the Linux AppImage download the new version, check it against the SHA-512 hash in the release's `latest.yml` and install it when you quit Rukoo; the Restart to update button does that right away. The portable Windows app, the `.deb` package and the Mac app show an Update button that opens the release page. Settings → About turns the check off and picks the update channel: Stable gets releases, Nightly also gets the daily builds of `main` (pre-releases on GitHub). Switching from Nightly back to Stable keeps the installed build until the next release.
 
 ## Screenshots
 

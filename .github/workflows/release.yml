@@ -198,6 +198,8 @@ jobs:
             dist/Rukoo-Mail-*-mac-*.dmg
             dist/Rukoo-Mail-*-mac-*.zip
             dist/SHA256SUMS-*.txt
+            dist/latest.yml
+            dist/latest-linux.yml
           if-no-files-found: error
           retention-days: 14
 
@@ -244,5 +246,7 @@ jobs:
             echo "::error::Title the draft \"$RELEASE_TAG - Added ...\" or \"$RELEASE_TAG - Fixed ...\", then re-run the failed jobs."
             exit 1
           fi
-          gh release upload "$RELEASE_TAG" ./*.exe ./*.AppImage ./*.deb ./*.dmg ./*.zip SHA256SUMS.txt --clobber
+          # latest.yml and latest-linux.yml describe the Windows installer and the AppImage for Rukoo's own updater
+          # (src/main/installer.js). The two Mac builds would both write latest-mac.yml; the Mac app doesn't update itself.
+          gh release upload "$RELEASE_TAG" ./*.exe ./*.AppImage ./*.deb ./*.dmg ./*.zip SHA256SUMS.txt latest.yml latest-linux.yml --clobber
           gh release edit "$RELEASE_TAG" --tag "$RELEASE_TAG" --verify-tag --draft=false "${flags[@]}"

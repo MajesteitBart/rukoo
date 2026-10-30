@@ -1,6 +1,7 @@
 // Rukoo 2.1's "What's new" guide, the keyboard schemes and the update check, in the real app with a throwaway
 // profile and the demo account.
 const { test, expect, _electron: electron } = require('@playwright/test');
+const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
@@ -12,13 +13,26 @@ let win;
 let dataDir;
 let github;
 
-// GitHub's releases API, with a Rukoo newer than this one.
+const NIGHTLY = '9.2.0-nightly.20261031.5';
+
+// GitHub's releases API, with a Rukoo newer than this one, and a nightly build after it that this platform could
+// download (its update description is on this server).
 function fakeGitHub() {
-  const body = JSON.stringify([
-    { tag_name: 'v9.1.0', name: 'v9.1.0', html_url: 'https://github.com/MajesteitBart/rukoo/releases/tag/v9.1.0', draft: false, prerelease: false }
+  const manifest = process.platform === 'win32' ? 'latest.yml' : process.platform === 'darwin' ? 'latest-mac.yml' : 'latest-linux.yml';
+  let port = 0;
+  const body = () => JSON.stringify([
+    { tag_name: 'v9.1.0', name: 'v9.1.0', html_url: 'https://github.com/MajesteitBart/rukoo/releases/tag/v9.1.0', draft: false, prerelease: false },
+    {
+      tag_name: `v${NIGHTLY}`,
+      name: `Rukoo Nightly ${NIGHTLY}`,
+      html_url: `https://github.com/MajesteitBart/rukoo/releases/tag/v${NIGHTLY}`,
+      draft: false,
+      prerelease: true,
+      assets: [{ name: manifest, browser_download_url: `http://127.0.0.1:${port}/download/v${NIGHTLY}/${manifest}` }]
+    }
   ]);
-  const server = http.createServer((req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(body));
-  return new Promise((r) => server.listen(0, '127.0.0.1', () => r(server)));
+  const server = http.createServer((req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(body()));
+  return new Promise((r) => server.listen(0, '127.0.0.1', () => r(server, (port = server.address().port))));
 }
 
 async function launch(extra = {}) {
@@ -183,6 +197,59 @@ test('a newer release on GitHub shows a button above the sync status that opens 
   await expect(page.locator('[data-a="toggle:checkUpdates"] .switch')).not.toHaveClass(/on/);
   await page.locator('[data-a="updates-check"]').click();
   await expect(page.locator('[data-a="updates-check"] .value')).toHaveText('Rukoo 9.1.0 is available');
+});
+
+test('the nightly channel offers nightly builds, and a downloaded update restarts Rukoo into it', async () => {
+  await launch({ RUKOO_RELEASES_URL: `http://127.0.0.1:${github.address().port}/releases` });
+  await win.waitForSelector('.provider-grid');
+  await win.click('[data-s="demo"]');
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await app.evaluate(() => global.__semUpdates.check({ force: true }));
+  await expect(win.locator('.update-btn')).toHaveText('Update to 9.1.0');
+
+  await win.click('[data-action="settings"]');
+  const page = win.locator('.page.settings');
+  const channel = page.locator('[data-a="updates-channel"]');
+  await expect(channel.locator('.value')).toHaveText('Stable');
+  await channel.click();
+  const picker = win.locator('.dialog', { hasText: 'Update channel' });
+  await expect(picker.locator('.radio-row')).toHaveText([/^Stable.*two weeks/, /^Nightly.*bugs\.$/]);
+  await picker.locator('.radio-row .rl', { hasText: /^Nightly$/ }).click();
+  await expect(channel.locator('.value')).toHaveText('Nightly');
+  await expect(page.locator('[data-a="updates-check"] .value')).toHaveText(`Rukoo ${NIGHTLY} is available`);
+  // This test install can't update itself, so the button opens the release page.
+  await expect(win.locator('.update-btn')).toHaveText(`Update to ${NIGHTLY}`);
+  await expect.poll(() => JSON.parse(fs.readFileSync(path.join(dataDir, 'data', 'settings.json'), 'utf8')).updateChannel).toBe('nightly');
+
+  // An install that updates itself (installer.js): no button while it downloads, then Restart to update.
+  const install = (status, percent) =>
+    app.evaluate(({}, [status, percent, version]) => {
+      Object.assign(global.__semInstaller, { kind: 'nsis', status, percent, version });
+      global.__semInstaller.emit('changed', global.__semInstaller.state());
+    }, [status, percent, NIGHTLY]);
+  await install('downloading', 41);
+  await expect(page.locator('[data-a="updates-check"] .value')).toHaveText(`Downloading Rukoo ${NIGHTLY} (41%)`);
+  await expect(win.locator('.update-btn')).toHaveCount(0);
+  await expect(page.locator('[data-a="updates-install"]')).toHaveCount(0);
+  await install('ready', 100);
+  await expect(page.locator('[data-a="updates-check"] .value')).toHaveText(`Rukoo ${NIGHTLY} installs when you quit`);
+  await expect(page.locator('[data-a="updates-install"]')).toContainText('Restart to update');
+  await app.evaluate(({ app: electronApp }) => {
+    global.__quits = 0;
+    global.__quit = electronApp.quit;
+    electronApp.quit = () => global.__quits++;
+  });
+  await page.locator('[data-a="updates-install"]').click();
+  await expect.poll(() => app.evaluate(() => global.__quits)).toBe(1);
+  while (await page.count()) await page.locator('[data-a="back"]').click();
+  await expect(win.locator('.update-btn')).toHaveText('Restart to update');
+  await win.locator('.update-btn').click();
+  await expect.poll(() => app.evaluate(() => global.__quits)).toBe(2);
+  await app.evaluate(({ app: electronApp }) => (electronApp.quit = global.__quit));
+
+  // A failed download falls back to the release page.
+  await install('failed', 0);
+  await expect(win.locator('.update-btn')).toHaveText(`Update to ${NIGHTLY}`);
 });
 
 test("after the guide, the sidebar and a panel show what Jev is doing, and when it has to wait", async () => {

@@ -707,10 +707,17 @@ function setMode(mode) {
   }
 }
 
-// A newer Rukoo on GitHub: a small button above the line over the sync status. It opens the release page.
+// A newer Rukoo on GitHub: a small button above the line over the sync status. Where this install updates itself
+// (main's installer.js) it shows once the download is done and restarts into the new version; while it downloads
+// there is no button. Elsewhere, and when the download failed, it opens the release page.
 function updateButton() {
   const u = S.updates && S.updates.available;
   if (!u) return '';
+  const install = S.updates.install && S.updates.install.version === u.version ? S.updates.install : null;
+  if (install && install.status === 'ready') {
+    return `<button class="update-btn" data-action="update-install" title="${esc(t('updates.button.restartTitle', { version: u.version }))}">${icons.sync}<span>${esc(t('updates.button.restart'))}</span></button>`;
+  }
+  if (S.updates.install && (!install || install.status !== 'failed') && u.feed) return '';
   return `<button class="update-btn" data-action="update" title="${esc(t('updates.button.title', { version: u.version }))}">${icons.download}<span>${esc(t('updates.button.label', { version: u.version }))}</span></button>`;
 }
 
@@ -853,6 +860,8 @@ function bindSidebar() {
         return newFolder();
       case 'update':
         return api('updatesOpen');
+      case 'update-install':
+        return api('updatesInstall');
       case 'sort-activity':
         return toggleSortPanel(t);
     }

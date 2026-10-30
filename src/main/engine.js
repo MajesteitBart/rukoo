@@ -72,6 +72,8 @@ const DEFAULT_SETTINGS = {
   keymap: 'rukoo',
   // Ask GitHub for new releases now and then. See updates.js.
   checkUpdates: true,
+  // 'stable' or 'nightly'; null follows the installed build (updates.js channelFor).
+  updateChannel: null,
   // The version whose "What's new" guide was last shown.
   whatsNewSeen: ''
 };
@@ -93,6 +95,7 @@ function normalizeSettings(s) {
   s.quickActions = Array.isArray(s.quickActions) ? [...new Set(s.quickActions.filter((a) => QUICK_ACTIONS.includes(a)))].slice(0, 4) : DEFAULT_SETTINGS.quickActions;
   s.keymap = KEYMAPS.includes(s.keymap) ? s.keymap : DEFAULT_SETTINGS.keymap;
   s.checkUpdates = s.checkUpdates !== false;
+  s.updateChannel = ['stable', 'nightly'].includes(s.updateChannel) ? s.updateChannel : null;
   s.whatsNewSeen = typeof s.whatsNewSeen === 'string' ? s.whatsNewSeen : '';
   s.calendar = normalizeCalendar(s.calendar);
   // A footer text that can't carry the link ({url}), or is longer than 300 characters, falls back to the default.
