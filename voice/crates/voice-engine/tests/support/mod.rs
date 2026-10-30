@@ -70,6 +70,9 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
+        // A test that failed mid-meeting leaves its recorder running. On Windows that recorder inherited
+        // the test's output pipe, so cargo would wait for it, up to the recorder's 8-hour limit.
+        stop_recorders(&self.0, 4);
         if thread::panicking() {
             return;
         }
@@ -81,6 +84,43 @@ impl Drop for TempDir {
             thread::sleep(Duration::from_millis(100));
         }
     }
+}
+
+/// Stops every recorder still recording into a meeting under `dir`, by the process id in its
+/// recorder.json: only recorders this test started, and never by image name.
+fn stop_recorders(dir: &Path, depth: usize) {
+    if let Some(file) = voice_recorder::meeting::read_recorder_file(dir) {
+        if file.pid != std::process::id() {
+            kill(file.pid);
+        }
+    }
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            stop_recorders(&entry.path(), depth - 1);
+        }
+    }
+}
+
+fn kill(pid: u32) {
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("taskkill");
+    #[cfg(windows)]
+    command.args(["/PID", &pid.to_string(), "/F"]);
+    #[cfg(not(windows))]
+    let mut command = std::process::Command::new("kill");
+    #[cfg(not(windows))]
+    command.args(["-9", &pid.to_string()]);
+    let _ = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 // The sink -----------------------------------------------------------------------------------
