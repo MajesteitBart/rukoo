@@ -217,7 +217,9 @@ test('cut, copy, paste, paste as plain text and select all act on the text in th
   expect(await clipboardText()).toBe('brave ');
   await expect(win.locator('.composer')).toHaveAttribute('data-dirty', 'true');
 
-  // Paste puts it back over a selection.
+  // Paste puts it back over a selection. The clipboard is the computer's, which other test runs can change, so the
+  // test puts the text there again rather than count on the Cut's.
+  await setClipboard({ text: 'brave ' });
   at = await select(win, 'new ');
   await win.mouse.click(at.x, at.y, { button: 'right' });
   expect(await enabled(win)).toEqual(['Cut', 'Copy', 'Paste', 'Paste as plain text', 'Select all']);
