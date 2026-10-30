@@ -62,6 +62,18 @@ const spelling = (spell) =>
     }
   }, spell);
 const spellCalls = () => app.evaluate(() => global.__spellCalls);
+// From here on, each clipboard read in main waits until the test finishes it: reads() counts them, finish(i) ends one.
+async function holdClipboardReads() {
+  await app.evaluate(({ clipboard }) => {
+    const read = clipboard.read.bind(clipboard);
+    global.__reads = [];
+    clipboard.read = () => new Promise((resolve) => global.__reads.push(() => resolve(read())));
+  });
+  return {
+    reads: () => app.evaluate(() => global.__reads.length),
+    finish: (i) => app.evaluate((_, i) => global.__reads[i](), i)
+  };
+}
 // data: { text, html }, or null to empty the clipboard.
 const setClipboard = (data) =>
   app.evaluate(({ clipboard, ClipboardItem }, data) => {
@@ -159,14 +171,7 @@ test('a late answer for an earlier right-click opens nothing over the text', asy
   await spelling([{ word: 'Subjcet', suggestions: ['Subject'] }, { word: 'Thsi', suggestions: ['This'] }]);
   await win.fill('[data-field="subject"]', 'Subjcet');
   await write(win, 'Thsi is the plan.');
-  // Every clipboard read waits until the test lets it finish.
-  await app.evaluate(({ clipboard }) => {
-    const read = clipboard.read.bind(clipboard);
-    global.__reads = [];
-    clipboard.read = () => new Promise((resolve) => global.__reads.push(() => resolve(read())));
-  });
-  const reads = () => app.evaluate(() => global.__reads.length);
-  const finish = (i) => app.evaluate((_, i) => global.__reads[i](), i);
+  const { reads, finish } = await holdClipboardReads();
 
   await win.locator('.composer [data-field="subject"]').click({ button: 'right' });
   await expect.poll(reads).toBe(1);
@@ -310,4 +315,16 @@ test('the quoted email in a reply keeps its own menu, and a right-click elsewher
   await win.locator('.composer .editor').click({ button: 'right' });
   await expect(menu(win)).toHaveCount(1);
   expect(await labels(win)).toEqual(['Cut', 'Copy', 'Paste', 'Paste as plain text', 'Select all']);
+  await win.keyboard.press('Escape');
+
+  // The text's answer is still on its way when the quoted email is right-clicked: the quote's menu, the newer one,
+  // stays.
+  const { reads, finish } = await holdClipboardReads();
+  await win.locator('.composer .editor').click({ button: 'right' });
+  await expect.poll(reads).toBe(1);
+  await quote.locator('body').click({ button: 'right', position: { x: 30, y: 10 } });
+  expect(await labels(win)).toEqual(['Select all']);
+  await finish(0);
+  await win.waitForTimeout(300);
+  expect(await labels(win)).toEqual(['Select all']);
 });

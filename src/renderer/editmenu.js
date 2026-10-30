@@ -4,7 +4,7 @@
 // menu key and Shift+F10 raise the same event at the caret. The quoted email in a reply has its own menu (mailframe.js),
 // which stops the event before main sees it.
 import { t } from './i18n.js';
-import { api, toast, showMenu } from './ui.js';
+import { api, toast, showMenu, menuOpen } from './ui.js';
 
 const run = (work) => work.catch((err) => toast(err.message, 5000));
 
@@ -22,6 +22,9 @@ export function editMenu(editor, { onOpen } = {}) {
     if (type !== 'edit-menu' || !pending || !editor.isConnected) return;
     const at = pending;
     pending = null;
+    // A right-click closes any open menu, so a menu open now came after this one: the quoted email's own, say, whose
+    // frame keeps its right-clicks from this document and from main.
+    if (menuOpen()) return;
     open(editor, payload || {}, at);
     if (onOpen) onOpen();
   });
