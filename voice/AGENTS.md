@@ -6,7 +6,19 @@ This file adds to the [root AGENTS.md](../AGENTS.md) for work in `voice/`. The r
 
 Rukoo Voice is push-to-talk dictation plus the meeting recorder for Rukoo. It replaces [Ownkey for Windows](https://github.com/MajesteitBart/ownkey-windows). Voice records and transcribes. Rukoo shows the meeting and runs the user's agent. [README.md](README.md) describes the design and the decisions made so far.
 
-There is no code yet. When you add the first code, add the build, run and test commands to this file in the same PR. When a design decision changes, update README.md in the same PR.
+When a design decision changes, update README.md in the same PR.
+
+## Build and test
+
+Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local speech worker links sherpa-onnx statically; its build downloads a 123 MB archive once per target folder, unless `SHERPA_ONNX_ARCHIVE_DIR` points at a folder that already holds `sherpa-onnx-v2.0.1-win-x64-static-MT-Release-lib.tar.bz2`.
+
+- Everything, as Windows CI runs it: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
+- The two recorder tests this file requires: `cargo test -p voice-recorder --test crash`.
+- Linux CI runs `cargo test -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings`.
+- The local model tests in `voice-local` load Orukeet read-only from Ownkey's model folder when it exists, or from `RUKOO_VOICE_TEST_ORUKEET`, and skip otherwise. `RUKOO_VOICE_TEST_SPEECH` names the WAV they transcribe.
+- `cargo test -p voice-input -- --ignored` runs the tests that use the real clipboard and send keys. Run them only on a desktop nobody is using, such as a VM.
+- The pill and Settings pages run without Voice on mock data: `node voice/ui/dev/serve.js`, then open the address it prints. `node voice/ui/dev/screenshots.js tmp/voice-ui-shots` captures every state, and `node voice/ui/dev/check.js` checks their behavior.
+- Rukoo's side: `node --test test/voice-*.test.js test/agent-tools-meeting.test.js`, and `npx playwright test test/e2e/meeting.spec.js` for the meeting view.
 
 ## What makes this project special?
 
@@ -49,8 +61,20 @@ The installed Ownkey runs every day on the maintainer's Windows PC as `Ownkey.ex
 
 - `voice/README.md`: the design and the decisions so far.
 - `voice/AGENTS.md`: this file.
-- `voice/PROTOCOL.md`, still to write: the bridge between Voice and Rukoo.
-- Rukoo's side of the bridge goes in `src/main/`, next to the other main-process services. The meeting view goes in `src/renderer/`.
+- `voice/PROTOCOL.md`: the bridge between Voice and Rukoo. `voice/fixtures/protocol-vectors.json` holds the examples both sides test against.
+- `voice/RECORDING.md`: the meeting folder the recorder writes: segments, the timeline and the control port.
+- `voice/crates/`:
+  - `voice-recorder`: the recorder process, `rukoo-voice-recorder`, and its crash tests. It captures and writes to disk and does nothing else.
+  - `voice-audio`: resampling to 16 kHz and the crash-safe WAV segments.
+  - `voice-meetings`: the meeting library, transcript.db and the live transcription that follows the recorded files.
+  - `voice-protocol` and `voice-bridge`: the bridge's messages and checks, the event log, the discovery file and the WebSocket server.
+  - `voice-core`: Settings, the Ownkey import, text cleanup, providers, the local model client and the update check.
+  - `voice-local`: the local speech worker, `rukoo-voice-local`, which runs Orukeet in its own process.
+  - `voice-input`: Windows hotkeys, text insertion and selection capture.
+  - `voice-engine`: dictation, the pill's state, Settings and the meeting controller behind one API.
+  - `voice-app`: the Tauri app, `rukoo-voice`: windows, tray and the native stop button.
+- `voice/ui/`: the pill and Settings pages in plain HTML, CSS and JavaScript. `API.md` lists every command and event between the pages and the app.
+- Rukoo's side of the bridge is in `src/main/voice/`. The meeting view is `src/renderer/meeting.js`, and the agent's meeting tools are in `src/main/agents/tools.js`.
 
 ## Taste
 
