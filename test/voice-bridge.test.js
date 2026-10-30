@@ -337,6 +337,27 @@ test('a meeting Voice started is recording as far as Rukoo knows after a restart
   assert.equal(s2.state().status, 'absent');
 });
 
+test('a meeting Voice started: meeting.started, then meeting.state recording, tells the renderer and protects every window', (t) => {
+  const dir = tempDir('rukoo-voice-started-');
+  const s = service(t, dir, null).init();
+  const states = [];
+  const recording = [];
+  s.on('state', (x) => states.push(x));
+  s.on('recording', (id) => recording.push(id));
+  assert.deepEqual(s.protects.map((p) => p.on), [false]);
+  const now = Date.now();
+  s.onEvent({ type: 'event', seq: 1, event: 'meeting.started', meeting: M1, createdAt: now, data: started('From Voice', now) });
+  // meeting.started already marks the entry recording, so this event changes only what records now.
+  s.onEvent({ type: 'event', seq: 2, event: 'meeting.state', meeting: M1, createdAt: now, data: { state: 'recording', at: 0 } });
+  assert.equal(s.state().recording, M1);
+  assert.ok(states.some((x) => x.recording === M1), 'a state event told the renderer');
+  assert.deepEqual(recording, [M1]);
+  assert.equal(s.protects.at(-1).on, true, 'the windows are protected');
+  s.onEvent({ type: 'event', seq: 3, event: 'meeting.state', meeting: M1, createdAt: now, data: { state: 'processing', at: 5000, endedAt: now + 5000, reason: 'user' } });
+  assert.equal(s.protects.at(-1).on, false);
+  assert.deepEqual(recording, [M1, null]);
+});
+
 test('without a connection, meeting commands fail with offline', async (t) => {
   const dir = tempDir('rukoo-voice-off-');
   const s = service(t, dir, null).init();
