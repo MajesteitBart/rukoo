@@ -8,3 +8,27 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+base64 = "0.22"
+bzip2 = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
+ureq = { version = "=3.5.0", features = ["json", "multipart"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The local worker tests spawn this test binary as a fake `rukoo-voice-local`, so it needs its own main.
+[[test]]
+name = "local_worker"
+harness = false
