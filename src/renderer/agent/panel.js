@@ -1585,9 +1585,20 @@ export function mountAgentPanel(ctx) {
     chat.focus();
   }
 
-  // Back into the input, ahead of what the user is writing, with its files and emails as chips again.
+  // Back into the input, ahead of what the user is writing, with its files and emails as chips again. Main lets go of
+  // the waiting copy once it is out of the queue, so a message whose files or emails don't fit next to what the input
+  // holds stays in the queue, with a note why, rather than come back without some of them.
   async function editQueued(e) {
     if (!P.conv) return;
+    const files = (e.files || []).length;
+    const emails = (e.emails || []).filter((m) => !P.attach.emails.some((x) => sameEmail(x, m))).length;
+    if (files > MAX_FILES - P.attach.files.length - P.adding.length || emails > MAX_EMAILS - P.attach.emails.length) {
+      // Its Edit button turned itself off when clicked; drawn again, it is on.
+      shownQueue = null;
+      showQueue();
+      toast(t('agent.queue.editFull', { files: MAX_FILES, emails: MAX_EMAILS }), 6000);
+      return;
+    }
     let back;
     try {
       back = await api('agentUnqueue', P.conv.id, e.id, { restage: true });

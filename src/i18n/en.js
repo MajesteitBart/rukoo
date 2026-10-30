@@ -903,6 +903,10 @@
     "message": "Edit",
     "description": "Chat panel: button under a waiting message that takes it out of the queue and puts its text and attachments back in the input."
   },
+  "agent.queue.editFull": {
+    "message": "This message keeps waiting: the one you're writing has no room for its attachments. A message takes up to {files} files and {emails} emails.",
+    "description": "Chat panel notice after you click Edit under a waiting message whose files or emails don't fit next to those already in the input; the message stays in the queue. files and emails are the maximums per message (editQueued in agent/panel.js)."
+  },
   "agent.queue.remove": {
     "message": "Remove",
     "description": "Chat panel: button under a waiting message that takes it out of the queue without sending it."

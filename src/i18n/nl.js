@@ -231,6 +231,7 @@
   "agent.queue.sendNow": "Nu versturen",
   "agent.queue.steerNow": "Nu bijsturen",
   "agent.queue.edit": "Bewerken",
+  "agent.queue.editFull": "Dit bericht blijft wachten: in het bericht dat je schrijft is geen ruimte voor de bijlagen ervan. Een bericht neemt maximaal {files} bestanden en {emails} e-mails mee.",
   "agent.queue.remove": "Verwijderen",
   "agent.panel.toggle": "Chatten met een agent (Ctrl+J)",
   "agent.panel.transcript": "Gesprek",

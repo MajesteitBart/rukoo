@@ -2832,6 +2832,49 @@ test('after Stop the queued messages wait, through a restart: Edit takes one bac
   expect(await sentTexts()).toEqual(['First waiting']);
 });
 
+test('Edit leaves a waiting message in the queue, file and all, while the input has no room for its file', async () => {
+  await openChat('Call on Thursday');
+  await say('Add the proposal task; ask for approval first');
+  await expect(transcript().locator('.bui-approval')).toContainText('Waiting for you');
+  // A message with a file waits for the end of the turn.
+  await dropFiles([textFile('queued.txt')]);
+  await expect(fileChips()).toHaveCount(1);
+  await input().fill('With a file');
+  await input().press('Alt+Enter');
+  await expect(waiting()).toHaveCount(1);
+  const queuedFiles = waiting().locator('.bui-ubatt .bui-entity__name');
+  await expect(queuedFiles).toHaveText(['queued.txt']);
+  await expect(fileChips()).toHaveCount(0);
+
+  // The input fills up to the ten files a message takes, under text of its own.
+  const names = Array.from({ length: 10 }, (_, i) => `part-${i + 1}.txt`);
+  await dropFiles(names.map(textFile));
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(names);
+  await input().fill('Draft in progress');
+
+  // Edit would have to leave the file behind: the message keeps waiting as it was, and the input stays as it was.
+  const edit = waiting().getByRole('button', { name: 'Edit' });
+  await edit.click();
+  await expect(win.locator('#toast')).toContainText("This message keeps waiting: the one you're writing has no room for its attachments. A message takes up to 10 files and 10 emails.");
+  fs.mkdirSync(RUK_SHOTS, { recursive: true });
+  await win.screenshot({ path: path.join(RUK_SHOTS, 'edit-full.png') });
+  await expect(waiting()).toHaveCount(1);
+  await expect(waiting().locator('.bui-ub')).toHaveText('With a file');
+  await expect(queuedFiles).toHaveText(['queued.txt']);
+  await expect(edit).toBeEnabled();
+  const cid = await conversationId();
+  expect(await app.evaluate((_e, cid) => global.__semAgents.conversations.get(cid).queue.map((e) => [e.text, e.files.map((f) => f.name)]), cid)).toEqual([['With a file', ['queued.txt']]]);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText(names);
+  expect(await inputValue()).toBe('Draft in progress');
+
+  // With room for it, Edit brings the message back with its file, ahead of the text being written.
+  await win.locator('.agentpane .bui-pb__files').getByRole('button', { name: 'Remove part-10.txt' }).click();
+  await edit.click();
+  await expect(waiting()).toHaveCount(0);
+  await expect(fileChips().locator('.bui-entity__name')).toHaveText([...names.slice(0, 9), 'queued.txt']);
+  await expect.poll(inputValue).toBe('With a file\n\nDraft in progress');
+});
+
 test('with an agent that can’t take a message during its turn, Enter queues and the send menu says why', async () => {
   await openChat('Call on Thursday');
   await win.click('.agentpane .bui-pb__modelbtn');
