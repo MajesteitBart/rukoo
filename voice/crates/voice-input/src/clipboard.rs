@@ -102,8 +102,11 @@ pub(crate) trait Clipboard {
     fn sequence(&self) -> u32;
     /// Copies every format [`holds_hglobal`] accepts.
     fn snapshot(&mut self) -> Result<Snapshot, InputError>;
-    /// Replaces the content with `text`, hidden from clipboard history.
-    fn set_text(&mut self, text: &str) -> Result<(), InputError>;
+    /// Replaces the content with `text`, hidden from clipboard history, and
+    /// returns the sequence number read before the clipboard closed, which
+    /// belongs to exactly that text. Read after the close, it could already
+    /// belong to someone else's copy.
+    fn set_text(&mut self, text: &str) -> Result<u32, InputError>;
     /// The Unicode text on the clipboard, if any, and the sequence number
     /// read while the clipboard was open, which belongs to exactly that text.
     fn text(&mut self) -> Result<(Option<String>, u32), InputError>;
@@ -192,7 +195,7 @@ impl Clock for SystemClock {
 #[derive(Debug)]
 pub(crate) struct PendingRestore {
     snapshot: Snapshot,
-    /// The sequence number right after our text went on the clipboard.
+    /// The sequence number our text got, read while the clipboard was open.
     ours: u32,
 }
 
@@ -206,18 +209,18 @@ pub(crate) fn paste(
 ) -> Result<PendingRestore, InputError> {
     let snapshot = clipboard.snapshot()?;
     let before = clipboard.sequence();
-    if let Err(err) = clipboard.set_text(text) {
-        let after = clipboard.sequence();
-        if after != before {
-            // It may have emptied the clipboard before it failed.
-            let _ = clipboard.restore(&snapshot, Some(after));
+    let ours = match clipboard.set_text(text) {
+        Ok(ours) => ours,
+        Err(err) => {
+            let after = clipboard.sequence();
+            if after != before {
+                // It may have emptied the clipboard before it failed.
+                let _ = clipboard.restore(&snapshot, Some(after));
+            }
+            return Err(err);
         }
-        return Err(err);
-    }
-    let pending = PendingRestore {
-        snapshot,
-        ours: clipboard.sequence(),
     };
+    let pending = PendingRestore { snapshot, ours };
     clock.sleep(PASTE_SETTLE);
     if let Err(err) = keyboard.send(&strokes::paste()) {
         // Nothing will read our text, so put the user's clipboard back now.
@@ -414,6 +417,9 @@ mod tests {
         /// Another app copies this after a restore checked the sequence
         /// number and before the restore gets the clipboard open.
         copied_while_opening: Option<Vec<Format>>,
+        /// Another app copies this right after our text went on the
+        /// clipboard and the clipboard closed.
+        copied_after_write: Option<Vec<Format>>,
         /// The window the paste went to doesn't answer, as while it is busy.
         target_busy: bool,
         /// How long each question to the target waited.
@@ -517,11 +523,15 @@ mod tests {
             Ok(Snapshot { formats })
         }
 
-        fn set_text(&mut self, text: &str) -> Result<(), InputError> {
+        fn set_text(&mut self, text: &str) -> Result<u32, InputError> {
             let mut desk = self.desk();
             desk.open()?;
             desk.replace(vec![text_format(text)], true);
-            Ok(())
+            let ours = desk.sequence;
+            if let Some(theirs) = desk.copied_after_write.take() {
+                desk.replace(theirs, false);
+            }
+            Ok(ours)
         }
 
         fn text(&mut self) -> Result<(Option<String>, u32), InputError> {
@@ -619,6 +629,21 @@ mod tests {
         assert_eq!(fake.restore(&pending), Ok(false));
         assert_eq!(fake.desk().formats, theirs);
         assert_eq!(fake.desk().restores, 0);
+    }
+
+    #[test]
+    fn a_copy_made_right_after_our_write_wins() {
+        let theirs = vec![text_format("copied right after")];
+        let mut desk = Desk::with(rich_clipboard());
+        desk.copied_after_write = Some(theirs.clone());
+        let fake = Fake::new(desk);
+        // The copy lands after our text went on the clipboard and before the
+        // paste looks at the sequence number: it is the user's, not ours.
+        let pending = fake.paste("dictated").unwrap();
+        assert_eq!(fake.restore(&pending), Ok(false));
+        let desk = fake.desk();
+        assert_eq!(desk.formats, theirs);
+        assert_eq!(desk.restores, 0);
     }
 
     #[test]

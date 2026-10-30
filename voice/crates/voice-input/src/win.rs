@@ -305,7 +305,7 @@ impl Clipboard for WinClipboard {
         Ok(Snapshot { formats })
     }
 
-    fn set_text(&mut self, text: &str) -> Result<(), InputError> {
+    fn set_text(&mut self, text: &str) -> Result<u32, InputError> {
         let data: Vec<u8> = text
             .encode_utf16()
             .chain([0])
@@ -314,7 +314,10 @@ impl Clipboard for WinClipboard {
         let _open = Open::new()?;
         unsafe { EmptyClipboard() }.map_err(clipboard_error)?;
         put(format::UNICODETEXT, &data)?;
-        hide_from_history()
+        hide_from_history()?;
+        // Read while the clipboard is still open, so nobody's copy can come
+        // between our text and its number.
+        Ok(self.sequence())
     }
 
     fn text(&mut self) -> Result<(Option<String>, u32), InputError> {
@@ -490,6 +493,16 @@ mod tests {
             clipboard.set_text("after").unwrap();
             assert_eq!(clipboard.restore(&snapshot, None), Ok(true));
             assert_eq!(clipboard.text().unwrap().0.as_deref(), Some("before"));
+        }
+
+        #[test]
+        #[ignore = "needs a dedicated desktop: changes the real clipboard"]
+        fn set_text_returns_the_number_its_text_keeps_after_closing() {
+            // The paste treats this number as its own: closing the clipboard
+            // must not move it.
+            let mut clipboard = WinClipboard;
+            let ours = clipboard.set_text("ours").unwrap();
+            assert_eq!(clipboard.sequence(), ours);
         }
 
         #[test]
