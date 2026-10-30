@@ -5,7 +5,8 @@
   !define RUKOO_MAIL_KEYS "Software"
 !endif
 
-; Lets Windows offer Rukoo Mail for mailto: links right after installing, also when the app doesn't start then.
+; Lets Windows offer Rukoo Mail for mailto: links and under "Open with" for .ics files right after installing, also
+; when the app doesn't start then. The app that opens .ics files now stays the default.
 ; Like the app at startup (MailClient.refresh), it leaves a registration that starts another copy alone. The values
 ; match MailClient.values(); test/mailclient.test.js checks that they stay the same.
 !macro customInstall
@@ -22,6 +23,11 @@
     WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\Clients\Mail\Rukoo Mail\Capabilities" "ApplicationDescription" "Email, calendar and agent chat for Windows"
     WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\Clients\Mail\Rukoo Mail\Capabilities\URLAssociations" "mailto" "RukooMail.mailto"
     WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\RegisteredApplications" "Rukoo Mail" "Software\Clients\Mail\Rukoo Mail\Capabilities"
+    WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\Classes\RukooMail.ics" "" "Calendar file"
+    WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\Classes\RukooMail.ics\DefaultIcon" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}",0'
+    WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\Classes\RukooMail.ics\shell\open\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" -- "%1"'
+    WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\Classes\.ics\OpenWithProgids" "RukooMail.ics" ""
+    WriteRegStr HKCU "${RUKOO_MAIL_KEYS}\Clients\Mail\Rukoo Mail\Capabilities\FileAssociations" ".ics" "RukooMail.ics"
   ${endIf}
   Pop $0
 !macroend
@@ -36,6 +42,8 @@
       DeleteRegValue HKCU "${RUKOO_MAIL_KEYS}\RegisteredApplications" "Rukoo Mail"
       DeleteRegKey HKCU "${RUKOO_MAIL_KEYS}\Clients\Mail\Rukoo Mail"
       DeleteRegKey HKCU "${RUKOO_MAIL_KEYS}\Classes\RukooMail.mailto"
+      DeleteRegKey HKCU "${RUKOO_MAIL_KEYS}\Classes\RukooMail.ics"
+      DeleteRegValue HKCU "${RUKOO_MAIL_KEYS}\Classes\.ics\OpenWithProgids" "RukooMail.ics"
     ${endIf}
     Pop $0
   ${endIf}

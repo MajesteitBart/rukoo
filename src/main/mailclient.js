@@ -1,7 +1,8 @@
 'use strict';
 
-// Makes Rukoo one of the email apps Windows offers for mailto: links, for the current user. Windows keeps the
-// choice to the user: register() only adds Rukoo to Settings > Apps > Default apps, where the user picks it.
+// Makes Rukoo one of the email apps Windows offers for mailto: links, and one of the apps for .ics files, for the
+// current user. Windows keeps the choice to the user: register() only adds Rukoo to Settings > Apps > Default apps
+// and to "Open with", where the user picks it.
 // The installer writes the same keys and the uninstaller removes them (build/installer.nsh).
 
 const fs = require('fs');
@@ -9,6 +10,9 @@ const { execFile } = require('child_process');
 
 const NAME = 'Rukoo Mail';
 const PROG_ID = 'RukooMail.mailto';
+// .ics files: Rukoo joins the apps under "Open with" and in Default apps; Outlook or whichever app opens them now
+// stays the default until the user picks Rukoo.
+const ICS_ID = 'RukooMail.ics';
 
 function reg(args) {
   return new Promise((resolve, reject) => {
@@ -29,7 +33,17 @@ class MailClient {
   get keys() {
     const prog = `${this.base}\\Classes\\${PROG_ID}`;
     const client = `${this.base}\\Clients\\Mail\\${NAME}`;
-    return { prog, command: `${prog}\\shell\\open\\command`, client, capabilities: `${client}\\Capabilities`, registered: `${this.base}\\RegisteredApplications` };
+    const ics = `${this.base}\\Classes\\${ICS_ID}`;
+    return {
+      prog,
+      command: `${prog}\\shell\\open\\command`,
+      client,
+      capabilities: `${client}\\Capabilities`,
+      registered: `${this.base}\\RegisteredApplications`,
+      ics,
+      icsCommand: `${ics}\\shell\\open\\command`,
+      openWith: `${this.base}\\Classes\\.ics\\OpenWithProgids`
+    };
   }
 
   // The values Windows reads, as [key, value name or null for the default value, data].
@@ -45,7 +59,12 @@ class MailClient {
       [k.capabilities, 'ApplicationName', NAME],
       [k.capabilities, 'ApplicationDescription', this.description],
       [`${k.capabilities}\\URLAssociations`, 'mailto', PROG_ID],
-      [k.registered, NAME, `Software\\Clients\\Mail\\${NAME}\\Capabilities`]
+      [k.registered, NAME, `Software\\Clients\\Mail\\${NAME}\\Capabilities`],
+      [k.ics, null, 'Calendar file'],
+      [`${k.ics}\\DefaultIcon`, null, `"${this.exe}",0`],
+      [k.icsCommand, null, `"${this.exe}" -- "%1"`],
+      [k.openWith, ICS_ID, ''],
+      [`${k.capabilities}\\FileAssociations`, '.ics', ICS_ID]
     ];
   }
 
@@ -89,4 +108,4 @@ class MailClient {
 // Opens Rukoo's own page under Default apps; Windows builds before mid-2023 open the general page.
 const SETTINGS_URL = `ms-settings:defaultapps?registeredAppUser=${encodeURIComponent(NAME)}`;
 
-module.exports = { MailClient, NAME, PROG_ID, SETTINGS_URL };
+module.exports = { MailClient, NAME, PROG_ID, ICS_ID, SETTINGS_URL };

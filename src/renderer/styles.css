@@ -1866,6 +1866,133 @@ body:has(.page) .titlebar-actions {
   border-bottom: 1px solid var(--border);
 }
 
+/* A calendar invitation above the email, or in the dialog for an .ics file (invite.js): what, when and who, the
+   answer, and where the answer goes. The note keeps its line while main looks in the calendars, so nothing jumps. */
+.invite {
+  margin: 14px 0 2px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  max-width: 640px;
+}
+.scrim .invite {
+  margin: 0;
+  max-width: none;
+}
+.invite-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.invite-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: var(--chip);
+  color: var(--text-2);
+}
+.invite-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.invite-titles {
+  flex: 1;
+  min-width: 0;
+}
+.invite-kind {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.invite-title {
+  margin: 1px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.invite-when {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+.invite.cancelled .invite-title {
+  text-decoration: line-through;
+  color: var(--text-2);
+}
+.invite-pill {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  font-weight: 600;
+}
+.invite-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 0 42px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  min-width: 0;
+}
+.invite-row svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+.invite-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.invite-row .link-btn {
+  padding: 0;
+}
+.invite-count {
+  color: var(--text);
+  font-weight: 500;
+}
+.invite-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.invite-foot .spacer {
+  flex: 1;
+}
+.invite-rsvp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.invite-rsvp .filter:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.invite-note {
+  margin-top: 8px;
+  min-height: 18px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-3);
+  text-wrap: pretty;
+}
+
 .atts {
   padding: 14px 0 2px;
 }

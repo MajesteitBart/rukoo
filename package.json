@@ -88,7 +88,8 @@
       "executableName": "rukoo-mail",
       "category": "Network;Email",
       "mimeTypes": [
-        "x-scheme-handler/mailto"
+        "x-scheme-handler/mailto",
+        "text/calendar"
       ],
       "maintainer": "Bart van der Meeren <MajesteitBart@users.noreply.github.com>",
       "artifactName": "Rukoo-Mail-${version}-${arch}.${ext}"
@@ -119,7 +120,15 @@
           "to": "nl.lproj"
         }
       ],
-      "hardenedRuntime": true
+      "hardenedRuntime": true,
+      "fileAssociations": [
+        {
+          "ext": "ics",
+          "name": "Calendar file",
+          "role": "Viewer",
+          "mimeType": "text/calendar"
+        }
+      ]
     }
   },
   "homepage": "https://github.com/MajesteitBart/rukoo",

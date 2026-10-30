@@ -33,7 +33,9 @@ const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
-const { windowChrome, MailtoQueue, MacMailClient, macMenu } = require('./desktop');
+const { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu } = require('./desktop');
+const { Invitations } = require('./calendar/invitations');
+const invite = require('./calendar/invite');
 // ---- agents ----
 const { clipboard, ClipboardItem, powerMonitor } = require('electron');
 const { AgentHub } = require('./agents');
@@ -118,6 +120,8 @@ let agentGate = null;
 // The booking service and the reminder runner. Null until they are made after the categories, so calendarFree can already ask.
 let booking = null;
 let reminders = null;
+// Invitations in email and .ics files (calendar/invitations.js).
+let invitations = null;
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -667,6 +671,16 @@ const api = {
   },
   openAttachment: async (id, index) => {
     const a = await engine.attachment(id, index);
+    // An .ics file opens as an invitation card in Rukoo itself; one that holds no event goes to the system's app.
+    if (isIcs(a)) {
+      try {
+        const acc = engine.messageAccount(id);
+        showInviteFile(invitations.openText(a.content.toString('utf8'), safeName(a.filename), acc ? acc.id : null));
+        return true;
+      } catch (_) {
+        // Not an event Rukoo can show.
+      }
+    }
     if (RISKY.test(safeName(a.filename))) {
       const res = await dialog.showMessageBox(win, {
         type: 'warning',
@@ -859,6 +873,15 @@ const api = {
       etag: calendarEtag(opts),
       seriesEtag: calendarSeriesEtag(opts)
     }),
+  // An invitation's card in the reader or for an .ics file. source: { id } of an email, or { file }: an opened file's
+  // token. The answer goes through the calendar that has the event, or else by email (calendar/invitations.js).
+  inviteFiles: () => inviteFiles.splice(0),
+  inviteState: (source) => invitations.state(inviteSource(source)),
+  inviteAnswer: (source, response) => invitations.answer(inviteSource(source), String(response)),
+  inviteAdd: (source, target) => {
+    const to = plainObject(target);
+    return invitations.add(inviteSource(source), { accountId: accountText(to.accountId, 200), calendarId: calendarCalendarId(to.calendarId) });
+  },
   calendarRespond: (id, response, opts) => calendars.respond(calendarEventId(id), String(response), { series: plainObject(opts).series === true }),
   calendarSeries: (id) => calendars.series(calendarEventId(id)),
   calendarMove: (id, calendarId, opts) => calendars.move(calendarEventId(id), calendarCalendarId(calendarId), { notify: plainObject(opts).notify === true }),
@@ -1254,15 +1277,49 @@ mailtoQueue.accept(mailto.fromArgs(process.argv));
 app.on('open-url', (event, url) => {
   if (mailtoQueue.accept(url)) event.preventDefault();
 });
+
+// An .ics file Rukoo was opened with: its card shows in the main window, once that is up.
+const icsQueue = new FileQueue(openIcsFile);
+icsQueue.accept(icsFromArgs(process.argv));
+app.on('open-file', (event, file) => {
+  if (!/[.]ics$/i.test(String(file || ''))) return;
+  event.preventDefault();
+  icsQueue.accept(file);
+});
+
+// The cards the main window has yet to show. It takes them when told (invite-file) and after its first state, so a
+// file Rukoo starts with isn't lost when the message comes before the window listens.
+const inviteFiles = [];
+function showInviteFile(token) {
+  inviteFiles.push(token);
+  send('invite-file');
+}
+
+function openIcsFile(file) {
+  showWindow();
+  try {
+    showInviteFile(invitations.openFile(file));
+  } catch (_) {
+    dialog.showMessageBox(win, { type: 'warning', message: t('errors.invite.unreadable'), detail: file, buttons: [t('common.actions.ok')] }).catch(() => {});
+  }
+}
+
+const isIcs = (a) => invite.isCalendarType(a.contentType) || /[.]ics$/i.test(String(a.filename || ''));
+const inviteSource = (source) => {
+  const s = plainObject(source);
+  return { id: accountText(s.id, 2000) || undefined, file: accountText(s.file, 100) || undefined };
+};
 app.on('activate', () => {
   if (engine && windowState) showWindow();
 });
 
 // Rukoo started again. For a mailto: link (Windows starts the app with it) only its compose window comes up, and
 // the main window stays where it was, in the tray too.
-app.on('second-instance', (e, argv) => {
+app.on('second-instance', (e, argv, workingDirectory) => {
   const link = mailto.fromArgs(argv);
+  const file = link ? null : icsFromArgs(argv, workingDirectory);
   if (link) mailtoQueue.accept(link);
+  else if (file) icsQueue.accept(file);
   else if (engine && windowState) showWindow();
 });
 
@@ -1288,6 +1345,8 @@ app.whenReady().then(() => {
   });
   engine.on('new-mail', notify);
   calendars = new Calendars({ engine });
+  invitations = new Invitations({ engine, calendars, dataDir: path.join(app.getPath('userData'), 'data') });
+  if (process.env.SEM_HIDDEN) global.__semInvitations = invitations;
   if (process.env.SEM_HIDDEN) global.__semCalendars = calendars;
   calendars.on('updated', () => send('calendar'));
   // A fork points the app at its own account server with package.json's rukoo.accountServer; tests and development
@@ -1361,7 +1420,10 @@ app.whenReady().then(() => {
   applyTheme();
   createWindow();
   // After the main window shows, so the compose window comes up in front of it.
-  win.once('ready-to-show', () => mailtoQueue.start());
+  win.once('ready-to-show', () => {
+    mailtoQueue.start();
+    icsQueue.start();
+  });
   refreshMailClient().catch(() => {});
   updateTray();
   scheduleSync();

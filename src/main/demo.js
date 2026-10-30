@@ -432,6 +432,7 @@ class DemoAccount {
       text: m.text || undefined,
       html: m.html || undefined,
       headers: m.headers || undefined,
+      icalEvent: m.icalEvent || undefined,
       attachments: (m.attachments || []).map((a) => ({ ...a }))
     });
     // Like an IMAP server, return the stored message as it was saved, Bcc included.
@@ -477,6 +478,12 @@ class DemoAccount {
   async append(p, raw, flags = []) {
     const parsed = await simpleParser(raw);
     const box = this.box(p);
+    // An invitation's calendar part (text/calendar in the body, with its METHOD) is kept as one, the way Google and
+    // Outlook send it; fetchSource builds it again with the copy as invite.ics, so that copy isn't kept twice.
+    const calendar = (parsed.attachments || []).find((a) => /^text\/calendar$/i.test(a.contentType) && a.contentDisposition !== 'attachment');
+    const type = calendar && calendar.headers && typeof calendar.headers.get === 'function' ? calendar.headers.get('content-type') : null;
+    const icalEvent = calendar ? { method: (type && type.params && type.params.method) || 'PUBLISH', content: calendar.content.toString('utf8') } : null;
+    const kept = (parsed.attachments || []).filter((a) => a !== calendar && !(calendar && a.content.equals(calendar.content)));
     const m = {
       uid: this.load().nextUid++,
       from: util.addressFromParsed(parsed.from)[0] || { name: '', address: DEMO_EMAIL },
@@ -489,7 +496,8 @@ class DemoAccount {
       text: parsed.text || null,
       inReplyTo: parsed.inReplyTo || null,
       references: parsed.references || null,
-      attachments: (parsed.attachments || []).map((a) => ({
+      ...(icalEvent ? { icalEvent } : {}),
+      attachments: kept.map((a) => ({
         filename: a.filename,
         contentType: a.contentType,
         content: a.content.toString('base64'),

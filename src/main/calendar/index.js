@@ -855,6 +855,22 @@ class Calendars extends EventEmitter {
     return { acc, p, cache, cal, event };
   }
 
+  // locate(), or for an answer an event outside the view's stretch that read() fetched lately: an invitation answered
+  // from its email (findInvite), whose week the calendar may never have shown.
+  locateAnswerable(id) {
+    try {
+      return this.locate(id);
+    } catch (err) {
+      const { accountId, calendarId, eventId } = decodeId(id);
+      const acc = this.engine.accounts.find((a) => a.id === accountId);
+      const cache = acc && this.provider(acc) ? this.cache(accountId) : null;
+      const cal = cache && cache.calendars.find((c) => c.id === calendarId);
+      const event = cal && this.recent(accountId, calendarId, (x) => x.calendarId === calendarId && x.eventId === eventId);
+      if (!event) throw err;
+      return { acc, p: this.provider(acc), cache, cal, event };
+    }
+  }
+
   // What a new or changed event may contain, checked again here because it comes from the renderer. The newer fields
   // are copied only when given: on a change, a missing one stays as it is.
   clean(input) {
@@ -987,16 +1003,43 @@ class Calendars extends EventEmitter {
     const acc = this.engine.accounts.find((a) => a.id === accountId);
     if (!acc || !this.provider(acc)) return null;
     const match = (x) => x.calendarId === calendarId && x.eventId === eventId;
-    const e = this.cache(acc.id).events.find(match);
-    if (e) return this.publicEvent(acc, e);
+    const e = this.cache(acc.id).events.find(match) || this.recent(acc.id, calendarId, match);
+    return e ? this.publicEvent(acc, e) : null;
+  }
+
+  // An event read() or a search fetched lately outside the cache, as the provider gave it.
+  recent(accountId, calendarId, match) {
     const now = Date.now();
-    for (const m of ((this.memos.get(acc.id) || new Map()).get(calendarId) || []).slice().reverse()) {
+    for (const m of ((this.memos.get(accountId) || new Map()).get(calendarId) || []).slice().reverse()) {
       const hit = now - m.at <= MEMO_KEEP && m.events.find(match);
-      if (hit) return this.publicEvent(acc, hit);
+      if (hit) return hit;
     }
-    const searched = this.found.get(acc.id);
-    const hit = searched && now - searched.at <= MEMO_KEEP && searched.events.find(match);
-    return hit ? this.publicEvent(acc, hit) : null;
+    const searched = this.found.get(accountId);
+    return (searched && now - searched.at <= MEMO_KEEP && searched.events.find(match)) || null;
+  }
+
+  // The event an invitation by email is about, in one of the user's calendars: the same UID and, for one occurrence
+  // of a series, the same original start. Google puts an invitation into the calendar when it arrives, under an id
+  // of its own, and so do CalDAV servers that handle scheduling. A day either side of its time is read; null when no
+  // calendar has it (or none could be read).
+  // accountId, me: the account it came to and the address that answers it. The same meeting can be in another
+  // calendar, of this account or another, where the user's place among the guests is another address (a shared team
+  // calendar, a second account): an answer there would be that address's. So with an address, only an event where
+  // it is the calendar's own guest counts, this account's first; without one, only this account's events.
+  // organizer: the invitation's. Anyone who knows a meeting's UID can send an email with it; only one from the
+  // event's own organizer may stand for it, so a forged one can't change the answer the calendar has.
+  async findInvite({ uid, start, end, rid = null, accountId = null, me = null, organizer = null }) {
+    if (!uid || !Number.isFinite(start)) return null;
+    const at = Number.isFinite(rid) ? rid : start;
+    const { events } = await this.read({ start: Math.min(at, start) - DAY, end: Math.max(Number.isFinite(end) ? end : start, at) + DAY });
+    const address = me ? String(me).toLowerCase() : null;
+    const by = String(organizer || '').toLowerCase();
+    const same = events
+      .filter((e) => e.uid === uid && String((e.organizer && e.organizer.address) || '').toLowerCase() === by)
+      .filter((e) => (address ? (e.attendees || []).some((a) => a.self && String(a.address).toLowerCase() === address) : accountId && e.accountId === accountId))
+      .sort((a, b) => (b.accountId === accountId) - (a.accountId === accountId));
+    if (Number.isFinite(rid)) return same.find((e) => e.originalStart === rid || (!e.seriesId && e.start === rid)) || null;
+    return same.find((e) => !e.seriesId || e.start === start) || same[0] || null;
   }
 
   // Lets go of what was read outside the cache, after a change or a new grant: it may no longer be so.
@@ -1274,7 +1317,7 @@ class Calendars extends EventEmitter {
   }
 
   async respond(id, response, { series = false } = {}) {
-    const { acc, p, cache, cal, event } = this.locate(id);
+    const { acc, p, cache, cal, event } = this.locateAnswerable(id);
     if (!RESPONSES.has(response)) throw calendarError('invalid', t('errors.calendar.invalidResponse'));
     if (!event.canRespond) throw calendarError('not_invited', t('errors.calendar.notInvited'));
     const written = await this.change(acc, cache, event, () => p.respond(cal, event, response, { series }));
@@ -1284,6 +1327,11 @@ class Calendars extends EventEmitter {
       if (!inScope(e, event, series) || !e.canRespond || fresh.has(e)) continue;
       e.response = response;
       for (const a of e.attendees || []) if (a.self) a.response = response;
+    }
+    // An event from outside the view's stretch (locateAnswerable) isn't among them.
+    if (!cache.events.includes(event)) {
+      event.response = response;
+      for (const a of event.attendees || []) if (a.self) a.response = response;
     }
     this.persist(acc.id);
     this.emit('updated');

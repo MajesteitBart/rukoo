@@ -11,6 +11,7 @@ const { ImapAccount, friendlyError } = require('./imap');
 const { DemoAccount, DEMO_EMAIL } = require('./demo');
 const { serverDefaults, publicProviders } = require('./providers');
 const { discoverCalDav, serverUrl } = require('./calendar/caldav');
+const invite = require('./calendar/invite');
 const util = require('./mailutil');
 const { cleanSignatureHtml, signatureText } = require('./signature');
 const { normalizeZoom } = require('./zoom');
@@ -1286,6 +1287,10 @@ class Engine extends EventEmitter {
           return this.publicMessage(acc, folder, msg);
         })();
     const html = parsed.html ? util.sanitizeHtml(parsed.html) : util.textToHtml(parsed.text || '');
+    // An invitation's calendar part in the body (calendar: true) shows as its card in the reader, not as an attachment;
+    // agents still see it as one, as before. An .ics attachment stays a plain attachment.
+    const part = invite.calendarPart(parsed.attachments);
+    const body = new Set(part ? part.hidden : []);
     return {
       ...base,
       from: util.addressFromParsed(parsed.from)[0] || base.from,
@@ -1302,16 +1307,40 @@ class Engine extends EventEmitter {
       isHtml: Boolean(parsed.html),
       unsubscribe: util.unsubscribeInfo(parsed),
       text: parsed.text || util.htmlToPlain(parsed.html || ''),
+      invite: part ? this.readInvite(parsed, part, base.accountId) : null,
       attachments: (parsed.attachments || [])
         .map((a, index) => ({
           index,
           filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }),
           contentType: a.contentType,
           size: a.size,
-          related: Boolean(a.related || (a.contentDisposition === 'inline' && a.cid))
+          related: Boolean(a.related || (a.contentDisposition === 'inline' && a.cid)),
+          ...(body.has(index) ? { calendar: true } : {})
         }))
         .filter((a) => !a.related)
     };
+  }
+
+  // The addresses an invitation can be for: the account's own and its aliases, or every account's when it isn't
+  // known (a saved email, an .ics file).
+  ownAddresses(accountId = null) {
+    const accs = this.accounts.filter((a) => !accountId || a.id === accountId);
+    return (accs.length ? accs : this.accounts).flatMap((a) => this.identities(a).map((i) => i.address.toLowerCase()));
+  }
+
+  readInvite(parsed, part, accountId) {
+    const a = parsed.attachments[part.index];
+    return invite.readInvite(a && a.content ? a.content.toString('utf8') : '', { me: this.ownAddresses(accountId), method: part.method });
+  }
+
+  // An email's invitation for answering it: its calendar text, its METHOD and the account it came to. null without one.
+  async inviteSource(id) {
+    const parsed = await simpleParser(await this.rawSource(id));
+    const part = invite.calendarPart(parsed.attachments);
+    const a = part && parsed.attachments[part.index];
+    if (!a || !a.content) return null;
+    const accountId = String(id).startsWith('saved:') ? null : this.locate(id).acc.id;
+    return { text: a.content.toString('utf8'), method: part.method, accountId };
   }
 
   async attachment(id, index) {
@@ -1625,9 +1654,12 @@ class Engine extends EventEmitter {
       .map(({ name, address }) => ({ name, address }));
   }
 
-  async send(payload) {
+  // icalEvent: an iCalendar part for the message ({ method, content }), only from the main process: the answer to an
+  // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics.
+  async send(payload, { icalEvent = null } = {}) {
     const acc = this.account(payload.accountId);
     const mail = await this.buildMail(acc, payload);
+    if (icalEvent) mail.icalEvent = { method: icalEvent.method, content: icalEvent.content, filename: 'invite.ics' };
     if (!mail.to.length && !mail.cc.length && !mail.bcc.length) throw new Error(t('errors.send.noRecipients'));
     for (const a of [...mail.to, ...mail.cc, ...mail.bcc]) {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));

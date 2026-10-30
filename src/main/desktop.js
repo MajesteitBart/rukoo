@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+const { fileURLToPath } = require('url');
 const mailto = require('./mailto');
 
 function windowChrome(platform, bar) {
@@ -21,6 +24,49 @@ class MailtoQueue {
   start() {
     this.started = true;
     for (const url of this.pending.splice(0)) this.open(url);
+  }
+}
+
+// An .ics file that Rukoo is started with ("Open with" on Windows, a second instance): the first argument after the
+// program that names an existing .ics file. Switches and the "." of a run from a checkout are skipped; a relative path
+// is the starting instance's, from its working directory. Linux desktops may pass a file:// URL instead.
+function icsFromArgs(args, cwd = process.cwd(), isFile = fileExists) {
+  for (const arg of (args || []).slice(1)) {
+    let s = String(arg || '');
+    if (/^file:\/\//i.test(s)) {
+      try {
+        s = fileURLToPath(s);
+      } catch (_) {
+        continue;
+      }
+    }
+    if (s.startsWith('-') || !/\.ics$/i.test(s)) continue;
+    const file = path.resolve(cwd || process.cwd(), s);
+    if (isFile(file)) return file;
+  }
+  return null;
+}
+
+function fileExists(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
+// The same wait for .ics files, which macOS sends with open-file, also before ready.
+class FileQueue {
+  constructor(open) { this.open = open; this.pending = []; this.started = false; }
+  accept(file) {
+    if (!file) return false;
+    if (this.started) this.open(file);
+    else this.pending.push(file);
+    return true;
+  }
+  start() {
+    this.started = true;
+    for (const file of this.pending.splice(0)) this.open(file);
   }
 }
 
@@ -62,4 +108,4 @@ function macMenu(t, edit, zoom) {
   ];
 }
 
-module.exports = { windowChrome, MailtoQueue, MacMailClient, macMenu };
+module.exports = { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu };
