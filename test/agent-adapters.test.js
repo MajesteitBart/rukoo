@@ -269,6 +269,16 @@ function hermesServer() {
     res.end(JSON.stringify(body));
   };
   const frame = (res, seq, event) => res.write(`id: ${seq}\ndata: ${JSON.stringify({ ...event, seq })}\n\n`);
+  // Hermes stamps each event with the time it made it, in seconds.
+  const clock = () => Number(process.hrtime.bigint()) / 1e9;
+  // A point in a script that the test opens (h.open()), so the test can act before the events after it come.
+  let opened = false;
+  const waiting = [];
+  const gate = () => (opened ? Promise.resolve() : new Promise((resolve) => waiting.push(resolve)));
+  const open = () => {
+    opened = true;
+    for (const resolve of waiting.splice(0)) resolve();
+  };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
@@ -390,6 +400,8 @@ function hermesServer() {
         }
         if (run.stopped || run.ended) return json(res, 409, { error: { message: `Run is not currently accepting steer input: ${m[1]}`, code: 'run_not_accepting_steer' } });
         run.steers.push(String(data.input || '').trim());
+        // Hermes puts run.steered in the run's stream right after it takes the message; the scripts write it there.
+        run.steeredAt = clock();
         if (run.onSteer) run.onSteer();
         // "slowAccept": Hermes takes it, delivers it and ends the run before this answer arrives.
         if (state.slowAccept) await sleep(400);
@@ -436,7 +448,7 @@ function hermesServer() {
       for (let seq = last + 1; seq < events.length; seq++) {
         const e = typeof events[seq] === 'function' ? await events[seq]() : events[seq];
         if (e === 'DROP') return res.destroy();
-        if (e) frame(res, seq, { run_id: m[1], timestamp: 1, ...e });
+        if (e) frame(res, seq, { run_id: m[1], timestamp: clock(), ...e });
       }
       res.end(': stream closed\n\n');
     });
@@ -451,12 +463,50 @@ function hermesServer() {
         if (run.steers.length) resolve();
         else run.onSteer = resolve;
       });
+    // run.steered, where Hermes' stream has it: right after Hermes took the message (none for a refused one).
+    const accepted = async () => (await steered(), run.steers.length ? { event: 'run.steered', accepted: true, timestamp: run.steeredAt } : null);
+    const read = () => ({ event: 'message.delta', delta: `read: ${run.steers.join(' | ')}` });
+    const completed = () => ((run.ended = true), { event: 'run.completed', output: `read: ${run.steers.join(' | ')}`, completed: true });
+    const cancelled = () =>
+      new Promise((resolve) => {
+        const end = () => resolve({ event: 'run.cancelled', completed: false, interrupted: true });
+        if (run.stopped) end();
+        else run.onStop = end;
+      });
     if (/steer tool/.test(input)) {
+      return [{ event: 'tool.started', tool: 'terminal', preview: 'sleep 1' }, accepted, { event: 'tool.completed', tool: 'terminal', duration: 1, error: false, preview: '' }, read, completed];
+    }
+    // Two tool calls side by side; the message comes while both run. Hermes hands it over after the second one, and
+    // with "stop" the run is stopped before that.
+    if (/steer parallel/.test(input)) {
+      return [
+        { event: 'tool.started', tool: 'web_search', preview: 'invoices' },
+        { event: 'tool.started', tool: 'read_file', preview: 'notes.txt' },
+        accepted,
+        async () => (await gate(), { event: 'tool.completed', tool: 'web_search', duration: 1, error: false, preview: '' }),
+        ...(/stop/.test(input) ? [cancelled] : [{ event: 'tool.completed', tool: 'read_file', duration: 2, error: false, preview: '' }, read, completed])
+      ];
+    }
+    // The tool call ended before Hermes took the message, and Rukoo gets that event only after the steer's answer.
+    // The batch was over, so the run ends holding the message.
+    if (/steer buffered/.test(input)) {
       return [
         { event: 'tool.started', tool: 'terminal', preview: 'sleep 1' },
-        async () => (await steered(), { event: 'tool.completed', tool: 'terminal', duration: 1, error: false, preview: '' }),
-        () => ({ event: 'message.delta', delta: `read: ${run.steers.join(' | ')}` }),
-        () => ((run.ended = true), { event: 'run.completed', output: `read: ${run.steers.join(' | ')}`, completed: true })
+        async () => (await steered(), await gate(), { event: 'tool.completed', tool: 'terminal', duration: 1, error: false, preview: '', timestamp: run.steeredAt - 0.01 }),
+        () => ({ event: 'run.steered', accepted: true, timestamp: run.steeredAt }),
+        () => ({ event: 'message.delta', delta: 'The tool is done.' }),
+        () => ((run.ended = true), { event: 'run.completed', output: 'The tool is done.', completed: true, pending_steer: run.steers.join('\n') })
+      ];
+    }
+    // The tool call ended just before Hermes took the message, but its event was queued after run.steered: the
+    // timestamps tell. The batch was over, so the run ends holding the message.
+    if (/steer racing/.test(input)) {
+      return [
+        { event: 'tool.started', tool: 'terminal', preview: 'sleep 1' },
+        accepted,
+        async () => (await gate(), { event: 'tool.completed', tool: 'terminal', duration: 1, error: false, preview: '', timestamp: run.steeredAt - 0.0005 }),
+        () => ({ event: 'message.delta', delta: 'All done.' }),
+        () => ((run.ended = true), { event: 'run.completed', output: 'All done.', completed: true, pending_steer: run.steers.join('\n') })
       ];
     }
     if (/steer late/.test(input)) {
@@ -533,7 +583,7 @@ function hermesServer() {
     return [{ event: 'message.delta', delta: 'OK' }, { event: 'run.completed', output: 'OK', completed: true }];
   }
 
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, state, url: `http://127.0.0.1:${server.address().port}`, key: KEY })));
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, state, open, url: `http://127.0.0.1:${server.address().port}`, key: KEY })));
 }
 
 test('hermes: status distinguishes unconfigured, unauthorized, ready and offline', async () => {
@@ -783,7 +833,7 @@ test('hermes: stop asks the server to stop the run and resolves stopped', async 
   }
 });
 
-test('hermes: a steered message goes to the run, and counts as read once the tool call under way ends', async () => {
+test('hermes: a steered message goes to the run, and counts as read on the model’s step after the tool call under way', async () => {
   const h = await hermesServer();
   try {
     const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
@@ -808,6 +858,64 @@ test('hermes: a steered message goes to the run, and counts as read once the too
     assert.equal(h.state.requests.length, before);
   } finally {
     h.server.close();
+  }
+});
+
+test('hermes: with tool calls side by side a steer is read after the last one, on the model’s next step; a stop before that leaves it unread', async () => {
+  // The first tool call ends after the steer's answer is in; Hermes still holds the message for the second one.
+  let h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+    const turn = steering(fakeTurn(conv(), 'steer parallel please'));
+    const done = adapter.runTurn(turn);
+    await waitFor(() => ofType(turn, 'tool-start').length === 2);
+    assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'use the work account' }), true);
+    h.open();
+    assert.deepEqual(await done, { status: 'done' });
+    assert.deepEqual(
+      turn.events.filter((e) => ['tool-end', 'steered', 'text'].includes(e.type)).map((e) => e.type),
+      ['tool-end', 'tool-end', 'steered', 'text']
+    );
+    assert.equal(texts(turn), 'read: use the work account');
+  } finally {
+    h.server.close();
+  }
+
+  // Stopped after the first tool call ended: the hub puts the message back in the queue.
+  h = await hermesServer();
+  try {
+    const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+    const turn = steering(fakeTurn(conv(), 'steer parallel stop please'));
+    const run = adapter.runTurn(turn);
+    await waitFor(() => ofType(turn, 'tool-start').length === 2);
+    assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'and the invoices' }), true);
+    h.open();
+    await waitFor(() => ofType(turn, 'tool-end').length === 1);
+    turn.controller.abort();
+    assert.deepEqual(await run, { status: 'stopped' });
+    assert.equal(ofType(turn, 'steered').length, 0);
+  } finally {
+    h.server.close();
+  }
+});
+
+test('hermes: a tool call that ended before Hermes took a steer doesn’t make it read, also when its event comes in after the steer’s answer', async () => {
+  for (const input of ['steer buffered please', 'steer racing please']) {
+    const h = await hermesServer();
+    try {
+      const adapter = new HermesAdapter({ id: 'clark', config: () => ({ url: h.url, key: h.key }) });
+      const turn = steering(fakeTurn(conv(), input));
+      const done = adapter.runTurn(turn);
+      await waitFor(() => ofType(turn, 'tool-start').length === 1);
+      assert.equal(await adapter.steer(turn, { id: 'q_1', input: 'use the work account' }), true);
+      h.open();
+      assert.deepEqual(await done, { status: 'done' });
+      assert.equal(ofType(turn, 'tool-end').length, 1, input);
+      // The run ended holding it (pending_steer): the hub sends it as the next message.
+      assert.equal(ofType(turn, 'steered').length, 0, input);
+    } finally {
+      h.server.close();
+    }
   }
 });
 
