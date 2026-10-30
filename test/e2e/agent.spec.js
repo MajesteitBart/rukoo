@@ -1829,7 +1829,8 @@ const fileChips = () => win.locator('.agentpane .bui-pb__files .bui-entity--atta
 // refresh comes in (an email marked read, a setting saved), and a redraw between dragTo's checks of the row and its
 // press made Playwright end the drag without a drop and without an error. The row is found, scrolled to and
 // measured in one step in the page, so no redraw comes in between; the mouse then drags whatever row is under it.
-async function dragToChat(subject) {
+// hold: the button stays down over the chat, for the test to let go; returns where the pointer is.
+async function dragToChat(subject, { hold = false } = {}) {
   const from = await win.evaluate((text) => {
     const row = [...document.querySelectorAll('.list-scroll .item')].find((el) => el.textContent.includes(text));
     // Instant: a smooth scroll would still be moving the row when it is measured.
@@ -1838,10 +1839,12 @@ async function dragToChat(subject) {
     return [r.x + r.width / 2, r.y + r.height / 2];
   }, subject);
   const box = await transcript().boundingBox();
+  const to = [box.x + box.width / 2, box.y + box.height / 2];
   await win.mouse.move(...from);
   await win.mouse.down();
-  await win.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
-  await win.mouse.up();
+  await win.mouse.move(...to, { steps: 5 });
+  if (!hold) await win.mouse.up();
+  return to;
 }
 const received = (agent = 'clark') => app.evaluate((_e, agent) => global.__semAgents.adapters.get(agent).received.at(-1), agent);
 const pickFilesWith = (paths) =>
@@ -2277,9 +2280,34 @@ test('two emails dragged from the list show up as chips, and the agent reads bot
   await shot('24-emails-sent');
 });
 
+test('an email let go over the chat just after the panel draws itself again still goes in, and the agent reads it', async () => {
+  await openChat('Call on Thursday');
+  const names = win.locator('.agentpane .bui-pb__files .bui-entity__name');
+  // Dragged over the empty chat and held there. While it is over the panel, the panel itself is under the pointer, not
+  // the empty state, which is drawn again when the agents' status comes in. Before, the message went without the
+  // email: the drop went to an element that had just left the page, or Chromium sent the new one a dragenter before
+  // the drop, and a dragenter the panel left alone refused it.
+  const at = await dragToChat('Your parcel is on its way', { hold: true });
+  const target = await win.evaluate(([x, y]) => {
+    window.__empty = document.querySelector('.agentpane .ap-empty');
+    const r = window.__empty.getBoundingClientRect();
+    return { overEmpty: x > r.left && x < r.right && y > r.top && y < r.bottom, panel: document.elementFromPoint(x, y) === document.querySelector('.agentpane') };
+  }, at);
+  expect(target).toEqual({ overEmpty: true, panel: true });
+  await app.evaluate(() => global.__semAgents.refreshStatus({ force: true }));
+  await expect.poll(() => win.evaluate(() => window.__empty.isConnected)).toBe(false);
+  await win.mouse.up();
+  await expect(names).toHaveText(['Call on Thursday', 'Your parcel is on its way']);
+  await say('Compare these');
+  await expect(transcript()).toContainText('The email "Your parcel is on its way" is from', { timeout: 10000 });
+  expect((await received()).emails).toEqual([await item('Your parcel is on its way').getAttribute('data-id')]);
+});
+
 test('an attached email archived after Send still reads with the id the agent got, after a restart too, and a new session gets the id it has now', async () => {
   await openChat('Call on Thursday');
   await dragToChat('Your parcel is on its way');
+  // The email is in the message before it goes.
+  await expect(win.locator('.agentpane .bui-pb__files .bui-entity__name')).toHaveText(['Call on Thursday', 'Your parcel is on its way']);
   await say('Compare these');
   await expect(transcript()).toContainText('The email "Your parcel is on its way" is from', { timeout: 10000 });
   const [given] = (await received()).emails;

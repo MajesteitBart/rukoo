@@ -2587,6 +2587,26 @@
     "message": "What you have written will be lost.",
     "description": "composer > discard. src/renderer/composer.js (discard)"
   },
+  "composer.edit.cut": {
+    "message": "Cut",
+    "description": "Menu item: cuts the selected text to the clipboard. Context menu on the message text in the composer (right-click, the context menu key or Shift+F10). src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.copy": {
+    "message": "Copy",
+    "description": "Menu item: copies the selected text to the clipboard. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.paste": {
+    "message": "Paste",
+    "description": "Menu item: pastes what is on the clipboard, with its formatting. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.pastePlain": {
+    "message": "Paste as plain text",
+    "description": "Menu item: pastes the clipboard's text without its formatting, so it takes on the style of the text around it. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
+  "composer.edit.selectAll": {
+    "message": "Select all",
+    "description": "Menu item: selects all of the message text. Context menu on the message text in the composer. src/renderer/editmenu.js (open)"
+  },
   "composer.errors.autosave": {
     "message": "Autosave failed",
     "description": "composer > errors. src/renderer/composer.js (saveDraft)"
@@ -2667,6 +2687,34 @@
     "message": "Insert link",
     "description": "composer > link. src/renderer/composer.js (insertLink)"
   },
+  "composer.mentions.addedCc": {
+    "message": "{name} added to Cc",
+    "description": "Toast after picking someone to @-mention who wasn't a recipient yet: the composer adds them to Cc. {name} is the person's name, or their email address when there is none. src/renderer/mentions.js (pick)"
+  },
+  "composer.mentions.addsCc": {
+    "message": "Adds to Cc",
+    "description": "Read by screen readers for a person in the @-mention suggestions who isn't a recipient yet: picking them adds them to Cc. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.hint": {
+    "message": "People who aren't on the email yet go to Cc",
+    "description": "Quiet line under the @-mention suggestions in the composer, shown while picking someone would add them as a recipient. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.inBcc": {
+    "message": "Already in Bcc",
+    "description": "Tooltip of the Bcc tag on a person in the @-mention suggestions who is already a Bcc recipient, and read by screen readers. Picking them only inserts the mention. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.inCc": {
+    "message": "Already in Cc",
+    "description": "Tooltip of the Cc tag on a person in the @-mention suggestions who is already a Cc recipient, and read by screen readers. Picking them only inserts the mention. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.inTo": {
+    "message": "Already in To",
+    "description": "Tooltip of the To tag on a person in the @-mention suggestions who is already a To recipient, and read by screen readers. Picking them only inserts the mention. src/renderer/mentions.js (draw)"
+  },
+  "composer.mentions.label": {
+    "message": "People to mention",
+    "description": "Accessible name of the suggestion list that opens when you type @ and a name in the composer's text. src/renderer/mentions.js (draw)"
+  },
   "composer.quote.date": {
     "message": "Date: {date}",
     "description": "composer > quote. src/renderer/composer.js (quoteHeader)"
@@ -2714,6 +2762,14 @@
   "composer.send.noSubjectTitle": {
     "message": "No subject",
     "description": "composer > send. src/renderer/composer.js (send)"
+  },
+  "composer.spelling.add": {
+    "message": "Add to dictionary",
+    "description": "Menu item: adds the right-clicked misspelled word to the spell checker's dictionary, so it is no longer underlined. Context menu on a misspelled word in the composer, under the spelling suggestions. src/renderer/editmenu.js (open)"
+  },
+  "composer.spelling.none": {
+    "message": "No suggestions",
+    "description": "Disabled menu row where the spelling suggestions go, when the spell checker has none for the right-clicked misspelled word. Context menu on a misspelled word in the composer. src/renderer/editmenu.js (open)"
   },
   "composer.status.defaultAccount": {
     "message": "{address} is now the default account",
@@ -5745,6 +5801,38 @@
     "message": "Hidden",
     "description": "Meeting type description: the type isn't listed on the page. src/renderer/booking-settings.js"
   },
+  "settings.booking.rowBufferBefore": {
+    "message": "{time} free time before",
+    "description": "Meeting type's row on the booking page, shown when the type keeps time free before a booking; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowBufferAfter": {
+    "message": "{time} free time after",
+    "description": "Meeting type's row on the booking page, shown when the type keeps time free after a booking; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowBufferBoth": {
+    "message": "{time} free time before and after",
+    "description": "Meeting type's row on the booking page, when the free time before and after a booking are the same; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowNotice": {
+    "message": "{time} notice",
+    "description": "Meeting type's row on the booking page, when its minimum notice isn't the default 4 hours; time is a length such as \"1 day\" or \"30 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowNoNotice": {
+    "message": "No minimum notice",
+    "description": "Meeting type's row on the booking page, when guests can book it right up to its start. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowHorizon": {
+    "message": { "one": "Up to {count} day ahead", "other": "Up to {count} days ahead" },
+    "description": "Meeting type's row on the booking page, when it can be booked more or fewer days ahead than the default 30; count is the number of days. src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowInterval": {
+    "message": "Start times every {time}",
+    "description": "Meeting type's row on the booking page, when the offered start times have their own step; time is a length such as \"15 mins\". src/renderer/booking-settings.js"
+  },
+  "settings.booking.rowLimit": {
+    "message": { "one": "At most {count} a day", "other": "At most {count} a day" },
+    "description": "Meeting type's row on the booking page, when the type has a limit of bookings per day; count is the limit. src/renderer/booking-settings.js"
+  },
   "settings.booking.addType": {
     "message": "Add meeting type",
     "description": "Booking page row that adds a meeting type (up to 10). src/renderer/booking-settings.js"
@@ -5901,9 +5989,13 @@
     "message": "A meeting link starts with https://.",
     "description": "Meeting type editor: error for a link that isn't https. src/renderer/booking-settings.js"
   },
+  "settings.booking.when": {
+    "message": "When guests can book",
+    "description": "Meeting type editor: heading of the section, open when the editor opens, with free time before and after, minimum notice, how far ahead, start times and the limit per day. src/renderer/booking-settings.js"
+  },
   "settings.booking.more": {
     "message": "More options",
-    "description": "Meeting type editor: folded section with buffers, notice, window, interval, limit, approval and hidden. src/renderer/booking-settings.js"
+    "description": "Meeting type editor: folded section with Needs your approval and Hide from the page. src/renderer/booking-settings.js"
   },
   "settings.booking.bufferBefore": {
     "message": "Free time before",
@@ -5912,6 +6004,10 @@
   "settings.booking.bufferAfter": {
     "message": "Free time after",
     "description": "Meeting type editor: buffer after a booking. src/renderer/booking-settings.js"
+  },
+  "settings.booking.bufferHelp": {
+    "message": "Keeps time free around each booking, so guests can't book right next to your other meetings.",
+    "description": "Meeting type editor: help under Free time before and Free time after, for hosts who look for buffers. src/renderer/booking-settings.js"
   },
   "settings.booking.minNotice": {
     "message": "Minimum notice",

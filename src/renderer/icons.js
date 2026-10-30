@@ -108,6 +108,12 @@ export const icons = {
   copy: p('<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/>'),
   // Select all in an email: lines of text inside a dashed frame.
   selectAll: p('<path d="M4 7.5V6a2 2 0 0 1 2-2h1.5M10.5 4h3M16.5 4H18a2 2 0 0 1 2 2v1.5M20 10.5v3M20 16.5V18a2 2 0 0 1-2 2h-1.5M13.5 20h-3M7.5 20H6a2 2 0 0 1-2-2v-1.5M4 13.5v-3M8.5 9.5h7M8.5 12h7M8.5 14.5h4.5"/>'),
+  // The composer's context menu: cut (scissors), paste (a clipboard), paste as plain text (a clipboard with a T) and
+  // add to dictionary (a book with a plus).
+  cut: p('<circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/><path d="M8.4 15.8 17.5 4M15.6 15.8 6.5 4"/>'),
+  paste: p('<path d="M9 4.5H7.5a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V6.5a2 2 0 0 0-2-2H15"/><rect x="9" y="3" width="6" height="3" rx="1"/>'),
+  pastePlain: p('<path d="M9 4.5H7.5a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V6.5a2 2 0 0 0-2-2H15"/><rect x="9" y="3" width="6" height="3" rx="1"/><path d="M9 10.5h6M12 10.5v6.5"/>'),
+  dictionary: p('<path d="M5 18.5V6a2.5 2.5 0 0 1 2.5-2.5H19v13H7.5A2.5 2.5 0 0 0 5 19a2.5 2.5 0 0 0 2.5 2.5H19"/><path d="M12 6.5v6M9 9.5h6"/>'),
   // A time zone, such as a booking guest's.
   globe: p('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.3 2.4 3.5 5.2 3.5 8.5s-1.2 6.1-3.5 8.5c-2.3-2.4-3.5-5.2-3.5-8.5s1.2-6.1 3.5-8.5z"/>'),
   // The conflict line: something overlaps.

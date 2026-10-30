@@ -1663,6 +1663,33 @@ class Engine extends EventEmitter {
       .map(({ name, address }) => ({ name, address }));
   }
 
+  // The people in an email thread, for @-mentions in the composer: everyone on the account's synced messages whose
+  // Message-ID is one of ids (a reply's References and In-Reply-To), or that answer one of them. People from the
+  // newest message come first; your own addresses and no-reply senders are left out.
+  threadContacts(accountId, ids) {
+    const cache = this.caches.get(accountId);
+    const want = new Set((Array.isArray(ids) ? ids : []).map(messageKey).filter(Boolean));
+    if (!cache || !want.size) return [];
+    const inThread = (v) => Boolean(v) && want.has(messageKey(v));
+    const hits = [];
+    for (const box of Object.values(cache.boxes)) {
+      for (const m of box.messages) if (inThread(m.messageId) || inThread(m.inReplyTo)) hits.push(m);
+    }
+    hits.sort((a, b) => (b.date || 0) - (a.date || 0));
+    const own = new Set(this.ownAddresses());
+    const people = new Map();
+    for (const m of hits) {
+      for (const a of [m.from, ...(m.replyTo || []), ...(m.to || []), ...(m.cc || [])]) {
+        const key = lowerAddr(a);
+        if (!key.includes('@') || own.has(key) || /no-?reply|do-?not-?reply/.test(key)) continue;
+        const prev = people.get(key);
+        if (!prev) people.set(key, { name: (a && a.name) || '', address: a.address });
+        else if (!prev.name && a.name) prev.name = a.name;
+      }
+    }
+    return [...people.values()];
+  }
+
   // icalEvent: an iCalendar part for the message ({ method, content }), only from the main process: the answer to an
   // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics.
   async send(payload, { icalEvent = null } = {}) {

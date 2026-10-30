@@ -1,5 +1,5 @@
-// Responses. Every answer is nosniff, and no-store except the booking pages' font files; booking pages add their own
-// policy on top (PROTOCOL.md, Public routes).
+// Responses. Every answer is nosniff, and no-store except the booking pages' font and icon files; booking pages add
+// their own policy on top (PROTOCOL.md, Public routes).
 
 export function baseHeaders(headers = {}) {
   return { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers };
@@ -65,6 +65,13 @@ export function meetText(status, body, contentType, headers = {}, method = 'GET'
 export function meetFont(body, method) {
   return new Response(method === 'HEAD' ? null : body, {
     headers: baseHeaders({ 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' })
+  });
+}
+
+// An icon (icons.js), cached for a day: unlike a font file, an icon keeps its name when it changes.
+export function meetIcon({ body, type }, method) {
+  return new Response(method === 'HEAD' ? null : body, {
+    headers: meetHeaders({ 'content-type': type, 'cache-control': 'public, max-age=86400' })
   });
 }
 
