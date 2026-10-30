@@ -1,12 +1,13 @@
 //! Behaviour of the recorder binary beyond the two crash tests: finalize, resume numbering,
-//! pause and marks, the tap, control authentication, the file source, call-track padding, the
-//! length limit and refused starts. All with synthetic or file sources.
+//! pause and marks, the tap and the connections it holds, dictation stretches, control
+//! authentication, the file source, call-track padding, a slow device open, the length limit and
+//! refused starts. All with synthetic or file sources.
 
 mod common;
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
 
 use common::*;
@@ -342,6 +343,321 @@ fn control_refuses_a_bad_token() {
     assert!(wait_exit(&mut child).success());
     let lines = m.lines();
     assert_eq!(of_kind(&lines, "stop").len(), 1);
+}
+
+/// The control port serves 16 connections at a time.
+const CONNECTIONS: usize = 16;
+
+/// Opens a tap the way the app's dictation does and returns the reply and the connection.
+fn open_tap(port: u16, token: &str, track: &str) -> (serde_json::Value, Client) {
+    let mut tap = Client::connect(port, Duration::from_secs(2)).unwrap();
+    let reply = command(&mut tap, token, json!({ "cmd": "tap", "track": track }));
+    (reply, tap)
+}
+
+/// Closes a connection as the app's tap does on drop: both directions, then the socket.
+fn close(client: Client) {
+    let pcm = client.into_pcm();
+    let _ = pcm.get_ref().shutdown(Shutdown::Both);
+}
+
+/// Waits until the recorder answers `status` again on a new connection.
+fn wait_for_a_free_connection(port: u16, token: &str) {
+    wait_until(WAIT_TIMEOUT, || {
+        let mut client = Client::connect(port, Duration::from_secs(2)).ok()?;
+        client
+            .request(&json!({ "token": token, "cmd": "status" }))
+            .ok()
+            .filter(|reply| reply["ok"] == true)
+    });
+}
+
+/// Whether the server closed `stream` within `timeout`.
+fn closed_within(stream: &mut TcpStream, timeout: Duration) -> bool {
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    let mut byte = [0u8; 1];
+    match stream.read(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+fn dictation_lines(lines: &[serde_json::Value]) -> Vec<(String, u64)> {
+    of_kind(lines, "dictation")
+        .iter()
+        .map(|l| (l["state"].as_str().unwrap().to_string(), t(l)))
+        .collect()
+}
+
+#[test]
+fn taps_on_a_lost_microphone_never_lock_out_stop() {
+    let m = TempMeeting::new("tap-lost-mic");
+    let mut child = m.record(
+        &[
+            "mic=synthetic:tone:440,fail-at=0",
+            "call=synthetic:tone:660",
+        ],
+        &[],
+    );
+    // The app's own connection stays open throughout.
+    let (_client, token) = m.connect(1);
+    let port = m.recorder_file().unwrap().port;
+    m.wait_for_heartbeat(1_000);
+
+    // The headset is unplugged and the user presses the dictation key again and again.
+    for n in 0..CONNECTIONS {
+        let (reply, tap) = open_tap(port, &token, "mic");
+        assert_eq!(
+            reply,
+            json!({ "ok": false, "error": "no_device" }),
+            "tap {n}"
+        );
+        close(tap);
+    }
+    // Every slot is free again: a new connection gets an answer and the meeting stops.
+    let mut fresh = Client::connect(port, Duration::from_secs(2)).unwrap();
+    let status = command(&mut fresh, &token, json!({ "cmd": "status" }));
+    assert_eq!(status["tracks"]["mic"]["ok"], false, "{status}");
+    let reply = command(&mut fresh, &token, json!({ "cmd": "stop" }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(wait_exit(&mut child).success());
+    assert_eq!(m.lines().last().unwrap()["kind"], "stop");
+}
+
+#[test]
+fn a_tap_ends_when_its_track_loses_the_device() {
+    let m = TempMeeting::new("tap-then-lost");
+    let mut child = m.record(&["mic=synthetic:tone:440,fail-at=1500"], &[]);
+    let (mut client, token) = m.connect(1);
+    let port = m.recorder_file().unwrap().port;
+    let (reply, tap) = open_tap(port, &token, "mic");
+    assert_eq!(reply["ok"], true, "{reply}");
+    // The tap carries audio until the device goes, then the recorder closes it.
+    let mut pcm = tap.into_pcm();
+    pcm.get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut rest = Vec::new();
+    let read = pcm.read_to_end(&mut rest);
+    assert!(read.is_ok(), "the tap ended with {read:?}");
+    assert!(
+        rest.len() >= 16_000,
+        "only {} bytes before the loss",
+        rest.len()
+    );
+    let status = command(&mut client, &token, json!({ "cmd": "status" }));
+    assert_eq!(status["tracks"]["mic"]["ok"], false, "{status}");
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+}
+
+#[test]
+fn closed_taps_on_a_silent_track_free_their_connections() {
+    let m = TempMeeting::new("tap-silent");
+    let mut child = m.record(&["mic=synthetic:tone:440", "call=synthetic:idle"], &[]);
+    let (mut client, token) = m.connect(1);
+    let port = m.recorder_file().unwrap().port;
+    // Nothing plays, so these taps never get a byte to write; only their clients closing ends
+    // them. With the app's connection they fill every slot, twice over.
+    for n in 0..2 * (CONNECTIONS - 1) {
+        let (reply, tap) = wait_until(WAIT_TIMEOUT, || {
+            let mut tap = Client::connect(port, Duration::from_secs(2)).ok()?;
+            let reply = tap
+                .request(&json!({ "token": token, "cmd": "tap", "track": "call" }))
+                .ok()?;
+            Some((reply, tap))
+        });
+        assert_eq!(reply["ok"], true, "tap {n}: {reply}");
+        close(tap);
+    }
+    wait_for_a_free_connection(port, &token);
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+}
+
+#[test]
+fn connections_without_the_token_are_closed_after_five_seconds() {
+    let m = TempMeeting::new("auth-timeout");
+    let mut child = m.record(&["mic=synthetic:tone:440"], &[]);
+    let (mut client, token) = m.connect(1);
+    let port = m.recorder_file().unwrap().port;
+    drop(client);
+    // A local program fills every slot and never says anything.
+    let mut silent: Vec<TcpStream> = (0..CONNECTIONS)
+        .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    for (n, stream) in silent.iter_mut().enumerate() {
+        assert!(
+            closed_within(stream, Duration::from_secs(15)),
+            "silent connection {n} stayed open"
+        );
+    }
+    wait_for_a_free_connection(port, &token);
+    client = Client::connect(port, Duration::from_secs(2)).unwrap();
+    let status = command(&mut client, &token, json!({ "cmd": "status" }));
+    assert_eq!(status["ok"], true);
+    // A client that authenticated may keep its connection idle.
+    std::thread::sleep(Duration::from_secs(6));
+    let status = command(&mut client, &token, json!({ "cmd": "status" }));
+    assert_eq!(status["ok"], true);
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+}
+
+#[test]
+fn a_dictation_ends_when_its_tap_closes() {
+    let m = TempMeeting::new("dictation-tap");
+    let mut child = m.record(&["mic=synthetic:tone:440", "call=synthetic:idle"], &[]);
+    let (mut client, token) = m.connect(1);
+    let port = m.recorder_file().unwrap().port;
+    m.wait_for_heartbeat(500);
+
+    // The app opens the tap, then says it dictates, then crashes: no `end` ever comes.
+    let (reply, tap) = open_tap(port, &token, "mic");
+    assert_eq!(reply["ok"], true, "{reply}");
+    let start = command(
+        &mut client,
+        &token,
+        json!({ "cmd": "dictation", "state": "start" }),
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    close(tap);
+    let gone = t(&command(&mut client, &token, json!({ "cmd": "status" })));
+    let lines = wait_until(WAIT_TIMEOUT, || {
+        let lines = m.lines_so_far();
+        (dictation_lines(&lines).len() == 2).then_some(lines)
+    });
+    let end = dictation_lines(&lines)[1].1;
+    assert!(
+        end + SLACK_MS >= gone && end <= gone + 1_000,
+        "the dictation ended at {end}, the tap closed at {gone}"
+    );
+    // The app's own `end` after that changes nothing.
+    let late = command(
+        &mut client,
+        &token,
+        json!({ "cmd": "dictation", "state": "end" }),
+    );
+    assert_eq!(late["ok"], true);
+
+    // The usual order: close the tap, then `end`. One `end` either way.
+    let (_, tap) = open_tap(port, &token, "mic");
+    let again = command(
+        &mut client,
+        &token,
+        json!({ "cmd": "dictation", "state": "start" }),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    close(tap);
+    command(
+        &mut client,
+        &token,
+        json!({ "cmd": "dictation", "state": "end" }),
+    );
+    m.wait_for_heartbeat(t(&again) + 1_500);
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+
+    let lines = m.lines();
+    let states: Vec<String> = dictation_lines(&lines).into_iter().map(|d| d.0).collect();
+    assert_eq!(states, ["start", "end", "start", "end"]);
+    assert_eq!(dictation_lines(&lines)[0].1, t(&start));
+    assert_eq!(dictation_lines(&lines)[2].1, t(&again));
+}
+
+#[test]
+fn a_dead_sessions_dictation_ends_where_it_was_last_seen() {
+    let m = TempMeeting::new("dictation-crash");
+    let tracks = ["mic=synthetic:tone:440"];
+    let mut child = m.record(&tracks, &[]);
+    let (mut client, token) = m.connect(1);
+    let start = command(
+        &mut client,
+        &token,
+        json!({ "cmd": "dictation", "state": "start" }),
+    );
+    m.wait_for_heartbeat(t(&start) + 1_000);
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    // The watchdog's restart closes it before its session line.
+    let mut child = m.record(&tracks, &["--resume"]);
+    let (mut client, token) = m.connect(2);
+    let lines = m.lines_so_far();
+    let session = lines
+        .iter()
+        .position(|l| l["kind"] == "session" && l["session"] == 2)
+        .unwrap();
+    let crash = of_kind(&lines, "crash")[0];
+    let ended = &lines[session - 1];
+    assert_eq!(
+        (ended["kind"].as_str(), ended["state"].as_str()),
+        (Some("dictation"), Some("end")),
+        "{ended}"
+    );
+    assert_eq!(ended["t"], crash["lastSeen"]);
+
+    // And `finalize` closes one before its stop line.
+    let start = command(
+        &mut client,
+        &token,
+        json!({ "cmd": "dictation", "state": "start" }),
+    );
+    m.wait_for_heartbeat(t(&start) + 1_000);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let dir = m.arg();
+    let (status, out) = m.run(&["finalize", "--meeting", &dir]);
+    assert!(status.success(), "{out}");
+    let lines = m.lines();
+    let stop = &lines[lines.len() - 1];
+    let ended = &lines[lines.len() - 2];
+    assert_eq!(stop["kind"], "stop");
+    assert_eq!(
+        (ended["kind"].as_str(), ended["state"].as_str()),
+        (Some("dictation"), Some("end")),
+        "{ended}"
+    );
+    assert_eq!(ended["t"], stop["t"]);
+    let states: Vec<String> = dictation_lines(&lines).into_iter().map(|d| d.0).collect();
+    assert_eq!(states, ["start", "end", "start", "end"]);
+}
+
+#[test]
+fn a_slow_device_open_is_not_a_sleep() {
+    let m = TempMeeting::new("slow-open");
+    // Opening the microphone blocks the recorder thread for 5 s, as a Bluetooth headset
+    // switching to Hands-Free can. A wall-clock check took that for a sleep, dropped both
+    // tracks and reopened the slow device again and again.
+    let mut child = m.record(
+        &[
+            "mic=synthetic:tone:440,open-ms=5000",
+            "call=synthetic:tone:660",
+        ],
+        &[],
+    );
+    // The recorder thread answers nothing while it opens, so the test reads the timeline first.
+    m.wait_for_heartbeat(8_000);
+    let (mut client, token) = m.connect(1);
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+
+    let lines = m.lines();
+    assert!(
+        of_kind(&lines, "suspend").is_empty(),
+        "{:?}",
+        of_kind(&lines, "suspend")
+    );
+    assert_eq!(of_kind(&lines, "track").len(), 2, "a device was reopened");
+    for (track, hz) in [("mic", 440.0), ("call", 660.0)] {
+        let segs = segments(&m, &lines, track);
+        assert_eq!(segs.len(), 1, "{track}: {segs:?}");
+        assert_tone(&segs[0].pcm, hz, track);
+    }
 }
 
 fn write_tone(path: &std::path::Path, rate: u32, hz: f64, seconds: f64) {

@@ -21,7 +21,11 @@ serde_json = "1"
 # Device capture is Windows-only in 0.1; elsewhere only the synthetic and file test sources run.
 [target.'cfg(windows)'.dependencies]
 cpal = "=0.18.2"
-windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security_Cryptography",
+  "Win32_System_WindowsProgramming",
+] }
 
 [dev-dependencies]
 hound = "=3.5.1"

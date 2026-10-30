@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use voice_audio::{Resampler, SegmentWriter, SAMPLE_RATE};
 
-use crate::clock::{self, wall_ms, MeetingClock, HEARTBEAT};
+use crate::clock::{self, wall_ms, MeetingClock, Stamp, HEARTBEAT};
 use crate::control::{self, Command, Reply};
 use crate::meeting::{self, RecorderFile};
 use crate::source::{Backend, Capture, DeviceInfo, Failure, Sink, SourceSpec, StreamFlags};
@@ -162,8 +162,17 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             .or(s.ended)
             .unwrap_or(0)
     });
+    // The app that dictated read the microphone through a tap of the dead session, so its
+    // dictation ended with it.
+    if let Some(since) = history.dictating {
+        journal.write(Line::Dictation {
+            t: last_seen.max(since),
+            state: "end".into(),
+        });
+    }
 
-    let wall = wall_ms();
+    let started = Stamp::now();
+    let wall = started.wall;
     let start_t = if resumed {
         let first_wall = history.first_wall.unwrap_or(wall);
         clock::resumed_start(first_wall, wall, history.latest_t.max(last_seen))
@@ -250,10 +259,11 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         events,
         tracks,
         paused: history.paused,
+        dictating: false,
         last_mark: history.last_mark,
         limit_ms: opts.limit_ms,
         segment_samples: opts.segment_ms.max(1) * SAMPLES_PER_MS,
-        heartbeat: (start_t, wall),
+        heartbeat: (start_t, started),
         stop: None,
     };
     for i in 0..recorder.tracks.len() {
@@ -341,16 +351,18 @@ impl Track {
     }
 
     /// Sends converted audio to every tap. A tap that can't keep up is disconnected: dropping
-    /// blocks would hand dictation broken audio without a sign.
-    fn send_taps(&mut self, pcm: &[i16]) {
+    /// blocks would hand dictation broken audio without a sign. A tap whose client closed it
+    /// goes too. Returns whether the track's last tap went.
+    fn send_taps(&mut self, pcm: &[i16]) -> bool {
         if self.taps.is_empty() {
-            return;
+            return false;
         }
         let mut bytes = Vec::with_capacity(pcm.len() * 2);
         for sample in pcm {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         self.taps.retain(|tap| tap.try_send(bytes.clone()).is_ok());
+        self.taps.is_empty()
     }
 }
 
@@ -384,11 +396,13 @@ struct Recorder {
     events: SyncSender<Event>,
     tracks: Vec<Track>,
     paused: bool,
+    /// A dictation stretch is open: the last `dictation` line says `start`.
+    dictating: bool,
     last_mark: u64,
     limit_ms: u64,
     segment_samples: u64,
-    /// Meeting time and wall time of the last heartbeat.
-    heartbeat: (u64, u64),
+    /// Meeting time and clock readings of the last heartbeat.
+    heartbeat: (u64, Stamp),
     stop: Option<Stopping>,
 }
 
@@ -445,10 +459,10 @@ impl Recorder {
 
     fn tick(&mut self, now: Instant, schedule: &mut Schedule) {
         schedule.tick = now + TICK;
-        let wall = wall_ms();
-        if let Some(jump) = clock::suspend_jump(self.heartbeat.1, wall) {
-            self.suspend(jump, wall);
-            schedule.heartbeat = now + HEARTBEAT;
+        let stamp = Stamp::now();
+        if clock::slept(&self.heartbeat.1, &stamp).is_some() {
+            self.suspend(&stamp);
+            schedule.heartbeat = Instant::now() + HEARTBEAT;
         }
         for i in 0..self.tracks.len() {
             self.check_failure(i);
@@ -459,7 +473,7 @@ impl Recorder {
         }
         if now >= schedule.heartbeat {
             schedule.heartbeat = later(schedule.heartbeat, HEARTBEAT, now);
-            self.write_heartbeat(wall);
+            self.write_heartbeat();
         }
         if now >= schedule.poll {
             schedule.poll = now + DEFAULT_POLL;
@@ -509,7 +523,9 @@ impl Recorder {
         if pcm.is_empty() {
             return;
         }
-        track.send_taps(&pcm);
+        if track.send_taps(&pcm) {
+            self.last_tap_gone(i);
+        }
         if paused {
             return;
         }
@@ -558,14 +574,23 @@ impl Recorder {
             }
             Command::Dictation { state } => {
                 let t = self.clock.at(at);
-                self.journal.write(Line::Dictation { t, state });
+                // Only a change is written: the stretch may have ended already when the app's
+                // tap closed, just before the app's own `end`.
+                let starting = state == "start";
+                if starting != self.dictating {
+                    self.dictating = starting;
+                    self.journal.write(Line::Dictation { t, state });
+                }
                 Reply::ok(json!({ "ok": true, "t": t }))
             }
             Command::Tap { track, pcm } => match self.tracks.iter_mut().find(|t| t.name == track) {
-                Some(track) => {
+                Some(track) if matches!(track.state, State::Open(_)) => {
                     track.taps.push(pcm);
                     Reply::ok(json!({ "ok": true, "rate": SAMPLE_RATE }))
                 }
+                // A tap waiting for the device to come back would hold a control connection
+                // while sending nothing; the client asks again instead.
+                Some(_) => Reply::error("no_device"),
                 None => Reply::error("unknown_track"),
             },
         };
@@ -680,6 +705,31 @@ impl Recorder {
             track: track.name.clone(),
             error,
         });
+        self.drop_taps(i);
+    }
+
+    /// Ends the track's taps: without a device there is nothing to send them, and a client
+    /// waiting on a tap would hold one of the control port's connections.
+    fn drop_taps(&mut self, i: usize) {
+        if self.tracks[i].taps.is_empty() {
+            return;
+        }
+        self.tracks[i].taps.clear();
+        self.last_tap_gone(i);
+    }
+
+    /// The track's last tap is gone. The app reads the microphone for a dictation through a
+    /// tap and closes it when the dictation ends, and also when it quits or crashes, so an open
+    /// dictation ends here instead of running on for the rest of the meeting.
+    fn last_tap_gone(&mut self, i: usize) {
+        if self.dictating && self.tracks[i].name == "mic" {
+            self.dictating = false;
+            let t = self.clock.now();
+            self.journal.write(Line::Dictation {
+                t,
+                state: "end".into(),
+            });
+        }
     }
 
     /// The device failed: end the segment, then drop the stream and retry every second.
@@ -755,10 +805,10 @@ impl Recorder {
         }
     }
 
-    /// The computer slept: end every segment, move the clock past the jump and reopen the
-    /// devices, which rarely survive a sleep.
-    fn suspend(&mut self, jump: u64, wall: u64) {
-        let from = self.heartbeat.0;
+    /// The computer slept, as `woke` shows against the last heartbeat: end every segment, move
+    /// the clock ahead by the sleep and reopen the devices, which rarely survive a sleep.
+    fn suspend(&mut self, woke: &Stamp) {
+        let (from, before) = self.heartbeat;
         let mut was_lost = Vec::with_capacity(self.tracks.len());
         for i in 0..self.tracks.len() {
             self.close_segment(i, false);
@@ -767,16 +817,20 @@ impl Recorder {
                 error: "The computer was asleep.".into(),
                 next_try: Instant::now(),
             };
+            self.drop_taps(i);
         }
-        self.clock.advance_to(from + jump);
+        let current = self.clock.now();
+        self.clock
+            .advance_to(clock::after_sleep(from, current, &before, woke));
         let until = self.clock.now();
         self.journal.write(Line::Suspend { t: from, until });
-        self.heartbeat = (until, wall);
         for (i, lost) in was_lost.into_iter().enumerate() {
             if let Err(error) = self.try_open(i, lost) {
                 self.mark_lost(i, error);
             }
         }
+        // Opening the devices can take seconds; the next check counts from here.
+        self.heartbeat = (self.clock.now(), Stamp::now());
     }
 
     fn pad(&mut self, i: usize, threshold_ms: u64) {
@@ -922,15 +976,20 @@ impl Recorder {
         self.lose(i, format!("Writing the audio failed: {e}"));
     }
 
-    fn write_heartbeat(&mut self, wall: u64) {
+    fn write_heartbeat(&mut self) {
         let samples: BTreeMap<String, u64> = self
             .tracks
             .iter()
             .filter_map(|t| Some((t.name.clone(), t.segment.as_ref()?.writer.samples())))
             .collect();
+        let stamp = Stamp::now();
         let t = self.clock.now();
-        self.journal.write(Line::Heartbeat { t, wall, samples });
-        self.heartbeat = (t, wall);
+        self.journal.write(Line::Heartbeat {
+            t,
+            wall: stamp.wall,
+            samples,
+        });
+        self.heartbeat = (t, stamp);
     }
 
     fn sync(&mut self) {

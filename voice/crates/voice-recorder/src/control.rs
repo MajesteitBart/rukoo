@@ -6,7 +6,7 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,13 @@ const MAX_LABEL: usize = 1000;
 const MAX_CONNECTIONS: usize = 16;
 /// Tap blocks of 10 ms queued for a slow reader before it's disconnected.
 const TAP_QUEUE: usize = 512;
+/// A connection must send its first request with the token this soon, so connections that
+/// never authenticate can't hold the slots.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often a tap looks whether its client is still there, also while the track sends nothing.
+const PEER_CHECK: Duration = Duration::from_millis(250);
+/// About the audio `TAP_QUEUE` holds.
+const TAP_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A command the recorder thread runs.
 pub enum Command {
@@ -108,7 +115,9 @@ fn serve(stream: TcpStream, token: &str, events: &SyncSender<Event>) -> io::Resu
     stream.set_nodelay(true)?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
-    while let Some(line) = read_line(&mut reader)? {
+    // Until a request carries the token; after that a client may keep the connection idle.
+    let mut deadline = Some(Instant::now() + AUTH_TIMEOUT);
+    while let Some(line) = read_line(&mut reader, deadline)? {
         if line.trim().is_empty() {
             continue;
         }
@@ -125,6 +134,9 @@ fn serve(stream: TcpStream, token: &str, events: &SyncSender<Event>) -> io::Resu
         if !authentic {
             send(&mut writer, &error("bad_token"))?;
             return Ok(());
+        }
+        if deadline.take().is_some() {
+            reader.get_ref().set_read_timeout(None)?;
         }
         let (command, tap) = match parse(&request) {
             Ok(parsed) => parsed,
@@ -202,21 +214,82 @@ fn parse(request: &Value) -> Result<Parsed, &'static str> {
     Ok((command, None))
 }
 
-/// Writes tap PCM until the client goes away or the recorder drops the tap.
+/// Writes tap PCM until the client goes away or the recorder drops the tap. A track without
+/// audio, such as a silent loopback, sends nothing for a long time, so the client is checked on
+/// a timer too: its slot must come free when it closes.
 fn stream_pcm(mut writer: TcpStream, pcm: Receiver<Vec<u8>>) -> io::Result<()> {
-    while let Ok(block) = pcm.recv() {
-        writer.write_all(&block)?;
+    // A client that stays connected but stops reading is as far behind as one the recorder
+    // disconnects for its full queue.
+    writer.set_write_timeout(Some(TAP_WRITE_TIMEOUT))?;
+    let mut next_check = Instant::now() + PEER_CHECK;
+    loop {
+        match pcm.recv_timeout(PEER_CHECK) {
+            Ok(block) => writer.write_all(&block)?,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+        if Instant::now() >= next_check {
+            if peer_closed(&writer)? {
+                return Ok(());
+            }
+            next_check = Instant::now() + PEER_CHECK;
+        }
     }
-    Ok(())
 }
 
-fn read_line(reader: &mut BufReader<TcpStream>) -> io::Result<Option<String>> {
+/// Whether the client closed its end. It sends nothing after `tap`; whatever it does send is
+/// read and dropped, so an end of stream behind it is still found.
+fn peer_closed(stream: &TcpStream) -> io::Result<bool> {
+    stream.set_nonblocking(true)?;
+    let mut buf = [0u8; 512];
+    let mut reader = stream;
+    let closed = loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break true,
+            Ok(_) => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break false,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break true,
+        }
+    };
+    stream.set_nonblocking(false)?;
+    Ok(closed)
+}
+
+/// Reads one request line. With a `deadline` the whole line must arrive before it passes, so a
+/// client can't keep the connection by sending a byte now and then.
+fn read_line(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Option<Instant>,
+) -> io::Result<Option<String>> {
     let mut buf = Vec::new();
-    let n = reader
-        .by_ref()
-        .take(MAX_REQUEST as u64 + 1)
-        .read_until(b'\n', &mut buf)?;
-    if n == 0 {
+    loop {
+        if let Some(deadline) = deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            reader.get_ref().set_read_timeout(Some(left))?;
+        }
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            break;
+        }
+        let (taken, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(end) => (end + 1, true),
+            None => (available.len(), false),
+        };
+        buf.extend_from_slice(&available[..taken]);
+        reader.consume(taken);
+        if buf.len() > MAX_REQUEST || done {
+            break;
+        }
+    }
+    if buf.is_empty() {
         return Ok(None);
     }
     if buf.len() > MAX_REQUEST {

@@ -218,6 +218,8 @@ pub struct History {
     pub segments: Vec<SegmentRecord>,
     pub stopped: bool,
     pub paused: bool,
+    /// The start of a dictation stretch that no `dictation` `end`, `crash` or `stop` closed.
+    pub dictating: Option<u64>,
     /// The highest `n` among the `k-<n>` mark ids.
     pub last_mark: u64,
 }
@@ -276,7 +278,19 @@ impl History {
                         h.last_mark = h.last_mark.max(n);
                     }
                 }
-                Line::Stop { .. } => h.stopped = true,
+                Line::Dictation { t, state } => match state.as_str() {
+                    "start" => {
+                        h.dictating.get_or_insert(*t);
+                    }
+                    "end" => h.dictating = None,
+                    _ => {}
+                },
+                // A dead recorder's dictation ended with it, as voice-meetings reads it.
+                Line::Crash { .. } => h.dictating = None,
+                Line::Stop { .. } => {
+                    h.stopped = true;
+                    h.dictating = None;
+                }
                 _ => {}
             }
         }
@@ -443,6 +457,42 @@ mod tests {
         assert_eq!(seen, 2_005);
         let seen = h.last_seen(|_| 0);
         assert_eq!(seen, 1_500);
+    }
+
+    #[test]
+    fn history_knows_an_open_dictation() {
+        let dictation = |t, state: &str| Line::Dictation {
+            t,
+            state: state.into(),
+        };
+        let open = |lines: &[Line]| History::from_lines(lines).dictating;
+        assert_eq!(open(&[dictation(10, "start")]), Some(10));
+        assert_eq!(
+            open(&[dictation(10, "start"), dictation(20, "start")]),
+            Some(10)
+        );
+        assert_eq!(open(&[dictation(10, "start"), dictation(30, "end")]), None);
+        assert_eq!(
+            open(&[
+                dictation(10, "start"),
+                Line::Crash {
+                    t: 90,
+                    last_seen: 40
+                }
+            ]),
+            None
+        );
+        assert_eq!(
+            open(&[
+                dictation(10, "start"),
+                Line::Stop {
+                    t: 40,
+                    wall: 0,
+                    reason: "user".into()
+                }
+            ]),
+            None
+        );
     }
 
     #[test]

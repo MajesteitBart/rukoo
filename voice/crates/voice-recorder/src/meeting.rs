@@ -183,6 +183,16 @@ pub fn finalize(dir: &Path, reason: &str) -> Result<Finalized, ExitError> {
     }
     if !history.stopped {
         let t = history.last_seen(on_disk);
+        // The app that dictated read the microphone through the dead recorder's tap.
+        if let Some(since) = history.dictating {
+            write(
+                &mut timeline,
+                &Line::Dictation {
+                    t: t.max(since),
+                    state: "end".into(),
+                },
+            )?;
+        }
         let wall = history.first_wall.map_or_else(wall_ms, |w| w + t);
         write(
             &mut timeline,

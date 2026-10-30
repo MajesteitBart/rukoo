@@ -39,7 +39,8 @@ fn main() {
     // Single-threaded here, so setting the variable is safe; every recorder the controller
     // starts from now on inherits it.
     std::env::set_var(ROLE, "recorder");
-    let tests: Vec<(&str, fn())> = vec![
+    #[allow(unused_mut)]
+    let mut tests: Vec<(&str, fn())> = vec![
         ("commands_reach_the_recorder", commands_reach_the_recorder),
         (
             "the_watchdog_resumes_a_killed_recorder",
@@ -74,7 +75,17 @@ fn main() {
             "transcription_waits_for_consent_and_starts_when_it_is_given",
             transcription_waits_for_consent_and_starts_when_it_is_given,
         ),
+        (
+            "a_reattach_ends_a_dictation_the_old_app_left_open",
+            a_reattach_ends_a_dictation_the_old_app_left_open,
+        ),
     ];
+    // Only Windows refuses a second writer of the timeline, which this test plays.
+    #[cfg(windows)]
+    tests.push((
+        "a_recorder_that_holds_the_meeting_without_answering_keeps_it_live",
+        a_recorder_that_holds_the_meeting_without_answering_keeps_it_live,
+    ));
     let filters: Vec<String> = std::env::args()
         .skip(1)
         .filter(|arg| !arg.starts_with('-'))
@@ -417,6 +428,109 @@ fn a_new_controller_reattaches_to_a_live_recorder() {
     );
     wait_for("the recorder to exit", || !alive(pid));
     b.shutdown();
+}
+
+fn a_reattach_ends_a_dictation_the_old_app_left_open() {
+    let dir = TempDir::new("reattach-dictation");
+    let data = dir.join("data");
+    let (a, _) = controller(&data, timing());
+    let id = a.start(StartArgs::default(), StartedBy::Voice).unwrap();
+    wait_clock(&a, 500);
+    // The app says the user dictates, then quits or crashes before the key comes up. This
+    // dictation has no tap, so only the next app can end it.
+    assert_eq!(a.dictation("start"), Some(id.clone()));
+    a.shutdown();
+    drop(a);
+    std::thread::sleep(Duration::from_millis(300));
+
+    let (b, changes) = controller(&data, timing());
+    b.recover();
+    let Change::Reattached { at_ms, .. } = wait_change(&changes, "the reattach", |c| {
+        matches!(c, Change::Reattached { .. })
+    }) else {
+        unreachable!()
+    };
+    wait_clock(&b, at_ms + 1_000);
+    b.stop(None, "user").unwrap();
+    let dictation: Vec<(String, u64)> = lines(&data, &id)
+        .iter()
+        .filter_map(|l| match l {
+            Line::Dictation { state, t } => Some((state.clone(), *t)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dictation.len(), 2, "{dictation:?}");
+    assert_eq!(dictation[1].0, "end", "{dictation:?}");
+    // It ends at the reattach, not at the stop: the rest of the meeting isn't dictation.
+    assert!(
+        dictation[1].1 <= at_ms + 500,
+        "the dictation ended at {} after a reattach at {at_ms}",
+        dictation[1].1
+    );
+    b.shutdown();
+}
+
+/// Holds the meeting's timeline the way a live recorder does: open for writing, readable by
+/// others, and refusing a second writer.
+#[cfg(windows)]
+fn hold_timeline(data: &Path, id: &str) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    let path = meeting_dir(data, id).join("timeline.jsonl");
+    let mut held = None;
+    // The killed recorder's own handle goes a moment after it does.
+    wait_for("the timeline to come free", || {
+        held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .open(&path)
+            .ok();
+        held.is_some()
+    });
+    held.unwrap()
+}
+
+/// A recorder that holds the meeting but doesn't answer, as one whose control port is full: the
+/// watchdog's restart and `finalize` both find it busy. The meeting is live, so it never ends
+/// on its own, and Stop keeps asking until it can finish the meeting.
+#[cfg(windows)]
+fn a_recorder_that_holds_the_meeting_without_answering_keeps_it_live() {
+    let dir = TempDir::new("busy");
+    let data = dir.join("data");
+    let mut timing = timing();
+    // Room to take the timeline between the kill and the first restart.
+    timing.backoff = vec![Duration::from_millis(1_500); 3];
+    let (c, changes) = controller(&data, timing);
+    let id = c.start(StartArgs::default(), StartedBy::Voice).unwrap();
+    wait_clock(&c, 500);
+    kill(recorder_pid(&data, &id));
+    let held = hold_timeline(&data, &id);
+
+    // Three restarts, all refused as busy, used to end the meeting as interrupted.
+    std::thread::sleep(Duration::from_secs(8));
+    assert_eq!(
+        count(&changes, |c| matches!(c, Change::Ended { .. })),
+        0,
+        "{:?}",
+        lock(&changes)
+    );
+    assert_eq!(c.current().map(|r| r.id), Some(id.clone()));
+
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        drop(held);
+    });
+    c.stop(None, "user").unwrap();
+    release.join().unwrap();
+    let ended = wait_change(&changes, "the end", |c| matches!(c, Change::Ended { .. }));
+    assert!(matches!(ended, Change::Ended { reason, .. } if reason == "user"));
+    assert!(
+        matches!(lines(&data, &id).last(), Some(Line::Stop { reason, .. }) if reason == "user")
+    );
+    assert!(c.current().is_none());
+    c.shutdown();
 }
 
 fn a_cut_off_meeting_is_finished_at_start() {

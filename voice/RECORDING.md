@@ -62,8 +62,8 @@ The one exception is real silence on a loopback track (`default-output` or `outp
 `timeline.jsonl` holds one JSON object per line. The recorder writes each line with a single write and a trailing newline, and starts every object with `kind`.
 
 - A reader ignores a last line without a newline, any line that doesn't parse, and kinds and fields it doesn't know. Before a recorder or `finalize` writes to a timeline, it cuts off a last line without a newline.
-- `t` is meeting time in milliseconds. Session 1 starts at `t = 0`; its `session` line holds the wall time of that moment. A later session starts at `t` = the wall time now minus that of session 1, but never earlier than anything already recorded, even when the wall clock went back. Within a session `t` follows the monotonic clock, and after a suspend it jumps ahead by the time the computer slept. Pauses don't stop the clock.
-- Lines appear in the order they were written, which is close to the order of `t` but not exactly: `segment_end` carries the end computed from the samples, a padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`, and `mark` and `dictation` carry the moment their request arrived.
+- `t` is meeting time in milliseconds. Session 1 starts at `t = 0`; its `session` line holds the wall time of that moment. A later session starts at `t` = the wall time now minus that of session 1, but never earlier than anything already recorded, even when the wall clock went back. Within a session `t` follows the monotonic clock, and after a suspend it jumps ahead by the time the computer slept, never by a step of the wall clock. Pauses don't stop the clock.
+- Lines appear in the order they were written, which is close to the order of `t` but not exactly: `segment_end` carries the end computed from the samples, a padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`, and `mark` and `dictation` carry the moment their request arrived, or the moment the recorder ended a dictation itself.
 
 | `kind` | Fields | When |
 |---|---|---|
@@ -76,8 +76,8 @@ The one exception is real silence on a loopback track (`default-output` or `outp
 | `device` | `t`, `track`, `device`, `reason` | A track got a device back, `reconnected`, or moved to another one, `default`. A `track` line follows |
 | `pause`, `resume` | `t` | The user paused or resumed |
 | `mark` | `t`, `id`, `label` | A user mark. `id` is `k-<n>` and `n` keeps counting across sessions; `label` is `null` without one |
-| `dictation` | `t`, `state` | The app reports dictation on the microphone: `start` or `end` |
-| `suspend` | `t`, `until` | The wall clock jumped more than 3 s past the heartbeat interval, so the computer slept. `t` is the last heartbeat before it, `until` the meeting time after it. The segments closed before the line; `track` lines follow as the devices reopen |
+| `dictation` | `t`, `state` | The app reports dictation on the microphone: `start` or `end`. Only a change is written. The app reads the microphone through a tap and closes it when the user stops dictating, quits or crashes, so the recorder writes `end` itself when the microphone's last tap goes and a dictation is open. A dictation the dead session left open ends at `lastSeen` |
+| `suspend` | `t`, `until` | The computer slept for more than 3 s: since the last heartbeat, more time passed by a clock that counts sleep than the computer was awake. A stalled recorder or a step of the wall clock doesn't count. `t` is the last heartbeat before it, `until` the meeting time after it. The segments closed before the line; `track` lines follow as the devices reopen |
 | `crash` | `t`, `lastSeen` | Written by a resumed session: the previous one died, and audio is missing from `lastSeen` to `t` |
 | `stop` | `t`, `wall`, `reason` | Recording ended: `user`, `rukoo`, `limit` or `interrupted`. Nothing follows |
 
@@ -101,7 +101,7 @@ A microphone that was unplugged for two seconds, with the heartbeats after the f
 
 `lastSeen` is the highest of: the dead session's start, its last heartbeat `t`, its last `segment_end` `t`, and for each track the last segment's `t` plus its samples on disk divided by 16.
 
-A resumed session writes, in this order: `segment_end` for every segment the dead session left open, after repairing its header; `session` with `resumed` true; `crash`; `pause` when the meeting was paused, because a restart must not record a user who paused; then `track` for each device.
+A resumed session writes, in this order: `segment_end` for every segment the dead session left open, after repairing its header; `dictation` `end` at `lastSeen` when the dead session left a dictation open, because the app's tap went with it; `session` with `resumed` true; `crash`; `pause` when the meeting was paused, because a restart must not record a user who paused; then `track` for each device.
 
 ## The recorder
 
@@ -121,7 +121,7 @@ rukoo-voice-recorder devices
 | `synthetic:idle` | For tests: a healthy loopback with nothing playing, which delivers nothing; padded |
 | `file:<path>[,loop]` | A WAV file in real time, then silence, or looped. For end-to-end tests with recorded speech |
 
-The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again) and `,switch-at=<ms>` (another device becomes the default). The times count from the start of the session. Device sources work on Windows only in this version; elsewhere `record` refuses them with exit code 2.
+The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default) and `,open-ms=<ms>` (every open takes this long on the recorder's thread, as a Bluetooth headset switching profile can). The times count from the start of the session. Device sources work on Windows only in this version; elsewhere `record` refuses them with exit code 2.
 
 Two options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit and `--segment-ms <ms>` the 30 s segment length.
 
@@ -154,7 +154,7 @@ The recorder writes it after the `session` line, to a temporary name that it ren
 
 ### `finalize`
 
-`finalize` finishes a meeting whose recorder died: it repairs every segment header from the file length, writes `segment_end` for segments that have none, and writes `stop` at `lastSeen` with the given reason, `interrupted` by default, when the timeline has no `stop`. It removes a stale `recorder.json`. Running it again changes nothing. It refuses a live meeting with exit code 4, and prints:
+`finalize` finishes a meeting whose recorder died: it repairs every segment header from the file length, writes `segment_end` for segments that have none, `dictation` `end` when a dictation is open, and `stop` at `lastSeen` with the given reason, `interrupted` by default, when the timeline has no `stop`. It removes a stale `recorder.json`. Running it again changes nothing. It refuses a live meeting with exit code 4, and prints:
 
 ```json
 { "ok": true, "ended": 2, "stopped": true, "t": 1528, "problems": [] }
@@ -170,7 +170,7 @@ The recorder writes it after the `session` line, to a temporary name that it ren
 
 ## The control port
 
-The recorder listens on `127.0.0.1` at the port in `recorder.json`. A client sends one JSON object per line and gets one line back for each. Every request carries the token, and a connection can carry several requests.
+The recorder listens on `127.0.0.1` at the port in `recorder.json`. A client sends one JSON object per line and gets one line back for each. Every request carries the token, and a connection can carry several requests. The first request must arrive within 5 s of connecting, or the recorder closes the connection; after it, a connection may stay idle.
 
 ```json
 { "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "cmd": "mark", "label": "Decision" }
@@ -183,8 +183,8 @@ The recorder listens on `127.0.0.1` at the port in `recorder.json`. A client sen
 | `pause` | | `{"ok":true,"t":…}`, or `not_recording` when already paused |
 | `resume` | | `{"ok":true,"t":…}`, or `not_recording` when not paused |
 | `mark` | `label`, optional, at most 1000 characters | `{"ok":true,"id":"k-3","t":…}`; also while paused |
-| `dictation` | `state`: `start` or `end` | `{"ok":true,"t":…}` |
-| `tap` | `track` | `{"ok":true,"rate":16000}`, then the raw PCM of that track; `unknown_track` when the meeting doesn't record it |
+| `dictation` | `state`: `start` or `end` | `{"ok":true,"t":…}`, also when it changes nothing |
+| `tap` | `track` | `{"ok":true,"rate":16000}`, then the raw PCM of that track; `unknown_track` when the meeting doesn't record it, `no_device` while the track has no device |
 
 Errors are `{"ok":false,"error":"<code>"}`:
 
@@ -195,10 +195,11 @@ Errors are `{"ok":false,"error":"<code>"}`:
 | `unknown_command` | The recorder doesn't know `cmd` | open |
 | `not_recording` | `pause` while paused, `resume` while recording | open |
 | `unknown_track` | `tap` for a track the meeting doesn't record | open |
+| `no_device` | `tap` for a track that has no device now; ask again once `status` says it has one | open |
 
 A request line is at most 64 KiB, and the recorder serves at most 16 connections at a time.
 
-After a successful `tap` the connection carries raw signed 16-bit little-endian PCM, 16 kHz, mono, as the track captures it, until the client closes it or the recording stops. The tap carries audio also while the meeting is paused, so dictation during a pause still works, and it never carries padding. A client more than about 5 s behind is disconnected rather than handed audio with holes in it. During a meeting the app reads the microphone for dictation from this tap, so the microphone is captured once.
+After a successful `tap` the connection carries raw signed 16-bit little-endian PCM, 16 kHz, mono, as the track captures it, until the client closes it, the track loses its device, the computer sleeps or the recording stops. The recorder notices within about 0.25 s that a client closed its end, also while the track sends nothing, so a closed tap never keeps one of the 16 connections. The tap carries audio also while the meeting is paused, so dictation during a pause still works, and it never carries padding. A client more than about 5 s behind is disconnected rather than handed audio with holes in it. During a meeting the app reads the microphone for dictation from this tap, so the microphone is captured once.
 
 ## Versioning
 

@@ -35,11 +35,13 @@ pub enum SourceSpec {
 
 /// What happens to a synthetic device, in ms since the recorder started: it disappears at
 /// `fail_at` and comes back at `back_at`, and at `switch_at` another device becomes the default.
+/// Opening it takes `open_ms`, as a slow Bluetooth endpoint can.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Faults {
     pub fail_at: Option<u64>,
     pub back_at: Option<u64>,
     pub switch_at: Option<u64>,
+    pub open_ms: Option<u64>,
 }
 
 impl Faults {
@@ -122,6 +124,7 @@ impl FromStr for SourceSpec {
                     "fail-at" => faults.fail_at = Some(ms),
                     "back-at" => faults.back_at = Some(ms),
                     "switch-at" => faults.switch_at = Some(ms),
+                    "open-ms" => faults.open_ms = Some(ms),
                     _ => return Err(format!("source {s:?}: unknown option {key:?}")),
                 }
             }
@@ -320,6 +323,9 @@ impl Backend {
         spec: &SourceSpec,
         sink: Sink,
     ) -> Result<Opened, String> {
+        if let Some(ms) = faults.open_ms {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
         let elapsed = self.started.elapsed().as_millis() as u64;
         if faults.unavailable(elapsed) {
             return Err("The synthetic device is unplugged.".into());
@@ -418,6 +424,9 @@ impl fmt::Display for SourceSpec {
             }
             if let Some(ms) = faults.switch_at {
                 write!(f, ",switch-at={ms}")?;
+            }
+            if let Some(ms) = faults.open_ms {
+                write!(f, ",open-ms={ms}")?;
             }
             Ok(())
         }
@@ -715,17 +724,18 @@ mod tests {
                     faults: Faults {
                         fail_at: Some(2000),
                         back_at: Some(4000),
-                        switch_at: None,
+                        ..Faults::default()
                     },
                 },
             ),
             (
-                "synthetic:idle,fail-at=10,switch-at=30",
+                "synthetic:idle,fail-at=10,switch-at=30,open-ms=5000",
                 SourceSpec::Idle {
                     faults: Faults {
                         fail_at: Some(10),
-                        back_at: None,
                         switch_at: Some(30),
+                        open_ms: Some(5000),
+                        ..Faults::default()
                     },
                 },
             ),
@@ -788,7 +798,7 @@ mod tests {
         let f = Faults {
             fail_at: Some(2000),
             back_at: Some(4000),
-            switch_at: None,
+            ..Faults::default()
         };
         assert!(!f.unavailable(1999));
         assert!(f.unavailable(2000));

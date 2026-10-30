@@ -28,6 +28,8 @@ use voice_recorder::timeline::{self, History, Line};
 /// The recorder's exit codes (voice/RECORDING.md).
 const EXIT_CONFLICT: i32 = 3;
 const EXIT_BUSY: i32 = 4;
+/// How long Stop keeps asking a recorder that holds the meeting but doesn't answer.
+const STOP_PATIENCE: Duration = Duration::from_secs(20);
 
 /// How the controller waits and retries. The defaults are for real use; tests shorten them.
 #[derive(Clone, Debug)]
@@ -269,6 +271,16 @@ impl Controller {
                 let status = request(&file, json!({"cmd": "status"}), Duration::from_secs(2)).ok();
                 let paused = status.as_ref().is_some_and(|s| s["state"] == "paused");
                 let at_ms = status.as_ref().and_then(|s| s["t"].as_u64()).unwrap_or(0);
+                // A dictation the app before this one started can't end any more: that app is
+                // gone. The recorder ends it when the app's tap closes; this covers a dictation
+                // without a tap. Nothing here dictates yet: the lock keeps `dictation` out.
+                if History::from_lines(&lines).dictating.is_some() {
+                    let _ = request(
+                        &file,
+                        json!({"cmd": "dictation", "state": "end"}),
+                        Duration::from_secs(2),
+                    );
+                }
                 *inner = Some(Live {
                     id: id.clone(),
                     dir: dir.path().to_path_buf(),
@@ -417,28 +429,26 @@ impl Controller {
 
     /// Stops the meeting. `reason` is `user` or `rukoo`.
     pub fn stop(&self, id: Option<&str>, reason: &str) -> Result<(), ControlError> {
-        let mut inner = self.live_for(self.lock(), id)?;
-        let live = inner.as_mut().expect("live_for checked it");
-        live.stopping = true;
-        let file = live.file.clone();
-        let dir = live.dir.clone();
-        let reply = request(
-            &file,
-            json!({"cmd": "stop", "reason": reason}),
-            Duration::from_secs(15),
-        );
-        let at_ms = match reply {
-            Ok(reply) if reply["ok"] == true => reply["t"].as_u64().unwrap_or(live.clock()),
-            // The recorder is gone; finish the folder so the meeting ends where its audio does.
-            _ => match meeting::finalize(&dir, reason) {
-                Ok(done) => done.stopped_at.unwrap_or(live.clock()),
-                Err(e) => {
-                    live.stopping = false;
-                    return Err(ControlError::failed(format!(
-                        "The meeting couldn't be stopped: {e}"
-                    )));
-                }
-            },
+        let (file, dir) = {
+            let mut inner = self.live_for(self.lock(), id)?;
+            let live = inner.as_mut().expect("live_for checked it");
+            // Keeps the watchdog and every other command off the meeting while it stops, so
+            // the lock needn't be held through the requests.
+            live.stopping = true;
+            (live.file.clone(), live.dir.clone())
+        };
+        let stopped = stop_recorder(&file, &dir, reason);
+        let mut inner = self.lock();
+        // Nothing else ends a meeting that is stopping; this is only defensive.
+        let Some(live) = inner.as_mut() else {
+            return stopped.map(|_| ());
+        };
+        let at_ms = match stopped {
+            Ok(at_ms) => at_ms.unwrap_or(live.clock()),
+            Err(e) => {
+                live.stopping = false;
+                return Err(e);
+            }
         };
         if let Some(child) = live.child.as_mut() {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -677,15 +687,18 @@ impl Controller {
         }
         let max = self.timing.backoff.len() as u32;
         if live.restarts >= max {
+            let finished = meeting::finalize(&live.dir, "interrupted");
+            if finished.as_ref().is_err_and(|e| e.code == EXIT_BUSY) {
+                // A recorder still holds the meeting: it lives and didn't answer. The meeting
+                // goes on, and the watchdog keeps asking it.
+                live.failed_pings = 0;
+                return;
+            }
             let id = live.id.clone();
-            let dir = live.dir.clone();
             *inner = None;
             drop(inner);
             self.changed.notify_all();
-            let at_ms = meeting::finalize(&dir, "interrupted")
-                .ok()
-                .and_then(|done| done.stopped_at)
-                .unwrap_or(0);
+            let at_ms = finished.ok().and_then(|done| done.stopped_at).unwrap_or(0);
             self.emit(Change::Notify {
                 title_key: NOTIFY_MEETING,
                 body: format!(
@@ -735,11 +748,14 @@ impl Controller {
                 self.emit(Change::Restarted { id, attempt });
             }
             Err(e) if e.code == Some(EXIT_BUSY) => {
-                // Another recorder records into it after all: watch that one.
+                // A recorder records into it after all: watch that one. When it holds the
+                // meeting without answering it is alive all the same, so nothing died and this
+                // attempt doesn't count towards giving up.
+                live.restarts = live.restarts.saturating_sub(1);
+                live.child = None;
+                live.failed_pings = 0;
                 if let Some(file) = meeting::live_recorder(&dir) {
-                    live.child = None;
                     live.file = file;
-                    live.failed_pings = 0;
                 }
                 drop(inner);
                 self.changed.notify_all();
@@ -834,6 +850,49 @@ fn tracks_of(
         fallback.to_vec()
     } else {
         opened
+    }
+}
+
+/// Asks the recorder to stop, or finishes the folder when no recorder records into it any more,
+/// so the meeting ends where its audio does. Returns the meeting time of the `stop` line, when
+/// one was written now.
+///
+/// `finalize` answers busy while a recorder still holds the meeting: that recorder is alive and
+/// didn't answer, for instance while its control port is full. The meeting goes on, so Stop
+/// asks again for a while and then says so, instead of reporting a meeting that ended.
+fn stop_recorder(
+    file: &RecorderFile,
+    dir: &Path,
+    reason: &str,
+) -> Result<Option<u64>, ControlError> {
+    let deadline = Instant::now() + STOP_PATIENCE;
+    loop {
+        let reply = request(
+            file,
+            json!({"cmd": "stop", "reason": reason}),
+            Duration::from_secs(15),
+        );
+        if let Ok(reply) = reply {
+            if reply["ok"] == true {
+                return Ok(reply["t"].as_u64());
+            }
+        }
+        match meeting::finalize(dir, reason) {
+            Ok(done) => return Ok(done.stopped_at),
+            Err(e) if e.code == EXIT_BUSY && Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) if e.code == EXIT_BUSY => {
+                return Err(ControlError::failed(
+                    "The recorder still records but doesn't answer, so the meeting goes on.",
+                ))
+            }
+            Err(e) => {
+                return Err(ControlError::failed(format!(
+                    "The meeting couldn't be stopped: {e}"
+                )))
+            }
+        }
     }
 }
 

@@ -53,18 +53,92 @@ pub fn resumed_start(first_wall: u64, now_wall: u64, latest_t: u64) -> u64 {
 
 /// Heartbeats are written this often.
 pub const HEARTBEAT: Duration = Duration::from_secs(1);
-/// A wall-clock jump this much larger than the heartbeat interval means the computer slept.
-pub const SUSPEND_JUMP_MS: u64 = 3_000;
+/// The computer slept when more time passed than it was awake, by more than this.
+pub const SUSPEND_MS: u64 = 3_000;
 
-/// Returns the wall-clock jump between two heartbeats when it means the computer slept.
-pub fn suspend_jump(previous_wall: u64, now_wall: u64) -> Option<u64> {
-    let delta = now_wall.saturating_sub(previous_wall);
-    (delta > HEARTBEAT.as_millis() as u64 + SUSPEND_JUMP_MS).then_some(delta)
+/// One reading of the clocks that tell sleep apart, in milliseconds. `awake` stops while the
+/// computer sleeps and `elapsed` keeps counting; neither follows a change of the wall clock.
+/// `wall` is the wall clock at the same moment, for the timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub awake: u64,
+    pub elapsed: u64,
+    pub wall: u64,
+}
+
+impl Stamp {
+    pub fn now() -> Stamp {
+        let (awake, elapsed) = sleep_clocks();
+        Stamp {
+            awake,
+            elapsed,
+            wall: wall_ms(),
+        }
+    }
+}
+
+/// Windows counts interrupt time with and without the time spent asleep; the difference is
+/// exactly the sleep. Rust's `Instant` isn't used for this: whether it counts sleep isn't
+/// specified, and on Windows it does.
+#[cfg(windows)]
+fn sleep_clocks() -> (u64, u64) {
+    use windows::Win32::System::WindowsProgramming::{
+        QueryInterruptTime, QueryUnbiasedInterruptTime,
+    };
+    // Both count 100 ns units since boot.
+    let mut awake = 0u64;
+    // SAFETY: both only write the u64 they are given.
+    let (ok, elapsed) = unsafe {
+        let ok = QueryUnbiasedInterruptTime(&mut awake).as_bool();
+        (ok, QueryInterruptTime())
+    };
+    let elapsed = elapsed / 10_000;
+    // Without the unbiased count, no sleep can be seen; that is what the call failing means.
+    let awake = if ok { awake / 10_000 } else { elapsed };
+    (awake, elapsed)
+}
+
+/// Elsewhere the monotonic clock stops during sleep on Linux and macOS, and the wall clock stands
+/// in for the time that passed, so a wall-clock step counts as sleep there. Voice 0.1 records
+/// devices only on Windows.
+#[cfg(not(windows))]
+fn sleep_clocks() -> (u64, u64) {
+    use std::sync::OnceLock;
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    let awake = BASE.get_or_init(Instant::now).elapsed().as_millis() as u64;
+    (awake, wall_ms())
+}
+
+/// How long the computer slept between two readings, when it slept more than `SUSPEND_MS`.
+/// A thread that was stalled advances both clocks alike, and a wall-clock step neither, so
+/// neither counts.
+pub fn slept(previous: &Stamp, now: &Stamp) -> Option<u64> {
+    let passed = now.elapsed.saturating_sub(previous.elapsed);
+    let awake = now.awake.saturating_sub(previous.awake);
+    let slept = passed.saturating_sub(awake);
+    (slept > SUSPEND_MS).then_some(slept)
+}
+
+/// The meeting time after a sleep found between a heartbeat at `heartbeat_t` and now: the time
+/// that passed since the heartbeat, but never more than `slept` past `current`, the clock's own
+/// reading. A clock that already counted the sleep doesn't move again.
+pub fn after_sleep(heartbeat_t: u64, current: u64, previous: &Stamp, now: &Stamp) -> u64 {
+    let passed = now.elapsed.saturating_sub(previous.elapsed);
+    let slept = slept(previous, now).unwrap_or(0);
+    (heartbeat_t + passed).min(current + slept).max(current)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stamp(awake: u64, elapsed: u64, wall: u64) -> Stamp {
+        Stamp {
+            awake,
+            elapsed,
+            wall,
+        }
+    }
 
     #[test]
     fn resumed_sessions_follow_the_wall_clock_but_never_go_back() {
@@ -74,12 +148,60 @@ mod tests {
     }
 
     #[test]
-    fn detects_a_jump_of_more_than_three_seconds_between_heartbeats() {
-        assert_eq!(suspend_jump(10_000, 11_000), None);
-        assert_eq!(suspend_jump(10_000, 14_000), None);
-        assert_eq!(suspend_jump(10_000, 14_001), Some(4_001));
-        assert_eq!(suspend_jump(10_000, 70_000), Some(60_000));
-        assert_eq!(suspend_jump(10_000, 5_000), None);
+    fn a_sleep_of_more_than_three_seconds_counts() {
+        let before = stamp(10_000, 10_000, 1_793_000_010_000);
+        // One second awake, then a minute asleep.
+        let after = stamp(11_000, 71_000, 1_793_000_071_000);
+        assert_eq!(slept(&before, &after), Some(60_000));
+        assert_eq!(slept(&before, &stamp(11_000, 14_000, 0)), None);
+        assert_eq!(slept(&before, &stamp(11_000, 14_001, 0)), Some(3_001));
+    }
+
+    #[test]
+    fn a_stalled_thread_is_not_a_sleep() {
+        // The recorder thread was blocked for 6 s, opening a device: every clock moved 6 s.
+        let before = stamp(10_000, 10_000, 1_793_000_010_000);
+        let after = stamp(16_000, 16_000, 1_793_000_016_000);
+        assert_eq!(slept(&before, &after), None);
+    }
+
+    #[test]
+    fn a_wall_clock_step_is_not_a_sleep() {
+        // A time sync moved the wall clock a minute forward, then back; one second passed.
+        let before = stamp(10_000, 10_000, 1_793_000_010_000);
+        assert_eq!(
+            slept(&before, &stamp(11_000, 11_000, 1_793_000_071_000)),
+            None
+        );
+        assert_eq!(
+            slept(&before, &stamp(11_000, 11_000, 1_792_999_951_000)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_clock_moves_by_the_sleep_and_never_by_a_wall_step() {
+        let before = stamp(10_000, 10_000, 0);
+        let asleep = stamp(11_000, 71_000, 0);
+        // A monotonic clock that stopped while asleep reads one second past the heartbeat.
+        assert_eq!(after_sleep(5_000, 6_000, &before, &asleep), 66_000);
+        // One that counted the sleep already is where it should be and stays.
+        assert_eq!(after_sleep(5_000, 66_000, &before, &asleep), 66_000);
+        // A wall-clock step moves nothing.
+        let stepped = stamp(11_000, 11_000, 60_000);
+        assert_eq!(after_sleep(5_000, 6_000, &before, &stepped), 6_000);
+        // Never back.
+        assert_eq!(after_sleep(5_000, 70_000, &before, &asleep), 70_000);
+    }
+
+    #[test]
+    fn this_computer_reads_its_clocks() {
+        let a = Stamp::now();
+        std::thread::sleep(Duration::from_millis(30));
+        let b = Stamp::now();
+        assert!(b.awake >= a.awake && b.elapsed >= a.elapsed);
+        assert!(b.elapsed - a.elapsed >= 10, "{a:?} {b:?}");
+        assert_eq!(slept(&a, &b), None);
     }
 
     #[test]
