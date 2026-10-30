@@ -66,7 +66,17 @@ describe('publishing a type with several lengths', () => {
     const [type] = (await stored(h.handle)).types;
     expect(type.duration).toBe(30);
     expect(type.durations).toEqual([15, 30, 60]);
-    expect(type.slotInterval).toBe(null);
+    expect(type.slotFollowsLength).toBe(true);
+  });
+
+  it('stores a step a Worker from before several lengths can take: the default duration, never null', async () => {
+    // That Worker steps from midnight by slotInterval and ignores slotFollowsLength; on null it never finishes a day.
+    // So it offers the default length every duration minutes, as it did for every type.
+    const h = await host(signup, { profile: { types: [CHAT, { ...CHAT, slug: 'set', slotInterval: 15 }, meetingType({ slug: 'one', slotInterval: null })] } });
+    const [follows, set, one] = (await stored(h.handle)).types;
+    expect([follows.slotInterval, follows.slotFollowsLength]).toEqual([30, true]);
+    expect([set.slotInterval, set.slotFollowsLength]).toEqual([15, undefined]);
+    expect([one.slotInterval, one.slotFollowsLength]).toEqual([30, undefined]);
   });
 
   it('takes a publish without durations, as older apps send it: one length, start times every duration', async () => {

@@ -340,6 +340,10 @@ function meetingType(value, field, schedules) {
   const duration = integer(value.duration, `${field}.duration`, 5, 480);
   if (duration % 5 !== 0) throw invalid(`${field}.duration must be a multiple of 5 minutes.`, `${field}.duration`);
   const lengths = durations(value.durations, duration, `${field}.durations`);
+  // slotInterval left out or null: start times follow the length. With one length that is the duration, as before.
+  // With several it is the length the guest picked: stored as slotFollowsLength, with the duration as slotInterval,
+  // because a Worker rolled back to before several lengths steps by slotInterval and would never finish a day on null.
+  const follows = (value.slotInterval === undefined || value.slotInterval === null) && lengths.length > 1;
   const type = {
     slug: slugText,
     title,
@@ -351,14 +355,8 @@ function meetingType(value, field, schedules) {
     bufferAfter: integer(value.bufferAfter ?? 0, `${field}.bufferAfter`, 0, 240),
     minNotice: integer(value.minNotice ?? 240, `${field}.minNotice`, 0, 43200),
     horizon: integer(value.horizon ?? 30, `${field}.horizon`, 1, 90),
-    // Left out or null: start times follow the length. With one length that is the duration, as before; with several
-    // it is the length the guest picked (slots.js).
-    slotInterval:
-      value.slotInterval === undefined || value.slotInterval === null
-        ? lengths.length > 1
-          ? null
-          : duration
-        : integer(value.slotInterval, `${field}.slotInterval`, 5, 480),
+    slotInterval: value.slotInterval === undefined || value.slotInterval === null ? duration : integer(value.slotInterval, `${field}.slotInterval`, 5, 480),
+    ...(follows ? { slotFollowsLength: true } : {}),
     dailyLimit: value.dailyLimit === null || value.dailyLimit === undefined ? null : integer(value.dailyLimit, `${field}.dailyLimit`, 1, 50),
     confirm: bool(value.confirm ?? false, `${field}.confirm`),
     hidden: bool(value.hidden ?? false, `${field}.hidden`),

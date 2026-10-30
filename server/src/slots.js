@@ -14,10 +14,17 @@ export function lengths(type) {
 }
 
 // The type as booked at one of its lengths: duration is that length, and so is the step between start times when the
-// host left it to follow the length (slotInterval null).
+// host left it to follow the length (step()).
 export function withLength(type, minutes) {
   if (minutes === type.duration) return type;
   return { ...type, duration: minutes };
+}
+
+// Minutes between start times. slotFollowsLength: they follow the length, the one picked on a type with several
+// (input.js stores the default duration in slotInterval then, for Workers from before several lengths). A null
+// slotInterval means the same.
+export function step(type) {
+  return type.slotFollowsLength || type.slotInterval === null || type.slotInterval === undefined ? type.duration : type.slotInterval;
 }
 
 // The meeting type a guest asked for: by slug (hidden types too), or the only visible one when none was named. With
@@ -144,8 +151,7 @@ export function openSlots({ profile, windows, busy, bookings, type, from, to, no
   const list = candidates({
     windows: windows[type.schedule] ?? [],
     timeZone: profile.timeZone,
-    // null: start times follow the meeting's length, the one picked when the type has several.
-    interval: type.slotInterval ?? type.duration,
+    interval: step(type),
     duration: type.duration,
     from: lo,
     to: hi
