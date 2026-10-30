@@ -54,6 +54,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.categories.CategoriesState
+import nl.bvdm.rukoo.categories.Category
+import nl.bvdm.rukoo.categories.CategoryLookup
 import nl.bvdm.rukoo.mail.model.FolderRole
 import nl.bvdm.rukoo.mail.model.MailView
 import nl.bvdm.rukoo.mail.model.MessageSummary
@@ -84,6 +86,7 @@ import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.root.Pane
+import nl.bvdm.rukoo.ui.settings.categoryColor
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.rkShadow
 import nl.bvdm.rukoo.ui.theme.semibold
@@ -120,20 +123,23 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
     val filter = if (nav.searching) ListFilter.ALL else nav.filter
 
     // Inbox categories sit under Inbox in the folder drawer; the inbox shows the one picked there, while categories
-    // are on and nothing is searched (app.js categoriesOn). Each email's category is worked out off the main thread
-    // whenever the list, the categories or any record changes.
+    // are on and nothing is searched (app.js categoriesOn). Every list that holds inbox mail labels it with its
+    // category, so each email's category is worked out off the main thread whenever the list, the categories or any
+    // record changes.
     val categories = app.services.categories
     val noCategories = remember { MutableStateFlow(CategoriesState()) }
     val catState by (categories?.state ?: noCategories).collectAsStateWithLifecycle()
     val noVersion = remember { MutableStateFlow(0L) }
     val recordsVersion by (app.services.account?.version ?: noVersion).collectAsStateWithLifecycle()
-    val tabsOn = categories != null && catState.enabled && catState.categories.isNotEmpty() && nav.view.kind == ViewKind.INBOX && !nav.searching
-    val categoryOf by produceState(emptyMap<String, String>(), all, catState, recordsVersion, tabsOn, accounts) {
-        value = if (tabsOn && categories != null) withContext(Dispatchers.Default) { categories.of(accounts, all) } else emptyMap()
+    val categoriesOn = categories != null && catState.enabled && catState.categories.isNotEmpty()
+    val tabsOn = categoriesOn && nav.view.kind == ViewKind.INBOX && !nav.searching
+    val lookup by produceState(CategoryLookup.NONE, all, catState, recordsVersion, categoriesOn, accounts) {
+        value = if (categoriesOn && categories != null) withContext(Dispatchers.Default) { categories.lookup(accounts, all) } else CategoryLookup.NONE
     }
-    val tab = nav.category?.takeIf { id -> tabsOn && catState.categories.any { it.id == id } }
+    val byId = remember(catState) { catState.categories.associateBy { it.id } }
+    val tab = nav.category?.takeIf { id -> tabsOn && id in byId }
     // The list in the category on screen; the quick filters and their counts work on it.
-    val inTab = remember(all, tab, categoryOf) { if (tab != null) all.filter { categoryOf[it.id] == tab } else all }
+    val inTab = remember(all, tab, lookup) { ListModel.categoryRows(all, lookup, tab) }
     val messages = remember(inTab, filter) { ListModel.applyFilter(inTab, filter) }
     val byDate = settings.sort == SortOrder.DATE_DESC || settings.sort == SortOrder.DATE_ASC
     val now = remember(all) { System.currentTimeMillis() }
@@ -171,7 +177,7 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
             when {
                 selecting -> SelectionBar(app, messages.filter { it.id in checked }, messages)
                 nav.searching -> SearchBar(app, nav.query, nav.view, folders)
-                else -> ListHeader(app, nav.view, inTab, accounts.map { it.id to it.email }, folders, category = tab?.let { id -> catState.categories.firstOrNull { it.id == id }?.name })
+                else -> ListHeader(app, nav.view, inTab, accounts.map { it.id to it.email }, folders, category = tab?.let(byId::get))
             }
             if (!selecting) {
                 if (nav.searching) {
@@ -246,12 +252,13 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
                         sync.syncing,
                         sync.errors,
                         accounts.associate { it.id to it.email },
-                        emptyTab = tab?.let { id -> catState.categories.firstOrNull { it.id == id }?.name },
+                        emptyTab = tab?.let { byId[it]?.name },
                     )
                     else -> MessageList(
                         app, rows, drafts, listState, dates, now, settings.density == Density.COMPACT, selecting, checked, nav.openMessageId, multi, labels, showFolder, folders,
                         swipeRight = settings.swipeRight.takeIf { settings.swipeActions && it != SwipeAction.NONE },
                         swipeLeft = settings.swipeLeft.takeIf { settings.swipeActions && it != SwipeAction.NONE },
+                        categoryOf = { m -> ListModel.rowCategory(m, lookup, tab, byId) },
                     )
                 }
             }
@@ -286,6 +293,8 @@ private fun MessageList(
     folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>,
     swipeRight: SwipeAction?,
     swipeLeft: SwipeAction?,
+    /** The category label a row shows, if any (ListModel.rowCategory). */
+    categoryOf: (MessageSummary) -> Category?,
 ) {
     val c = Rk.colors
     val ui = app.mailUi
@@ -329,6 +338,7 @@ private fun MessageList(
                             accountLabel = if (multi) labels[m.accountId] else null,
                             accountColor = m.accountColor,
                             folderLabel = if (showFolder) folderNames[m.accountId]?.get(m.folder) ?: m.folder else null,
+                            category = categoryOf(m),
                         ),
                         actions = RowActions(
                             open = {
@@ -394,18 +404,15 @@ private fun GroupHead(label: String) {
 
 /**
  * "N unread · account" when the view counts unread mail, else the account or "All accounts" (app.js listTitle). A
- * category under Inbox titles the list with its name, and "N unread · Inbox" below it.
+ * category under Inbox titles the list with its name and wears its color, so it can't be taken for Inbox itself; the
+ * line below names the account or "All accounts" too.
  */
 @Composable
-private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSummary>, accounts: List<Pair<String, String>>, folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>, category: String? = null) {
+private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSummary>, accounts: List<Pair<String, String>>, folders: Map<String, List<nl.bvdm.rukoo.mail.model.Folder>>, category: Category? = null) {
     val c = Rk.colors
-    val where = if (category != null) {
-        viewTitle(view, folders)
-    } else {
-        view.accountId?.let { id -> accounts.firstOrNull { it.first == id }?.second }
-            ?: accounts.singleOrNull()?.second
-            ?: stringResource(R.string.mailbox_search_all_accounts)
-    }
+    val where = view.accountId?.let { id -> accounts.firstOrNull { it.first == id }?.second }
+        ?: accounts.singleOrNull()?.second
+        ?: stringResource(R.string.mailbox_search_all_accounts)
     val counts = view.kind in setOf(ViewKind.INBOX, ViewKind.FOLDER, ViewKind.VIP, ViewKind.JUNK, ViewKind.ARCHIVE, ViewKind.UNREAD)
     val unread = if (counts) list.count { it.unread } else 0
     val sub = if (unread > 0) stringResource(R.string.mailbox_list_unread_summary, unread, where) else where
@@ -414,11 +421,12 @@ private fun ListHeader(app: AppViewModel, view: MailView, list: List<MessageSumm
     val settings by app.services.settingsSnapshot.collectAsStateWithLifecycle()
     val news = rememberAgentNews(app)
     RkTopBar(
-        title = category ?: viewTitle(view, folders),
+        title = category?.name ?: viewTitle(view, folders),
         subtitle = sub,
         titleStyle = Rk.type.pageTitle,
         height = 64.dp,
         hairline = false,
+        tint = category?.let { categoryColor(it.color) },
         // The folders open from FoldersButton at the bottom, where the thumb is, rather than from a menu
         // button in the top corner.
         actions = {

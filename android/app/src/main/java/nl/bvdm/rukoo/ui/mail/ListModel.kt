@@ -1,5 +1,7 @@
 package nl.bvdm.rukoo.ui.mail
 
+import nl.bvdm.rukoo.categories.Category
+import nl.bvdm.rukoo.categories.CategoryLookup
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.FolderRole
@@ -65,6 +67,29 @@ object ListModel {
 
     /** Counts after each quick filter's label, over the loaded list. */
     fun filterCount(list: List<MessageSummary>, filter: ListFilter): Int = if (filter == ListFilter.ALL) 0 else applyFilter(list, filter).size
+
+    /** The list in the category tab on screen (app.js categoryRows): a category's [tab] shows its own mail, else all of it. */
+    fun categoryRows(list: List<MessageSummary>, lookup: CategoryLookup, tab: String?): List<MessageSummary> =
+        if (tab != null) list.filter { lookup[it] == tab } else list
+
+    /**
+     * The category label a row shows (app.js rowCategory): an inbox email's category in a list that mixes them, such as
+     * Inbox, a search, VIP or Unread. A category's own [tab] says which it is in its header, so its rows have none.
+     */
+    fun rowCategory(m: MessageSummary, lookup: CategoryLookup, tab: String?, categories: Map<String, Category>): Category? =
+        if (tab != null) null else lookup[m]?.let(categories::get)
+
+    /**
+     * How wide each pill on a row's subject line is (styles.css .flags): the width it needs, [basis], while they all fit
+     * in [room]; else each gives up room in proportion to its width, as CSS flex-shrink does, so a long label ends in an
+     * ellipsis before a short one does.
+     */
+    fun pillWidths(basis: List<Int>, room: Int): List<Int> {
+        val total = basis.sum()
+        if (total <= room) return basis
+        if (total == 0 || room <= 0) return basis.map { 0 }
+        return basis.map { (it.toLong() * room / total).toInt() }
+    }
 
     /** Sent mail and drafts never stack; other mail stacks by sender address. */
     fun stackKey(m: MessageSummary): String? {

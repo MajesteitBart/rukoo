@@ -51,6 +51,18 @@ data class Category(
     val order: Int,
 )
 
+/**
+ * The categories of a list of mail, worked out once for all of it (desktop's categoryOf): each inbox email's category
+ * by id. Empty while categories are off.
+ */
+data class CategoryLookup(val of: Map<String, String> = emptyMap()) {
+    operator fun get(m: MessageSummary): String? = of[m.id]
+
+    companion object {
+        val NONE = CategoryLookup()
+    }
+}
+
 data class JevState(val on: Boolean = false, val hasKey: Boolean = false, val error: String? = null, val model: String = Jev.MODEL)
 
 /** A sender whose mail always goes to one category. */
@@ -444,27 +456,46 @@ class Categories(
     fun of(acc: Account, m: MessageSummary): String? = of(listOf(acc), listOf(m))[m.id]
 
     /** The category of each of [messages] by id, for the inbox mail among them; nothing when categories are off. */
-    fun of(accounts: List<Account>, messages: List<MessageSummary>): Map<String, String> {
+    fun of(accounts: List<Account>, messages: List<MessageSummary>): Map<String, String> = placing()?.let { of(accounts, messages, it) }.orEmpty()
+
+    /** [of] for a list on screen, as one [CategoryLookup]; [CategoryLookup.NONE] while categories are off. */
+    fun lookup(accounts: List<Account>, messages: List<MessageSummary>): CategoryLookup {
+        val placing = placing() ?: return CategoryLookup.NONE
+        return CategoryLookup(of(accounts, messages, placing))
+    }
+
+    /** The categories as placing an email needs them, worked out once for many (desktop's context()). */
+    internal class Placing(val order: List<String>, val ids: Set<String>, val unsure: String)
+
+    /** Null while categories are off or there are none. */
+    private fun placing(): Placing? {
         val s = settings()
-        if (!s.enabled) return emptyMap()
+        if (!s.enabled) return null
         val list = list()
-        if (list.isEmpty()) return emptyMap()
+        if (list.isEmpty()) return null
         val order = list.map { it.id }
         val ids = order.toSet()
-        val unsure = if (s.unsure in ids) s.unsure else list[0].id
+        return Placing(order, ids, if (s.unsure in ids) s.unsure else list[0].id)
+    }
+
+    private fun of(accounts: List<Account>, messages: List<MessageSummary>, placing: Placing): Map<String, String> {
         val byId = accounts.associateBy { it.id }
         val out = HashMap<String, String>(messages.size * 2)
         for (m in messages) {
             // Only inbox mail has a category, as desktop's publicMessage asks for it in the inbox only.
             if (m.role != FolderRole.INBOX) continue
             val acc = byId[m.accountId] ?: continue
-            val key = key(acc, m)
-            val stored = listOf("override" to key, "sender" to lower(m.from.address), "classification" to key).firstNotNullOfOrNull { (collection, k) ->
-                (account.get(collection, k) as? JsonObject).text("category")?.takeIf { it in ids }
-            }
-            out[m.id] = stored ?: byRules(acc, m, order, unsure).category
+            out[m.id] = placed(acc, m, key(acc, m), placing)
         }
         return out
+    }
+
+    /** An inbox email's category: a correction, a sender rule, the stored one, else what the rules say now. */
+    private fun placed(acc: Account, m: MessageSummary, key: String, placing: Placing): String {
+        val stored = listOf("override" to key, "sender" to lower(m.from.address), "classification" to key).firstNotNullOfOrNull { (collection, k) ->
+            (account.get(collection, k) as? JsonObject).text("category")?.takeIf { it in placing.ids }
+        }
+        return stored ?: byRules(acc, m, placing.order, placing.unsure).category
     }
 
     /** Puts emails in a category; with [sender], also every later email from their senders. */

@@ -133,6 +133,18 @@ class CategoriesTest {
     }
 
     @Test
+    fun `a list's lookup gives each inbox email its category, and nothing while categories are off`() {
+        val s = setup(inbox())
+        val sent = msg(8, Address("Me", "me@work.example"), "Re: hi", 8).copy(id = "acc1:Sent:8", folder = "Sent", role = FolderRole.SENT)
+        val list = s.mail.inbox + sent
+        assertEquals(CategoryLookup.NONE, s.cats.lookup(listOf(s.acc), list))
+        s.cats.setEnabled(true)
+        val lookup = s.cats.lookup(listOf(s.acc), list)
+        assertEquals(s.cats.of(listOf(s.acc), list), lookup.of)
+        assertEquals(listOf("needs-you", "promotions", "updates", null), list.map { lookup[it] })
+    }
+
+    @Test
     fun `mail cached before its headers were fetched waits to be sorted`() = runBlocking {
         val s = setup(inbox())
         s.mail.inbox = s.mail.inbox.mapIndexed { i, m -> if (i == 0) m.copy(signals = null) else m }

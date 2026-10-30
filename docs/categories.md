@@ -2,7 +2,7 @@
 
 Inbox categories split the inbox, like Gmail's tabs, for every kind of account: Gmail, Outlook, any IMAP server and the demo account. Rukoo doesn't label, flag or move anything on the mail server, so other mail apps see your inbox as before. The categories, the category each email got and your corrections live in Rukoo's own data, and with a [Rukoo account](account.md) every device shows the same.
 
-They show under Inbox in the sidebar, on the phone in the folder drawer. Inbox itself still shows all of it, unless you [keep a category out of it](#keeping-a-category-out-of-inbox). On the computer, each email in Inbox carries a label with its category's color and name. Search results and views built from the inbox, such as VIPs, show the label too. A category's own tab has its color at the top of the list, with a dot before its name. The first start of Rukoo 2.1 offers to set them up step by step (Settings → About → What's new opens that again), or turn them on in Settings → General → Inbox categories.
+They show under Inbox in the sidebar, on the phone in the folder drawer. Inbox itself still shows all of it, unless you [keep a category out of it](#keeping-a-category-out-of-inbox). Each email in Inbox carries a label with its category's color and name, on the computer and on the phone. Search results and views built from the inbox, such as VIPs, show the label too. A category's own tab has its color at the top of the list, with a dot before its name. The first start of Rukoo 2.1 offers to set them up step by step (Settings → About → What's new opens that again), or turn them on in Settings → General → Inbox categories.
 
 ## The categories
 
