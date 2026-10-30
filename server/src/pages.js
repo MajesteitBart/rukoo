@@ -8,7 +8,8 @@
 // The look follows Rukoo's design skill (.agents/skills/rukoo-design): the app's colour tokens for both themes, Inter,
 // the app's line icons, hairline rings, one ink-coloured primary button, radii by role and a 4px grid. The booker
 // is one card in three columns, like the app's event card beside a month: the host and the meeting, the month, and
-// the chosen day's times. Nothing is loaded from elsewhere; the font comes from this server (fonts.js).
+// the chosen day's times. Nothing is loaded from elsewhere; the font and the tab's icon come from this server (fonts.js,
+// icons.js).
 //
 // Assistants get the page's llms.txt, linked in the head and in the footer; the page itself carries no text for them.
 
@@ -358,6 +359,9 @@ function zoneText(zone, ms) {
 // ctx: what web.js context() returns. main: the markup in <main>. switchable: a page opened with GET, which booker.js
 // may load again in the browser's zone or with the remembered clock. width: 'wide' for the booker, 'mid' for pages
 // in two columns or a list, 'narrow' for a single card.
+//
+// The icons (icons.js): the .ico holds 16 and 32 pixels but says 32x32, because Chromium takes an exact 16x16 for a tab
+// over the SVG, which follows the browser's light or dark theme.
 export function documentHtml(ctx, { title, main, switchable = false, footer = 'full', width = 'narrow' }) {
   const attrs = [`lang="${ctx.lang}"`, `data-zone="${esc(ctx.zone)}"`, `data-clock="${ctx.clock}"`];
   if (switchable) attrs.push('data-switch');
@@ -372,6 +376,9 @@ export function documentHtml(ctx, { title, main, switchable = false, footer = 'f
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="same-origin">
 <title>${esc(title)}</title>
+<link rel="icon" href="${esc(ctx.icons)}favicon.ico" sizes="32x32">
+<link rel="icon" href="${esc(ctx.icons)}favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="${esc(ctx.icons)}apple-touch-icon.png">
 <link rel="preload" href="${esc(ctx.fonts)}${MAIN_FONT}" as="font" type="font/woff2" crossorigin>${guide}
 <style>${fontFaces(ctx.fonts)}
 ${CSS}</style>
