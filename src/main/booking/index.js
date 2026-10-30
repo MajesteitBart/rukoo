@@ -72,7 +72,7 @@ function readJson(file, fallback) {
 }
 
 function emptyFile(acct = null) {
-  return { v: 1, acct, cursor: 0, device: null, page: null, lost: false, rows: {}, handled: {}, seen: {}, unopened: {}, busy: {}, unchecked: [], publish: { at: 0, lastOk: null, hash: null, ok: true, error: null }, published: null, dismissed: {}, notices: [], noUid: false };
+  return { v: 1, acct, cursor: 0, device: null, page: null, lost: false, rows: {}, handled: {}, seen: {}, unopened: {}, busy: {}, unchecked: [], publish: { at: 0, lastOk: null, hash: null, ok: true, error: null }, published: null, dismissed: {}, notices: [], unmoved: {}, noUid: false };
 }
 
 // A booking row as the owner API sends it (PROTOCOL.md, GET /v1/booking/bookings), with anything unexpected left out.
@@ -173,6 +173,7 @@ class Booking extends EventEmitter {
     delete this.file.unreadable;
     delete this.file.pageAt;
     if (!plain(this.file.unopened)) this.file.unopened = {};
+    if (!plain(this.file.unmoved)) this.file.unmoved = {};
     this.follow();
     this.account.on('status', () => this.follow());
     this.account.on('records', ({ collections = [] } = {}) => {
@@ -887,7 +888,7 @@ class Booking extends EventEmitter {
   forgetBookings() {
     const acct = this.acct;
     if (acct) for (const { k } of this.account.list('booking')) if (k.startsWith(`map:${acct}:`) || k.startsWith(`meeting:${acct}:`)) this.account.remove('booking', k);
-    Object.assign(this.file, { rows: {}, handled: {}, seen: {}, unopened: {}, cursor: 0, notices: [], unchecked: [], lost: false });
+    Object.assign(this.file, { rows: {}, handled: {}, seen: {}, unopened: {}, unmoved: {}, cursor: 0, notices: [], unchecked: [], lost: false });
     this.file.publish = { ...emptyFile().publish };
     if (this.file.page) this.file.page = { ...this.file.page, enabled: false, device: null, today: null };
     this.opened.clear();
@@ -1167,7 +1168,7 @@ class Booking extends EventEmitter {
         if (restarted || !moveCursor) throw rules.bookingError('serverAnswer');
         restarted = true;
         from = 0;
-        Object.assign(this.file, { cursor: 0, rows: {}, handled: {}, seen: {}, unopened: {} });
+        Object.assign(this.file, { cursor: 0, rows: {}, handled: {}, seen: {}, unopened: {}, unmoved: {} });
         continue;
       }
       if (list.length > PAGE_LIMIT) throw rules.bookingError('serverAnswer');
@@ -1240,7 +1241,11 @@ class Booking extends EventEmitter {
         this.tell('rescheduled', row, guest, ev ? { id: ev.id, start: ev.start } : { start: row.start });
         await this.checkOverlap(row, guest, settings);
         if (!row.notify) this.budgetNotice(row, guest, settings);
-      } else this.writeMap({ ...map, version: row.version });
+      } else {
+        this.writeMap({ ...map, version: row.version });
+        // A meeting a crash or a failed step left at an earlier time of the booking.
+        await this.followMeeting(row, guest);
+      }
     } else if (row.status === 'cancelled' && row.cancelledBy === 'guest') {
       const map = this.map(row.id);
       const guest = map && map.guest ? map.guest : this.opened.get(row.id) || null;
@@ -1259,7 +1264,7 @@ class Booking extends EventEmitter {
         this.tell('cancelled', row, guest, { start: row.start }, 'withdrawn');
       }
       // Its meeting goes too, also one made for an event that never got written.
-      await this.endMeeting(row, (map && map.video) || (this.keptMeeting(row.id) || {}).ref, rules.shortName(guest && guest.name));
+      await this.endMeeting(row, map, rules.shortName(guest && guest.name));
       this.dropNotices(row.id, ['overlap']);
     } else this.dropNotices(row.id, ['overlap']);
     await this.handled(row);
@@ -1409,23 +1414,27 @@ class Booking extends EventEmitter {
     try {
       let ev = await this.findEvent(row, dest.accountId);
       // A meeting made for this booking before its event was: kept, so a retry doesn't make a second one.
-      const kept = this.keptMeeting(row.id);
-      let meeting = kept ? kept.ref : null;
+      let meeting = this.keptMeeting(row.id);
       if (!ev) {
         const input = this.eventInput(row, guest, settings, dest);
         meeting = await this.meetingFor(row, guest, settings, input);
-        ev = await this.after(this.calendars.create(withMeeting(input, meeting, { locale: settings.locale, name: videoName(meeting) }), { notify: row.notify, bookingId: row.id, uid: row.uid }));
-      } else {
+        // The booking's meeting is its one link, also when the type has used Google Meet since.
+        if (meeting) delete input.addMeet;
+        ev = await this.after(this.calendars.create(withMeeting(input, meeting && meeting.ref, { locale: settings.locale, name: videoName(meeting && meeting.ref) }), { notify: row.notify, bookingId: row.id, uid: row.uid }));
+      } else if (ev.start !== row.start || ev.end !== row.end) {
         // Made for an earlier time of this booking (an answer that got lost, then the guest moved it): it goes to this one.
-        if (ev.start !== row.start || ev.end !== row.end) ev = await this.moveTo(await this.intoCache(ev), row);
-        if (kept && (kept.start !== row.start || kept.end !== row.end)) await this.moveMeeting(row, meeting, guest);
+        ev = await this.moveTo(await this.intoCache(ev), row);
       }
       const acc = this.engine.accounts.find((a) => a.id === ev.accountId);
       // uid: the one the calendar gave the event (Google may ignore the booking's), kept before handled tells the
       // server, so a handled that fails still has it the next time. The booking's own when the server can't take it.
       const uid = typeof ev.uid === 'string' && UID.test(ev.uid) ? ev.uid : row.uid;
-      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid, version: row.version, type: row.type, start: row.start, end: row.end, guest, customLength: false, ...(meeting ? { video: meeting } : {}) });
-      this.dropKept(row.id);
+      // The meeting with the time it has, which followMeeting changes once the service takes the booking's.
+      const video = meeting ? { video: { ...meeting.ref, start: meeting.start, end: meeting.end } } : {};
+      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid, version: row.version, type: row.type, start: row.start, end: row.end, guest, customLength: false, ...video });
+      if (meeting) this.dropKept(row.id, meeting.ref);
+      // A kept meeting made for an earlier time of the booking goes to this one.
+      await this.followMeeting(row, guest);
       return ev;
     } finally {
       this.own.delete(row.id);
@@ -1479,13 +1488,14 @@ class Booking extends EventEmitter {
       if (!ev) {
         // Gone from the calendar, as a fresh read showed: the booking is still on, so it gets its event again, with
         // the meeting it had.
+        const video = videoOf(map);
+        if (video) this.keepMeeting(row.id, video);
         this.account.remove('booking', this.mapKey(row.id));
-        if (map.video) this.keepMeeting(row.id, map.video, map);
         return this.createEvent(row, guest, settings);
       }
       const out = await this.moveTo(ev, row);
       this.writeMap({ ...map, version: row.version, start: row.start, end: row.end, customLength: false, calendarId: out.calendarId, eventId: out.eventId });
-      await this.moveMeeting(row, map.video, guest);
+      await this.followMeeting(row, guest);
       return out;
     } finally {
       this.own.delete(row.id);
@@ -1524,36 +1534,42 @@ class Booking extends EventEmitter {
   keptMeeting(id) {
     const v = this.acct ? this.account.get('booking', this.keptKey(id)) : undefined;
     if (!plain(v) || typeof v.service !== 'string' || typeof v.url !== 'string') return null;
-    return { ref: { service: v.service, id: typeof v.id === 'string' ? v.id : String(v.id || ''), url: v.url }, start: v.start, end: v.end };
+    return { ref: refOf(v), start: v.start, end: v.end };
   }
 
-  keepMeeting(id, ref, at) {
+  // Written to disk at once, not with the account's own save a second later: a crash before the calendar write must
+  // not lose the only record of a meeting the service has.
+  keepMeeting(id, { ref, start, end }) {
     this.live();
-    this.account.put('booking', this.keptKey(id), { service: ref.service, id: ref.id, url: ref.url, start: at.start, end: at.end });
+    this.account.put('booking', this.keptKey(id), { ...refOf(ref), start, end });
+    this.account.flush();
   }
 
-  dropKept(id) {
-    if (this.keptMeeting(id)) this.account.remove('booking', this.keptKey(id));
+  // Only once the meeting is in the booking's mapping record, or the service deleted it: otherwise nothing would know
+  // of it.
+  dropKept(id, ref) {
+    const kept = this.keptMeeting(id);
+    if (kept && sameMeeting(kept.ref, ref)) this.account.remove('booking', this.keptKey(id));
   }
 
-  // The meeting a booking's event gets when its type uses a video service: { service, id, url }. null for another
-  // location, or when the service can't make one: the event then goes in without a link, and a notice says why and
-  // what to do. input: the event, for the meeting's title and zone.
+  // The meeting a booking's event gets: { ref: { service, id, url }, start, end }, with the time the meeting has. A
+  // meeting made for the booking before its event could be written is the one, whatever its type says by now (another
+  // location or service, or no type at all): the guest booked with it, and only so is it moved and deleted with the
+  // booking. Otherwise a new one when the type uses a video service. null for another location, or when the service
+  // can't make one: the event then goes in without a link, and a notice says why and what to do. input: the event,
+  // for the meeting's title and zone.
   async meetingFor(row, guest, settings, input) {
+    const kept = this.keptMeeting(row.id);
+    if (kept) return kept;
     const type = settings.types.find((x) => x.slug === row.type);
     const loc = type && type.location;
     if (!loc || loc.kind !== 'video') return null;
-    const kept = this.keptMeeting(row.id);
-    if (kept && kept.ref.service === loc.service) {
-      // Its new time is kept only once the service took it, so a move that failed is tried again with the next retry.
-      if ((kept.start !== row.start || kept.end !== row.end) && (await this.moveMeeting(row, kept.ref, guest))) this.keepMeeting(row.id, kept.ref, row);
-      return kept.ref;
-    }
     try {
       if (!this.video) throw Object.assign(new Error(''), { code: 'off' });
       const made = await this.after(this.video.create(loc.service, { title: input.title, start: row.start, end: row.end, timeZone: input.timeZone }));
-      this.keepMeeting(row.id, made, row);
-      return made;
+      const meeting = { ref: refOf(made), start: row.start, end: row.end };
+      this.keepMeeting(row.id, meeting);
+      return meeting;
     } catch (err) {
       unlessStale(err);
       this.addNotice('video', row, rules.shortName(guest && guest.name), videoProblem(loc.service, 'create', err));
@@ -1561,32 +1577,47 @@ class Booking extends EventEmitter {
     }
   }
 
-  // A booking's meeting at its new time. A failure leaves the meeting and its link as they were, with a notice.
-  // True when the service took the new time.
-  async moveMeeting(row, ref, guest) {
-    if (!ref || !this.video) return false;
+  // The booking's meeting at the booking's time, when the time its mapping record gives the meeting is another: right
+  // after a move, and on each later pass (processing, reconciliation) until the service takes it, so a move that
+  // failed, or that a crash or a failed step before it skipped, still happens. The record keeps the new time only once
+  // the service took it. A failure leaves the meeting and its link as they were, with a notice once for each time the
+  // booking gets: the passes that try again don't bring a dismissed one back.
+  async followMeeting(row, guest) {
+    const video = videoOf(this.map(row.id));
+    if (!video || !this.video || (video.start === row.start && video.end === row.end)) return;
     const settings = this.settings();
     const zone = settings && isZone(settings.timeZone) ? settings.timeZone : pcZone();
     try {
-      await this.after(this.video.update(ref, { start: row.start, end: row.end, timeZone: zone }));
-      return true;
+      await this.after(this.video.update(video.ref, { start: row.start, end: row.end, timeZone: zone }));
     } catch (err) {
       unlessStale(err);
-      this.addNotice('video', row, rules.shortName(guest && guest.name), videoProblem(ref.service, 'update', err));
-      return false;
+      if (this.file.unmoved[row.id] !== row.start) {
+        this.file.unmoved[row.id] = row.start;
+        this.addNotice('video', row, rules.shortName(guest && guest.name), videoProblem(video.ref.service, 'update', err));
+      }
+      return;
     }
+    delete this.file.unmoved[row.id];
+    this.file.notices = this.file.notices.filter((n) => !(n.id === `video:${row.id}` && n.op === 'update'));
+    const map = this.map(row.id);
+    if (map && sameMeeting(map.video, video.ref)) this.writeMap({ ...map, video: { ...video.ref, start: row.start, end: row.end } });
   }
 
-  // A booking that ended takes its meeting with it. One the service couldn't delete stays, with a notice.
-  async endMeeting(row, ref, name) {
-    if (!ref || !this.video) return;
-    try {
-      await this.after(this.video.remove(ref));
-      this.dropKept(row.id);
-      this.dropNotices(row.id, ['video']);
-    } catch (err) {
-      unlessStale(err);
-      this.addNotice('video', row, name, videoProblem(ref.service, 'delete', err));
+  // A booking that ended takes its meeting with it: the one in its mapping record, and one kept for an event that
+  // never got written. One the service couldn't delete stays, with a notice.
+  async endMeeting(row, map, name) {
+    if (!this.video) return;
+    const kept = this.keptMeeting(row.id);
+    const refs = [videoOf(map), kept].filter(Boolean).map((m) => m.ref);
+    for (const ref of refs.filter((r, i) => refs.findIndex((x) => sameMeeting(x, r)) === i)) {
+      try {
+        await this.after(this.video.remove(ref));
+        this.dropKept(row.id, ref);
+        this.dropNotices(row.id, ['video']);
+      } catch (err) {
+        unlessStale(err);
+        this.addNotice('video', row, name, videoProblem(ref.service, 'delete', err));
+      }
     }
   }
 
@@ -1717,11 +1748,13 @@ class Booking extends EventEmitter {
             this.file.rows[row.id] = moved;
             next = { ...next, version: moved.version, start: moved.start, end: moved.end };
             this.writeMap(next);
+            // The meeting goes along before handled, which can fail; the passes after this one move it when it didn't.
+            await this.followMeeting(moved, map.guest);
             await this.handled(moved);
-            await this.moveMeeting(moved, map.video, map.guest);
             continue;
           }
           if (next.calendarId !== map.calendarId || next.eventId !== map.eventId || Boolean(map.customLength) !== custom) this.writeMap(next);
+          await this.followMeeting(row, map.guest);
         } catch (err) {
           unlessStale(err);
           if (err && err.code === 'stale_version') await this.fetchRows(this.file.cursor, true).catch(unlessStale);
@@ -1742,7 +1775,7 @@ class Booking extends EventEmitter {
     this.dropNotices(row.id, ['overlap', 'mailBudget']);
     await this.handled(next).catch(unlessStale);
     // Its meeting goes too, also one made for an event that never got written.
-    await this.endMeeting(next, (map && map.video) || (this.keptMeeting(row.id) || {}).ref, rules.shortName(map && map.guest && map.guest.name));
+    await this.endMeeting(next, map, rules.shortName(map && map.guest && map.guest.name));
     return next;
   }
 
@@ -1785,6 +1818,7 @@ class Booking extends EventEmitter {
       delete this.file.handled[id];
       delete this.file.seen[id];
       delete this.file.unopened[id];
+      delete this.file.unmoved[id];
       this.opened.delete(id);
       this.moves.delete(id);
     }
@@ -1953,6 +1987,22 @@ function eventFor(list, map) {
 function videoName(x) {
   const id = x && x.service;
   return rules.VIDEO_SERVICES[id] || String(id || '');
+}
+
+// A meeting's reference, as the video services take it.
+function refOf(v) {
+  return { service: v.service, id: typeof v.id === 'string' ? v.id : String(v.id || ''), url: v.url };
+}
+
+function sameMeeting(a, b) {
+  return plain(a) && plain(b) && a.service === b.service && String(a.id || '') === String(b.id || '') && a.url === b.url;
+}
+
+// A mapping record's meeting with the time it has: { ref, start, end }, or null.
+function videoOf(map) {
+  const v = map && map.video;
+  if (!plain(v) || typeof v.service !== 'string' || typeof v.url !== 'string') return null;
+  return { ref: refOf(v), start: v.start, end: v.end };
 }
 
 // What a video notice keeps about a failure: the sign-in needs renewing, the service isn't connected here ('off', also

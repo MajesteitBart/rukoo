@@ -117,7 +117,8 @@ test('a booking whose type uses a video service gets its own meeting, with the l
   assert.deepEqual(made[0], { op: 'create', service: 'zoom', title: '30 minute meeting: Bart and Jane Doe', start, end: start + 30 * 60000, timeZone: 'Europe/Amsterdam' });
   const ev = bookingEvent(host.fake, a.id);
   const map = mapOf(host, a.id);
-  assert.deepEqual(map.video, { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1' });
+  // The meeting with the time it has.
+  assert.deepEqual(map.video, { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1', start, end: start + 30 * 60000 });
   assert.equal(ev.location, map.video.url);
   assert.ok(ev.description.startsWith(`Join with Zoom: ${map.video.url}\n\n`), ev.description);
   assert.ok(ev.description.includes('Booked via'));
@@ -144,7 +145,10 @@ test('moving or cancelling a booking, by the guest or the host, moves or deletes
   const c = await srv.book({ handle: 'bart', type: '30min', start: start + 2 * DAY, guest: { name: 'Ann Lee', email: 'ann@example.org' } });
   const d = await srv.book({ handle: 'bart', type: '30min', start: start + 3 * DAY, guest: { name: 'Bo Ek', email: 'bo@example.org' } });
   await host.booking.sync();
-  const ref = (id) => mapOf(host, id).video;
+  const ref = (id) => {
+    const { service, id: meeting, url } = mapOf(host, id).video;
+    return { service, id: meeting, url };
+  };
   const refA = ref(a.id);
   const refB = ref(b.id);
   const refC = ref(c.id);
@@ -263,7 +267,7 @@ test('a meeting made before the calendar write failed is the one the retry uses'
   assert.deepEqual(ops(host.video, 'update').map((x) => [x.ref.id, x.start, x.end]), [['m1', start + HOUR, start + HOUR + 30 * 60000]]);
   assert.equal(bookingEvent(host.fake, id).location, 'https://us05web.zoom.us/j/8101?pwd=p1');
   assert.equal(Date.parse(bookingEvent(host.fake, id).start.dateTime), start + HOUR);
-  assert.deepEqual(mapOf(host, id).video, { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1' });
+  assert.deepEqual(mapOf(host, id).video, { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1', start: start + HOUR, end: start + HOUR + 30 * 60000 });
   assert.equal(keptOf(host, id), undefined, 'kept only until the event exists');
 
   // A booking cancelled while its event couldn't be written yet still takes its meeting with it.
@@ -279,30 +283,166 @@ test('a meeting made before the calendar write failed is the one the retry uses'
   assert.equal(keptOf(host, other.id), undefined);
 });
 
-test('a kept meeting whose move failed is moved again with the next retry', async (t) => {
+test('a kept meeting made for an earlier time moves once its event is written, and on a later pass when that fails', async (t) => {
   const srv = await server(t);
   let down = true;
   const fake = fakeCalendar({ fail: ({ method, url }) => (down && method === 'POST' && /\/events$/.test(url.pathname) ? { status: 503, body: { error: { code: 503, message: 'Backend Error' } } } : null) });
   const host = await computer(t, srv, { fake });
   await pageWith(host, ZOOM);
   const start = slot(3, 10);
+  const end = start + 30 * 60000;
   const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
   await host.booking.sync();
   srv.guestReschedule({ handle: 'bart', id, start: start + HOUR });
+  await host.booking.sync();
+  // No event yet: the meeting keeps its time until there is one.
+  assert.equal(ops(host.video, 'update').length, 0);
+  assert.equal(keptOf(host, id).start, start, 'still the time the meeting has');
+  // The calendar takes the event; Zoom can't be reached for the move, here and when sync reconciles.
+  down = false;
   host.video.fail.update = Object.assign(new Error("Rukoo couldn't reach Zoom."), { video: true, code: 'network' });
   await host.booking.sync();
-  assert.equal(ops(host.video, 'update').length, 1);
-  assert.equal(keptOf(host, id).start, start, 'still the time the meeting has');
-  // Zoom answers again, the calendar not yet: the move goes through and its time is kept.
+  assert.equal(Date.parse(bookingEvent(host.fake, id).start.dateTime), start + HOUR);
+  assert.equal(bookingEvent(host.fake, id).location, 'https://us05web.zoom.us/j/8101?pwd=p1');
+  assert.equal(ops(host.video, 'update').length, 2);
+  assert.deepEqual([mapOf(host, id).video.start, mapOf(host, id).video.end], [start, end]);
+  assert.equal(keptOf(host, id), undefined, 'the mapping record has it');
+  // Zoom answers again: the next pass moves it, and the mapping keeps its new time.
   host.video.fail.update = null;
   await host.booking.sync();
-  assert.equal(ops(host.video, 'update').length, 2);
-  assert.equal(keptOf(host, id).start, start + HOUR);
-  down = false;
+  assert.equal(ops(host.video, 'update').length, 3);
+  assert.deepEqual([mapOf(host, id).video.start, mapOf(host, id).video.end], [start + HOUR, end + HOUR]);
   await host.booking.sync();
-  assert.equal(ops(host.video, 'update').length, 2, 'nothing left to move');
-  assert.equal(Date.parse(bookingEvent(host.fake, id).start.dateTime), start + HOUR);
+  assert.equal(ops(host.video, 'update').length, 3, 'nothing left to move');
   assert.equal(ops(host.video, 'create').length, 1);
+});
+
+test("a kept meeting stays the booking's when the type's location changes, or the type goes, before the retry", async (t) => {
+  const srv = await server(t);
+  let down = false;
+  const fake = fakeCalendar({ fail: ({ method, url }) => (down && method === 'POST' && /\/events$/.test(url.pathname) ? { status: 503, body: { error: { code: 503, message: 'Backend Error' } } } : null) });
+  const host = await computer(t, srv, { fake });
+  await host.booking.enable(ENABLE);
+  const first = host.booking.settings().types[0];
+  const zoom = { ...first, location: ZOOM };
+  const intro = { ...first, slug: 'intro', title: 'Intro', location: { kind: 'none', label: '', value: '', public: false } };
+  const at = (location) => [{ ...zoom, location }, intro];
+  const changes = [
+    ['phone', at({ kind: 'phone', label: '', value: '+31 20 123 4567', public: false })],
+    ['Teams', at({ ...ZOOM, service: 'teams' })],
+    ['Google Meet', at({ kind: 'googleMeet', label: '', value: '', public: false })],
+    ['none', at({ kind: 'none', label: '', value: '', public: false })],
+    ['type deleted', [intro]]
+  ];
+  for (const [i, [change, types]] of changes.entries()) {
+    await host.booking.save({ types: [zoom, intro] });
+    const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10 + i), guest: { name: 'Jane Doe' } });
+    const made = ops(host.video, 'create').length;
+    // The meeting is made and kept; the calendar refuses the event.
+    down = true;
+    await host.booking.sync();
+    const kept = keptOf(host, id);
+    assert.ok(kept, change);
+    assert.equal(bookingEvent(fake, id), undefined, change);
+    // The host changes the type before the retry.
+    await host.booking.save({ types });
+    down = false;
+    await host.booking.sync();
+    assert.equal(ops(host.video, 'create').length, made + 1, `${change}: exactly one meeting`);
+    assert.equal(mapOf(host, id).video.id, kept.id, `${change}: the mapping has the kept meeting`);
+    assert.equal(keptOf(host, id), undefined, `${change}: kept until the mapping has it`);
+    const ev = bookingEvent(fake, id);
+    assert.equal(ev.location, kept.url, `${change}: the invitation has its link`);
+    assert.equal(ev.conferenceData, undefined, `${change}: no Google Meet besides`);
+    // Cancelling the booking deletes that meeting.
+    await host.booking.action(id, 'cancel', { notify: true });
+    assert.equal(ops(host.video, 'remove').at(-1).ref.id, kept.id, change);
+  }
+});
+
+test("the kept meeting is on disk before the calendar write starts", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await pageWith(host, ZOOM);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10), guest: { name: 'Jane Doe' } });
+  const key = `meeting:${host.account.acct}:${id}`;
+  const create = host.calendars.create.bind(host.calendars);
+  let onDisk = null;
+  host.calendars.create = (...args) => {
+    // What a restart after a crash right now would find.
+    const file = JSON.parse(require('fs').readFileSync(path.join(host.dataDir, 'account-records.json'), 'utf8'));
+    onDisk = file.entries.find((e) => e.c === 'booking' && e.k === key && !e.deleted) || null;
+    return create(...args);
+  };
+  await host.booking.sync();
+  assert.ok(onDisk, 'the kept meeting was written to disk before calendars.create');
+  assert.equal(onDisk.v.id, 'm1');
+  assert.equal(mapOf(host, id).video.id, 'm1');
+});
+
+test("a host's move moves the meeting when handled fails, and the mapping keeps the meeting's own time", async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await pageWith(host, ZOOM);
+  const start = slot(3, 10);
+  const end = start + 30 * 60000;
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  await host.booking.sync();
+
+  // The host moves the event; the server takes the move, then refuses handled once.
+  const ev = host.calendars.event(host.booking.state().bookings.find((x) => x.id === id).eventId);
+  await host.calendars.update(ev.id, { accountId: ev.accountId, calendarId: ev.calendarId, title: ev.title, location: ev.location, description: ev.description, allDay: false, start: start + HOUR, end: end + HOUR }, { etag: ev.etag, scope: 'one' });
+  let refused = 0;
+  srv.fail = ({ route, body }) => (route === 'POST /v1/booking/bookings' && body.action === 'handled' && refused++ === 0 ? [503, { error: 'unavailable', message: 'down' }] : null);
+  await host.booking.reconcile();
+  assert.equal(refused >= 1, true, 'handled was refused');
+  assert.equal(srv.pages.get('bart').bookings.get(id).start, start + HOUR);
+  await host.booking.reconcile();
+  await host.booking.sync();
+  srv.fail = null;
+  await host.booking.sync();
+  assert.deepEqual(ops(host.video, 'update').map((x) => [x.ref.id, x.start, x.end]), [['m1', start + HOUR, end + HOUR]], 'moved once');
+  assert.deepEqual(mapOf(host, id).video, { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1', start: start + HOUR, end: end + HOUR });
+});
+
+test('a meeting whose move failed is moved on a later pass, and keeps its old time in the mapping until then', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await pageWith(host, ZOOM);
+  const start = slot(3, 10);
+  const end = start + 30 * 60000;
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  await host.booking.sync();
+  // The guest moves the booking while Zoom can't be reached; sync tries again when it reconciles.
+  const unreachable = Object.assign(new Error("Rukoo couldn't reach Zoom."), { video: true, code: 'network' });
+  host.video.fail.update = unreachable;
+  srv.guestReschedule({ handle: 'bart', id, start: start + HOUR });
+  await host.booking.sync();
+  assert.equal(ops(host.video, 'update').length, 2);
+  assert.equal(srv.pages.get('bart').bookings.get(id).handledVersion, 2, 'the booking is handled');
+  assert.equal(mapOf(host, id).start, start + HOUR);
+  assert.deepEqual([mapOf(host, id).video.start, mapOf(host, id).video.end], [start, end], 'still the time the meeting has');
+  const video = () => host.booking.state().notices.filter((n) => n.id === `video:${id}`);
+  assert.deepEqual(video().map((n) => n.title), ['Zoom meeting not moved']);
+
+  // Zoom answers again: the next pass moves the meeting once, keeps its new time, and the notice goes.
+  host.video.fail.update = null;
+  await host.booking.reconcile();
+  await host.booking.sync();
+  assert.equal(ops(host.video, 'update').length, 3, 'moved once');
+  assert.deepEqual([mapOf(host, id).video.start, mapOf(host, id).video.end], [start + HOUR, end + HOUR]);
+  assert.deepEqual(video(), []);
+
+  // Another move that fails: its notice, once dismissed, stays away while later passes keep trying.
+  host.video.fail.update = unreachable;
+  srv.guestReschedule({ handle: 'bart', id, start: start + 2 * HOUR });
+  await host.booking.sync();
+  assert.equal(video().length, 1);
+  await host.booking.action(`video:${id}`, 'dismiss');
+  await host.booking.reconcile();
+  assert.equal(ops(host.video, 'update').length, 6);
+  assert.deepEqual(video(), []);
+  assert.equal(mapOf(host, id).video.start, start + HOUR);
 });
 
 test('a video service chosen just after another computer took over is refused, also before this one noticed', async (t) => {
