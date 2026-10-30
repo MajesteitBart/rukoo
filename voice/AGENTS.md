@@ -19,6 +19,18 @@ Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local spe
 - `cargo test -p voice-input -- --ignored` runs the tests that use the real clipboard and send keys. Run them only on a desktop nobody is using, such as a VM.
 - The pill and Settings pages run without Voice on mock data: `node voice/ui/dev/serve.js`, then open the address it prints. `node voice/ui/dev/screenshots.js tmp/voice-ui-shots` captures every state, and `node voice/ui/dev/check.js` checks their behavior.
 - Rukoo's side: `node --test test/voice-*.test.js test/agent-tools-meeting.test.js`, and `npx playwright test test/e2e/meeting.spec.js` for the meeting view.
+- Rukoo against Voice's real bridge server: `RUKOO_VOICE_INTEROP=1 node --test test/voice-interop.test.js`, which builds and runs `voice-bridge`'s `serve` example.
+
+## Run
+
+`cargo build -p voice-app -p voice-recorder -p voice-local` puts `rukoo-voice.exe`, `rukoo-voice-recorder.exe` and `rukoo-voice-local.exe` together in `target\debug`; the app finds the other two next to itself. Set `SHERPA_ONNX_ARCHIVE_DIR` first, as above. Tauri embeds `voice/ui` when it compiles, so a page change needs a rebuild.
+
+- A development copy: set `RUKOO_VOICE_DATA_DIR` to a scratch folder under `tmp\` and `RUKOO_VOICE_BRIDGE` to a discovery file path, then run `target\debug\rukoo-voice.exe`. It uses F13 and F14, never imports Ownkey on its own and never starts at login. Its log is `<data folder>\logs\app.log`. It transcribes with Orukeet from Ownkey's model folder, read only; the first meeting window hashes the model once and keeps a stamp in `<data folder>\models`.
+- No microphone or speakers needed: `RUKOO_VOICE_TEST_SOURCES="mic=file:<you.wav>,loop,call=file:<them.wav>,loop"` makes the recorder play WAV files in real time instead (`synthetic:tone:440` works too). Only a development copy reads it.
+- Pair it with a development Rukoo: start Rukoo with `SEM_DATA_DIR` under `tmp\`, the same `RUKOO_VOICE_BRIDGE` and `ELECTRON_RUN_AS_NODE` removed.
+- `--dev-hooks <folder>` lets a script drive a development copy without the tray or the keyboard: it writes `request.json` with `status`, `start_meeting`, `stop_meeting` or `capture` (the pill and Settings at a page, from WebView2) and reads `reply-<id>.json`.
+- The live paired run is the acceptance test for meetings: `node voice/scripts/live-meeting.mjs`, or with `--skip-build` after a build. It makes SAPI speech, runs Voice and a hidden Rukoo on the demo account, and checks passages on both tracks before the stop, the pill, Rukoo's window protection, a Voice restart mid-meeting, a killed recorder, processing then done, `meeting.get`, and a meeting started from Voice. It takes about two minutes and stops every process it started by process id. The report is `tmp\live\<time>\report.json` and the captures go to `tmp\live-shots\`. Voice's pill and Settings show on the desktop while it runs, without taking focus.
+- `--fake-engine[=idle|meeting|dictation|cycle|first-run]` runs the windows against scripted states, and `--self-test <folder>` with it captures both pages in both themes and languages. Both refuse to run without `RUKOO_VOICE_DATA_DIR`.
 
 ## What makes this project special?
 
