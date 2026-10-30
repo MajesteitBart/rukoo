@@ -791,6 +791,86 @@ test('at the narrowest list every button for checked emails is inside it and can
   }
 });
 
+// RUK-89: a sync that changes the list's toolbar while one of its menus is open draws a new button in place of the
+// one that opened it. Escape goes to the new button, and the menu's items still act on the checked emails.
+test('after a sync redraws the toolbar under an open menu, Escape goes to the new More button and items still work', async () => {
+  await item('Bencompare').click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+ArrowDown');
+  await expect(win.locator('.sel-count')).toHaveText('2 geselecteerd');
+  const ids = await win.locator('.item.checked').evaluateAll((rows) => rows.map((r) => r.dataset.id));
+  expect(ids).toHaveLength(2);
+  const setUnread = (id, unread) => win.evaluate(([id, unread]) => window.mail.call('setFlags', id, { unread }), [id, unread]);
+  for (const id of ids) await setUnread(id, false);
+  await expect(win.locator('.list-tools [data-bulk="unread"]')).toBeVisible();
+
+  const more = win.locator('.list-tools [data-bulk="more"]');
+  // Opens More's menu from the keyboard, then has the toolbar drawn anew under it, as when a sync changes the
+  // checked emails: one of them turns unread or read, and the toolbar offers the other action.
+  const openThenRedraw = async (unread) => {
+    await more.evaluate((b) => (window.__opener = b));
+    await more.focus();
+    await win.keyboard.press('Enter');
+    await expect(win.locator('.menu [role="menuitem"]').first()).toBeFocused();
+    await setUnread(ids[0], unread);
+    await expect(win.locator(`.list-tools [data-bulk="${unread ? 'read' : 'unread'}"]`)).toBeVisible();
+    expect(await win.evaluate(() => window.__opener.isConnected)).toBe(false);
+    await expect(win.locator('.menu')).toBeVisible();
+  };
+
+  await openThenRedraw(true);
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.menu')).toHaveCount(0);
+  await expect(more).toBeFocused();
+
+  // Star, the second item, picked from a menu whose button was redrawn: both checked emails get the star.
+  await openThenRedraw(false);
+  await win.keyboard.press('ArrowDown');
+  await expect(win.locator('.menu [role="menuitem"]', { hasText: 'Ster toevoegen' })).toBeFocused();
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.menu')).toHaveCount(0);
+  await expect(win.locator('.item.checked .star-btn.on')).toHaveCount(2);
+});
+
+// Tab closes a menu and goes on from its button, as from any other button, instead of from the end of the page.
+test('Tab and Shift+Tab in a menu go on from the button that opened it', async () => {
+  await item('Bencompare').click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+ArrowDown');
+  await expect(win.locator('.sel-count')).toHaveText('2 geselecteerd');
+  const more = win.locator('.list-tools [data-bulk="more"]');
+  await more.focus();
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.menu')).toBeVisible();
+  await win.keyboard.press('Tab');
+  await expect(win.locator('.menu')).toHaveCount(0);
+  await expect(win.locator('.list-tools [data-bulk="clear"]')).toBeFocused();
+  await more.focus();
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.menu')).toBeVisible();
+  await win.keyboard.press('Shift+Tab');
+  await expect(win.locator('.menu')).toHaveCount(0);
+  await expect(win.locator('.list-tools [data-bulk="delete"]')).toBeFocused();
+});
+
+// When the redraw has no copy of the button, Escape puts the focus on the toolbar that held it.
+test('Escape in a menu whose button a sync removed goes to the toolbar that held it', async () => {
+  await item('Bencompare').click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+ArrowDown');
+  await expect(win.locator('.sel-count')).toHaveText('2 geselecteerd');
+  const ids = await win.locator('.item.checked').evaluateAll((rows) => rows.map((r) => r.dataset.id));
+  await win.locator('.list-tools [data-bulk="more"]').focus();
+  await win.keyboard.press('Enter');
+  await expect(win.locator('.menu')).toBeVisible();
+  // Deleted on another device: the checked emails leave the list, and the toolbar shows the filters again.
+  for (const id of ids) await win.evaluate((id) => window.mail.call('remove', id), id);
+  await expect(win.locator('.list-tools .filter').first()).toBeVisible();
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.menu')).toHaveCount(0);
+  await expect(win.locator('.list-tools .filter').first()).toBeFocused();
+});
+
 test('settings: theme switch and account page', async () => {
   await win.click('[data-action="settings"]');
   await expect(win.locator('.settings h1')).toHaveText('E-mailinstellingen');

@@ -30,7 +30,7 @@ App code builds HTML in template strings. Every value in them goes through `esc(
 
 ### Menus, dialogs and notices
 
-- `showMenu(anchor, items, opts)` in `ui.js` opens a `.menu`: 10px radius, 4px padding, 32px rows with 6px corners, `--raised` with `--shadow`, popping in over 120ms. `.menu-heading` and `.menu-sep` group the items. An item's `sub` adds a quieter second line in `--text-3`, as the account switcher does with each address under the account's name. A menu taller than the room it has is capped there and scrolls (`.menu.scrolls`).
+- `showMenu(anchor, items, opts)` in `ui.js` opens a `.menu`: 10px radius, 4px padding, 32px rows with 6px corners, `--raised` with `--shadow`, popping in over 120ms. `.menu-heading` and `.menu-sep` group the items. An item's `sub` adds a quieter second line in `--text-3`, as the account switcher does with each address under the account's name. A menu taller than the room it has is capped there and scrolls (`.menu.scrolls`). Escape and Tab return the focus to the anchor; when a redraw replaced the anchor while the menu was open, they go to the element with the same `id` or `data-*` attributes, so give a menu's button one that names what it does, such as `data-action="list-more"`.
 - `dialog({ title, body, buttons, render })`, `confirmDialog()` and `choiceDialog()` in `ui.js` open a `.dialog` over a `.scrim`. `promptDialog()` in `settings.js` asks for text. Use these instead of building a new modal.
 - `toast(message, { action, ms })` in `ui.js` shows the notice at the bottom, with an optional action such as Undo. It stays 2.6s, or 8s with an action. The toast is dark in both themes on purpose, like Beautiful UI's tooltips, so it uses literal colors.
 
