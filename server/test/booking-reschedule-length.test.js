@@ -136,7 +136,7 @@ describe('moving a booking whose type got shorter', () => {
     // The booker for the move offers the times an hour fits, and says how long the meeting is.
     const booker = await call('GET', `${moving}&date=${s.day}`);
     expect(booker.status).toBe(200);
-    expect(booker.text).toContain('<span>60 min</span>');
+    expect(booker.text).toContain('<span>1 h</span>');
     const offered = slotLinks(booker.text);
     expect(offered).toContain(`${moving}&slot=${slotOf(s.early)}`);
     expect(offered.some((h) => h.endsWith(`slot=${slotOf(s.target)}`))).toBe(false);
@@ -155,12 +155,12 @@ describe('moving a booking whose type got shorter', () => {
     const confirm = await call('GET', `${moving}&slot=${slotOf(s.early)}`);
     expect(confirm.text).toContain('Move your booking to this time?');
     expect(confirm.text).toMatch(/<dt>New<\/dt><dd><strong>[^<]*09:30[^<]*10:30[^<]*<\/strong>/);
-    expect(confirm.text).toContain('<span>60 min</span>');
+    expect(confirm.text).toContain('<span>1 h</span>');
 
     // Posting 10:00 from the manage page anyway is refused, and nothing moved.
     const refused = await post(`/meet/${s.handle}/booking/${s.id}`, { k: s.manageKey, action: 'reschedule', start: slotOf(s.target), tz: ZONE });
     expect(refused.status).toBe(409);
-    expect(refused.text).toContain('<span>60 min</span>');
+    expect(refused.text).toContain('<span>1 h</span>');
     expect((await owned(s.person)).body.bookings.at(-1)).toMatchObject({ id: s.id, start: s.start, end: s.start + HOUR, reschedules: 0 });
     const moved = await post(`/meet/${s.handle}/booking/${s.id}`, { k: s.manageKey, action: 'reschedule', start: slotOf(s.early), tz: ZONE });
     expect(moved.status).toBe(303);

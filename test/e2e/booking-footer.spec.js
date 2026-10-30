@@ -186,6 +186,21 @@ test('Settings has the footer beside the signature, with a preview, its text and
   expect((await call('state')).accounts[0].bookingFooter).toBe(false);
 });
 
+test('free times with the link use the default duration of a type guests can book at several lengths', async () => {
+  await pageOn();
+  const [type] = (await call('bookingState')).settings.types;
+  await call('bookingSave', { types: [{ ...type, durations: [15, 30, 60], duration: 60 }] });
+  await reload();
+  await compose();
+  await editor().click({ position: { x: 4, y: 4 } });
+  await win.click('.composer [data-c="calendar"]');
+  await win.locator('.menu button', { hasText: 'Insert my free times…' }).click();
+  const dialog = win.locator('.scrim .dialog');
+  await expect(dialog.locator('[name="type"] option')).toHaveText([`${type.title} · 1 hr`]);
+  await dialog.locator('[name="range"]').selectOption('days14');
+  await expect(dialog.locator('.free-preview li').first()).toBeVisible({ timeout: 10000 });
+});
+
 test('the calendar button inserts the booking link and free times, inline and in the compose window', async () => {
   // Without a booking page the menu offers free times only.
   await compose();

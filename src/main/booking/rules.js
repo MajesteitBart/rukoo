@@ -37,6 +37,8 @@ const VIDEO_SERVICES = { jitsi: 'Jitsi Meet', zoom: 'Zoom', teams: 'Microsoft Te
 // The settings record before sealing, in UTF-8 bytes (contracts g).
 const SETTINGS_BYTES = 12288;
 const MAX_TYPES = 10;
+// The lengths a guest can pick from on one type, as the server takes them (server/src/input.js).
+const MAX_DURATIONS = 10;
 const MAX_OVERRIDES = 60;
 const MAX_RANGES = 6;
 const MAX_BUSY = 5000;
@@ -112,13 +114,30 @@ function paragraph(value, { max }) {
   return points(text) <= max ? text : null;
 }
 
+// The title Rukoo gives a type of one length, in the page's language: "30 minute meeting".
+const lengthTitle = (locale, minutes) => translate(locale, 'booking.defaults.typeTitle', { minutes });
+
+// The type's title for a booking of minutes. A title Rukoo made, "30 minute meeting" for the type's default length or
+// "Meeting" for a type with several, names the booked length instead, in the same language; a title the host wrote
+// stays as it is. The event, the notifications and the decline mail use this, so a guest who picked an hour doesn't
+// get "30 minute meeting".
+function titleFor(type, minutes) {
+  if (!type) return '';
+  if (!Number.isInteger(minutes) || minutes <= 0) return type.title;
+  for (const locale of ['en', 'nl']) {
+    if (type.title === lengthTitle(locale, type.duration) || type.title === translate(locale, 'booking.defaults.typeTitleAny')) return lengthTitle(locale, minutes);
+  }
+  return type.title;
+}
+
 // The first meeting type (contracts h): '30min', titled in the page's language, Google Meet when the destination
 // calendar can add it.
 function defaultType(locale, { conference = false } = {}) {
   return {
     slug: '30min',
-    title: translate(locale, 'booking.defaults.typeTitle'),
+    title: lengthTitle(locale, 30),
     duration: 30,
+    durations: [30],
     description: '',
     location: { kind: conference ? 'googleMeet' : 'none', label: '', value: '', public: false },
     bufferBefore: 0,
@@ -142,6 +161,8 @@ function typeWithDefaults(type, base) {
     slug: pick('slug'),
     title: pick('title'),
     duration: pick('duration'),
+    // A type given without lengths has only its duration, whatever the base offered.
+    durations: own(t0, 'durations') ? t0.durations : own(t0, 'duration') ? [t0.duration] : base.durations,
     description: pick('description'),
     location: {
       kind: own(loc, 'kind') ? loc.kind : b.kind,
@@ -170,6 +191,19 @@ function checkType(type, i, { meet }) {
   const title = line(type.title, { min: 1, max: 100 });
   if (title === null) throw refused('invalidType', f('title'));
   if (!int(type.duration, 5, 480) || type.duration % 5) throw refused('invalidType', f('duration'));
+  // The lengths a guest picks from, the default (duration) among them, shortest first. A record from before guests
+  // could pick has none: the type has only its duration.
+  const durations = type.durations === undefined || type.durations === null ? [type.duration] : type.durations;
+  if (
+    !Array.isArray(durations) ||
+    durations.length < 1 ||
+    durations.length > MAX_DURATIONS ||
+    !durations.every((m) => int(m, 5, 480) && m % 5 === 0) ||
+    new Set(durations).size !== durations.length ||
+    !durations.includes(type.duration)
+  ) {
+    throw refused('invalidType', f('durations'));
+  }
   const description = paragraph(type.description ?? '', { max: 500 });
   if (description === null) throw refused('invalidType', f('description'));
   const loc = plain(type.location) ? type.location : {};
@@ -190,10 +224,14 @@ function checkType(type, i, { meet }) {
   if (loc.kind === 'googleMeet' && !meet) throw refused('noMeet', f('location.kind'));
   if (loc.kind === 'video' && !own(VIDEO_SERVICES, loc.service)) throw refused('invalidType', f('location.service'));
   if (typeof loc.public !== 'boolean') throw refused('invalidType', f('location.public'));
+  const lengths = [...durations].sort((a, b) => a - b);
   const out = {
     slug: type.slug,
     title,
     duration: type.duration,
+    // Only for a type with several lengths. A type with one is stored as before guests could pick, so a record an
+    // older app wrote reads back byte for byte and stays within SETTINGS_BYTES.
+    ...(lengths.length > 1 ? { durations: lengths } : {}),
     description,
     // A video service's link is made per booking: nothing to keep or show beforehand.
     location: loc.kind === 'video' ? { kind: 'video', label, value: '', public: false, service: loc.service } : { kind: loc.kind, label, value, public: loc.public },
@@ -236,8 +274,9 @@ function parsePortable(key) {
 
 // The whole settings record checked (contracts h). Returns the record as it is stored; throws a booking error that
 // names the first field refused. o.today: the first date overrides may have, in the page's zone (older ones are
-// dropped). o.meet: whether the destination can add Google Meet.
-function checkSettings(s, { today = null, meet = false } = {}) {
+// dropped). o.meet: whether the destination can add Google Meet. o.limit: refuse a record over SETTINGS_BYTES, as a
+// save must; reading the stored record doesn't, so the booking device never stops over a size only a write can change.
+function checkSettings(s, { today = null, meet = false, limit = true } = {}) {
   if (!plain(s)) throw refused('invalidType', 'settings');
   const handle = handleProblem(s.handle);
   if (handle) throw refused(handle === 'reserved' ? 'reservedHandle' : 'invalidHandle', 'handle');
@@ -296,7 +335,7 @@ function checkSettings(s, { today = null, meet = false } = {}) {
     device: typeof s.device === 'string' && s.device.length <= 200 ? s.device : null,
     types
   };
-  if (Buffer.byteLength(JSON.stringify(out), 'utf8') > SETTINGS_BYTES) throw bookingError('tooLarge', { code: 'too_large' });
+  if (limit && Buffer.byteLength(JSON.stringify(out), 'utf8') > SETTINGS_BYTES) throw bookingError('tooLarge', { code: 'too_large' });
   return out;
 }
 
@@ -320,22 +359,26 @@ function mergeSettings(current, patch) {
 }
 
 // What a type looks like on the page (contracts h): the private location value only when the host made it public,
-// the slot interval as a number.
+// duration as the default length and durations as every length a guest can pick, and the slot interval as a number,
+// or null to follow the length a guest picks when the type has several. A server from before several lengths drops
+// durations and reads a null slot interval as duration, so it offers the default length as it always did.
 function publishedType(type, { confirm = false } = {}) {
   const video = type.location.kind === 'video';
   const location = video ? { kind: 'link', label: type.location.label || VIDEO_SERVICES[type.location.service] } : { kind: type.location.kind, label: type.location.label };
   if (type.location.public && type.location.value) location.value = type.location.value;
+  const durations = Array.isArray(type.durations) && type.durations.length ? type.durations : [type.duration];
   return {
     slug: type.slug,
     title: type.title,
     duration: type.duration,
+    durations,
     description: type.description,
     location,
     bufferBefore: type.bufferBefore,
     bufferAfter: type.bufferAfter,
     minNotice: type.minNotice,
     horizon: type.horizon,
-    slotInterval: type.slotInterval ?? type.duration,
+    slotInterval: type.slotInterval ?? (durations.length > 1 ? null : type.duration),
     dailyLimit: type.dailyLimit,
     confirm: type.confirm || confirm,
     hidden: type.hidden,
@@ -435,6 +478,8 @@ module.exports = {
   slugProblem,
   defaultHandle,
   defaultType,
+  lengthTitle,
+  titleFor,
   typeWithDefaults,
   checkSettings,
   mergeSettings,

@@ -10,6 +10,7 @@ import { bookingBase, config } from './config.js';
 import { HttpError } from './input.js';
 import {
   dayText,
+  lengthsText,
   links,
   loadPage,
   nextSlots,
@@ -18,6 +19,7 @@ import {
   utcIso,
   visibleTypes
 } from './public.js';
+import { lengths } from './slots.js';
 import { zonedParts } from './zone.js';
 
 export const NEXT_DAYS = 7;
@@ -129,14 +131,24 @@ export function llmsTxt(data) {
     const place = [t.location.label, t.location.value].filter(Boolean).join(', ');
     const where = t.location.label ? ` Location: ${mdQuote(profile.name, place)}.` : '';
     const approval = t.needsApproval ? "Needs the host's approval: a booking stays pending until they confirm." : 'Confirmed at once.';
-    out.push(`- ${t.slug}: ${mdQuote(profile.name, t.title)}. ${t.duration} minutes.${where} ${approval}`);
+    const offered = lengths(t);
+    const several = offered.length > 1;
+    const length = several ? `${lengthsText(offered)}, as your user picks; ${t.duration} when you send no duration.` : `${t.duration} minutes.`;
+    out.push(`- ${t.slug}: ${mdQuote(profile.name, t.title)}. ${length}${where} ${approval}`);
     out.push(`  Open times as JSON, next 14 days: ${l.slotsFor(t.slug)}`);
+    for (const d of several ? offered.filter((d) => d !== t.duration) : []) out.push(`  For ${d} minutes: ${l.slotsFor(t.slug, d)}`);
     if (t.description) out.push(`  ${mdQuote(profile.name, t.description)}`);
   }
   out.push('');
 
   out.push('## Open times', '');
   out.push(`Times in ${zone}, with UTC first. Each link opens a booking form for that time; opening it books nothing.`, '');
+  if (data.types.some((t) => lengths(t).length > 1)) {
+    out.push(
+      "These are for each type's default length. A longer meeting may not fit every one of them: for another length, get the open times from that length's JSON link above.",
+      ''
+    );
+  }
   for (const t of data.types) {
     out.push(`### ${t.slug} (${t.duration} minutes)`, '');
     const starts = data.slots[t.slug] ?? [];
@@ -152,6 +164,9 @@ export function llmsTxt(data) {
     'Use a UTC time from the list for slot, written like 2026-11-03T09:00Z, and percent-encode the other values (space %20, @ %40, + %2B). Opening the link books nothing.',
     ''
   );
+  if (data.types.some((t) => lengths(t).length > 1)) {
+    out.push("For a length other than the type's default, add duration with the minutes, such as &duration=60, as the open times for that length have it.", '');
+  }
 
   out.push('## Book with HTTP', '');
   out.push('```http');
@@ -161,6 +176,9 @@ export function llmsTxt(data) {
   out.push('');
   out.push(exampleBody(exampleType.slug, exampleStart, zone));
   out.push('```', '');
+  if (data.types.some((t) => lengths(t).length > 1)) {
+    out.push('Add "duration" with the minutes, such as "duration": 60, to book another length than the default; the start must be open for that length.', '');
+  }
   out.push(
     `The answer (201) has booking, key, manage_url, ics_url, privacy_url and message. Pass the message, the manage link and the calendar file on to your user, and show them the privacy statement. ` +
       (profile.invites === false
@@ -222,8 +240,8 @@ export function siteLlmsTxt(env, url) {
     '',
     '## JSON API',
     '',
-    `- GET ${base}/<handle>/api lists the meeting types; GET ${base}/<handle>/api/slots?type=<type> lists open times.`,
-    `- POST ${base}/<handle>/api/bookings with JSON {"type","start","name","email","notes","time_zone","via"} books one; the answer has a key and a manage_url for changing or cancelling.`,
+    `- GET ${base}/<handle>/api lists the meeting types and their lengths; GET ${base}/<handle>/api/slots?type=<type>&duration=<minutes> lists open times, duration optional.`,
+    `- POST ${base}/<handle>/api/bookings with JSON {"type","duration","start","name","email","notes","time_zone","via"} books one, duration optional; the answer has a key and a manage_url for changing or cancelling.`,
     '',
     '## Optional',
     '',

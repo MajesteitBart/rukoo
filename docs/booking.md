@@ -41,18 +41,21 @@ A page has up to 10 meeting types. Each has its own link, `https://meet.rukoo.io
 |---|---|---|
 | Title | "30 minute meeting" for the first, in the page's language | Up to 100 characters |
 | Name in the link | `30min` for the first | Up to 40 lowercase letters, digits or hyphens; a few words such as `api` and `mcp` are reserved |
-| Length | 30 minutes | 15, 20, 30, 45 or 90 minutes, or 1 to 4 hours |
+| Available durations | 30 minutes | One or more of 15, 20, 30, 45 or 90 minutes, or 1 to 4 hours |
+| Default duration | The only available duration | One of the available durations; shown when there are several |
 | Description | Empty | Up to 500 characters, shown on the page |
 | Location | Google Meet when the calendar allows it, else none | Google Meet, a [video service](#video-meetings) connected on this computer, phone call, in person, a meeting link (https) or none |
 | Free time before, free time after | None | 5, 10, 15, 30, 45 or 60 minutes kept free around each booking, so guests can't book right next to your other meetings |
 | Minimum notice | 4 hours | None, 30 minutes, 1, 2, 4, 8 or 12 hours, 1 or 2 days, or a week |
 | How far ahead | 30 days | 7, 14, 30, 60 or 90 days |
-| Start times every | Same as the length | 5, 10, 15, 20, 30 or 60 minutes |
+| Start times every | Same as the length, the one the guest picked | 5, 10, 15, 20, 30 or 60 minutes |
 | At most per day | No limit | 1 to 6, 8, 10, 15 or 20 |
 | Needs your approval | Off | Bookings wait as requests until you accept them |
 | Hide from the page | Off | Only people with the type's own link can book it |
 
-The fields from Free time to At most per day have a section of their own, When guests can book, which is open when the editor opens. Needs your approval and Hide from the page sit under More options. In Settings → Booking page, each meeting type's row shows its length and location, these settings where they differ from the defaults, such as "15 mins free time after" or "1 day notice", and whether it needs your approval or is hidden.
+The fields from Free time to At most per day have a section of their own, When guests can book, which is open when the editor opens. Needs your approval and Hide from the page sit under More options. In Settings → Booking page, each meeting type's row shows its lengths and location, these settings where they differ from the defaults, such as "15 mins free time after" or "1 day notice", and whether it needs your approval or is hidden.
+
+With more than one available duration, guests pick the length on the page, from a row of buttons under the meeting's title with the default duration already picked, and the open times follow it. A booking keeps the length it was made at, also when it moves. Free time, minimum notice and the limits per day count the same at every length; with Start times every left at its default, a 15-minute meeting can start every 15 minutes and an hour-long one on the hour. While a type has a title Rukoo gave it, the title follows the durations: "30 minute meeting" with one, "Meeting" with several.
 
 A location's details (the phone number, address or meeting link) go only into the guest's invitation, unless you turn on "Show these details on the booking page". The page shows a label, such as "Phone call" or "In person, Amsterdam". Google Meet needs a Google calendar that allows Meet under Add bookings to; Google makes the Meet link when the event is created. A video service makes its own link for each booking, so that link only ever goes into the invitation, and the page shows the label or the service's name.
 
@@ -125,7 +128,7 @@ An event is busy when it shows as busy and you haven't declined it. Invitations 
 
 A booking becomes an event in the calendar under Add bookings to:
 
-- The title is the type, your name and the guest's: "30 minute meeting: Sanne de Vries and Jane Doe". Rukoo shortens the guest's name to at most four words and 40 characters of letters, spaces, apostrophes, hyphens and periods.
+- The title is the type, your name and the guest's: "30 minute meeting: Sanne de Vries and Jane Doe". A title Rukoo gave the type names the length the guest picked, such as "60 minute meeting"; a title you wrote stays as it is. Rukoo shortens the guest's name to at most four words and 40 characters of letters, spaces, apostrophes, hyphens and periods.
 - The description is the type's description and a line "Booked via" with your link.
 - The location comes from the type, or Google Meet. With a video service it is the meeting's own link, which also opens the description as "Join with Zoom: …".
 - The guest is invited by address. Google, or the CalDAV server, sends the invitation from your account.
@@ -154,7 +157,7 @@ The guest cancels or picks another time from the page they saw after booking, or
 
 Settings → General → Booking link under signature adds a line with your link after your signature. The default text, in the page's language, is "Want to meet with me? Pick a time, or share this link with your agent:" followed by the link. You can write your own text; keep `{url}` where the link goes. The link shows as its address, so it also works in the plain-text part of the mail. Each account's settings can follow the general choice, turn the line on or off, or give it its own text. Add to signature, after turning the page on, switches it on.
 
-In the composer, the calendar button has Insert booking link and Insert my free times…. The second opens a dialog with the length, period, hours and time zone, and a preview of the list it inserts. With "Add my booking link", the times follow the page's hours and the chosen type's length and minimum notice, and the link goes under them. The page may still offer fewer times, because free time around meetings and the limits per day only count there. Both work in the reading pane and in a separate compose window.
+In the composer, the calendar button has Insert booking link and Insert my free times…. The second opens a dialog with the length, period, hours and time zone, and a preview of the list it inserts. With "Add my booking link", the times follow the page's hours and the chosen type's default duration and minimum notice, and the link goes under them. The page may still offer fewer times, because free time around meetings and the limits per day only count there. Both work in the reading pane and in a separate compose window.
 
 ## Notifications
 
@@ -165,6 +168,11 @@ The computer that handles bookings shows a desktop notification for each new boo
 The computer that turned the page on handles it. It publishes your open times when you turn the page on or change it, a minute after a change in your calendars, and at least every 30 minutes. It checks for new bookings every minute. Settings → Booking page shows "Last updated from this computer" with how long ago.
 
 Your other computers signed in to the same Rukoo account show the page, its requests and bookings, and say "Bookings are handled by …". Use this computer makes the computer you're on the one that handles bookings, for example when the other one stays off. Video services are connected per computer: when a meeting type, or the meeting of an upcoming booking, uses one that isn't connected on the computer you're on, the notice and the row with Use this computer say which to connect first. Requests can only be answered on the computer that handles bookings. When you delete a booked event on another computer, the booking is cancelled once the handling computer next syncs.
+
+Update Rukoo on every computer before you give a meeting type more than one available duration. A Rukoo version from before several durations doesn't know them, and Rukoo doesn't warn you about it:
+
+- When the older version handles bookings, it publishes each type with its default duration only: shortly after it syncs a change to the page's settings, and again at least every 30 minutes. Guests can't pick the other durations, while Settings → Booking page on an updated computer still lists them. They come back once the computer that handles bookings is updated, or when an updated computer takes over with Use this computer.
+- When the older version writes the page's settings, it drops the other durations, and every type keeps only its default duration, on all your computers. It writes them when you save anything under Settings → Booking page on that computer, turn the page on there or click Use this computer there, and when it records a new address for the page. Pick the durations again on an updated computer afterwards.
 
 ## When the computer is off
 
@@ -212,19 +220,19 @@ Deleting your Rukoo account checks your password, then turns the booking page of
 
 ## For guests and their assistants
 
-A booking page is at `https://meet.rukoo.io/<handle>`, and each meeting type at `https://meet.rukoo.io/<handle>/<type>`. The page shows the host, their introduction, the meeting types and the next open times. Pick a day and a time, then fill in your name, email and an optional note. The page is in English and Dutch, shows times in your time zone with a choice of 12 or 24 hours, and works without JavaScript. The page you get after booking shows the time in your zone and the host's, an `.ics` file, Cancel and Pick another time. Keep its address: it carries the key to your booking. The invitation comes from the host's calendar.
+A booking page is at `https://meet.rukoo.io/<handle>`, and each meeting type at `https://meet.rukoo.io/<handle>/<type>`. The page shows the host, their introduction, the meeting types and the next open times. Pick a length when the meeting has several, a day and a time, then fill in your name, email and an optional note. The page is in English and Dutch, shows times in your time zone with a choice of 12 or 24 hours, and works without JavaScript. The page you get after booking shows the time in your zone and the host's, an `.ics` file, Cancel and Pick another time. Keep its address: it carries the key to your booking. The invitation comes from the host's calendar.
 
 Assistants have four ways in, all English:
 
 - `https://meet.rukoo.io/<handle>/llms.txt` is a guide with the rules, the meeting types, the open times of the next 7 days and how to book. The page links to it as "For AI assistants" in its footer and in its `<head>`, and asking for the page with `Accept: text/markdown` returns it. `https://meet.rukoo.io/llms.txt` explains booking pages in general.
-- A prepared link opens the form filled in, for example `https://meet.rukoo.io/sanne/30min?slot=2026-11-03T09:00Z&name=Jane%20Doe&email=jane%40example.com&via=Calendar%20helper`. `slot` is the start in UTC. The user checks the details and presses Book; opening the link books nothing.
-- The JSON API: `GET /<handle>/api` lists the types, `GET /<handle>/api/slots` the open times, and `POST /<handle>/api/bookings` books one. Every answer has a `message` written for the assistant to pass on.
-- `https://meet.rukoo.io/mcp` is one MCP endpoint for every page, over plain HTTP POST without sign-in. Its tools are `get_meeting_types`, `find_available_times`, `book_meeting`, `get_booking`, `cancel_booking` and `reschedule_booking`; each takes `link`, the page's address or its handle.
+- A prepared link opens the form filled in, for example `https://meet.rukoo.io/sanne/30min?slot=2026-11-03T09:00Z&name=Jane%20Doe&email=jane%40example.com&via=Calendar%20helper`. `slot` is the start in UTC, and `duration=60` picks another length than the default. The user checks the details and presses Book; opening the link books nothing.
+- The JSON API: `GET /<handle>/api` lists the types with their `durations`, `GET /<handle>/api/slots` the open times, and `POST /<handle>/api/bookings` books one. Both take `duration`, the length in minutes; leaving it out means the default duration. Every answer has a `message` written for the assistant to pass on.
+- `https://meet.rukoo.io/mcp` is one MCP endpoint for every page, over plain HTTP POST without sign-in. Its tools are `get_meeting_types`, `find_available_times`, `book_meeting`, `get_booking`, `cancel_booking` and `reschedule_booking`; each takes `link`, the page's address or its handle, and `find_available_times` and `book_meeting` take `duration` too.
 
 An example with the JSON API:
 
 ```sh
-# Open times for the next two weeks, written in the guest's zone
+# Open times for the next two weeks, written in the guest's zone; add &duration=60 for another length
 curl 'https://meet.rukoo.io/sanne/api/slots?type=30min&time_zone=Europe/London'
 
 # Book one of them: start must be a start the slots answer listed
@@ -245,7 +253,7 @@ curl https://meet.rukoo.io/mcp -H 'content-type: application/json' \
 
 ## Running your own
 
-The account server in [`server/`](../server) serves booking pages too; its `/v1/info` lists `booking` under `features`. Where the pages live depends on `BOOKING_ORIGIN`:
+The account server in [`server/`](../server) serves booking pages too; its `/v1/info` lists `booking` under `features`. A server from before guests could pick a length offers each type's default duration only, until it is updated. Where the pages live depends on `BOOKING_ORIGIN`:
 
 - Without it, the default for a server of your own, the pages live under `/meet` on the server's own address, such as `https://accounts.example/meet/<handle>`, with the MCP endpoint at `/meet/mcp`.
 - With it set to an address that reaches the same Worker, such as `https://meet.example`, the pages live at the root of that address: `https://meet.example/<handle>`, with MCP at `https://meet.example/mcp` and a general guide at `https://meet.example/llms.txt`. `/meet/…` on the server's other addresses forwards there.
@@ -258,5 +266,6 @@ The default server is set up the second way, with its pages at `meet.rukoo.io`. 
 - Bookings reach your calendar, and guests their invitation, only while Rukoo runs on the computer that handles bookings.
 - Microsoft calendars can't take bookings yet ([#17](https://github.com/MajesteitBart/rukoo/issues/17)), and neither can CalDAV calendars whose server doesn't send invitations.
 - Booking notifications have no setting of their own yet.
+- A computer with a Rukoo version from before several durations offers and keeps only each type's default duration, without a warning ([One computer handles bookings](#one-computer-handles-bookings)).
 - Video services are for bookings only. The calendar's own event dialog still offers just Google Meet.
 - Rukoo for Android doesn't show or change the booking page. Its `get_booking_link` tool gives agents your link.

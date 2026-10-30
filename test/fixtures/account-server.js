@@ -91,8 +91,21 @@ function badPublish(body, now) {
     slugs.add(t.slug);
     if (typeof t.title !== 'string' || !t.title.trim() || [...t.title].length > 100) return `${f}.title`;
     if (!Number.isInteger(t.duration) || t.duration < 5 || t.duration > 480 || t.duration % 5) return `${f}.duration`;
+    // durations: optional, 1 to 10 different lengths with duration among them; slotInterval null follows the length.
+    const lengths = t.durations === undefined || t.durations === null ? [t.duration] : t.durations;
+    if (
+      !Array.isArray(lengths) ||
+      lengths.length < 1 ||
+      lengths.length > 10 ||
+      !lengths.every((m) => Number.isInteger(m) && m >= 5 && m <= 480 && m % 5 === 0) ||
+      new Set(lengths).size !== lengths.length ||
+      !lengths.includes(t.duration)
+    ) {
+      return `${f}.durations`;
+    }
     if (!isObject(t.location) || !['googleMeet', 'phone', 'inPerson', 'link', 'none'].includes(t.location.kind)) return `${f}.location`;
     for (const [k, lo, hi] of [['bufferBefore', 0, 240], ['bufferAfter', 0, 240], ['minNotice', 0, 43200], ['horizon', 1, 90], ['slotInterval', 5, 480]]) {
+      if (k === 'slotInterval' && t[k] === null) continue;
       if (!Number.isInteger(t[k]) || t[k] < lo || t[k] > hi) return `${f}.${k}`;
     }
     if (t.dailyLimit !== null && (!Number.isInteger(t.dailyLimit) || t.dailyLimit < 1 || t.dailyLimit > 50)) return `${f}.dailyLimit`;
@@ -357,13 +370,15 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
   // Makes a booking as the public routes would: the guest's details sealed to the page's published key. guest:
   // { name, email, notes, timeZone, locale, via }. status: 'confirmed' or 'pending'; by default what the type, a stale
   // page and the mail budget give. plaintext(details) may change what is sealed and publicKey (base64url) seals to
-  // another key, for tests of a device that must refuse what it opens. Returns { id, manageKey, booking }.
-  async function book({ handle, type, start, guest = {}, status, channel = 'api', plaintext = (p) => p, publicKey = null }) {
+  // another key, for tests of a device that must refuse what it opens. duration: one of the type's lengths, the
+  // default when left out. Returns { id, manageKey, booking }.
+  async function book({ handle, type, start, duration = null, guest = {}, status, channel = 'api', plaintext = (p) => p, publicKey = null }) {
     const page = livePage(handle);
     const t = page.profile.types.find((x) => x.slug === type);
     if (!t) throw new Error(`No type ${type} on ${handle}`);
+    if (duration !== null && !(t.durations || [t.duration]).includes(duration)) throw new Error(`Type ${type} has no length ${duration}`);
     const now = control.now();
-    const end = start + t.duration * MINUTE;
+    const end = start + (duration ?? t.duration) * MINUTE;
     const c = counts(page, now);
     let made = status || (t.confirm || now - page.publishedAt > STALE ? 'pending' : 'confirmed');
     // Past the day's mail budget a new booking becomes a request (PROTOCOL.md, Limits).

@@ -14,6 +14,7 @@ const { bookingAcct } = require('../src/main/account');
 
 const vectors = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'server', 'test', 'fixtures', 'booking-vectors.json'), 'utf8'));
 const Q = 15 * 60000;
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 const ringOf = (v) => keys.openKeyring({ current: v.owner.keyId, keys: { [v.owner.keyId]: { privatePkcs8: v.owner.privatePkcs8, publicRaw: v.owner.publicRaw, createdAt: 0 } } });
 
@@ -138,6 +139,74 @@ test('the published profile never carries a private location value', () => {
   assert.equal(rules.publishedType(type, { confirm: true }).confirm, true);
   assert.equal(rules.defaultType('nl').title, 'Gesprek van 30 minuten');
   assert.equal(rules.defaultType('en', { conference: true }).location.kind, 'googleMeet');
+});
+
+test('a type with several lengths keeps them shortest first with duration as the default, and publishes them', () => {
+  const base = {
+    v: 1, handle: 'bart', url: '', name: 'Bart', intro: '', timeZone: 'Europe/Amsterdam', locale: 'en', contact: null, dailyCap: 20,
+    hours: { custom: false, weekly: null }, overrides: {}, destination: null, device: null, types: [rules.defaultType('en')]
+  };
+  assert.deepEqual(rules.defaultType('en').durations, [30]);
+  // A record from before guests could pick a length has only its duration, and a type with one length is stored that
+  // way too.
+  const legacy = { ...base.types[0] };
+  delete legacy.durations;
+  assert.equal(own(rules.checkSettings({ ...base, types: [legacy] }).types[0], 'durations'), false);
+  assert.equal(own(rules.checkSettings(base).types[0], 'durations'), false);
+  const picked = rules.checkSettings({ ...base, types: [{ ...base.types[0], duration: 60, durations: [60, 15, 30] }] }).types[0];
+  assert.deepEqual([picked.duration, picked.durations], [60, [15, 30, 60]]);
+  for (const durations of [[15, 45], [30, 30], [30, 33], [30, 600], Array.from({ length: 11 }, (_, i) => 5 * (i + 1)), '30', []]) {
+    assert.throws(() => rules.checkSettings({ ...base, types: [{ ...base.types[0], durations }] }), (err) => err.field === 'types[0].durations', JSON.stringify(durations));
+  }
+
+  // Published: duration stays the default, so a server from before several lengths offers that one. Start times
+  // follow the length a guest picks unless the host set a step; one length keeps publishing its number.
+  const shown = rules.publishedType(picked);
+  assert.deepEqual([shown.duration, shown.durations, shown.slotInterval], [60, [15, 30, 60], null]);
+  assert.equal(rules.publishedType({ ...picked, slotInterval: 15 }).slotInterval, 15);
+  assert.deepEqual(rules.publishedType(rules.defaultType('en')).durations, [30]);
+  assert.equal(rules.publishedType(legacy).slotInterval, 30);
+});
+
+// A settings record as an app from before several lengths stored it: ten types without durations, padded with the
+// intro to bytes in UTF-8.
+function recordBeforeLengths(bytes) {
+  const types = Array.from({ length: 10 }, (_, i) => {
+    const { durations, ...type } = rules.defaultType('en');
+    return { ...type, slug: `type-${i}`, description: 'é'.repeat(450) };
+  });
+  const record = {
+    v: 1, handle: 'bart', url: 'https://rukoo.io/bart', name: 'Bart', intro: '', timeZone: 'Europe/Amsterdam', locale: 'en', contact: null,
+    dailyCap: 20, hours: { custom: false, weekly: null }, overrides: {}, destination: 'host@example.com\nhost@example.com', device: 'desk', types
+  };
+  record.intro = 'a'.repeat(bytes - Buffer.byteLength(JSON.stringify(record), 'utf8'));
+  return record;
+}
+
+test('a record an older app stored just under the size limit reads and saves as it was', () => {
+  const record = recordBeforeLengths(12231);
+  assert.equal(Buffer.byteLength(JSON.stringify(record), 'utf8'), 12231);
+  // Read back byte for byte: the types with one length gain no durations that would push it over 12,288 bytes.
+  const read = rules.checkSettings(record, { meet: true });
+  assert.equal(JSON.stringify(read), JSON.stringify(record));
+  // Reading never refuses over the size; saving still does.
+  const over = recordBeforeLengths(12300);
+  assert.equal(rules.checkSettings(over, { meet: true, limit: false }).intro, over.intro);
+  assert.throws(() => rules.checkSettings(over, { meet: true }), (err) => err.code === 'too_large');
+});
+
+test('a title Rukoo made names the length a guest picked; a title the host wrote stays', () => {
+  const en = rules.defaultType('en');
+  assert.equal(en.title, '30 minute meeting');
+  assert.equal(rules.titleFor(en, 60), '60 minute meeting');
+  assert.equal(rules.titleFor(en, 30), '30 minute meeting');
+  assert.equal(rules.titleFor(rules.defaultType('nl'), 15), 'Gesprek van 15 minuten');
+  // Rukoo's title for a type with several lengths names the length of each booking.
+  assert.equal(rules.titleFor({ ...en, title: 'Meeting', durations: [15, 30, 60] }, 15), '15 minute meeting');
+  assert.equal(rules.titleFor({ ...en, title: 'Gesprek', durations: [15, 30, 60] }, 60), 'Gesprek van 60 minuten');
+  assert.equal(rules.titleFor({ ...en, title: 'Intro call' }, 60), 'Intro call');
+  // A title made for another length than the default is the host's choice.
+  assert.equal(rules.titleFor({ ...en, title: '45 minute meeting' }, 60), '45 minute meeting');
 });
 
 test('the published profile says invites: false only for a calendar that sends no invitations', () => {
