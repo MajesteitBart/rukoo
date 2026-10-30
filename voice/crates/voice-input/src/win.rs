@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
     GetClipboardFormatNameW, GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
@@ -20,16 +20,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
-    GetWindowThreadProcessId, GUITHREADINFO, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+    GetWindowThreadProcessId, IsWindow, SendMessageTimeoutW, GUITHREADINFO, HWND_MESSAGE,
+    SMTO_ABORTIFHUNG, SMTO_BLOCK, WINDOW_EX_STYLE, WINDOW_STYLE, WM_NULL,
 };
 
-use crate::clipboard::{self, format, Clipboard, Format, Gate, Keyboard, Snapshot, SystemClock};
+use crate::clipboard::{
+    self, format, BeforeKeys, Clipboard, Format, Gate, Guarded, Keyboard, Snapshot, SystemClock,
+    Target,
+};
 use crate::strokes::{self, Stroke};
 use crate::target::{classify, WindowInfo};
 use crate::{InputError, Key};
-
-/// Ownkey's pause between typed characters.
-const TYPE_PACE: Duration = Duration::from_millis(5);
 /// pyperclip, which Ownkey used, retried OpenClipboard every 10 ms for 0.5 s.
 const OPEN_TIMEOUT: Duration = Duration::from_millis(500);
 const OPEN_RETRY: Duration = Duration::from_millis(10);
@@ -47,17 +48,21 @@ pub(crate) fn is_key_down(key: Key) -> bool {
     state as u16 & 0x8000 != 0
 }
 
-pub(crate) fn type_text(text: &str) -> Result<(), InputError> {
-    for batch in strokes::typing(text) {
-        SendKeys.send(&batch)?;
-        thread::sleep(TYPE_PACE);
-    }
-    Ok(())
+pub(crate) fn type_text(text: &str, before_keys: BeforeKeys) -> Result<(), InputError> {
+    let mut keys = SendKeys;
+    let mut guarded = Guarded::new(&mut keys, before_keys);
+    clipboard::type_text(text, &mut guarded, &SystemClock::new())
 }
 
-pub(crate) fn paste_text(text: &str) -> Result<(), InputError> {
+pub(crate) fn paste_text(text: &str, before_keys: BeforeKeys) -> Result<(), InputError> {
     let turn = CLIPBOARD_GATE.enter();
-    let pending = clipboard::paste(text, &mut WinClipboard, &mut SendKeys, &SystemClock::new())?;
+    let pending = {
+        let mut keys = SendKeys;
+        let mut guarded = Guarded::new(&mut keys, before_keys);
+        clipboard::paste(text, &mut WinClipboard, &mut guarded, &SystemClock::new())?
+    };
+    // Ctrl+V went to the foreground window, which reads the clipboard.
+    let target = PasteTarget(unsafe { GetForegroundWindow() }.0 as isize);
     // Restoring on another thread lets the caller report the insertion now.
     // The turn moves along, so the next paste or capture waits for it. If the
     // thread can't start or the restore fails, our text stays on the
@@ -65,21 +70,57 @@ pub(crate) fn paste_text(text: &str) -> Result<(), InputError> {
     let _ = thread::Builder::new()
         .name("clipboard-restore".into())
         .spawn(move || {
-            thread::sleep(clipboard::RESTORE_AFTER);
-            let _ = clipboard::restore_if_unchanged(&mut WinClipboard, &pending);
+            let clock = SystemClock::new();
+            let _ = clipboard::finish_paste(&mut WinClipboard, &clock, &target, &pending);
             drop(turn);
         });
     Ok(())
 }
 
-pub(crate) fn capture_selection(timeout: Duration) -> Result<Option<String>, InputError> {
+pub(crate) fn capture_selection(
+    timeout: Duration,
+    before_keys: BeforeKeys,
+) -> Result<Option<String>, InputError> {
     let _turn = CLIPBOARD_GATE.enter();
+    let mut keys = SendKeys;
+    let mut guarded = Guarded::new(&mut keys, before_keys);
     clipboard::capture(
         &mut WinClipboard,
-        &mut SendKeys,
+        &mut guarded,
         &SystemClock::new(),
         timeout,
     )
+}
+
+/// The window Ctrl+V went to, by handle, so the restore thread can ask it.
+struct PasteTarget(isize);
+
+impl Target for PasteTarget {
+    fn answers(&self, timeout: Duration) -> bool {
+        let hwnd = HWND(self.0 as *mut core::ffi::c_void);
+        // No window, or one that closed since: nothing reads our text any more.
+        if self.0 == 0 || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return true;
+        }
+        // WM_NULL does nothing; the answer only says the window's thread
+        // handles messages again. A hung window fails at once and a busy one
+        // after the timeout. So does a window Windows won't let Voice message,
+        // which leaves the dictation on the clipboard.
+        let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        let mut result = 0usize;
+        let answered = unsafe {
+            SendMessageTimeoutW(
+                hwnd,
+                WM_NULL,
+                WPARAM(0),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                millis,
+                Some(&mut result),
+            )
+        };
+        answered.0 != 0
+    }
 }
 
 pub(crate) fn wait_for_clipboard_restore() {
@@ -276,10 +317,13 @@ impl Clipboard for WinClipboard {
         hide_from_history()
     }
 
-    fn text(&mut self) -> Result<Option<String>, InputError> {
+    fn text(&mut self) -> Result<(Option<String>, u32), InputError> {
         let _open = Open::new()?;
-        let Some(data) = read_global(format::UNICODETEXT) else {
-            return Ok(None);
+        let data = read_global(format::UNICODETEXT);
+        // Read while the clipboard is open, so it belongs to exactly this text.
+        let seen = self.sequence();
+        let Some(data) = data else {
+            return Ok((None, seen));
         };
         // GlobalSize can round up, so stop at the terminating zero.
         let units: Vec<u16> = data
@@ -287,14 +331,19 @@ impl Clipboard for WinClipboard {
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .take_while(|&unit| unit != 0)
             .collect();
-        Ok(Some(String::from_utf16_lossy(&units)))
+        Ok((Some(String::from_utf16_lossy(&units)), seen))
     }
 
-    fn restore(&mut self, snapshot: &Snapshot) -> Result<(), InputError> {
+    fn restore(&mut self, snapshot: &Snapshot, expected: Option<u32>) -> Result<bool, InputError> {
         let _open = Open::new()?;
+        // Nobody else can copy while the clipboard is open, so a copy made
+        // after the caller's own check, while Open retried, is seen here.
+        if expected.is_some_and(|expected| expected != self.sequence()) {
+            return Ok(false);
+        }
         unsafe { EmptyClipboard() }.map_err(clipboard_error)?;
         if snapshot.formats.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         let mut result = Ok(());
         for format in &snapshot.formats {
@@ -305,7 +354,7 @@ impl Clipboard for WinClipboard {
         // Putting the user's own content back isn't a new copy, so it doesn't
         // belong in clipboard history a second time.
         hide_from_history()?;
-        result
+        result.map(|()| true)
     }
 }
 
@@ -439,8 +488,8 @@ mod tests {
             clipboard.set_text("before").unwrap();
             let snapshot = clipboard.snapshot().unwrap();
             clipboard.set_text("after").unwrap();
-            clipboard.restore(&snapshot).unwrap();
-            assert_eq!(clipboard.text().unwrap().as_deref(), Some("before"));
+            assert_eq!(clipboard.restore(&snapshot, None), Ok(true));
+            assert_eq!(clipboard.text().unwrap().0.as_deref(), Some("before"));
         }
 
         #[test]
@@ -451,7 +500,7 @@ mod tests {
             crate::insert_text("Pasted by voice-input\nsecond line", InsertMode::Paste).unwrap();
             crate::wait_for_clipboard_restore();
             assert_eq!(
-                clipboard.text().unwrap().as_deref(),
+                clipboard.text().unwrap().0.as_deref(),
                 Some("the user's text")
             );
         }
@@ -470,7 +519,7 @@ mod tests {
             let selection = crate::capture_selection(Duration::from_millis(500)).unwrap();
             assert!(selection.is_some_and(|text| !text.is_empty()));
             assert_eq!(
-                clipboard.text().unwrap().as_deref(),
+                clipboard.text().unwrap().0.as_deref(),
                 Some("the user's text")
             );
         }

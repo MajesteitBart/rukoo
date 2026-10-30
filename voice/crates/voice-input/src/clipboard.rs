@@ -1,10 +1,17 @@
-//! Clipboard save and restore around a paste or a selection capture.
+//! Clipboard save and restore around a paste or a selection capture, and the
+//! keys every insertion sends.
 //!
 //! Ownkey overwrote the clipboard on every dictation and rewrite. Voice takes
 //! a snapshot of every format it can copy, puts its own text on the clipboard
 //! hidden from clipboard history, and puts the snapshot back once the target
-//! app has read the text, unless someone copied something in the meantime.
-//! This differs from Ownkey on purpose.
+//! app has had time to read the text, unless someone copied something in the
+//! meantime. This differs from Ownkey on purpose.
+//!
+//! Windows doesn't say when an app has read the clipboard, so the restore
+//! waits [`RESTORE_AFTER`] and then asks the window the keys went to for an
+//! answer. A window that doesn't answer may still paste later; Voice then
+//! leaves the dictation on the clipboard, as Ownkey always did, rather than
+//! risk pasting the user's old clipboard into it.
 //!
 //! The logic is written against small traits so it can be tested with a fake
 //! clipboard; the Windows backend implements them.
@@ -18,9 +25,16 @@ use crate::InputError;
 
 /// Ownkey's "small delay so clipboard is ready" before Ctrl+V.
 pub(crate) const PASTE_SETTLE: Duration = Duration::from_millis(50);
-/// Apps read the clipboard asynchronously after Ctrl+V. Restoring sooner can
-/// paste the old content instead of ours.
-pub(crate) const RESTORE_AFTER: Duration = Duration::from_millis(600);
+/// Apps read the clipboard after they handle Ctrl+V, which a busy app or a
+/// remote desktop does late. Restoring sooner pastes the user's old content
+/// instead of ours. Voice first used 600 ms, which nobody measured; this is
+/// the floor, and [`TARGET_ANSWER`] covers a target that is still busy.
+pub(crate) const RESTORE_AFTER: Duration = Duration::from_millis(2000);
+/// How long the window the keys went to may take to answer before Voice
+/// leaves the dictation on the clipboard instead of restoring.
+pub(crate) const TARGET_ANSWER: Duration = Duration::from_millis(1000);
+/// Ownkey's pause between typed characters.
+pub(crate) const TYPE_PACE: Duration = Duration::from_millis(5);
 /// Ownkey lets the foreground app settle before Ctrl+C, longer on the retry.
 pub(crate) const COPY_SETTLE: [Duration; 2] =
     [Duration::from_millis(50), Duration::from_millis(150)];
@@ -90,10 +104,14 @@ pub(crate) trait Clipboard {
     fn snapshot(&mut self) -> Result<Snapshot, InputError>;
     /// Replaces the content with `text`, hidden from clipboard history.
     fn set_text(&mut self, text: &str) -> Result<(), InputError>;
-    /// The Unicode text on the clipboard, if any.
-    fn text(&mut self) -> Result<Option<String>, InputError>;
+    /// The Unicode text on the clipboard, if any, and the sequence number
+    /// read while the clipboard was open, which belongs to exactly that text.
+    fn text(&mut self) -> Result<(Option<String>, u32), InputError>;
     /// Replaces the content with the snapshot, hidden from clipboard history.
-    fn restore(&mut self, snapshot: &Snapshot) -> Result<(), InputError>;
+    /// With `expected`, it first compares the sequence number while it holds
+    /// the clipboard open, so nobody can copy in between, and leaves the
+    /// clipboard alone when it differs. Returns whether it restored.
+    fn restore(&mut self, snapshot: &Snapshot, expected: Option<u32>) -> Result<bool, InputError>;
 }
 
 pub(crate) trait Keyboard {
@@ -102,9 +120,54 @@ pub(crate) trait Keyboard {
     fn send(&mut self, strokes: &[Stroke]) -> Result<(), InputError>;
 }
 
+/// Runs before every batch of keys. The caller waits there until the user
+/// has let go of keys that would change them, such as Right Alt turning
+/// Ctrl+V into AltGr+V, or returns an error to send nothing more.
+pub type BeforeKeys<'a> = &'a mut dyn FnMut() -> Result<(), InputError>;
+
+/// A keyboard that calls [`BeforeKeys`] right before each batch, so the check
+/// runs after any wait for the clipboard and the paste settle, not before.
+pub(crate) struct Guarded<'a> {
+    keyboard: &'a mut dyn Keyboard,
+    before: BeforeKeys<'a>,
+}
+
+impl<'a> Guarded<'a> {
+    pub(crate) fn new(keyboard: &'a mut dyn Keyboard, before: BeforeKeys<'a>) -> Guarded<'a> {
+        Guarded { keyboard, before }
+    }
+}
+
+impl Keyboard for Guarded<'_> {
+    fn send(&mut self, strokes: &[Stroke]) -> Result<(), InputError> {
+        (self.before)()?;
+        self.keyboard.send(strokes)
+    }
+}
+
+/// Types `text` one character per batch, [`TYPE_PACE`] apart.
+pub(crate) fn type_text(
+    text: &str,
+    keyboard: &mut dyn Keyboard,
+    clock: &dyn Clock,
+) -> Result<(), InputError> {
+    for batch in strokes::typing(text) {
+        keyboard.send(&batch)?;
+        clock.sleep(TYPE_PACE);
+    }
+    Ok(())
+}
+
 pub(crate) trait Clock {
     fn now(&self) -> Duration;
     fn sleep(&self, duration: Duration);
+}
+
+/// The window a paste went to.
+pub(crate) trait Target {
+    /// Whether it handles messages again: it answers within `timeout`, or it
+    /// is gone. A window that is busy or hung may still read the clipboard.
+    fn answers(&self, timeout: Duration) -> bool;
 }
 
 pub(crate) struct SystemClock(Instant);
@@ -133,8 +196,8 @@ pub(crate) struct PendingRestore {
     ours: u32,
 }
 
-/// Puts `text` on the clipboard and presses Ctrl+V. The caller waits
-/// [`RESTORE_AFTER`] and then calls [`restore_if_unchanged`].
+/// Puts `text` on the clipboard and presses Ctrl+V. The caller then calls
+/// [`finish_paste`].
 pub(crate) fn paste(
     text: &str,
     clipboard: &mut dyn Clipboard,
@@ -144,9 +207,10 @@ pub(crate) fn paste(
     let snapshot = clipboard.snapshot()?;
     let before = clipboard.sequence();
     if let Err(err) = clipboard.set_text(text) {
-        if clipboard.sequence() != before {
+        let after = clipboard.sequence();
+        if after != before {
             // It may have emptied the clipboard before it failed.
-            let _ = clipboard.restore(&snapshot);
+            let _ = clipboard.restore(&snapshot, Some(after));
         }
         return Err(err);
     }
@@ -163,6 +227,23 @@ pub(crate) fn paste(
     Ok(pending)
 }
 
+/// After a paste: waits [`RESTORE_AFTER`], then puts the user's clipboard
+/// back once the window the keys went to answers. When it doesn't answer
+/// within [`TARGET_ANSWER`], it may still paste later, so the dictation stays
+/// on the clipboard. Returns whether the snapshot went back.
+pub(crate) fn finish_paste(
+    clipboard: &mut dyn Clipboard,
+    clock: &dyn Clock,
+    target: &dyn Target,
+    pending: &PendingRestore,
+) -> Result<bool, InputError> {
+    clock.sleep(RESTORE_AFTER);
+    if !target.answers(TARGET_ANSWER) {
+        return Ok(false);
+    }
+    restore_if_unchanged(clipboard, pending)
+}
+
 /// Puts the snapshot back unless the clipboard changed after our paste.
 /// Returns whether it did.
 pub(crate) fn restore_if_unchanged(
@@ -173,8 +254,8 @@ pub(crate) fn restore_if_unchanged(
         // Someone copied something since; theirs wins.
         return Ok(false);
     }
-    clipboard.restore(&pending.snapshot)?;
-    Ok(true)
+    // Checked again with the clipboard open: a copy made in between wins too.
+    clipboard.restore(&pending.snapshot, Some(pending.ours))
 }
 
 /// Copies the selection with Ctrl+C and returns its text, then puts the
@@ -189,20 +270,26 @@ pub(crate) fn capture(
     let snapshot = clipboard.snapshot()?;
     let original = clipboard.sequence();
     let copied = copy_selection(clipboard, keyboard, clock, timeout);
-    if clipboard.sequence() != original {
+    // The selection's copy is what goes; a copy the user makes after it stays.
+    let selection = match &copied {
+        Ok(Some((_, seen))) => *seen,
+        _ => clipboard.sequence(),
+    };
+    if selection != original {
         // A failed restore leaves the selection on the clipboard, which is
         // what Ownkey always did; the captured text is still good.
-        let _ = clipboard.restore(&snapshot);
+        let _ = clipboard.restore(&snapshot, Some(selection));
     }
-    copied
+    copied.map(|copied| copied.map(|(text, _)| text))
 }
 
+/// The selection's text and the sequence number it was read at.
 fn copy_selection(
     clipboard: &mut dyn Clipboard,
     keyboard: &mut dyn Keyboard,
     clock: &dyn Clock,
     timeout: Duration,
-) -> Result<Option<String>, InputError> {
+) -> Result<Option<(String, u32)>, InputError> {
     for settle in COPY_SETTLE {
         clock.sleep(settle);
         let before = clipboard.sequence();
@@ -211,7 +298,7 @@ fn copy_selection(
         loop {
             if clipboard.sequence() != before {
                 match clipboard.text() {
-                    Ok(Some(text)) if !text.is_empty() => return Ok(Some(text)),
+                    Ok((Some(text), seen)) if !text.is_empty() => return Ok(Some((text, seen))),
                     // Still being written, or no text (yet).
                     Ok(_) | Err(InputError::ClipboardBusy) => {}
                     Err(err) => return Err(err),
@@ -324,6 +411,13 @@ mod tests {
         copy_at: Option<Duration>,
         /// SendInput is blocked, as for an elevated window.
         blocked: bool,
+        /// Another app copies this after a restore checked the sequence
+        /// number and before the restore gets the clipboard open.
+        copied_while_opening: Option<Vec<Format>>,
+        /// The window the paste went to doesn't answer, as while it is busy.
+        target_busy: bool,
+        /// How long each question to the target waited.
+        asked: Vec<Duration>,
         sent: Vec<Vec<Stroke>>,
         pasted: Vec<Option<String>>,
         restores: u32,
@@ -384,8 +478,23 @@ mod tests {
             restore_if_unchanged(&mut self.clone(), pending)
         }
 
+        fn finish(&self, pending: &PendingRestore) -> Result<bool, InputError> {
+            finish_paste(&mut self.clone(), &self.clone(), &self.clone(), pending)
+        }
+
         fn capture(&self) -> Result<Option<String>, InputError> {
             capture(&mut self.clone(), &mut self.clone(), &self.clone(), TIMEOUT)
+        }
+    }
+
+    impl Target for Fake {
+        fn answers(&self, timeout: Duration) -> bool {
+            let mut desk = self.desk();
+            desk.asked.push(timeout);
+            if desk.target_busy {
+                desk.time += timeout;
+            }
+            !desk.target_busy
         }
     }
 
@@ -415,7 +524,7 @@ mod tests {
             Ok(())
         }
 
-        fn text(&mut self) -> Result<Option<String>, InputError> {
+        fn text(&mut self) -> Result<(Option<String>, u32), InputError> {
             let mut desk = self.desk();
             desk.settle_copy();
             if desk.busy_reads > 0 {
@@ -423,16 +532,26 @@ mod tests {
                 return Err(InputError::ClipboardBusy);
             }
             desk.open()?;
-            Ok(decode(&desk.formats))
+            Ok((decode(&desk.formats), desk.sequence))
         }
 
-        fn restore(&mut self, snapshot: &Snapshot) -> Result<(), InputError> {
+        fn restore(
+            &mut self,
+            snapshot: &Snapshot,
+            expected: Option<u32>,
+        ) -> Result<bool, InputError> {
             let mut desk = self.desk();
+            if let Some(theirs) = desk.copied_while_opening.take() {
+                desk.replace(theirs, false);
+            }
             desk.open()?;
+            if expected.is_some_and(|expected| expected != desk.sequence) {
+                return Ok(false);
+            }
             desk.restores += 1;
             let hidden = !snapshot.formats.is_empty();
             desk.replace(snapshot.formats.clone(), hidden);
-            Ok(())
+            Ok(true)
         }
     }
 
@@ -500,6 +619,132 @@ mod tests {
         assert_eq!(fake.restore(&pending), Ok(false));
         assert_eq!(fake.desk().formats, theirs);
         assert_eq!(fake.desk().restores, 0);
+    }
+
+    #[test]
+    fn a_copy_made_while_the_restore_opens_the_clipboard_wins() {
+        let fake = Fake::new(Desk::with(rich_clipboard()));
+        let pending = fake.paste("dictated").unwrap();
+        // The sequence number still matches when the restore looks; the copy
+        // lands while it waits for OpenClipboard.
+        let theirs = vec![text_format("copied right then")];
+        fake.desk().copied_while_opening = Some(theirs.clone());
+        assert_eq!(fake.restore(&pending), Ok(false));
+        assert_eq!(fake.desk().formats, theirs);
+        assert_eq!(fake.desk().restores, 0);
+    }
+
+    #[test]
+    fn the_restore_waits_and_asks_the_target_first() {
+        let fake = Fake::new(Desk::with(rich_clipboard()));
+        let pending = fake.paste("dictated").unwrap();
+        assert_eq!(fake.finish(&pending), Ok(true));
+        let desk = fake.desk();
+        assert_eq!(desk.sleeps, [PASTE_SETTLE, RESTORE_AFTER]);
+        assert_eq!(desk.asked, [TARGET_ANSWER]);
+        assert_eq!(desk.formats, rich_clipboard());
+        assert!(
+            RESTORE_AFTER >= Duration::from_secs(2),
+            "600 ms was too short"
+        );
+    }
+
+    #[test]
+    fn a_busy_target_keeps_the_dictation_on_the_clipboard() {
+        let fake = Fake::new(Desk::with(rich_clipboard()));
+        let pending = fake.paste("dictated").unwrap();
+        // The app hasn't handled Ctrl+V yet and may read the clipboard any
+        // moment: the user's old clipboard must not be what it pastes.
+        fake.desk().target_busy = true;
+        assert_eq!(fake.finish(&pending), Ok(false));
+        let desk = fake.desk();
+        assert_eq!(desk.formats, [text_format("dictated")]);
+        assert_eq!(desk.restores, 0);
+    }
+
+    #[test]
+    fn the_key_check_runs_right_before_ctrl_v() {
+        let fake = Fake::new(Desk::with(rich_clipboard()));
+        let seen = RefCell::new(Vec::new());
+        let mut check = || {
+            let desk = fake.desk();
+            seen.borrow_mut()
+                .push((desk.sent.len(), decode(&desk.formats), desk.sleeps.clone()));
+            Ok(())
+        };
+        let mut keyboard = fake.clone();
+        let mut guarded = Guarded::new(&mut keyboard, &mut check);
+        paste("dictated", &mut fake.clone(), &mut guarded, &fake.clone()).unwrap();
+        // After our text went on the clipboard and settled, before any key.
+        assert_eq!(
+            seen.into_inner(),
+            [(0, Some("dictated".to_string()), vec![PASTE_SETTLE])]
+        );
+        assert_eq!(fake.desk().sent, [strokes::paste()]);
+    }
+
+    #[test]
+    fn a_cancelled_key_check_sends_nothing_and_restores_at_once() {
+        let fake = Fake::new(Desk::with(rich_clipboard()));
+        let mut cancel = || Err(InputError::System("Voice is quitting.".into()));
+        let mut keyboard = fake.clone();
+        let mut guarded = Guarded::new(&mut keyboard, &mut cancel);
+        let err = paste("dictated", &mut fake.clone(), &mut guarded, &fake.clone()).unwrap_err();
+        assert_eq!(err, InputError::System("Voice is quitting.".into()));
+        let desk = fake.desk();
+        assert!(desk.sent.is_empty());
+        assert_eq!(desk.formats, rich_clipboard());
+        assert_eq!(desk.restores, 1);
+    }
+
+    #[test]
+    fn typing_checks_the_keys_before_every_character() {
+        let fake = Fake::new(Desk::with(rich_clipboard()));
+        let checks = RefCell::new(Vec::new());
+        let mut check = || {
+            checks.borrow_mut().push(fake.desk().sent.len());
+            Ok(())
+        };
+        let mut keyboard = fake.clone();
+        let mut guarded = Guarded::new(&mut keyboard, &mut check);
+        type_text("hé\nx", &mut guarded, &fake.clone()).unwrap();
+        assert_eq!(checks.into_inner(), [0, 1, 2, 3], "one check per batch");
+        let desk = fake.desk();
+        assert_eq!(desk.sent.len(), 4);
+        assert_eq!(desk.sleeps, [TYPE_PACE; 4]);
+        assert_eq!(
+            desk.formats,
+            rich_clipboard(),
+            "typing leaves the clipboard alone"
+        );
+    }
+
+    #[test]
+    fn a_capture_checks_the_keys_before_each_ctrl_c() {
+        let fake = Fake::new(Desk::with(rich_clipboard()));
+        let mut checks = 0;
+        let mut check = || {
+            checks += 1;
+            Ok(())
+        };
+        let mut keyboard = fake.clone();
+        let mut guarded = Guarded::new(&mut keyboard, &mut check);
+        let copied = capture(&mut fake.clone(), &mut guarded, &fake.clone(), TIMEOUT);
+        assert_eq!(copied, Ok(None));
+        assert_eq!(checks, 2, "both attempts");
+    }
+
+    #[test]
+    fn a_copy_made_while_a_capture_restores_wins() {
+        let mut desk = Desk::with(rich_clipboard());
+        desk.selection = Some(vec![text_format("selected")]);
+        let theirs = vec![text_format("copied right then")];
+        desk.copied_while_opening = Some(theirs.clone());
+        let fake = Fake::new(desk);
+        assert_eq!(fake.capture(), Ok(Some("selected".to_string())));
+        let desk = fake.desk();
+        assert_eq!(desk.formats, theirs);
+        assert_eq!(desk.restores, 0);
     }
 
     #[test]

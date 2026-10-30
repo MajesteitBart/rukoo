@@ -369,6 +369,66 @@ fn insertion_waits_while_a_hotkey_is_held() {
 }
 
 #[test]
+fn a_key_pressed_while_the_paste_waits_for_the_clipboard_holds_the_paste() {
+    let h = Harness::new("defer-late");
+    h.config(json!({}));
+    let engine = h.start();
+    h.speech.say("first");
+    // The previous paste's restore still holds the clipboard when this one starts.
+    *lock(&h.input.clipboard_wait) = Duration::from_millis(400);
+    h.hold(Key::F13);
+    wait_for("the insertion to start", || {
+        h.input.entered.load(Ordering::SeqCst) == 1
+    });
+    // No key was down when the insertion started; the next dictation's is down by the time
+    // the clipboard is free.
+    h.keys.down(Key::F13);
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        h.input.texts().is_empty(),
+        "Ctrl+V waits for the release, also after waiting for the clipboard"
+    );
+    h.keys.up(Key::F13);
+    wait_for("the insertion", || !h.input.texts().is_empty());
+    let first = lock(&h.input.inserted)[0].clone();
+    assert_eq!(first.text, "first");
+    assert!(first.held.is_empty(), "keys went out with {:?}", first.held);
+    engine.shutdown();
+}
+
+#[test]
+fn the_copy_after_the_release_waits_for_the_next_key_too() {
+    let mut h = Harness::new("defer-copy");
+    h.dev_mode = false;
+    // Right Shift can't copy while held, so the selection is copied after the release.
+    h.config(
+        json!({"hotkey": "right ctrl", "rewrite_hotkey": "right shift", "rewrite_api_key": "k"}),
+    );
+    *lock(&h.input.selection) = Some("selected".into());
+    *lock(&h.input.clipboard_wait) = Duration::from_millis(400);
+    let engine = h.start();
+    h.speech.say("shorter");
+    h.hold(Key::RightShift);
+    wait_for("the copy to start", || {
+        h.input.entered.load(Ordering::SeqCst) == 1
+    });
+    h.keys.down(Key::RightCtrl);
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(
+        h.input.captures.load(Ordering::SeqCst),
+        0,
+        "Ctrl+C with Right Ctrl held"
+    );
+    h.keys.up(Key::RightCtrl);
+    // The dictation now owns the pill, so the rewrite shows as its text.
+    wait_for("the rewrite", || {
+        h.input.texts().first().map(String::as_str) == Some("Rewritten.")
+    });
+    assert_eq!(lock(&h.input.capture_held).clone(), [Vec::<Key>::new()]);
+    engine.shutdown();
+}
+
+#[test]
 fn a_settings_key_change_applies_without_a_restart() {
     let h = Harness::new("keys");
     h.config(json!({}));

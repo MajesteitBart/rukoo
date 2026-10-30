@@ -14,7 +14,7 @@ use voice_core::local::{
 };
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{ProviderError, Rewriter, SpeechToText};
-use voice_input::{InputError, InsertMode, Key, TextTarget};
+use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
 use voice_meetings::PipelineOptions;
 
 use crate::api::{EngineOptions, Locale, Theme};
@@ -24,9 +24,21 @@ use crate::meetings::controller::ControllerTiming;
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
 
 /// Text into the focused app, and the selection out of it.
+///
+/// Both call `before_keys` right before every batch of keys they send, after any wait for the
+/// clipboard (voice-input's `insert_text_with`). Dictation waits there while a hotkey is held.
 pub trait TextInput: Send + Sync {
-    fn insert(&self, text: &str, mode: InsertMode) -> Result<(), InputError>;
-    fn capture_selection(&self, timeout: Duration) -> Result<Option<String>, InputError>;
+    fn insert(
+        &self,
+        text: &str,
+        mode: InsertMode,
+        before_keys: BeforeKeys,
+    ) -> Result<(), InputError>;
+    fn capture_selection(
+        &self,
+        timeout: Duration,
+        before_keys: BeforeKeys,
+    ) -> Result<Option<String>, InputError>;
     fn text_target(&self) -> TextTarget;
     /// Before quitting, so the user's clipboard comes back.
     fn wait_for_clipboard_restore(&self) {}
@@ -162,12 +174,21 @@ pub const RECORDER_EXE: &str = "rukoo-voice-recorder";
 struct SystemInput;
 
 impl TextInput for SystemInput {
-    fn insert(&self, text: &str, mode: InsertMode) -> Result<(), InputError> {
-        voice_input::insert_text(text, mode)
+    fn insert(
+        &self,
+        text: &str,
+        mode: InsertMode,
+        before_keys: BeforeKeys,
+    ) -> Result<(), InputError> {
+        voice_input::insert_text_with(text, mode, before_keys)
     }
 
-    fn capture_selection(&self, timeout: Duration) -> Result<Option<String>, InputError> {
-        voice_input::capture_selection(timeout)
+    fn capture_selection(
+        &self,
+        timeout: Duration,
+        before_keys: BeforeKeys,
+    ) -> Result<Option<String>, InputError> {
+        voice_input::capture_selection_with(timeout, before_keys)
     }
 
     fn text_target(&self) -> TextTarget {

@@ -29,6 +29,7 @@ mod win;
 #[cfg(windows)]
 use win as sys;
 
+pub use clipboard::BeforeKeys;
 pub use hotkeys::{HotkeyEvent, HotkeyPoller, Stopper, POLL_INTERVAL};
 pub use keys::{Key, UnknownKey};
 pub use ptt::{Action, HotkeyConfig, Mode, PushToTalk};
@@ -84,9 +85,12 @@ impl std::error::Error for InputError {}
 ///
 /// [`InsertMode::Paste`] takes a snapshot of the clipboard, puts the text on
 /// it hidden from clipboard history and cloud clipboard, and presses Ctrl+V.
-/// It returns right away; 600 ms later a background thread puts the
-/// snapshot back, unless something else was copied by then. The next paste
-/// or [`capture_selection`] waits for that restore, and so does
+/// It returns right away. A background thread waits 2 s and then puts the
+/// snapshot back, unless something else was copied by then or the window the
+/// keys went to doesn't answer within 1 s: an app that hasn't handled Ctrl+V
+/// yet must get the dictation, not the user's old clipboard, so the
+/// dictation stays on the clipboard then. The next paste or
+/// [`capture_selection`] waits for that restore, and so does
 /// [`wait_for_clipboard_restore`], which the app should call before quitting.
 ///
 /// [`InsertMode::Type`] sends each character as a Unicode key event, 5 ms
@@ -94,14 +98,28 @@ impl std::error::Error for InputError {}
 ///
 /// The keys go to whatever has focus, with any keys the user is holding.
 /// Inserting while Right Alt is held for the next recording turns Ctrl+V
-/// into AltGr+V, as it did in Ownkey; the caller decides whether to wait.
+/// into AltGr+V, as it did in Ownkey. [`insert_text_with`] lets the caller
+/// wait for such keys right before each batch of keys goes out.
 pub fn insert_text(text: &str, mode: InsertMode) -> Result<(), InputError> {
+    insert_text_with(text, mode, &mut || Ok(()))
+}
+
+/// [`insert_text`], calling `before_keys` right before every batch of keys:
+/// before Ctrl+V, after the wait for an earlier restore and the paste settle,
+/// and before every typed character. The caller waits there while the user
+/// holds a key that would change the keys, or returns an error to stop; a
+/// paste then puts the user's clipboard back at once.
+pub fn insert_text_with(
+    text: &str,
+    mode: InsertMode,
+    before_keys: BeforeKeys,
+) -> Result<(), InputError> {
     if text.is_empty() {
         return Ok(());
     }
     match mode {
-        InsertMode::Paste => sys::paste_text(text),
-        InsertMode::Type => sys::type_text(text),
+        InsertMode::Paste => sys::paste_text(text, before_keys),
+        InsertMode::Type => sys::type_text(text, before_keys),
     }
 }
 
@@ -112,9 +130,18 @@ pub fn insert_text(text: &str, mode: InsertMode) -> Result<(), InputError> {
 /// app to copy (Ownkey waited 500 ms), so the worst case is about twice the
 /// timeout plus 0.2 s. `Ok(None)` when nothing with text was copied. Don't
 /// call it while a key that changes Ctrl+C is held: see
-/// [`Key::can_copy_while_held`].
+/// [`Key::can_copy_while_held`] and [`capture_selection_with`].
 pub fn capture_selection(timeout: Duration) -> Result<Option<String>, InputError> {
-    sys::capture_selection(timeout)
+    capture_selection_with(timeout, &mut || Ok(()))
+}
+
+/// [`capture_selection`], calling `before_keys` right before each Ctrl+C, as
+/// [`insert_text_with`] does.
+pub fn capture_selection_with(
+    timeout: Duration,
+    before_keys: BeforeKeys,
+) -> Result<Option<String>, InputError> {
+    sys::capture_selection(timeout, before_keys)
 }
 
 /// Waits until a pending clipboard restore from [`insert_text`] has finished.

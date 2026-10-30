@@ -19,7 +19,8 @@ use voice_core::config::Config;
 use voice_core::providers::provider_requires_key;
 use voice_core::{cleanup, prompts, RewriteRequest};
 use voice_input::{
-    HotkeyConfig, HotkeyEvent, HotkeyPoller, InsertMode, Key, Mode, PushToTalk, TextTarget,
+    HotkeyConfig, HotkeyEvent, HotkeyPoller, InputError, InsertMode, Key, Mode, PushToTalk,
+    TextTarget,
 };
 
 use self::errors::Step;
@@ -256,7 +257,11 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         let (input, slot) = (Arc::clone(&core.svc.input), Arc::clone(&pending));
         let _ = thread::Builder::new()
             .name("selection".into())
-            .spawn(move || slot.set(input.capture_selection(CAPTURE_TIMEOUT).ok().flatten()));
+            .spawn(move || {
+                // The rewrite key is down on purpose here; it doesn't change Ctrl+C.
+                let copied = input.capture_selection(CAPTURE_TIMEOUT, &mut || Ok(()));
+                slot.set(copied.ok().flatten())
+            });
         pending
     } else {
         // Right Alt and Right Shift would turn Ctrl+C into another shortcut: copy after the release.
@@ -624,13 +629,18 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
     let cfg = &job.cfg;
     let mut selection = job.selection.wait(PRESS_CAPTURE_WAIT);
     if selection.as_deref().is_none_or(|s| s.trim().is_empty()) {
-        // The key is up by now, so Ctrl+C is safe for every key.
+        // This recording's key is up, but the next one may be down by the time Ctrl+C goes out.
+        let held = hotkeys_of(core, cfg);
+        let mut released = || wait_for_release(core, &held);
         selection = core
             .svc
             .input
-            .capture_selection(CAPTURE_TIMEOUT)
+            .capture_selection(CAPTURE_TIMEOUT, &mut released)
             .ok()
             .flatten();
+    }
+    if core.shutting_down() {
+        return Outcome::Quiet;
     }
     let Some(selection) = selection.filter(|s| !s.trim().is_empty()) else {
         return failed(
@@ -696,14 +706,12 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
     }
 }
 
-/// Inserts once no hotkey is held. Keys go to whatever has focus, with the keys the user holds:
-/// pasting while Right Alt is held for the next dictation turns Ctrl+V into AltGr+V, which Ownkey
-/// did (ownkey-dictation.md 17.7). Voice waits for the release instead, on purpose.
-fn insert(core: &Core, cfg: &Config, text: &str) -> Result<(), Outcome> {
+/// The dictation and rewrite keys of the recording's settings and of the live ones.
+fn hotkeys_of(core: &Core, cfg: &Config) -> Vec<Key> {
     let (keys, _) = hotkeys(cfg, core.opts.dev_mode);
     let live = core.config();
     let (live_keys, _) = hotkeys(&live, core.opts.dev_mode);
-    let held: Vec<Key> = [
+    [
         Some(keys.dictate),
         keys.rewrite,
         Some(live_keys.dictate),
@@ -711,29 +719,51 @@ fn insert(core: &Core, cfg: &Config, text: &str) -> Result<(), Outcome> {
     ]
     .into_iter()
     .flatten()
-    .collect();
+    .collect()
+}
+
+/// Waits until none of `held` is down, for at most [`DEFER_LIMIT`]. Fails once Voice quits.
+fn wait_for_release(core: &Core, held: &[Key]) -> Result<(), InputError> {
+    let quitting = || InputError::System("Voice is quitting.".into());
     let deadline = Instant::now() + DEFER_LIMIT;
     while held.iter().any(|&key| core.key_down(key)) && Instant::now() < deadline {
         if core.shutting_down() {
-            return Err(Outcome::Quiet);
+            return Err(quitting());
         }
         thread::sleep(DEFER_POLL);
     }
     if core.shutting_down() {
-        return Err(Outcome::Quiet);
+        return Err(quitting());
     }
+    Ok(())
+}
+
+/// Inserts with no hotkey held. Keys go to whatever has focus, with the keys the user holds:
+/// pasting while Right Alt is held for the next dictation turns Ctrl+V into AltGr+V, which Ownkey
+/// did (ownkey-dictation.md 17.7). Voice waits for the release instead, on purpose, right before
+/// every batch of keys: a paste can wait for the previous paste's clipboard first, and a key can go
+/// down during that wait or halfway through typing.
+fn insert(core: &Core, cfg: &Config, text: &str) -> Result<(), Outcome> {
+    let held = hotkeys_of(core, cfg);
+    let mut released = || wait_for_release(core, &held);
     let mode = if cfg.paste_mode {
         InsertMode::Paste
     } else {
         InsertMode::Type
     };
-    core.svc.input.insert(text, mode).map_err(|e| {
-        failed(
-            errors::input_notice(&e),
-            errors::TITLE_DICTATION,
-            e.to_string(),
-        )
-    })
+    core.svc
+        .input
+        .insert(text, mode, &mut released)
+        .map_err(|e| {
+            if core.shutting_down() {
+                return Outcome::Quiet;
+            }
+            failed(
+                errors::input_notice(&e),
+                errors::TITLE_DICTATION,
+                e.to_string(),
+            )
+        })
 }
 
 fn activity_of(mode: Mode) -> Activity {

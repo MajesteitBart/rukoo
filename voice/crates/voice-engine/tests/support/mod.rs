@@ -25,7 +25,7 @@ use voice_engine::services::{
 use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
 };
-use voice_input::{InputError, InsertMode, Key, TextTarget};
+use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
 
 /// CI machines are slow; every wait is generous.
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -222,9 +222,16 @@ pub struct FakeInput {
     pub keys: Keys,
     pub inserted: Mutex<Vec<Inserted>>,
     pub selection: Mutex<Option<String>>,
+    /// Ctrl+C sent, with the hotkeys held at that moment.
     pub captures: AtomicUsize,
+    pub capture_held: Mutex<Vec<Vec<Key>>>,
     pub target: Mutex<TextTarget>,
     pub fail: Mutex<Option<InputError>>,
+    /// How long an insertion or a capture waits for the clipboard before its keys, as behind the
+    /// previous paste's restore.
+    pub clipboard_wait: Mutex<Duration>,
+    /// Insertions and captures that started.
+    pub entered: AtomicUsize,
 }
 
 impl FakeInput {
@@ -234,9 +241,27 @@ impl FakeInput {
             inserted: Mutex::new(Vec::new()),
             selection: Mutex::new(None),
             captures: AtomicUsize::new(0),
+            capture_held: Mutex::new(Vec::new()),
             target: Mutex::new(TextTarget::Selected),
             fail: Mutex::new(None),
+            clipboard_wait: Mutex::new(Duration::ZERO),
+            entered: AtomicUsize::new(0),
         }
+    }
+
+    fn held(&self) -> Vec<Key> {
+        Key::ALL
+            .into_iter()
+            .filter(|k| self.keys.is_down(*k))
+            .collect()
+    }
+
+    /// Waits for the clipboard, then runs the caller's check right before the keys go out.
+    fn before_keys(&self, before_keys: BeforeKeys) -> Result<(), InputError> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        let wait = *lock(&self.clipboard_wait);
+        thread::sleep(wait);
+        before_keys()
     }
 
     pub fn texts(&self) -> Vec<String> {
@@ -248,23 +273,31 @@ impl FakeInput {
 }
 
 impl TextInput for FakeInput {
-    fn insert(&self, text: &str, mode: InsertMode) -> Result<(), InputError> {
+    fn insert(
+        &self,
+        text: &str,
+        mode: InsertMode,
+        before_keys: BeforeKeys,
+    ) -> Result<(), InputError> {
+        self.before_keys(before_keys)?;
         if let Some(error) = lock(&self.fail).clone() {
             return Err(error);
         }
-        let held = Key::ALL
-            .into_iter()
-            .filter(|k| self.keys.is_down(*k))
-            .collect();
         lock(&self.inserted).push(Inserted {
             text: text.to_string(),
             mode,
-            held,
+            held: self.held(),
         });
         Ok(())
     }
 
-    fn capture_selection(&self, _timeout: Duration) -> Result<Option<String>, InputError> {
+    fn capture_selection(
+        &self,
+        _timeout: Duration,
+        before_keys: BeforeKeys,
+    ) -> Result<Option<String>, InputError> {
+        self.before_keys(before_keys)?;
+        lock(&self.capture_held).push(self.held());
         self.captures.fetch_add(1, Ordering::SeqCst);
         Ok(lock(&self.selection).clone())
     }
