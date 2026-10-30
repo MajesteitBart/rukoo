@@ -330,6 +330,8 @@ describe('the booker', () => {
     expect(html).toContain('<input type="hidden" name="duration" value="60">');
     expect(html).toMatch(/data-clock="12"/);
     expect(html).toContain(`/meet/${h.handle}/chat?duration=60&month=${date.slice(0, 7)}&date=${date}&clock=12`);
+    // The language links keep it too; booker.js swaps them (#languages) when the length changes without a reload.
+    expect(html).toContain(`<nav id="languages" aria-label="Language"><a href="/meet/${h.handle}/chat?duration=60&date=${date}&lang=en"`);
   });
 
   it('ignores a length the type doesn’t offer: the default is picked, and the times and lengths don’t carry it on', async () => {

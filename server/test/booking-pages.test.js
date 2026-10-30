@@ -979,6 +979,7 @@ describe('the booker script', () => {
   it('swaps the zone picker and the lengths with the booker, so their links keep the chosen day', () => {
     expect(BOOKER_JS).toContain("replace(doc, 'zone')");
     expect(BOOKER_JS).toContain("replace(doc, 'lengths')");
+    expect(BOOKER_JS).toContain("replace(doc, 'languages')");
     expect(BOOKER_JS).toContain('#lengths a[data-swap]');
     expect(BOOKER_JS).not.toMatch(/=>|`/);
   });

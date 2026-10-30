@@ -110,6 +110,8 @@ export const BOOKER_JS = String.raw`(function () {
         var nextZone = replace(doc, 'zone');
         if (nextZone) nextZone.open = open;
         var lengths = replace(doc, 'lengths');
+        // The language links carry the page's address on, which is the new one now.
+        replace(doc, 'languages');
         history.pushState({ booker: true }, '', href);
         swapped = true;
         var times = next.querySelector('.times');

@@ -424,7 +424,8 @@ function footerHtml(ctx, footer, width) {
   });
   out.push('<div class="foot-row">');
   out.push(links.length ? `<nav>${links.join('\n')}</nav>` : '<span></span>');
-  out.push(`<nav aria-label="${esc(ctx.T('page.language'))}">${langs.join('\n')}</nav>`);
+  // booker.js swaps this nav with the booker, so a language link keeps the day and length picked since the page loaded.
+  out.push(`<nav id="languages" aria-label="${esc(ctx.T('page.language'))}">${langs.join('\n')}</nav>`);
   out.push('</div>', '</footer>');
   return out.join('\n');
 }
