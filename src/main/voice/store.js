@@ -21,6 +21,7 @@ const { validate, isMeetingId, STATES } = require('./protocol');
 
 const VERSION = 1;
 const SAVE_MS = 400;
+const RETRY_MS = 2000;
 const NAME_MAX = 200;
 const ADDRESS_MAX = 320;
 const NOTES_MAX = 100000;
@@ -147,6 +148,8 @@ class VoiceStore {
       this.keepAside(this.file);
     }
     this.index = index;
+    // The cursor on disk: Voice replays after it, so it only moves once every meeting file before it is written.
+    this.savedCursor = { instance: index.instance, lastSeq: index.lastSeq };
     return this;
   }
 
@@ -192,8 +195,10 @@ class VoiceStore {
   }
 
   // The meetings first, then the index with the cursor, so a crash in between leaves the cursor behind the data
-  // and Voice's replay applies the same events again.
+  // and Voice's replay applies the same events again. A meeting that fails to save keeps the cursor on disk where it
+  // was: otherwise a restart would ask Voice only for what came after events that never reached the meeting's file.
   save() {
+    let failed = false;
     for (const id of [...this.dirty]) {
       this.dirty.delete(id);
       const m = this.cache.get(id);
@@ -203,21 +208,41 @@ class VoiceStore {
       } catch (err) {
         this.log('store', `saving ${id} failed: ${err.message}`);
         this.dirty.add(id);
+        failed = true;
       }
     }
-    if (!this.indexDirty) return;
-    this.indexDirty = false;
-    try {
-      writeAtomic(this.file, this.index);
-    } catch (err) {
-      this.log('store', `saving voice.json failed: ${err.message}`);
-      this.indexDirty = true;
+    if (failed) this.indexDirty = true;
+    if (this.indexDirty) {
+      this.indexDirty = false;
+      const cursor = failed ? this.savedCursor : { instance: this.index.instance, lastSeq: this.index.lastSeq };
+      try {
+        writeAtomic(this.file, { ...this.index, ...cursor });
+        this.savedCursor = cursor;
+      } catch (err) {
+        this.log('store', `saving voice.json failed: ${err.message}`);
+        this.indexDirty = true;
+        failed = true;
+      }
+      if (failed) this.indexDirty = true;
     }
+    if (failed) this.retrySave();
+  }
+
+  // A failed save tries again a little later, so a file another program held open is written once it lets go.
+  retrySave() {
+    if (this.retryTimer || this.closed) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.save();
+    }, RETRY_MS);
+    if (this.retryTimer.unref) this.retryTimer.unref();
   }
 
   flush() {
     clearTimeout(this.timer);
     this.timer = null;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.save();
   }
 

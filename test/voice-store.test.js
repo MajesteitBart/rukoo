@@ -154,6 +154,29 @@ test('saves wait a moment, and closing writes everything at once', async () => {
   assert.ok(fs.existsSync(quick.file));
 });
 
+test("a meeting file that can't be written keeps the cursor on disk behind its events until it can", () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir, { saveMs: 60000 });
+  const first = script().slice(0, 5);
+  for (const e of first) s.apply(e);
+  s.flush();
+  const saved = first.at(-1).seq;
+  const file = path.join(dir, 'meetings', `${M}.json`);
+  // A folder in the file's place makes the next write of the meeting fail, as a file another program holds would.
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+  const later = passage('mic', 90000, 'This passage never reaches the disk at first.');
+  s.apply(later);
+  s.flush();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'voice.json'), 'utf8')).lastSeq, saved, 'the cursor on disk stays behind');
+  assert.equal(store(dir).cursor().after, saved, 'after a restart Voice replays the passage again');
+  fs.rmSync(file, { recursive: true });
+  s.flush();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'voice.json'), 'utf8')).lastSeq, later.seq);
+  assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).passages['mic-000090000']);
+  s.close();
+});
+
 test('a damaged voice.json or meeting file is kept aside, never overwritten, and Voice is asked for the meeting again', () => {
   const dir = tempDir('rukoo-voice-store-');
   const s = store(dir);
