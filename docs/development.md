@@ -30,7 +30,7 @@ npm run test:e2e  # Playwright drives the real Electron app; chat tests use scri
 
 The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.email) and skip themselves when it's unreachable.
 
-Headless Electron tests on Linux need an X display and a window manager, so minimize and restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04, Windows and macOS, and runs the Mac-specific Electron tests on both Intel and Apple Silicon, again against the built app. The demo suite doesn't verify real mail synchronization, native tray availability or live agent authentication on every Linux desktop.
+Headless Electron tests on Linux need an X display and a window manager, so minimize and restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04, Windows and macOS, and runs the Mac-specific Electron tests on both Intel and Apple Silicon, again against the built app. On Windows and Ubuntu it splits the Electron tests over three runners with `--shard=N/3 --fully-parallel`, so a run takes about a third of the time and a failed shard can be rerun on its own. The demo suite doesn't verify real mail synchronization, native tray availability or live agent authentication on every Linux desktop.
 
 ## Screenshots
 
