@@ -125,6 +125,20 @@ mod tests {
     }
 
     #[test]
+    fn every_notification_title_the_engine_sends_is_in_both_catalogs() {
+        let catalog = Catalog::embedded();
+        let api = include_str!("../../../ui/API.md");
+        for key in voice_engine::NOTIFY_TITLES {
+            assert!(catalog.en.contains_key(*key), "en.json lacks {key}");
+            assert!(catalog.nl.contains_key(*key), "nl.json lacks {key}");
+            assert!(
+                api.contains(&format!("`{key}`")),
+                "API.md doesn't list {key}"
+            );
+        }
+    }
+
+    #[test]
     fn api_md_lists_every_key_the_app_reads() {
         let api = include_str!("../../../ui/API.md");
         let start = api

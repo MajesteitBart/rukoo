@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
-use voice_engine::{Notification, PillSnapshot, TrayState, UiSink};
+use voice_engine::{Notification, PillRepair, PillSnapshot, TrayState, UiSink};
 
 use crate::catalog::Catalog;
 use crate::engine::EngineSlot;
@@ -58,5 +58,9 @@ impl UiSink for AppSink {
 
     fn ui_changed(&self) {
         self.refresh_ui();
+    }
+
+    fn pill_repair(&self, seq: u64, repair: PillRepair) {
+        self.pill.engine_repair(seq, repair);
     }
 }

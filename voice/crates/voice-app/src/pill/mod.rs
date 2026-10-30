@@ -20,7 +20,7 @@ use serde_json::json;
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
-use voice_engine::{PillPhase, PillSnapshot, UiOptions};
+use voice_engine::{PillPhase, PillRepair, PillSnapshot, UiOptions};
 
 use crate::catalog::{keys, Catalog};
 use crate::engine::EngineSlot;
@@ -75,6 +75,24 @@ struct Inner {
     raise_queued: bool,
     hit_visible: bool,
     monitor: Option<window::Monitor>,
+    /// The newest snapshot repaired, and how far: the app's watchdog and the engine's
+    /// `pill_repair` both watch the paint, and one of them is enough.
+    repaired: (u64, Repair),
+}
+
+/// How far a repair went for one snapshot; a rebuild includes a nudge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Repair {
+    #[default]
+    None,
+    Nudge,
+    Rebuild,
+}
+
+/// Whether a repair of snapshot `seq` still has work: it shows, isn't painted, and nobody
+/// repaired it (or a newer one) this far yet.
+fn repair_due(shown: bool, acked: u64, seq: u64, repaired: (u64, Repair), want: Repair) -> bool {
+    shown && acked < seq && (repaired.0 < seq || (repaired.0 == seq && repaired.1 < want))
 }
 
 pub struct Pill {
@@ -143,6 +161,7 @@ impl Pill {
                 raise_queued: false,
                 hit_visible: false,
                 monitor: None,
+                repaired: (0, Repair::None),
             }),
         })
     }
@@ -281,6 +300,37 @@ impl Pill {
         }
     }
 
+    /// The engine's paint watchdog (`UiSink::pill_repair`): the page didn't ack `seq`. A nudge
+    /// reapplies size, position, styles and topmost; a rebuild makes a new window, off the event
+    /// loop thread, where building a WebView2 window would deadlock.
+    pub fn engine_repair(self: &Arc<Self>, seq: u64, repair: PillRepair) {
+        let want = match repair {
+            PillRepair::Nudge => Repair::Nudge,
+            PillRepair::Rebuild => Repair::Rebuild,
+        };
+        if !self.claim_repair(seq, want) {
+            return;
+        }
+        log::warn!("pill: the engine saw no paint of snapshot {seq}; {repair:?}");
+        match repair {
+            PillRepair::Nudge => self.on_main(|p| p.nudge_now()),
+            PillRepair::Rebuild => {
+                let this = self.clone();
+                thread::spawn(move || this.rebuild(seq));
+            }
+        }
+    }
+
+    /// Takes on a repair unless it is done or not needed.
+    fn claim_repair(&self, seq: u64, want: Repair) -> bool {
+        let mut i = self.lock();
+        if !repair_due(i.shown, i.acked, seq, i.repaired, want) {
+            return false;
+        }
+        i.repaired = (seq, want);
+        true
+    }
+
     pub fn level(&self, level: f32) {
         let label = self.label();
         let _ = self
@@ -387,6 +437,24 @@ impl Pill {
         }
         self.update_hit();
         self.lock().last_raise = Some(Instant::now());
+    }
+
+    /// Size, position, styles and topmost again, so WebView2 paints (#13) and the pill is on top
+    /// (#14). Event loop thread.
+    fn nudge_now(self: &Arc<Self>) {
+        if let Some(win) = self.window() {
+            let _ = win.set_size(LogicalSize::new(place::WINDOW_W + 1.0, place::WINDOW_H));
+            let _ = win.set_size(LogicalSize::new(place::WINDOW_W, place::WINDOW_H));
+            let (monitor, edge) = {
+                let i = self.lock();
+                (i.monitor, i.snapshot.as_ref().map(|s| s.edge))
+            };
+            if let (Some(monitor), Some(edge)) = (monitor, edge) {
+                window::place(&win, monitor, edge);
+            }
+            window::apply_styles(&win);
+        }
+        self.raise_now();
     }
 
     fn replace_if_moved(self: &Arc<Self>) {
@@ -599,23 +667,20 @@ impl Pill {
         if self.watch_state(seq, generation).is_none() {
             return;
         }
-        log::warn!(
-            "pill: no paint {} ms after showing snapshot {seq}; nudging the window",
-            NUDGE_AFTER.as_millis()
-        );
-        self.on_main(|p| {
-            if let Some(win) = p.window() {
-                let _ = win.set_size(LogicalSize::new(place::WINDOW_W + 1.0, place::WINDOW_H));
-                let _ = win.set_size(LogicalSize::new(place::WINDOW_W, place::WINDOW_H));
-                window::apply_styles(&win);
-            }
-            p.raise_now();
-        });
+        if self.claim_repair(seq, Repair::Nudge) {
+            log::warn!(
+                "pill: no paint {} ms after showing snapshot {seq}; nudging the window",
+                NUDGE_AFTER.as_millis()
+            );
+            self.on_main(|p| p.nudge_now());
+        }
         thread::sleep(REBUILD_AFTER - NUDGE_AFTER);
         if self.watch_state(seq, generation).is_none() {
             return;
         }
-        self.rebuild(seq);
+        if self.claim_repair(seq, Repair::Rebuild) {
+            self.rebuild(seq);
+        }
     }
 
     /// Replaces the pill window with a new one. Runs on the watchdog's thread, never the event loop's.
@@ -645,5 +710,34 @@ impl Pill {
         if let Err(error) = self.create() {
             log::error!("pill: could not rebuild the window: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_repair_per_snapshot_and_step() {
+        let none = (0, Repair::None);
+        assert!(repair_due(true, 4, 5, none, Repair::Nudge));
+        // Painted, or hidden: nothing to repair.
+        assert!(!repair_due(true, 5, 5, none, Repair::Nudge));
+        assert!(!repair_due(false, 4, 5, none, Repair::Rebuild));
+        // The other watchdog nudged this snapshot already; a rebuild can still follow.
+        let nudged = (5, Repair::Nudge);
+        assert!(!repair_due(true, 4, 5, nudged, Repair::Nudge));
+        assert!(repair_due(true, 4, 5, nudged, Repair::Rebuild));
+        assert!(!repair_due(
+            true,
+            4,
+            5,
+            (5, Repair::Rebuild),
+            Repair::Rebuild
+        ));
+        // A late repair of an older snapshot after a newer one was handled does nothing.
+        assert!(!repair_due(true, 3, 4, nudged, Repair::Rebuild));
+        // A newer snapshot gets its own repairs.
+        assert!(repair_due(true, 5, 6, (5, Repair::Rebuild), Repair::Nudge));
     }
 }

@@ -222,6 +222,30 @@
     "message": "Quit Rukoo Voice",
     "description": "Tray menu item that quits the app. A recording meeting keeps recording in its own process. Read by voice-app (see voice/ui/API.md)."
   },
+  "app.notify.dictationFailed": {
+    "message": "Dictation failed",
+    "description": "Title of a tray notification after a dictation failed; the body is the full error, often an English message from the provider. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.rewriteFailed": {
+    "message": "Rewrite failed",
+    "description": "Title of a tray notification after rewriting the dictation or the selected text failed; the body says why. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.noTextBox": {
+    "message": "No text box selected",
+    "description": "Title of a tray notification when no text field had focus as the dictated text went out; Voice inserts it anyway. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.meeting": {
+    "message": "Meeting recording",
+    "description": "Title of a tray notification about a meeting: it was cut off and saved, couldn't be stopped, or its transcript failed. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.settings": {
+    "message": "Rukoo Voice Settings",
+    "description": "Title of a tray notification about Settings, such as a damaged settings file Voice replaced with defaults, or an Ownkey import that failed. Read by voice-app (see voice/ui/API.md)."
+  },
+  "app.notify.welcome": {
+    "message": "Welcome to Rukoo Voice",
+    "description": "Title of the tray notification on the first start when dictation can't work yet; the body points to Settings > Transcription. Read by voice-app (see voice/ui/API.md)."
+  },
   "settings.title": {
     "message": "Rukoo Voice Settings",
     "description": "Settings: the window title. The app sets it on the native window too. voice/ui/settings.html; voice/ui/settings.js (applyLanguage)."

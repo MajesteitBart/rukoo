@@ -129,6 +129,7 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 - `settings.title`: the Settings window's title.
 - `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`.
 - `app.tray.tooltip`, `app.tray.tooltipRecording`, `app.tray.settings`, `app.tray.startMeeting`, `app.tray.pauseMeeting`, `app.tray.resumeMeeting`, `app.tray.stopMeeting`, `app.tray.quit`: the tray.
+- `app.notify.dictationFailed`, `app.notify.rewriteFailed`, `app.notify.noTextBox`, `app.notify.meeting`, `app.notify.settings`, `app.notify.welcome`: the titles of the engine's tray notifications (`Notification.title_key`). The body comes from the engine as it is.
 
 `test/voice-ui-i18n.test.js` checks that every key in this list exists in both catalogs.
 
