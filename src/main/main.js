@@ -372,6 +372,35 @@ function harden(w) {
   });
 }
 
+// The spelling a window's last right-click in a text field found, by its webContents: { word, suggestions }.
+const spelling = new WeakMap();
+
+// Right-click in a text field. Only this event knows whether the word under the pointer is misspelled and what could
+// replace it, so it goes to the window, which draws its own menu (the composer's text, editmenu.js); other fields
+// ignore it. The word and its suggestions stay here for the pick: a window can replace the word with one of them or
+// add that word to the dictionary, and nothing else. An email's frame stops its contextmenu event for its own menu,
+// so its right-clicks never get here.
+function forwardEditMenu(w) {
+  const contents = w.webContents;
+  contents.on('context-menu', async (_event, params) => {
+    if (!params.isEditable) return;
+    const word = params.misspelledWord || '';
+    const suggestions = word ? (params.dictionarySuggestions || []).slice(0, 5) : [];
+    spelling.set(contents, { word, suggestions });
+    // Paste is on when the clipboard holds something. A clipboard that can't be read leaves it on, as Ctrl+V would
+    // still try.
+    const types = await clipboard.read().then(
+      (items) => items.flatMap((item) => item.types),
+      () => null
+    );
+    if (contents.isDestroyed()) return;
+    contents.send('mail:event', {
+      type: 'edit-menu',
+      payload: { word, suggestions, canPaste: !types || types.length > 0, canPastePlain: !types || types.includes('text/plain') }
+    });
+  });
+}
+
 // One zoom level for the main window and every compose window. Settings follows it through the 'zoom' event;
 // nothing else in the windows depends on it, so it is saved without the 'updated' redraw.
 function setZoom(level) {
@@ -528,6 +557,7 @@ function openComposeWindow(input) {
   composeWindows.set(id, { win: w, opts, draftId: opts.mode === 'draft' ? opts.id : null });
   w.on('closed', () => composeWindows.delete(id));
   harden(w);
+  forwardEditMenu(w);
   watchZoom(w);
   watchQuit(w);
   if (!process.env.SEM_HIDDEN) windowState.track('compose', w);
@@ -1170,9 +1200,25 @@ Object.assign(api, {
 
 // Calls that act on the window that makes them.
 const windowApi = {
-  // copy: the reader's context menu, for the selection in the email frame it has just focused.
+  // copy: the reader's context menu, for the selection in the email frame it has just focused. cut, paste and
+  // pasteAndMatchStyle (paste as plain text): the composer's context menu, for its text (editmenu.js).
   nativeEdit: (sender, action) => {
-    if (['undo', 'redo', 'selectAll', 'copy'].includes(action)) sender[action]();
+    if (['undo', 'redo', 'selectAll', 'copy', 'cut', 'paste', 'pasteAndMatchStyle'].includes(action)) sender[action]();
+  },
+  // The spelling part of the composer's context menu: one of the suggestions forwardEditMenu sent for the word that
+  // was right-clicked, or that word into the dictionary. Either one is used once.
+  replaceMisspelling: (sender, word) => {
+    const found = spelling.get(sender);
+    if (!found || typeof word !== 'string' || !found.suggestions.includes(word)) throw new Error('invalid');
+    spelling.delete(sender);
+    sender.replaceMisspelling(word);
+    return true;
+  },
+  addToDictionary: (sender) => {
+    const found = spelling.get(sender);
+    if (!found || !found.word) throw new Error('invalid');
+    spelling.delete(sender);
+    return sender.session.addWordToSpellCheckerDictionary(found.word);
   },
   // Save image as, from an email's context menu; the dialog belongs to the window it was asked in.
   saveImage: async (sender, src) => {
@@ -1264,6 +1310,7 @@ function createWindow({ hidden = false } = {}) {
   });
   updateApplicationMenu();
   harden(win);
+  forwardEditMenu(win);
   watchZoom(win);
   watchQuit(win);
   win.on('focus', () => {
