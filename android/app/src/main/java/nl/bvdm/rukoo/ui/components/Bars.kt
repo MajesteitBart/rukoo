@@ -14,11 +14,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -66,9 +68,15 @@ fun RkTopBar(
     background: Color = Rk.colors.panel,
     hairline: Boolean = true,
     windowInsets: WindowInsets = WindowInsets.statusBars,
+    /**
+     * A color that washes the bar from the top down and puts a 10dp dot before the title: an inbox category's tab
+     * (styles.css .list-head.cat-head), so it can't be taken for Inbox itself.
+     */
+    tint: Color? = null,
 ) {
     val c = Rk.colors
-    Column(modifier.fillMaxWidth().background(background).windowInsetsPadding(windowInsets)) {
+    val wash = if (tint != null) Modifier.background(Brush.verticalGradient(listOf(tint.copy(alpha = 0.18f), Color.Transparent))) else Modifier
+    Column(modifier.fillMaxWidth().background(background).then(wash).windowInsetsPadding(windowInsets)) {
         CompositionLocalProvider(LocalContentColor provides c.text) {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = height).padding(start = if (navigation != null) 4.dp else 18.dp, end = 4.dp),
@@ -79,7 +87,13 @@ fun RkTopBar(
                     Spacer(Modifier.width(4.dp))
                 }
                 Column(Modifier.weight(1f)) {
-                    Text(title, style = titleStyle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (tint != null) {
+                            Box(Modifier.size(10.dp).background(tint, CircleShape))
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(title, style = titleStyle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                     if (subtitle != null) {
                         Text(subtitle, style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }

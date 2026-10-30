@@ -51,11 +51,17 @@ Right-click in an email for a menu that fits what's under the pointer. A link op
 
 New mail, replies and forwards open in the reading pane, with Send at the bottom right. A button moves the message into a window of its own, which remembers its size and position. Formatting appears above selected text, or as a row you switch on. Earlier mail in a reply waits behind a "···" pill and can be left out. The composer has recipient autocomplete, Cc and Bcc, attachments by picker or drag and drop, links and inline images.
 
+Spelling is checked as you write. Right-click in the message text, or press the context menu key or `Shift+F10`, for a menu with Cut, Copy, Paste, Paste as plain text and Select all. On a misspelled word it starts with the spell checker's suggestions, which replace the word, and Add to dictionary. The spell checker follows the computer's language, not the language of the email.
+
 Drafts save to the server's Drafts folder while you write. Opening another message keeps what you wrote as a draft. Closing with unsaved changes asks whether to keep them.
 
 Signatures are plain text or formatted. Paste one from another mail app or a web page, write it in Settings with bold, links, colors and images, or edit its HTML. There is a general signature and one per account, each with a preview. Rukoo cleans pasted HTML: scripts, forms, frames, event handlers and unsafe links are removed. Images in a signature, or inserted in a message, are sent as inline attachments, so mail apps that drop embedded image data still show them. Images from the web stay links to the web. The plain-text part of the mail carries the signature as text.
 
 The composer's calendar button inserts your [booking link](booking.md) or a list of your free times, and a line under your signature can carry the link.
+
+Type `@` and a name in the text to mention someone. The suggestions start with the people in the thread: the email's recipients, the people on the email you answer, and the rest of the conversation as far as Rukoo has synced it. People from the rest of your synced mail come after them. Arrow keys move through the list, and Enter or Tab picks. Picking someone puts "@Name" in the text, or the part of the address before the @ for someone without a name, and adds them to Cc if they aren't on the email yet. Someone already in To, Cc or Bcc only gets the mention. Deleting a mention leaves the recipients as they are. An email address you type, quoted mail and your signature never open the list. A comma or colon typed right after a mention replaces the space after it, so "@Bob:" comes out as written.
+
+In the sent email a mention is a mailto: link to that person, as Outlook and Gmail send them, and the plain-text part reads "@Name". Only people in To or Cc get the link. A mention of someone in Bcc goes out as plain text without their address, so the other recipients don't see it. Saved drafts keep their mentions.
 
 ## Swipe, quick actions and keyboard
 

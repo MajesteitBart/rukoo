@@ -4,8 +4,8 @@
   "name": "rukoo-account",
   "main": "src/index.js",
   "compatibility_date": "2026-10-20",
-  // The booking pages' font files (src/fonts.js), bundled as binary data.
-  "rules": [{ "type": "Data", "globs": ["**/*.woff2"] }],
+  // The booking pages' font files (src/fonts.js) and icons (src/icons.js), bundled as binary data.
+  "rules": [{ "type": "Data", "globs": ["**/*.woff2", "**/*.ico", "**/*.png", "**/*.svg"] }],
 
   // One Durable Object per account, each with its own SQLite database.
   // REGISTRY: one object for the whole server that counts the accounts, for MAX_ACCOUNTS.

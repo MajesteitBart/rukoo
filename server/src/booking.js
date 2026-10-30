@@ -13,7 +13,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { blob, fromBase64url, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import { ACCOUNT_NAME, accountObject, configProblem, jurisdiction } from './config.js';
 import { saltedHash, seal, unwrapManageKey, wrapManageKey } from './seal.js';
-import { expiresAt, isOpen, movingType, nearest, openSlots, resolveType } from './slots.js';
+import { expiresAt, isOpen, lengths, movingType, nearest, openSlots, resolveType, withLength } from './slots.js';
 import { DAY, zonedParts } from './zone.js';
 
 // The owner of a page whose account was deleted: deleted:<hash of the deleting device's handleKey> (wipe()).
@@ -163,18 +163,19 @@ export class Booking extends DurableObject {
     };
   }
 
-  // Open starts of one type in [from, to). type null picks the only visible type. exclude: { id, keyHash } of a
-  // booking the guest is moving, which then doesn't count against its own new time (the key has to match), and whose
-  // own length the starts of its type are for (movingType()); the type returned has that length then.
-  slots({ type, from, to, exclude = null }, times) {
+  // Open starts of one type in [from, to). type null picks the only visible type; duration (minutes) one of its
+  // lengths, null its default. exclude: { id, keyHash } of a booking the guest is moving, which then doesn't count
+  // against its own new time (the key has to match), and whose own length the starts of its type are for
+  // (movingType()); the type returned has that length then.
+  slots({ type, duration = null, from, to, exclude = null }, times) {
     const now = Date.now();
     const page = this.#page();
     if (!page) return fail('not_found');
     if (this.#moved(page, now)) return fail('moved', { movedTo: page.movedTo });
     const info = this.#info(page, now, times);
     if (!info.accepting) return fail('not_accepting', { page: info });
-    const resolved = resolveType(info.profile, type);
-    if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible });
+    const resolved = resolveType(info.profile, type, duration);
+    if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible, durations: resolved.durations });
     this.#expire(now);
     const moving = this.#excluded(exclude);
     const slotType = movingType(resolved.type, moving);
@@ -183,9 +184,10 @@ export class Booking extends DurableObject {
     return { ok: true, page: info, type: slotType, starts, now };
   }
 
-  // The open starts of every visible type in [from, to), at most limit each: the landing page's and llms.txt's
-  // "next open times". With slug, that type only (hidden types too). exclude as for slots().
-  overview({ from, to, limit = 40, slug = null, exclude = null }, times) {
+  // The open starts of every visible type in [from, to), at most limit each, at each type's default length: the
+  // landing page's and llms.txt's "next open times". With slug, that type only (hidden types too), at duration when
+  // it is one of its lengths. exclude as for slots().
+  overview({ from, to, limit = 40, slug = null, duration = null, exclude = null }, times) {
     const now = Date.now();
     const page = this.#page();
     if (!page) return fail('not_found');
@@ -195,8 +197,9 @@ export class Booking extends DurableObject {
     this.#expire(now);
     const moving = this.#excluded(exclude);
     const slots = {};
-    for (const type of info.profile.types) {
-      if (slug ? type.slug !== slug : type.hidden) continue;
+    for (const listed of info.profile.types) {
+      if (slug ? listed.slug !== slug : listed.hidden) continue;
+      const type = slug && duration !== null && lengths(listed).includes(duration) ? withLength(listed, duration) : listed;
       slots[type.slug] = openSlots({ ...this.#slotInput(page, movingType(type, moving), now, info), exclude: moving?.id ?? null, from, to })
         .slice(0, limit)
         .map((s) => s.start);
@@ -205,15 +208,16 @@ export class Booking extends DurableObject {
   }
 
   // Whether one start is open, and if not the nearest open ones: for the booking form a link opens. Reads only.
-  check({ type, start, exclude = null }, times) {
+  // duration as for slots().
+  check({ type, duration = null, start, exclude = null }, times) {
     const now = Date.now();
     const page = this.#page();
     if (!page) return fail('not_found');
     if (this.#moved(page, now)) return fail('moved', { movedTo: page.movedTo });
     const info = this.#info(page, now, times);
     if (!info.accepting) return fail('not_accepting', { page: info });
-    const resolved = resolveType(info.profile, type);
-    if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible });
+    const resolved = resolveType(info.profile, type, duration);
+    if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible, durations: resolved.durations });
     this.#expire(now);
     const moving = this.#excluded(exclude);
     const slotType = movingType(resolved.type, moving);
@@ -241,7 +245,8 @@ export class Booking extends DurableObject {
 
   // ---- Booking ----
 
-  // input: { type, start, name, email, notes, timeZone, locale, via, channel, idempotencyKey, network, uidHost }.
+  // input: { type, duration, start, name, email, notes, timeZone, locale, via, channel, idempotencyKey, network,
+  // uidHost }. duration: the length the guest picked in minutes, or null for the type's default.
   async book(input, times) {
     for (let attempt = 0; attempt < 3; attempt++) {
       // The page as it is now: its key, the type and the day's salt. A page that can't take the booking stops it
@@ -277,7 +282,7 @@ export class Booking extends DurableObject {
       if (input.idempotencyKey) {
         idem = {
           key: await saltedHash(snap.salt, `idempotency\n${input.idempotencyKey}`),
-          bodyHash: toBase64url(await sha256(utf8(bodyText(input, snap.type.slug)))),
+          bodyHash: toBase64url(await sha256(utf8(bodyText(input, snap.type.slug, input.duration ?? null)))),
           wrapped: await wrapManageKey(input.idempotencyKey, bookingId, manageKey)
         };
       }
@@ -315,8 +320,9 @@ export class Booking extends DurableObject {
     if (this.#moved(page, now)) return fail('moved', { movedTo: page.movedTo });
     const info = this.#info(page, now, times);
     if (!info.accepting) return fail('not_accepting', { page: info });
-    const resolved = resolveType(info.profile, input.type);
-    if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible });
+    // The type at the length the guest picked: the booking's end, its slot check and the sealed details follow it.
+    const resolved = resolveType(info.profile, input.type, input.duration ?? null);
+    if (resolved.error) return fail(resolved.error, { page: info, visible: resolved.visible, durations: resolved.durations });
     const day = this.#rollDay(info.profile, now);
     return {
       ok: true,
@@ -346,8 +352,9 @@ export class Booking extends DurableObject {
     if (!page) return fail('not_found');
     const info = this.#info(page, now, times);
     if (!info.accepting) return fail('not_accepting', { page: info });
-    const resolved = resolveType(info.profile, input.type);
-    // The page changed while the details were sealed: seal again against what it is now.
+    const resolved = resolveType(info.profile, input.type, input.duration ?? null);
+    // The page changed while the details were sealed: seal again against what it is now. A length the guest picked
+    // that the type no longer offers fails on the next try; without one, a changed default length gives a new end.
     if (
       resolved.error ||
       resolved.type.slug !== snap.type.slug ||
@@ -913,9 +920,11 @@ export class Booking extends DurableObject {
 }
 
 // What an Idempotency-Key's body hash is made of: the booking as checked, so field order and spelling don't matter,
-// only what would be booked.
-function bodyText(input, type) {
-  return JSON.stringify([type, input.start, input.name, input.email, input.notes, input.timeZone, input.via]);
+// only what would be booked. A length the guest named counts; a body without one hashes as it did before guests
+// could pick a length, so a retry across a server update still matches.
+function bodyText(input, type, duration) {
+  const fields = [type, input.start, input.name, input.email, input.notes, input.timeZone, input.via];
+  return JSON.stringify(duration === null ? fields : [...fields, duration]);
 }
 
 // A booking as the host's devices get it (PROTOCOL.md, GET /v1/booking/bookings).

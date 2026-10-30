@@ -42,6 +42,7 @@
     </plurals>
     <string name="mailbox_message_unknown_sender">(Onbekende afzender)</string>
     <string name="mailbox_message_vip">VIP</string>
+    <string name="mailbox_message_account">Account: %1$s</string>
     <string name="mailbox_search_all_accounts">Alle accounts</string>
     <string name="mailbox_search_all_folders">Alle mappen</string>
     <string name="mailbox_search_folder_named">Deze map (%1$s)</string>

@@ -9,6 +9,7 @@ import { sha256, utf8 } from './bytes.js';
 import { blockedHandles, bookingBase, bookingObject, bookingOrigin, bookingTimes, config } from './config.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
+import { lengths } from './slots.js';
 import { DAY, addDays, daysBetween, zonedInstant, zonedParts } from './zone.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -38,8 +39,9 @@ export function links(env, url, handle) {
     mcp: `${base}/mcp`,
     privacy: config(env, url).operator.privacy,
     type: (slug) => `${page}/${slug}`,
-    slotsFor: (slug) => `${page}/api/slots?type=${encodeURIComponent(slug)}`,
-    prepare: (slug, start) => `${page}/${slug}?slot=${slotParam(start)}`,
+    // duration: a length other than the type's default, or null.
+    slotsFor: (slug, duration = null) => `${page}/api/slots?type=${encodeURIComponent(slug)}${duration ? `&duration=${duration}` : ''}`,
+    prepare: (slug, start, duration = null) => `${page}/${slug}?slot=${slotParam(start)}${duration ? `&duration=${duration}` : ''}`,
     manage: (id, key) => `${page}/booking/${id}?k=${encodeURIComponent(key)}`,
     ics: (id, key) => `${page}/booking/${id}.ics?k=${encodeURIComponent(key)}`
   };
@@ -79,6 +81,7 @@ export function publicProfile(page) {
       slug: t.slug,
       title: t.title,
       duration: t.duration,
+      durations: lengths(t),
       description: t.description,
       location: publicLocation(t.location),
       needsApproval: t.confirm || page.stale,
@@ -95,6 +98,13 @@ function publicLocation(location) {
 
 export function visibleTypes(profile) {
   return profile ? profile.types.filter((t) => !t.hidden) : [];
+}
+
+// A type's lengths for assistants: '30 minutes', '15, 30 or 60 minutes'.
+export function lengthsText(durations) {
+  const list = durations.map(String);
+  if (list.length === 1) return `${list[0]} minutes`;
+  return `${list.slice(0, -1).join(', ')} or ${list[list.length - 1]} minutes`;
 }
 
 // ---- Times ----
@@ -166,9 +176,9 @@ async function excluded(exclude) {
   return hash && input.BOOKING_ID.test(exclude.id) ? { id: exclude.id, keyHash: hash } : null;
 }
 
-// Open starts of one type in a date range on a zone's clock. query: { type, from, to, timeZone } as slotQuery()
-// returns them, plus exclude: { id, key } for a guest moving their booking. Returns { ok: true, page, type, starts,
-// timeZone, from, to, nextFrom } or the object's failure.
+// Open starts of one type in a date range on a zone's clock. query: { type, duration, from, to, timeZone } as
+// slotQuery() returns them, plus exclude: { id, key } for a guest moving their booking. Returns { ok: true, page,
+// type, starts, timeZone, from, to, nextFrom } or the object's failure; type has the length the starts are for.
 export async function listSlots(env, handle, query) {
   pathHandle(env, handle);
   const stub = bookingObject(env, handle);
@@ -180,7 +190,7 @@ export async function listSlots(env, handle, query) {
   const timeZone = query.timeZone ?? view.profile.timeZone;
   const range = slotRange({ from: query.from, to: query.to, timeZone });
   const exclude = await excluded(query.exclude);
-  const result = await stub.slots({ type: query.type ?? null, from: range.fromMs, to: range.toMs, exclude }, times);
+  const result = await stub.slots({ type: query.type ?? null, duration: query.duration ?? null, from: range.fromMs, to: range.toMs, exclude }, times);
   if (!result.ok) return result;
   const horizonEnd = result.now + result.type.horizon * DAY;
   return {
@@ -195,22 +205,22 @@ export async function listSlots(env, handle, query) {
   };
 }
 
-// The next open times of every visible type (or of one type, hidden ones too), for the landing page, the type
-// pages and llms.txt: the next days days, at most limit each. exclude as for listSlots().
-export async function nextSlots(env, handle, { days = 7, limit = 40, slug = null, exclude = null } = {}) {
+// The next open times of every visible type (or of one type, hidden ones too, at duration when given), for the
+// landing page, the type pages and llms.txt: the next days days, at most limit each. exclude as for listSlots().
+export async function nextSlots(env, handle, { days = 7, limit = 40, slug = null, duration = null, exclude = null } = {}) {
   const now = Date.now();
   const skip = await excluded(exclude);
-  const result = await bookingObject(env, handle).overview({ from: now, to: now + days * DAY, limit, slug, exclude: skip }, bookingTimes(env));
+  const result = await bookingObject(env, handle).overview({ from: now, to: now + days * DAY, limit, slug, duration, exclude: skip }, bookingTimes(env));
   if (!result.ok && result.error === 'not_found') throw notFound();
   return result;
 }
 
 // Whether one start of a type is open now, and the 3 nearest open ones when it isn't: { ok: true, page, type, open,
-// alternatives, now } or the object's failure. Books and holds nothing.
-export async function checkSlot(env, handle, { type, start, exclude = null }) {
+// alternatives, now } or the object's failure. Books and holds nothing. duration: one of the type's lengths, or null.
+export async function checkSlot(env, handle, { type, duration = null, start, exclude = null }) {
   pathHandle(env, handle);
   const skip = await excluded(exclude);
-  const result = await bookingObject(env, handle).check({ type, start, exclude: skip }, bookingTimes(env));
+  const result = await bookingObject(env, handle).check({ type, duration, start, exclude: skip }, bookingTimes(env));
   if (!result.ok && result.error === 'not_found') throw notFound();
   return result;
 }
@@ -224,6 +234,7 @@ export async function createBooking(env, handle, fields, ctx) {
   return stub.book(
     {
       type: fields.type,
+      duration: fields.duration ?? null,
       start: fields.start,
       name: fields.name,
       email: fields.email,

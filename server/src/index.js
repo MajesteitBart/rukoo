@@ -70,13 +70,13 @@ async function handle(request, env) {
   const account = path === '/v1' || path.startsWith('/v1/');
   const root = bookingRoot(env);
   if (path === '/meet' || path.startsWith('/meet/')) return root ? toRoot(request, root, url) : meet(request, env, url);
-  // At the root of BOOKING_ORIGIN every other path is a booking page's, /mcp, /booker.js, /llms.txt or a font.
+  // At the root of BOOKING_ORIGIN every other path is a booking page's, /mcp, /booker.js, /llms.txt, an icon or a font.
   if (root === url.origin && !account) return meet(request, env, url);
   // Where the pages lived before: links shared from there keep working. Reads go to the same path under the new
   // address. Posts, keyed reads and the guest's manage page are answered here, with the new address in their answers.
   // A form's post and the manage page it leads to stay on the form's own origin (form-action 'self' covers the whole
   // navigation), and clients drop the Authorization header on a redirect to another origin. That page loads the
-  // script and fonts from here too, under its own CSP.
+  // script, icons and fonts from here too, under its own CSP.
   if (root && !account && bookingFormerRoots(env).has(url.origin)) {
     const here = !reading || request.headers.has('authorization') || MANAGE_PATH.test(path) || PAGE_ASSET.test(path);
     return here ? meet(request, env, url) : toRoot(request, root, url, path);
@@ -352,11 +352,14 @@ function notFound() {
 // cross-site fetch can follow them. rest: the path under the pages, /meet taken off.
 // A guest's manage page or calendar file, /<handle>/booking/<id>[.ics].
 const MANAGE_PATH = /^\/[^/]+\/booking\/[^/]+$/;
-// The pages' own script and fonts at the root.
-const PAGE_ASSET = /^\/(?:booker\.js|assets\/fonts\/[^/]+)$/;
+// The pages' script and icons, which are at the root there and under /meet/assets/ without BOOKING_ORIGIN.
+const ROOT_FILE = /^\/(?:booker\.js|favicon\.ico|favicon\.svg|apple-touch-icon\.png)$/;
+// The pages' own script, icons and fonts at the root.
+const PAGE_ASSET = /^\/(?:booker\.js|favicon\.ico|favicon\.svg|apple-touch-icon\.png|assets\/fonts\/[^/]+)$/;
 
 function toRoot(request, root, url, rest = url.pathname.slice('/meet'.length)) {
-  if (url.pathname === '/meet/assets/booker.js') rest = '/booker.js';
+  const file = url.pathname.slice('/meet/assets'.length);
+  if (url.pathname.startsWith('/meet/assets/') && ROOT_FILE.test(file)) rest = file;
   const reading = request.method === 'GET' || request.method === 'HEAD';
   return redirect(reading ? 301 : 308, `${root}${rest || '/'}${url.search}`, reading ? READ_CORS : {});
 }

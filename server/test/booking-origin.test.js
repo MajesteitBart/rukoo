@@ -34,16 +34,33 @@ function pageLinks(html) {
 }
 
 // Each link on the page is the page's own (relative or on BOOKING), the MCP endpoint, the privacy statement, the
-// script or a font; none goes through /meet.
+// script, an icon or a font; none goes through /meet.
 function expectRootLinks(html, handle) {
   const found = pageLinks(html);
   expect(found.length).toBeGreaterThan(3);
   for (const link of found) {
     expect(link).not.toContain('/meet');
     const path = link.startsWith(`${BOOKING}/`) ? link.slice(BOOKING.length) : link;
-    expect(path, link).toMatch(new RegExp(`^/(?:${handle}(?:[/?#.]|$)|privacy(?:[?#]|$)|booker\\.js$|mcp$|assets/fonts/inter-[a-z-]+\\.woff2$)`));
+    expect(path, link).toMatch(
+      new RegExp(`^/(?:${handle}(?:[/?#.]|$)|privacy(?:[?#]|$)|booker\\.js$|mcp$|favicon\\.(?:ico|svg)$|apple-touch-icon\\.png$|assets/fonts/inter-[a-z-]+\\.woff2$)`)
+    );
   }
 }
+
+// The icon links in every page's head, for the icons under dir.
+function iconLinks(dir) {
+  return [
+    `<link rel="icon" href="${dir}favicon.ico" sizes="32x32">`,
+    `<link rel="icon" href="${dir}favicon.svg" type="image/svg+xml">`,
+    `<link rel="apple-touch-icon" href="${dir}apple-touch-icon.png">`
+  ].join('\n');
+}
+
+const ICONS = [
+  ['/favicon.ico', 'image/x-icon'],
+  ['/favicon.svg', 'image/svg+xml'],
+  ['/apple-touch-icon.png', 'image/png']
+];
 
 // Every absolute address in a JSON answer.
 function urls(value, out = []) {
@@ -236,6 +253,34 @@ describe('booking pages at the root of BOOKING_ORIGIN', () => {
     expect(page.headers.get('content-security-policy')).toContain("font-src 'self'");
   });
 
+  it('serves the icons at the root, where browsers also look for /favicon.ico, and every page links them', async () => {
+    for (const [path, type] of ICONS) {
+      const res = await at('GET', path);
+      expect(res.status, path).toBe(200);
+      expect(res.headers.get('content-type'), path).toBe(type);
+      expect(res.headers.get('cache-control'), path).toBe('public, max-age=86400');
+      expect(res.headers.get('x-content-type-options'), path).toBe('nosniff');
+      expect(res.text.length, path).toBeGreaterThan(500);
+      expect((await at('HEAD', path)).status, path).toBe(200);
+      expect((await at('POST', path, { body: {} })).status, path).not.toBe(200);
+    }
+    for (const path of ['/assets/favicon.svg', '/favicon.svg/x', '/apple-touch-icon-precomposed.png']) {
+      expect((await at('GET', path)).status, path).toBe(404);
+    }
+
+    const { handle } = await host(signup);
+    const booked = await at('POST', `/${handle}/api/bookings`, { body: { type: '30min', start: iso(slotAhead(3)), ...guest() }, headers: { origin: BOOKING } });
+    expect(booked.status).toBe(201);
+    const manage = booked.body.manage_url.slice(BOOKING.length);
+    for (const path of [`/${handle}`, `/${handle}/30min`, manage, '/nobody-has-this']) {
+      const res = await at('GET', path);
+      expect(res.text, path).toContain(iconLinks('/'));
+      expectRootLinks(res.text, path === '/nobody-has-this' ? 'nobody-has-this' : handle);
+    }
+    // The page's CSP lets them load: they are on the page's own origin.
+    expect((await at('GET', `/${handle}`)).headers.get('content-security-policy')).toContain("img-src 'self' data:");
+  });
+
   it('answers MCP at /mcp, with links on the root layout', async () => {
     const { handle } = await host(signup);
     const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } });
@@ -311,7 +356,7 @@ describe('booking pages at the root of BOOKING_ORIGIN', () => {
 
   it('answers any other root path with the neutral 404 page', async () => {
     const bodies = new Set();
-    for (const path of ['/nobody-has-this', '/download', '/github', '/Bart', '/robots.txt', '/favicon.ico', '/nobody-has-this/30min', '/meeting']) {
+    for (const path of ['/nobody-has-this', '/download', '/github', '/Bart', '/robots.txt', '/favicon.png', '/nobody-has-this/30min', '/meeting']) {
       const res = await at('GET', path);
       expect(res.status, path).toBe(404);
       expect(res.headers.get('content-type'), path).toBe('text/html; charset=utf-8');
@@ -328,7 +373,7 @@ describe('booking pages at the root of BOOKING_ORIGIN', () => {
     expect(nothing.status).toBe(404);
     expect(nothing.body.error).toBe('not_found');
     // The server's other addresses have no root layout.
-    for (const path of ['/nobody-has-this', '/booker.js', '/mcp']) expect((await old('GET', path)).body.error, path).toBe('not_found');
+    for (const path of ['/nobody-has-this', '/booker.js', '/mcp', '/favicon.ico', '/favicon.svg']) expect((await old('GET', path)).body.error, path).toBe('not_found');
   });
 
   it('keeps the website’s paths and likely future ones from being claimed', async () => {
@@ -361,7 +406,8 @@ describe('a former root of the pages, in BOOKING_FORMER_ROOTS', () => {
       ['GET', '/mcp', `${BOOKING}/mcp`],
       ['GET', '/llms.txt', `${BOOKING}/llms.txt`],
       ['GET', `/meet/${handle}`, `${BOOKING}/${handle}`],
-      ['GET', '/meet/assets/booker.js', `${BOOKING}/booker.js`]
+      ['GET', '/meet/assets/booker.js', `${BOOKING}/booker.js`],
+      ['GET', '/meet/assets/favicon.svg', `${BOOKING}/favicon.svg`]
     ];
     for (const [method, path, location] of cases) {
       const res = await was(method, path);
@@ -369,9 +415,14 @@ describe('a former root of the pages, in BOOKING_FORMER_ROOTS', () => {
       expect(res.headers.get('location'), `${method} ${path}`).toBe(location);
       expect(res.headers.get('access-control-allow-origin'), `${method} ${path}`).toBe('*');
     }
-    // The pages' script and fonts stay, for a manage page answered there.
+    // The pages' script, icons and fonts stay, for a manage page answered there: its CSP takes images only from its own
+    // origin, so a redirect would lose the icon.
     expect((await was('GET', '/booker.js')).text).toBe(BOOKER_JS);
     expect((await was('GET', '/assets/fonts/inter-latin-opsz-normal.woff2')).headers.get('content-type')).toBe('font/woff2');
+    for (const [path, type] of ICONS) {
+      const icon = await was('GET', path);
+      expect([icon.status, icon.headers.get('content-type')], path).toEqual([200, type]);
+    }
     // The account API, / and /privacy stay, as on any address.
     expect((await was('GET', '/v1/info')).body.features).toEqual(['booking']);
     expect((await was('GET', '/')).status).toBe(200);
@@ -446,6 +497,9 @@ describe('/meet with BOOKING_ORIGIN set', () => {
       ['GET', '/meet/mcp', 301, `${BOOKING}/mcp`],
       ['GET', '/meet/assets/booker.js', 301, `${BOOKING}/booker.js`],
       ['GET', '/meet/assets/fonts/inter-latin-opsz-normal.woff2', 301, `${BOOKING}/assets/fonts/inter-latin-opsz-normal.woff2`],
+      ['GET', '/meet/assets/favicon.ico', 301, `${BOOKING}/favicon.ico`],
+      ['GET', '/meet/assets/favicon.svg', 301, `${BOOKING}/favicon.svg`],
+      ['HEAD', '/meet/assets/apple-touch-icon.png', 301, `${BOOKING}/apple-touch-icon.png`],
       ['GET', '/meet', 301, `${BOOKING}/`],
       ['GET', '/meet/', 301, `${BOOKING}/`]
     ];
@@ -470,8 +524,11 @@ describe('/meet with BOOKING_ORIGIN set', () => {
       expect(res.status, vars.BOOKING_ORIGIN).toBe(200);
       expect(res.text).toContain('<script src="/meet/assets/booker.js"></script>');
       expect(res.text).toContain("src:url('/meet/assets/fonts/inter-latin-opsz-normal.woff2')");
+      expect(res.text).toContain(iconLinks('/meet/assets/'));
       expect(res.headers.get('link')).toBe(`<https://accounts.example/meet/${handle}/llms.txt>; rel="alternate"; type="text/markdown"`);
       expect((await call('GET', '/meet/assets/booker.js', { vars })).status).toBe(200);
+      expect((await call('GET', '/meet/assets/favicon.svg', { vars })).status).toBe(200);
+      expect((await call('GET', '/favicon.ico', { vars })).status).toBe(404);
       expect((await call('OPTIONS', `/meet/${handle}/api`, { vars })).status).toBe(204);
       expect((await call('GET', `/${handle}`, { vars })).status).toBe(404);
     }

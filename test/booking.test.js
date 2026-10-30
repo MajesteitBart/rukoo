@@ -551,6 +551,60 @@ test("a manage key or page address that fails its check leaves the guest's links
   assert.equal(other.pages.get('bart').bookings.get(id).status, 'confirmed');
 });
 
+test('several lengths are saved, published and reach the other computer; a booking at another length gets its end and title', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const type = host.booking.settings().types[0];
+  await assert.rejects(host.booking.save({ types: [{ ...type, durations: [15, 60] }] }), (err) => err.code === 'invalid' && err.field === 'types[0].durations');
+  await host.booking.save({ types: [{ ...type, durations: [60, 15, 30] }] });
+  assert.deepEqual(host.booking.settings().types[0].durations, [15, 30, 60]);
+  const published = srv.pages.get('bart').profile.types[0];
+  assert.deepEqual([published.duration, published.durations, published.slotInterval], [30, [15, 30, 60], null]);
+
+  // Another computer of the same account has them from the account's settings record.
+  const laptop = await computer(t, srv, { signUp: false, name: 'laptop' });
+  await laptop.account.sync();
+  const synced = laptop.booking.settings().types[0];
+  assert.deepEqual([synced.duration, synced.durations], [30, [15, 30, 60]]);
+
+  // A guest picks an hour: the event ends an hour later, and Rukoo's own title says so, in the event, the bookings
+  // list and the notification.
+  const start = slot(3, 10);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, duration: 60, guest: { name: 'Jane Doe' } });
+  const state = await host.booking.sync();
+  const ev = bookingEvent(host.fake, id);
+  assert.equal(ev.summary, '60 minute meeting: Bart and Jane Doe');
+  assert.equal(Date.parse(ev.end.dateTime) - Date.parse(ev.start.dateTime), HOUR);
+  assert.equal(state.bookings.find((b) => b.id === id).typeTitle, '60 minute meeting');
+  assert.match(host.shown.at(-1).body, /^Jane Doe booked 60 minute meeting for /);
+
+  // A title the host wrote stays as it is at every length.
+  await host.booking.save({ types: [{ ...host.booking.settings().types[0], title: 'Intro call' }] });
+  const other = await srv.book({ handle: 'bart', type: '30min', start: slot(4, 11), duration: 15, guest: { name: 'Ann Lee' } });
+  await host.booking.sync();
+  assert.equal(bookingEvent(host.fake, other.id).summary, 'Intro call: Bart and Ann Lee');
+});
+
+test('a settings record an older app stored just under the size limit keeps the page publishing', async (t) => {
+  const srv = await server(t);
+  const host = await computer(t, srv);
+  await host.booking.enable(ENABLE);
+  const current = host.booking.settings();
+  // As an app from before several lengths wrote it: ten types without durations, 12,231 of the 12,288 bytes.
+  const types = Array.from({ length: 10 }, (_, i) => {
+    const { durations, ...type } = current.types[0];
+    return { ...type, slug: `type-${i}`, description: 'é'.repeat(450) };
+  });
+  const record = { ...current, intro: '', types };
+  record.intro = 'a'.repeat(12231 - Buffer.byteLength(JSON.stringify(record), 'utf8'));
+  host.account.put('booking', `settings:${host.account.acct}`, record);
+  assert.deepEqual(host.booking.settings(), record);
+  await host.booking.publish({ force: true });
+  assert.equal(srv.pages.get('bart').profile.types.length, 10);
+  assert.equal(srv.pages.get('bart').profile.intro, record.intro);
+});
+
 test('settings are checked as a whole; a refused field keeps the record as it was', async (t) => {
   const srv = await server(t);
   const host = await computer(t, srv);

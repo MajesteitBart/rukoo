@@ -236,6 +236,12 @@ object RukooIcons {
                 path("M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14z")
                 path("M10 20.5a2.2 2.2 0 0 0 4 0")
             },
+            // Settings > Inbox categories: a category whose notifications are off.
+            "bellOff" to spec {
+                path("M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14z")
+                path("M10 20.5a2.2 2.2 0 0 0 4 0")
+                path("M4 3.5 20 20.5")
+            },
             "panelRight" to spec {
                 rect(3.5f, 4.5f, 17f, 15f, 2.5f)
                 path("M14.5 4.5v15")
@@ -353,6 +359,7 @@ object RukooIcons {
     val Sparkle: ImageVector get() = named("sparkle")
     val Clock: ImageVector get() = named("clock")
     val Bell: ImageVector get() = named("bell")
+    val BellOff: ImageVector get() = named("bellOff")
     val PanelRight: ImageVector get() = named("panelRight")
     val Calendar: ImageVector get() = named("calendar")
     val CalendarPlus: ImageVector get() = named("calendarPlus")

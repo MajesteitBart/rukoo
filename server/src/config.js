@@ -164,6 +164,13 @@ export function fontDir(env, url) {
   return `${bookingPrefix(env, url)}/assets/fonts/`;
 }
 
+// The pages' icons (icons.js), next to the script: the root itself, where browsers look for /favicon.ico, else
+// /meet/assets/.
+export function iconDir(env, url) {
+  const prefix = bookingPrefix(env, url);
+  return prefix ? `${prefix}/assets/` : '/';
+}
+
 // The origins a booking write may come from: the page's own, as served on either address.
 export function bookingOrigins(env, url) {
   return new Set([url.origin, bookingOrigin(env, url)]);

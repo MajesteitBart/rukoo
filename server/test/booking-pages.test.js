@@ -1,7 +1,7 @@
 // The human booking pages: landing, booker, filled-in form, form POST, manage page and moving a booking, without
 // JavaScript, in English and Dutch, with every query parameter checked and every host and guest string escaped.
 
-import { env } from 'cloudflare:workers';
+import { env, exports } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { call, randomIp, signup } from './helpers.js';
 import { DAY, HOUR, MINUTE, ORIGIN, book, guest, host, iso, meetingType, newHandle, page, publish, slotAhead } from './booking-helpers.js';
@@ -151,7 +151,8 @@ describe('the landing page', () => {
     expect(html).toContain(`<h3><a href="/meet/${handle}/30min">30 minute meeting</a></h3>`);
     expect(html).toContain(`<h3><a href="/meet/${handle}/long">Long talk</a></h3>`);
     expect(html).toMatch(/<ul class="details inline">(<li><svg [^>]*>.*?<\/svg><span>[^<]+<\/span><\/li>){3}<\/ul>/);
-    expect(html).toContain('<span>60 min</span></li><li><svg');
+    // A whole hour is written in hours.
+    expect(html).toContain('<span>1 h</span></li><li><svg');
     expect(html).toContain('<span>Phone call</span></li><li><svg');
     expect(html).toContain('<span>Bart van der Meeren confirms each booking</span></li></ul>');
     expect(html).not.toContain('Hidden one');
@@ -975,8 +976,11 @@ describe('the booker script', () => {
     expect((await call('HEAD', '/meet/assets/booker.js')).text).toBe('');
   });
 
-  it('swaps the zone picker with the booker, so its form keeps the chosen day', () => {
-    expect(BOOKER_JS).toContain("doc.getElementById('zone')");
+  it('swaps the zone picker and the lengths with the booker, so their links keep the chosen day', () => {
+    expect(BOOKER_JS).toContain("replace(doc, 'zone')");
+    expect(BOOKER_JS).toContain("replace(doc, 'lengths')");
+    expect(BOOKER_JS).toContain("replace(doc, 'languages')");
+    expect(BOOKER_JS).toContain('#lengths a[data-swap]');
     expect(BOOKER_JS).not.toMatch(/=>|`/);
   });
 });
@@ -994,6 +998,67 @@ describe('the pages’ font', () => {
     const html = (await call('GET', `/meet/${handle}`)).text;
     expect(html).toContain('<link rel="preload" href="/meet/assets/fonts/inter-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>');
     expect(CSS).toContain("--font:'Inter',");
+  });
+});
+
+describe('the pages’ icons', () => {
+  const TYPES = { 'favicon.ico': 'image/x-icon', 'favicon.svg': 'image/svg+xml', 'apple-touch-icon.png': 'image/png' };
+  const fetchBytes = async (path) => {
+    const res = await exports.default.fetch(new Request(`${ORIGIN}${path}`));
+    return { res, bytes: new Uint8Array(await res.arrayBuffer()) };
+  };
+
+  it('are Rukoo’s pigeon from the server itself, cached for a day, under /meet/assets/', async () => {
+    for (const [file, type] of Object.entries(TYPES)) {
+      const { res, bytes } = await fetchBytes(`/meet/assets/${file}`);
+      expect(res.status, file).toBe(200);
+      expect(res.headers.get('content-type'), file).toBe(type);
+      expect(res.headers.get('cache-control'), file).toBe('public, max-age=86400');
+      expect(res.headers.get('content-security-policy'), file).toBe(MEET_CSP);
+      expect(res.headers.get('x-content-type-options'), file).toBe('nosniff');
+      expect(bytes.length, file).toBeGreaterThan(500);
+      const head = await call('HEAD', `/meet/assets/${file}`);
+      expect([head.status, head.text], file).toEqual([200, '']);
+      expect((await call('POST', `/meet/assets/${file}`, { body: {} })).status, file).not.toBe(200);
+    }
+    for (const path of ['/meet/assets/favicon.png', '/meet/assets/constructor', '/meet/assets/favicon.svg/x', '/meet/favicon.ico']) {
+      expect((await call('GET', path)).status, path).toBe(404);
+    }
+
+    // An .ico of two PNG images, 16 and 32 pixels.
+    const ico = (await fetchBytes('/meet/assets/favicon.ico')).bytes;
+    const view = new DataView(ico.buffer);
+    expect([view.getUint16(0, true), view.getUint16(2, true), view.getUint16(4, true)]).toEqual([0, 1, 2]);
+    expect([ico[6], ico[7], ico[22], ico[23]]).toEqual([16, 16, 32, 32]);
+    for (const entry of [6, 22]) {
+      const at = view.getUint32(entry + 12, true);
+      expect([...ico.slice(at, at + 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    }
+    // 180 pixels without transparency, which iOS would fill with black.
+    const touch = (await fetchBytes('/meet/assets/apple-touch-icon.png')).bytes;
+    const png = new DataView(touch.buffer);
+    expect([png.getUint32(16), png.getUint32(20), touch[25]]).toEqual([180, 180, 2]);
+    // The head turns lighter on a dark tab bar, where the slate one disappears.
+    const svg = (await call('GET', '/meet/assets/favicon.svg')).text;
+    expect(svg).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 268 268">/);
+    expect(svg).toContain('<style>.head{fill:#3b4766}@media (prefers-color-scheme:dark){.head{fill:#5a6a96}}</style>');
+  });
+
+  it('are linked by the landing page, the booker, the booking’s page and the 404 page', async () => {
+    const { handle } = await host(signup);
+    const booked = await book(handle, { type: '30min', start: iso(slotAhead(3)), ...guest() });
+    expect(booked.status).toBe(201);
+    const manage = new URL(booked.body.manage_url);
+    const links = [
+      '<link rel="icon" href="/meet/assets/favicon.ico" sizes="32x32">',
+      '<link rel="icon" href="/meet/assets/favicon.svg" type="image/svg+xml">',
+      '<link rel="apple-touch-icon" href="/meet/assets/apple-touch-icon.png">'
+    ].join('\n');
+    for (const path of [`/meet/${handle}`, `/meet/${handle}/30min`, `${manage.pathname}${manage.search}`, '/meet/nobody-has-this']) {
+      const res = await call('GET', path);
+      expect(res.headers.get('content-type'), path).toBe('text/html; charset=utf-8');
+      expect(res.text, path).toContain(links);
+    }
   });
 });
 

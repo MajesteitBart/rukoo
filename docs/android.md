@@ -83,7 +83,7 @@ The mail goes out as HTML in the same structure desktop's composer writes (a `<d
 
 ## Sync and notifications
 
-Mail syncs when the app opens, every few minutes while it is open (Settings > Accounts, five minutes by default), and every 15 minutes in the background, which is the shortest interval Android allows. New mail gives one notification per account. An agent's reply, a waiting approval and a draft an agent wrote while you were elsewhere give a notification that opens the chat.
+Mail syncs when the app opens, every few minutes while it is open (Settings > Accounts, five minutes by default), and every 15 minutes in the background, which is the shortest interval Android allows. New mail gives one notification per account. A category whose notifications are off on this phone sends none, and while one is off, an email Jev is about to sort waits for its category, at most 20 seconds, as on the computer ([Notifications](categories.md#notifications)). An agent's reply, a waiting approval and a draft an agent wrote while you were elsewhere give a notification that opens the chat.
 
 ## Rukoo account
 
@@ -95,9 +95,9 @@ The server is `https://rukoo.io` unless you choose another while signed out; [Ru
 
 ## Inbox categories
 
-Settings > Inbox categories turns [inbox categories](categories.md) on. The folder drawer then lists them under Inbox, each with its color; one shows only its mail, under its own name, and switching clears a selection. Inbox still shows all of it, also a category the desktop keeps out of Inbox with Show in Inbox, and a search covers every category. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
+Settings > Inbox categories turns [inbox categories](categories.md) on. The folder drawer then lists them under Inbox, each with its color; one shows only its mail, under its own name with a dot and a wash of its color at the top, and switching clears a selection. Inbox shows all of it apart from the categories whose Show in Inbox is off, marked with a crossed-out eye; their unread mail leaves Inbox's count and the launcher badge's number, and Mark all as read leaves it alone. A search covers every category, and VIP and Unread still show them. Opening such an email from its notification brings up its category. Each email in Inbox, in search results, VIP and Unread carries a label with its category's color and name, which gives way before the subject on a narrow screen. In a list of several accounts, the account is a dot in its color on the sender's picture, as on the computer. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
 
-The settings page has the desktop's parts: the categories with up and down, editing a name, description and color, adding up to twelve and deleting; When Rukoo isn't sure; Sort with Jev and the TypeSafe API key, which stays on this phone, encrypted like the mail passwords; Sort the inbox again, which counts along while it runs; and the senders with a rule.
+The settings page has the desktop's parts: the categories with up and down, editing a name, description, color, Show in Inbox and Notifications, adding up to twelve and deleting; When Rukoo isn't sure; Sort with Jev and the TypeSafe API key, which stays on this phone, encrypted like the mail passwords; Sort the inbox again, which counts along while it runs; and the senders with a rule.
 
 While Jev sorts, waits for TypeSafe or can't use its key, the folder drawer says so in a line above the sync status, as the desktop's sidebar does. A tap opens a sheet with the progress, why Jev waits, and its last decisions; tap one to open that email in its category.
 
