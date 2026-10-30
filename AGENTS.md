@@ -8,6 +8,8 @@ The main process handles accounts, mail, calendar data, local storage and agent 
 
 The repository also holds Rukoo for Android in `android/`: a native Kotlin and Jetpack Compose app that ports the desktop's mail engine, agent hub, MCP tools and design to a phone, built for the Galaxy Z Fold7. It reaches Hermes and OpenClaw itself and runs Claude Code and Codex through desktop Rukoo (`src/main/agents/phonehost.js`). [docs/android.md](docs/android.md) describes it.
 
+Rukoo Voice is being built in `voice/`: push-to-talk dictation plus the meeting recorder for Rukoo, replacing Ownkey for Windows. It has no code yet. [voice/README.md](voice/README.md) has the design and [voice/AGENTS.md](voice/AGENTS.md) the rules for working there.
+
 ## What makes this project special?
 
 - **It is a desktop client connected to real accounts.** A test can change a real mailbox, even when the app runs locally. Choose the profile and account deliberately; use the test-data rules below.
@@ -148,6 +150,7 @@ The agent hub coordinates conversations and providers, and Rukoo exposes its own
 - `src/i18n/`: English source catalog, Dutch translations and locale registry. Read its nested `AGENTS.md` and [docs/translations.md](docs/translations.md) before catalog work.
 - `.agents/skills/rukoo-design/`: development design guidance and references. `skills/` contains user-facing skills shipped with the app; follow [skills/README.md](skills/README.md) for those.
 - `android/`: Rukoo for Android. `app/src/main/java/nl/bvdm/rukoo/` has `mail/`, `agents/`, `mcp/`, `desktop/` and `ui/`, mirroring the desktop's main process and renderer; [docs/android.md](docs/android.md) has the code map. Release signing reads the ignored `android/signing.properties`.
+- `voice/`: Rukoo Voice, with its own README.md and AGENTS.md. Its bridge to Rukoo has a side in `src/main/`; a change to the bridge changes both sides in the same PR.
 - `scripts/`: launch and capture helpers. `dist/`, `test-results/`, `playwright-report/` and `tmp/` are local outputs, not implementation source.
 
 ## Taste
