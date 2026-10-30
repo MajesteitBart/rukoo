@@ -454,6 +454,22 @@ function stubbornAgent() {
   return agent;
 }
 
+// An agent whose turns end at once, without a timer in between: a turn on a fast machine.
+function instantAgent() {
+  const agent = {
+    received: [],
+    async status() {
+      return { state: 'ready', detail: '' };
+    },
+    async runTurn(turn) {
+      agent.received.push({ text: turn.text, files: turn.files });
+      return { status: 'done' };
+    },
+    async dispose() {}
+  };
+  return agent;
+}
+
 test('while the agent works, Steer hands a message over within the turn and Queue sends it after the turn', async () => {
   const env = await demo();
   const { hub, events } = fakeHub(env);
@@ -680,7 +696,10 @@ test('waiting messages survive a restart with their files, and wait until the us
   const file = c.queue[0].files[0];
   await first.hub.dispose();
 
-  const { hub } = fakeHub(env);
+  // Its turns end at once, as the fake agent's can on a fast machine: the second message can be in before a check
+  // ever sees the first alone (#189's CI on Linux and macOS arm64).
+  const fake = instantAgent();
+  const { hub } = fakeHub(env, { adapters: { clark: fake } });
   await hub.start();
   try {
     const again = hub.get(c.id);
@@ -694,14 +713,18 @@ test('waiting messages survive a restart with their files, and wait until the us
     assert.ok(fs.existsSync(hub.files.path(c.id, file)), 'the start-up clean-up keeps a waiting message’s file');
     assert.equal(hub.turns.size, 0, 'nothing goes by itself after a restart');
     hub.sendQueued(c.id, again.queue[1].id);
-    const fake = hub.adapters.get('clark');
-    await until(() => fake.received.length === 1, 20000);
-    assert.equal(fake.received[0].text, 'with a file');
-    assert.equal(fake.received[0].files[0].name, 'notes.txt');
-    // That turn ended normally, so the other one follows.
-    await until(() => fake.received.length === 2, 20000);
+    // The one sent goes first; that turn ended normally, so the other one follows.
+    await until(() => fake.received.length >= 2, 20000);
     await idle(hub, c.id);
-    assert.equal(fake.received[1].text, 'steered, never read');
+    assert.deepEqual(
+      fake.received.map((r) => r.text),
+      ['with a file', 'steered, never read']
+    );
+    assert.deepEqual(
+      fake.received[0].files.map((f) => f.name),
+      ['notes.txt']
+    );
+    assert.deepEqual(again.queue, []);
     assert.ok(again.files.some((f) => f.id === file.id));
   } finally {
     await hub.dispose();
