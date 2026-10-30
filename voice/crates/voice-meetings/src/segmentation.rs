@@ -289,6 +289,17 @@ pub fn timed_passages(owned: &[Token]) -> Vec<Draft> {
         .collect()
 }
 
+/// Keeps a window's passages inside the window, `[start, end]` in ms. A word belongs to the window
+/// that holds its midpoint, but its timing can reach past the window's edges: Orukeet's duration
+/// of the last word before a pause runs into the pause. Clamped, the passages of neighbouring
+/// windows never overlap.
+pub fn within(drafts: &mut [Draft], start: u64, end: u64) {
+    for draft in drafts {
+        draft.start = draft.start.clamp(start, end);
+        draft.end = draft.end.clamp(draft.start, end);
+    }
+}
+
 /// One passage over the whole window, for recognizers that give text without timings.
 pub fn window_passage(text: &str, start: u64, end: u64) -> Option<Draft> {
     draft(start, end, text, Vec::new())
@@ -311,6 +322,33 @@ fn seconds_to_ms(seconds: f64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passages_stay_inside_their_window() {
+        // From a live run: the window ended at 25.198 s, but the duration of its last word,
+        // "yesterday.", ran to 25.588 s, past the start of the next window.
+        let owned = owned_tokens(
+            &[" yester".into(), "day".into(), ".".into()],
+            &[3.2, 3.6, 3.9],
+            &[0.4, 0.3, 0.69],
+            21.0,
+            20.0,
+            25.198,
+        );
+        let mut drafts = timed_passages(&owned);
+        assert_eq!((drafts[0].start, drafts[0].end), (24_200, 25_590));
+        within(&mut drafts, 20_000, 25_198);
+        assert_eq!((drafts[0].start, drafts[0].end), (24_200, 25_198));
+        // Context before the window can't pull a passage's start before it either.
+        let mut early = vec![Draft {
+            start: 19_400,
+            end: 20_300,
+            text: "so".into(),
+            tokens: Vec::new(),
+        }];
+        within(&mut early, 20_000, 25_198);
+        assert_eq!((early[0].start, early[0].end), (20_000, 20_300));
+    }
 
     /// A test signal: (seconds, loud) pieces, loud being a 300 Hz square wave of amplitude 4000.
     fn signal(pieces: &[(f64, bool)]) -> Vec<i16> {

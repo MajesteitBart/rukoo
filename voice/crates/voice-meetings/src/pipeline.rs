@@ -23,7 +23,7 @@ use voice_protocol::{events, MeetingState, MeetingStateChange, Passage, Speaker,
 use crate::library::{MeetingDir, MeetingFile};
 use crate::reader::{segment_samples, TrackReader, PER_MS};
 use crate::segmentation::{
-    next_boundary, owned_tokens, timed_passages, window_passage, worth_recognizing, Draft,
+    next_boundary, owned_tokens, timed_passages, window_passage, within, worth_recognizing, Draft,
     CORE_LIMIT, LEFT_CONTEXT, RATE, RIGHT_CONTEXT,
 };
 use crate::stt::{Heard, Recognizer, TimedSpeechToText};
@@ -843,6 +843,7 @@ impl Worker {
                         seconds(end),
                     );
                     drafts = timed_passages(&owned);
+                    within(&mut drafts, cursor / PER_MS, end / PER_MS);
                     language = t.language;
                 }
                 Ok(Heard::Text(text, lang)) => {
