@@ -30,6 +30,14 @@ class VoiceError extends Error {
   }
 }
 
+// Whether every string in v is valid UTF-16. JSON carries a lone surrogate as an escape Voice's parser refuses, and
+// without the command's id Voice can't even answer bad_request.
+function wellFormed(v) {
+  if (typeof v === 'string') return v.isWellFormed();
+  if (v && typeof v === 'object') return Object.entries(v).every(([k, x]) => k.isWellFormed() && wellFormed(x));
+  return true;
+}
+
 // Whether a process with this id runs. EPERM: it runs as another user. pid 0 says nothing, so Rukoo connects to find out.
 function pidAlive(pid) {
   if (!pid) return true;
@@ -364,6 +372,7 @@ class VoiceBridge extends EventEmitter {
     const message = { type: 'command', id, command: name, args };
     const checked = validate('rukoo', message);
     if (!checked.ok) return Promise.reject(new VoiceError('bad_request', `invalid ${checked.reason}`));
+    if (!wellFormed(args)) return Promise.reject(new VoiceError('bad_request', 'text with a lone surrogate'));
     if (JSON.stringify(message).length > RUKOO_MESSAGE_MAX) return Promise.reject(new VoiceError('bad_request', 'too large'));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

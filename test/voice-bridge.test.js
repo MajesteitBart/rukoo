@@ -239,6 +239,13 @@ test('a command Voice never answers fails with timeout, and the connection keeps
   // Commands that don't follow the protocol never leave Rukoo.
   const bad = await bridge.command('meeting.stop', {}).then(() => null, (e) => e);
   assert.equal(bad.code, 'bad_request');
+  // Nor does text with a lone surrogate, which Voice can't parse and so never answers.
+  const asked = voice.commands.length;
+  for (const args of [{ title: 'Half an emoji \uD83D' }, { context: { calendarEvent: 'x\uDE00' } }, { context: { ['\uD83Dkey']: 1 } }]) {
+    const lone = await bridge.command('meeting.start', args, { timeoutMs: 2000 }).then(() => null, (e) => e);
+    assert.equal(lone.code, 'bad_request', JSON.stringify(args));
+  }
+  assert.equal(voice.commands.length, asked, 'none of them reached Voice');
 });
 
 test('a connection cut halfway through a message comes back, and the replay brings that message once', async (t) => {
