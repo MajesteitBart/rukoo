@@ -97,6 +97,24 @@ class FakeAdapter {
     // What each turn handed the agent, newest last, so tests can check the exact text and the chat's model and effort.
     // After a lost session, input is what the new session got (startOver()).
     this.received = [];
+    // The messages steered into a turn ({conversationId, id, input}), newest last, and the run of each turn.
+    this.steers = [];
+    this.live = new Map();
+  }
+
+  // OpenClaw's gateway takes no message during a turn, so neither does its stand-in.
+  canSteer() {
+    return this.id !== 'openclaw';
+  }
+
+  // Takes the message at the next step of the turn, like Claude Code at a tool boundary (FakeRun.take()).
+  async steer(turn, { id, input, text }) {
+    const run = this.live.get(turn);
+    if (!this.canSteer() || !run || run.over) return false;
+    this.steers.push({ conversationId: turn.conversation.id, id, input });
+    if (this.steers.length > 20) this.steers.shift();
+    run.pending.push({ id, text: String(text || '') });
+    return true;
   }
 
   async status() {
@@ -129,11 +147,18 @@ class FakeAdapter {
     this.received.push(record);
     if (this.received.length > 20) this.received.shift();
     const run = new FakeRun(this, turn, record);
+    this.live.set(turn, run);
     try {
-      return (await run.play()) || { status: 'done' };
+      const result = (await run.play()) || { status: 'done' };
+      // What the user steered in during the turn gets its answer before the turn ends.
+      if (result.status === 'done') await run.answerSteers();
+      return result;
     } catch (err) {
       if (err === STOPPED || turn.signal.aborted) return { status: 'stopped' };
       return { status: 'error', error: { code: 'unknown', detail: (err && err.message) || String(err) } };
+    } finally {
+      run.over = true;
+      this.live.delete(turn);
     }
   }
 }
@@ -146,10 +171,31 @@ class FakeRun {
     this.record = record;
     this.cid = turn.conversation.id;
     this.toolCount = 0;
+    // Steered messages not taken in yet, and the text of those taken in.
+    this.pending = [];
+    this.taken = [];
+    this.over = false;
   }
 
   check() {
     if (this.turn.signal.aborted) throw STOPPED;
+  }
+
+  // A step starts: the messages steered in meanwhile are taken in first.
+  take() {
+    for (const s of this.pending.splice(0)) {
+      if (typeof this.turn.steered === 'function') this.turn.steered(s.id);
+      this.taken.push(s.text);
+    }
+  }
+
+  // Each one taken in gets a line; one steered in while those are said is taken in and answered too.
+  async answerSteers() {
+    this.take();
+    while (this.taken.length) {
+      const text = this.taken.shift();
+      await this.say(`\n\nYou also said: "${text.replace(/\s+/g, ' ').trim().slice(0, 120)}". Noted.`);
+    }
   }
 
   sleep(ms) {
@@ -175,6 +221,7 @@ class FakeRun {
   }
 
   async say(text) {
+    this.take();
     for (let i = 0; i < text.length; i += STEP_CHARS) {
       this.check();
       this.turn.emit({ type: 'text', delta: text.slice(i, i + STEP_CHARS) });
@@ -185,6 +232,7 @@ class FakeRun {
   // Runs one of Rukoo's tools with tool-start/tool-end around it, like a real agent's MCP call.
   async tool(name, args = {}) {
     this.check();
+    this.take();
     const key = `fake-${++this.toolCount}`;
     const detail = args.query || args.title || args.action || '';
     this.turn.emit({ type: 'tool-start', key, name: `mcp__rukoo__${name}`, detail });
@@ -278,7 +326,7 @@ class FakeRun {
       ]
     });
     await this.say('Two of these belong in Todoist. ');
-    await this.tool('propose_action', {
+    const res = await this.tool('propose_action', {
       title: 'Add 2 tasks to Todoist',
       detail: 'Review Proposal-v3.pdf (due Wednesday) and send notes to Joris after the call (due Friday).',
       fields: [
@@ -287,6 +335,8 @@ class FakeRun {
       ],
       confirm_label: 'Add tasks'
     });
+    // The chat's permission level let it through without a card: go ahead now.
+    if (res.status === 'approved') return this.followUp();
     return this.say("I'll add them once you approve.");
   }
 
@@ -426,6 +476,7 @@ class FakeRun {
       location: 'Phone'
     });
     if (res.error) return this.say(`That did not work: ${res.error}`);
+    if (res.status === 'done') return this.say(`You have time on ${found.lines[0] || slot.start}. I added the call there.`);
     return this.say(`You have time on ${found.lines[0] || slot.start}. I picked the first half hour; Rukoo asks you before it adds the call.`);
   }
 

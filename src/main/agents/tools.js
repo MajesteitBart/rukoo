@@ -21,6 +21,7 @@ const EN = require('../../i18n/en');
 const { calendarKey } = require('../calendar');
 const { zonedParts, zonedInstant, addDays, isZone, pcZone } = require('../calendar/zone');
 const { slugProblem } = require('../booking/rules');
+const { needsApproval } = require('./permission');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -228,7 +229,7 @@ const TOOLS = [
     name: 'propose_action',
     title: 'Ask the user for approval',
     description:
-      'Shows an approval card in Rukoo for something you want to do elsewhere (send a message, create a task, update a record). Returns at once; stop and wait. When the user approves you get a new message saying so, then do it. If they decline you will be told.',
+      'Shows an approval card in Rukoo for something you want to do elsewhere (send a message, create a task, update a record). Returns at once. With status waiting_for_user, stop and wait: when the user approves you get a new message saying so, then do it; if they decline you will be told. With status approved, the user lets you act without asking: do it now.',
     inputSchema: schema(
       {
         title: whole({ type: 'string', description: 'What you will do, e.g. "Add 2 tasks to Todoist".', maxLength: 120 }),
@@ -319,7 +320,7 @@ const TOOLS = [
     name: 'create_event',
     title: 'Add an event to the calendar',
     description:
-      "Asks Rukoo to add an event to one of the user's calendars. Rukoo shows the user a card first; you get status waiting_for_user, and the outcome with your next message. Guests get an invitation from the calendar's account. Only calendars that send invitations take guests: Google calendars, and CalDAV calendars whose server sends them. A date alone in start makes an all-day event.",
+      "Asks Rukoo to add an event to one of the user's calendars. Rukoo shows the user a card first unless they let it act without asking; you get status waiting_for_user and the outcome with your next message, or the result. Guests get an invitation from the calendar's account. Only calendars that send invitations take guests: Google calendars, and CalDAV calendars whose server sends them. A date alone in start makes an all-day event.",
     inputSchema: schema(
       {
         title: copied(whole({ type: 'string', description: 'The title, e.g. "Call with Sanne".', maxLength: 300 })),
@@ -532,12 +533,16 @@ async function callTool(hub, identity, name, args, meta = {}) {
   } catch (err) {
     return errorResult(`${err.message} Check the ${tool.name} input schema and try again.`);
   }
+  // boundTo: the chat something the model doesn't pick ties the call to, whose own level it may use
+  // (hub.permissionFor).
+  const { conversation, bound } = hub.resolveCall(identity, clean, meta || {});
   const call = {
     agent: identity.agent,
     identity,
     remote: Boolean(identity.remote),
     meta: meta || {},
-    conversation: hub.resolveConversation(identity, clean, meta || {})
+    conversation,
+    boundTo: bound && conversation ? conversation.id : null
   };
   // A tool call during a turn shows the agent got that turn's input. Stopping the turn stops the PDF reads it
   // started (signal), so they don't hold up another chat's.
@@ -1370,6 +1375,16 @@ async function showSources(hub, args, call) {
 
 function proposeAction(hub, args, call) {
   const c = hub.ensureConversation(call);
+  // Full permission: no card. The chat still says what the agent goes ahead with.
+  if (!needsApproval(hub.permissionFor(call), { kind: 'proposal' })) {
+    const title = untag(args.title).replace(/\s+/g, ' ').trim();
+    hub.addItem(c, { type: 'notice', text: `Allowed without asking: ${title}`, tone: 'info', code: 'auto-approved', params: { title: title.slice(0, 200) }, undo: null });
+    return {
+      conversation_id: c.id,
+      status: 'approved',
+      note: "The chat's permission level lets you act without asking, so Rukoo showed no card. Go ahead now, then report back briefly."
+    };
+  }
   const pending = hub.requestApproval(c.id, {
     title: args.title,
     detail: args.detail || '',
@@ -1474,65 +1489,36 @@ async function mailAction(hub, args, call) {
   const c = hub.ensureConversation(call);
   const spec = { action: args.action, ids, folder: args.action === 'move' ? args.folder : null, pins: ids.map((id) => pinOf(engine, id)) };
   const title = mailTitle(engine, spec);
-  // The setting covers archive, move and mark. Deleting and unsubscribing always ask, and so does a move
-  // that lands in Trash, which is a delete by another name.
-  const intoTrash =
-    spec.action === 'move' &&
-    accounts.some((a) => {
-      const target = resolveFolder(engine, a, args.folder);
-      return engine.publicAccount(a).folders.some((f) => f.path === target && f.role === 'trash');
+  // A move that lands in Trash is a delete by another name, so a level that asks before deleting asks before it too.
+  // So does a move into Spam: Spam empties itself (Gmail's after 30 days), and the move teaches the spam filter.
+  const into = new Set(
+    spec.action === 'move'
+      ? accounts.map((a) => {
+          const target = resolveFolder(engine, a, args.folder);
+          const folder = engine.publicAccount(a).folders.find((f) => f.path === target);
+          return folder ? folder.role : null;
+        })
+      : []
+  );
+  if (!needsApproval(hub.permissionFor(call), { kind: 'mail', action: spec.action, intoTrash: into.has('trash'), intoSpam: into.has('junk') })) {
+    const outcome = await runNow(hub, c, title, 'mail', () => executeMail(hub, c, spec), (result, error) => {
+      const action = unsafeInline(title, 'mail action');
+      return error
+        ? `Rukoo could not finish ${action}: ${unsafeInline((error && (error.detail || error.message)) || String(error), 'mail result')}. Part of it may be done; check the mail before you try again.`
+        : `Rukoo finished ${action}: ${unsafeInline(result.text, 'mail result')}.`;
     });
-  if (hub.cfg.data.autoMailActions && spec.action !== 'unsubscribe' && spec.action !== 'trash' && !intoTrash) {
-    // The agent's call waits for this, but its client gives up after 120 s, and a slow IMAP server can take longer.
-    // Then the call answers that the work goes on, and the outcome comes with the agent's next message, which
-    // waits for it, the same way an approved action reports.
-    // The actions run on the conversation's mail chain, after earlier mail work, so they happen in the order they
-    // were asked for. Whichever comes first decides: the work ends (the call answers with the result) or the wait
-    // does (the call says the work goes on, and the outcome becomes a note).
-    let late = false;
-    let finished = false;
-    let answer;
-    const first = new Promise((resolve) => (answer = resolve));
-    const timer = setTimeout(() => {
-      if (finished) return;
-      late = true;
-      answer(null);
-    }, hub.mailWait || AUTO_MAIL_WAIT_MS);
-    hub.settleMail(
-      c,
-      async () => {
-        let result = null;
-        let error = null;
-        try {
-          result = await executeMail(hub, c, spec);
-        } catch (err) {
-          error = err;
-        }
-        finished = true;
-        clearTimeout(timer);
-        if (!late) return answer({ result, error });
-        const action = unsafeInline(title, 'mail action');
-        c.notes.push(
-          error
-            ? `Rukoo could not finish ${action}: ${unsafeInline((error && (error.detail || error.message)) || String(error), 'mail result')}. Part of it may be done; check the mail before you try again.`
-            : `Rukoo finished ${action}: ${unsafeInline(result.text, 'mail result')}.`
-        );
-        hub.touch(c);
-        if (error) throw error;
-      },
-      title
-    );
-    const outcome = await first;
-    if (!outcome) {
-      return {
-        conversation_id: c.id,
-        status: 'in_progress',
-        note: 'Rukoo is still doing this. You will be told the outcome in your next message; do not repeat the request.'
-      };
-    }
+    if (!outcome) return stillRunning(c);
     if (outcome.error) throw outcome.error;
     const result = outcome.result;
-    return { conversation_id: c.id, status: 'done', done: result.done.length, failed: result.failed, undoable: result.undo.length > 0, summary: result.text };
+    // The summary can name a sender (an unsubscribe) and an error can quote a server: tagged, as in the notes.
+    return {
+      conversation_id: c.id,
+      status: 'done',
+      done: result.done.length,
+      failed: result.failed.map((f) => ({ id: f.id, error: unsafeInline(f.error, 'mail result') })),
+      undoable: result.undo.length > 0,
+      summary: unsafeInline(result.text, 'mail result')
+    };
   }
   const fields = ids.slice(0, 6).map((id) => {
     const m = cacheMessage(engine, id) || {};
@@ -1559,10 +1545,57 @@ async function mailAction(hub, args, call) {
   };
 }
 
-// Runs an approved (or auto-approved) mail action, adds a notice to the conversation and returns what happened.
-// How long a mail_action call waits for actions that run without asking: a client gives up on a tool call after
-// 120 s. Past this the call answers that the work goes on; see mailAction().
+// How long a call waits for an action that runs without asking: a client gives up on a tool call after 120 s. Past
+// this the call answers that the work goes on; see runNow().
 const AUTO_MAIL_WAIT_MS = 90000;
+
+// Work the chat's permission level lets Rukoo do without asking: a mail action, an event. The agent's call waits for
+// it, but its client gives up after 120 s, and a slow IMAP or calendar server can take longer. Then the call answers
+// that the work goes on, and the outcome comes with the agent's next message, which waits for it, the same way an
+// approved action reports.
+// The work runs on the conversation's mail chain, after earlier mail work, so things happen in the order they were
+// asked for. Whichever comes first decides: the work ends (resolves to {result, error}) or the wait does (resolves to
+// null, and late(result, error) makes the note the agent gets instead).
+function runNow(hub, c, label, kind, work, late) {
+  let gone = false;
+  let finished = false;
+  let answer;
+  const first = new Promise((resolve) => (answer = resolve));
+  const timer = setTimeout(() => {
+    if (finished) return;
+    gone = true;
+    answer(null);
+  }, hub.mailWait || AUTO_MAIL_WAIT_MS);
+  hub.settleMail(
+    c,
+    async () => {
+      let result = null;
+      let error = null;
+      try {
+        result = await work();
+      } catch (err) {
+        error = err;
+      }
+      finished = true;
+      clearTimeout(timer);
+      if (!gone) return answer({ result, error });
+      c.notes.push(late(result, error));
+      hub.touch(c);
+      if (error) throw error;
+    },
+    label,
+    kind
+  );
+  return first;
+}
+
+const stillRunning = (c) => ({
+  conversation_id: c.id,
+  status: 'in_progress',
+  note: 'Rukoo is still doing this. You will be told the outcome in your next message; do not repeat the request.'
+});
+
+// Runs an approved (or auto-approved) mail action, adds a notice to the conversation and returns what happened.
 
 async function executeMail(hub, c, { action, ids, folder, pins = [] }) {
   const { engine } = hub;
@@ -2116,6 +2149,21 @@ async function createEvent(hub, args, call) {
     location: input.location,
     description: input.description
   };
+  if (!needsApproval(hub.permissionFor(call), { kind: 'calendar', guests: guests.length, mine: cal.mine === true })) {
+    const label = `Add "${title}" to the calendar`;
+    const outcome = await runNow(hub, c, label, 'calendar', () => executeCalendar(hub, c, spec), (result, error) =>
+      error || !result.ok
+        ? `Rukoo could not add ${unsafeInline(label, 'calendar')}: ${unsafeInline(error ? englishError(error) : result.text, 'calendar result')}. Tell the user.`
+        : `Rukoo did ${unsafeInline(label, 'calendar')}: ${unsafeInline(result.text, 'calendar result')}.`
+    );
+    if (!outcome) return stillRunning(c);
+    if (outcome.error) throw outcome.error;
+    const result = outcome.result;
+    // The text names the calendar, whose name can come from whoever shared it: tagged, as in the note an approval
+    // gives (hub.onCalendarDecision).
+    if (!result.ok) return { conversation_id: c.id, status: 'failed', summary: unsafeInline(result.text, 'calendar result'), note: 'Rukoo did not add the event. Tell the user.' };
+    return { conversation_id: c.id, status: 'done', event_id: result.event.id, summary: unsafeInline(result.text, 'calendar result') };
+  }
   const pending = hub.requestApproval(c.id, {
     title: `Add "${title}" to the calendar`,
     detail: guests.length ? `Guests get an invitation from ${acc.email}.` : '',
@@ -2154,7 +2202,7 @@ async function executeCalendar(hub, c, spec = {}) {
       tone: 'success',
       code: null,
       undo: null,
-      calendar: { action: 'created', title, id: event.id, start: event.start, allDay: Boolean(event.allDay) }
+      calendar: { action: 'created', title, id: event.id, start: event.start, allDay: Boolean(event.allDay), ...(spec.notify ? { guests: (spec.guests || []).length } : {}) }
     });
     const where = spec.calendar ? ` in ${line(spec.calendar)} (${spec.account})` : '';
     return { ok: true, event, text: `Added the event${where}, id ${event.id}${spec.notify ? '. The guests get an invitation' : ''}` };

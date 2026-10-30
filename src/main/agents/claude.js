@@ -17,6 +17,10 @@ const { AgentError, clip, logger, resolveExe, cleanEnv, start, readJsonLines, ta
 
 const IDLE_MS = 15 * 60 * 1000;
 const STOP_WAIT = 5000;
+// How long a steered message waits for the chat's process to run its turn (it can still be starting).
+const STEER_WAIT = 30000;
+// How long a turn that ended with steered messages Claude Code has not taken in waits for the turn it starts for them.
+const FOLLOW_WAIT = 15000;
 // A tool chip waits this long for the tool's input (its preview) before it shows without one.
 const INPUT_WAIT = 1500;
 const EXE_TTL = 30000;
@@ -316,7 +320,9 @@ class ClaudeAdapter {
       '--thinking-display', 'summarized',
       '--settings', JSON.stringify({ showThinkingSummaries: true }),
       known ? `--resume=${sessionId}` : `--session-id=${sessionId}`,
-      '--permission-prompt-tool', 'stdio'
+      '--permission-prompt-tool', 'stdio',
+      // Claude Code echoes each message from stdin when it takes it in: for a steered message, the moment it read it.
+      '--replay-user-messages'
     ];
     // read_attachment saves files there for Claude to open; reading what Rukoo handed over needs no prompt.
     const attachments = this.attachmentsDir();
@@ -346,6 +352,21 @@ class ClaudeAdapter {
       });
     }
     return session.close({ now });
+  }
+
+  // A message the user sent while the turn runs (hub.js steerEntry()). Claude Code takes a message that comes in
+  // during a turn after the tool calls under way, within that turn (verified with 2.1.312). It waits here until the
+  // chat's process runs this turn: the process can still be starting, or waiting for an old one to let go.
+  async steer(turn, { id, input, files }) {
+    const cid = turn.conversation.id;
+    const end = Date.now() + STEER_WAIT;
+    for (;;) {
+      const session = this.sessions.get(cid);
+      const t = session && session.current;
+      if (t && t.turn === turn) return session.steer(t, { id, input, files });
+      if (this.disposed || (turn.signal && turn.signal.aborted) || (typeof turn.isOpen === 'function' && !turn.isOpen()) || Date.now() > end) return false;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
 
   // The hub calls this when a conversation is removed. The transcript stays with Claude Code.
@@ -409,7 +430,14 @@ class Session {
         approvals: new Map(),
         stopping: false,
         stopTimer: null,
-        message: null
+        message: null,
+        // Messages steered into this turn that Claude Code has not taken in yet ({id, text}), in the order written;
+        // whether the turn's own message was echoed yet; the result the turn waits behind while Claude Code answers
+        // steered messages in a turn of its own (end()).
+        steers: [],
+        ownSeen: false,
+        following: null,
+        followTimer: null
       };
       this.current = t;
       t.onAbort = () => this.stop(t);
@@ -426,11 +454,51 @@ class Session {
     });
   }
 
+  // A message for the turn that runs. Claude Code echoes it when it takes it in (onReplay()).
+  steer(t, { id, input, files }) {
+    if (this.current !== t || this.exited || this.closing || t.stopping) return false;
+    const ok = writeJson(this.child, { type: 'user', message: { role: 'user', content: userContent({ input, files }) }, parent_tool_use_id: null, session_id: '' });
+    if (ok) t.steers.push({ id, text: String(input || '') });
+    return ok;
+  }
+
+  // An echoed message. The first one of a turn is its own; any other is a steered one, which Claude Code reads now.
+  onReplay(t, message) {
+    if (!t.ownSeen) {
+      t.ownSeen = true;
+      return;
+    }
+    if (!t.steers.length) return;
+    const content = message.content;
+    const first = Array.isArray(content) ? content.find((b) => b && b.type === 'text') : null;
+    const text = first ? String(first.text || '') : typeof content === 'string' ? content : '';
+    const at = t.steers.findIndex((s) => s.text === text);
+    if (at < 0) return;
+    const [s] = t.steers.splice(at, 1);
+    clearTimeout(t.followTimer);
+    if (typeof t.turn.steered === 'function') t.turn.steered(s.id);
+  }
+
+  // The turn's result. Claude Code answers steered messages it had no step to take in before that result in a turn of
+  // its own, right after; the turn follows it, so their answer is part of it. When that turn doesn't come, the process
+  // goes (closing drops what it holds) and the hub queues the messages again.
+  end(t, outcome) {
+    if (!t.steers.length || t.stopping || this.exited) return this.finish(outcome);
+    t.following = outcome;
+    clearTimeout(t.followTimer);
+    t.followTimer = setTimeout(() => {
+      if (this.current !== t) return;
+      this.adapter.closeSession(this);
+      this.finish(t.following);
+    }, FOLLOW_WAIT);
+  }
+
   finish(outcome) {
     const t = this.current;
     if (!t) return;
     this.current = null;
     clearTimeout(t.stopTimer);
+    clearTimeout(t.followTimer);
     if (t.turn.signal) t.turn.signal.removeEventListener('abort', t.onAbort);
     for (const w of t.waiting.values()) clearTimeout(w.timer);
     for (const key of t.open) t.turn.emit({ type: 'tool-end', key, error: false });
@@ -445,6 +513,15 @@ class Session {
   stop(t) {
     if (t !== this.current || t.stopping) return;
     t.stopping = true;
+    if (t.steers.length) {
+      // After an interrupt Claude Code runs the messages it holds, so a steered one it has not taken in would start
+      // a new turn after Stop. The process goes instead; the next message resumes the session.
+      this.adapter.closeSession(this);
+      t.stopTimer = setTimeout(() => {
+        if (this.current === t) this.finish({ result: { status: 'stopped' } });
+      }, STOP_WAIT);
+      return;
+    }
     writeJson(this.child, { type: 'control_request', request_id: crypto.randomUUID(), request: { subtype: 'interrupt' } });
     // An interrupt normally lands within milliseconds; a stuck process (or hook) gets killed.
     t.stopTimer = setTimeout(() => {
@@ -477,7 +554,10 @@ class Session {
     if (!t) return;
     const stderr = this.stderr ? this.stderr.lines.join('\n') : '';
     if (/No conversation found with session ID/i.test(stderr)) return this.finish({ lostSession: true });
-    if (t.stopping || this.closing) return this.finish({ result: { status: 'stopped' } });
+    if (t.stopping) return this.finish({ result: { status: 'stopped' } });
+    // Gone while the turn waited for Claude Code to answer steered messages: the turn's own answer stands.
+    if (t.following) return this.finish(t.following);
+    if (this.closing) return this.finish({ result: { status: 'stopped' } });
     const err = this.spawnError;
     if (err && err.code === 'ENOENT') return this.finish({ result: { status: 'error', error: { code: 'not-installed', detail: clip(err.message, 200) } } });
     const last = this.stderr ? this.stderr.last() : '';
@@ -519,7 +599,8 @@ class Session {
         if (t && !msg.parent_tool_use_id) this.onAssistant(t, msg.message || {});
         return;
       case 'user':
-        if (t && !msg.parent_tool_use_id) this.onToolResults(t, msg.message || {});
+        if (t && msg.isReplay) this.onReplay(t, msg.message || {});
+        else if (t && !msg.parent_tool_use_id) this.onToolResults(t, msg.message || {});
         return;
       case 'result':
         if (t) this.onResult(t, msg);
@@ -623,7 +704,7 @@ class Session {
   onResult(t, msg) {
     if (typeof msg.total_cost_usd === 'number' || msg.usage) t.turn.emit({ type: 'usage', costUsd: msg.total_cost_usd, usage: msg.usage });
     const stderr = this.stderr ? this.stderr.lines.join('\n') : '';
-    if (msg.subtype === 'success' && !msg.is_error) return this.finish({ result: { status: 'done' } });
+    if (msg.subtype === 'success' && !msg.is_error) return this.end(t, { result: { status: 'done' } });
     if (/^aborted/.test(String(msg.terminal_reason || '')) || (t.stopping && msg.subtype === 'error_during_execution')) {
       return this.finish({ result: { status: 'stopped' } });
     }
@@ -631,7 +712,7 @@ class Session {
     if (msg.num_turns === 0 && /No conversation found/i.test(errors + stderr)) return this.finish({ lostSession: true });
     const error = resultError(msg, this.stderr && this.stderr.last());
     t.turn.emit({ type: 'error', code: error.code, detail: error.detail });
-    this.finish({ result: { status: 'error', error } });
+    this.end(t, { result: { status: 'error', error } });
   }
 
   respond(requestId, response) {

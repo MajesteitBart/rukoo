@@ -26,7 +26,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const AGENTS = [
   { id: 'clark', name: 'Clark', tag: 'Hermes', status: 'ready' },
   { id: 'claude', name: 'Claude', tag: 'Claude Code', status: 'ready' },
-  { id: 'codex', name: 'Codex', tag: 'Codex', status: 'offline' }
+  { id: 'codex', name: 'Codex', tag: 'Codex', status: 'offline' },
+  { id: 'openclaw', name: 'OpenClaw', tag: 'OpenClaw', status: 'ready' }
 ];
 const COMMANDS = [
   { name: 'reply', label: 'Draft a reply', description: 'Write a reply in my voice', icon: 'pen' },
@@ -125,6 +126,26 @@ a.append(
   bui.userBubble({ text: 'Add 2 tasks to Todoist', action: 'approved', labels: { approved: 'You approved', declined: 'You declined' } }),
   bui.userBubble({ text: 'Send a Slack message to #sales', action: 'declined', labels: { approved: 'You approved', declined: 'You declined' } })
 );
+// Messages sent while the agent worked, at the end of the conversation: steering (the agent reads it at its next
+// step), queued while it works, queued because the agent can't steer, and held after Stop.
+head(a, 'Waiting messages');
+const queueActions = (running) => [
+  { id: 'send', label: running ? 'Steer now' : 'Send now', icon: 'send', onClick: noop },
+  { id: 'edit', label: 'Edit', icon: 'pen', onClick: noop },
+  { id: 'remove', label: 'Remove', icon: 'x', onClick: noop }
+];
+a.append(
+  bui.queuedBubble({ text: 'Use the work account, not the personal one.', tone: 'steering', status: 'Clark reads it before its next step' }),
+  bui.queuedBubble({ text: 'Then summarize what you found in three bullets.', tone: 'queued', status: 'Sends when Clark is done', actions: queueActions(true) }),
+  bui.queuedBubble({ text: 'And check the invoice too.', tone: 'queued', status: "OpenClaw can't read messages while it works. This one sends when OpenClaw is done.", actions: queueActions(false).slice(1) }),
+  bui.queuedBubble({
+    text: 'Compare it with this one.',
+    attachments: [bui.attachmentChip({ label: 'Invoice March', sub: 'Joris Bakker', icon: 'mail' })],
+    tone: 'held',
+    status: 'Not sent yet',
+    actions: queueActions(false)
+  })
+);
 head(a, 'Stream text');
 const doneText = bui.streamText();
 doneText.set('I checked your earlier mail with Sanne. You agreed on the revised price in March, so the reply only confirms Thursday.\n\nSee https://example.com/proposal-v3 for the version she attached.');
@@ -169,6 +190,8 @@ head(a, 'Notices');
 a.append(
   bui.noticeLine({ text: 'Codex started a new thread.', tone: 'info' }, { labels: { undo: 'Undo' } }).el,
   bui.noticeLine({ text: 'Archived 3 emails', tone: 'success', undo: { kind: 'move', ids: [] } }, { labels: { undo: 'Undo' }, onUndo: noop }).el,
+  // Full permission: a proposal went ahead without a card.
+  bui.noticeLine({ text: 'Allowed without asking: Add 2 tasks to Todoist', tone: 'info', code: 'auto-approved' }, { labels: { undo: 'Undo' } }).el,
   bui.noticeLine({ text: 'Could not reach Clark.', tone: 'error', code: 'offline' }, { labels: { undo: 'Undo' } }).el
 );
 
@@ -315,12 +338,43 @@ live.append(
   ).el
 );
 head(live, 'Composer');
-const composerLabels = { send: 'Send', stop: 'Stop', agent: 'Agent', removeContext: 'Remove', noMatches: (q) => `No matches for "${q}"` };
+const composerLabels = {
+  send: 'Send',
+  stop: 'Stop',
+  agent: 'Agent',
+  removeContext: 'Remove',
+  noMatches: (q) => `No matches for "${q}"`,
+  steer: 'Steer',
+  queue: 'Queue',
+  steerHint: (name) => `${name} reads it before its next step`,
+  queueHint: (name) => `Sends when ${name} is done`,
+  cantSteer: (name) => `${name} can't read messages while it works`,
+  sendOptions: 'Send options'
+};
 const c1 = bui.chatComposer({ placeholder: 'Ask Clark about this email…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
 c1.setContext(bui.entityChip({ label: 'Sanne de Vries', sub: 'Call on Thursday', monogram: 'Sanne de Vries', onRemove: noop, removeLabel: 'Remove' }));
+// The permission level by Send, one per level: Ask, Auto, and Full permission with its orange shield.
+const PERMISSION_ITEMS = () => [
+  { heading: 'Permission level' },
+  { id: '', label: 'Default', tag: 'Ask', checked: false },
+  { separator: true },
+  { id: 'ask', label: 'Ask', sub: 'Asks before every action', icon: 'shield' },
+  { id: 'auto', label: 'Auto', sub: 'Asks before deleting or what others see', icon: 'shield-half', checked: true },
+  { id: 'full', label: 'Full permission', sub: 'Never asks, not even before sending', icon: 'shield-off' }
+];
+c1.setPicker('permission', { text: 'Ask', label: 'Permission level: Ask', items: PERMISSION_ITEMS, icon: 'shield' });
 const c2 = bui.chatComposer({ placeholder: 'Ask Claude…', labels: composerLabels, agents: AGENTS, agentId: 'claude', commands: COMMANDS }, {});
 c2.setValue('Keep it short and mention the revised price from March.');
 c2.setRunning(true);
+// The same for an agent that can't take a message during its turn: the main button queues.
+const c8 = bui.chatComposer({ placeholder: 'Ask OpenClaw…', labels: composerLabels, agents: AGENTS, agentId: 'openclaw', commands: COMMANDS }, {});
+c8.setValue('And check the invoice too.');
+c8.setRunning(true);
+c8.setSteer(false);
+// Running with nothing typed: Stop alone, filled.
+const c9 = bui.chatComposer({ placeholder: 'Ask Claude…', labels: composerLabels, agents: AGENTS, agentId: 'claude', commands: COMMANDS }, {});
+c9.setRunning(true);
+c2.setPicker('permission', { text: 'Auto', label: 'Permission level: Auto', items: PERMISSION_ITEMS, icon: 'shield-half' });
 const c3 = bui.chatComposer({ placeholder: 'Ask Codex…', labels: composerLabels, agents: AGENTS, agentId: 'codex', commands: COMMANDS }, {});
 c3.setDisabled(true, bui.button({ label: 'Set up Codex', kind: 'link', size: 'sm' }));
 // What goes along with the message: a file that is there (with its x), one still on its way and an email. Until the
@@ -334,6 +388,7 @@ c5.setAttachments([
 ]);
 c5.setValue('Compare these with the offer from March.');
 c5.setHolding(true, 'Wait until the files are added, then send.');
+c5.setPicker('permission', { text: 'Full', label: 'Permission level: Full permission', items: PERMISSION_ITEMS, icon: 'shield-off', tone: 'warn' });
 const c4wrap = document.createElement('div');
 c4wrap.className = 'gpush';
 const c4 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
@@ -348,7 +403,7 @@ c6wrap.append(c6.el);
 const c7 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
 c7.setSkills({ items: SKILLS, heading: "Clark's skills" });
 c7.setValue('Prepare the call with $meeting-prep and keep it short.');
-live.append(c1.el, c2.el, c3.el, c5.el, c7.el, c4wrap, c6wrap);
+live.append(c1.el, c2.el, c8.el, c9.el, c3.el, c5.el, c7.el, c4wrap, c6wrap);
 c6.setValue('Check this with $');
 c6.el.querySelector('.bui-pb__ta').dispatchEvent(new Event('input'));
 
@@ -650,6 +705,13 @@ async function check() {
   ok(undone, 'noticeLine undo calls back');
   ok(bui.userBubble({ text: 'T', action: 'approved', labels: { approved: 'You approved' } }).classList.contains('bui-sys'), 'userBubble approved renders a system line');
   ok(bui.userBubble({ text: '<i>x</i>' }).textContent === '<i>x</i>', 'userBubble escapes text');
+  const picked = [];
+  const qb = bui.queuedBubble({ text: '<b>x</b>', status: 'Sends when Clark is done', actions: [{ id: 'edit', label: 'Edit', icon: 'pen', onClick: () => picked.push('edit') }] });
+  ok(qb.querySelector('.bui-ub').textContent === '<b>x</b>' && !qb.querySelector('b'), 'queuedBubble escapes text');
+  qb.querySelector('[data-action="edit"]').click();
+  ok(picked[0] === 'edit' && qb.querySelector('[data-action="edit"]').disabled && qb.querySelector('[data-action="edit"]').getAttribute('aria-label') === 'Edit', 'a waiting message’s action calls back once and is labelled');
+  const steeringBubble = bui.queuedBubble({ text: 'x', tone: 'steering', status: 'Clark reads it before its next step' });
+  ok(steeringBubble.querySelector('.bui-spin') && !steeringBubble.querySelector('button'), 'a steering message shows a spinner and no actions');
 
   // chat composer: Enter sends, Shift+Enter and IME do not, stop while running, slash menu keys, disabled state.
   const got = { sent: [], stopped: 0, commands: [], agents: [] };
@@ -671,12 +733,52 @@ async function check() {
   ok(got.sent[0] === 'hello' && cp.getValue() === '', 'Enter sends the trimmed text and clears');
   cp.setRunning(true);
   ok(!sendBtn.disabled && sendBtn.querySelector('[data-icon="stop"]'), 'running shows an enabled stop button');
-  cp.setValue('more');
-  key(ta, 'Enter');
-  ok(got.sent.length === 1, 'Enter does not send while running');
   sendBtn.click();
   ok(got.stopped === 1, 'stop button calls onStop');
   cp.setRunning(false);
+
+  // While the agent works: Stop stays put; a message typed meanwhile gets Steer beside it. Enter steers, Alt+Enter
+  // queues, and for an agent that can't steer Enter queues and the menu says why Steer is off.
+  const run = { sent: [], modes: [], stopped: 0 };
+  const rc = bui.chatComposer({ placeholder: 'p', labels: composerLabels, agents: AGENTS, agentId: 'claude', commands: COMMANDS }, { onSend: (t, mode) => (run.sent.push(t), run.modes.push(mode)), onStop: () => run.stopped++ });
+  scratch.append(rc.el);
+  const rta = rc.el.querySelector('.bui-pb__ta');
+  const rstop = rc.el.querySelector('.bui-pb__send');
+  const rsplit = rc.el.querySelector('.bui-pb__split');
+  rc.setValue('idle');
+  key(rta, 'Enter', { altKey: true });
+  ok(run.modes[0] === null, 'idle, Alt+Enter just sends');
+  rc.setRunning(true);
+  ok(rsplit.hidden && !rstop.classList.contains('is-quiet'), 'running with nothing typed: Stop alone');
+  rc.setValue('use the work account');
+  ok(!rsplit.hidden && rstop.classList.contains('is-quiet') && rstop.querySelector('[data-icon="stop"]'), 'a message typed while running: Steer beside a quieter Stop');
+  ok(rsplit.querySelector('.bui-pb__go').getAttribute('aria-label') === 'Steer' && /reads it before its next step \(Enter\)/.test(rsplit.querySelector('.bui-pb__go').title), 'the main part steers and says how');
+  key(rta, 'Enter');
+  ok(run.sent[1] === 'use the work account' && run.modes[1] === 'steer' && rc.getValue() === '', 'Enter steers while running');
+  ok(rsplit.hidden, 'with the input empty again, Stop stands alone');
+  rc.setValue('then summarize');
+  key(rta, 'Enter', { altKey: true });
+  ok(run.modes[2] === 'queue', 'Alt+Enter queues while running');
+  rc.setValue('and the invoice');
+  rsplit.querySelector('.bui-pb__more').click();
+  let sendMenu = document.querySelector('.bui-menu');
+  ok(sendMenu && sendMenu.querySelectorAll('.bui-menu__row').length === 2 && !sendMenu.querySelector('[data-id="steer"]').disabled, 'the send menu offers Steer and Queue');
+  ok(/Alt\+Enter/.test(sendMenu.querySelector('[data-id="queue"]').textContent), 'the menu names the key for Queue');
+  sendMenu.querySelector('[data-id="queue"]').click();
+  ok(run.modes[3] === 'queue' && !document.querySelector('.bui-menu'), 'picking Queue queues the message');
+  rc.setSteer(false);
+  rc.setValue('one more');
+  ok(rsplit.querySelector('.bui-pb__go').getAttribute('aria-label') === 'Queue' && rsplit.querySelector('[data-icon="clock"]'), 'for an agent that can’t steer the main part queues');
+  rsplit.querySelector('.bui-pb__more').click();
+  sendMenu = document.querySelector('.bui-menu');
+  ok(sendMenu.querySelector('[data-id="steer"]').disabled && /can't read messages while it works/.test(sendMenu.querySelector('[data-id="steer"]').textContent), 'Steer is off in the menu, and says why');
+  sendMenu.querySelector('[data-id="queue"]').click();
+  rc.setValue('again');
+  key(rta, 'Enter');
+  ok(run.modes[5] === 'queue', 'Enter queues for an agent that can’t steer');
+  rstop.click();
+  ok(run.stopped === 1, 'Stop still stops, whatever is typed');
+  rc.el.remove();
   cp.setValue('/ta');
   input(ta);
   ok(cp.el.querySelectorAll('.bui-pb__cmd').length === 1 && cp.el.querySelector('.bui-pb__cmdname').textContent === '/tasks', 'slash menu filters commands');
@@ -711,7 +813,7 @@ async function check() {
   const trigger = cp.el.querySelector('.bui-pb__modelbtn');
   trigger.click();
   const menu = document.querySelector('.bui-menu');
-  ok(menu && menu.querySelectorAll('.bui-menu__row').length === 3 && trigger.getAttribute('aria-expanded') === 'true', 'agent picker opens on the body with every agent');
+  ok(menu && menu.querySelectorAll('.bui-menu__row').length === AGENTS.length && trigger.getAttribute('aria-expanded') === 'true', 'agent picker opens on the body with every agent');
   ok(document.activeElement === menu.querySelector('.bui-menu__row.is-checked'), 'agent picker focuses the current agent');
   key(document.activeElement, 'ArrowDown');
   ok(document.activeElement === menu.querySelectorAll('.bui-menu__row')[1], 'ArrowDown moves focus in the picker');

@@ -33,6 +33,8 @@ test('which accounts have a calendar: Google with the grant, Google without it, 
     // The demo's calendars have no colour of their own: they show in the account's.
     const demo = calendars.view({ start: monday(), end: monday() + 7 * DAY }).accounts.find((a) => a.id === 'd1');
     assert.deepEqual(demo.calendars.map((c) => c.providerColor), [null, null, null]);
+    // The demo user's own calendars are Personal and Work; the birthdays aren't.
+    assert.deepEqual(demo.calendars.map((c) => [c.id, c.mine]), [['personal', true], ['work', true], ['birthdays', false]]);
   });
 });
 

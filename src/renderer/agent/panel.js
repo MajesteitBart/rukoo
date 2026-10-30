@@ -240,6 +240,9 @@ export function mountAgentPanel(ctx) {
     return STATES.includes(s) ? s : 'unknown';
   };
   const dotOf = (state) => (state === 'ready' ? 'ready' : state === 'offline' || state === 'unauthorized' ? 'offline' : state === 'starting' ? 'starting' : 'unconfigured');
+  // Whether the agent takes a message during its turn (main's status says, per agent). Until the status is in, it is
+  // offered; main queues the message when the agent can't take it after all.
+  const canSteer = (id) => !(P.status && P.status[id] && P.status[id].steer === false);
   const statusText = (id) => t(`agent.status.${stateOf(id)}`);
   const agentRows = () =>
     AGENTS.map((id) => ({ id, name: agentName(id), label: agentName(id), tag: PRODUCTS[id], status: dotOf(stateOf(id)), checked: id === currentAgent() }));
@@ -256,7 +259,7 @@ export function mountAgentPanel(ctx) {
       // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
       if (AGENTS.includes(config.defaultAgent) && config.defaultAgent !== before) {
         // What was picked for the chat that has not started belongs to the agent before.
-        if (!P.conv && P.agentId !== config.defaultAgent) P.draft = { model: null, effort: null };
+        if (!P.conv && P.agentId !== config.defaultAgent) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
         P.agentId = config.defaultAgent;
       }
     } catch (err) {
@@ -437,7 +440,13 @@ export function mountAgentPanel(ctx) {
           skillsLoading: t('agent.panel.skillsLoading'),
           noSkills: t('agent.panel.noSkills'),
           skill: (name) => t('agent.panel.skillChip', { name }),
-          attach: t('agent.panel.attach')
+          attach: t('agent.panel.attach'),
+          steer: t('agent.panel.steer'),
+          queue: t('agent.panel.queue'),
+          steerHint: (name) => t('agent.panel.steerHint', { name }),
+          queueHint: (name) => t('agent.panel.queueHint', { name }),
+          cantSteer: (name) => t('agent.panel.cantSteer', { name }),
+          sendOptions: t('agent.panel.sendOptions')
         },
         agents: agentRows(),
         agentId: currentAgent(),
@@ -445,7 +454,7 @@ export function mountAgentPanel(ctx) {
         context: contextChip(context)
       },
       {
-        onSend: (text) => submit(text),
+        onSend: (text, mode) => submit(text, mode),
         onStop: () => P.conv && api('agentStop', P.conv.id).catch((err) => showError(err)),
         onAgent: (id) => pickAgent(id),
         onPick: (kind, id) => pickChoice(kind, id),
@@ -644,17 +653,24 @@ export function mountAgentPanel(ctx) {
     chat.setCommands(commands());
     showOwnSkills();
     chat.setRunning(Boolean(P.conv && P.conv.status === 'running'));
+    chat.setSteer(canSteer(id));
     chat.setPlaceholder(placeholder());
     const state = stateOf(id);
     const blocked = P.unavailable || BLOCKED.has(state);
     chat.setDisabled(blocked, blocked ? setupNote(id, state) : null);
     refreshPickers();
+    // Whether the agent can steer decides what a waiting message offers.
+    showQueue();
   }
 
   // ---------- model and effort ----------
 
-  // The chat on screen's own model and effort, or what was picked for the chat that has not started yet.
-  const choiceOf = () => (P.conv ? { model: P.conv.model || null, effort: P.conv.effort || null } : P.draft);
+  // The chat on screen's own model, effort and permission level, or what was picked for the chat that has not started
+  // yet.
+  const choiceOf = () => {
+    const c = P.conv || P.draft;
+    return { model: c.model || null, effort: c.effort || null, permission: c.permission || null };
+  };
   const effortName = (e) => (hasKey(`agent.effort.${e}`) ? t(`agent.effort.${e}`) : String(e));
   // Where the effort dial's needle stands for each level, so a narrow panel still shows it without the name.
   const METER = { minimal: 0, low: 0.15, medium: 0.35, high: 0.55, xhigh: 0.75, max: 0.9, ultra: 1 };
@@ -776,6 +792,46 @@ export function mountAgentPanel(ctx) {
     return items;
   }
 
+  // ---------- permission level ----------
+
+  // Main checks the level before every mail action, event and proposal (agents/permission.js); the button by Send
+  // shows the level of the chat on screen, its own or the one in Settings.
+  const PERMISSIONS = ['ask', 'auto', 'full'];
+  const PERMISSION_ICONS = { ask: 'shield', auto: 'shield-half', full: 'shield-off' };
+  const defaultPermission = () => (P.config && PERMISSIONS.includes(P.config.permission) ? P.config.permission : 'ask');
+  // Claude Code's and Codex's calls are bound to their chat, so a chat of theirs can have any level. Hermes and
+  // OpenClaw name the chat in each call themselves, and main gives their chats no looser level than Settings
+  // (hub.js BOUND_AGENTS, permissionFor()): the menu doesn't offer one, and one saved before counts as Default.
+  const BOUND_AGENTS = new Set(['claude', 'codex']);
+  const capped = (level) => !BOUND_AGENTS.has(currentAgent()) && PERMISSIONS.indexOf(level) > PERMISSIONS.indexOf(defaultPermission());
+  const ownPermission = () => {
+    const own = choiceOf().permission;
+    return own && !capped(own) ? own : null;
+  };
+  const permissionOf = () => ownPermission() || defaultPermission();
+  const permissionName = (level) => t(`agent.permission.${level}`);
+
+  function permissionItems() {
+    const own = ownPermission();
+    const items = [
+      { heading: t('agent.permission.title') },
+      { id: '', label: t('agent.permission.default'), tag: permissionName(defaultPermission()), checked: !own },
+      { separator: true }
+    ];
+    for (const level of PERMISSIONS) {
+      const off = capped(level);
+      items.push({
+        id: level,
+        label: permissionName(level),
+        sub: off ? t('agent.permission.onlyInSettings', { name: agentName(currentAgent()) }) : t(`agent.permission.${level}Hint`),
+        icon: PERMISSION_ICONS[level],
+        checked: level === own,
+        disabled: off
+      });
+    }
+    return items;
+  }
+
   // The buttons show the chat on screen: its model (else the default in Settings) and its effort (else only the
   // icon). The effort menu goes away for a model without effort levels.
   function refreshPickers() {
@@ -796,6 +852,15 @@ export function mountAgentPanel(ctx) {
       hidden: blocked || (!effort && !effortsOf(list, model).length),
       meter: effort && effort in METER ? METER[effort] : null
     });
+    const level = permissionOf();
+    chat.setPicker('permission', {
+      text: level === 'full' ? t('agent.permission.fullShort') : permissionName(level),
+      label: t('agent.permission.button', { level: permissionName(level) }),
+      items: permissionItems,
+      hidden: blocked,
+      icon: PERMISSION_ICONS[level],
+      tone: level === 'full' ? 'warn' : ''
+    });
   }
 
   function pickChoice(kind, value) {
@@ -807,11 +872,12 @@ export function mountAgentPanel(ctx) {
       P.draft = next;
       return refreshPickers();
     }
-    // Applies from the next turn; a turn that runs now keeps what it started with.
+    // A model or effort applies from the next turn; a turn that runs now keeps what it started with. The level counts
+    // from the agent's next action, and goes alone, so the model and effort stay as main has them.
     const conv = P.conv;
     Object.assign(conv, next);
     refreshPickers();
-    api('agentSetChoice', conv.id, next)
+    api('agentSetChoice', conv.id, kind === 'permission' ? { permission: next.permission } : next)
       .then((saved) => {
         if (saved && P.conv && P.conv.id === conv.id) {
           Object.assign(P.conv, saved);
@@ -824,7 +890,7 @@ export function mountAgentPanel(ctx) {
         api('agentGet', conv.id)
           .then((c) => {
             if (c && P.conv && P.conv.id === c.id) {
-              Object.assign(P.conv, { model: c.model || null, effort: c.effort || null });
+              Object.assign(P.conv, { model: c.model || null, effort: c.effort || null, permission: c.permission || null });
               refreshPickers();
             }
           })
@@ -1033,8 +1099,8 @@ export function mountAgentPanel(ctx) {
 
   function pickAgent(id) {
     if (!AGENTS.includes(id)) return;
-    // What was picked for one agent means nothing to another.
-    if (id !== currentAgent()) P.draft = { model: null, effort: null };
+    // A model or effort picked for one agent means nothing to another; the permission level does.
+    if (id !== currentAgent()) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
     P.agentId = id;
     // A conversation stays with its agent; another agent starts a new one about the same email.
     if (P.conv && P.conv.agent !== id) return showEmpty();
@@ -1049,12 +1115,14 @@ export function mountAgentPanel(ctx) {
     if (P.conv) return P.conv;
     const meeting = contextMeeting();
     const m = meeting ? null : contextEmail();
+    // The level the menu shows: one picked for Claude Code that a Hermes chat can't have stays behind.
     const conv = await api('agentCreate', {
       agent: P.agentId,
       message: m ? messageRef(m) : null,
       meeting: meeting ? { id: meeting.id, title: meeting.title || '', eventId: meeting.eventId || null } : null,
       model: P.draft.model,
-      effort: P.draft.effort
+      effort: P.draft.effort,
+      permission: ownPermission()
     });
     P.draft = { model: null, effort: null };
     showConversation(conv);
@@ -1078,8 +1146,8 @@ export function mountAgentPanel(ctx) {
   // The files and emails the user attached go along with whatever is sent, and a message can be those alone. Decided
   // and taken here, before anything waits, so the chat, the text and the attachments are the ones on screen. false:
   // not sent (one is still going out, a file is still on its way, or there is nothing to send); the composer keeps
-  // its text then.
-  function send(text, action = null, skill = null) {
+  // its text then. mode, while the agent works: 'steer' or 'queue' (main's send()); a quick action or skill waits.
+  function send(text, action = null, skill = null, mode = null) {
     const body = String(text || '').trim();
     if (sending || holding() || (!body && !action && !skill && !hasAttachments())) return false;
     sending = true;
@@ -1087,11 +1155,12 @@ export function mountAgentPanel(ctx) {
     const attached = P.attach;
     P.attach = { files: [], emails: [] };
     showAttachments();
-    deliver({ body, action, skill, attached }).finally(() => (sending = false));
+    const busy = Boolean(P.conv && P.conv.status === 'running');
+    deliver({ body, action, skill, attached, mode: busy ? (action || skill ? 'queue' : mode || 'steer') : null }).finally(() => (sending = false));
     return true;
   }
 
-  async function deliver({ body, action, skill, attached }) {
+  async function deliver({ body, action, skill, attached, mode = null }) {
     // Not sent: the chips come back, before anything the user attached meanwhile.
     const restore = () => {
       P.attach = { files: [...attached.files, ...P.attach.files], emails: [...attached.emails, ...P.attach.emails] };
@@ -1100,7 +1169,7 @@ export function mountAgentPanel(ctx) {
     try {
       const conv = await ensureConversation();
       const message = action ? { text: action.prompt, action: action.action, display: action.label } : skill ? { skill } : { text: body };
-      await api('agentSend', conv.id, { ...message, files: attached.files.map((f) => f.id), emails: attached.emails.map((m) => m.id) });
+      await api('agentSend', conv.id, { ...message, files: attached.files.map((f) => f.id), emails: attached.emails.map((m) => m.id), ...(mode ? { mode } : {}) });
       follow(true);
     } catch (err) {
       const why = String((err && err.message) || '');
@@ -1151,12 +1220,13 @@ export function mountAgentPanel(ctx) {
   }
 
   // What the input sends with Enter or the Send button. A message that is just one of the offered commands
-  // ("/summary", "/shared-name") runs it, the same as picking it from the menu; anything else is chat text.
-  function submit(text) {
+  // ("/summary", "/shared-name") runs it, the same as picking it from the menu; anything else is chat text. mode:
+  // Steer or Queue while the agent works (chatComposer); a command then waits for the turn to end.
+  function submit(text, mode = null) {
     const m = /^\/([\w-]+)$/.exec(String(text || '').trim());
     const cmd = m && commands().find((c) => String(c.name).toLowerCase() === m[1].toLowerCase());
     if (cmd) return runAction(cmd.name);
-    return send(text);
+    return send(text, null, null, mode);
   }
 
   function showError(err) {
@@ -1171,6 +1241,9 @@ export function mountAgentPanel(ctx) {
   let toolRun = null;
   let pendingEl = null;
   let turnErrorEl = null;
+  // The messages that wait, at the end of the conversation, and what that list shows (showQueue()).
+  let queueEl = null;
+  let shownQueue = null;
   // A running tool that waits on the approval card right under it: tool item id -> approval item id.
   // The card says what the tool will do, so the chip stays out of sight until the user allows it.
   const waitsFor = new Map();
@@ -1181,11 +1254,19 @@ export function mountAgentPanel(ctx) {
     toolRun = null;
     pendingEl = null;
     turnErrorEl = null;
+    queueEl = null;
+    shownQueue = null;
     transcript.replaceChildren();
     pane.classList.remove('is-empty');
     for (const item of P.conv.items) addItem(item);
     showPending();
+    showQueue();
     follow(true);
+  }
+
+  // The messages that wait (showQueue()) stay at the end of the conversation: what the turn adds goes above them.
+  function place(el) {
+    transcript.insertBefore(el, queueEl && queueEl.parentNode === transcript ? queueEl : null);
   }
 
   function wrap(el, item) {
@@ -1204,7 +1285,7 @@ export function mountAgentPanel(ctx) {
   function newRun(item) {
     const group = B.toolGroup();
     const box = wrap(elOf(group), item);
-    transcript.append(box);
+    place(box);
     return { group, box, ids: [], chips: new Map() };
   }
 
@@ -1252,7 +1333,7 @@ export function mountAgentPanel(ctx) {
     toolRun = null;
     const view = buildView(item);
     if (!view) return;
-    transcript.append(wrap(view.el, item));
+    place(wrap(view.el, item));
     views.set(item.id, { item, ...view });
     if (item.type === 'approval') linkApproval(item);
   }
@@ -1473,10 +1554,13 @@ export function mountAgentPanel(ctx) {
   function localizeNotice(item) {
     const cal = item.calendar;
     if (cal && typeof cal.title === 'string' && (cal.action === 'created' || cal.action === 'failed')) {
-      return { ...item, text: cal.action === 'created' ? t('agent.calendar.created', { title: cal.title }) : t('agent.calendar.failed', { title: cal.title }) };
+      if (cal.action === 'failed') return { ...item, text: t('agent.calendar.failed', { title: cal.title }) };
+      // Guests got an invitation: said, as nobody may have seen a card with them (a permission level that never asks).
+      const guests = Number(cal.guests) || 0;
+      return { ...item, text: guests > 0 ? t('agent.calendar.createdInvited', { title: cal.title, count: guests }) : t('agent.calendar.created', { title: cal.title }) };
     }
     if (item.code && hasKey(`agent.notices.${item.code}`)) {
-      const params = item.code === 'kept-approval' || item.code === 'approval-too-long' ? { title: String((item.params && item.params.title) || '') } : {};
+      const params = ['kept-approval', 'approval-too-long', 'auto-approved'].includes(item.code) ? { title: String((item.params && item.params.title) || '') } : {};
       return { ...item, text: t(`agent.notices.${item.code}`, { name: agentName(P.conv ? P.conv.agent : currentAgent()), ...params }) };
     }
     if (item.code && (CODES.has(item.code) || item.tone === 'error')) return { ...item, text: describeError({ code: item.code }, agentName(P.conv ? P.conv.agent : currentAgent())).text };
@@ -1540,12 +1624,14 @@ export function mountAgentPanel(ctx) {
       pendingEl = document.createElement('div');
       pendingEl.className = 'ap-item ap-pending';
       pendingEl.append(elOf(B.shimmer(t('agent.items.working', { name: agentName(P.conv.agent) }))));
-      transcript.append(pendingEl);
+      place(pendingEl);
     } else if (!want && pendingEl) {
       pendingEl.remove();
       pendingEl = null;
     }
-    if (pendingEl && pendingEl !== transcript.lastElementChild) transcript.append(pendingEl);
+    // Last of the turn, before the messages that wait.
+    const end = queueEl && queueEl.parentNode === transcript ? queueEl.previousElementSibling : transcript.lastElementChild;
+    if (pendingEl && pendingEl !== end) place(pendingEl);
   }
 
   // A turn that failed without leaving a notice of its own still says why.
@@ -1555,8 +1641,116 @@ export function mountAgentPanel(ctx) {
     clearTurnError();
     const item = { id: 'turn-error', type: 'notice', text: '', detail: error.detail || '', tone: 'error', code: error.code || 'unknown', undo: null };
     turnErrorEl = wrap(noticeView(item, null).el, item);
-    transcript.append(turnErrorEl);
+    place(turnErrorEl);
     follow();
+  }
+
+  // ---------- messages that wait ----------
+
+  // What the user sent while the agent worked and is not in the conversation yet (main's c.queue): at its end, each
+  // with when it goes. While the agent works, a queued one can steer now (when the agent can take it), be edited
+  // back into the input or be removed. Once the agent is done without sending them (Stop, an error, a restart),
+  // they wait for the user: Send now starts one. Drawn again only when it changes, so a status update leaves the focus
+  // on its buttons.
+  function showQueue() {
+    if (!P.conv) return;
+    const queue = Array.isArray(P.conv.queue) ? P.conv.queue : [];
+    const running = P.conv.status === 'running';
+    const steer = canSteer(P.conv.agent);
+    const key = JSON.stringify([queue.map((e) => [e.id, e.state, e.fallback, e.text]), running, steer, getLocale()]);
+    if (key === shownQueue && (queue.length ? queueEl && queueEl.parentNode === transcript : !queueEl)) return;
+    shownQueue = key;
+    if (!queue.length) {
+      queueEl?.remove();
+      queueEl = null;
+      return;
+    }
+    const name = agentName(P.conv.agent);
+    const box = document.createElement('div');
+    box.className = 'ap-item ap-queue';
+    box.setAttribute('role', 'list');
+    box.setAttribute('aria-label', t('agent.queue.list'));
+    for (const e of queue) {
+      const steering = e.state === 'steering';
+      const tone = steering ? 'steering' : running ? 'queued' : 'held';
+      const status = steering ? t('agent.panel.steerHint', { name }) : !running ? t('agent.queue.held') : e.fallback ? t('agent.queue.fallback', { name }) : t('agent.panel.queueHint', { name });
+      const actions = [];
+      if (!steering) {
+        // While the agent works only a message can steer; a quick action or skill, also one of the agent's own named
+        // with $, waits for its own turn.
+        if (!running || (steer && !e.action && !e.startsSkill)) actions.push({ id: 'send', label: running ? t('agent.queue.steerNow') : t('agent.queue.sendNow'), icon: 'send', onClick: () => sendQueued(e) });
+        if (!e.action || e.action === 'skill') actions.push({ id: 'edit', label: t('agent.queue.edit'), icon: 'pen', onClick: () => editQueued(e) });
+        actions.push({ id: 'remove', label: t('agent.queue.remove'), icon: 'x', onClick: () => removeQueued(e) });
+      }
+      const attachments = [...(e.files || []).map((f) => fileChip(f, null)), ...(e.emails || []).map((m) => emailChip(m, null))];
+      const el = elOf(B.queuedBubble({ text: e.text || '', attachments, skills: chatSkills(e), status, tone, actions, labels: { skill: (n) => t('agent.panel.skillChip', { name: n }) } }));
+      el.setAttribute('role', 'listitem');
+      el.dataset.id = e.id;
+      box.append(el);
+    }
+    // The button that had the focus is drawn again: the same one in the new list takes it.
+    const had = queueEl && queueEl.contains(document.activeElement) ? document.activeElement : null;
+    const focus = had ? { id: had.closest('[data-id]')?.dataset.id, action: had.dataset.action } : null;
+    if (queueEl && queueEl.parentNode === transcript) queueEl.replaceWith(box);
+    else transcript.append(box);
+    queueEl = box;
+    if (focus) box.querySelector(`[data-id="${CSS.escape(focus.id || '')}"] [data-action="${CSS.escape(focus.action || '')}"]`)?.focus();
+    follow();
+  }
+
+  function sendQueued(e) {
+    if (!P.conv) return;
+    clearTurnError();
+    api('agentSendQueued', P.conv.id, e.id)
+      .then(() => follow(true))
+      .catch((err) => {
+        shownQueue = null;
+        showQueue();
+        showError(err);
+      });
+  }
+
+  function removeQueued(e) {
+    if (!P.conv) return;
+    api('agentUnqueue', P.conv.id, e.id).catch((err) => {
+      shownQueue = null;
+      showQueue();
+      showError(err);
+    });
+    chat.focus();
+  }
+
+  // Back into the input, ahead of what the user is writing, with its files and emails as chips again. Main lets go of
+  // the waiting copy once it is out of the queue, so a message whose files or emails don't fit next to what the input
+  // holds stays in the queue, with a note why, rather than come back without some of them.
+  async function editQueued(e) {
+    if (!P.conv) return;
+    const files = (e.files || []).length;
+    const emails = (e.emails || []).filter((m) => !P.attach.emails.some((x) => sameEmail(x, m))).length;
+    if (files > MAX_FILES - P.attach.files.length - P.adding.length || emails > MAX_EMAILS - P.attach.emails.length) {
+      // Its Edit button turned itself off when clicked; drawn again, it is on.
+      shownQueue = null;
+      showQueue();
+      toast(t('agent.queue.editFull', { files: MAX_FILES, emails: MAX_EMAILS }), 6000);
+      return;
+    }
+    let back;
+    try {
+      back = await api('agentUnqueue', P.conv.id, e.id, { restage: true });
+    } catch (err) {
+      shownQueue = null;
+      showQueue();
+      return showError(err);
+    }
+    if (!chat) return;
+    const typed = chat.getValue();
+    const text = String(back.text || '');
+    chat.setValue(typed.trim() ? (text ? `${text}\n\n${typed}` : typed) : text);
+    for (const m of back.emails || []) {
+      if (P.attach.emails.length < MAX_EMAILS && !P.attach.emails.some((x) => sameEmail(x, m))) P.attach.emails.push(m);
+    }
+    takeFiles(back.files || []);
+    chat.focus();
   }
 
   function clearTurnError() {
@@ -1573,6 +1767,8 @@ export function mountAgentPanel(ctx) {
     toolRun = null;
     pendingEl = null;
     turnErrorEl = null;
+    queueEl = null;
+    shownQueue = null;
     pane.classList.add('is-empty');
     const id = currentAgent();
     const name = agentName(id);
@@ -2013,6 +2209,7 @@ export function mountAgentPanel(ctx) {
     if (!Array.isArray(conv.items)) {
       Object.assign(P.conv, conv, { items: P.conv.items });
       renderHead();
+      showQueue();
       return refreshComposer();
     }
     // Merge rather than redraw, so streaming text and the scroll position survive.
@@ -2021,6 +2218,7 @@ export function mountAgentPanel(ctx) {
     Object.assign(P.conv, conv, { items: P.conv.items });
     for (const item of conv.items) upsertItem({ ...item });
     renderHead();
+    showQueue();
     refreshComposer();
   }
 
@@ -2084,6 +2282,8 @@ export function mountAgentPanel(ctx) {
     if (status === 'running') clearTurnError();
     showPending();
     if (status === 'error' && error) showTurnError(error);
+    // A turn that ended leaves what waits waiting for the user, or the next one starts.
+    showQueue();
   }
 
   // The chat opens before the panel does. A closed panel still holds the chat it showed last, whose answer may be

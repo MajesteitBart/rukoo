@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { t } = require('../src/i18n');
 const { toEvent, applyGuests } = require('../src/main/calendar/google');
-const { fakeCalendar, setup, settle, monday, at, iso, day, DAY } = require('./fixtures/google-calendar');
+const { fakeCalendar, setup, settle, monday, at, iso, day, DAY, DELEGATED } = require('./fixtures/google-calendar');
 
 const mine = { organizer: { email: 'me@example.com', self: true } };
 const DEMO = { id: 'd1', type: 'demo', provider: 'demo', email: 'demo@example.com', name: 'Demo User' };
@@ -55,6 +55,42 @@ test('calendars carry their colour, Meet, default reminders and ownership, and t
   assert.deepEqual([c.Team.availability, c.Holidays.visible, c.Holidays.availability], [true, true, false], 'the eye toggle never changes availability');
   engine.calendarSettings({ colors: { 'g1\nme@example.com': null } });
   assert.equal(cals()['me@example.com'].color, '#9fe1e7', 'null takes the choice back');
+});
+
+test("the owner role makes a calendar owned, but only the account's own calendars are mine", async () => {
+  const fake = fakeCalendar({ more: DELEGATED });
+  const { calendars, week } = await opened(fake);
+  const by = Object.fromEntries(calendars.view(week).accounts[0].calendars.map((c) => [c.name, c]));
+  // Google gives the owner role to everyone with "Make changes and manage sharing". Such a calendar still counts
+  // toward availability, as before; only the primary calendar and one whose dataOwner is the account are the user's own.
+  assert.deepEqual(
+    Object.entries(by).map(([name, c]) => [name, c.owned, c.mine, c.availability]),
+    [
+      ['me@example.com', true, true, true],
+      ['Holidays', false, false, false],
+      ['Team', false, false, false],
+      ['Lotte', true, false, true],
+      ['Board', true, false, true],
+      ['Side project', true, true, true]
+    ]
+  );
+});
+
+test("a calendar cached before Rukoo read dataOwner is the user's own only when it is the primary or has the account's address", () => {
+  const { Calendars } = require('../src/main/calendar');
+  const calendars = Object.create(Calendars.prototype);
+  calendars.engine = { settings: {} };
+  const acc = { id: 'g1', email: 'Me@Example.com', type: 'imap', provider: 'google', auth: 'oauth2', scopes: [] };
+  calendars.kind = () => 'google';
+  const mineOf = (cal) => calendars.publicCalendar(acc, { name: cal.id, writable: true, selected: true, ...cal }).mine;
+  assert.equal(mineOf({ id: 'whatever@group.calendar.google.com', primary: true }), true);
+  assert.equal(mineOf({ id: 'me@example.com', primary: false, owned: true }), true, 'its id is the address, in any case');
+  assert.equal(mineOf({ id: 'side@group.calendar.google.com', primary: false, owned: true }), false, 'no dataOwner yet: it asks');
+  assert.equal(mineOf({ id: 'boss@example.com', primary: false, owned: true }), false);
+  assert.equal(mineOf({ id: 'board@group.calendar.google.com', primary: false, owned: true, dataOwner: 'boss@example.com' }), false);
+  // A Google account that needs signing in again keeps the same answer.
+  calendars.kind = () => 'reconnect';
+  assert.equal(mineOf({ id: 'side@group.calendar.google.com', primary: false, owned: true, dataOwner: 'me@example.com' }), true);
 });
 
 test('a cache from before the newer fields gives calendars and events their defaults', () => {

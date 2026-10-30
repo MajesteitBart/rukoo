@@ -96,9 +96,11 @@ class WaitingMail(private val file: File? = null) {
 
 /**
  * New-mail notifications on the `mail` channel: one per account, summarizing what arrived since the
- * app was last on screen (desktop main.js:192-215 shows up to three, then a count). Nothing is shown
+ * app was last on screen (desktop main.js:192-215 shows up to three, then a count). Mail reaches it through
+ * MailNotices, which leaves out muted categories and holds what waits for Jev. Nothing is shown
  * while Rukoo is on screen or when the user turned mail notifications off. A tap opens the message
- * (one new) or the account's inbox (several), through MainActivity's extras.
+ * (one new) or the account's inbox (several), through MainActivity's extras. The number the launcher badge may show
+ * is [badge] of what a notification lists: the mail Inbox shows, without the categories it leaves out.
  */
 class MailNotifier(
     private val context: Context,
@@ -106,6 +108,7 @@ class MailNotifier(
     private val enabled: () -> Boolean,
     private val foreground: () -> Boolean,
     private val waiting: WaitingMail = WaitingMail(),
+    private val badge: (List<MessageSummary>) -> Int = { it.size },
 ) {
     private fun allowed(): Boolean {
         if (!enabled() || foreground()) return false
@@ -118,16 +121,23 @@ class MailNotifier(
         context.getSystemService(NotificationManager::class.java)?.activeNotifications.orEmpty().filter { it.tag == TAG }.map { it.id }.toSet()
     }.getOrDefault(emptySet())
 
+    /**
+     * Adds [messages] to their accounts' notifications. [quiet]: accounts whose notification already sounded for this
+     * arrival (MailNotices, for mail that waited for Jev), which update without a sound. Returns the accounts whose
+     * notification grew; none while notifications aren't allowed.
+     */
     @Synchronized
-    fun newMail(messages: List<MessageSummary>, accounts: List<Account>) {
-        if (!allowed()) return
+    fun newMail(messages: List<MessageSummary>, accounts: List<Account>, quiet: Set<String> = emptySet()): Set<String> {
+        if (!allowed()) return emptySet()
         // A notification the user swiped away has done its job: the next one starts over.
         val inShade = shown()
         for (accountId in waiting.accountIds) if (notificationId(accountId) !in inShade) waiting.forget(accountId)
-        for (accountId in waiting.add(messages)) {
+        val grown = waiting.add(messages)
+        for (accountId in grown) {
             val account = accounts.firstOrNull { it.id == accountId } ?: continue
-            post(account, waiting.of(accountId), quietly = false)
+            post(account, waiting.of(accountId), quietly = accountId in quiet)
         }
+        return grown
     }
 
     /**
@@ -150,6 +160,23 @@ class MailNotifier(
             } else {
                 post(account, list, quietly = true)
             }
+        }
+    }
+
+    /**
+     * The badge's number again, for notifications in the shade whose mail changed category: Show in Inbox turned off
+     * for one, or Jev put an email in a category Inbox doesn't show. Nothing makes a sound.
+     */
+    @Synchronized
+    fun recount(accounts: List<Account>) {
+        val numbers = runCatching {
+            context.getSystemService(NotificationManager::class.java)?.activeNotifications.orEmpty().filter { it.tag == TAG }.associate { it.id to it.notification.number }
+        }.getOrDefault(emptyMap())
+        for (accountId in waiting.accountIds) {
+            val number = numbers[notificationId(accountId)] ?: continue
+            val list = waiting.of(accountId)
+            val account = accounts.firstOrNull { it.id == accountId } ?: continue
+            if (list.isNotEmpty() && badge(list) != number) post(account, list, quietly = true)
         }
     }
 
@@ -204,7 +231,8 @@ class MailNotifier(
             .setContentIntent(pending)
             .setWhen(newest.date)
             .setShowWhen(true)
-            .setNumber(list.size)
+            // The launcher badge counts what Inbox shows; the notification still lists all of it.
+            .setNumber(badge(list))
             // Taking a read message off makes no sound; new mail does.
             .setOnlyAlertOnce(quietly)
             .setSilent(quietly)

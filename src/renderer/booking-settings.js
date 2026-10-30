@@ -10,6 +10,7 @@ import { duration, whenText, longDay, inlineDay, pcZone, zoneOptions } from './c
 import { safeBookingUrl, bookingFooterHtml } from './composer.js';
 import { signaturePreview } from './signature.js';
 import { weekOrder, weekdayName, workHoursText } from './calendar-settings.js';
+import { listText } from './video-settings.js';
 
 export const BOOKING_VIEWS = ['booking', 'booking-setup', 'booking-type', 'booking-hours'];
 
@@ -85,6 +86,7 @@ const defaultType = (meet) => ({
   slug: '',
   title: '',
   duration: 30,
+  durations: [30],
   description: '',
   location: { kind: meet ? 'googleMeet' : 'none', label: '', value: '', public: false },
   bufferBefore: 0,
@@ -97,6 +99,25 @@ const defaultType = (meet) => ({
   hidden: false
 });
 const options = (list, value, label) => list.map((v) => `<option value="${esc(v)}"${String(v) === String(value) ? ' selected' : ''}>${esc(label(v))}</option>`).join('');
+// The lengths a guest can pick on a type, shortest first; a record from before there were several has only duration.
+const lengthsOf = (type) => (Array.isArray(type.durations) && type.durations.length ? [...type.durations].sort((a, b) => a - b) : [type.duration]);
+// "15 min, 30 min or 1 hr", in the interface language.
+const lengthsText = (list) => {
+  const parts = list.map((m) => duration(m * 60000));
+  try {
+    return new Intl.ListFormat(getLocale(), { type: 'disjunction' }).format(parts);
+  } catch (_) {
+    return parts.join(', ');
+  }
+};
+// The title Rukoo gives a type, in the page's language (src/main/booking/rules.js): "30 minute meeting" with one
+// length, "Meeting" with several. A title still equal to one Rukoo gave follows the lengths in the editor.
+const madeTitle = (locale, lengths) => (lengths.length > 1 ? translate(locale, 'booking.defaults.typeTitleAny') : translate(locale, 'booking.defaults.typeTitle', { minutes: lengths[0] }));
+const isMadeTitle = (locale, title, lengths) => title === madeTitle(locale, lengths) || lengths.some((m) => title === madeTitle(locale, [m]));
+// The default length when the old one is no longer offered: the nearest one, the shorter of two as near.
+const nearestLength = (lengths, old) => [...lengths].sort((a, b) => Math.abs(a - old) - Math.abs(b - old) || a - b)[0];
+// The Default duration choices: the lengths picked under Available durations.
+const defaultOptions = (lengths, value) => options(lengths, value, (m) => duration(m * 60000));
 
 // pages: what settings.js needs. row: its row helper; go, back and rerender: its navigation; current(): the page on
 // top; promptDialog: its text prompt.
@@ -105,6 +126,8 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   let failed = null;
   let lists = null;
   let app = null;
+  // The video services on this computer (videoState): the connected ones are locations a meeting type can have.
+  let video = null;
   let lastView = null;
   // After Turn on: the card with Copy link, Preview page and Add to signature.
   let justOn = false;
@@ -163,8 +186,19 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
       failed = err.message;
     }
     if (entering) justOn = false;
-    if (BOOKING_VIEWS.includes(view) && signedIn()) lists = await api('calendarList').catch(() => lists);
+    if (BOOKING_VIEWS.includes(view) && signedIn()) [lists, video] = await Promise.all([api('calendarList').catch(() => lists), api('videoState').catch(() => video)]);
   }
+
+  // ---------- video services ----------
+
+  const videoServices = () => (video && Array.isArray(video.services) ? video.services : []);
+  const videoName = (id) => (videoServices().find((s) => s.id === id) || { name: id }).name;
+  // The services a type's location can be: on the computer that handles bookings, those connected here or needing
+  // renewal; and the type's own whatever its state, so opening a type never changes its location.
+  const videoOptions = (current) => videoServices().filter((s) => s.id === current || (state.thisDevice && (s.status === 'connected' || s.status === 'renew')));
+  const videoLabel = (s) => (s.status === 'connected' ? s.name : s.status === 'renew' ? t('settings.booking.videoRenewOption', { service: s.name }) : t('settings.booking.videoOffOption', { service: s.name }));
+  // A location select's value: 'video:zoom' for a video service, else the kind.
+  const kindValue = (loc) => (loc.kind === 'video' ? `video:${loc.service}` : loc.kind);
 
   // What the page shows of a state. The publish line is left out: it is written in place, because a publish changes
   // only that line and a redraw would move the page under the user. Bookings that have ended drop out.
@@ -403,7 +437,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
 
   // ---------- the page ----------
 
-  const kindName = (loc) => (loc && loc.label ? loc.label : loc && loc.kind !== 'none' ? KIND_LABEL[loc.kind]() : '');
+  const kindName = (loc) => (loc && loc.label ? loc.label : loc && loc.kind === 'video' ? videoName(loc.service) : loc && loc.kind !== 'none' ? KIND_LABEL[loc.kind]() : '');
   // When guests can book a type, as far as it differs from a new type's defaults: "15 mins free time after",
   // "1 day notice". Equal free time on both sides is one phrase.
   const whenDesc = (type) => {
@@ -423,7 +457,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
   };
   // A row that wraps breaks after a dot, not before it.
   const typeDesc = (type) =>
-    [duration(type.duration * 60000), kindName(type.location), ...whenDesc(type), type.confirm ? t('settings.booking.typeConfirm') : '', type.hidden ? t('settings.booking.typeHidden') : ''].filter(Boolean).join(' · ');
+    [lengthsText(lengthsOf(type)), kindName(type.location), ...whenDesc(type), type.confirm ? t('settings.booking.typeConfirm') : '', type.hidden ? t('settings.booking.typeHidden') : ''].filter(Boolean).join(' · ');
   const hoursValue = () => {
     const s = state.settings || {};
     const calendar = app && app.settings && app.settings.calendar;
@@ -501,11 +535,14 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const unchecked = ((state.publishing && state.publishing.unchecked) || [])
       .map((u) => `<div class="row static"><div class="text"><div class="desc booking-warn">${esc(t('settings.booking.unchecked', { email: u.email, time: `${inlineDay(u.since)}, ${hhmm(u.since)}` }))}</div></div></div>`)
       .join('');
+    // Use this computer moves the meetings too: the services the types use that aren't connected here.
+    const missing = ((state.video && state.video.missing) || []).map((m) => m.name);
     const otherDevice =
       !state.thisDevice && device
         ? `<div class="row static booking-device">
             <div class="text"><div class="title">${esc(device.name ? t('settings.booking.otherDevice', { device: device.name }) : t('settings.booking.otherDeviceGone'))}</div>
-              <div class="desc">${esc(t('settings.booking.otherDeviceHelp'))}</div></div>
+              <div class="desc">${esc(t('settings.booking.otherDeviceHelp'))}</div>
+              ${missing.length ? `<div class="desc booking-warn" data-video-missing>${esc(t('settings.booking.otherDeviceVideo', { services: listText(missing) }))}</div>` : ''}</div>
             <button class="btn sm secondary" data-a="booking-takeover">${esc(t('settings.booking.takeover'))}</button></div>`
         : '';
     const requests = state.requests || [];
@@ -582,25 +619,41 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const d = edit.draft;
     const meet = meetAllowed();
     const loc = d.location;
-    const showValue = loc.kind !== 'none' && loc.kind !== 'googleMeet';
-    const lengths = LENGTHS.includes(d.duration) ? LENGTHS : [...LENGTHS, d.duration].sort((a, b) => a - b);
+    const showValue = loc.kind !== 'none' && loc.kind !== 'googleMeet' && loc.kind !== 'video';
+    // Connected video services come right after Google Meet.
+    const option = (value, label, extra = '') => `<option value="${esc(value)}"${value === kindValue(loc) ? ' selected' : ''}${extra}>${esc(label)}</option>`;
+    const kinds = KINDS.map(
+      (k) =>
+        option(k, KIND_LABEL[k](), k === 'googleMeet' && !meet && loc.kind !== 'googleMeet' ? ' disabled' : '') +
+        (k === 'googleMeet' ? videoOptions(loc.kind === 'video' ? loc.service : null).map((s) => option(`video:${s.id}`, videoLabel(s))).join('') : '')
+    ).join('');
+    // Every length the editor offers, with any the type has that isn't among them.
+    const picked = lengthsOf(d);
+    const lengths = [...new Set([...LENGTHS, ...picked])].sort((a, b) => a - b);
     const base = (state.url || '').replace(/\/$/, '');
     return `<div class="card"><form class="form booking-type" data-form="booking-type" novalidate>
       <label>${esc(t('settings.booking.typeTitle'))}<input type="text" name="title" value="${esc(d.title)}" maxlength="100" autocomplete="off"/></label>
       <label>${esc(t('settings.booking.typeSlug'))}<input type="text" name="slug" value="${esc(d.slug)}" maxlength="40" spellcheck="false" autocomplete="off" aria-describedby="booking-slug-url"/>
         <span class="field-help" id="booking-slug-url" data-slug-url>${esc(`${base}/${d.slug}`)}</span></label>
-      <label>${esc(t('settings.booking.typeLength'))}<select name="duration">${options(lengths, d.duration, (m) => duration(m * 60000))}</select></label>
+      <fieldset class="booking-lengths" aria-describedby="booking-lengths-help">
+        <legend>${esc(t('settings.booking.typeLengths'))}</legend>
+        <div class="booking-length-options">${lengths
+          .map((m) => `<label class="booking-length"><input type="checkbox" name="durations" value="${m}"${picked.includes(m) ? ' checked' : ''}/><span>${esc(duration(m * 60000))}</span></label>`)
+          .join('')}</div>
+        <span class="field-help" id="booking-lengths-help">${esc(t('settings.booking.typeLengthsHelp'))}</span>
+      </fieldset>
+      <label data-default-length ${picked.length > 1 ? '' : 'hidden'}>${esc(t('settings.booking.typeDefaultLength'))}<select name="duration" aria-describedby="booking-default-help">${defaultOptions(picked, d.duration)}</select>
+        <span class="field-help" id="booking-default-help">${esc(t('settings.booking.typeDefaultLengthHelp'))}</span></label>
       <label>${esc(t('settings.booking.typeDescription'))}<textarea name="description" maxlength="500" rows="3">${esc(d.description)}</textarea></label>
-      <label>${esc(t('settings.booking.location'))}<select name="locationKind">${KINDS.map(
-        (k) => `<option value="${k}"${k === loc.kind ? ' selected' : ''}${k === 'googleMeet' && !meet && loc.kind !== 'googleMeet' ? ' disabled' : ''}>${esc(KIND_LABEL[k]())}</option>`
-      ).join('')}</select>
-        ${meet ? '' : `<span class="field-help">${esc(t('settings.booking.meetUnavailable'))}</span>`}</label>
+      <label>${esc(t('settings.booking.location'))}<select name="locationKind">${kinds}</select>
+        ${meet ? '' : `<span class="field-help">${esc(t('settings.booking.meetUnavailable'))}</span>`}
+        <span class="field-help" data-video-help>${esc(videoHelp(kindValue(loc)))}</span></label>
       <div class="booking-location" data-location ${showValue ? '' : 'hidden'}>
         <label>${esc(t('settings.booking.locationValue'))}<input type="text" name="locationValue" value="${esc(loc.value)}" maxlength="500" autocomplete="off" placeholder="${esc(showValue ? KIND_VALUE[loc.kind]() : '')}"/></label>
         <label class="inline"><input type="checkbox" name="locationPublic" ${loc.public ? 'checked' : ''}/> ${esc(t('settings.booking.locationPublic'))}</label>
         <span class="field-help">${esc(t('settings.booking.locationPrivateHelp'))}</span>
       </div>
-      <label data-location-label ${loc.kind === 'googleMeet' ? 'hidden' : ''}>${esc(t('settings.booking.locationLabel'))}<input type="text" name="locationLabel" value="${esc(loc.label)}" maxlength="100" autocomplete="off" placeholder="${esc(t('settings.booking.locationLabelPlaceholder'))}"/></label>
+      <label data-location-label ${loc.kind === 'googleMeet' ? 'hidden' : ''}>${esc(t('settings.booking.locationLabel'))}<input type="text" name="locationLabel" value="${esc(loc.label)}" maxlength="100" autocomplete="off" placeholder="${esc(labelPlaceholder(kindValue(loc)))}"/></label>
       ${section('when', t('settings.booking.when'), `<div class="booking-grid">
           <label>${esc(t('settings.booking.bufferBefore'))}<select name="bufferBefore" aria-describedby="booking-buffer-help">${options(BUFFERS.includes(d.bufferBefore) ? BUFFERS : [...BUFFERS, d.bufferBefore], d.bufferBefore, (m) => (m ? duration(m * 60000) : t('common.values.none')))}</select></label>
           <label>${esc(t('settings.booking.bufferAfter'))}<select name="bufferAfter" aria-describedby="booking-buffer-help">${options(BUFFERS.includes(d.bufferAfter) ? BUFFERS : [...BUFFERS, d.bufferAfter], d.bufferAfter, (m) => (m ? duration(m * 60000) : t('common.values.none')))}</select></label>
@@ -632,23 +685,44 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     </form></div>`;
   }
 
+  // Under Location: what a video service does, or where to connect one while none is.
+  function videoHelp(value) {
+    if (value.startsWith('video:')) return t('settings.booking.videoHelp', { service: videoName(value.slice(6)) });
+    if (!state.thisDevice) return t('settings.booking.videoOtherDevice');
+    return videoOptions(null).length ? '' : t('settings.booking.videoNone');
+  }
+  const labelPlaceholder = (value) => (value.startsWith('video:') ? videoName(value.slice(6)) : t('settings.booking.locationLabelPlaceholder'));
+
   // What the type form holds now, as a meeting type.
   function readType(form) {
     const f = new FormData(form);
     const num = (name, fallback) => (f.get(name) === '' || f.get(name) === null ? fallback : Number(f.get(name)));
-    const kind = String(f.get('locationKind') || 'none');
+    const choice = String(f.get('locationKind') || 'none');
+    const service = choice.startsWith('video:') ? choice.slice(6) : null;
+    const kind = service ? 'video' : choice;
+    const label = String(f.get('locationLabel') || '').trim();
+    const durations = f
+      .getAll('durations')
+      .map(Number)
+      .sort((a, b) => a - b);
+    const chosen = num('duration', durations[0]);
     return {
       ...edit.draft,
       title: String(f.get('title') || '').trim(),
       slug: String(f.get('slug') || '').trim(),
-      duration: num('duration', 30),
+      durations,
+      // The default is one of the lengths picked; the field follows them as they change (fill()).
+      duration: durations.includes(chosen) ? chosen : durations[0],
       description: String(f.get('description') || '').trim(),
-      location: {
-        kind,
-        label: String(f.get('locationLabel') || '').trim(),
-        value: kind === 'none' || kind === 'googleMeet' ? '' : String(f.get('locationValue') || '').trim(),
-        public: kind !== 'none' && kind !== 'googleMeet' && f.get('locationPublic') === 'on'
-      },
+      // A video service's link is made per booking, so there are no details to keep or show.
+      location: service
+        ? { kind, label, value: '', public: false, service }
+        : {
+            kind,
+            label,
+            value: kind === 'none' || kind === 'googleMeet' ? '' : String(f.get('locationValue') || '').trim(),
+            public: kind !== 'none' && kind !== 'googleMeet' && f.get('locationPublic') === 'on'
+          },
       bufferBefore: num('bufferBefore', 0),
       bufferAfter: num('bufferAfter', 0),
       minNotice: num('minNotice', 240),
@@ -861,12 +935,37 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
       typeForm.addEventListener('change', (e) => {
         if (e.target.name !== 'locationKind') return;
         const kind = e.target.value;
-        const showValue = kind !== 'none' && kind !== 'googleMeet';
+        const showValue = kind !== 'none' && kind !== 'googleMeet' && !kind.startsWith('video:');
         typeForm.querySelector('[data-location]').hidden = !showValue;
         typeForm.querySelector('[data-location-label]').hidden = kind === 'googleMeet';
         if (showValue) typeForm.querySelector('[name="locationValue"]').placeholder = KIND_VALUE[kind]();
+        typeForm.querySelector('[name="locationLabel"]').placeholder = labelPlaceholder(kind);
+        typeForm.querySelector('[data-video-help]').textContent = videoHelp(kind);
       });
       for (const el of typeForm.querySelectorAll('details[data-section]')) el.addEventListener('toggle', () => edit && (edit.open[el.dataset.section] = el.open));
+      // Available durations: at least one stays picked, Default duration lists the ones picked and shows only with
+      // several, and a title Rukoo gave follows them ("30 minute meeting", "Meeting").
+      let shown = lengthsOf(edit.draft);
+      typeForm.addEventListener('change', (e) => {
+        if (e.target.name !== 'durations') return;
+        const boxes = [...typeForm.querySelectorAll('[name="durations"]')];
+        const error = typeForm.querySelector('[data-error]');
+        if (!boxes.some((b) => b.checked)) {
+          e.target.checked = true;
+          if (error) error.textContent = t('settings.booking.lengthsNeeded');
+          return;
+        }
+        if (error && error.textContent === t('settings.booking.lengthsNeeded')) error.textContent = '';
+        const next = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+        const select = typeForm.querySelector('[name="duration"]');
+        const old = Number(select.value);
+        select.innerHTML = defaultOptions(next, next.includes(old) ? old : nearestLength(next, old));
+        typeForm.querySelector('[data-default-length]').hidden = next.length < 2;
+        const locale = (state.settings && state.settings.locale) || getLanguage();
+        const title = typeForm.querySelector('[name="title"]');
+        if (isMadeTitle(locale, title.value.trim(), shown)) title.value = madeTitle(locale, next);
+        shown = next;
+      });
     }
     const hoursForm = page.querySelector('form[data-form="booking-hours"]');
     if (hoursForm && hours) {
@@ -887,7 +986,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const error = form.querySelector('[data-error]');
     if (error) error.textContent = err.message;
     const field = String(err.field || '').split('.').pop();
-    const names = { location: 'locationValue', value: 'locationValue', kind: 'locationKind', label: 'locationLabel', public: 'locationPublic' };
+    const names = { location: 'locationValue', value: 'locationValue', kind: 'locationKind', service: 'locationKind', label: 'locationLabel', public: 'locationPublic' };
     const input = field && form.querySelector(`[name="${CSS.escape(names[field] || field)}"]`);
     if (input) {
       input.setAttribute('aria-invalid', 'true');
@@ -972,6 +1071,7 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     const type = readType(form);
     const stop = (field, message) => fail(form, { field, message });
     if (!type.title) return stop('title', t('settings.booking.titleNeeded'));
+    if (!type.durations.length) return stop('durations', t('settings.booking.lengthsNeeded'));
     if (!SLUG.test(type.slug) || RESERVED_SLUGS.has(type.slug)) return stop('slug', t('settings.booking.slugHelp'));
     const types = clone(state.settings.types || []);
     if (types.some((x, i) => x.slug === type.slug && i !== edit.index)) return stop('slug', t('settings.booking.slugTaken'));
@@ -1073,6 +1173,8 @@ export function bookingPages({ row, go, back, rerender, current, promptDialog })
     switch (a.action) {
       case 'takeover':
         return action(() => api('bookingTakeover'), t('settings.booking.takenOver'));
+      case 'video':
+        return go('video');
       case 'cancel':
         return n.bookingId ? cancelAsk(n.bookingId) : null;
       case 'keep':

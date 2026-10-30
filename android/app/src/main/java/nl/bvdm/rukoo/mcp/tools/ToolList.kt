@@ -234,7 +234,7 @@ object ToolList {
         ToolSpec(
             "propose_action",
             "Ask the user for approval",
-            "Shows an approval card in Rukoo for something you want to do elsewhere (send a message, create a task, update a record). Returns at once; stop and wait. When the user approves you get a new message saying so, then do it. If they decline you will be told.",
+            "Shows an approval card in Rukoo for something you want to do elsewhere (send a message, create a task, update a record). Returns at once. With status waiting_for_user, stop and wait: when the user approves you get a new message saying so, then do it; if they decline you will be told. With status approved, the user lets you act without asking: do it now.",
             schema(
                 "title" to str(whole = true) {
                     description("What you will do, e.g. \"Add 2 tasks to Todoist\".")
@@ -363,7 +363,7 @@ object ToolList {
         ToolSpec(
             "create_event",
             "Add an event to the calendar",
-            "Asks Rukoo to add an event to one of the user's calendars. Rukoo shows the user a card first; you get status waiting_for_user, and the outcome with your next message. Guests get an invitation from the calendar's account. Only calendars that send invitations take guests: Google calendars, and CalDAV calendars whose server sends them. A date alone in start makes an all-day event.",
+            "Asks Rukoo to add an event to one of the user's calendars. Rukoo shows the user a card first unless they let it act without asking; you get status waiting_for_user and the outcome with your next message, or the result. Guests get an invitation from the calendar's account. Only calendars that send invitations take guests: Google calendars, and CalDAV calendars whose server sends them. A date alone in start makes an all-day event.",
             schema(
                 "title" to str(untag = true, whole = true) {
                     description("The title, e.g. \"Call with Sanne\".")

@@ -27,7 +27,7 @@ import {
   rescheduleBooking,
   slotParam
 } from './public.js';
-import { movingType } from './slots.js';
+import { lengths, movingType, withLength } from './slots.js';
 import { DAY, isDate, isZone, zonedParts } from './zone.js';
 
 const MINUTE = 60000;
@@ -208,7 +208,21 @@ function emailText(value) {
     .replace(/ /g, '+');
 }
 
-// month (YYYY-MM), date (YYYY-MM-DD), slot (a start, Z or an offset), the guest's fields and reschedule=<id>&k=.
+// A length in minutes from a link or a form, or null. Whether the type offers it is checked where the type is known.
+function lengthParam(value) {
+  const text = String(value ?? '').trim();
+  return /^\d{1,3}$/.test(text) ? Number(text) : null;
+}
+
+// The type at the length a link or form asked for, and that length when it isn't the default (for links to carry
+// on). A length the type doesn't offer is ignored, never echoed.
+function pickLength(type, minutes) {
+  if (minutes === null || minutes === type.duration || !lengths(type).includes(minutes)) return { type, picked: null };
+  return { type: withLength(type, minutes), picked: minutes };
+}
+
+// month (YYYY-MM), date (YYYY-MM-DD), slot (a start, Z or an offset), duration (minutes), the guest's fields and
+// reschedule=<id>&k=.
 export function typeQuery(q) {
   const monthText = q.get('month') ?? '';
   const month = /^\d{4}-(?:0[1-9]|1[0-2])$/.test(monthText) ? monthText : null;
@@ -228,7 +242,8 @@ export function typeQuery(q) {
   const filled = Object.values(fields).some(Boolean);
   const id = q.get('reschedule');
   const reschedule = id ? { id: cut(id, 64), key: cut(q.get('k'), 200) } : null;
-  return { month, date: month && date && !date.startsWith(month) ? null : date, slot, badSlot, fields, filled, reschedule };
+  const duration = lengthParam(q.get('duration'));
+  return { month, date: month && date && !date.startsWith(month) ? null : date, slot, badSlot, fields, filled, reschedule, duration };
 }
 
 // An address with a time, guest details or a manage key in it is kept out of search engines, whatever page it shows.
@@ -248,7 +263,8 @@ export async function landingPage(request, env, url, handle, data) {
   if (!data.accepting || !profile) return respond(ctx, request, 200, pages.offHtml(ctx, profile), { landing: true, noindex });
   const visible = profile.types.filter((t) => !t.hidden);
   if (visible.length === 1) {
-    return bookerPage(ctx, request, env, handle, { page, type: visible[0], landing: true, data, q });
+    const { type, picked } = pickLength(visible[0], q.duration);
+    return bookerPage(ctx, request, env, handle, { page, type, listed: visible[0], picked, landing: true, data, q });
   }
   const body = pages.landingHtml(ctx, {
     profile,
@@ -267,10 +283,12 @@ async function typePage(request, env, url, handle, slug) {
   const q = typeQuery(url.searchParams);
   const noindex = privateQuery(q);
   if (!page.accepting || !profile) return respond(ctx, request, 200, pages.offHtml(ctx, profile), { noindex });
-  let type = profile.types.find((t) => t.slug === slug);
-  if (!type) return respond(ctx, request, 404, pages.missingHtml(ctx, { kind: 'type', profile }), { noindex });
+  const listed = profile.types.find((t) => t.slug === slug);
+  if (!listed) return respond(ctx, request, 404, pages.missingHtml(ctx, { kind: 'type', profile }), { noindex });
   ctx.guide = ctx.links.llmsFor(slug);
 
+  let type = listed;
+  let picked = null;
   let reschedule = null;
   if (q.reschedule) {
     const found = await findBooking(env, handle, q.reschedule.id, q.reschedule.key);
@@ -284,14 +302,18 @@ async function typePage(request, env, url, handle, slug) {
     reschedule = { booking: b, key: q.reschedule.key };
     // The booking keeps its length when it moves, which the type may no longer have: the pages show that length.
     type = movingType(type, b);
+  } else {
+    ({ type, picked } = pickLength(listed, q.duration));
   }
 
   // The booking's own time isn't a new one: a link to it shows the booker.
-  if (q.slot !== null && q.slot !== reschedule?.booking.start) return preparedPage(ctx, request, env, handle, { page, type, q, reschedule });
-  return bookerPage(ctx, request, env, handle, { page, type, landing: false, data: null, q, reschedule });
+  if (q.slot !== null && q.slot !== reschedule?.booking.start) return preparedPage(ctx, request, env, handle, { page, type, picked, q, reschedule });
+  return bookerPage(ctx, request, env, handle, { page, type, listed, picked, landing: false, data: null, q, reschedule });
 }
 
-async function bookerPage(ctx, request, env, handle, { page, type, landing, data, q, reschedule = null }) {
+// type: the type at the length the times are for; listed: the type as published, with its lengths; picked: the
+// length the guest picked when it isn't the default.
+async function bookerPage(ctx, request, env, handle, { page, type, listed = type, picked = null, landing, data, q, reschedule = null }) {
   const zone = ctx.zone;
   const now = Date.now();
   const today = zonedParts(now, zone).date;
@@ -301,10 +323,11 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
   // While a booking moves it doesn't block its own neighbours, but its own time isn't offered: it isn't a new one.
   const own = reschedule ? reschedule.booking.start : null;
 
-  // The first open time decides where the month opens; the landing page's data (agentData) has it already.
-  let first = exclude ? null : (data?.slots?.[type.slug]?.[0] ?? null);
+  // The first open time decides where the month opens; the landing page's data (agentData) has it already, for the
+  // default length.
+  let first = exclude || picked ? null : (data?.slots?.[type.slug]?.[0] ?? null);
   if (first === null) {
-    const next = await nextSlots(env, handle, { days: type.horizon + 1, limit: own === null ? 1 : 2, slug: type.slug, exclude });
+    const next = await nextSlots(env, handle, { days: type.horizon + 1, limit: own === null ? 1 : 2, slug: type.slug, duration: picked, exclude });
     first = next.ok ? ((next.slots?.[type.slug] ?? []).find((s) => s !== own) ?? null) : null;
   }
   let month = q.month ?? q.date?.slice(0, 7) ?? (first !== null ? pages.monthOf(first, zone) : thisMonth);
@@ -313,8 +336,8 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
 
   const byDate = new Map();
   if (first !== null) {
-    const listed = await listSlots(env, handle, { type: type.slug, from: `${month}-01`, to: pages.lastDay(month), timeZone: zone, exclude });
-    for (const s of listed.ok ? listed.starts : []) {
+    const open = await listSlots(env, handle, { type: type.slug, duration: picked, from: `${month}-01`, to: pages.lastDay(month), timeZone: zone, exclude });
+    for (const s of open.ok ? open.starts : []) {
       if (s === own) continue;
       const d = zonedParts(s, zone).date;
       if (!byDate.has(d)) byDate.set(d, []);
@@ -328,12 +351,23 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
   if (reschedule) Object.assign(keep, { reschedule: reschedule.booking.id, k: reschedule.key });
   // Fields an assistant put in the link travel with every day and time, so the form opens filled in.
   if (q.filled) Object.assign(keep, q.fields);
+  // A picked length goes with every day, time, month and setting; the default one is left out.
+  if (picked) keep.duration = picked;
+  const path = landing ? ctx.base : `${ctx.base}/${type.slug}`;
+  // The lengths to pick from, as links to the same month and day at each length. A booking that moves keeps its own.
+  const offered = reschedule ? [] : lengths(listed);
+  const lengthLinks =
+    offered.length > 1
+      ? offered.map((m) => ({ minutes: m, current: m === type.duration, href: href(path, { ...keep, duration: m === listed.duration ? null : m, month, date }) }))
+      : null;
   const v = {
     profile: page.profile,
     type,
+    lengthLinks,
     landing,
     reschedule,
     badSlot: q.badSlot,
+    badLength: Boolean(q.badLength),
     approval: type.confirm || page.stale,
     month,
     days: pages.monthDays(month, new Set(byDate.keys()), today),
@@ -342,7 +376,7 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
     first,
     prevMonth: month > thisMonth ? pages.addMonths(month, -1) : null,
     nextMonth: month < lastMonth ? pages.addMonths(month, 1) : null,
-    path: landing ? ctx.base : `${ctx.base}/${type.slug}`,
+    path,
     slotPath: `${ctx.base}/${type.slug}`,
     keep,
     weekStart: ctx.weekStart
@@ -351,10 +385,10 @@ async function bookerPage(ctx, request, env, handle, { page, type, landing, data
 }
 
 // GET /<handle>/<slug>?slot=: the form for that time, filled in from the link, or the nearest open times when
-// it is gone. With reschedule, the confirmation of the move instead.
-async function preparedPage(ctx, request, env, handle, { page, type, q, reschedule }) {
+// it is gone. With reschedule, the confirmation of the move instead. type is at the length picked, if any.
+async function preparedPage(ctx, request, env, handle, { page, type, picked = null, q, reschedule }) {
   const exclude = reschedule ? { id: reschedule.booking.id, key: reschedule.key } : null;
-  const check = await checkSlot(env, handle, { type: type.slug, start: q.slot, exclude });
+  const check = await checkSlot(env, handle, { type: type.slug, duration: picked, start: q.slot, exclude });
   if (!check.ok) return refusal(ctx, request, env, { page, error: check.error, movedTo: check.movedTo, rest: `/${type.slug}` });
   const start = q.slot;
   const end = start + type.duration * MINUTE;
@@ -366,6 +400,8 @@ async function preparedPage(ctx, request, env, handle, { page, type, q, reschedu
   const body = pages.formHtml(ctx, {
     profile: page.profile,
     type,
+    picked,
+    duration: formLength(type),
     start,
     end,
     fields: q.fields,
@@ -378,6 +414,12 @@ async function preparedPage(ctx, request, env, handle, { page, type, q, reschedu
     switchable: true
   });
   return respond(ctx, request, 200, body, { noindex: true });
+}
+
+// The length a booking form sends with the booking: the one the guest saw, when the type has several. A type with one
+// length sends none, as before guests could pick one.
+function formLength(type) {
+  return lengths(type).length > 1 ? type.duration : null;
 }
 
 // The nearest open times offered for a move, without the time the booking already has.
@@ -413,9 +455,20 @@ async function bookPost(request, env, url, handle, slug) {
   }
   ctx.languageLink = (l) => href(`${ctx.base}/${slug}`, { ...ctx.keep, lang: l, slot: start === null ? null : slotParam(start), ...fields });
   if (!page.accepting || !profile) return respond(ctx, request, 409, pages.offHtml(ctx, profile), { noindex: true });
-  const type = profile.types.find((t) => t.slug === slug);
-  if (!type) return respond(ctx, request, 404, pages.missingHtml(ctx, { kind: 'type', profile }), { noindex: true });
+  const listed = profile.types.find((t) => t.slug === slug);
+  if (!listed) return respond(ctx, request, 404, pages.missingHtml(ctx, { kind: 'type', profile }), { noindex: true });
   ctx.guide = ctx.links.llmsFor(slug);
+  // The length the form was for. One the type no longer offers (the host changed it after the form was shown) books
+  // nothing: the booker at the default length says so.
+  const asked = lengthParam(form.get('duration'));
+  const lengthGone = () =>
+    bookerPage(ctx, request, env, handle, { page, type: listed, listed, landing: false, data: null, q: { ...typeQuery(new URLSearchParams()), badLength: true } }).then((res) =>
+      withStatus(res, 409)
+    );
+  if (asked !== null && !lengths(listed).includes(asked)) return lengthGone();
+  const { type, picked } = pickLength(listed, asked);
+  // The form again in another language keeps the length too.
+  ctx.languageLink = (l) => href(`${ctx.base}/${slug}`, { ...ctx.keep, lang: l, slot: start === null ? null : slotParam(start), duration: picked, ...fields });
 
   let idem = null;
   try {
@@ -427,9 +480,28 @@ async function bookPost(request, env, url, handle, slug) {
   // The form again, as it was sent, with what went wrong. A start that can't be read shows the booker instead.
   const again = (status, error, extra = {}, headers = {}) => {
     if (start === null) {
-      return bookerPage(ctx, request, env, handle, { page, type, landing: false, data: null, q: { ...typeQuery(new URLSearchParams()), badSlot: true } }).then((res) => withStatus(res, status));
+      return bookerPage(ctx, request, env, handle, { page, type, listed, picked, landing: false, data: null, q: { ...typeQuery(new URLSearchParams()), badSlot: true } }).then((res) =>
+        withStatus(res, status)
+      );
     }
-    const body = pages.formHtml(ctx, { profile, type, start, end: start + type.duration * MINUTE, fields, filled: false, open: true, alternatives: [], approval, idem: idem ?? newIdem(), multiple: true, switchable: false, error, ...extra });
+    const body = pages.formHtml(ctx, {
+      profile,
+      type,
+      picked,
+      duration: formLength(type),
+      start,
+      end: start + type.duration * MINUTE,
+      fields,
+      filled: false,
+      open: true,
+      alternatives: [],
+      approval,
+      idem: idem ?? newIdem(),
+      multiple: true,
+      switchable: false,
+      error,
+      ...extra
+    });
     return respond(ctx, request, status, body, { noindex: true, headers });
   };
 
@@ -443,7 +515,7 @@ async function bookPost(request, env, url, handle, slug) {
   try {
     // The zone the page was written in: tz when the server can read it, else the host's. The guest can't change a
     // hidden field, so a zone this server doesn't know never refuses the booking.
-    booking = input.guestBooking({ type: slug, start: startText, name: fields.name, email: fields.email, notes: fields.notes, time_zone: ctx.zone, via: fields.via });
+    booking = input.guestBooking({ type: slug, duration: asked, start: startText, name: fields.name, email: fields.email, notes: fields.notes, time_zone: ctx.zone, via: fields.via });
   } catch (err) {
     if (!(err instanceof HttpError) || err.code !== 'invalid') throw err;
     const field = err.extra.field;
@@ -454,7 +526,15 @@ async function bookPost(request, env, url, handle, slug) {
   const result = await createBooking(env, handle, booking, { url, channel: 'web', idempotencyKey: idem, network: clientNetwork(request), locale: ctx.lang });
   if (result.ok) {
     if (result.key) return seeOther(href(`${ctx.base}/booking/${result.booking.id}`, { k: result.key, tz: booking.timeZone, lang: ctx.keep.lang, clock: ctx.keep.clock }));
-    const body = pages.alreadyHtml(ctx, { profile, type, start: result.booking.start, end: result.booking.end, email: booking.email });
+    // The booking already there has its own length, which can differ from the one picked now.
+    const body = pages.alreadyHtml(ctx, {
+      profile,
+      type: movingType(listed, result.booking),
+      picked: type.duration,
+      start: result.booking.start,
+      end: result.booking.end,
+      email: booking.email
+    });
     return respond(ctx, request, 200, body, { noindex: true });
   }
   const host = profile.name;
@@ -468,6 +548,8 @@ async function bookPost(request, env, url, handle, slug) {
     case 'idempotency_mismatch':
       idem = newIdem();
       return again(409, { message: ctx.T('error.idempotency') });
+    case 'unknown_duration':
+      return lengthGone();
     default:
       return refusal(ctx, request, env, { page, error: result.error, movedTo: result.movedTo, rest: `/${slug}`, status: 409 });
   }

@@ -62,6 +62,10 @@ const ICONS = {
   retry: ['<path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/>', 2],
   copy: ['<rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 1.8],
   shield: ['<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>', 1.8],
+  // The chat's permission levels beside the shield (Ask): half of it guarded (Auto), and none (Full permission).
+  // Lucide's shield-half and shield-off.
+  'shield-half': ['<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 22V2"/>', 1.8],
+  'shield-off': ['<path d="m2 2 20 20"/><path d="M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71"/><path d="M9.31 3.65a12.25 12.25 0 0 0 1.93-1.37 1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.78 9.78 0 0 1-.08 1.26"/>', 1.8],
   wrench: ['<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>', 1.8],
   person: ['<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', 1.8],
   calendar: ['<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>', 1.8],
@@ -827,6 +831,31 @@ export function userBubble({ text, action, labels = {}, attachments = [], skills
   return h('div', { class: 'bui-ubwrap' }, chips, text || !chips ? h('div', { class: 'bui-ub' }, skillText(text, skills, labels)) : null);
 }
 
+// A message the user sent while the agent worked that is not in the conversation yet, at its end: the bubble with a
+// dashed edge, and under it when it goes and what can be done with it. tone: 'steering' (the agent reads it before
+// its next step; a spinner, no actions), 'queued' (it goes when the agent is done) or 'held' (nothing sends it by
+// itself). actions: [{id, label, icon, onClick}], always visible, so touch and the keyboard reach them.
+export function queuedBubble({ text = '', attachments = [], skills = [], status = '', tone = 'queued', actions = [], labels = {} } = {}) {
+  const chips = attachments.length ? h('div', { class: 'bui-ubatt' }, attachments) : null;
+  const bubble = text || !chips ? h('div', { class: 'bui-ub' }, skillText(text, skills, labels)) : null;
+  const buttons = actions.map((a) => {
+    const b = h('button', { type: 'button', class: 'bui-queued__btn', 'data-action': a.id, 'aria-label': a.label, title: a.label }, icon(a.icon, 13));
+    b.addEventListener('click', () => {
+      b.disabled = true;
+      if (a.onClick) a.onClick();
+    });
+    return b;
+  });
+  const line = h(
+    'div',
+    { class: 'bui-queued__line' },
+    h('span', { class: 'bui-queued__ico', 'aria-hidden': 'true' }, tone === 'steering' ? icon('spinner') : icon('clock', 11)),
+    h('span', { class: 'bui-queued__status', text: status }),
+    ...buttons
+  );
+  return h('div', { class: `bui-ubwrap bui-queued bui-queued--${tone}` }, chips, bubble, line);
+}
+
 export function noticeLine(item = {}, { labels = {}, onUndo } = {}) {
   const ico = h('span', { class: 'bui-notice__ico' });
   const text = h('span', { class: 'bui-notice__text' });
@@ -1427,6 +1456,8 @@ export function chatComposer(opts = {}, handlers = {}) {
   const labels = opts.labels || {};
   const state = {
     running: false,
+    // While the agent works, whether it can take a message during its turn (setSteer): Enter steers then, else queues.
+    steer: true,
     disabled: false,
     agents: Array.isArray(opts.agents) ? opts.agents : [],
     agentId: opts.agentId || null,
@@ -1473,18 +1504,24 @@ export function chatComposer(opts = {}, handlers = {}) {
   let dot = statusDot(null);
   const agentName = h('span');
   const agentBtn = h('button', { type: 'button', class: 'bui-pb__modelbtn', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': labels.agent || '' }, dot, agentName, icon('chevron', 11, 2.4));
-  // The model and effort menus next to the agent picker. The caller fills them (setPicker); items is a
-  // function, so a menu shows what is current when it opens.
+  // The model and effort menus next to the agent picker, and the permission level by Send. The caller fills them
+  // (setPicker); items is a function, so a menu shows what is current when it opens.
   const pickers = {};
-  for (const kind of ['model', 'effort']) {
+  for (const kind of ['model', 'effort', 'permission']) {
     const text = h('span', { class: 'bui-pb__opttext' });
-    const lead = kind === 'effort' ? gauge(null) : null;
+    const lead = kind === 'effort' ? gauge(null) : kind === 'permission' ? icon('shield', 14) : null;
     const btn = h('button', { type: 'button', class: 'bui-pb__opt', 'data-pick': kind, 'aria-haspopup': 'listbox', 'aria-expanded': 'false', hidden: true }, lead, text, icon('chevron', 11, 2.4));
-    pickers[kind] = { btn, text, lead, meter: null, items: () => [], menu: null };
+    pickers[kind] = { btn, text, lead, meter: null, icon: kind === 'permission' ? 'shield' : null, items: () => [], menu: null };
     btn.addEventListener('click', () => openPicker(kind));
   }
   const send = h('button', { type: 'button', class: 'bui-pb__send', 'aria-label': labels.send || '' }, icon('send', 16));
-  const row = h('div', { class: 'bui-pb__row' }, agentBtn, pickers.model.btn, pickers.effort.btn, h('span', { class: 'bui-pb__spacer' }), send);
+  // While the agent works, Send is Stop and stays where it is. A message typed meanwhile gets a split button beside
+  // it: the main part steers (or queues, for an agent that can't take a message during its turn), the chevron offers
+  // both with their keys.
+  const go = h('button', { type: 'button', class: 'bui-pb__go' }, icon('send', 15));
+  const more = h('button', { type: 'button', class: 'bui-pb__more', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': labels.sendOptions || null, title: labels.sendOptions || null }, icon('chevron', 11, 2.4));
+  const split = h('span', { class: 'bui-pb__split', hidden: true }, go, more);
+  const row = h('div', { class: 'bui-pb__row' }, agentBtn, pickers.model.btn, pickers.effort.btn, h('span', { class: 'bui-pb__spacer' }), pickers.permission.btn, split, send);
   const box = h('div', { class: 'bui-pb__box' }, files, ta, disabledRow, row);
   const el = h('div', { class: 'bui-pb' }, box);
   let menu = null;
@@ -1711,6 +1748,14 @@ export function chatComposer(opts = {}, handlers = {}) {
     history.list[history.at] = { parts: next, caret: state.caret };
   }
 
+  // The agent's name, for the Steer and Queue hints; a label can be a function of it.
+  const agentLabel = () => {
+    const a = state.agents.find((x) => x.id === state.agentId) || state.agents[0];
+    return a ? a.name : '';
+  };
+  const hint = (v) => (typeof v === 'function' ? v(agentLabel()) : v || '');
+  // What Enter does with a message while the agent works.
+  const runningMode = () => (state.steer ? 'steer' : 'queue');
   function updateSend() {
     send.replaceChildren(icon(state.running ? 'stop' : 'send', 16));
     send.setAttribute('aria-label', state.running ? labels.stop || '' : labels.send || '');
@@ -1720,6 +1765,39 @@ export function chatComposer(opts = {}, handlers = {}) {
     send.title = why;
     if (why) send.setAttribute('aria-description', why);
     else send.removeAttribute('aria-description');
+    // With a message to send while the agent works, the split button is the main action and Stop steps back.
+    const offered = state.running && !state.disabled && (Boolean(value().trim()) || state.attached);
+    split.hidden = !offered;
+    send.classList.toggle('is-quiet', offered);
+    if (!offered && more.getAttribute('aria-expanded') === 'true' && openMenu) openMenu.close();
+    const steer = runningMode() === 'steer';
+    go.replaceChildren(icon(steer ? 'send' : 'clock', 15));
+    go.disabled = state.holding;
+    go.setAttribute('aria-label', steer ? labels.steer || '' : labels.queue || '');
+    go.title = state.holding ? state.holdLabel : `${hint(steer ? labels.steerHint : labels.queueHint)} (Enter)`;
+    const note = state.holding ? state.holdLabel : steer ? hint(labels.steerHint) : hint(labels.cantSteer);
+    if (note) go.setAttribute('aria-description', note);
+    else go.removeAttribute('aria-description');
+  }
+  // Steer or Queue, with the keys that do each. Steer is off for an agent that can't take a message during its turn.
+  function openSendMenu() {
+    if (more.getAttribute('aria-expanded') === 'true') {
+      if (openMenu) openMenu.close();
+      return;
+    }
+    const off = state.holding || (!value().trim() && !state.attached);
+    glideMenu({
+      anchor: more,
+      align: 'right',
+      items: [
+        { id: 'steer', label: labels.steer || '', sub: hint(state.steer ? labels.steerHint : labels.cantSteer), tag: state.steer ? 'Enter' : '', icon: 'send', disabled: off || !state.steer },
+        { id: 'queue', label: labels.queue || '', sub: hint(labels.queueHint), tag: state.steer ? 'Alt+Enter' : 'Enter', icon: 'clock', disabled: off }
+      ],
+      onPick: (id) => {
+        focusInput();
+        submit(id === 'steer' ? 'steer' : 'queue');
+      }
+    });
   }
   function refreshFiles() {
     if (attach) attach.hidden = state.disabled;
@@ -1870,11 +1948,11 @@ export function chatComposer(opts = {}, handlers = {}) {
     updateSend();
   }
   // The text goes only once the owner takes it: onSend returns false for a message it refuses (one is still being
-  // sent, say), and the text stays where it was.
-  function submit() {
+  // sent, say), and the text stays where it was. mode: 'steer' or 'queue' while the agent works, null otherwise.
+  function submit(mode = null) {
     const text = value().trim();
     if ((!text && !state.attached) || state.disabled || state.holding) return;
-    if (handlers.onSend && handlers.onSend(text) === false) return;
+    if (handlers.onSend && handlers.onSend(text, state.running ? mode || runningMode() : null) === false) return;
     render([], 0);
     resetHistory();
     closeMenu();
@@ -1974,9 +2052,11 @@ export function chatComposer(opts = {}, handlers = {}) {
       }
       return;
     }
+    // While the agent works, Enter steers (or queues, for an agent that can't take a message during its turn) and
+    // Alt+Enter queues.
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!state.running) submit();
+      submit(state.running && e.altKey ? 'queue' : null);
     }
   });
   send.addEventListener('click', () => {
@@ -1984,6 +2064,8 @@ export function chatComposer(opts = {}, handlers = {}) {
       if (handlers.onStop) handlers.onStop();
     } else submit();
   });
+  go.addEventListener('click', () => submit(runningMode()));
+  more.addEventListener('click', () => openSendMenu());
   agentBtn.addEventListener('click', () => {
     if (agentBtn.getAttribute('aria-expanded') === 'true') {
       if (openMenu) openMenu.close();
@@ -2039,6 +2121,11 @@ export function chatComposer(opts = {}, handlers = {}) {
       state.running = Boolean(running);
       updateSend();
     },
+    // Whether the agent can take a message during its turn; without it, Enter queues while the agent works.
+    setSteer(can) {
+      state.steer = can !== false;
+      updateSend();
+    },
     // holding: something the message takes is still on its way. label: why Send is off, for its tooltip and screen
     // readers. Once it is there, a / the caret sits after offers its commands again.
     setHolding(holding, label = '') {
@@ -2065,19 +2152,29 @@ export function chatComposer(opts = {}, handlers = {}) {
       state.agents = Array.isArray(list) ? list : [];
       if (currentId !== undefined) state.agentId = currentId;
       renderAgent();
+      updateSend();
     },
-    // kind: 'model' or 'effort'. text is what the button shows (empty: only its icon), label its accessible name,
-    // items a function that returns glideMenu items. hidden takes the button away. meter: the effort dial's level
-    // (0 to 1, null for none).
-    setPicker(kind, { text = '', label = '', items, hidden = false, meter = null } = {}) {
+    // kind: 'model', 'effort' or 'permission'. text is what the button shows (empty: only its icon), label its
+    // accessible name, items a function that returns glideMenu items. hidden takes the button away. meter: the effort
+    // dial's level (0 to 1, null for none). icon: the permission button's icon. tone 'warn' marks a level that never
+    // asks.
+    setPicker(kind, { text = '', label = '', items, hidden = false, meter = null, icon: iconName = null, tone = '' } = {}) {
       const p = pickers[kind];
       if (!p) return;
-      if (p.lead && meter !== p.meter) {
+      if (kind === 'effort' && meter !== p.meter) {
         const next = gauge(meter);
         p.lead.replaceWith(next);
         p.lead = next;
         p.meter = meter;
       }
+      if (kind === 'permission' && iconName && iconName !== p.icon) {
+        const next = icon(iconName, 14);
+        p.lead.replaceWith(next);
+        p.lead = next;
+        p.icon = iconName;
+      }
+      if (tone) p.btn.dataset.tone = tone;
+      else delete p.btn.dataset.tone;
       p.text.textContent = text;
       p.text.hidden = !text;
       p.btn.setAttribute('aria-label', label);

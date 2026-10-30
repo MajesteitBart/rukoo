@@ -552,6 +552,10 @@
     "message": "Not done yet: {title}. {name} hears about your approval with your next message.",
     "description": "Chat transcript info line: you approved a proposal, but the follow-up turn could not start (for example the app quit). title is the proposal, name the agent."
   },
+  "agent.notices.auto-approved": {
+    "message": "Allowed without asking: {title}",
+    "description": "Chat transcript info line: the agent proposed an action in another system (propose_action) and the chat's permission level is Full permission, so Rukoo let it go ahead without an approval card. title is what the agent said it will do, e.g. \"Add 2 tasks to Todoist\" (tools.js proposeAction, agent/panel.js localizeNotice)."
+  },
   "agent.notices.new-session": {
     "message": "{name} started a new session",
     "description": "Chat panel info line (agent/panel.js localizeNotice): Claude Code or Hermes no longer had this chat's session, so it started a new one (claude.js ClaudeAdapter.turn, hermes.js HermesAdapter.session). Rukoo sends that session the email and a recap of the chat. name is the agent name."
@@ -855,6 +859,62 @@
     "message": "Stop",
     "description": "Chat panel input: label of the button that stops the agent while it works."
   },
+  "agent.panel.steer": {
+    "message": "Steer",
+    "description": "Chat panel input, while the agent works: the way of sending that hands your message to the agent during its current turn, so it can change course. Label of the main part of the split send button and of its menu row (chatComposer in agent/bui.js). Short verb."
+  },
+  "agent.panel.steerHint": {
+    "message": "{name} reads it before its next step",
+    "description": "Chat panel, while the agent works: what Steer does, under Steer in the send menu and in the button's tooltip; also the line under a steered message that the agent has not read yet. name is the agent name."
+  },
+  "agent.panel.queue": {
+    "message": "Queue",
+    "description": "Chat panel input, while the agent works: the way of sending that holds your message until the agent's current turn is over and then sends it. Menu row in the send menu, and the main button for an agent that can't take a message during its turn. Short verb."
+  },
+  "agent.panel.queueHint": {
+    "message": "Sends when {name} is done",
+    "description": "Chat panel, while the agent works: what Queue does, under Queue in the send menu and in the button's tooltip; also the line under a queued message at the end of the conversation. name is the agent name."
+  },
+  "agent.panel.cantSteer": {
+    "message": "{name} can't read messages while it works",
+    "description": "Chat panel send menu: why Steer is off for this agent (OpenClaw, or a Hermes server without the steer route); its messages are queued instead. name is the agent name."
+  },
+  "agent.panel.sendOptions": {
+    "message": "Send options",
+    "description": "Chat panel input, while the agent works: accessible name and tooltip of the chevron beside the send button, which opens the menu with Steer and Queue."
+  },
+  "agent.queue.list": {
+    "message": "Messages waiting to be sent",
+    "description": "Chat panel: accessible name of the list at the end of the conversation with the messages you sent while the agent worked that are not in the conversation yet (showQueue in agent/panel.js)."
+  },
+  "agent.queue.fallback": {
+    "message": "{name} can't read messages while it works. This one sends when {name} is done.",
+    "description": "Chat panel: line under a message you meant to steer, which waits instead because the agent can't take a message during its turn. name is the agent name."
+  },
+  "agent.queue.held": {
+    "message": "Not sent yet",
+    "description": "Chat panel: line under a waiting message once the agent stopped working without sending it (you pressed Stop, the turn failed, or Rukoo restarted). It waits until you send it, edit it or remove it."
+  },
+  "agent.queue.sendNow": {
+    "message": "Send now",
+    "description": "Chat panel: button under a waiting message, while the agent is idle, that sends it as the next message."
+  },
+  "agent.queue.steerNow": {
+    "message": "Steer now",
+    "description": "Chat panel: button under a queued message, while the agent works, that hands it to the agent during the current turn instead of after it."
+  },
+  "agent.queue.edit": {
+    "message": "Edit",
+    "description": "Chat panel: button under a waiting message that takes it out of the queue and puts its text and attachments back in the input."
+  },
+  "agent.queue.editFull": {
+    "message": "This message keeps waiting: the one you're writing has no room for its attachments. A message takes up to {files} files and {emails} emails.",
+    "description": "Chat panel notice after you click Edit under a waiting message whose files or emails don't fit next to those already in the input; the message stays in the queue. files and emails are the maximums per message (editQueued in agent/panel.js)."
+  },
+  "agent.queue.remove": {
+    "message": "Remove",
+    "description": "Chat panel: button under a waiting message that takes it out of the queue without sending it."
+  },
   "agent.panel.toggle": {
     "message": "Chat with an agent (Ctrl+J)",
     "description": "Title bar button tooltip that opens or closes the chat panel."
@@ -866,6 +926,50 @@
   "agent.panel.waitFiles": {
     "message": "Wait until the files are added, then send.",
     "description": "Chat panel: why Send is off while a file you dropped, pasted or picked is still being added (tooltip of the Send button), and the notice when you pick a quick action or skill meanwhile (refreshHolding and runAction in agent/panel.js)."
+  },
+  "agent.permission.title": {
+    "message": "Permission level",
+    "description": "Chat panel: heading of the permission menu, opened from the shield button beside Send. The level decides which actions of the agent wait for your approval in this chat (permissionItems in agent/panel.js)."
+  },
+  "agent.permission.button": {
+    "message": "Permission level: {level}",
+    "description": "Chat panel: tooltip and accessible name of the shield button beside Send. level is the chat's level, e.g. \"Ask\" (refreshPickers in agent/panel.js)."
+  },
+  "agent.permission.default": {
+    "message": "Default",
+    "description": "Chat panel permission menu: first row, the chat follows the permission level in Settings > Agents. The level it comes down to shows beside it (permissionItems in agent/panel.js)."
+  },
+  "agent.permission.ask": {
+    "message": "Ask",
+    "description": "Name of the permission level where every action that changes something waits for your approval. Chat panel permission menu and button, Settings > Agents > Permission level. Keep it short: the button beside Send shows it."
+  },
+  "agent.permission.auto": {
+    "message": "Auto",
+    "description": "Name of the permission level where the agent acts alone on safe, reversible actions and asks before anything others see. Chat panel permission menu and button, Settings > Agents > Permission level. Keep it short."
+  },
+  "agent.permission.full": {
+    "message": "Full permission",
+    "description": "Name of the permission level where nothing waits for your approval. Chat panel permission menu, Settings > Agents > Permission level."
+  },
+  "agent.permission.fullShort": {
+    "message": "Full",
+    "description": "Short name of the Full permission level, on the small button beside Send in the chat panel (refreshPickers in agent/panel.js)."
+  },
+  "agent.permission.askHint": {
+    "message": "Asks before every action",
+    "description": "Chat panel permission menu: second line under Ask. One short line; the menu is narrow."
+  },
+  "agent.permission.autoHint": {
+    "message": "Asks before deleting or what others see",
+    "description": "Chat panel permission menu: second line under Auto, e.g. it still asks before deleting mail, invitations and changes in other systems. One short line; the menu is narrow."
+  },
+  "agent.permission.fullHint": {
+    "message": "Never asks, not even before sending",
+    "description": "Chat panel permission menu: second line under Full permission. Sending covers messages and calendar invitations. One short line; the menu is narrow."
+  },
+  "agent.permission.onlyInSettings": {
+    "message": "For {name}, only in Settings",
+    "description": "Chat panel permission menu: second line under a level that can't be picked, in a chat of Hermes or OpenClaw, for a level looser than the one in Settings > Agents. That agent's chats can be stricter than Settings but not looser; the user can pick the level for all chats in Settings. name is the agent's name, e.g. \"Hermes\". One short line; the menu is narrow."
   },
   "agent.panel.width": {
     "message": "Chat panel width",
@@ -1310,6 +1414,10 @@
   "agent.calendar.created": {
     "message": "Added \"{title}\" to your calendar",
     "description": "Chat transcript notice after you approved an event an agent asked for and Rukoo added it. title: the event's title."
+  },
+  "agent.calendar.createdInvited": {
+    "message": { "one": "Added \"{title}\" to your calendar and invited {count} guest", "other": "Added \"{title}\" to your calendar and invited {count} guests" },
+    "description": "Chat transcript notice after Rukoo added an event an agent asked for, with guests who got an invitation from your calendar. title: the event's title; count: how many guests."
   },
   "agent.calendar.failed": {
     "message": "Couldn't add \"{title}\" to your calendar",
@@ -3175,6 +3283,66 @@
     "message": "You signed in as {signedInEmail}, but this account is {accountEmail}.",
     "description": "errors > google. src/main/engine.js"
   },
+  "errors.video.connection": {
+    "message": "Rukoo couldn't reach {service}. Check your internet connection and try again.",
+    "description": "A video service didn't answer, while signing in or making a booking's meeting. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/video/oauth.js, src/main/video/index.js"
+  },
+  "errors.video.cancelled": {
+    "message": "Signing in to {service} was cancelled.",
+    "description": "The user cancelled the browser sign-in to a video service in Settings > Video meetings. service is Zoom or Microsoft Teams. src/main/video/oauth.js"
+  },
+  "errors.video.denied": {
+    "message": "{service} didn't give Rukoo access.",
+    "description": "The user declined access on the video service's sign-in page. service is Zoom or Microsoft Teams. src/main/video/oauth.js"
+  },
+  "errors.video.timeout": {
+    "message": "Signing in to {service} took too long. Try again.",
+    "description": "The browser sign-in to a video service wasn't finished within five minutes. service is Zoom or Microsoft Teams. src/main/video/oauth.js"
+  },
+  "errors.video.notConfigured": {
+    "message": "{service} needs an OAuth app before you can connect it. The booking page guide explains how to add one.",
+    "description": "Connect was asked for a video service without an OAuth client in this copy of Rukoo. service is Zoom or Microsoft Teams. The guide is docs/booking.md. src/main/video/index.js"
+  },
+  "errors.video.invalidClient": {
+    "message": "This file has no client_id for {service}.",
+    "description": "The client file chosen in Settings > Video meetings doesn't hold an OAuth client ID. client_id is the JSON field name; keep it as is. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.noRefreshToken": {
+    "message": "{service} didn't give Rukoo lasting access. Try connecting again.",
+    "description": "The video service's sign-in returned no refresh token, so Rukoo couldn't make meetings later. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.expired": {
+    "message": "The {service} connection needs renewing in Settings → Video meetings.",
+    "description": "The stored sign-in to a video service was refused, expired or revoked. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.notConnected": {
+    "message": "{service} isn't connected on this computer.",
+    "description": "A booking's meeting type uses a video service that isn't connected on the computer that handles bookings. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/video/index.js"
+  },
+  "errors.video.gone": {
+    "message": "{service} no longer has this meeting.",
+    "description": "A booking's video meeting was deleted in the service itself before Rukoo could move it. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.refused": {
+    "message": "{service} refused the request: {reason}",
+    "description": "A video service turned down making, moving or deleting a booking's meeting. service is Zoom or Microsoft Teams; reason is the service's own message, often in English. src/main/video/index.js"
+  },
+  "errors.video.request": {
+    "message": "{service} answered with an error: {reason}",
+    "description": "A video service failed while signing in or handling a booking's meeting. service is Zoom or Microsoft Teams; reason is the service's own message or an HTTP status. src/main/video/oauth.js, src/main/video/index.js"
+  },
+  "errors.video.noLink": {
+    "message": "{service} made the meeting but sent no link for it.",
+    "description": "A video service's answer to making a meeting had no join link. service is Zoom or Microsoft Teams. src/main/video/index.js"
+  },
+  "errors.video.jitsiServer": {
+    "message": "Enter the address of a Jitsi server, starting with https://.",
+    "description": "Settings > Video meetings: the Jitsi server address entered isn't an https address. src/main/video/jitsi.js"
+  },
+  "errors.video.unknown": {
+    "message": "Rukoo doesn't know this video service.",
+    "description": "A window or a booking named a video service this version of Rukoo doesn't have. src/main/video/index.js"
+  },
   "errors.message.missing": {
     "message": "Message not found.",
     "description": "errors > message. src/main/engine.js"
@@ -4231,13 +4399,25 @@
     "message": "Runs commands without asking. Only for agents you trust completely.",
     "description": "Settings, Agents page: warning under the full access choice."
   },
-  "settings.agents.autoMail": {
-    "message": "Let agents archive, move and mark mail without asking",
-    "description": "Settings, Agents page: toggle for mail actions without an approval card."
+  "settings.agents.permission": {
+    "message": "Permission level",
+    "description": "Settings, Agents page: row that sets which actions of agents wait for your approval, as the default for chats. Opens a choice of Ask, Auto and Full permission."
   },
-  "settings.agents.autoMailHelp": {
-    "message": "Deleting and unsubscribing always ask first.",
-    "description": "Settings, Agents page: note under the mail actions toggle."
+  "settings.agents.permissionHelp": {
+    "message": "What agents may do without asking you first. A chat can pick its own level with the shield beside Send. Commands and file changes of Claude Code and Codex follow their own Access below.",
+    "description": "Settings, Agents page: explanation under the Permission level row. Access is the existing per-agent setting of Claude Code and Codex further down the page (settings.agents.access)."
+  },
+  "settings.agents.permissionAskHint": {
+    "message": "Mail actions, calendar events and actions in other systems wait for your approval. Drafts go into the composer, where you check and send them yourself.",
+    "description": "Settings, Agents page: explanation of the Ask choice in the Permission level dialog."
+  },
+  "settings.agents.permissionAutoHint": {
+    "message": "Archiving, moving, marking and starring mail, and adding events without guests to your own calendars, happen without asking. Deleting, moving mail to Spam, unsubscribing, invitations and actions in other systems still wait for you.",
+    "description": "Settings, Agents page: explanation of the Auto choice in the Permission level dialog."
+  },
+  "settings.agents.permissionFullHint": {
+    "message": "Nothing waits for your approval. Agents can send messages and calendar invitations, delete mail and change other systems without asking. Only for agents you trust completely.",
+    "description": "Settings, Agents page: warning under the Full permission choice in the Permission level dialog. It must say plainly that sending mail and invitations happens without asking."
   },
   "settings.agents.configDir": {
     "message": "Claude config folder (optional)",
@@ -5261,6 +5441,114 @@
     "message": "Week, working hours, reminders and which calendars count",
     "description": "Settings overview: second line of the Calendar row. src/renderer/calendar-settings.js"
   },
+  "settings.video.title": {
+    "message": "Video meetings",
+    "description": "Title of Settings > Video meetings, where Zoom, Microsoft Teams and Jitsi Meet are connected for bookings, and of its row on the Settings overview. src/renderer/video-settings.js"
+  },
+  "settings.video.rowNone": {
+    "message": "Give each booking its own Zoom, Teams or Jitsi link",
+    "description": "Settings overview: second line of the Video meetings row while no service is connected. src/renderer/video-settings.js"
+  },
+  "settings.video.rowConnected": {
+    "message": "Connected: {services}",
+    "description": "Settings overview: second line of the Video meetings row. services lists the connected ones, such as 'Zoom and Jitsi Meet'. src/renderer/video-settings.js"
+  },
+  "settings.video.intro": {
+    "message": "Connect a service, then choose it as a meeting type's location on your booking page. Each booking then gets its own meeting link in the guest's invitation.",
+    "description": "Settings > Video meetings: text at the top. src/renderer/video-settings.js"
+  },
+  "settings.video.thisComputer": {
+    "message": "Sign-ins stay on this computer. When another computer handles your bookings, connect the services there too.",
+    "description": "Settings > Video meetings: note under the services. src/renderer/video-settings.js"
+  },
+  "settings.video.services": {
+    "message": "Services",
+    "description": "Settings > Video meetings: group heading above the list of services. src/renderer/video-settings.js"
+  },
+  "settings.video.jitsiHelp": {
+    "message": "No account needed. Each booking gets its own room, with a name nobody can guess.",
+    "description": "Settings > Video meetings: line under Jitsi Meet, which has a switch. src/renderer/video-settings.js"
+  },
+  "settings.video.jitsiServer": {
+    "message": "Jitsi server",
+    "description": "Settings > Video meetings: the row and dialog title for the Jitsi server the rooms are on. src/renderer/video-settings.js"
+  },
+  "settings.video.jitsiServerHelp": {
+    "message": "Leave empty to use meet.jit.si.",
+    "description": "Settings > Video meetings: help in the Jitsi server dialog. src/renderer/video-settings.js"
+  },
+  "settings.video.zoomHelp": {
+    "message": "Makes a meeting in your Zoom account for each booking.",
+    "description": "Settings > Video meetings: line under Zoom while it isn't connected. src/renderer/video-settings.js"
+  },
+  "settings.video.teamsHelp": {
+    "message": "Makes a Teams meeting for each booking. Needs a work or school account with Microsoft Teams.",
+    "description": "Settings > Video meetings: line under Microsoft Teams while it isn't connected. src/renderer/video-settings.js"
+  },
+  "settings.video.connectedAs": {
+    "message": "Connected as {account}",
+    "description": "Settings > Video meetings: line under a connected Zoom or Teams. account is the address or name of the signed-in account. src/renderer/video-settings.js"
+  },
+  "settings.video.connectedPlain": {
+    "message": "Connected",
+    "description": "Settings > Video meetings: line under a connected Zoom or Teams when the service didn't say which account. src/renderer/video-settings.js"
+  },
+  "settings.video.renewHelp": {
+    "message": "The connection stopped working. Renew it to keep adding links to bookings.",
+    "description": "Settings > Video meetings: line under Zoom or Teams when its stored sign-in was refused or expired. src/renderer/video-settings.js"
+  },
+  "settings.video.unavailable": {
+    "message": "This copy of Rukoo has no {service} app to sign in with. Add a client file, as the booking page guide explains.",
+    "description": "Settings > Video meetings: line under Zoom or Teams when no OAuth client is configured. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.pending": {
+    "message": "Finish signing in to {service} in your browser.",
+    "description": "Settings > Video meetings: line under Zoom or Teams while its browser sign-in is open. src/renderer/video-settings.js"
+  },
+  "settings.video.connect": {
+    "message": "Connect",
+    "description": "Settings > Video meetings: button that signs in to Zoom or Microsoft Teams in the browser. src/renderer/video-settings.js"
+  },
+  "settings.video.renew": {
+    "message": "Renew",
+    "description": "Settings > Video meetings: button that signs in to Zoom or Teams again after the connection stopped working. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnect": {
+    "message": "Disconnect",
+    "description": "Settings > Video meetings: button that forgets the sign-in to Zoom or Teams on this computer. src/renderer/video-settings.js"
+  },
+  "settings.video.addClient": {
+    "message": "Add client file…",
+    "description": "Settings > Video meetings: button that opens a file picker for a Zoom or Microsoft OAuth client file (JSON). src/renderer/video-settings.js"
+  },
+  "settings.video.importTitle": {
+    "message": "Choose the {service} client file",
+    "description": "Title of the file picker for a video service's OAuth client file. service is Zoom or Microsoft Teams. src/main/main.js (videoImportClient)"
+  },
+  "settings.video.connected": {
+    "message": "{service} connected",
+    "description": "Toast after signing in to a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnected": {
+    "message": "{service} disconnected",
+    "description": "Toast after disconnecting a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.clientAdded": {
+    "message": "Client file added",
+    "description": "Toast after a video service's OAuth client file was chosen and stored. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnectTitle": {
+    "message": "Disconnect {service}?",
+    "description": "Title of the confirmation before disconnecting a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.disconnectConfirm": {
+    "message": "Rukoo forgets the sign-in on this computer. New bookings that use {service} go in your calendar without a link until you connect it again. Meetings already made stay.",
+    "description": "Text of the confirmation before disconnecting a video service. service is Zoom or Microsoft Teams. src/renderer/video-settings.js"
+  },
+  "settings.video.serverSaved": {
+    "message": "Jitsi server saved",
+    "description": "Toast after changing the Jitsi server in Settings > Video meetings. src/renderer/video-settings.js"
+  },
   "settings.calendar.week": {
     "message": "Week and working hours",
     "description": "Settings > Calendar: group heading. src/renderer/calendar-settings.js"
@@ -5697,6 +5985,10 @@
     "message": "That computer publishes your open times and adds bookings to your calendar. Use this one instead if that computer stays off.",
     "description": "Booking page: help under the other computer's name. src/renderer/booking-settings.js"
   },
+  "settings.booking.otherDeviceVideo": {
+    "message": "Before you use this computer, connect {services} here in Video meetings, or new bookings get no meeting link.",
+    "description": "Booking page: warning under the other computer's name when meeting types use video services that aren't connected on this computer. services lists them, such as 'Zoom and Microsoft Teams'. src/renderer/booking-settings.js"
+  },
   "settings.booking.takeover": {
     "message": "Use this computer",
     "description": "Booking page button: this computer becomes the one that handles bookings. src/renderer/booking-settings.js"
@@ -5917,9 +6209,25 @@
     "message": "Another meeting type already uses this name.",
     "description": "Meeting type editor: error for a name in the link another type has. src/renderer/booking-settings.js"
   },
-  "settings.booking.typeLength": {
-    "message": "Length",
-    "description": "Meeting type editor: the meeting's length. src/renderer/booking-settings.js"
+  "settings.booking.typeLengths": {
+    "message": "Available durations",
+    "description": "Meeting type editor: heading over the lengths a guest can pick from on the booking page, each a toggle such as 15 min or 1 hr. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeLengthsHelp": {
+    "message": "Guests pick one on the booking page. With one, the page shows no choice.",
+    "description": "Meeting type editor: help under Available durations. src/renderer/booking-settings.js"
+  },
+  "settings.booking.lengthsNeeded": {
+    "message": "Pick at least one duration.",
+    "description": "Meeting type editor: error when no duration is selected under Available durations. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeDefaultLength": {
+    "message": "Default duration",
+    "description": "Meeting type editor: which of the available durations is selected when a guest opens the booking page. Shown when more than one is selected. src/renderer/booking-settings.js"
+  },
+  "settings.booking.typeDefaultLengthHelp": {
+    "message": "Selected when a guest opens the page, and the length Insert my free times uses.",
+    "description": "Meeting type editor: help under Default duration. Insert my free times is the composer's calendar menu item. src/renderer/booking-settings.js"
   },
   "settings.booking.typeDescription": {
     "message": "Description",
@@ -5984,6 +6292,26 @@
   "settings.booking.meetUnavailable": {
     "message": "Google Meet needs a Google calendar that allows Meet under Add bookings to.",
     "description": "Meeting type editor: why Google Meet can't be chosen. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoRenewOption": {
+    "message": "{service} (needs renewing)",
+    "description": "Meeting type editor: a Location option for a video service whose connection stopped working on this computer. service is Zoom or Microsoft Teams. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoOffOption": {
+    "message": "{service} (not connected here)",
+    "description": "Meeting type editor: the Location option of a type whose video service isn't connected on this computer. service is Zoom, Microsoft Teams or Jitsi Meet. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoHelp": {
+    "message": "Each booking gets its own {service} link in the guest's invitation. The page shows only the label.",
+    "description": "Meeting type editor: help under Location when a video service is chosen. service is Zoom, Microsoft Teams or Jitsi Meet. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoOtherDevice": {
+    "message": "Video services are chosen on the computer that handles your bookings, where they are connected.",
+    "description": "Meeting type editor: help under Location on a computer that doesn't handle bookings, so it offers no video services. src/renderer/booking-settings.js"
+  },
+  "settings.booking.videoNone": {
+    "message": "To give each booking its own meeting link, connect Zoom, Microsoft Teams or Jitsi Meet in Settings → Video meetings.",
+    "description": "Meeting type editor: help under Location while no video service is connected on this computer. src/renderer/booking-settings.js"
   },
   "settings.booking.linkHttps": {
     "message": "A meeting link starts with https://.",
@@ -6633,6 +6961,10 @@
     "message": "Google Meet needs a Google calendar that allows it as the calendar for bookings.",
     "description": "Booking page error: a meeting type uses Google Meet but the destination calendar can't add it. src/main/booking/rules.js."
   },
+  "booking.errors.videoElsewhere": {
+    "message": "Choose a video service on the computer that handles your bookings, where it is connected.",
+    "description": "Booking page error: a meeting type's location was set to Zoom, Microsoft Teams or Jitsi Meet on a computer that doesn't handle bookings. src/main/booking/index.js (save)."
+  },
   "booking.errors.notBookingDevice": {
     "message": "Another computer handles your bookings. Use this computer for bookings first.",
     "description": "Booking page error: only the booking device can publish, rename the page or act on bookings. src/main/booking/index.js."
@@ -6682,8 +7014,12 @@
     "description": "Booking page error: the list of bookings from the account server breaks the protocol's order rules. src/main/booking/index.js (fetchRows)."
   },
   "booking.defaults.typeTitle": {
-    "message": "30 minute meeting",
-    "description": "Booking page: title of the first meeting type, in the booking page's language. src/main/booking/rules.js (defaultType)."
+    "message": "{minutes} minute meeting",
+    "description": "Booking page: the title Rukoo gives a meeting type of one length, in the booking page's language, such as the first type's \"30 minute meeting\". minutes is the length. The event of a booking at another length gets this title with that length. src/main/booking/rules.js (defaultType, titleFor); src/renderer/booking-settings.js (meeting type editor)."
+  },
+  "booking.defaults.typeTitleAny": {
+    "message": "Meeting",
+    "description": "Booking page: the title Rukoo gives a meeting type once guests can pick from several lengths, replacing a title such as \"30 minute meeting\" it made before, in the booking page's language. src/renderer/booking-settings.js (meeting type editor)."
   },
   "booking.event.title": {
     "message": "{type}: {host} and {guest}",
@@ -6696,6 +7032,10 @@
   "booking.event.description": {
     "message": "Booked via {url}",
     "description": "Last line of a booked event's description, in the booking page's language; guests see it in their invitation. url is the booking page. src/main/booking/index.js (eventInput)."
+  },
+  "booking.event.video": {
+    "message": "Join with {service}: {url}",
+    "description": "First line of a booked event's description when its meeting type uses a video service, in the booking page's language; guests see it in their invitation. service is Zoom, Microsoft Teams or Jitsi Meet; url the meeting's link. src/main/video/index.js (withMeeting)."
   },
   "booking.decline.subject": {
     "message": "{type} on {when}",
@@ -6777,6 +7117,10 @@
     "message": "Open",
     "description": "Booking notice button: open the booked event or request. src/main/booking/index.js (notices)."
   },
+  "booking.notices.actions.video": {
+    "message": "Video meetings",
+    "description": "Booking notice button: opens Settings > Video meetings to connect or renew a video service. src/main/booking/index.js (notices)."
+  },
   "booking.notices.handleLostTitle": {
     "message": "Your booking page's address is gone",
     "description": "Booking notice title: another account now owns the page's address. src/main/booking/index.js (notices)."
@@ -6792,6 +7136,10 @@
   "booking.notices.otherDeviceText": {
     "message": "That computer publishes your free times and adds bookings to your calendar.",
     "description": "Booking notice text on a computer that isn't the booking device. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.otherDeviceVideoText": {
+    "message": "That computer publishes your free times and adds bookings to your calendar. Before you use this computer instead, connect {services} here in Settings → Video meetings.",
+    "description": "Booking notice text on a computer that isn't the booking device, when meeting types use video services that aren't connected on this computer. services lists them, such as 'Zoom and Microsoft Teams'. src/main/booking/index.js (notices)."
   },
   "booking.notices.otherDeviceUnknown": {
     "message": "another computer",
@@ -6864,6 +7212,62 @@
   "booking.notices.destinationText": {
     "message": "The calendar for bookings, in {email}, isn't on this computer. New and moved bookings get no event and no invitation until you choose another calendar in Settings → Booking page.",
     "description": "Booking notice text when the destination calendar is missing on the booking device. email is the mail account the calendar belongs to. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoMissingTitle": {
+    "message": "No {service} links for new bookings",
+    "description": "Booking notice title on the booking device: a meeting type uses a video service that can't make meetings on this computer. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoMissingText": {
+    "message": "{service} isn't connected on this computer, so new bookings of {types} go in your calendar without a link. Connect it in Settings → Video meetings.",
+    "description": "Booking notice text when a video service a meeting type uses isn't connected on the booking device. service is Zoom, Microsoft Teams or Jitsi Meet; types lists the meeting types' titles. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoRenewText": {
+    "message": "The {service} connection on this computer needs renewing, so new bookings of {types} go in your calendar without a link. Renew it in Settings → Video meetings.",
+    "description": "Booking notice text when the sign-in to a video service a meeting type uses stopped working on the booking device. service is Zoom or Microsoft Teams; types lists the meeting types' titles. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoBookingsTitle": {
+    "message": "{service} meetings can't follow their bookings",
+    "description": "Booking notice title on the booking device: upcoming bookings have Zoom or Teams meetings, but that service can't be used on this computer, so moves and cancellations can't change the meetings. service is Zoom or Microsoft Teams. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoBookingsText": {
+    "message": { "one": "{why} Until that's fixed, Rukoo can't move or delete the {service} meeting of {count} upcoming booking.", "other": "{why} Until that's fixed, Rukoo can't move or delete the {service} meetings of {count} upcoming bookings." },
+    "description": "Booking notice text for the title above. why is one sentence with the reason (not connected here, or the connection needs renewing), service the video service, count how many upcoming bookings have such a meeting. src/main/booking/index.js (notices)."
+  },
+  "booking.notices.videoCreateTitle": {
+    "message": "No {service} link for a booking",
+    "description": "Booking notice title: Rukoo couldn't make the video meeting for a new booking. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoCreateText": {
+    "message": "Rukoo couldn't make a {service} meeting for {type} with {guest} on {when}, so the booking is in your calendar without a link. {why} Add a link to the event yourself, or cancel the booking.",
+    "description": "Booking notice text when a new booking's video meeting couldn't be made. service is the video service, type the meeting type, guest the cleaned short name, when the day and time, why one sentence with the reason. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoUpdateTitle": {
+    "message": "{service} meeting not moved",
+    "description": "Booking notice title: a booking moved, but its video meeting couldn't be moved along. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoUpdateText": {
+    "message": "{type} with {guest} moved to {when}, but Rukoo couldn't move its {service} meeting. {why} The link in the invitation still works; change the meeting's time in {service} if you need to.",
+    "description": "Booking notice text when a moved booking's video meeting kept its old time. type is the meeting type, guest the cleaned short name, when the new day and time, service the video service, why one sentence with the reason. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoDeleteTitle": {
+    "message": "{service} meeting not deleted",
+    "description": "Booking notice title: a booking was cancelled, but its video meeting couldn't be deleted. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoDeleteText": {
+    "message": "{type} with {guest} on {when} is cancelled, but Rukoo couldn't delete its {service} meeting. {why} You can delete it in {service} yourself.",
+    "description": "Booking notice text when a cancelled booking's video meeting is still there. type is the meeting type, guest the cleaned short name, when the day and time, service the video service, why one sentence with the reason. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoWhyRenew": {
+    "message": "The {service} connection on this computer needs renewing.",
+    "description": "Reason sentence inside a video booking notice: the stored sign-in stopped working. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoWhyOff": {
+    "message": "{service} isn't connected on this computer.",
+    "description": "Reason sentence inside a video booking notice: the service isn't connected on the booking device. service is Zoom, Microsoft Teams or Jitsi Meet. src/main/booking/index.js (storedNotice)."
+  },
+  "booking.notices.videoWhyFailed": {
+    "message": "{service} didn't answer as expected.",
+    "description": "Reason sentence inside a video booking notice when the service gave no message. service is Zoom or Microsoft Teams. src/main/booking/index.js (storedNotice)."
   },
   "booking.notices.overlapTitle": {
     "message": "A booking overlaps another event",

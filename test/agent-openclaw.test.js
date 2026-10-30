@@ -387,7 +387,8 @@ test('openclaw: through the hub, a chat streams from the gateway and OpenClaw’
   try {
     assert.throws(() => hub.copyOpenClawSetup(), /not-configured/);
     hub.setSecret('openclaw', TOKEN);
-    assert.deepEqual(await hub.test('openclaw'), { state: 'ready', detail: 'OpenClaw gateway, agent default' });
+    // The gateway takes no message during a turn, so the panel queues them (steer: false).
+    assert.deepEqual(await hub.test('openclaw'), { state: 'ready', detail: 'OpenClaw gateway, agent default', steer: false });
 
     const call = engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
     hub.view({ openMessageId: call.id, checkedIds: [], scope: 'all', view: 'inbox', folder: null, composer: null });

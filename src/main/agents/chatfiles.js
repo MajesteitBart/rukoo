@@ -319,6 +319,22 @@ class ChatFiles {
     return removeFiles(kept.map((f) => this.path(cid, f)));
   }
 
+  // The copies of a message that waited in the chat, staged again for the message the user is writing (Edit takes
+  // a waiting message back into the input). Each is staged as stage() does, or {name, error} when it can't be, in
+  // the same order. The copies go, unless keep: the chat has them already.
+  async restage(cid, kept, { keep = false } = {}) {
+    const out = [];
+    for (const f of kept) {
+      try {
+        out.push(this.stage(f.name, await this.load(cid, f)));
+      } catch (_) {
+        out.push({ name: f.name, error: 'unreadable' });
+      }
+    }
+    if (!keep) await this.discard(cid, kept);
+    return out;
+  }
+
   // What goes along with the message: each file with its path, and the start of its text for text files and PDFs.
   // The PDFs are read side by side, each in a process of its own; the text then shares TURN_TEXT_MAX in order.
   // Nothing here blocks, and a file is read only when its text is needed: a PDF once a reader takes it (pdfread.js),

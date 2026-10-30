@@ -296,7 +296,10 @@ class AppViewModel(
         when (route) {
             is NotificationRoute.Composer -> if (services.composer.isOpen) showComposer() else route.chat?.let(::openRoute)
             is NotificationRoute.Chat -> openChat(route.conversationId, route.messageId)
-            is NotificationRoute.Message -> openMessage(route.messageId)
+            is NotificationRoute.Message -> {
+                openMessage(route.messageId)
+                showCategoryOf(route.messageId)
+            }
             is NotificationRoute.Inbox -> viewModelScope.launch {
                 withTimeoutOrNull(LOAD_WAIT_MS) { services.mail.loaded.first { it } }
                 val accounts = services.mail.accounts.value
@@ -304,6 +307,28 @@ class AppViewModel(
                 val one = route.accountId.takeIf { id -> accounts.size > 1 && accounts.any { it.id == id } }
                 selectView(MailView(ViewKind.INBOX, one))
             }
+        }
+    }
+
+    /**
+     * An email opened from a notification that Inbox or the category on screen leaves out, because Show in Inbox is off
+     * for its category or it is in another one, brings up its own category, so its row is on screen beside it (desktop's
+     * openMessage). Another account's inbox can't list it whatever the category, so that stays as it is, as on desktop.
+     * The pane the user works in stays as the notification left it.
+     */
+    private fun showCategoryOf(id: String) {
+        val categories = services.categories ?: return
+        viewModelScope.launch {
+            val m = runCatching { services.mail.summary(id) }.getOrNull() ?: return@launch
+            fun applies(nav: NavState) = nav.view.kind == ViewKind.INBOX && !nav.searching && nav.openMessageId == id && (nav.view.accountId == null || nav.view.accountId == m.accountId)
+            val nav = _state.value
+            if (!applies(nav)) return@launch
+            val lookup = withContext(Dispatchers.Default) { categories.lookup(services.mail.accounts.value, listOf(m)) }
+            val own = lookup[m] ?: return@launch
+            val tab = nav.category?.takeIf { tab -> categories.state.value.categories.any { it.id == tab } }
+            if (ListModel.categoryRows(listOf(m), lookup, tab, inbox = true).isNotEmpty()) return@launch
+            // The user may have moved on while the categories were worked out.
+            set { now -> if (applies(now) && now.view == nav.view && now.category == nav.category) now.copy(category = own, checked = emptyList()) else now }
         }
     }
 

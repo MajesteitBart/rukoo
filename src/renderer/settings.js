@@ -20,6 +20,7 @@ import { categoryPages, CATEGORY_VIEWS } from './categories-settings.js';
 import { calendarSettingsPages, CALENDAR_VIEWS } from './calendar-settings.js';
 import { meetingSettingsPages, MEETING_VIEWS } from './meeting-settings.js';
 import { bookingPages, BOOKING_VIEWS } from './booking-settings.js';
+import { videoPages, VIDEO_VIEWS } from './video-settings.js';
 import { SCHEMES, ACTIONS as KEY_ACTIONS, bindings, display, keyLabel } from './keymap.js';
 
 // Settings > Keyboard shortcuts: the schemes by the name of their app (keymap.js).
@@ -90,6 +91,12 @@ const AGENT_STATES = ['starting', 'ready', 'offline', 'unconfigured', 'disabled'
 const ACCESS = [
   { value: 'ask', get label() { return t('settings.agents.accessAsk'); }, get hint() { return t('settings.agents.accessAskHint'); } },
   { value: 'full', get label() { return t('settings.agents.accessFull'); }, get hint() { return t('settings.agents.accessFullHint'); } }
+];
+// The permission level a chat has unless it picked its own (main: agents/permission.js). The names are the chat panel's.
+const PERMISSION = [
+  { value: 'ask', get label() { return t('agent.permission.ask'); }, get hint() { return t('settings.agents.permissionAskHint'); } },
+  { value: 'auto', get label() { return t('agent.permission.auto'); }, get hint() { return t('settings.agents.permissionAutoHint'); } },
+  { value: 'full', get label() { return t('agent.permission.full'); }, get hint() { return t('settings.agents.permissionFullHint'); } }
 ];
 const agentName = (config, id) => (id === 'clark' ? (config && config.clark && config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'openclaw' ? 'OpenClaw' : 'Codex');
 const agentStateOf = (status, id) => {
@@ -265,6 +272,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (type === 'categories') categoriesPage.onState(payload);
     // The booking page's state from main: the page and the overview follow it, forms keep what is typed.
     if (type === 'booking') bookingPage.onState(payload);
+    if (type === 'video') videoPage.onState(payload);
     if (type === 'categories-progress') categoriesPage.onActivity(payload);
     // Rukoo Voice connected, left or started a meeting: the Meetings row and page say so.
     if (type === 'meeting' && payload && payload.kind === 'state') meetingPage.onState(payload.state);
@@ -317,6 +325,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const bookingPage = bookingPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
   // Settings > Meetings (meeting-settings.js): Rukoo Voice and what Rukoo does during a meeting.
   const meetingPage = meetingSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
+  // Settings > Video meetings (video-settings.js), beside the booking page.
+  const videoPage = videoPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog });
   // A redraw of the screen already showing keeps its scroll position on the pages with calendar and booking rows: the
   // booking page changes while it is open, and a switch near the bottom shouldn't send the page back to the top.
   // Another page, or the booking page's setup becoming the page, starts at the top.
@@ -635,7 +645,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       <div class="card">
         ${row({ title: t('settings.agents.default'), value: `<span data-agent-default>${esc(agentName(c, c.defaultAgent))}</span>`, action: 'agent-default' })}
         ${row({ title: t('settings.agents.shortcuts'), desc: t('settings.agents.shortcutsHelp'), action: 'agent-shortcuts' })}
-        ${row({ title: t('settings.agents.autoMail'), desc: t('settings.agents.autoMailHelp'), action: 'agent-auto', toggle: Boolean(c.autoMailActions) })}
+        ${row({ title: t('settings.agents.permission'), desc: t('settings.agents.permissionHelp'), value: `<span data-agent-permission>${esc(labelOf(PERMISSION, c.permission))}</span>`, action: 'agent-permission' })}
       </div>
       ${head('clark')}
       <div class="card agent-card">
@@ -820,9 +830,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         if (v && (await updateAgents({ defaultAgent: v }))) b.querySelector('[data-agent-default]').textContent = agentName(agentState.config, v);
         return;
       }
-      case 'agent-auto':
-        if (await updateAgents({ autoMailActions: !c.autoMailActions })) flip(b, Boolean(agentState.config.autoMailActions));
+      case 'agent-permission': {
+        const v = await choiceDialog(t('settings.agents.permission'), PERMISSION, c.permission, { stacked: true });
+        if (v && (await updateAgents({ permission: v }))) b.querySelector('[data-agent-permission]').textContent = labelOf(PERMISSION, agentState.config.permission);
         return;
+      }
       case 'agent-enabled':
         if (await updateAgents({ [id]: { enabled: c[id].enabled === false } })) flip(b, agentState.config[id].enabled !== false);
         return;
@@ -953,6 +965,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || CALENDAR_VIEWS.includes(view) ? calendarPage.prepare(view, state) : null,
       view === 'main' || view === 'account' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
       view === 'main' || MEETING_VIEWS.includes(view) ? meetingPage.prepare() : null,
+      view === 'main' || VIDEO_VIEWS.includes(view) ? videoPage.prepare(view) : null,
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -986,7 +999,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       const footerRow = bookingPage.footerRow(s);
       const calendarGroup = `
         <div class="settings-group-title" data-i18n="settings.groups.calendar">${esc(t('settings.groups.calendar'))}</div>
-        <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}</div>`;
+        <div class="card">${calendarPage.rowHtml()}${bookingPage.rowHtml()}${videoPage.rowHtml()}</div>`;
       body = `
         <div class="settings-group-title" data-i18n="settings.groups.accounts">${esc(t('settings.groups.accounts'))}</div>
         <div class="card">${accounts}
@@ -1210,6 +1223,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (CALENDAR_VIEWS.includes(view)) ({ title, body } = calendarPage.view(view));
     if (BOOKING_VIEWS.includes(view)) ({ title, body } = bookingPage.view(view));
     if (MEETING_VIEWS.includes(view)) ({ title, body } = meetingPage.view(s));
+    if (VIDEO_VIEWS.includes(view)) ({ title, body } = videoPage.view(view));
 
     // A redraw, such as the one after each update from main, keeps the keyboard on the control with the same action.
     const focused = page.contains(document.activeElement) ? document.activeElement.dataset.a : null;
@@ -1275,6 +1289,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a.startsWith('calset-') && (await calendarPage.click(a))) return;
     if (a.startsWith('booking-') && (await bookingPage.click(a))) return;
     if (a.startsWith('mtset-') && (await meetingPage.click(a))) return;
+    if (a.startsWith('video-') && (await videoPage.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
     if (a === 'mailto-use') {

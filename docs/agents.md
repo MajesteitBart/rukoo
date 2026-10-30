@@ -102,6 +102,33 @@ The bell shows how many chats have a reply ready or wait for you. It turns orang
 
 Pick a chat to open it together with its email. For a chat you continued from a newer email, that's the newest one. If the email has moved since, Rukoo finds it again by its Message-ID. Opening a chat marks its reply as read. A chat you stopped yourself doesn't count as news. Rukoo keeps which replies you haven't read in `conversations.json`, so they're still marked after a restart.
 
+## While the agent works
+
+You can keep typing while the agent answers. A message you send then goes one of two ways:
+
+- **Steer** (Enter): the message goes to the agent now, and the agent reads it before its next step, such as after the tool call it is running. Use it to change course without stopping, as in "use the work account" while the agent signs in to the wrong one.
+- **Queue** (Alt+Enter): the message waits, and goes as your next message once the agent is done.
+
+The button beside Stop does what Enter does, and its chevron offers both, with their keys. Stop stays where it is. A quick action or a skill you start while the agent works always waits, because each starts a task of its own. So does a message that names one of the agent's own skills with `$`: the agent starts such a skill only with the message a turn begins with, so steered it would get the name as plain text.
+
+Enter steers because Codex CLI and Claude Code both hand a message typed during a turn to the agent before its next step. Codex steers on Enter and queues on Tab ([openai/codex#13595](https://github.com/openai/codex/issues/13595): "Steering injects the prompt at the end of current tool call"). Claude Code passes a message typed while Claude runs tool calls to Claude "as soon as those tool calls finish, within the same turn" ([interactive mode](https://code.claude.com/docs/en/interactive-mode#queue-messages-while-claude-works)). Rukoo keeps Tab for moving the focus and for picking from the `/` and `$` menus, so Queue is Alt+Enter.
+
+Messages that aren't in the conversation yet show at its end, with a dashed edge:
+
+- A steered message says "Claude reads it before its next step" until the agent takes it in. It then joins the conversation where the agent read it, and what the agent says next comes below it.
+- A queued message says "Sends when Claude is done", with Steer now, Edit and Remove. Edit takes it out of the queue and puts its text, files and emails back in the input.
+
+After a turn that ended normally, the queued messages go one by one, each as a turn of its own. After Stop or an error they wait, marked "Not sent yet": Stop means stop, and after an error the next message would likely run into the same problem. Send now sends one of them. A message you type then goes first, and the queue continues once its turn ends normally. A steered message the agent hadn't taken in when the turn ended goes back into the queue, ahead of the others. A chat keeps its queue while you look at another chat, and works through it in the background. Rukoo saves the queue with the chat: after a restart the messages wait, with their files, until you send one. A chat holds at most 20 waiting messages.
+
+| Agent | Steer | How it works |
+|---|---|---|
+| Claude Code | Yes | Rukoo writes the message to Claude Code's input while the turn runs. Claude Code takes it in after the tool calls under way and echoes it then (`--replay-user-messages`). During an answer without tool calls it can't: it finishes the answer, then answers the message right after, which Rukoo shows as part of the same turn. Stop with a steered message Claude Code hasn't taken in closes its process, because after an interrupt Claude Code runs what it holds; the next message resumes the session. Verified with Claude Code 2.1.312 |
+| Codex | Yes | `turn/steer` adds the message to the turn under way. Codex takes it in at once and goes on; an answer it was streaming stops there. Verified with Codex 0.165 |
+| Hermes Agent | When the server has `POST /v1/runs/{id}/steer` (`run_steer` in `/v1/capabilities`) | Hermes adds the message once all the tool calls under way are done, before the model's next request. Its event stream doesn't say when, so Rukoo counts the message as read when the model writes or reasons after such a tool call. A run that ends before another tool call returns it as `pending_steer`, and Rukoo sends it as your next message. After Stop, a message Rukoo hasn't seen read goes back into the queue. A Hermes without the route queues |
+| OpenClaw | No | The Chat Completions endpoint takes no input during a turn. The message queues, and the panel says why |
+
+A steered message carries your text and what you attached. The notes Rukoo keeps for the agent, such as your decisions on cards and the outcome of mail actions, wait for the next turn. Rukoo on your phone doesn't offer Steer or Queue yet.
+
 ## How each agent connects
 
 | Agent | Connection | Needs |
@@ -163,7 +190,7 @@ With "Pair and send my accounts and agent settings", the phone can fetch the fol
 - Every account with its server settings, signature and aliases, and its password or Google refresh token in plain text. When this computer can't decrypt an account's secret (it was saved under another Windows user), the account goes without it and the phone asks you for it.
 - The Google OAuth client from `google-oauth.json`, so the phone can refresh Google sign-ins.
 - Mail settings: the default account, language, theme, general signature, VIPs, spam addresses, sync interval, hidden views, dark emails, swipe actions, notifications, sort order and density.
-- Agent settings: the default agent, the shortcuts, whether mail actions need approval, Hermes' name, address, API key and model, OpenClaw's address, token, agent and model, the model and access of Claude Code and Codex, and Rukoo's MCP port.
+- Agent settings: the default agent, the shortcuts, the [permission level](#permission-level), Hermes' name, address, API key and model, OpenClaw's address, token, agent and model, the model and access of Claude Code and Codex, and Rukoo's MCP port. The phone has no permission levels yet: with Auto or Full permission here it archives, moves and marks mail without asking, and it asks before everything else, a move into Trash or Spam included.
 
 Program paths, Claude Code's config folder and the Tailscale switches describe this computer, so they stay here. After one successful fetch the window closes. "Send accounts and settings again" opens it for another ten minutes, for example after you reinstalled the app on the phone. When the phone has fetched them, Rukoo says "Sent your accounts and settings to …". The export travels over Tailscale, which encrypts it; the phone stores the secrets encrypted with a key from the Android Keystore. With "Pair only", nothing leaves this computer and you set up the phone's accounts there.
 
@@ -249,12 +276,12 @@ Sometimes the agent no longer has the session. By default, Claude Code deletes t
 | `get_draft` | Reads the composer, including your own edits |
 | `show_plan` | A list of steps or tasks in the chat, updated as the agent works |
 | `show_sources` | Cards for the sources the agent used. Email sources open the email |
-| `propose_action` | An approval card for something other people will see or that changes another system |
-| `mail_action` | Archive, delete, move, mark read or unread, star, or unsubscribe. Rukoo asks you first |
+| `propose_action` | An approval card for something other people will see or that changes another system. With Full permission there is no card, and the agent goes ahead |
+| `mail_action` | Archive, delete, move, mark read or unread, star, or unsubscribe. Rukoo asks you first, unless the chat's [permission level](#permission-level) lets it go ahead |
 | `read_skill` | One of the [skills](#skills), with the text files next to it. Without a name, the list of skills |
 | `list_events` | The events in your calendars between two dates, at most 92 days apart, in every account with a calendar. Without a calendar named, the calendars you show in Rukoo |
 | `find_free_time` | Open time of at least a given length in a stretch of up to 31 days, on the calendars that count toward your availability, within your working hours, your booking page's hours or any time. It names the accounts Rukoo couldn't read |
-| `create_event` | Adds an event to one of your calendars, with guests and Google Meet where the calendar allows them. Rukoo asks you first |
+| `create_event` | Adds an event to one of your calendars, with guests and Google Meet where the calendar allows them. Rukoo asks you first, unless the chat's [permission level](#permission-level) lets it go ahead |
 | `get_booking_link` | The link to your [booking page](booking.md) and to each meeting type that isn't hidden, while the page is on |
 | `read_meeting_transcript` | The transcript of a meeting [Rukoo Voice](../voice/README.md) recorded: one line per passage with the time and the speaker, plus gaps in the audio and marks. In a chat about a meeting, only what is new since the agent last read it |
 | `search_meetings` | Your recorded meetings, newest first, or the passages that hold some words |
@@ -334,12 +361,39 @@ Rukoo's own skills stay slash commands, because every agent has them. The quick 
 
 ## Approvals
 
-There are four kinds:
+There are four kinds. The [permission level](#permission-level) decides when the first three show a card.
 
 - **Proposals.** When an agent calls `propose_action`, Rukoo shows a card and the agent stops. If you approve, Rukoo sends the agent a new message saying so, and the agent carries it out. If you decline, the agent hears it next time you write.
-- **Mail actions.** Rukoo runs these itself after you approve, and you can undo a move from the notice that follows. In Settings → Agents you can let agents archive, move and mark mail without asking. Deleting and unsubscribing always ask.
-- **Calendar events.** When an agent calls `create_event`, Rukoo shows the event as it will be made: title, time, calendar, guests, Google Meet, place and description. Create adds exactly that, and a notice says so; Cancel adds nothing. These always ask. The agent hears the outcome with your next message. A card that is still waiting when Rukoo restarts can be answered afterwards.
+- **Mail actions.** Rukoo runs these itself after you approve, and you can undo a move from the notice that follows.
+- **Calendar events.** When an agent calls `create_event`, Rukoo shows the event as it will be made: title, time, calendar, guests, Google Meet, place and description. Create adds exactly that, and a notice says so; Cancel adds nothing. The agent hears the outcome with your next message. A card that is still waiting when Rukoo restarts can be answered afterwards.
 - **The agent's own permissions.** Claude Code and Codex ask before running commands or changing files when their access is set to "Ask before actions", the default. Their questions show up as cards in the chat. With "Full access" they don't ask. Chats from [Rukoo on your phone](#rukoo-on-your-phone) always ask, and their cards show on the phone. Hermes follows its own approval settings, and so does OpenClaw, whose approvals Rukoo doesn't see.
+
+## Permission level
+
+The permission level decides which of Rukoo's approval cards a chat shows. Settings → Agents → Permission level sets it for every chat. The shield button beside Send shows the level of the chat on screen and sets one for that chat alone; Default follows Settings again. A chat keeps its own level after a restart. Rukoo checks the level in the app itself each time an agent calls a tool, so a change counts from the agent's next action.
+
+| | Ask (default) | Auto | Full permission |
+|---|---|---|---|
+| Archive, move between folders, mark read or unread, star | Card | Goes ahead | Goes ahead |
+| Delete, or move into Trash | Card | Card | Goes ahead |
+| Move into Spam | Card | Card | Goes ahead |
+| Unsubscribe | Card | Card | Goes ahead |
+| An event without guests on your own calendar | Card | Goes ahead | Goes ahead |
+| An event with guests, or on someone else's calendar | Card | Card | Goes ahead, and the guests get their invitation |
+| `propose_action`: sending a message, a task, a note, a record elsewhere | Card | Card | Goes ahead |
+| `write_draft`: a draft in the composer | Goes ahead | Goes ahead | Goes ahead |
+
+A draft never gets a card: the composer is where you check it, nothing leaves until you send it, and the draft's card in the chat has Undo. Auto goes ahead with what only you see and what you can undo. It asks before anything other people see or that is hard to take back. Spam is in that second group: it empties itself, Gmail's after 30 days, and a move there teaches the spam filter. Full permission shows no cards at all. That includes messages and calendar invitations the agent sends, so pick it only for agents you trust completely. What goes ahead still shows in the chat: the notice of a mail action with its Undo, the event that was added, and "Allowed without asking" with what the agent proposed.
+
+Your own calendar is your primary calendar, or one you made yourself. A calendar someone shared with you to "Make changes and manage sharing" doesn't count, even though Google gives you its owner role: a manager's calendar you look after is still hers. On a CalDAV account your own calendars are the ones in your calendar home that nobody shared with you.
+
+A chat of Claude Code or Codex can have a looser level than Settings. Rukoo knows which chat their calls come from: Claude Code gets a token for each chat, and Codex says which of its threads makes the call. Hermes and OpenClaw use one token for all their chats and name the chat in each call themselves, and an agent misled by an email could name another chat. Their chats can be stricter than Settings, not looser, and the shield's menu doesn't offer a looser level for them. A call that names its chat, or comes from outside a chat, gets the strictest of that chat's level, the one in Settings and the level of every chat the agent is working in at that moment.
+
+When the level isn't Ask, each message tells the agent the level, and the tools answer with the result instead of `waiting_for_user`. A chat set back to Ask says so once. Rukoo can't send email itself at any level; an agent sends through its own tools.
+
+The level doesn't cover the agent's own permission requests. Claude Code and Codex ask before commands and file changes as their Access in Settings says, and Hermes and OpenClaw follow their own settings. Rukoo can't tell which commands can be undone, so it leaves that choice to the agent's own setting.
+
+Before the levels, Settings had "Let agents archive, move and mark mail without asking". Auto does that too, but it also adds events without asking, so Rukoo doesn't switch to it by itself: everyone starts at Ask.
 
 ## Safety
 

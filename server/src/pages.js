@@ -69,6 +69,13 @@ p{margin:0;text-wrap:pretty}
 .details li{display:flex;align-items:flex-start;gap:8px;min-width:0;overflow-wrap:anywhere}
 .details .ic{margin-top:2px}
 .details.inline{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px;font-size:13px}
+.details li.pick .ic{margin-top:6px}
+.lengths{display:flex;flex-wrap:wrap;gap:6px}
+.lengths a{display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:9999px;background:var(--chip);color:var(--text-2);font-size:12.5px;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap;transition:background-color 120ms ease,color 120ms ease}
+.lengths a:hover{background:var(--active);color:var(--text);text-decoration:none}
+.lengths a:active{scale:.96}
+.lengths a[aria-current]{background:var(--primary);color:var(--on-primary)}
+@media (pointer:coarse){.lengths a{height:36px;padding:0 14px}.details li.pick .ic{margin-top:10px}}
 .quote{margin:14px 0 0;padding:0 0 0 10px;border-left:2px solid var(--border-strong);color:var(--text-2);font-size:13.5px;white-space:pre-line;overflow-wrap:anywhere}
 .intro{margin:10px 0 0;color:var(--text-2);font-size:13.5px;white-space:pre-line;overflow-wrap:anywhere}
 .zone{margin-top:20px;padding-top:16px;border-top:1px solid var(--border);font-size:13px;color:var(--text-2)}
@@ -417,7 +424,8 @@ function footerHtml(ctx, footer, width) {
   });
   out.push('<div class="foot-row">');
   out.push(links.length ? `<nav>${links.join('\n')}</nav>` : '<span></span>');
-  out.push(`<nav aria-label="${esc(ctx.T('page.language'))}">${langs.join('\n')}</nav>`);
+  // booker.js swaps this nav with the booker, so a language link keeps the day and length picked since the page loaded.
+  out.push(`<nav id="languages" aria-label="${esc(ctx.T('page.language'))}">${langs.join('\n')}</nav>`);
   out.push('</div>', '</footer>');
   return out.join('\n');
 }
@@ -447,13 +455,41 @@ function locationText(ctx, location) {
   return [label, value].filter(Boolean).join(', ');
 }
 
-// A type's length, place and whether the host confirms each booking, each with its icon.
-function detailsHtml(ctx, type, approval, { inline = false } = {}) {
-  const items = [['clock', ctx.T('type.minutes', { n: type.duration })]];
+// A length as the pages write it: '30 min', '1 h', '90 min'.
+function lengthText(ctx, minutes) {
+  return minutes % 60 === 0 ? ctx.T('type.hours', { n: minutes / 60 }) : ctx.T('type.minutes', { n: minutes });
+}
+
+// Every length of a type in one phrase: '15 min, 30 min or 1 h'.
+function lengthsText(ctx, durations) {
+  const list = durations.map((m) => lengthText(ctx, m));
+  try {
+    return new Intl.ListFormat(ctx.locale ?? ctx.lang, { type: 'disjunction' }).format(list);
+  } catch {
+    return list.join(', ');
+  }
+}
+
+// The lengths a guest picks from on the booker, as links to the same month and day at each length, the current one
+// marked. booker.js loads them without a full reload, and swaps this row along with the times.
+function lengthsHtml(ctx, links) {
+  const items = links.map(
+    (l) => `<a href="${esc(l.href)}" data-swap="length-${l.minutes}"${l.current ? ' aria-current="true"' : ''}>${esc(lengthText(ctx, l.minutes))}</a>`
+  );
+  return `<div class="lengths" id="lengths" role="group" aria-label="${esc(ctx.T('booker.length'))}">${items.join('')}</div>`;
+}
+
+// A type's length, place and whether the host confirms each booking, each with its icon. lengthLinks: the picker in
+// place of the length, on a booker for a type with several lengths. Elsewhere such a type lists them all, except where
+// a time is chosen and type has the one it is for (single).
+function detailsHtml(ctx, type, approval, { inline = false, lengthLinks = null, single = false } = {}) {
+  const offered = Array.isArray(type.durations) && type.durations.length > 1 && !single ? type.durations : [type.duration];
+  const length = lengthLinks ? lengthsHtml(ctx, lengthLinks) : `<span>${esc(offered.length > 1 ? lengthsText(ctx, offered) : lengthText(ctx, type.duration))}</span>`;
+  const items = [['clock', length, lengthLinks ? ' class="pick"' : '']];
   const where = locationText(ctx, type.location);
-  if (where) items.push([LOCATION_ICONS[type.location.kind] ?? 'pin', where]);
-  if (approval) items.push(['person', ctx.T('type.approval', { host: ctx.host })]);
-  return `<ul class="details${inline ? ' inline' : ''}">${items.map(([name, text]) => `<li>${icon(name)}<span>${esc(text)}</span></li>`).join('')}</ul>`;
+  if (where) items.push([LOCATION_ICONS[type.location.kind] ?? 'pin', `<span>${esc(where)}</span>`, '']);
+  if (approval) items.push(['person', `<span>${esc(ctx.T('type.approval', { host: ctx.host }))}</span>`, '']);
+  return `<ul class="details${inline ? ' inline' : ''}">${items.map(([name, markup, attrs]) => `<li${attrs}>${icon(name)}${markup}</li>`).join('')}</ul>`;
 }
 
 function quoteHtml(text) {
@@ -541,7 +577,8 @@ function whenHtml(ctx, { start, end, hostZone, host }) {
 function infoHtml(ctx, { profile, type, back, approval, when = null }) {
   const out = ['<header class="info">', hostHtml(profile, back), `<h1>${esc(type.title)}</h1>`];
   if (when) out.push(whenHtml(ctx, { ...when, hostZone: profile.timeZone, host: profile.name }));
-  out.push(detailsHtml(ctx, type, approval), '</header>');
+  // These pages are about one booking, at one length: the one type has now.
+  out.push(detailsHtml(ctx, type, approval, { single: true }), '</header>');
   return out.join('\n');
 }
 
@@ -592,15 +629,16 @@ export function bookerHtml(ctx, v) {
   const notices = [];
   if (reschedule) notices.push(esc(ctx.T('reschedule.pick', { time: ctx.f.whenText(reschedule.booking.start, reschedule.booking.end) })));
   if (v.badSlot) notices.push(esc(ctx.T('form.badSlot')));
+  if (v.badLength) notices.push(esc(ctx.T('form.badLength')));
   const at = v.date ? zonedInstant(v.date, '12:00', ctx.zone) : Date.now();
   const info = [
     '<header class="info">',
     hostHtml(profile, back),
     landing ? introHtml(profile.intro) : '',
     `<h1>${esc(type.title)}</h1>`,
-    detailsHtml(ctx, type, v.approval),
+    detailsHtml(ctx, type, v.approval, { lengthLinks: v.lengthLinks, single: Boolean(reschedule) }),
     quoteHtml(type.description),
-    noticeHtml(notices, { error: Boolean(v.badSlot) }),
+    noticeHtml(notices, { error: Boolean(v.badSlot || v.badLength) }),
     zoneHtml(ctx, { path: v.path, params: { ...v.keep, month: v.month, date: v.date }, at }),
     '</header>'
   ];
@@ -676,7 +714,9 @@ ${day}
 }
 
 // The filled-in form for one time (a prepared link, or the form again after a refused booking), or, when the time is
-// gone, the nearest open times as links that keep what was filled in.
+// gone, the nearest open times as links that keep what was filled in. type is at the length the form is for; picked:
+// that length when it isn't the default, which links carry on; duration: the length the form posts, when the type
+// has several.
 export function formHtml(ctx, v) {
   const { profile, type, start, end, fields } = v;
   const path = `${ctx.base}/${type.slug}`;
@@ -686,9 +726,10 @@ export function formHtml(ctx, v) {
   // Focus goes to the field that was wrong, or to the notice when no field was.
   const onField = v.open && FIELDS.includes(v.error?.field);
   if (v.error) side.push(noticeHtml([esc(v.error.message)], { error: true, alert: true, id: 'form-error', focus: !onField }));
-  const other = href(path, ctx.keep);
+  const keep = { ...ctx.keep, duration: v.picked ?? null };
+  const other = href(path, keep);
   if (!v.open) {
-    side.push(alternativesHtml(ctx, { path, alternatives: v.alternatives, params: { ...ctx.keep, ...fieldParams(fields) }, gone: !v.error }));
+    side.push(alternativesHtml(ctx, { path, alternatives: v.alternatives, params: { ...keep, ...fieldParams(fields) }, gone: !v.error }));
     side.push(`<p class="small"><a href="${esc(other)}">${esc(ctx.T('form.other'))}</a></p>`);
   } else {
     side.push(bookFormHtml(ctx, v, path, other));
@@ -738,7 +779,7 @@ function bookFormHtml(ctx, v, path, other) {
   const host = v.profile.name;
   // tz is the zone the guest saw the times in, kept with the booking; booker.js puts the browser's zone there when the
   // page only had the host's.
-  const inputs = hiddenInputs({ start: slotParam(v.start), tz: ctx.zone, lang: ctx.keep.lang, clock: ctx.keep.clock, idem: v.idem });
+  const inputs = hiddenInputs({ start: slotParam(v.start), duration: v.duration ?? null, tz: ctx.zone, lang: ctx.keep.lang, clock: ctx.keep.clock, idem: v.idem });
   const operator = ctx.operator.name || ctx.T('page.operatorStart');
   // The server's own statement opens at its part about guests, in the page's language.
   const own = sameOrigin(ctx.operator.privacy, ctx.url) && new URL(ctx.operator.privacy, ctx.url).pathname === '/privacy';
@@ -762,13 +803,18 @@ function bookFormHtml(ctx, v, path, other) {
 }
 
 // After a booking for the same time and email as an active one: no key comes back, so the page says where it is.
-export function alreadyHtml(ctx, { profile, type, start, end, email }) {
+// type is at the length of the booking already there; picked, the length the form was for, when it differs, is named.
+export function alreadyHtml(ctx, { profile, type, picked = null, start, end, email }) {
   const path = `${ctx.base}/${type.slug}`;
+  const notice = [esc(ctx.T(profile.invites === false ? 'form.alreadyNoInvitation' : 'form.already', { email, host: profile.name }))];
+  if (picked !== null && picked !== type.duration) {
+    notice.push(esc(ctx.T('form.alreadyLength', { length: lengthText(ctx, type.duration), picked: lengthText(ctx, picked) })));
+  }
   const main = [
     '<div class="card split">',
     infoHtml(ctx, { profile, type, back: href(ctx.base, ctx.keep), approval: false, when: { start, end } }),
     '<div class="side">',
-    noticeHtml([esc(ctx.T(profile.invites === false ? 'form.alreadyNoInvitation' : 'form.already', { email, host: profile.name }))]),
+    noticeHtml(notice),
     `<p class="small"><a href="${esc(href(path, ctx.keep))}">${esc(ctx.T('form.other'))}</a></p>`,
     '</div>',
     '</div>'

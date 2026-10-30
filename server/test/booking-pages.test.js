@@ -151,7 +151,8 @@ describe('the landing page', () => {
     expect(html).toContain(`<h3><a href="/meet/${handle}/30min">30 minute meeting</a></h3>`);
     expect(html).toContain(`<h3><a href="/meet/${handle}/long">Long talk</a></h3>`);
     expect(html).toMatch(/<ul class="details inline">(<li><svg [^>]*>.*?<\/svg><span>[^<]+<\/span><\/li>){3}<\/ul>/);
-    expect(html).toContain('<span>60 min</span></li><li><svg');
+    // A whole hour is written in hours.
+    expect(html).toContain('<span>1 h</span></li><li><svg');
     expect(html).toContain('<span>Phone call</span></li><li><svg');
     expect(html).toContain('<span>Bart van der Meeren confirms each booking</span></li></ul>');
     expect(html).not.toContain('Hidden one');
@@ -975,8 +976,11 @@ describe('the booker script', () => {
     expect((await call('HEAD', '/meet/assets/booker.js')).text).toBe('');
   });
 
-  it('swaps the zone picker with the booker, so its form keeps the chosen day', () => {
-    expect(BOOKER_JS).toContain("doc.getElementById('zone')");
+  it('swaps the zone picker and the lengths with the booker, so their links keep the chosen day', () => {
+    expect(BOOKER_JS).toContain("replace(doc, 'zone')");
+    expect(BOOKER_JS).toContain("replace(doc, 'lengths')");
+    expect(BOOKER_JS).toContain("replace(doc, 'languages')");
+    expect(BOOKER_JS).toContain('#lengths a[data-swap]');
     expect(BOOKER_JS).not.toMatch(/=>|`/);
   });
 });

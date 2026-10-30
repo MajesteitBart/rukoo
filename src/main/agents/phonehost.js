@@ -637,7 +637,10 @@ class PhoneHost {
       settings,
       agents: {
         defaultAgent: d.defaultAgent,
-        autoMailActions: d.autoMailActions,
+        // The phone has no permission levels yet, only "archive, move and mark mail without asking": Auto's mail
+        // part. Auto and Full permission both give it that, so the phone never does more without asking than here.
+        permission: d.permission,
+        autoMailActions: d.permission === 'auto' || d.permission === 'full',
         shortcuts: d.shortcuts ? JSON.parse(JSON.stringify(d.shortcuts)) : null,
         clark: { enabled: clark.enabled !== false, name: clark.name, url: clark.url, key: clark.key || '', model: clark.model },
         openclaw: { enabled: openclaw.enabled !== false, url: openclaw.url, key: openclaw.key || '', agent: openclaw.agent, model: openclaw.model },

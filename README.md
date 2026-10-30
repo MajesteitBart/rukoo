@@ -41,7 +41,7 @@ More in [Mail](docs/mail.md) and [Inbox categories](docs/categories.md).
 - The calendar (`Ctrl+2`) shows your Google calendars and the CalDAV calendars of IMAP accounts together, by month, week, day or what's coming.
 - Drag on the grid to create an event, and drag events to move or resize them. Events can have guests, repeats, reminders and their own time zone. Google calendars add Meet links.
 - The availability panel (`A`) lists your open time across your calendars. The composer's calendar button inserts the same list into a message.
-- A booking page such as `https://meet.rukoo.io/sanne` lets people, and their AI assistants, pick a time with you. Each booking lands in your calendar, which sends the invitation.
+- A booking page such as `https://meet.rukoo.io/sanne` lets people, and their AI assistants, pick a time with you. Each booking lands in your calendar, which sends the invitation, and can get its own Zoom, Microsoft Teams or Jitsi Meet link.
 
 More in [Calendar](docs/calendar.md) and [Booking page](docs/booking.md).
 
@@ -49,7 +49,7 @@ More in [Calendar](docs/calendar.md) and [Booking page](docs/booking.md).
 
 - The chat panel (`Ctrl+J`) sits next to the email. It works with Hermes Agent (such as Clark), Claude Code, Codex and OpenClaw.
 - Quick actions draft a reply, brief you on the sender, plan follow-ups or summarize. You can edit them and add your own.
-- Agents read your mail and calendar and write drafts through Rukoo's own MCP server. They never send mail. Anything other people will see, and every event an agent adds, waits for your approval.
+- Agents read your mail and calendar and write drafts through Rukoo's own MCP server. Rukoo never sends mail for them. Anything other people will see, and every event an agent adds, waits for your approval, unless you give a chat a looser [permission level](docs/agents.md#permission-level).
 - `/name` in the chat starts a skill in the Agent Skills format, from Rukoo's own set or from your skills folder.
 
 More in [Agents](docs/agents.md).

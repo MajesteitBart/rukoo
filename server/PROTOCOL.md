@@ -74,7 +74,7 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | `override` | the same key as `classification` | `{ category, at }` | last write wins |
 | `sender` | a lowercased sender address | `{ category, at }` | last write wins |
 | `setting` | a setting's name, such as `categories` | that setting's value, such as `{ enabled, unsure, seeded }` | last write wins |
-| `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became | see [Booking pages](#booking-pages) | last write wins |
+| `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became; `meeting:<acct>:<bookingId>`, a video meeting made for a booking whose event isn't written yet | see [Booking pages](#booking-pages) | last write wins |
 | `bookingkey` | `<acct>` | the booking page's key pair: `{ current, keys: { <keyId>: { privatePkcs8, publicRaw, createdAt } } }` | first write wins (`ifAbsent`) |
 
 `<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device leaves `bookingkey` out of "Export my data" and removes it locally when it signs out.
@@ -302,6 +302,7 @@ Claims the handle if needed, publishes and turns the page on or off. The whole p
         "slug": "30min",
         "title": "30 minute meeting",
         "duration": 30,
+        "durations": [30],
         "description": "",
         "location": { "kind": "googleMeet", "label": "Google Meet" },
         "bufferBefore": 0,
@@ -338,18 +339,23 @@ Claims the handle if needed, publishes and turns the page on or off. The whole p
 | `dailyCap` | 1 to 50 new bookings per host-local day |
 | `invites` | optional; `false` when the host's calendar sends guests no invitations (a demo calendar). Leave it out otherwise |
 | `types` | 1 to 10 |
-| `slug`, `title`, `duration` | slug rules; 1 to 100 characters; minutes, 5 to 480, a multiple of 5 |
+| `slug`, `title`, `duration` | slug rules; 1 to 100 characters; minutes, 5 to 480, a multiple of 5. `duration` is the default length: the one a guest gets without picking one |
+| `durations` | optional; the lengths a guest can pick, 1 to 10 different ones in minutes with the rules of `duration`, `duration` among them. Stored shortest first. Left out, the type has only `duration`, as from devices before guests could pick |
 | `description` | at most 500 |
 | `location` | `kind` is `googleMeet`, `phone`, `inPerson`, `link` or `none`; `label` at most 100; `value` at most 500, and only when the host made it public. An empty `label` is shown as the kind's own name: from `booking-text.js` in the page's language (en, nl) on pages, in English ("Google Meet", "Phone call", "In person", "Link") in JSON, `llms.txt` and MCP. A `none` location with an empty label shows no location. |
 | `bufferBefore`, `bufferAfter` | minutes, 0 to 240 |
 | `minNotice` | minutes, 0 to 43200 |
 | `horizon` | days, 1 to 90 |
-| `slotInterval` | minutes, 5 to 480 |
+| `slotInterval` | minutes, 5 to 480; or null or left out: start times follow the meeting's length, the one the guest picked on a type with several. The server always stores a number: `duration` for null, and on a type with several lengths also `slotFollowsLength: true`, a field only it reads (see below) |
 | `dailyLimit` | null or 1 to 50 per host-local day |
 | `confirm`, `hidden` | booleans: bookings of this type wait for the host; the type is left off the landing page, the API and MCP but can be booked by its link |
 | `schedule` | the key in `windows` this type uses; `default` |
 | `windows` | `{ "default": [[start, end], …] }`, at most 2000 intervals, sorted, not overlapping, from 1 day ago to 91 days ahead |
 | `busy` | at most 5000 intervals, sorted, not overlapping, each edge a multiple of 15 minutes (900000 ms) |
+
+`durations` and a null `slotInterval` came after the first booking pages, so they work both ways. A server from before them drops `durations` (it drops every field it doesn't know) and reads a null `slotInterval` as `duration`: its pages offer each type's default length, as they did. A device from before them sends neither, and its types have one length.
+
+The stored profile works both ways too. A Worker rolled back to before several lengths reads the profile a newer one stored and steps between start times by `slotInterval` alone, so the newer one never stores null there: on a type with several lengths whose start times follow the length, it stores `duration` in `slotInterval` and `slotFollowsLength: true`. The older Worker ignores `slotFollowsLength` and `durations` and offers the default length every `duration` minutes; the newer one steps by the length the guest picked.
 
 `takeover: true` makes the caller the booking device. Without it, a publish from another session gets `409 other_device`; the first publish on a page sets the device, and so does the first one after the page was turned off, except from the former booking device before it has read the page ([One booking device](#one-booking-device)). A publish whose `keyId` differs from the last one is accepted: bookings already sealed keep their key id in the blob.
 
@@ -452,11 +458,13 @@ A booking id is 16 random bytes and a manage key 32 random bytes, both base64url
 
 The server works out the open times; devices only publish windows and busy times.
 
-- Candidates step by the type's `slotInterval` from local midnight on the host's wall clock in the profile's `timeZone`. A time a clock change skips isn't offered; of a time that happens twice, only the first counts.
+- The meeting's length is the one the guest picked (`duration` on the page, in the JSON API and in MCP), one of the type's `durations`; without one, the type's `duration`. A length the type doesn't offer is `400 invalid`, field `duration`, listing the ones it does. Everything below is for that length; the rest of the type stays as it is.
+- Candidates step by the type's `slotInterval` from local midnight on the host's wall clock in the profile's `timeZone`, or by the meeting's length when the device sent `slotInterval` null on a type with several lengths (stored as `slotFollowsLength`). A time a clock change skips isn't offered; of a time that happens twice, only the first counts.
 - A candidate lies inside `windows[schedule]`, starts at least `minNotice` from now and less than `horizon` days ahead.
 - The meeting widened by `bufferBefore` and `bufferAfter` overlaps neither `busy` nor any active booking widened by its own type's buffers. Pending requests hold their slot until they lapse. The booking being rescheduled doesn't count against itself.
-- A booking keeps its length when it moves, also after the host changed its type's `duration`. A move, by the guest or by the host without `host: true`, is checked as the booking's type with the booking's own length (`end - start`) in place of `duration`; the buffers, `slotInterval`, `minNotice`, `horizon` and limits stay the type's. The times offered for a move (the booker with `reschedule`) and the `alternatives` of a refused move are worked out the same way. `GET /api/slots` lists times for a new booking, at the type's current `duration`, so a time from it can still be refused for a longer booking that moves there (`409 slot_taken`, with `alternatives` that fit it).
-- The host-local day stays under the type's `dailyLimit` and the page's `dailyCap`.
+- A booking keeps its length when it moves: the length it was booked at, also after the host changed its type's `duration` or `durations`. A move, by the guest or by the host without `host: true`, is checked as the booking's type with the booking's own length (`end - start`) as the meeting's length; the buffers, `minNotice`, `horizon` and limits stay the type's, and so does `slotInterval` unless start times follow the length. The times offered for a move (the booker with `reschedule`) and the `alternatives` of a refused move are worked out the same way. `GET /api/slots` lists times for a new booking, at the length asked for, so a time from it can still be refused for a longer booking that moves there (`409 slot_taken`, with `alternatives` that fit it).
+- The host-local day stays under the type's `dailyLimit` and the page's `dailyCap`, whatever the length of each booking.
+- A booking's end is its start plus the meeting's length, in the row and in the sealed details. When the page changes while a booking's details are sealed (a new key, the type, its length or the day), the server seals them again against the page as it is then: a booking without a length gets the type's new `duration`, and one whose length the type no longer offers fails as above.
 - More than 24 hours (`BOOKING_STALE_HOURS`) after the last publish, every type acts as if it needs the host's confirmation, and a guest can't move a confirmed booking (`403 limit_reached`, `limit: "stale"`): its new time would only be checked against the same old busy times. More than 7 days (`BOOKING_DARK_DAYS`) after it, no times are offered: the page shows the text for "no open times", plus `contact`.
 
 ### Public routes
@@ -516,17 +524,18 @@ The booker for one type, hidden types included. Query parameters, each checked b
 | `tz` | an IANA zone; default the host's. Without JavaScript the zone is never taken from the IP address. |
 | `lang` | `en` or `nl`; default from `Accept-Language`, then the page's `locale` |
 | `clock` | `12` or `24`; default from the `Accept-Language` locale |
+| `duration` | minutes, one of the type's `durations`: the times and the form are for that length. Another value is ignored, like a missing one, and the type's `duration` is used. Ignored with `reschedule`: a booking keeps its own length. |
 | `slot` | a start in UTC, `2026-11-03T09:00Z` (seconds optional; an offset works too, and a space before it reads as `+`): shows the filled-in form for that time |
 | `name`, `email`, `notes`, `via` | fill in the form; a space in `email` reads as `+`. Without `slot` they travel with every day and time, so the form opens filled in. |
 | `reschedule`, `k` | a booking id and its manage key: the guest picks a new time for that booking, which doesn't count against its own new time. The times offered, and the length the page shows, are for the booking's own length (see Slots). The booking's own time isn't offered, and a `slot` at that time shows the booker. |
 
-Without `slot` the page opens at the month and day of the first open time; days with times are links, and so are the day's times. With one that can't be read, it says so above the booker. With `slot`, the page shows the time in `tz` (or the host's zone), in the host's zone when that differs, and in UTC, the fields filled in, and "Your assistant filled this in. Check the details and press Book." when the link filled any in. When the slot is gone it lists the 3 nearest open times as links that keep the fields, and no form. With `reschedule` and `slot`, it asks "Move your booking to this time?" with a button that posts to the manage page. A booking of another type, or one that can't move any more, is sent to its manage page (303). Opening any of these books, holds and moves nothing.
+A type with several lengths shows them under its title as links (`#lengths`, "Length"), the current one marked with `aria-current`, each to the same month and day at that length; a type with one length, and the booker of a move, show the length as text. Links and forms on the booker carry a picked `duration` on, the default left out. Without `slot` the page opens at the month and day of the first open time; days with times are links, and so are the day's times. With one that can't be read, it says so above the booker. With `slot`, the page shows the time in `tz` (or the host's zone), in the host's zone when that differs, and in UTC, the fields filled in, and "Your assistant filled this in. Check the details and press Book." when the link filled any in. When the slot is gone it lists the 3 nearest open times as links that keep the fields, and no form. With `reschedule` and `slot`, it asks "Move your booking to this time?" with a button that posts to the manage page. A booking of another type, or one that can't move any more, is sent to its manage page (303). Opening any of these books, holds and moves nothing.
 
 Times are written with the full `Accept-Language` locale and carry their zone and UTC offset; a toggle switches between 12 and 24 hours. With JavaScript (`booker.js`) the browser's zone replaces the server's before times show, when the server knows that zone; the form's `tz` is always the zone the page was written in.
 
 #### `POST /<handle>/<slug>`
 
-The form's booking. Fields: `start` (as `slot`), `tz`, `name`, `email`, `notes`, `via`, and from the page `lang`, `clock` and `idem`, a random key the form carries as its `Idempotency-Key`, so pressing Book twice gives the same booking and the same manage page. A `tz` the server doesn't know is taken as the host's zone, not refused: it is a hidden field, so the guest couldn't fix it. → `303` to the manage page (`/<handle>/booking/<id>?k=…&tz=…`, plus `lang` and `clock` when the guest chose them), or the form again with the error and the fields kept, with the error's status (400, 403, 409, 429). A time that was just taken shows the 3 nearest open times instead of the form; a page that is off answers with its off page (409). The same type, time and address as an active booking answers 200 with a page that says so, without a key. Posts are rate-limited like the JSON writes (`BOOKING_LIMITER`).
+The form's booking. Fields: `start` (as `slot`), `duration`, `tz`, `name`, `email`, `notes`, `via`, and from the page `lang`, `clock` and `idem`, a random key the form carries as its `Idempotency-Key`, so pressing Book twice gives the same booking and the same manage page. `duration` is the length the form showed; the form sends it for a type with several lengths, also the default, so a host changing the default meanwhile doesn't change the booking. A length the type no longer offers books nothing: the answer is the booker at the default length with a notice that says so (409). A `tz` the server doesn't know is taken as the host's zone, not refused: it is a hidden field, so the guest couldn't fix it. → `303` to the manage page (`/<handle>/booking/<id>?k=…&tz=…`, plus `lang` and `clock` when the guest chose them), or the form again with the error and the fields kept, with the error's status (400, 403, 409, 429). A time that was just taken shows the 3 nearest open times instead of the form; a page that is off answers with its off page (409). The same type, time and address as an active booking answers 200 with a page that says so, without a key. Posts are rate-limited like the JSON writes (`BOOKING_LIMITER`).
 
 Under the form, in the page's language: "Your name, email and note go to {host}. {operator} keeps this booking on its server until 30 days after the meeting. Privacy", linking to the operator's privacy statement.
 
@@ -542,7 +551,7 @@ The confirmed booking as `text/calendar; charset=utf-8` with `content-dispositio
 
 With `?type=<slug>` it is that one type's guide, hidden types included; a slug the page doesn't have is `404 unknown_type`. A meeting type's own pages (its booker and form) point to that guide, so a hidden type's link leads to its own instructions; the landing page and the rest point to the page-wide one.
 
-Markdown (`text/markdown; charset=utf-8`) for assistants, in English, in the shape of llmstxt.org: the host and zone, the booking rules (show times in the user's zone, get name, email and the user's OK, book once, one guest per booking), each visible type with its literal slots URL and its description quoted as `From "{name}": "…"`, the open times for the next 7 days with UTC and a prepared link each, how to book with a link and with HTTP, how to change or cancel, the errors, and the MCP endpoint and privacy statement as options. Text the host wrote is always quoted and labelled; it describes the meeting and isn't instructions. The host's name is host text too: it appears only quoted, and the server's own sentences say "the host".
+Markdown (`text/markdown; charset=utf-8`) for assistants, in English, in the shape of llmstxt.org: the host and zone, the booking rules (show times in the user's zone, get name, email and the user's OK, book once, one guest per booking), each visible type with its literal slots URL and its description quoted as `From "{name}": "…"` (a type with several lengths lists them, says which one leaving out `duration` gives, and has a literal slots URL for each other length), the open times for the next 7 days at each type's default length with UTC and a prepared link each, how to book with a link and with HTTP, how to change or cancel, the errors, and the MCP endpoint and privacy statement as options. Text the host wrote is always quoted and labelled; it describes the meeting and isn't instructions. The host's name is host text too: it appears only quoted, and the server's own sentences say "the host".
 
 #### `GET /llms.txt`
 
@@ -559,6 +568,7 @@ Only at the root of `BOOKING_ORIGIN`. Markdown in the same shape, the same for e
       "slug": "30min",
       "title": "30 minute meeting",
       "duration": 30,
+      "durations": [30],
       "description": "",
       "location": { "kind": "google_meet", "label": "Google Meet" },
       "needs_approval": false,
@@ -578,16 +588,17 @@ Only at the root of `BOOKING_ORIGIN`. Markdown in the same shape, the same for e
 }
 ```
 
-Visible types only. `location.kind` is `google_meet`, `phone`, `in_person`, `link` or `none`; `location.value` appears only when the host made it public. `needs_approval` is true for types that need the host's confirmation, also while the page is stale. Never in a public answer: windows, busy times, the public key, the owner, hidden types, limits or private location values.
+Visible types only. `duration` is the default length and `durations` every length a guest can pick, in minutes, shortest first. `location.kind` is `google_meet`, `phone`, `in_person`, `link` or `none`; `location.value` appears only when the host made it public. `needs_approval` is true for types that need the host's confirmation, also while the page is stale. Never in a public answer: windows, busy times, the public key, the owner, hidden types, limits or private location values.
 
-#### `GET /<handle>/api/slots?type=&from=&to=&time_zone=`
+#### `GET /<handle>/api/slots?type=&duration=&from=&to=&time_zone=`
 
-All parameters are optional. `type` defaults to the only visible type (with several, `400 invalid`, field `type`, listing them); `from` and `to` are dates in `time_zone`, inclusive, default today and 13 days later, at most 31 days apart; `time_zone` defaults to the host's.
+All parameters are optional. `type` defaults to the only visible type (with several, `400 invalid`, field `type`, listing them); `duration` is the meeting's length in minutes, one of the type's `durations`, default its `duration` (another is `400 invalid`, field `duration`, listing them); `from` and `to` are dates in `time_zone`, inclusive, default today and 13 days later, at most 31 days apart; `time_zone` defaults to the host's.
 
 ```json
 {
   "type": "30min",
   "duration": 30,
+  "durations": [30],
   "time_zone": "Europe/Amsterdam",
   "from": "2026-11-02",
   "to": "2026-11-15",
@@ -605,7 +616,7 @@ All parameters are optional. `type` defaults to the only visible type (with seve
 }
 ```
 
-`next_from` is the day after `to` while the type's horizon reaches past it, else null. No open times gives an empty `slots` and the "no open times" message, with the host's contact line in `contact` when there is one; a `409 not_accepting` carries `contact` the same way.
+`duration` is the length the times are for and `durations` the type's lengths. For a length other than the default, each `book_url` carries `&duration=<minutes>`, and the message says to send it ("12 open times for 60 minutes. Send one of these start values exactly as listed, with duration 60, to book."); a type with several lengths names the length in the message. `next_from` is the day after `to` while the type's horizon reaches past it, else null. No open times gives an empty `slots` and the "no open times" message, with the host's contact line in `contact` when there is one; a `409 not_accepting` carries `contact` the same way.
 
 #### `POST /<handle>/api/bookings`
 
@@ -618,6 +629,7 @@ Headers: `content-type: application/json`, optionally `Idempotency-Key` (16 to 2
 | Field | Rule |
 |---|---|
 | `type` | optional with one visible type |
+| `duration` | optional; the meeting's length in minutes, one of the type's `durations` (a string of digits works too). Left out, the type's `duration`. `400 invalid`, field `duration`, for another |
 | `start` | ISO 8601 with `Z` or an offset (a space before a 2-digit offset reads as `+`), equal to an offered slot. A time without an offset is `400 invalid` with an example in `message`. |
 | `name` | 1 to 80 characters, no control characters |
 | `email` | a plain address: dot-atom local part, no quotes, commas, angle brackets or semicolons; at most 254 |
@@ -634,6 +646,7 @@ Headers: `content-type: application/json`, optionally `Idempotency-Key` (16 to 2
     "status": "confirmed",
     "type": "30min",
     "type_title": "30 minute meeting",
+    "duration": 30,
     "start": "2026-11-03T10:00:00+01:00",
     "start_utc": "2026-11-03T09:00:00Z",
     "end": "2026-11-03T10:30:00+01:00",
@@ -652,13 +665,13 @@ Headers: `content-type: application/json`, optionally `Idempotency-Key` (16 to 2
 }
 ```
 
-A type that needs approval gives `status: "pending"`, `expires_at`, `ics_url: null` and the message "Bart van der Meeren will confirm or decline; the invitation follows when they confirm." Past the day's mail budget a new booking becomes a request the same way.
+`booking.duration` is the booking's length in minutes, also in `GET /api/bookings/<id>` and the answers to a cancel or move. A type that needs approval gives `status: "pending"`, `expires_at`, `ics_url: null` and the message "Bart van der Meeren will confirm or decline; the invitation follows when they confirm." Past the day's mail budget a new booking becomes a request the same way.
 
 When the host's calendar sends no invitations (the profile has `invites: false`, as for a demo calendar), the answer also has `"invitation": false`, and the message, the manage page, the booking form, `book_meeting` and the agent texts say that no invitation is sent and the manage link is the guest's record.
 
 The same type, start and email as an active booking, without the `Idempotency-Key` that booked it, answers `200` with only `{ "already_booked": true, "message": "This time is already booked for this email. The link to change or cancel it was in the answer to the first booking; the invitation comes from the host's calendar." }`. It says nothing more, not the booking's id or status: anyone who knows the guest's email can send it. The same `Idempotency-Key` gets the first answer again, as below.
 
-An `Idempotency-Key` seen in the last 24 hours with the same body answers what the first request got, `201` with the header `idempotent-replayed: true`; the key comes back only because the server kept it wrapped under a key derived from the `Idempotency-Key`. A different body under the same key: `409 idempotency_mismatch`.
+An `Idempotency-Key` seen in the last 24 hours with the same body (a `duration` sent counts; one left out is not the same as the default sent) answers what the first request got, `201` with the header `idempotent-replayed: true`; the key comes back only because the server kept it wrapped under a key derived from the `Idempotency-Key`. A different body under the same key: `409 idempotency_mismatch`.
 
 #### `GET /<handle>/api/bookings/<id>`
 
@@ -713,17 +726,17 @@ Methods: `initialize` (2025), `server/discover` (2026), `ping`, `tools/list`, `t
 | Tool | Arguments | Annotations | Same as |
 |---|---|---|---|
 | `get_meeting_types` | `link` | `readOnlyHint: true`, `openWorldHint: true` | `GET /api` |
-| `find_available_times` | `link`, `type?`, `from?`, `to?`, `time_zone?` | `readOnlyHint: true`, `openWorldHint: true` | `GET /api/slots` |
-| `book_meeting` | `link`, `type?`, `start`, `name`, `email`, `notes?`, `time_zone?`, `via?`, `idempotency_key?` | `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false`, `openWorldHint: true` | `POST /api/bookings`; its description tells the assistant to confirm the details with its user first and to show them the privacy statement |
+| `find_available_times` | `link`, `type?`, `duration?`, `from?`, `to?`, `time_zone?` | `readOnlyHint: true`, `openWorldHint: true` | `GET /api/slots` |
+| `book_meeting` | `link`, `type?`, `duration?`, `start`, `name`, `email`, `notes?`, `time_zone?`, `via?`, `idempotency_key?` | `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false`, `openWorldHint: true` | `POST /api/bookings`; its description tells the assistant to confirm the details with its user first and to show them the privacy statement |
 | `get_booking` | `link`, `booking_id`, `key` | `readOnlyHint: true`, `openWorldHint: true` | `GET /api/bookings/<id>` |
 | `cancel_booking` | `link`, `booking_id`, `key` | `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true`, `openWorldHint: true` | `POST …/cancel` |
 | `reschedule_booking` | `link`, `booking_id`, `key`, `start`, `time_zone?` | `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false`, `openWorldHint: true` | `POST …/reschedule` |
 
-Every argument is a string. `link` is the page address or handle; `start` an ISO 8601 time with `Z` or an offset; `from` and `to` dates as `YYYY-MM-DD`.
+Every argument is a string. `link` is the page address or handle; `duration` the minutes, such as `"60"`; `start` an ISO 8601 time with `Z` or an offset; `from` and `to` dates as `YYYY-MM-DD`. `get_meeting_types` names each type's lengths and default in its text.
 
 #### `GET /booker.js`
 
-The pages' only script (`text/javascript`, served from the server itself for `script-src 'self'`), at `/booker.js` under `BOOKING_ORIGIN` (where `/assets/` belongs to the website) and at `/meet/assets/booker.js` without it. The pages work without it. On a page that used the host's zone or the locale's clock it loads the same address again with the browser's `tz` and the `clock` this browser chose before (kept in `localStorage`), from `<head>`, so times never show in the wrong zone first. It loads days and months without a full reload, swapping the zone picker along so its form keeps the chosen day, announces the new times in a live region, and puts the browser's zone in a form shown again after a refused booking. It loads nothing from elsewhere; any failure leaves the page as the server wrote it.
+The pages' only script (`text/javascript`, served from the server itself for `script-src 'self'`), at `/booker.js` under `BOOKING_ORIGIN` (where `/assets/` belongs to the website) and at `/meet/assets/booker.js` without it. The pages work without it. On a page that used the host's zone or the locale's clock it loads the same address again with the browser's `tz` and the `clock` this browser chose before (kept in `localStorage`), from `<head>`, so times never show in the wrong zone first. It loads days, months and lengths without a full reload, swapping the zone picker and the lengths along so their links and form keep the chosen day, announces the new times in a live region, and puts the browser's zone in a form shown again after a refused booking. It loads nothing from elsewhere; any failure leaves the page as the server wrote it.
 
 #### `GET /assets/fonts/<file>`
 
