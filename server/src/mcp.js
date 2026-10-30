@@ -439,7 +439,10 @@ function successText(name, body, host) {
           `${body.slots.length} open time${body.slots.length === 1 ? '' : 's'} for ${body.type} (${body.duration} minutes) from ${body.from} to ${body.to}, in ${body.time_zone}${body.needs_approval ? '; bookings wait for the host’s approval' : ''}:`
         );
         for (const s of body.slots) lines.push(`- ${s.start} (${s.start_utc})`);
-        lines.push('Show these in your user’s time zone. Send one start exactly as listed to book_meeting.');
+        // A type with several lengths: the same duration, also the default one, so the booking is the length these
+        // times are for even when the host changes the default in between.
+        const length = body.durations?.length > 1 ? `, with duration ${body.duration}` : '';
+        lines.push(`Show these in your user’s time zone. Send one start exactly as listed to book_meeting${length}.`);
       } else {
         lines.push(`No open times for ${body.type} from ${body.from} to ${body.to}.`);
         if (body.contact) lines.push(contactLine(host, body.contact));
@@ -453,12 +456,14 @@ function successText(name, body, host) {
       }
       const b = body.booking;
       const invites = body.invitation !== false;
+      // The length booked, so a model that left duration out or picked one still tells its user how long it is.
+      const what = `${b.type} at ${b.start} (${b.start_utc}), ${b.duration} minutes, until ${b.end}`;
       const lines = [
         b.status === 'pending'
-          ? `Requested, not confirmed yet: ${b.type} at ${b.start} (${b.start_utc}). The host confirms or declines; ${invites ? 'the invitation follows when they confirm' : 'the manage link shows the answer, and no invitation is sent'}. If they haven't by ${b.expires_at}, the request lapses.`
+          ? `Requested, not confirmed yet: ${what}. The host confirms or declines; ${invites ? 'the invitation follows when they confirm' : 'the manage link shows the answer, and no invitation is sent'}. If they haven't by ${b.expires_at}, the request lapses.`
           : invites
-            ? `Booked: ${b.type} at ${b.start} (${b.start_utc}). The host's calendar sends an invitation to the guest's email, usually within minutes; it can take longer while the host's computer is off. The booking holds either way.`
-            : `Booked: ${b.type} at ${b.start} (${b.start_utc}). The host's calendar doesn't send invitations, so give your user the manage link: it has the time and the way to change or cancel.`
+            ? `Booked: ${what}. The host's calendar sends an invitation to the guest's email, usually within minutes; it can take longer while the host's computer is off. The booking holds either way.`
+            : `Booked: ${what}. The host's calendar doesn't send invitations, so give your user the manage link: it has the time and the way to change or cancel.`
       ];
       if (body.key) lines.push(`Booking id ${b.id}, key ${body.key}: keep both to change or cancel. Manage link for your user: ${body.manage_url}`);
       if (body.ics_url) lines.push(`Calendar file: ${body.ics_url}`);

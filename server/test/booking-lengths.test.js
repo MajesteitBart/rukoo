@@ -205,12 +205,24 @@ describe('booking a length', () => {
     const found = await mcp('find_available_times', { link: `https://accounts.example/meet/${h.handle}/chat`, duration: '60', from: date, to: date });
     expect(found.body.result.structuredContent.duration).toBe(60);
     expect(found.body.result.content[0].text).toContain('8 open times for chat (60 minutes)');
+    // The model is told to send the same length back, also the default one, and the answer says which it got.
+    expect(found.body.result.content[0].text).toContain('Send one start exactly as listed to book_meeting, with duration 60.');
+    const plain = await mcp('find_available_times', { link: `https://accounts.example/meet/${h.handle}/chat`, from: date, to: date });
+    expect(plain.body.result.content[0].text).toContain('Send one start exactly as listed to book_meeting, with duration 30.');
     const start = found.body.result.structuredContent.slots[1].start;
     const booked = await mcp('book_meeting', { link: h.handle, type: 'chat', duration: '60', start, name: 'Jane Doe', email: 'jane@example.com' });
     expect(booked.body.result.isError).toBe(false);
-    expect(booked.body.result.structuredContent.booking.duration).toBe(60);
+    const made = booked.body.result.structuredContent.booking;
+    expect(made.duration).toBe(60);
+    expect(booked.body.result.content[0].text).toMatch(new RegExp(`^Booked: chat at ${made.start.replace(/\+/g, '\\+')} \\(${made.start_utc}\\), 60 minutes, until ${made.end.replace(/\+/g, '\\+')}\\. `));
     const types = await mcp('get_meeting_types', { link: h.handle });
     expect(types.body.result.content[0].text).toContain('15, 30 or 60 minutes (pick one with duration; default 30)');
+  });
+
+  it('keeps find_available_times as it was for a type with one length', async () => {
+    const h = await host(signup);
+    const found = await mcp('find_available_times', { link: h.handle });
+    expect(found.body.result.content[0].text).toContain('Send one start exactly as listed to book_meeting.');
   });
 });
 
