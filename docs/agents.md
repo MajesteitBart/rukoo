@@ -347,8 +347,9 @@ The permission level decides which of Rukoo's approval cards a chat shows. Setti
 | An event without guests on a calendar you own | Card | Goes ahead | Goes ahead |
 | An event with guests, or on a calendar someone shared with you | Card | Card | Goes ahead, and the guests get their invitation |
 | `propose_action`: sending a message, a task, a note, a record elsewhere | Card | Card | Goes ahead |
+| `write_draft`: a draft in the composer | Goes ahead | Goes ahead | Goes ahead |
 
-Auto goes ahead with what only you see and what you can undo. It asks before anything other people see or that is hard to take back. Full permission shows no cards at all. That includes messages and calendar invitations the agent sends, so pick it only for agents you trust completely. What goes ahead still shows in the chat: the notice of a mail action with its Undo, the event that was added, and "Allowed without asking" with what the agent proposed.
+A draft never gets a card: the composer is where you check it, nothing leaves until you send it, and the draft's card in the chat has Undo. Auto goes ahead with what only you see and what you can undo. It asks before anything other people see or that is hard to take back. Full permission shows no cards at all. That includes messages and calendar invitations the agent sends, so pick it only for agents you trust completely. What goes ahead still shows in the chat: the notice of a mail action with its Undo, the event that was added, and "Allowed without asking" with what the agent proposed.
 
 When the level isn't Ask, each message tells the agent the level, and the tools answer with the result instead of `waiting_for_user`. A chat set back to Ask says so once. Rukoo can't send email itself at any level; an agent sends through its own tools.
 

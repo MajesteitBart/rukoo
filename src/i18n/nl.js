@@ -1100,7 +1100,7 @@
   "settings.agents.accessFullHint": "Voert opdrachten uit zonder te vragen. Alleen voor agents die je volledig vertrouwt.",
   "settings.agents.permission": "Toestemmingsniveau",
   "settings.agents.permissionHelp": "Wat agents mogen doen zonder het je eerst te vragen. Een chat kan een eigen niveau kiezen met het schild naast Versturen. Opdrachten en bestandswijzigingen van Claude Code en Codex volgen hun eigen Toegang hieronder.",
-  "settings.agents.permissionAskHint": "Elke actie die iets verandert wacht op je akkoord: mailacties, afspraken en acties in andere systemen.",
+  "settings.agents.permissionAskHint": "Mailacties, afspraken en acties in andere systemen wachten op je akkoord. Concepten komen in het opstelvenster, waar je ze zelf controleert en verstuurt.",
   "settings.agents.permissionAutoHint": "Mail archiveren, verplaatsen, markeren en een ster geven, en afspraken zonder gasten in je eigen agenda's zetten, gebeuren zonder te vragen. Verwijderen, uitschrijven, uitnodigingen en acties in andere systemen wachten nog op jou.",
   "settings.agents.permissionFullHint": "Niets wacht op je akkoord. Agents kunnen berichten en agenda-uitnodigingen versturen, mail verwijderen en andere systemen wijzigen zonder te vragen. Alleen voor agents die je volledig vertrouwt.",
   "settings.agents.configDir": "Configuratiemap van Claude (optioneel)",

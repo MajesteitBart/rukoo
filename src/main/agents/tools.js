@@ -1449,7 +1449,15 @@ async function mailAction(hub, args, call) {
     if (!outcome) return stillRunning(c);
     if (outcome.error) throw outcome.error;
     const result = outcome.result;
-    return { conversation_id: c.id, status: 'done', done: result.done.length, failed: result.failed, undoable: result.undo.length > 0, summary: result.text };
+    // The summary can name a sender (an unsubscribe) and an error can quote a server: tagged, as in the notes.
+    return {
+      conversation_id: c.id,
+      status: 'done',
+      done: result.done.length,
+      failed: result.failed.map((f) => ({ id: f.id, error: unsafeInline(f.error, 'mail result') })),
+      undoable: result.undo.length > 0,
+      summary: unsafeInline(result.text, 'mail result')
+    };
   }
   const fields = ids.slice(0, 6).map((id) => {
     const m = cacheMessage(engine, id) || {};

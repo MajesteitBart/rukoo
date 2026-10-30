@@ -1575,7 +1575,9 @@ class AgentHub extends EventEmitter {
     if (turn.closed || turn.controller.signal.aborted) return handle.input;
     turn.newer = newer;
     const openMessage = this.openLine(c, newer);
-    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, newer, earlier: this.earlier(c, turn), attached: turn.attached, local: this.localAgent(c) });
+    // A new session knows only the instructions, which describe Ask: it hears of any other level here.
+    const permission = turn.permission && turn.permission !== 'ask' ? turn.permission : null;
+    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, newer, earlier: this.earlier(c, turn), attached: turn.attached, local: this.localAgent(c), permission });
     return handle.input;
   }
 

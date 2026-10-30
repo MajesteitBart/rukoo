@@ -4200,7 +4200,7 @@
     "description": "Settings, Agents page: explanation under the Permission level row. Access is the existing per-agent setting of Claude Code and Codex further down the page (settings.agents.access)."
   },
   "settings.agents.permissionAskHint": {
-    "message": "Every action that changes something waits for your approval: mail actions, calendar events and actions in other systems.",
+    "message": "Mail actions, calendar events and actions in other systems wait for your approval. Drafts go into the composer, where you check and send them yourself.",
     "description": "Settings, Agents page: explanation of the Ask choice in the Permission level dialog."
   },
   "settings.agents.permissionAutoHint": {
