@@ -1,4 +1,6 @@
 // Renders a mail body in a sandboxed iframe. Shared by the reader and the quote in the compose window.
+import { t } from './i18n.js';
+import { api, toast, showMenu, closeMenu } from './ui.js';
 
 // options: { light, darkEmails }
 export function frameDoc(m, { light = false, darkEmails = true } = {}) {
@@ -60,6 +62,91 @@ function clearCanvas(doc) {
   }
 }
 
+// A PNG of an image, for the clipboard. The data: URL comes from main, so the canvas is never tainted.
+async function pngOf(url) {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  canvas.getContext('2d').drawImage(img, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+const run = (work, done) =>
+  work.then((res) => res && done && toast(done)).catch((err) => toast(err.message, 5000));
+
+// Right-click in an email: what the pointer is on decides the items, in the order Chromium's own menu has them, links
+// first. The frame runs no script, so the menu is the app's; the clipboard, the downloads and the image viewer are main's.
+function frameMenu(frame, e) {
+  const doc = frame.contentDocument;
+  const el = e.target.nodeType === 1 ? e.target : e.target.parentElement;
+  if (!doc || !el) return;
+  e.preventDefault();
+  const link = el.closest('a[href]');
+  const href = link && /^(https?:|mailto:)/i.test(link.href) ? link.href : '';
+  const img = el.closest('img');
+  const src = img && /^(https?:|data:image\/)/i.test(img.currentSrc || img.src) ? img.currentSrc || img.src : '';
+  const selected = String(doc.getSelection() || '').trim();
+  const mailto = /^mailto:/i.test(href);
+  let address = mailto ? href.slice(7).split('?')[0] : '';
+  try {
+    address = decodeURIComponent(address);
+  } catch {
+    // A broken escape: the address as written.
+  }
+  const items = [];
+  if (href) {
+    items.push(
+      mailto
+        ? { icon: 'compose', label: t('composer.titles.new'), sub: address, action: () => api('openExternal', href) }
+        : { icon: 'globe', label: t('reader.content.openLink'), action: () => api('openExternal', href) },
+      {
+        icon: 'link',
+        label: mailto ? t('reader.address.copy') : t('reader.content.copyLink'),
+        action: () => run(api('copyText', mailto ? address : href), mailto ? t('reader.address.copied') : t('reader.content.linkCopied'))
+      },
+      { separator: true }
+    );
+  }
+  if (src) {
+    items.push(
+      { icon: 'image', label: t('reader.content.openImage'), action: () => run(api('openImage', src)) },
+      {
+        icon: 'copy',
+        label: t('reader.content.copyImage'),
+        action: () => run(api('imageData', src).then(pngOf).then((png) => api('copyImage', png)), t('reader.content.imageCopied'))
+      },
+      { icon: 'download', label: t('reader.content.saveImage'), action: () => run(api('saveImage', src), t('reader.content.imageSaved')) },
+      { separator: true }
+    );
+  }
+  // Copy is the frame's own, as Ctrl+C there: it needs the frame's focus back, which the menu took.
+  if (selected) {
+    items.push({
+      icon: 'copy',
+      label: t('reader.content.copy'),
+      shortcut: 'Ctrl+C',
+      action: () => {
+        frame.contentWindow.focus();
+        run(api('nativeEdit', 'copy'));
+      }
+    });
+  }
+  items.push({
+    icon: 'selectAll',
+    label: t('reader.content.selectAll'),
+    action: () => {
+      frame.contentWindow.focus();
+      doc.getSelection().selectAllChildren(doc.body);
+    }
+  });
+  // The event's position is inside the frame; the menu goes in the window around it.
+  const r = frame.getBoundingClientRect();
+  showMenu(frame, items, { at: { x: r.left + frame.clientLeft + e.clientX, y: r.top + frame.clientTop + e.clientY } });
+}
+
 // "Fit content to window" shrinks wide mail to no less than this.
 const MIN_ZOOM = 0.8;
 
@@ -114,6 +201,20 @@ export function fillFrame(frame, m, opts = {}) {
   if (doc.body) frame.observers[0].observe(doc.body);
   frame.observers[1].observe(frame);
   doc.defaultView.addEventListener('load', fit);
+  // A click in the frame never reaches the window's own listener that closes an open menu.
+  doc.addEventListener('mousedown', () => closeMenu());
+  doc.addEventListener('contextmenu', (e) => frameMenu(frame, e));
+  // Chromium's copy writes the computed text colour into the HTML it puts on the clipboard. Where that colour is
+  // the dark theme's light grey (frameDoc's mail that is not inverted), the copy would paste as nearly white text
+  // on a white page, so Ctrl+C and the menu's Copy take the plain text alone.
+  if (!opts.light && !(opts.darkEmails !== false && m.isHtml)) {
+    doc.addEventListener('copy', (e) => {
+      const text = String(doc.getSelection() || '');
+      if (!text || !e.clipboardData) return;
+      e.clipboardData.setData('text/plain', text);
+      e.preventDefault();
+    });
+  }
   doc.addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]');
     if (!a) return;
