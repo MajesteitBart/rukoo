@@ -42,6 +42,19 @@ pub trait UiSink: Send + Sync + 'static {
     fn notify(&self, notification: Notification);
     /// Theme, language or pill options changed; the app re-reads [`EngineApi::ui`].
     fn ui_changed(&self);
+    /// The pill didn't ack snapshot `seq` after a show or a phase change: 500 ms after it the
+    /// app nudges the window (resize by a pixel and raise it), after 2 s it builds a new window
+    /// and replays [`EngineApi::pill_snapshot`] (pill-settings-design.md 3.2, step 5).
+    fn pill_repair(&self, seq: u64, repair: PillRepair) {
+        let _ = (seq, repair);
+    }
+}
+
+/// What the app does to a pill window that didn't paint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PillRepair {
+    Nudge,
+    Rebuild,
 }
 
 /// `pill://snapshot` in API.md.

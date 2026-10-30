@@ -1879,8 +1879,16 @@ dependencies = [
 name = "voice-engine"
 version = "0.1.0"
 dependencies = [
+ "cpal",
  "serde",
  "serde_json",
+ "voice-audio",
+ "voice-bridge",
+ "voice-core",
+ "voice-input",
+ "voice-protocol",
+ "voice-recorder",
+ "windows",
 ]
 
 [[package]]
