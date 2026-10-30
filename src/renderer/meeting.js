@@ -972,7 +972,9 @@ async function setEvent(eventId) {
 // ---------- notes ----------
 
 // The notes editor saves a moment after typing stops and when it loses focus, with the revision it started from.
-const N = { id: null, rev: 0, dirty: false, saving: false, again: false, timer: null };
+// queued holds texts waiting while another save runs, by meeting: captured when the save was asked for, so opening
+// another meeting meanwhile can't lose what was typed in the one before.
+const N = { id: null, rev: 0, dirty: false, saving: false, queued: new Map(), timer: null };
 
 function fillNotes(d) {
   const area = $('.meeting .mt-notes-input');
@@ -1014,39 +1016,52 @@ function notesArrived(notes) {
 async function saveNotes() {
   clearTimeout(N.timer);
   if (!N.dirty || !N.id) return;
-  if (N.saving) {
-    N.again = true;
-    return;
-  }
   const area = $('.meeting .mt-notes-input');
   if (!area || $('.meeting')?.dataset.id !== N.id) return;
-  const id = N.id;
-  const text = area.value;
-  N.saving = true;
   N.dirty = false;
-  notesStatus(t('meeting.notes.saving'));
+  N.queued.set(N.id, { text: area.value, rev: N.rev });
+  if (!N.saving) await drainNotes();
+}
+
+// Saves the queued texts one at a time. A conflict is a save of this editor's own that crossed this one, because only
+// this editor writes a meeting's notes: it saves over it with the revision main has now.
+async function drainNotes() {
+  N.saving = true;
   try {
-    let res = await api('meetingSaveNotes', id, text, N.rev);
-    // Only this editor writes a meeting's notes, so a conflict is a save of its own that crossed this one: save
-    // over it with the revision main has now.
-    if (res && res.conflict) res = await api('meetingSaveNotes', id, text, res.rev);
-    if (res && !res.conflict && N.id === id) {
-      N.rev = res.rev;
-      if (M.data && M.data.meeting.id === id) M.data.notes = { text, rev: res.rev, updatedAt: Date.now() };
-    }
-    if (N.id === id) notesStatus(N.dirty ? '' : t('meeting.notes.saved'));
-  } catch (_) {
-    if (N.id === id) {
-      N.dirty = true;
-      notesStatus(t('meeting.notes.failed'), true);
+    while (N.queued.size) {
+      const [id, job] = N.queued.entries().next().value;
+      N.queued.delete(id);
+      if (N.id === id) notesStatus(t('meeting.notes.saving'));
+      try {
+        let res = await api('meetingSaveNotes', id, job.text, job.rev);
+        if (res && res.conflict) res = await api('meetingSaveNotes', id, job.text, res.rev);
+        if (res && !res.conflict) {
+          // A newer text queued meanwhile goes out with the revision this save made.
+          const next = N.queued.get(id);
+          if (next) next.rev = res.rev;
+          if (N.id === id) N.rev = res.rev;
+          if (M.data && M.data.meeting.id === id) M.data.notes = { text: job.text, rev: res.rev, updatedAt: Date.now() };
+        }
+        if (N.id === id) notesStatus(N.dirty || N.queued.has(id) ? '' : t('meeting.notes.saved'));
+      } catch (_) {
+        // Kept for the next try, unless something newer for that meeting is queued already.
+        if (!N.queued.has(id)) N.queued.set(id, job);
+        if (N.id === id) notesStatus(t('meeting.notes.failed'), true);
+        clearTimeout(N.timer);
+        N.timer = setTimeout(retryNotes, NOTES_WAIT);
+        return;
+      }
     }
   } finally {
     N.saving = false;
-    if (N.again || (N.dirty && N.id === id)) {
-      N.again = false;
-      N.timer = setTimeout(saveNotes, NOTES_WAIT);
-    }
   }
+  if (N.dirty && N.id) N.timer = setTimeout(saveNotes, NOTES_WAIT);
+}
+
+function retryNotes() {
+  if (N.saving) return;
+  if (N.dirty) saveNotes();
+  else if (N.queued.size) drainNotes();
 }
 
 // Leaving the meeting or the view: what was typed goes out now.

@@ -402,6 +402,37 @@ test('a meeting Rukoo Voice deletes keeps your notes, marked as deleted; one wit
   await expect(item('Kept for its notes')).toHaveCount(1);
 });
 
+test('notes typed while a save is still on its way are kept when another meeting opens', async () => {
+  const ended = (id, title, ago) => {
+    voice.append('meeting.started', id, { title, startedAt: Date.now() - ago, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null });
+    voice.append('meeting.state', id, { state: 'done', at: 60000, endedAt: Date.now() - ago + 60000 });
+    say(id, 'call', 1000, `A line from ${title}.`);
+  };
+  const first = voice.meetingId();
+  const second = voice.meetingId();
+  ended(first, 'First meeting', 3 * 60 * 60 * 1000);
+  ended(second, 'Second meeting', 2 * 60 * 60 * 1000);
+  await openMeetings();
+  const item = (title) => win.locator('.sidebar [data-mt-open]', { hasText: title });
+  await item('First meeting').click();
+  await expect(view().locator('.mt-title')).toHaveText('First meeting');
+  // Every save takes a while in main, so a second one has to wait for the first.
+  await app.evaluate(() => {
+    const v = global.__semVoice;
+    const save = v.saveNotes.bind(v);
+    v.saveNotes = (...args) => new Promise((resolve) => setTimeout(() => resolve(save(...args)), 800));
+  });
+  const input = view().locator('.mt-notes-input');
+  await input.fill('First line.');
+  await input.blur();
+  await input.fill('First line. Second line.');
+  await item('Second meeting').click();
+  await expect(view().locator('.mt-title')).toHaveText('Second meeting');
+  await expect.poll(() => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, first), { timeout: 10000 }).toBe('First line. Second line.');
+  await item('First meeting').click();
+  await expect(view().locator('.mt-notes-input')).toHaveValue('First line. Second line.');
+});
+
 test('without Rukoo Voice the view says to start it, and Settings > Meetings has both switches', async () => {
   await voice.close();
   voice.removeDiscovery();
