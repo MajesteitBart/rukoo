@@ -329,4 +329,21 @@ test('the quoted email in a reply keeps its own menu, and a right-click elsewher
   await finish(0);
   await win.waitForTimeout(300);
   expect(await labels(win)).toEqual(['Select all']);
+  await win.keyboard.press('Escape');
+  await expect(menu(win)).toHaveCount(0);
+
+  // The same with the quote's menu closed again before the answer comes: it is still newer, so the text's late answer
+  // opens nothing and leaves the focus where Escape put it.
+  await win.locator('.composer .editor').click({ button: 'right' });
+  await expect.poll(reads).toBe(2);
+  await quote.locator('body').click({ button: 'right', position: { x: 30, y: 10 } });
+  expect(await labels(win)).toEqual(['Select all']);
+  await win.keyboard.press('Escape');
+  await expect(menu(win)).toHaveCount(0);
+  const focused = () => win.evaluate(() => document.activeElement && document.activeElement.outerHTML.slice(0, 120));
+  const before = await focused();
+  await finish(1);
+  await win.waitForTimeout(300);
+  await expect(menu(win)).toHaveCount(0);
+  expect(await focused()).toBe(before);
 });
