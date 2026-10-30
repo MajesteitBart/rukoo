@@ -4,7 +4,7 @@
 
 Rukoo Mail is an open-source email client for Windows and Linux. A macOS build and an Android app are experimental. Mail, calendar and agent chat share one window. You connect your own mail accounts and your own agent: Hermes Agent, Claude Code, Codex or OpenClaw.
 
-The latest release is [2.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.0). It adds a full calendar, an overview of your free time and booking pages on meet.rukoo.io. It's also the first stable release with inbox categories and the Rukoo account, which arrived in the 2.0.0 pre-release.
+The latest release is [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1). It labels each email with its category in Inbox and search, lets a category stay out of Inbox, and turns notifications off per category. [2.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.0) added a full calendar, an overview of your free time and booking pages on meet.rukoo.io.
 
 ## Install
 
