@@ -408,6 +408,25 @@ describe('the booking form', () => {
     expect((await call('GET', `/meet/${h.handle}/30min?slot=${start}`)).text).not.toContain('name="duration"');
   });
 
+  it('shows a booking already made for that time and email at its own length, not the one picked now', async () => {
+    const h = await host(signup, { profile: { types: [CHAT] } });
+    const start = at(3, '10:00');
+    expect((await book(h.handle, { type: 'chat', start: iso(start), ...guest({ email: 'jane@example.com' }) })).status).toBe(201);
+    const fields = { start: slotOf(start), tz: ZONE, name: 'Jane Doe', email: 'jane@example.com' };
+    const res = await post(`/meet/${h.handle}/chat`, { ...fields, duration: '60' });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('You already booked this time with jane@example.com.');
+    expect(res.text).toContain('<span>30 min</span>');
+    expect(res.text).not.toContain('<span>1 h</span>');
+    expect(res.text).toContain('That booking lasts 30 min, not 1 h.');
+    const nl = await post(`/meet/${h.handle}/chat?lang=nl`, { ...fields, duration: '60', lang: 'nl' });
+    expect(decode(nl.text)).toContain('Die afspraak duurt 30 min, niet 1 uur.');
+    // At the same length the page only says it was booked.
+    const same = await post(`/meet/${h.handle}/chat`, { ...fields, duration: '30' });
+    expect(same.text).toContain('You already booked this time with jane@example.com.');
+    expect(same.text).not.toContain('That booking lasts');
+  });
+
   it('books nothing for a length the type no longer offers, and says so above the booker', async () => {
     const h = await host(signup, { profile: { types: [CHAT] } });
     const res = await post(`/meet/${h.handle}/chat`, { start: slotOf(at(3, '10:00')), duration: '45', tz: ZONE, name: 'Jane Doe', email: 'jane@example.com' });

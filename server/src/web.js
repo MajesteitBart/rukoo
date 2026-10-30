@@ -526,7 +526,15 @@ async function bookPost(request, env, url, handle, slug) {
   const result = await createBooking(env, handle, booking, { url, channel: 'web', idempotencyKey: idem, network: clientNetwork(request), locale: ctx.lang });
   if (result.ok) {
     if (result.key) return seeOther(href(`${ctx.base}/booking/${result.booking.id}`, { k: result.key, tz: booking.timeZone, lang: ctx.keep.lang, clock: ctx.keep.clock }));
-    const body = pages.alreadyHtml(ctx, { profile, type, start: result.booking.start, end: result.booking.end, email: booking.email });
+    // The booking already there has its own length, which can differ from the one picked now.
+    const body = pages.alreadyHtml(ctx, {
+      profile,
+      type: movingType(listed, result.booking),
+      picked: type.duration,
+      start: result.booking.start,
+      end: result.booking.end,
+      email: booking.email
+    });
     return respond(ctx, request, 200, body, { noindex: true });
   }
   const host = profile.name;

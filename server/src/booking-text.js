@@ -92,6 +92,7 @@ export const TEXT = {
     'form.badLength': 'That length isn’t offered any more. Pick a length and a time below.',
     'form.already': 'You already booked this time with {email}. The page you saw after booking has the link to change it, and the invitation comes from {host}’s calendar.',
     'form.alreadyNoInvitation': 'You already booked this time with {email}. The page you saw after booking has the link to change it.',
+    'form.alreadyLength': 'That booking lasts {length}, not {picked}.',
 
     'error.name': 'Fill in your name: up to 80 characters, on one line.',
     'error.email': 'Fill in an email address, such as jane@example.com.',
@@ -228,6 +229,7 @@ export const TEXT = {
     'form.badLength': 'Die duur wordt niet meer aangeboden. Kies hieronder een duur en een tijd.',
     'form.already': 'Je hebt deze tijd al geboekt met {email}. Op de pagina die je na het boeken zag, staat de link om de afspraak te wijzigen. De uitnodiging komt uit de agenda van {host}.',
     'form.alreadyNoInvitation': 'Je hebt deze tijd al geboekt met {email}. Op de pagina die je na het boeken zag, staat de link om de afspraak te wijzigen.',
+    'form.alreadyLength': 'Die afspraak duurt {length}, niet {picked}.',
 
     'error.name': 'Vul je naam in: maximaal 80 tekens, op één regel.',
     'error.email': 'Vul een e-mailadres in, zoals jan@voorbeeld.nl.',

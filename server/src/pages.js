@@ -803,13 +803,18 @@ function bookFormHtml(ctx, v, path, other) {
 }
 
 // After a booking for the same time and email as an active one: no key comes back, so the page says where it is.
-export function alreadyHtml(ctx, { profile, type, start, end, email }) {
+// type is at the length of the booking already there; picked, the length the form was for, when it differs, is named.
+export function alreadyHtml(ctx, { profile, type, picked = null, start, end, email }) {
   const path = `${ctx.base}/${type.slug}`;
+  const notice = [esc(ctx.T(profile.invites === false ? 'form.alreadyNoInvitation' : 'form.already', { email, host: profile.name }))];
+  if (picked !== null && picked !== type.duration) {
+    notice.push(esc(ctx.T('form.alreadyLength', { length: lengthText(ctx, type.duration), picked: lengthText(ctx, picked) })));
+  }
   const main = [
     '<div class="card split">',
     infoHtml(ctx, { profile, type, back: href(ctx.base, ctx.keep), approval: false, when: { start, end } }),
     '<div class="side">',
-    noticeHtml([esc(ctx.T(profile.invites === false ? 'form.alreadyNoInvitation' : 'form.already', { email, host: profile.name }))]),
+    noticeHtml(notice),
     `<p class="small"><a href="${esc(href(path, ctx.keep))}">${esc(ctx.T('form.other'))}</a></p>`,
     '</div>',
     '</div>'
