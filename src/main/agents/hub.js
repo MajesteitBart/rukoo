@@ -100,8 +100,8 @@ const normId = (v) => String(v || '').trim().replace(/^<|>$/g, '').toLowerCase()
 
 // What a chat about a Rukoo Voice meeting keeps of it: the id, the title and linked event when the chat started, and
 // readSeq, how far the agent has read the transcript (read_meeting_transcript's cursor, in the voice store's change
-// numbers). null for anything else. paging, where a read from the start that goes on page by page stopped, is left
-// out: after a restart that read moves the cursor no more.
+// numbers). null for anything else. paging, the places where reads that go on page by page stopped (up to eight), is
+// left out: after a restart those reads start over and move the cursor no more.
 function meetingRef(m) {
   if (!isObj(m) || !isMeetingId(m.id)) return null;
   return {
