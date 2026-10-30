@@ -4,7 +4,7 @@
 
 Rukoo Mail is an open-source email client for Windows and Linux. A macOS build and an Android app are experimental. Mail, calendar and agent chat share one window. You connect your own mail accounts and your own agent: Hermes Agent, Claude Code, Codex or OpenClaw.
 
-The latest release is [2.1.2](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2). It answers calendar invitations from the email, opens .ics files and adds a right-click menu for links, images and text in an email. [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1) labeled each email with its category and let a category stay out of Inbox or stay quiet. [2.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.0) added a full calendar, an overview of your free time and booking pages on meet.rukoo.io.
+The latest release is [2.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0). It shows meetings recorded with Rukoo Voice live next to your agent, gives each agent chat a permission level and lets you steer or queue a message while the agent works. [2.1.2](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2) answered calendar invitations from the email, opened .ics files and added a right-click menu for links, images and text in an email. [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1) labeled each email with its category and let a category stay out of Inbox or stay quiet.
 
 ## Install
 
@@ -53,6 +53,14 @@ More in [Calendar](docs/calendar.md) and [Booking page](docs/booking.md).
 - `/name` in the chat starts a skill in the Agent Skills format, from Rukoo's own set or from your skills folder.
 
 More in [Agents](docs/agents.md).
+
+### Meetings
+
+- Rukoo Voice, a companion app for Windows, records a meeting's microphone and call audio and transcribes it while you talk. Rukoo shows the transcript in the meeting view (`Ctrl+3`), next to the agent chat.
+- Start a recording from a calendar event, the meeting view or Voice. Name the voices from the event's guests and keep your own notes next to the transcript.
+- Your agent reads the meeting through Rukoo's MCP tools, as untrusted content, and can't start or stop a recording. While a meeting records, Rukoo keeps its windows out of screen recordings and screen shares on Windows and macOS.
+
+More in [Meetings](docs/meetings.md) and [Rukoo Voice](voice/README.md).
 
 ### Across devices
 

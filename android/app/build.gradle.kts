@@ -23,8 +23,8 @@ android {
         applicationId = "nl.bvdm.rukoo"
         minSdk = 31
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
         // The in-memory preview mail engine and agent hub stand in until the real ones land; the mail and
         // agent tracks turn these off (debug builds can keep the preview for screenshots).
         buildConfigField("boolean", "USE_PREVIEW_MAIL", "false")
