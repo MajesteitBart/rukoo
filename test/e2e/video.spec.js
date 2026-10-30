@@ -137,7 +137,7 @@ test('a meeting type with Jitsi gives each booking its own room in the event, an
   await expect(form.locator('[name="locationLabel"]')).toHaveAttribute('placeholder', 'Jitsi Meet');
   await form.locator('button[type=submit]').click();
   await expect(win.locator('#toast')).toHaveText('Saved', { timeout: 15000 });
-  await expect(page().locator('[data-a="booking-type:0"] .desc')).toHaveText(/ · Jitsi Meet$/);
+  await expect(page().locator('[data-a="booking-type:0"] .desc')).toHaveText(/ · Jitsi Meet$/);
   expect(server.pages.get(HANDLE).profile.types[0].location).toEqual({ kind: 'link', label: 'Jitsi Meet' });
 
   const start = slot(3, 10);
