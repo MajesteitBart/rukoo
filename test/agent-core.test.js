@@ -124,13 +124,18 @@ async function demo() {
   return { dir, engine, acc };
 }
 
+// Each test's own agent workspace. By default it sits beside the data folder, which for a test is the system's temp
+// folder: every hub of every test file running at the same time would share it, and the start-up clean-up of one
+// would remove the chat files of the others.
+const workspaceOf = (env) => path.join(env.dir, 'workspace');
+
 function fakeHub(env, extra = {}) {
   const make = (opts) => new FakeAdapter({ ...opts, scale: 0.02 });
   const hub = new AgentHub({
     engine: env.engine,
     dataDir: env.dir,
     secrets,
-    deps: { appVersion: '1.0.0', unsubscribe: async () => ({ done: true }), ...extra.deps },
+    deps: { appVersion: '1.0.0', workspace: workspaceOf(env), unsubscribe: async () => ({ done: true }), ...extra.deps },
     adapters: extra.adapters || { clark: make, claude: make, codex: make },
     listen: false
   });
@@ -1966,7 +1971,7 @@ test('adapter modules load one by one: a broken one only marks that agent unknow
   ];
   const fakeEnv = process.env.SEM_AGENT_FAKE;
   delete process.env.SEM_AGENT_FAKE;
-  const hub = new AgentHub({ engine: env.engine, dataDir: env.dir, deps: {}, listen: false });
+  const hub = new AgentHub({ engine: env.engine, dataDir: env.dir, deps: { workspace: workspaceOf(env) }, listen: false });
   try {
     await hub.start();
     if (fakeEnv !== undefined) process.env.SEM_AGENT_FAKE = fakeEnv;
