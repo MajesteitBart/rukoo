@@ -7,7 +7,7 @@ import { call, randomIp, signup } from './helpers.js';
 import { DAY, HOUR, MINUTE, ORIGIN, book, guest, host, iso, meetingType, newHandle, page, publish, slotAhead } from './booking-helpers.js';
 import { BOOKER_JS } from '../src/booker-script.js';
 import { MEET_CSP } from '../src/http.js';
-import { CSS } from '../src/pages.js';
+import { CSS, addMonths } from '../src/pages.js';
 import { listSlots } from '../src/public.js';
 import { addDays, zonedInstant, zonedParts } from '../src/zone.js';
 
@@ -296,6 +296,10 @@ describe('the landing page', () => {
 
 describe('the booker', () => {
   it('shows a month, its open days as links and the chosen day’s times; refuses nothing it can’t read', async () => {
+    // Today at noon, frozen. The page and the expected arrows read one clock, so a month can't end between them, and
+    // on a month's last evening this month still has times for the junk months below to fall back to.
+    const now = zonedInstant(amsterdam(Date.now()).date, '12:00', 'Europe/Amsterdam');
+    vi.setSystemTime(now);
     const { handle } = await host(signup);
     const day = amsterdam(slotAhead(3)).date;
     const month = day.slice(0, 7);
@@ -311,10 +315,13 @@ describe('the booker', () => {
     expect(times).toHaveLength(16);
     expect(times[0]).toEqual({ href: `/meet/${handle}/30min?slot=${slotOf(zonedInstant(day, '09:00', 'Europe/Amsterdam'))}`, text: '09:00' });
     expect(html).toMatch(/<section class="times" data-status="16 open times on \w+ \d+ \w+">/);
-    // This month has no earlier month to go to; the next month is a link.
-    expect(html).toContain('<span class="nav" aria-hidden="true">');
-    const nextMonth = `${month.slice(0, 5)}${String((Number(month.slice(5)) % 12) + 1).padStart(2, '0')}`;
-    if (!month.endsWith('-12')) expect(html).toContain(`href="/meet/${handle}/30min?month=${nextMonth}" data-swap="next"`);
+    // The arrows reach from this month to the month the booking window ends in. Late in a month the day three days
+    // ahead is in the next one, which then has an earlier month and, the window ending before it does, no later one.
+    const hasPrev = month > amsterdam(now).date.slice(0, 7);
+    const hasNext = month < amsterdam(now + meetingType().horizon * DAY).date.slice(0, 7);
+    expect(html.includes(`href="/meet/${handle}/30min?month=${addMonths(month, -1)}" data-swap="prev"`)).toBe(hasPrev);
+    expect(html.includes(`href="/meet/${handle}/30min?month=${addMonths(month, 1)}" data-swap="next"`)).toBe(hasNext);
+    expect(html.split('<span class="nav" aria-hidden="true">').length - 1).toBe(Number(!hasPrev) + Number(!hasNext));
     // Junk in the query is left out; the page still opens at the first day with times.
     for (const query of ['month=2026-13', 'date=2026-02-30', 'month=../../x', 'date=<b>', 'month=1999-01', 'month=2999-01&date=2999-01-01']) {
       const page2 = await call('GET', `/meet/${handle}/30min?${query}`);
