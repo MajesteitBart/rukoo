@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/voice-protocol",
+  "crates/voice-audio",
+  "crates/voice-recorder",
+  "crates/voice-core",
+  "crates/voice-input",
+  "crates/voice-local",
+  "crates/voice-meetings",
+  "crates/voice-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/MajesteitBart/rukoo"
+rust-version = "1.85"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "symbols"

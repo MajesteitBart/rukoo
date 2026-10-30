@@ -1,0 +1,14 @@
+[package]
+name = "voice-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "rukoo-voice-local"
+path = "src/main.rs"
+
+[dependencies]
