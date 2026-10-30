@@ -127,6 +127,7 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 
 - `pill.stopButton`: the title of the native stop window, which screen readers announce.
 - `settings.title`: the Settings window's title.
+- `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`.
 - `app.tray.tooltip`, `app.tray.tooltipRecording`, `app.tray.settings`, `app.tray.startMeeting`, `app.tray.pauseMeeting`, `app.tray.resumeMeeting`, `app.tray.stopMeeting`, `app.tray.quit`: the tray.
 
 `test/voice-ui-i18n.test.js` checks that every key in this list exists in both catalogs.
