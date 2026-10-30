@@ -190,6 +190,19 @@ test('welcome: another instance resets the cursor, a gap or full replay goes bac
   assert.ok(s.meeting(M), 'the meetings Rukoo has stay');
 });
 
+test('a replay whose numbers skip, because Voice keeps only the newest status, applies and moves the cursor', () => {
+  const s = store();
+  s.welcome({ type: 'welcome', protocol: 1, voiceVersion: '0.1.0', instance: 'Vb3kQ9m2X7pL1sR4tY8wZQ', head: 9, oldest: 3, replay: 'full', status: { recording: null, dictating: false } });
+  assert.equal(s.cursor().after, 2);
+  // Status events 1, 2, 4, 5, 6 and 8 were replaced by 9.
+  s.apply({ ...started(), seq: 3 });
+  s.apply({ ...passage('call', 1000, 'First.'), seq: 7 });
+  s.apply({ ...ev('status', null, { recording: null, dictating: true }), seq: 9 });
+  assert.equal(s.cursor().after, 9);
+  assert.deepEqual(s.status(), { recording: null, dictating: true });
+  assert.deepEqual(s.meeting(M).passages.map((p) => p.text), ['First.']);
+});
+
 test("a snapshot replaces the lists with Voice's current ones and leaves out what doesn't pass the protocol's checks", () => {
   const s = store();
   for (const e of script().slice(0, 6)) s.apply(e);

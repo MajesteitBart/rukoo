@@ -1,9 +1,11 @@
 //! The WebSocket server of PROTOCOL.md on `127.0.0.1`.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc as std_mpsc, Arc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::stream::{SplitSink, SplitStream};
@@ -71,6 +73,96 @@ impl Default for Options {
     }
 }
 
+/// A client that sent the token: what its `hello` said, and how far it has read since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Client {
+    /// `client` from its hello, such as `rukoo`.
+    pub client: String,
+    pub client_version: Option<String>,
+    /// The protocol version the connection speaks.
+    pub protocol: u32,
+    /// `after` from its hello: the last event it had seen.
+    pub after: u64,
+    /// The highest sequence number the client has: sent on this connection, or `after` before
+    /// the replay sent anything.
+    pub sent: u64,
+    /// When it connected, in ms since the epoch.
+    pub connected_at: u64,
+}
+
+/// A `hello` the server turned away for its token or its protocol version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused {
+    pub refusal: Refusal,
+    /// The version the client asked for, when it was a whole number.
+    pub protocol: Option<u64>,
+    pub client: Option<String>,
+    pub client_version: Option<String>,
+    /// When, in ms since the epoch.
+    pub at: u64,
+}
+
+/// Who is connected now, and the newest refused `hello`, for Settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Clients {
+    /// Oldest connection first.
+    pub connected: Vec<Client>,
+    /// The newest hello this server refused for its token or its version.
+    pub refused: Option<Refused>,
+    /// When a client with the token last connected, in ms since the epoch: a refusal before it
+    /// is history.
+    pub last_admitted_at: Option<u64>,
+}
+
+/// The connected clients, kept for [`Handle::clients`].
+#[derive(Default)]
+struct Registry {
+    next: u64,
+    connected: BTreeMap<u64, Arc<Entry>>,
+    refused: Option<Refused>,
+    last_admitted_at: Option<u64>,
+}
+
+struct Entry {
+    client: Client,
+    sent: AtomicU64,
+}
+
+/// Removes a connection from the registry when its task ends, also when it is aborted.
+struct Registered {
+    registry: Arc<Mutex<Registry>>,
+    id: u64,
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        lock(&self.registry).connected.remove(&self.id);
+    }
+}
+
+fn lock(registry: &Mutex<Registry>) -> std::sync::MutexGuard<'_, Registry> {
+    registry.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a refused hello said about its client, as far as it could be read.
+#[derive(Default)]
+struct Said {
+    protocol: Option<u64>,
+    client: Option<String>,
+    client_version: Option<String>,
+}
+
+impl Said {
+    fn of(value: &Value) -> Said {
+        let text = |key: &str| value[key].as_str().map(str::to_owned);
+        Said {
+            protocol: value["protocol"].as_u64(),
+            client: text("client"),
+            client_version: text("clientVersion"),
+        }
+    }
+}
+
 /// Starts the bridge server.
 pub struct BridgeServer;
 
@@ -102,13 +194,14 @@ impl BridgeServer {
             .enable_all()
             .build()?;
         match serve(&runtime, log, control, discovery_path, version, options) {
-            Ok((port, discovery, shutdown, server)) => Ok(Handle {
+            Ok((port, discovery, shutdown, server, registry)) => Ok(Handle {
                 port,
                 discovery_path: discovery_path.to_owned(),
                 discovery: Some(discovery),
                 shutdown,
                 server: Some(server),
                 runtime: Some(runtime),
+                registry,
             }),
             Err(e) => {
                 // Dropping a runtime blocks, which panics inside an async task.
@@ -119,7 +212,13 @@ impl BridgeServer {
     }
 }
 
-type Started = (u16, Discovery, watch::Sender<bool>, JoinHandle<()>);
+type Started = (
+    u16,
+    Discovery,
+    watch::Sender<bool>,
+    JoinHandle<()>,
+    Arc<Mutex<Registry>>,
+);
 
 fn serve(
     runtime: &Runtime,
@@ -147,6 +246,7 @@ fn serve(
         voice_version: version.to_owned(),
         started_at: now_ms(),
     };
+    let registry = Arc::new(Mutex::new(Registry::default()));
     let shared = Arc::new(Shared {
         log,
         control,
@@ -155,12 +255,13 @@ fn serve(
         options,
         clients: Arc::new(Semaphore::new(MAX_CLIENTS)),
         pending: Arc::new(Semaphore::new(MAX_PENDING)),
+        registry: registry.clone(),
     });
     let (shutdown, quit) = watch::channel(false);
     let server = runtime.spawn(accept(listener, shared, quit));
     // The file comes last: Rukoo may connect the moment it appears.
     match Discovery::write(discovery_path, &file) {
-        Ok(discovery) => Ok((port, discovery, shutdown, server)),
+        Ok(discovery) => Ok((port, discovery, shutdown, server, registry)),
         Err(e) => {
             let _ = shutdown.send(true);
             Err(e)
@@ -176,9 +277,27 @@ pub struct Handle {
     shutdown: watch::Sender<bool>,
     server: Option<JoinHandle<()>>,
     runtime: Option<Runtime>,
+    registry: Arc<Mutex<Registry>>,
 }
 
 impl Handle {
+    /// The clients connected now, and the newest hello refused for its token or version.
+    pub fn clients(&self) -> Clients {
+        let registry = lock(&self.registry);
+        Clients {
+            connected: registry
+                .connected
+                .values()
+                .map(|entry| Client {
+                    sent: entry.sent.load(Ordering::SeqCst),
+                    ..entry.client.clone()
+                })
+                .collect(),
+            refused: registry.refused.clone(),
+            last_admitted_at: registry.last_admitted_at,
+        }
+    }
+
     /// The port on `127.0.0.1`.
     pub fn port(&self) -> u16 {
         self.port
@@ -227,6 +346,50 @@ struct Shared {
     options: Options,
     clients: Arc<Semaphore>,
     pending: Arc<Semaphore>,
+    registry: Arc<Mutex<Registry>>,
+}
+
+impl Shared {
+    /// Keeps a client that was admitted, until its connection ends.
+    fn register(&self, hello: &Hello) -> (Arc<Entry>, Registered) {
+        let entry = Arc::new(Entry {
+            client: Client {
+                client: hello.client.clone(),
+                client_version: hello.client_version.clone(),
+                protocol: hello.protocol,
+                after: hello.after,
+                sent: hello.after,
+                connected_at: now_ms(),
+            },
+            sent: AtomicU64::new(hello.after),
+        });
+        let mut registry = lock(&self.registry);
+        registry.last_admitted_at = Some(entry.client.connected_at);
+        registry.next += 1;
+        let id = registry.next;
+        registry.connected.insert(id, entry.clone());
+        let registered = Registered {
+            registry: self.registry.clone(),
+            id,
+        };
+        (entry, registered)
+    }
+
+    /// Remembers a hello refused for its token or version, so Settings can say why Rukoo isn't
+    /// connected. Other refusals don't come from a client that said hello.
+    fn note_refusal(&self, refusal: Refusal, said: Option<Said>) {
+        let Some(said) = said else { return };
+        if !matches!(refusal, Refusal::BadToken | Refusal::UnsupportedProtocol) {
+            return;
+        }
+        lock(&self.registry).refused = Some(Refused {
+            refusal,
+            protocol: said.protocol,
+            client: said.client,
+            client_version: said.client_version,
+            at: now_ms(),
+        });
+    }
 }
 
 async fn accept(listener: TcpListener, shared: Arc<Shared>, mut quit: watch::Receiver<bool>) {
@@ -271,15 +434,23 @@ async fn connection(
     };
     let (sink, mut source) = socket.split();
     let admitted = match timeout_at(deadline, first_message(&mut source)).await {
-        Err(_) => Err(Refusal::HelloTimeout),
+        Err(_) => Err((Refusal::HelloTimeout, None)),
         Ok(First::Closed) => return,
-        Ok(First::Refused(refusal)) => Err(refusal),
+        Ok(First::Refused(refusal, said)) => Err((refusal, said)),
         Ok(First::Hello(hello)) => admit(&shared, hello),
     };
     drop(pending);
     match admitted {
-        Err(refusal) => refuse(sink, source, refusal).await,
-        Ok((hello, _slot)) => Session::new(shared, sink, quit).run(hello, source).await,
+        Err((refusal, said)) => {
+            shared.note_refusal(refusal, said);
+            refuse(sink, source, refusal).await
+        }
+        Ok((hello, _slot)) => {
+            let (entry, _registered) = shared.register(&hello);
+            Session::new(shared, sink, quit, entry)
+                .run(hello, source)
+                .await
+        }
     }
 }
 
@@ -319,7 +490,8 @@ fn refuse_upgrade(status: StatusCode) -> ErrorResponse {
 
 enum First {
     Hello(Hello),
-    Refused(Refusal),
+    /// With what the hello said, when the first message was one.
+    Refused(Refusal, Option<Said>),
     Closed,
 }
 
@@ -328,42 +500,52 @@ async fn first_message(source: &mut Source) -> First {
         let text = match frame {
             Ok(Frame::Text(text)) => text,
             Ok(Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_)) => continue,
-            Ok(Frame::Binary(_)) => return First::Refused(Refusal::HelloTimeout),
+            Ok(Frame::Binary(_)) => return First::Refused(Refusal::HelloTimeout, None),
             Ok(Frame::Close(_)) | Err(_) => return First::Closed,
         };
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            return First::Refused(Refusal::HelloTimeout);
+            return First::Refused(Refusal::HelloTimeout, None);
         };
         return match validate_incoming(Side::Rukoo, &value) {
             Ok(Message::Hello(hello)) => First::Hello(hello),
             // A hello with a malformed token or version gets the answer a wrong one gets.
-            Err(invalid) if value["type"] == "hello" => {
-                First::Refused(match invalid.reason.as_str() {
+            Err(invalid) if value["type"] == "hello" => First::Refused(
+                match invalid.reason.as_str() {
                     "token" => Refusal::BadToken,
                     "protocol" => Refusal::UnsupportedProtocol,
                     _ => Refusal::HelloTimeout,
-                })
-            }
-            Ok(_) | Err(_) => First::Refused(Refusal::HelloTimeout),
+                },
+                Some(Said::of(&value)),
+            ),
+            Ok(_) | Err(_) => First::Refused(Refusal::HelloTimeout, None),
         };
     }
     First::Closed
 }
 
-fn admit(shared: &Shared, hello: Hello) -> Result<(Hello, OwnedSemaphorePermit), Refusal> {
+type Admitted = Result<(Hello, OwnedSemaphorePermit), (Refusal, Option<Said>)>;
+
+fn admit(shared: &Shared, hello: Hello) -> Admitted {
+    let said = || {
+        Some(Said {
+            protocol: Some(u64::from(hello.protocol)),
+            client: Some(hello.client.clone()),
+            client_version: hello.client_version.clone(),
+        })
+    };
     let token_matches: bool = hello.token.as_bytes().ct_eq(shared.token.as_bytes()).into();
     if !token_matches {
-        return Err(Refusal::BadToken);
+        return Err((Refusal::BadToken, said()));
     }
     if !(MIN_PROTOCOL..=PROTOCOL).contains(&hello.protocol) {
-        return Err(Refusal::UnsupportedProtocol);
+        return Err((Refusal::UnsupportedProtocol, said()));
     }
     // Only a client with the token takes a slot, so a program without it can't keep Rukoo out.
     let slot = shared
         .clients
         .clone()
         .try_acquire_owned()
-        .map_err(|_| Refusal::TooManyClients)?;
+        .map_err(|_| (Refusal::TooManyClients, said()))?;
     Ok((hello, slot))
 }
 
@@ -404,16 +586,29 @@ struct Session {
     quit: watch::Receiver<bool>,
     /// The highest sequence number sent on this connection.
     last: u64,
+    client: Arc<Entry>,
 }
 
 impl Session {
-    fn new(shared: Arc<Shared>, sink: Sink, quit: watch::Receiver<bool>) -> Session {
+    fn new(
+        shared: Arc<Shared>,
+        sink: Sink,
+        quit: watch::Receiver<bool>,
+        client: Arc<Entry>,
+    ) -> Session {
         Session {
             shared,
             sink,
             quit,
             last: 0,
+            client,
         }
+    }
+
+    /// The client has every event up to `seq`.
+    fn reached(&mut self, seq: u64) {
+        self.last = seq;
+        self.client.sent.store(seq, Ordering::SeqCst);
     }
 
     async fn run(mut self, hello: Hello, mut source: Source) {
@@ -463,7 +658,7 @@ impl Session {
             status,
         };
         self.send(Message::Welcome(welcome).to_json()).await?;
-        self.last = from.saturating_sub(1);
+        self.reached(from.saturating_sub(1));
         self.catch_up().await?;
 
         let (jobs, queue) = mpsc::channel(COMMAND_QUEUE);
@@ -518,6 +713,7 @@ impl Session {
                     Ok(stored) if stored.seq == self.last + 1 => {
                         self.last = stored.seq;
                         self.send(stored.to_json()).await?;
+                        self.reached(stored.seq);
                     }
                     // A burst outran the channel, or an event went missing in it: the log has
                     // every event that still exists.
@@ -557,6 +753,8 @@ impl Session {
                 self.last = stored.seq;
             }
             self.sink.flush().await.map_err(|_| End::Dropped)?;
+            let last = self.last;
+            self.reached(last);
             if !more {
                 return Ok(());
             }

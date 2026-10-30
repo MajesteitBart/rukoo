@@ -102,15 +102,15 @@ Voice sends events. Every event has a sequence number, and Voice stores events, 
 { "type": "event", "seq": 1042, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000123, "data": { } }
 ```
 
-- `seq` starts at 1 and goes up by one for every event, across restarts of Voice. Only a new data folder, which brings a new `instance`, starts it again.
+- `seq` starts at 1 and goes up with every event, across restarts of Voice. Only a new data folder, which brings a new `instance`, starts it again. A number is never given out twice.
 - `meeting` is there for meeting events and missing for the others.
 - Applying an event twice gives the same result. Things with an id replace the earlier version with the same id.
 - Rukoo ignores event types it doesn't know.
-- Voice keeps a meeting's events as long as it keeps the meeting. `oldest` in `welcome` is the lowest stored number.
+- Voice keeps a meeting's events as long as it keeps the meeting. Of the `status` events it keeps only the newest: a new one replaces the stored one. So the numbers in a replay can skip, and Rukoo doesn't expect them to follow each other. `oldest` in `welcome` is the lowest stored number.
 
 ### `status`
 
-What Voice is doing right now. `welcome` carries the same object.
+What Voice is doing right now. `welcome` carries the same object. Every dictation sends two, so Voice stores only the newest.
 
 ```json
 { "recording": "m-20261030-171203-4f2a", "dictating": false }

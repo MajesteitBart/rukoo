@@ -592,3 +592,81 @@ fn events_keep_flowing_while_a_command_runs() {
     client.read_reply("c-1");
     client.read_reply("c-2");
 }
+
+#[test]
+fn the_handle_reports_its_clients_and_the_last_refused_hello() {
+    let bridge = Bridge::start("server-clients-info");
+    let handle = bridge.handle.as_ref().unwrap();
+    assert_eq!(handle.clients(), voice_bridge::Clients::default());
+    fill(&bridge.log, A, 3);
+    let instance = bridge.log.instance().to_owned();
+    let (mut client, _) = bridge.client(Some(&instance), 1);
+    assert_eq!(seqs(&mut client, 2), [2, 3]);
+    // The server counts an event as sent once it has written it; the status reply comes after.
+    assert!(read_until_status_reply(&mut client, "c-1").is_empty());
+    let clients = handle.clients();
+    assert_eq!(clients.connected.len(), 1);
+    let rukoo = &clients.connected[0];
+    assert_eq!(
+        (
+            rukoo.client.as_str(),
+            rukoo.client_version.as_deref(),
+            rukoo.protocol,
+            rukoo.after,
+            rukoo.sent
+        ),
+        ("rukoo", Some("2.2.0"), 1, 1, 3)
+    );
+    bridge
+        .log
+        .append("passage", Some(A), passage(9000))
+        .unwrap();
+    assert_eq!(seqs(&mut client, 1), [4]);
+    assert!(read_until_status_reply(&mut client, "c-2").is_empty());
+    assert_eq!(handle.clients().connected[0].sent, 4);
+    assert_eq!(handle.clients().last_admitted_at, Some(rukoo.connected_at));
+
+    // A wrong token and a version Voice doesn't speak are remembered; a client that never said
+    // hello isn't.
+    let mut stranger = Client::connect(bridge.port());
+    stranger.hello("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", None, 0);
+    assert_eq!(stranger.read_refusal().0, "bad_token");
+    let refused = handle.clients().refused.unwrap();
+    assert_eq!(
+        (
+            refused.refusal,
+            refused.protocol,
+            refused.client.as_deref(),
+            refused.client_version.as_deref()
+        ),
+        (
+            voice_protocol::Refusal::BadToken,
+            Some(1),
+            Some("rukoo"),
+            Some("2.2.0")
+        )
+    );
+    let mut newer = Client::connect(bridge.port());
+    newer.send(json!({ "type": "hello", "protocol": 3, "token": bridge.token(), "client": "rukoo", "clientVersion": "9.0.0", "instance": null, "after": 0 }));
+    assert_eq!(newer.read_refusal().0, "unsupported_protocol");
+    let refused = handle.clients().refused.unwrap();
+    assert_eq!(
+        (refused.refusal, refused.protocol),
+        (voice_protocol::Refusal::UnsupportedProtocol, Some(3))
+    );
+    let mut silent = Client::connect(bridge.port());
+    silent.command("c-1", "status.get", json!({}));
+    assert_eq!(silent.read_refusal().0, "hello_timeout");
+    assert_eq!(
+        handle.clients().refused.unwrap().refusal,
+        voice_protocol::Refusal::UnsupportedProtocol
+    );
+
+    // A client that leaves is gone from the list.
+    drop(client);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !handle.clients().connected.is_empty() {
+        assert!(Instant::now() < deadline, "the client stayed in the list");
+        thread::sleep(Duration::from_millis(20));
+    }
+}

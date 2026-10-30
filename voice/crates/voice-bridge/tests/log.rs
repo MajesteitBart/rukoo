@@ -328,3 +328,38 @@ fn a_meetings_events_come_with_the_head_they_are_complete_up_to() {
     );
     assert!(log.latest(A, "passage").unwrap().is_none());
 }
+
+#[test]
+fn only_the_newest_status_is_kept() {
+    let dir = TempDir::new("log-status");
+    let log = EventLog::open(dir.path()).unwrap();
+    let status = |dictating: bool| json!({ "recording": null, "dictating": dictating });
+    assert_eq!(log.append("status", None, status(false)).unwrap(), 1);
+    assert_eq!(log.append("passage", Some(A), passage(0)).unwrap(), 2);
+    // A dictation: two status events, and only the last one stays.
+    assert_eq!(log.append("status", None, status(true)).unwrap(), 3);
+    assert_eq!(log.append("status", None, status(false)).unwrap(), 4);
+    let stored = log.after(0).unwrap();
+    assert_eq!(
+        stored
+            .iter()
+            .map(|s| (s.seq, s.event.as_str()))
+            .collect::<Vec<_>>(),
+        [(2, "passage"), (4, "status")]
+    );
+    assert_eq!(stored[1].data, status(false));
+    assert_eq!(log.bounds().unwrap(), (4, 2));
+    // The numbers of the replaced ones are never given out again, also after reopening.
+    drop(log);
+    let log = EventLog::open(dir.path()).unwrap();
+    assert_eq!(log.append("passage", Some(A), passage(1000)).unwrap(), 5);
+    for _ in 0..100 {
+        log.append("status", None, status(true)).unwrap();
+    }
+    assert_eq!(
+        log.after(0).unwrap().len(),
+        3,
+        "bridge.db doesn't grow with status events"
+    );
+    assert_eq!(log.head(), 105);
+}

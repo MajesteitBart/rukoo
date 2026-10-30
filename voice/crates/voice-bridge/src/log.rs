@@ -261,6 +261,10 @@ impl EventLog {
     ///
     /// The event is checked as Rukoo will check it, so a bug that builds a bad event fails here
     /// instead of being stored for good and dropped by Rukoo.
+    ///
+    /// A `status` event replaces the stored one: only the newest says what Voice does now, and
+    /// every dictation sends two, so keeping them all would grow `bridge.db` and every full
+    /// replay without bound (PROTOCOL.md, Events). Their numbers are never given out again.
     pub fn append(&self, event: &str, meeting: Option<&str>, data: Value) -> Result<u64, LogError> {
         let created_at = now_ms();
         let (data, data_json) = check(event, meeting, created_at, data)?;
@@ -271,6 +275,12 @@ impl EventLog {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let seq = next_seq(&tx, head)?;
         insert(&tx, seq, event, meeting, created_at, &data_json)?;
+        if event == events::STATUS && meeting.is_none() {
+            tx.execute(
+                "DELETE FROM events WHERE event = ?1 AND meeting IS NULL AND seq < ?2",
+                params![event, to_sql(seq)?],
+            )?;
+        }
         tx.commit()?;
         db.head = seq;
         self.push(Stored {
