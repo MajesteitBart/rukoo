@@ -155,6 +155,15 @@ check('a Settings state that isn\'t newer than the shown one is dropped', async 
   await page.waitForSelector('[data-a="toggle:dictation.readyChime"][aria-checked="true"]');
 });
 
+check('a change whose event arrives before the first settings_state answer stays on screen', async ({ open, page, mockState }) => {
+  // The mock's first answer is the state from before the change, with the lower seq.
+  await open('settings.html?mock=1&lang=en&theme=dark&eventFirst=1');
+  await page.waitForTimeout(300);
+  const app = await mockState();
+  assert.equal(app.config.dictation.readyChime, true);
+  assert.equal(await page.locator('[data-a="toggle:dictation.readyChime"]').getAttribute('aria-checked'), 'true', 'the older answer came back');
+});
+
 check('a development copy can\'t import or start at login', async ({ open, page }) => {
   await open('settings.html?mock=1&lang=en&scenario=dev');
   assert.equal(await page.locator('[data-a="toggle:dictation.startAtLogin"]').isDisabled(), true);

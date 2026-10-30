@@ -1440,9 +1440,10 @@ page.addEventListener('change', (e) => {
 // ---------- state from the app ----------
 
 function applyState(next, { first = false } = {}) {
-  // Each state has a seq of its own (API.md), so one that isn't newer is stale.
-  if (!next || (!first && state && next.seq <= state.seq)) return;
-  // An event can arrive before the first settings_state answers.
+  // Each state has a seq of its own (API.md), so one that isn't newer is stale. That holds for the first
+  // settings_state answer too: an event can arrive before it, with a newer state.
+  if (!next || (state && next.seq <= state.seq)) return;
+  // The first state shown, from either, draws the whole page.
   const full = first || !state;
   const relocalize = full || next.locale !== state.locale;
   const retheme = full || next.theme !== state.theme;

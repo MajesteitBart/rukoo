@@ -1,10 +1,12 @@
 // Mock of the app's side of Settings, for settings.html?mock=1. Not used inside the app. Paths and versions are
 // made up; no real profile is read.
 //
-// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1
+// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&eventFirst=1
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy).
+//   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
+//   as the app can (for dev/check.js).
 
 const MB = 1_000_000;
 const NOW = Date.UTC(2026, 9, 30, 15, 42);
@@ -219,6 +221,7 @@ export function createMock(params) {
   const forced = { theme: params.get('theme'), locale: params.get('lang') };
   const handlers = [];
   let downloadTimer = 0;
+  let eventFirst = params.get('eventFirst') === '1';
 
   const resolve = () => {
     const ui = state.config.ui;
@@ -278,7 +281,16 @@ export function createMock(params) {
   }
 
   const commands = {
-    settings_state: () => snapshot(),
+    settings_state: async () => {
+      const answer = snapshot();
+      if (eventFirst) {
+        eventFirst = false;
+        state.config.dictation.readyChime = !state.config.dictation.readyChime;
+        emit();
+        await wait(50);
+      }
+      return answer;
+    },
     settings_set: ({ key, value }) => {
       const roles = ['dictation.hotkey', 'dictation.rewriteHotkey', 'meetings.stopKey'];
       if (roles.includes(key) && value !== 'off' && roles.some((role) => role !== key && getPath(role) === value)) fail('same_key', `${value} is already in use`);
