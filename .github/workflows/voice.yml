@@ -40,7 +40,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Includes the two recorder tests voice/AGENTS.md requires: a hard kill and a lost microphone mid-meeting.
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       # Rukoo's real bridge client against Voice's real bridge server (the voice-bridge `serve` example, built above).
       # It needs Node's global WebSocket (Node 22 or later) and no npm packages.
       - name: Bridge interop between Rukoo and Voice
@@ -63,4 +63,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       # The app, the input crate and the local worker are Windows-first; the recorder, the bridge and the
       # transcript pipeline must behave the same on Linux, so their tests run here too.
-      - run: cargo test -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings
+      - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings

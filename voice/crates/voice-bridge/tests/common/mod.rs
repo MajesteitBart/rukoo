@@ -299,6 +299,11 @@ impl Client {
         self.socket.send(Frame::text(text)).unwrap();
     }
 
+    /// Sends without unwrapping, for a message the server may close the connection on while it is still written.
+    pub fn try_send_text(&mut self, text: String) -> tungstenite::Result<()> {
+        self.socket.send(Frame::text(text))
+    }
+
     pub fn hello(&mut self, token: &str, instance: Option<&str>, after: u64) {
         self.send(json!({ "type": "hello", "protocol": 1, "token": token, "client": "rukoo", "clientVersion": "2.2.0", "instance": instance, "after": after }));
     }

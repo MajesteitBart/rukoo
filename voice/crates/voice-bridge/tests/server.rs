@@ -411,10 +411,25 @@ fn a_message_over_one_mebibyte_closes_the_connection() {
     client.send_text(at_limit);
     client.read_reply("c-1");
 
+    // The server stops reading at the limit and closes. On Linux the rest of the write can meet that close as a reset
+    // or a broken pipe before the client reads the close frame; either way the connection is gone.
     let over = format!("{}x", " ".repeat(MAX_RUKOO_MESSAGE));
-    client.send_text(over);
-    let code = client.read_close();
-    assert!(matches!(code, Some(1009) | None), "{code:?}");
+    match client.try_send_text(over) {
+        Ok(()) => {
+            let code = client.read_close();
+            assert!(matches!(code, Some(1009) | None), "{code:?}");
+        }
+        Err(tungstenite::Error::Io(e)) => assert!(
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionAborted
+            ),
+            "{e:?}"
+        ),
+        Err(e) => panic!("{e:?}"),
+    }
 
     // The server carries on for others.
     bridge.client(None, 0);
