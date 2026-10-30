@@ -31,6 +31,8 @@
         <item quantity="one">%1$d unread</item>
         <item quantity="other">%1$d unread</item>
     </plurals>
+    <!-- What a screen reader says for the crossed-out eye beside a category whose Show in Inbox switch is off, in the folder drawer and in Settings > Inbox categories. -->
+    <string name="mailbox_categories_hidden">Not shown in Inbox</string>
 
     <!-- Settings -->
     <string name="settings_general_categories">Inbox categories</string>
@@ -51,6 +53,16 @@
     <string name="settings_categories_description">What belongs here</string>
     <string name="settings_categories_description_help">Rukoo, and Jev when it is on, read this to decide which mail goes here. Name the kinds of mail and senders.</string>
     <string name="settings_categories_color">Color</string>
+    <!-- The switch in the category dialog; off keeps the category's mail out of Inbox itself. Inbox is mailbox_folders_inbox. -->
+    <string name="settings_categories_inbox">Show in Inbox</string>
+    <string name="settings_categories_inbox_help">When off, this mail stays out of Inbox and its unread count. You find it under the category in the folders, and search still finds it.</string>
+    <!-- The switch in the category dialog that turns notifications for the category's new mail on or off, on this phone only. -->
+    <string name="settings_categories_notify">Notifications</string>
+    <string name="settings_categories_notify_help">Show a notification for new mail in this category. This choice stays on this phone.</string>
+    <!-- Under the disabled switch while Settings > Notifications > New mail (settings_notifications_new_mail) is off. -->
+    <string name="settings_categories_notify_blocked">Notifications are off for all new mail, so this category stays quiet too. Turn on New mail under Notifications in Settings first.</string>
+    <!-- What a screen reader says for the crossed-out bell on a category whose notifications are off. -->
+    <string name="settings_categories_notify_off">Notifications off</string>
     <string name="settings_categories_restore">Use Rukoo\'s text</string>
     <string name="settings_categories_delete_title">Delete %1$s?</string>
     <string name="settings_categories_delete_help">Its mail goes to the other categories. Sender rules for it stop working.</string>

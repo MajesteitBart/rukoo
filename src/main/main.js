@@ -23,6 +23,7 @@ const { Engine } = require('./engine');
 const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
+const { VideoServices } = require('./video');
 const { RISKY, safeName, markOfTheWeb } = require('./files');
 const { WindowState } = require('./windowstate');
 const { Logos, siteOf } = require('./logos');
@@ -98,6 +99,8 @@ let logos = null;
 let engine = null;
 let calendars = null;
 let google = null;
+// Zoom, Microsoft Teams and Jitsi Meet for booked meetings (video/index.js).
+let video = null;
 let account = null;
 let categories = null;
 let mailNotices = null;
@@ -1048,6 +1051,29 @@ const api = {
   bookingDetails: (id) => booking.details(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id) ? id : ''),
   bookingSync: () => booking.sync(),
   bookingTakeover: () => booking.takeover(),
+  // Video services for bookings (video/index.js), connected on this computer only.
+  videoState: () => video.state(),
+  videoConnect: async (id) => {
+    const state = await video.connect(accountText(id, 20));
+    showWindow();
+    return state;
+  },
+  videoCancel: () => video.cancel(),
+  videoDisconnect: (id) => video.disconnect(accountText(id, 20)),
+  videoRoom: (id, input) => {
+    const i = plainObject(input);
+    return video.setRoom(accountText(id, 20), { on: typeof i.on === 'boolean' ? i.on : undefined, server: typeof i.server === 'string' ? i.server.slice(0, 400) : undefined });
+  },
+  videoImportClient: async (id) => {
+    const service = accountText(id, 20);
+    const res = await dialog.showOpenDialog(win, {
+      title: t('settings.video.importTitle', { service: video.name(service) }),
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (res.canceled || !res.filePaths[0]) return video.state();
+    return video.importClient(service, res.filePaths[0]);
+  },
   categoriesActivity: () => categories.activity(),
   accountExport: async () => {
     const res = await dialog.showSaveDialog(win, {
@@ -1270,6 +1296,8 @@ function windowError(err) {
   if (err && err.booking === true && typeof err.code === 'string') {
     return typeof err.field === 'string' ? { code: err.code.slice(0, 40), field: err.field.slice(0, 200) } : { code: err.code.slice(0, 40) };
   }
+  // Video errors (video/oauth.js videoError) pass their code, so a sign-in the user cancelled isn't shown as a failure.
+  if (err && err.video === true && typeof err.code === 'string') return { code: err.code.slice(0, 40) };
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
@@ -1449,7 +1477,12 @@ app.whenReady().then(() => {
   categories.on('changed', () => broadcast('categories', categories.state()));
   categories.on('progress', (activity) => broadcast('categories-progress', activity));
   mailNotices = new MailNotices({ categories, show: showMailNotices });
-  booking = new Booking({ account, calendars, engine, secrets, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
+  // Sign-ins to Zoom and Microsoft Teams stay on this computer; their OAuth clients come from SEM_* variables or a
+  // client file next to google-oauth.json (docs/booking.md).
+  video = new VideoServices({ dataDir: path.join(app.getPath('userData'), 'data'), configDir: app.getPath('userData'), secrets, openBrowser: (url) => shell.openExternal(url) }).init();
+  if (process.env.SEM_HIDDEN) global.__semVideo = video;
+  video.on('changed', (s) => broadcast('video', s));
+  booking = new Booking({ account, calendars, engine, secrets, video, dataDir: path.join(app.getPath('userData'), 'data'), notify: showBookingNotification }).init();
   if (process.env.SEM_HIDDEN) global.__semBooking = booking;
   booking.on('state', (s) => broadcast('booking', s));
   // Deleting the Rukoo account turns the booking page off first, and stops when that fails (decision 22).
