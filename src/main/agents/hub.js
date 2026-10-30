@@ -92,7 +92,8 @@ const normId = (v) => String(v || '').trim().replace(/^<|>$/g, '').toLowerCase()
 
 // What a chat about a Rukoo Voice meeting keeps of it: the id, the title and linked event when the chat started, and
 // readSeq, how far the agent has read the transcript (read_meeting_transcript's cursor, in the voice store's change
-// numbers). null for anything else.
+// numbers). null for anything else. paging, where a read from the start that goes on page by page stopped, is left
+// out: after a restart that read moves the cursor no more.
 function meetingRef(m) {
   if (!isObj(m) || !isMeetingId(m.id)) return null;
   return {
@@ -884,10 +885,13 @@ class AgentHub extends EventEmitter {
     const about = meetingRef(meeting);
     const ref = about ? null : this.messageRef(message);
     const now = Date.now();
+    // Agents get the chat's title (Hermes names its session after it). With agents' access to meetings off, a
+    // meeting chat is named after its first message instead, as a chat without an email is.
+    const meetingTitle = about && about.title && !this.meetingsOff() ? about.title : '';
     const c = {
       id: newConversationId(),
       agent: id,
-      title: clip(ref && ref.subject ? ref.subject : about && about.title ? about.title : title, 80),
+      title: clip(ref && ref.subject ? ref.subject : meetingTitle || title, 80),
       message: ref,
       // The meeting this chat is about, with how far the agent read its transcript (read_meeting_transcript).
       meeting: about ? { ...about, readSeq: 0 } : null,
@@ -1565,6 +1569,11 @@ class AgentHub extends EventEmitter {
     turn.startedOver = true;
     // Kept until a turn reaches the new session, so a turn that fails on the way does not leave it without the email.
     c.needsRecap = true;
+    // The new session has read none of the meeting's transcript either: its next read starts from the beginning.
+    if (c.meeting) {
+      c.meeting.readSeq = 0;
+      delete c.meeting.paging;
+    }
     this.touch(c);
     let message = null;
     try {
@@ -1589,7 +1598,7 @@ class AgentHub extends EventEmitter {
   // turn says nothing from the meeting. known: Rukoo has the meeting. null for any other chat.
   meetingTurn(c) {
     if (!c.meeting) return null;
-    const off = Boolean(this.engine && this.engine.settings && this.engine.settings.meetingAgentsCanRead === false);
+    const off = this.meetingsOff();
     const voice = this.deps.voice;
     const m = !off && voice ? voice.meeting(c.meeting.id) : null;
     return {
@@ -1601,6 +1610,11 @@ class AgentHub extends EventEmitter {
       fresh: m ? m.passages.filter((p) => p.changed > c.meeting.readSeq).length : 0,
       total: m ? m.passages.length : 0
     };
+  }
+
+  // The user turned off agents' access to meetings (Settings > Meetings > Agents can read meetings).
+  meetingsOff() {
+    return Boolean(this.engine && this.engine.settings && this.engine.settings.meetingAgentsCanRead === false);
   }
 
   tokenFor(c) {

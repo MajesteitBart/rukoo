@@ -46,7 +46,7 @@ Settings → Meetings shows whether Rukoo Voice is connected, and has two switch
   - Windows 10 2004 and later: screen recordings and screen shares in apps such as Teams and Zoom leave Rukoo out. Remote access tools that capture the screen show Rukoo's windows black; Remote Desktop still shows them.
   - macOS: Rukoo Voice and older screen recorders leave Rukoo out. On macOS 15 and later, other apps' screen shares still show it.
   - Linux has no way to hide a window. Keep Rukoo on a monitor you don't share or record.
-- **Agents can read meetings.** Off, the meeting tools give agents nothing from your meetings.
+- **Agents can read meetings.** Off, the meeting tools give agents nothing from your meetings, and a new chat about a meeting is named after your first message instead of the meeting.
 
 In meeting mode, the status line at the bottom of the sidebar says how Voice is, and opens these settings.
 

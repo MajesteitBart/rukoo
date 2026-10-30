@@ -53,7 +53,11 @@ const failure = (res) => {
   assert.equal(res.isError, true, JSON.stringify(res.structuredContent));
   return res.content[0].text;
 };
-const meetingTag = (v) => `<unsafe_content source="meeting">${v}</unsafe_content>`;
+const meetingTag = (v, source = 'meeting') => `<unsafe_content source="${source}">${v}</unsafe_content>`;
+// Until the chat's turn is over.
+async function settle(hub, c) {
+  for (let i = 0; i < 300 && (c.status === 'running' || hub.turns.has(c.id)); i++) await new Promise((r) => setTimeout(r, 10));
+}
 
 function meetingEvents() {
   return [
@@ -188,6 +192,56 @@ test('max_chars stops early with more, and reading again gets the rest without r
   assert.match(start.note, /with from_seconds \d+/);
 });
 
+test("a read from the start that goes on with the note's from_seconds moves a meeting chat's cursor once it has it all", async (t) => {
+  const { feed, call, hub } = await setup(t);
+  const events = [startedEv(), ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' })];
+  for (let i = 0; i < 60; i++) events.push(passage('call', i * 3000, `Line ${i}: ${'x'.repeat(60)}`));
+  feed(events);
+  const c = hub.create({ agent: 'claude', meeting: { id: M } });
+  const seen = [];
+  let args = { since: 'start', max_chars: 1000 };
+  for (let round = 0; round < 20; round++) {
+    const res = data(await call('read_meeting_transcript', args, c.id));
+    seen.push(...untag(res.transcript).trim().split('\n').filter(Boolean));
+    if (!res.more) break;
+    assert.equal(c.meeting.readSeq, 0, 'not before the last page');
+    // Voice transcribes a line of the first page again while the agent reads on.
+    if (round === 0) feed([passage('call', 0, 'Line 0, transcribed again.', { revision: 2 })]);
+    // A look at another stretch in between doesn't end the read.
+    if (round === 1) data(await call('read_meeting_transcript', { from_seconds: 0, to_seconds: 5 }, c.id));
+    args = { from_seconds: Number(/with from_seconds (\d+)/.exec(res.note)[1]), max_chars: 1000 };
+  }
+  assert.equal(seen.length, 60);
+  assert.equal(new Set(seen).size, 60);
+  assert.ok(c.meeting.readSeq > 0, 'the last page moved the cursor');
+  // What changed on a page already read is still new; the rest isn't.
+  assert.equal(hub.meetingTurn(c).fresh, 1);
+  const next = data(await call('read_meeting_transcript', {}, c.id));
+  assert.equal(next.since, 'last_read');
+  assert.deepEqual(untag(next.transcript).trim().split('\n'), ['[00:00:00] Speaker 1 (revised): Line 0, transcribed again.']);
+  assert.equal(hub.meetingTurn(c).fresh, 0);
+});
+
+test('a meeting chat whose agent lost its session reads the transcript from the start again', async (t) => {
+  const { feed, call, hub } = await setup(t, { fake: true });
+  feed(meetingEvents().slice(0, 6));
+  const c = hub.create({ agent: 'claude', meeting: { id: M, title: 'Weekly with Anna' } });
+  hub.send(c.id, { text: 'What did they say in the meeting?' });
+  await settle(hub, c);
+  assert.ok(c.meeting.readSeq > 0, 'the old session read it');
+  hub.send(c.id, { text: 'Lost session?' });
+  await settle(hub, c);
+  const input = hub.adapters.get('claude').received.at(-1).input;
+  assert.match(input, /Your earlier session for this chat is gone/);
+  assert.match(input, /with 2 passages of transcript so far/);
+  assert.equal(c.meeting.readSeq, 0, 'the new session has read nothing');
+  const res = data(await call('read_meeting_transcript', {}, c.id));
+  assert.equal(res.since, 'last_read');
+  assert.equal(res.from_seq, 0);
+  assert.equal(res.count, 2);
+  assert.equal(res.revised, 0);
+});
+
 test('a first passage longer than max_chars comes back whole, and the next read goes on after it', async (t) => {
   const { feed, call, hub } = await setup(t);
   const long = `Start of a long turn ${'y'.repeat(1450)} end of the long turn.`;
@@ -233,6 +287,13 @@ test('search lists recent meetings without a query, and finds passages with ever
   assert.equal(hits.results[1].speaker, 'You');
   assert.equal(data(await call('search_meetings', { query: 'thursday', meeting_id: OLD })).total, 1);
   assert.equal(data(await call('search_meetings', { query: 'thursday', limit: 1 })).results.length, 1);
+  // A name Rukoo took from the linked calendar event is tagged as the calendar's, as read_meeting_transcript tags it.
+  voice.store.setName(M, 'call-1', { name: 'Anna de Vries', address: 'anna@example.com', from: 'auto' });
+  const named = data(await call('search_meetings', { query: 'anna launch' }));
+  assert.equal(named.results[0].speaker, meetingTag('Anna de Vries', 'calendar'));
+  assert.equal(data(await call('read_meeting_transcript', { meeting_id: M })).speakers[1].name, meetingTag('Anna de Vries', 'calendar'));
+  voice.setSpeaker(M, 'call-1', { name: 'Anna' });
+  assert.equal(data(await call('search_meetings', { query: 'anna launch' })).results[0].speaker, meetingTag('Anna'), 'a name the user typed');
 });
 
 test("notes are the user's own: plain, and said to be theirs", async (t) => {
@@ -277,13 +338,19 @@ test('a frame comes as an image after a note that it is untrusted, with no struc
 });
 
 test('with "Agents can read meetings" off, every meeting tool says so, and a meeting chat\'s turn tells nothing from it', async (t) => {
-  const { feed, call, hub } = await setup(t, { settings: { meetingAgentsCanRead: false } });
+  const { feed, call, hub } = await setup(t, { settings: { meetingAgentsCanRead: false }, fake: true });
   feed(meetingEvents());
   for (const [name, args] of [['read_meeting_transcript', {}], ['search_meetings', {}], ['read_meeting_notes', {}], ['get_meeting_frame', { at_seconds: 1 }]]) {
     assert.match(failure(await call(name, args)), /turned off agents' access to meetings/, name);
   }
   const c = hub.create({ agent: 'claude', meeting: { id: M, title: 'Weekly with Anna' } });
   assert.deepEqual(hub.meetingTurn(c), { id: M, off: true, known: false, title: 'Weekly with Anna', state: null, fresh: 0, total: 0 });
+  // Agents get the chat's title too (Hermes names its session after it), so the chat is named after its first message.
+  assert.equal(c.title, '');
+  assert.deepEqual(hub.list().find((x) => x.id === c.id).meeting, { id: M, title: 'Weekly with Anna' }, 'Rukoo itself still knows the meeting');
+  hub.send(c.id, { text: 'Draft a reply to Sanne' });
+  await settle(hub, c);
+  assert.equal(c.title, 'Draft a reply to Sanne');
 });
 
 test('without a voice service the tools say there are no meetings, and the arguments are still checked', async (t) => {
