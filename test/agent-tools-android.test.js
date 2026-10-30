@@ -42,13 +42,14 @@ const kotlin = (text) => text.endsWith('+');
 test("Android's fixture is the desktop's tools.list(null), key order included", () => {
   const fixture = JSON.parse(read(FIXTURE));
   assert.equal(JSON.stringify(fixture.tools), JSON.stringify(list(null)));
+  // The phone serves the meeting tools too, after checking their arguments, and answers that it has no meetings.
   assert.deepEqual(
-    fixture.tools.map((t) => t.name).slice(-4),
-    ['list_events', 'find_free_time', 'create_event', 'get_booking_link']
+    fixture.tools.map((t) => t.name).slice(-8),
+    ['list_events', 'find_free_time', 'create_event', 'get_booking_link', 'read_meeting_transcript', 'search_meetings', 'read_meeting_notes', 'get_meeting_frame']
   );
 });
 
-test("the calendar tools' schemas use only what Android's SchemaBuilder can write", () => {
+test("the tools' schemas use only what Android's SchemaBuilder can write", () => {
   // Schema.kt writes type, description, maxLength, enum, minimum, maximum, minItems, maxItems, items, properties,
   // required and anyOf. A schema with anything else (number, format, pattern, default) can't be the same there.
   const allowed = new Set(['type', 'description', 'maxLength', 'enum', 'minimum', 'maximum', 'minItems', 'maxItems', 'items', 'properties', 'required', 'anyOf']);

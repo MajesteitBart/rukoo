@@ -546,7 +546,7 @@ class McpToolsTest {
         )
         hub.disabled = emptySet()
         assertEquals(
-            "Unknown tool \"send_mail\". Rukoo's tools are: get_context, search_mail, read_message, read_attachment, read_chat_file, write_draft, get_draft, show_plan, show_sources, propose_action, mail_action, read_skill, list_events, find_free_time, create_event, get_booking_link.",
+            "Unknown tool \"send_mail\". Rukoo's tools are: get_context, search_mail, read_message, read_attachment, read_chat_file, write_draft, get_draft, show_plan, show_sources, propose_action, mail_action, read_skill, list_events, find_free_time, create_event, get_booking_link, read_meeting_transcript, search_meetings, read_meeting_notes, get_meeting_frame.",
             run("send_mail").error(),
         )
         assertTrue(run("mcp__rukoo__get_draft").error() == null)
@@ -565,6 +565,23 @@ class McpToolsTest {
             run("find_free_time", """{"start":"2026-11-02","end":"2026-11-09","duration_minutes":2}""").error(),
         )
         assertEquals("arguments.start is required. Check the create_event input schema and try again.", run("create_event", """{"title":"Call"}""").error())
+        assertEquals(cards, hub.get("c_1")!!.items.size)
+    }
+
+    @Test
+    fun theMeetingToolsSayThePhoneHasNoMeetings() {
+        chat()
+        val cards = hub.get("c_1")!!.items.size
+        assertEquals(McpTools.NO_MEETINGS, run("read_meeting_transcript", """{"meeting_id":"m-20261030-171203-4f2a","since":"last_read","conversation_id":"c_1"}""").error())
+        assertEquals(McpTools.NO_MEETINGS, run("search_meetings", """{"query":"launch"}""").error())
+        assertEquals(McpTools.NO_MEETINGS, run("read_meeting_notes").error())
+        assertEquals(McpTools.NO_MEETINGS, run("get_meeting_frame", """{"at_seconds":12}""").error())
+        // The arguments are checked first, in desktop's words.
+        assertEquals("arguments.at_seconds is required. Check the get_meeting_frame input schema and try again.", run("get_meeting_frame").error())
+        assertEquals(
+            "arguments.max_chars must be at least 1000. Check the read_meeting_transcript input schema and try again.",
+            run("read_meeting_transcript", """{"max_chars":10}""").error(),
+        )
         assertEquals(cards, hub.get("c_1")!!.items.size)
     }
 

@@ -1227,6 +1227,38 @@
     "message": "Getting your booking link...",
     "description": "Chat transcript tool chip while it runs: the agent reads the link to your booking page. Present tense; the done form is agent.tools.get_booking_link."
   },
+  "agent.tools.read_meeting_transcript": {
+    "message": "Read the meeting",
+    "description": "Chat transcript tool chip: the agent read the transcript of a meeting Rukoo Voice recorded (read_meeting_transcript). src/renderer/agent/panel.js (toolProps)."
+  },
+  "agent.tools.search_meetings": {
+    "message": "Searched your meetings",
+    "description": "Chat transcript tool chip: the agent searched the transcripts of your recorded meetings, or listed them (search_meetings)."
+  },
+  "agent.tools.read_meeting_notes": {
+    "message": "Read your meeting notes",
+    "description": "Chat transcript tool chip: the agent read the notes you wrote about a meeting in Rukoo (read_meeting_notes)."
+  },
+  "agent.tools.get_meeting_frame": {
+    "message": "Looked at the meeting's screen",
+    "description": "Chat transcript tool chip: the agent looked at the screen Rukoo Voice recorded at a moment in a meeting (get_meeting_frame)."
+  },
+  "agent.tools.running.read_meeting_transcript": {
+    "message": "Reading the meeting...",
+    "description": "Chat transcript tool chip while it runs: the agent reads a meeting's transcript. Present tense; the done form is agent.tools.read_meeting_transcript."
+  },
+  "agent.tools.running.search_meetings": {
+    "message": "Searching your meetings...",
+    "description": "Chat transcript tool chip while it runs: the agent searches your recorded meetings. Present tense; the done form is agent.tools.search_meetings."
+  },
+  "agent.tools.running.read_meeting_notes": {
+    "message": "Reading your meeting notes...",
+    "description": "Chat transcript tool chip while it runs: the agent reads your notes about a meeting. Present tense; the done form is agent.tools.read_meeting_notes."
+  },
+  "agent.tools.running.get_meeting_frame": {
+    "message": "Looking at the meeting's screen...",
+    "description": "Chat transcript tool chip while it runs: the agent looks at the screen recorded in a meeting. Present tense; the done form is agent.tools.get_meeting_frame."
+  },
   "agent.approval.calendarTitle": {
     "message": "{name} wants to add an event to your calendar",
     "description": "Chat transcript approval card title when an agent asks to add an event (create_event). name: agent name. src/renderer/agent/panel.js (localizeEvent)."

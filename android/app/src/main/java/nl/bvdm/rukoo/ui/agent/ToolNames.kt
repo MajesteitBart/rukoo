@@ -16,6 +16,7 @@ enum class ToolChipKind(val icon: String) {
     FILE("file"),
     CALENDAR("calendar"),
     LINK("link"),
+    MEETING("mic"),
     TOOL("wrench"),
 }
 
@@ -56,6 +57,10 @@ object ToolNames {
         "find_free_time" to ToolChipKind.CALENDAR,
         "create_event" to ToolChipKind.CALENDAR,
         "get_booking_link" to ToolChipKind.LINK,
+        "read_meeting_transcript" to ToolChipKind.MEETING,
+        "search_meetings" to ToolChipKind.SEARCH,
+        "read_meeting_notes" to ToolChipKind.MEETING,
+        "get_meeting_frame" to ToolChipKind.MEETING,
     )
 
     // These put their own card in the transcript, so once they succeed a chip saying the same is noise.

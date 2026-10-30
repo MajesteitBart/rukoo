@@ -229,6 +229,7 @@ class FakeRun {
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
     if (/\bmarkdown\b/.test(lower)) return this.markdown();
     if (/\bschedule\b/.test(lower)) return this.schedule();
+    if (/\bmeeting\b/.test(lower)) return this.meeting();
     if (/\bapproval\b/.test(lower)) return this.approval();
     if (/\berror\b/.test(lower)) return this.error();
     if (/reply/.test(lower)) return this.reply();
@@ -426,6 +427,17 @@ class FakeRun {
     });
     if (res.error) return this.say(`That did not work: ${res.error}`);
     return this.say(`You have time on ${found.lines[0] || slot.start}. I picked the first half hour; Rukoo asks you before it adds the call.`);
+  }
+
+  // "meeting": reads the meeting's transcript like a real agent asked about a call, and quotes what came back: in a
+  // meeting chat only what is new since its last read. The words go out without their tags, as an agent would say them.
+  async meeting() {
+    const res = await this.tool('read_meeting_transcript');
+    if (res.error) return this.say(`I could not read the meeting: ${res.error}`);
+    const lines = untag(res.transcript || '').trim().split('\n').filter(Boolean);
+    const title = untag((res.meeting && res.meeting.title) || '') || 'the meeting';
+    if (!lines.length) return this.say(`Nothing new in ${title} since I last read it.`);
+    return this.say(`From ${title}, ${res.count} ${res.count === 1 ? 'line' : 'lines'}${res.revised ? `, ${res.revised} revised` : ''}:\n${lines.map((l) => `> ${l}`).join('\n')}`);
   }
 
   // "lost session": the agent no longer has the chat's session, like Claude Code after it deleted an old

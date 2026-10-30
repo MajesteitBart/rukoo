@@ -52,6 +52,10 @@ const { PanelGate } = require('./agents/gate');
 const { free: freeTime } = require('./calendar/free');
 const { Booking } = require('./booking');
 const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner');
+// ---- voice ----
+const { VoiceService, VoiceError, bridgePathHere } = require('./voice');
+const { isMeetingId, SCREENS: MEETING_SCREENS } = require('./voice/protocol');
+// ---- /voice ----
 
 // Windows takes the taskbar icon and the handler for notification clicks from the Start menu shortcut with this ID,
 // and Electron writes such a shortcut the first time it shows a notification. A run from a checkout gets its own ID,
@@ -126,6 +130,13 @@ let booking = null;
 let reminders = null;
 // Invitations in email and .ics files (calendar/invitations.js).
 let invitations = null;
+// ---- voice ----
+// Rukoo Voice's meetings and the bridge to it (voice/index.js). Made before the windows, so a meeting that records
+// hides them from the start.
+let voice = null;
+// Whether Rukoo's windows are left out of screen capture now; new windows follow it.
+let captureHidden = false;
+// ---- /voice ----
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
   app.quit();
@@ -145,6 +156,25 @@ function windows() {
 function broadcast(type, payload) {
   for (const w of windows()) w.webContents.send('mail:event', { type, payload });
 }
+
+// ---- voice ----
+// Every Rukoo window while Rukoo Voice records a meeting, when the user wants that (Settings > Meetings). Windows 10
+// 2004 and later leave the window out of capture and screen shares; macOS leaves it out of capture by Rukoo Voice
+// and older screen recorders. Linux has no way to, so nothing changes there. Every BrowserWindow, not only
+// windows(): a window that isn't listed must not end up in a recording either.
+function protectWindows(on) {
+  captureHidden = Boolean(on) && (process.platform === 'win32' || process.platform === 'darwin');
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.setContentProtection(captureHidden);
+  }
+}
+
+// What the meeting view and Settings show about Voice. Never the discovery file: its token stays in main.
+function voiceState() {
+  const base = voice ? voice.state() : { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false };
+  return { ...base, hidden: captureHidden, canHide: process.platform === 'win32' || process.platform === 'darwin' };
+}
+// ---- /voice ----
 
 // What the update check found, and how far this install got with it: install is null where Rukoo can't update
 // itself, and the sidebar's button opens the release page instead.
@@ -452,6 +482,8 @@ function endSession() {
   if (reminders) reminders.stop();
   if (booking) booking.close();
   if (updates) updates.stop();
+  // Writes what Rukoo keeps of the meetings. Voice keeps recording.
+  if (voice) voice.close();
   destroyTray();
   // ---- agents ----
   // dispose() saves the chats before its first await; see will-quit.
@@ -524,6 +556,8 @@ function openComposeWindow(input) {
     ...windowChrome(process.platform, bar),
     webPreferences: WEB_PREFERENCES
   });
+  // Before it first shows, so a meeting that records never captures it (protectWindows).
+  if (captureHidden) w.setContentProtection(true);
   const id = w.webContents.id;
   composeWindows.set(id, { win: w, opts, draftId: opts.mode === 'draft' ? opts.id : null });
   w.on('closed', () => composeWindows.delete(id));
@@ -663,6 +697,11 @@ const api = {
       updates.channelChanged();
       broadcast('updates', updatesState());
       updates.check().catch(() => {});
+    }
+    // Turned off during a meeting, the windows show in capture again at once; turned on, they hide.
+    if ('meetingHideWindow' in patch && voice) {
+      voice.refreshProtection();
+      send('meeting', { kind: 'state', state: voiceState() });
     }
     return s;
   },
@@ -1045,6 +1084,10 @@ function agentHub() {
   if (!hub) throw new Error('unknown');
   return hub;
 }
+function agentMeeting(m) {
+  if (!m || typeof m !== 'object' || !isMeetingId(m.id)) return null;
+  return { id: m.id, title: agentText(m.title, 300), eventId: agentText(m.eventId, 4000) || null };
+}
 function agentMessage(m) {
   if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !m.id) return null;
   const from = m.from && typeof m.from === 'object' ? { name: agentText(m.from.name, 200), address: agentText(m.from.address, 320) } : null;
@@ -1097,8 +1140,17 @@ Object.assign(api, {
   },
   agentCreate: (input) => {
     const i = agentPlain(input);
-    return agentHub().create({ agent: agentText(i.agent, 20), message: agentMessage(i.message), model: agentText(i.model, 300) || null, effort: agentText(i.effort, 20) || null });
+    return agentHub().create({
+      agent: agentText(i.agent, 20),
+      message: agentMessage(i.message),
+      // A chat about a Rukoo Voice meeting instead of an email.
+      meeting: agentMeeting(i.meeting),
+      model: agentText(i.model, 300) || null,
+      effort: agentText(i.effort, 20) || null
+    });
   },
+  // The newest chat about this meeting, or null.
+  agentFindForMeeting: (id) => (isMeetingId(id) ? agentHub().findForMeeting(id) : null),
   agentModels: (agent, options) => agentHub().models(agentId(agent), { refresh: agentPlain(options).refresh === true }),
   // A chat's model and effort; a key that is left out stays as it is, null goes back to the agent's default.
   agentSetChoice: (id, choice) => {
@@ -1168,6 +1220,63 @@ Object.assign(api, {
 });
 // ---- /agents ----
 
+// ---- voice ----
+// The meeting view's and Settings' calls (voice/index.js). A meeting id has one fixed form, so anything else stops
+// here; text is cut to what the service keeps.
+const meetingId = (v) => {
+  if (!isMeetingId(v)) throw new Error('invalid');
+  return v;
+};
+const meetingText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+function voiceService() {
+  if (!voice) throw new Error('unknown');
+  return voice;
+}
+// A frame's image as the renderer's CSP takes it (img-src data:), or null for anything but a plain image.
+function frameUrl(result) {
+  const image = result && result.image;
+  if (!image || !/^image\/(jpeg|png|webp)$/.test(image.type) || typeof image.data !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(image.data)) return null;
+  return `data:${image.type};base64,${image.data}`;
+}
+Object.assign(api, {
+  voiceState: () => voiceState(),
+  // Newest first.
+  meetingList: () => voiceService().list(),
+  meetingGet: (id) => voiceService().get(meetingId(id)),
+  // Hides the windows first when the user wants that, then asks Voice: {meetingId}.
+  meetingStart: (opts) => {
+    const o = plainObject(opts);
+    return voiceService().start({
+      title: meetingText(o.title, 300),
+      eventId: meetingText(o.eventId, 4000) || null,
+      screen: MEETING_SCREENS.includes(o.screen) ? o.screen : undefined
+    });
+  },
+  meetingStop: (id) => voiceService().stop(meetingId(id)),
+  meetingPause: (id) => voiceService().pause(meetingId(id)),
+  meetingResume: (id) => voiceService().resume(meetingId(id)),
+  meetingMark: (id, label) => voiceService().mark(meetingId(id), meetingText(label, 200) || null).then(() => true),
+  // The calendar event the meeting was, or null; the speakers come back with the guests to pick from.
+  meetingSetEvent: (id, eventId) => voiceService().setEvent(meetingId(id), eventId == null ? null : meetingText(eventId, 4000) || null),
+  meetingSetSpeaker: (id, speakerId, value) => {
+    const v = value === null ? null : plainObject(value);
+    return voiceService().setSpeaker(meetingId(id), meetingText(speakerId, 100), v && { name: meetingText(v.name, 200), address: meetingText(v.address, 320) });
+  },
+  // rev: the notes' revision the editor started from. {rev}, or {conflict, rev, text} when they changed meanwhile.
+  meetingSaveNotes: (id, text, rev) => {
+    if (!Number.isInteger(rev) || rev < 0) throw new Error('invalid');
+    return voiceService().saveNotes(meetingId(id), meetingText(text, 100000), rev);
+  },
+  // null goes back to the text Voice recognized.
+  meetingCorrect: (id, passageId, text) => voiceService().correct(meetingId(id), meetingText(passageId, 100), text === null ? null : meetingText(text, 20000)),
+  meetingFrame: async (id, atSeconds) => {
+    if (!Number.isInteger(atSeconds) || atSeconds < 0) throw new Error('invalid');
+    return frameUrl(await voiceService().frame(meetingId(id), atSeconds * 1000));
+  },
+  meetingEvents: (id) => voiceService().events(meetingId(id))
+});
+// ---- /voice ----
+
 // Calls that act on the window that makes them.
 const windowApi = {
   // copy: the reader's context menu, for the selection in the email frame it has just focused.
@@ -1211,6 +1320,9 @@ const WINDOW_CODES = new Set(['auth']);
 // What a window gets besides the message: an allowed code, and for 'auth' the provider whose app password page helps.
 // Booking errors (booking/rules.js bookingError) pass their code, and for a refused field its name (contracts f).
 function windowError(err) {
+  // Rukoo Voice's error codes (voice/PROTOCOL.md, plus offline and timeout) under a name of their own, so the meeting
+  // view says them in its words and the chat panel never takes one for an agent's code.
+  if (err instanceof VoiceError) return { voice: String(err.code).slice(0, 40), ...(typeof err.meeting === 'string' ? { meeting: err.meeting.slice(0, 100) } : {}) };
   if (err && err.booking === true && typeof err.code === 'string') {
     return typeof err.field === 'string' ? { code: err.code.slice(0, 40), field: err.field.slice(0, 200) } : { code: err.code.slice(0, 40) };
   }
@@ -1262,6 +1374,8 @@ function createWindow({ hidden = false } = {}) {
     ...windowChrome(process.platform, bar),
     webPreferences: WEB_PREFERENCES
   });
+  // Before it first shows, so a meeting that records never captures it (protectWindows).
+  if (captureHidden) win.setContentProtection(true);
   updateApplicationMenu();
   harden(win);
   watchZoom(win);
@@ -1420,6 +1534,24 @@ app.whenReady().then(() => {
   // After every check, so a download that failed tries again with the next one.
   updates.on('checked', (state) => installer.download(state.available).catch(() => {}));
   installer.on('changed', () => broadcast('updates', updatesState()));
+  // ---- voice ----
+  // Before the hub, whose meeting tools use it, and before the first window, which it may have to hide. A development
+  // or test profile (SEM_DATA_DIR) only finds a Voice paired through RUKOO_VOICE_BRIDGE, never the installed one.
+  voice = new VoiceService({
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    discovery: bridgePathHere(process.env),
+    appVersion: app.getVersion(),
+    calendars,
+    hide: () => engine.settings.meetingHideWindow !== false,
+    protect: protectWindows,
+    log: (scope, line) => {
+      if (!process.env.SEM_HIDDEN) console.warn(`[voice:${scope}] ${line}`);
+    }
+  }).init();
+  if (process.env.SEM_HIDDEN) global.__semVoice = voice;
+  voice.on('state', () => send('meeting', { kind: 'state', state: voiceState() }));
+  voice.on('meeting', (payload) => send('meeting', payload));
+  // ---- /voice ----
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({
@@ -1433,6 +1565,8 @@ app.whenReady().then(() => {
       calendarFree: (opts) => freeTime(calendars, engine.settings, booking ? booking.hours() : null, opts),
       bookingHours: () => (booking ? booking.hours() : null),
       bookingLink: () => (booking ? booking.link() : null),
+      // The meeting tools read what Rukoo keeps of Rukoo Voice's meetings.
+      voice,
       unsubscribe: (id) => api.unsubscribe(id),
       // A mailto-only unsubscribe opens a filled-in compose window; the user sends it.
       openMailto: (url) => openUrl(url),
@@ -1492,6 +1626,13 @@ app.on('before-quit', () => {
 
 // Every window has closed, so the quit goes through.
 app.on('will-quit', destroyTray);
+// ---- voice ----
+// Not in before-quit, which a compose window can still call off; synchronous, before the agents' wait. Never
+// meeting.stop: Voice keeps recording when Rukoo quits.
+app.on('will-quit', () => {
+  if (voice) voice.close();
+});
+// ---- /voice ----
 
 // ---- agents ----
 // dispose() stops turns and flushes the conversations before its first await, and starts the kills of the

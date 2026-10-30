@@ -4,11 +4,12 @@ import nl.bvdm.rukoo.core.Unsafe
 
 /** Tool chip labels and details, ported from hub.js (toolLabel, chipDetail) and tools.js (bareName, isRukooTool). */
 object ToolLabels {
-    /** Rukoo's sixteen tools, in desktop's order. */
+    /** Rukoo's twenty tools, in desktop's order. */
     val RUKOO_TOOLS = listOf(
         "get_context", "search_mail", "read_message", "read_attachment", "read_chat_file", "write_draft",
         "get_draft", "show_plan", "show_sources", "propose_action", "mail_action", "read_skill",
         "list_events", "find_free_time", "create_event", "get_booking_link",
+        "read_meeting_transcript", "search_meetings", "read_meeting_notes", "get_meeting_frame",
     )
 
     private val RUKOO_LABELS = mapOf(
@@ -28,6 +29,10 @@ object ToolLabels {
         "find_free_time" to "Looked for free time",
         "create_event" to "Proposed an event",
         "get_booking_link" to "Got the booking link",
+        "read_meeting_transcript" to "Read the meeting",
+        "search_meetings" to "Searched meetings",
+        "read_meeting_notes" to "Read the meeting notes",
+        "get_meeting_frame" to "Looked at the screen",
     )
 
     private val COMMANDS = Regex("^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$", RegexOption.IGNORE_CASE)
