@@ -8,8 +8,11 @@ use common::*;
 use serde_json::json;
 
 /// The first segment of a session may start this late: the device opens, then its first
-/// 10 ms block arrives. CI machines are slow, hence the margin.
-const START_TOLERANCE_MS: u64 = 300;
+/// 10 ms block arrives. GitHub's Windows runners open the second track's source and create its
+/// first file late now and then (two cores and a virus scan of every new file), so the margin is
+/// generous. What these tests guard is that nothing recorded is lost after a kill or a lost device;
+/// the tolerances below for that stay tight.
+const START_TOLERANCE_MS: u64 = 1_000;
 /// Neighbouring segments of one stream may sit this far apart. Synthetic sources run on the
 /// same clock as the recorder, so in practice they are exactly contiguous.
 const JOIN_TOLERANCE_MS: u64 = 30;
@@ -180,7 +183,11 @@ fn microphone_removed_keeps_the_timeline_complete() {
     let mic = segments(&m, &lines, "mic");
     let (before, after): (Vec<&Seg>, Vec<&Seg>) = mic.iter().partition(|s| s.t < lost_t);
     assert!(!before.is_empty() && !after.is_empty(), "{mic:?}");
-    assert!(before[0].t <= START_TOLERANCE_MS);
+    assert!(
+        before[0].t <= START_TOLERANCE_MS,
+        "mic starts at {}",
+        before[0].t
+    );
     for pair in before.windows(2).chain(after.windows(2)) {
         assert!(pair[1].t.abs_diff(pair[0].end()) <= JOIN_TOLERANCE_MS);
     }
@@ -202,7 +209,11 @@ fn microphone_removed_keeps_the_timeline_complete() {
     }
 
     let call = segments(&m, &lines, "call");
-    assert!(call[0].t <= START_TOLERANCE_MS);
+    assert!(
+        call[0].t <= START_TOLERANCE_MS,
+        "call starts at {}",
+        call[0].t
+    );
     assert_contiguous(&call, "call");
     let call_end = call.last().unwrap().end();
     assert!(
