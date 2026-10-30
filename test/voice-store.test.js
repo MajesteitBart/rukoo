@@ -154,6 +154,29 @@ test('saves wait a moment, and closing writes everything at once', async () => {
   assert.ok(fs.existsSync(quick.file));
 });
 
+test("a replay of an older meeting's states leaves the meeting the welcome says records alone", () => {
+  const s = store();
+  const history = [
+    started(OTHER),
+    ev('meeting.state', OTHER, { state: 'recording', at: 0 }),
+    ev('meeting.state', OTHER, { state: 'done', at: 60000, endedAt: 1793000060000 }),
+    started(M),
+    ev('meeting.state', M, { state: 'recording', at: 0 })
+  ];
+  // Rukoo connects while M records, and Voice replays everything it keeps from the oldest event on.
+  s.welcome({ instance: 'Vb3kQ9m2X7pL1sR4tY8wZQ', replay: 'full', oldest: history[0].seq, head: history.at(-1).seq, status: { recording: M, dictating: false } });
+  const seen = [];
+  for (const e of history) {
+    s.apply(e);
+    seen.push(s.status().recording);
+  }
+  assert.deepEqual(seen, [M, M, M, M, M]);
+  assert.equal(s.entry(OTHER).state, 'done');
+  // After the head, an event says what happens now.
+  s.apply(ev('meeting.state', M, { state: 'processing', at: 90000, endedAt: 1793000090000, reason: 'user' }));
+  assert.equal(s.status().recording, null);
+});
+
 test("a meeting file that can't be written keeps the cursor on disk behind its events until it can", () => {
   const dir = tempDir('rukoo-voice-store-');
   const s = store(dir, { saveMs: 60000 });
@@ -272,7 +295,8 @@ test('welcome: another instance resets the cursor, a gap or full replay goes bac
 
 test('a replay whose numbers skip, because Voice keeps only the newest status, applies and moves the cursor', () => {
   const s = store();
-  s.welcome({ type: 'welcome', protocol: 1, voiceVersion: '0.1.0', instance: 'Vb3kQ9m2X7pL1sR4tY8wZQ', head: 9, oldest: 3, replay: 'full', status: { recording: null, dictating: false } });
+  // The welcome's status is Voice's status at the head, the same as the newest status event, 9.
+  s.welcome({ type: 'welcome', protocol: 1, voiceVersion: '0.1.0', instance: 'Vb3kQ9m2X7pL1sR4tY8wZQ', head: 9, oldest: 3, replay: 'full', status: { recording: null, dictating: true } });
   assert.equal(s.cursor().after, 2);
   // Status events 1, 2, 4, 5, 6 and 8 were replaced by 9.
   s.apply({ ...started(), seq: 3 });

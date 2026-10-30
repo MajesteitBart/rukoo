@@ -233,6 +233,9 @@ class FakeVoice {
     const e = { type: 'event', seq: ++this.head, event, ...(meeting ? { meeting } : {}), createdAt: Date.now(), data };
     this.events.push(e);
     if (event === 'status') this.status = data;
+    // Voice's status is what its controller records now, so the welcome follows the meetings' states as Voice's does.
+    if (event === 'meeting.state' && ['recording', 'paused'].includes(data.state)) this.status = { ...this.status, recording: meeting };
+    else if (event === 'meeting.state' && this.status.recording === meeting) this.status = { ...this.status, recording: null };
     if (push) for (const p of this.peers) if (p.hello) p.send(e);
     return e;
   }

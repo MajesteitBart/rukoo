@@ -99,6 +99,8 @@ class VoiceStore {
     this.cache = new Map();
     // Meetings whose file was damaged and set aside: Voice can send them again (meeting.get).
     this.damaged = new Set();
+    // Told when a meeting file turns out damaged as it is read, so Voice can be asked for the meeting at once.
+    this.onDamaged = null;
     this.dirty = new Set();
     this.indexDirty = false;
     this.timer = null;
@@ -170,7 +172,10 @@ class VoiceStore {
       return m;
     }
     const raw = this.readJson(this.meetingFile(id));
-    if (raw === null) this.damaged.add(id);
+    if (raw === null) {
+      this.damaged.add(id);
+      if (this.onDamaged) this.onDamaged(id);
+    }
     if (!raw && !create && !this.index.meetings[id]) return null;
     m = raw ? normalizeMeeting(id, raw) : emptyMeeting(id);
     this.cache.set(id, m);
@@ -280,6 +285,9 @@ class VoiceStore {
     const reset = this.index.instance !== null && this.index.instance !== msg.instance;
     this.index.instance = msg.instance;
     if (msg.replay !== 'partial') this.index.lastSeq = Math.max(0, msg.oldest - 1);
+    // What records now is the welcome's status. The replay that follows is history up to this head: an older
+    // meeting's states in it must not move the status, or Rukoo would show itself in a screen recording mid-meeting.
+    this.replayHead = Number.isInteger(msg.head) ? msg.head : 0;
     this.setStatus(msg.status);
     this.touchIndex();
     return { reset, gap: msg.replay === 'gap' };
@@ -319,13 +327,14 @@ class VoiceStore {
     }
     const id = ev.meeting;
     const d = ev.data;
+    const live = !(Number.isInteger(ev.seq) && ev.seq <= (this.replayHead || 0));
     switch (ev.event) {
       case 'status':
-        return this.setStatus(d) ? { meeting: null, kind: 'status' } : null;
+        return live && this.setStatus(d) ? { meeting: null, kind: 'status' } : null;
       case 'meeting.started':
         return this.started(id, d);
       case 'meeting.state':
-        return this.stateChanged(id, d);
+        return this.stateChanged(id, d, live);
       case 'speaker':
         return this.speaker(id, d);
       case 'passage':
@@ -353,14 +362,15 @@ class VoiceStore {
     return this.entryChanged(e, before);
   }
 
-  stateChanged(id, d) {
+  // live: the event came after the welcome's head, so it tells what happens now rather than replaying history.
+  stateChanged(id, d, live = true) {
     const e = this.ensureEntry(id);
     const before = JSON.stringify(e);
     Object.assign(e, { state: d.state, at: d.at, endedAt: ENDED.has(d.state) ? d.endedAt : null, reason: d.reason == null ? null : d.reason });
     // Fail closed: what records now is known the moment Voice says so, and a meeting that ended no longer records,
     // also when the status event that says it is still to come.
-    if (d.state === 'recording' || d.state === 'paused') this.setStatus({ ...this.index.status, recording: id });
-    else if (this.index.status.recording === id) this.setStatus({ ...this.index.status, recording: null });
+    if (live && (d.state === 'recording' || d.state === 'paused')) this.setStatus({ ...this.index.status, recording: id });
+    else if (live && this.index.status.recording === id) this.setStatus({ ...this.index.status, recording: null });
     return this.entryChanged(e, before);
   }
 
