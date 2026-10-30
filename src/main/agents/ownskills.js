@@ -36,6 +36,11 @@ function mentionsIn(text, names) {
   return out;
 }
 
+// Whether the text names any skill at all ($name), whatever skills the agent has.
+function hasMention(text) {
+  return !String(text || '').matchAll(MENTION).next().done;
+}
+
 // Claude Code starts a skill only from the last text block of a message, and only when that block begins with
 // /name: the CLI puts the skill's instructions in its place and passes the rest as its arguments. Only one skill
 // starts per message. So the text up to the last mentioned skill becomes the block before it, the earlier mentions
@@ -233,4 +238,4 @@ function cleanList(list) {
   return out;
 }
 
-module.exports = { mentionsIn, claudeDispatch, claudeSkills, cleanList, SKILLS_MAX };
+module.exports = { mentionsIn, hasMention, claudeDispatch, claudeSkills, cleanList, SKILLS_MAX };

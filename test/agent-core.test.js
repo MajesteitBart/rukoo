@@ -838,6 +838,49 @@ test('an agent that can’t take a message during its turn queues a steer and sa
   }
 });
 
+test('a message that names one of the agent’s own skills waits for a turn of its own, where the agent starts the skill', async () => {
+  const env = await demo();
+  const { hub } = fakeHub(env);
+  await hub.start();
+  try {
+    const fake = hub.adapters.get('claude');
+    const c = hub.create({ agent: 'claude' });
+    // Before the $ menu loaded the list, any $name counts; an amount never does.
+    hub.send(c.id, { text: 'first question' });
+    assert.equal(hub.send(c.id, { text: '$pdf the contract', mode: 'steer' }).state, 'queued');
+    assert.equal(hub.send(c.id, { text: 'it costs $50 now', mode: 'steer' }).state, 'steering');
+    await until(() => fake.received.length === 2, 20000);
+    await idle(hub, c.id);
+
+    // The list the $ menu loaded tells a skill from other text.
+    await hub.ownSkills('claude');
+    fake.received.length = 0;
+    fake.steers.length = 0;
+    hub.send(c.id, { text: 'second question' });
+    const res = hub.send(c.id, { text: 'use $humanizer on the reply', mode: 'steer' });
+    assert.equal(res.state, 'queued');
+    assert.equal(c.queue[0].startsSkill, true, 'the panel offers no Steer now for it');
+    assert.throws(() => hub.sendQueued(c.id, res.queued), /busy/);
+    assert.equal(hub.send(c.id, { text: 'and $HOME is fine', mode: 'steer' }).state, 'steering');
+    await until(() => fake.received.length === 2, 20000);
+    await idle(hub, c.id);
+    assert.deepEqual(
+      fake.received.map((r) => [r.text, r.skills]),
+      [
+        ['second question', []],
+        ['use $humanizer on the reply', [{ name: 'humanizer' }]]
+      ]
+    );
+    assert.deepEqual(
+      fake.steers.map((s) => s.input),
+      ['and $HOME is fine']
+    );
+  } finally {
+    await hub.dispose();
+    await env.engine.close();
+  }
+});
+
 test('waiting messages survive a restart with their files, and wait until the user sends one', async () => {
   const env = await demo();
   const agent = stubbornAgent();

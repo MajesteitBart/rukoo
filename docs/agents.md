@@ -109,7 +109,7 @@ You can keep typing while the agent answers. A message you send then goes one of
 - **Steer** (Enter): the message goes to the agent now, and the agent reads it before its next step, such as after the tool call it is running. Use it to change course without stopping, as in "use the work account" while the agent signs in to the wrong one.
 - **Queue** (Alt+Enter): the message waits, and goes as your next message once the agent is done.
 
-The button beside Stop does what Enter does, and its chevron offers both, with their keys. Stop stays where it is. A quick action or a skill you start while the agent works always waits, because each starts a task of its own.
+The button beside Stop does what Enter does, and its chevron offers both, with their keys. Stop stays where it is. A quick action or a skill you start while the agent works always waits, because each starts a task of its own. So does a message that names one of the agent's own skills with `$`: the agent starts such a skill only with the message a turn begins with, so steered it would get the name as plain text.
 
 Enter steers because Codex CLI and Claude Code both hand a message typed during a turn to the agent before its next step. Codex steers on Enter and queues on Tab ([openai/codex#13595](https://github.com/openai/codex/issues/13595): "Steering injects the prompt at the end of current tool call"). Claude Code passes a message typed while Claude runs tool calls to Claude "as soon as those tool calls finish, within the same turn" ([interactive mode](https://code.claude.com/docs/en/interactive-mode#queue-messages-while-claude-works)). Rukoo keeps Tab for moving the focus and for picking from the `/` and `$` menus, so Queue is Alt+Enter.
 

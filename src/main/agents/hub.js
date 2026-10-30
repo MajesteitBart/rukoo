@@ -1891,7 +1891,8 @@ class AgentHub extends EventEmitter {
   // message sent after it, without files, can't get ahead of it while its files are copied.
   hold(c, message, staged, mode) {
     if (c.queue.length >= MAX_QUEUE) throw new AgentError('invalid', `at most ${MAX_QUEUE} messages can wait`);
-    const steer = mode === 'steer' && !message.action;
+    const startsSkill = !message.action && this.namesOwnSkill(c.agent, message.body);
+    const steer = mode === 'steer' && !message.action && !startsSkill;
     const entry = {
       id: newQueueId(),
       state: staged.length ? 'copying' : 'queued',
@@ -1903,7 +1904,9 @@ class AgentHub extends EventEmitter {
       files: [],
       emails: message.mails,
       // Set when it was meant to steer but the agent can't take it during this turn.
-      fallback: false
+      fallback: false,
+      // It names one of the agent's own skills, so it never steers (namesOwnSkill()).
+      startsSkill
     };
     c.queue.push(entry);
     this.touch(c);
@@ -1949,6 +1952,17 @@ class AgentHub extends EventEmitter {
     );
     if (steer) slot = this.steerEntry(c, entry, done);
     return done;
+  }
+
+  // Whether a message names one of the agent's own skills ($name). The adapter starts those the agent's own way, and
+  // only with the message a turn starts with (mentionedSkills()): steered, the agent would get "$name" as plain text.
+  // So such a message waits for a turn of its own, as a skill from the / menu does. The list is the one the $ menu
+  // loaded; before there is one, any $name counts.
+  namesOwnSkill(agent, text) {
+    const entry = this.skillLists.get(agent);
+    const list = entry && entry.value;
+    if (!list) return ownskills.hasMention(text);
+    return ownskills.mentionsIn(text, (list.skills || []).map((s) => s.name)).length > 0;
   }
 
   // Takes out a message whose files didn't make it into the chat's folder.
@@ -2081,7 +2095,8 @@ class AgentHub extends EventEmitter {
     if (!entry) throw new AgentError('invalid', 'unknown queued message');
     if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
     if (this.turns.has(c.id) || this.sending.has(c.id)) {
-      if (entry.action) throw new AgentError('busy', 'a turn is running');
+      // A quick action, or a message that starts one of the agent's own skills, waits for a turn of its own.
+      if (entry.action || entry.startsSkill) throw new AgentError('busy', 'a turn is running');
       this.steerEntry(c, entry);
       return { conversationId: c.id, queued: entry.id, state: entry.state };
     }
@@ -2725,7 +2740,8 @@ function cleanQueue(list) {
       action: typeof e.action === 'string' && e.action ? e.action : null,
       files: Array.isArray(e.files) ? e.files.filter((f) => isObj(f) && typeof f.id === 'string' && typeof f.file === 'string') : [],
       emails: Array.isArray(e.emails) ? e.emails.filter((m) => isObj(m) && typeof m.id === 'string' && m.id) : [],
-      fallback: false
+      fallback: false,
+      startsSkill: e.startsSkill === true
     });
   }
   return out;

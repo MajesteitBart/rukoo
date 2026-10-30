@@ -1541,8 +1541,9 @@ export function mountAgentPanel(ctx) {
       const status = steering ? t('agent.panel.steerHint', { name }) : !running ? t('agent.queue.held') : e.fallback ? t('agent.queue.fallback', { name }) : t('agent.panel.queueHint', { name });
       const actions = [];
       if (!steering) {
-        // While the agent works only a message can steer; a quick action or skill waits for its own turn.
-        if (!running || (steer && !e.action)) actions.push({ id: 'send', label: running ? t('agent.queue.steerNow') : t('agent.queue.sendNow'), icon: 'send', onClick: () => sendQueued(e) });
+        // While the agent works only a message can steer; a quick action or skill, also one of the agent's own named
+        // with $, waits for its own turn.
+        if (!running || (steer && !e.action && !e.startsSkill)) actions.push({ id: 'send', label: running ? t('agent.queue.steerNow') : t('agent.queue.sendNow'), icon: 'send', onClick: () => sendQueued(e) });
         if (!e.action || e.action === 'skill') actions.push({ id: 'edit', label: t('agent.queue.edit'), icon: 'pen', onClick: () => editQueued(e) });
         actions.push({ id: 'remove', label: t('agent.queue.remove'), icon: 'x', onClick: () => removeQueued(e) });
       }
