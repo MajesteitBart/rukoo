@@ -843,11 +843,17 @@ class Booking extends EventEmitter {
       }
       patch = p;
       const settings = rules.checkSettings(next, { today: rules.todayIn(next.timeZone, this.now()), meet });
-      const on = this.status() === 'on';
+      let on = this.status() === 'on';
       // A video service is chosen on the computer that handles bookings, where it has to be connected. That one runs
       // a Rukoo that knows the location, so a computer from before video services never handles a page that has one.
-      const chosen = on && !this.thisDevice() ? newVideo(current, settings) : -1;
-      if (chosen >= 0) throw rules.bookingError('videoElsewhere', { code: 'invalid', field: `types[${chosen}].location.kind` });
+      // Who handles them is asked fresh, as another computer may have taken over since this one last looked; when the
+      // server can't say, the change doesn't go.
+      const chosen = on ? newVideo(current, settings) : -1;
+      if (chosen >= 0) {
+        this.setPage(await this.call('GET', '/v1/booking'));
+        on = this.status() === 'on';
+        if (on && !this.thisDevice()) throw rules.bookingError('videoElsewhere', { code: 'invalid', field: `types[${chosen}].location.kind` });
+      }
       if (settings.handle !== current.handle && on) {
         // A rename goes to the server first; when it is refused the record keeps the old handle. Changes the old
         // handle has waiting are handled first: afterwards only the new one is read, and the server refuses the
@@ -1539,10 +1545,8 @@ class Booking extends EventEmitter {
     if (!loc || loc.kind !== 'video') return null;
     const kept = this.keptMeeting(row.id);
     if (kept && kept.ref.service === loc.service) {
-      if (kept.start !== row.start || kept.end !== row.end) {
-        await this.moveMeeting(row, kept.ref, guest);
-        this.keepMeeting(row.id, kept.ref, row);
-      }
+      // Its new time is kept only once the service took it, so a move that failed is tried again with the next retry.
+      if ((kept.start !== row.start || kept.end !== row.end) && (await this.moveMeeting(row, kept.ref, guest))) this.keepMeeting(row.id, kept.ref, row);
       return kept.ref;
     }
     try {
@@ -1558,15 +1562,18 @@ class Booking extends EventEmitter {
   }
 
   // A booking's meeting at its new time. A failure leaves the meeting and its link as they were, with a notice.
+  // True when the service took the new time.
   async moveMeeting(row, ref, guest) {
-    if (!ref || !this.video) return;
+    if (!ref || !this.video) return false;
     const settings = this.settings();
     const zone = settings && isZone(settings.timeZone) ? settings.timeZone : pcZone();
     try {
       await this.after(this.video.update(ref, { start: row.start, end: row.end, timeZone: zone }));
+      return true;
     } catch (err) {
       unlessStale(err);
       this.addNotice('video', row, rules.shortName(guest && guest.name), videoProblem(ref.service, 'update', err));
+      return false;
     }
   }
 

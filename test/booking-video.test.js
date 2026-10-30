@@ -279,6 +279,48 @@ test('a meeting made before the calendar write failed is the one the retry uses'
   assert.equal(keptOf(host, other.id), undefined);
 });
 
+test('a kept meeting whose move failed is moved again with the next retry', async (t) => {
+  const srv = await server(t);
+  let down = true;
+  const fake = fakeCalendar({ fail: ({ method, url }) => (down && method === 'POST' && /\/events$/.test(url.pathname) ? { status: 503, body: { error: { code: 503, message: 'Backend Error' } } } : null) });
+  const host = await computer(t, srv, { fake });
+  await pageWith(host, ZOOM);
+  const start = slot(3, 10);
+  const { id } = await srv.book({ handle: 'bart', type: '30min', start, guest: { name: 'Jane Doe' } });
+  await host.booking.sync();
+  srv.guestReschedule({ handle: 'bart', id, start: start + HOUR });
+  host.video.fail.update = Object.assign(new Error("Rukoo couldn't reach Zoom."), { video: true, code: 'network' });
+  await host.booking.sync();
+  assert.equal(ops(host.video, 'update').length, 1);
+  assert.equal(keptOf(host, id).start, start, 'still the time the meeting has');
+  // Zoom answers again, the calendar not yet: the move goes through and its time is kept.
+  host.video.fail.update = null;
+  await host.booking.sync();
+  assert.equal(ops(host.video, 'update').length, 2);
+  assert.equal(keptOf(host, id).start, start + HOUR);
+  down = false;
+  await host.booking.sync();
+  assert.equal(ops(host.video, 'update').length, 2, 'nothing left to move');
+  assert.equal(Date.parse(bookingEvent(host.fake, id).start.dateTime), start + HOUR);
+  assert.equal(ops(host.video, 'create').length, 1);
+});
+
+test('a video service chosen just after another computer took over is refused, also before this one noticed', async (t) => {
+  const srv = await server(t);
+  const fake = fakeCalendar();
+  const desk = await computer(t, srv, { fake, name: 'desk' });
+  await desk.booking.enable(ENABLE);
+  const laptop = await computer(t, srv, { fake, signUp: false, name: 'laptop' });
+  await laptop.account.sync();
+  await laptop.booking.takeover();
+  // The desk hasn't looked since; its copy of the page still names itself.
+  assert.equal(desk.booking.thisDevice(), true);
+  const type = desk.booking.settings().types[0];
+  await assert.rejects(desk.booking.save({ types: [{ ...type, location: ZOOM }] }), (err) => err.code === 'invalid' && err.field === 'types[0].location.kind');
+  assert.equal(desk.booking.thisDevice(), false);
+  assert.notDeepEqual(desk.booking.settings().types[0].location, ZOOM);
+});
+
 test('a computer that takes over uses the meeting the other one made before the calendar write failed', async (t) => {
   const srv = await server(t);
   let down = false;
