@@ -74,7 +74,7 @@ The server keeps whatever reaches it last, so devices settle the order themselve
 | `override` | the same key as `classification` | `{ category, at }` | last write wins |
 | `sender` | a lowercased sender address | `{ category, at }` | last write wins |
 | `setting` | a setting's name, such as `categories` | that setting's value, such as `{ enabled, unsure, seeded }` | last write wins |
-| `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became | see [Booking pages](#booking-pages) | last write wins |
+| `booking` | `settings:<acct>`, the booking page's settings; `map:<acct>:<bookingId>`, which event a booking became; `meeting:<acct>:<bookingId>`, a video meeting made for a booking whose event isn't written yet | see [Booking pages](#booking-pages) | last write wins |
 | `bookingkey` | `<acct>` | the booking page's key pair: `{ current, keys: { <keyId>: { privatePkcs8, publicRaw, createdAt } } }` | first write wins (`ifAbsent`) |
 
 `<acct>` is the first 16 characters of `base64url(SHA-256(the account's normalized email))`, so a device that signs in to another account never uses these records. A device leaves `bookingkey` out of "Export my data" and removes it locally when it signs out.

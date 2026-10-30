@@ -390,6 +390,8 @@ function calendarNotice(n, state) {
     switch (action) {
       case 'takeover':
         return act(() => api('bookingTakeover'));
+      case 'video':
+        return ctx.openSettings('video');
       case 'reconnect':
         return n.accountId ? reconnect(n.accountId) : null;
       case 'open':

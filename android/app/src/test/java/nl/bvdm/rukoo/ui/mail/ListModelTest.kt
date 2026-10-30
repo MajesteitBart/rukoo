@@ -1,5 +1,7 @@
 package nl.bvdm.rukoo.ui.mail
 
+import nl.bvdm.rukoo.categories.Category
+import nl.bvdm.rukoo.categories.CategoryLookup
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.AccountType
 import nl.bvdm.rukoo.mail.model.Address
@@ -92,5 +94,49 @@ class ListModelTest {
         assertEquals(mapOf("1" to "gmail", "2" to "bvdm"), ListModel.accountLabels(listOf(acc("1", "bart@gmail.com"), acc("2", "bart@bvdm.ai"))))
         assertEquals(mapOf("1" to "gmail.com", "2" to "gmail.nl"), ListModel.accountLabels(listOf(acc("1", "a@gmail.com"), acc("2", "b@gmail.nl"))))
         assertEquals(mapOf("1" to "a", "2" to "b"), ListModel.accountLabels(listOf(acc("1", "a@gmail.com"), acc("2", "b@gmail.com"))))
+    }
+
+    private fun category(id: String) = Category(id, id, id.replaceFirstChar { it.uppercase() }, "", false, false, "#c56cf0", 0)
+
+    @Test
+    fun inboxShowsEachEmailItsCategoryAndACategoryTabOnlyItsOwnMail() {
+        val list = listOf(msg("1", "sanne@x.nl", 3), msg("2", "news@shop.nl", 2), msg("3", "me@x.nl", 1, role = FolderRole.SENT))
+        val cats = listOf(category("needs-you"), category("promotions")).associateBy { it.id }
+        // Sent mail has no category, so the lookup leaves it out.
+        val lookup = CategoryLookup(mapOf("1" to "needs-you", "2" to "promotions"))
+        assertEquals(list, ListModel.categoryRows(list, lookup, tab = null))
+        assertEquals(listOf("2"), ListModel.categoryRows(list, lookup, tab = "promotions").map { it.id })
+        // Inbox, a search, VIP and Unread mix the categories: each inbox email has its label.
+        assertEquals(listOf("needs-you", "promotions", null), list.map { ListModel.rowCategory(it, lookup, tab = null, cats)?.id })
+        // A category's own tab says which one it is in its header, so its rows don't.
+        assertNull(ListModel.rowCategory(list[1], lookup, tab = "promotions", cats))
+        // A category removed meanwhile has no label to show; categories off has no lookup.
+        assertNull(ListModel.rowCategory(list[0], lookup, null, cats - "needs-you"))
+        assertNull(ListModel.rowCategory(list[0], CategoryLookup.NONE, null, cats))
+    }
+
+    @Test
+    fun inboxLeavesOutAHiddenCategoryWhichItsTabSearchAndCountsStillKnow() {
+        val list = listOf(msg("1", "sanne@x.nl", 3, unread = true), msg("2", "news@shop.nl", 2, unread = true), msg("3", "app@x.nl", 1))
+        val lookup = CategoryLookup(mapOf("1" to "needs-you", "2" to "promotions", "3" to "updates"), hiddenCategories = setOf("promotions"))
+        // Inbox itself: without Promotions.
+        assertEquals(listOf("1", "3"), ListModel.categoryRows(list, lookup, tab = null, inbox = true).map { it.id })
+        // Its own tab still shows all of it.
+        assertEquals(listOf("2"), ListModel.categoryRows(list, lookup, tab = "promotions", inbox = true).map { it.id })
+        // A search, VIP and Unread aren't Inbox itself: everything.
+        assertEquals(list, ListModel.categoryRows(list, lookup, tab = null, inbox = false))
+        // Inbox's unread count in the drawer leaves it out too.
+        assertEquals(1, ListModel.inboxUnread(list.filter { it.unread }, lookup))
+        assertEquals(2, ListModel.inboxUnread(list.filter { it.unread }, lookup.copy(hiddenCategories = emptySet())))
+    }
+
+    @Test
+    fun pillsShrinkInProportionBeforeTheSubjectDoes() {
+        // Room enough: each as wide as it needs.
+        assertEquals(listOf(30, 80), ListModel.pillWidths(listOf(30, 80), 150))
+        // Short of room: the longer label gives up more, so a short VIP pill stays readable longer.
+        assertEquals(listOf(20, 53, 26), ListModel.pillWidths(listOf(30, 80, 40), 100))
+        assertTrue(ListModel.pillWidths(listOf(30, 80, 40), 100).sum() <= 100)
+        assertEquals(listOf(0, 0), ListModel.pillWidths(listOf(30, 80), 0))
     }
 }
