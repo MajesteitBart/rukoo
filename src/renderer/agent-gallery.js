@@ -169,6 +169,8 @@ head(a, 'Notices');
 a.append(
   bui.noticeLine({ text: 'Codex started a new thread.', tone: 'info' }, { labels: { undo: 'Undo' } }).el,
   bui.noticeLine({ text: 'Archived 3 emails', tone: 'success', undo: { kind: 'move', ids: [] } }, { labels: { undo: 'Undo' }, onUndo: noop }).el,
+  // Full permission: a proposal went ahead without a card.
+  bui.noticeLine({ text: 'Allowed without asking: Add 2 tasks to Todoist', tone: 'info', code: 'auto-approved' }, { labels: { undo: 'Undo' } }).el,
   bui.noticeLine({ text: 'Could not reach Clark.', tone: 'error', code: 'offline' }, { labels: { undo: 'Undo' } }).el
 );
 
@@ -318,9 +320,20 @@ head(live, 'Composer');
 const composerLabels = { send: 'Send', stop: 'Stop', agent: 'Agent', removeContext: 'Remove', noMatches: (q) => `No matches for "${q}"` };
 const c1 = bui.chatComposer({ placeholder: 'Ask Clark about this email…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});
 c1.setContext(bui.entityChip({ label: 'Sanne de Vries', sub: 'Call on Thursday', monogram: 'Sanne de Vries', onRemove: noop, removeLabel: 'Remove' }));
+// The permission level by Send, one per level: Ask, Auto, and Full permission with its orange shield.
+const PERMISSION_ITEMS = () => [
+  { heading: 'Permission level' },
+  { id: '', label: 'Default', tag: 'Ask', checked: false },
+  { separator: true },
+  { id: 'ask', label: 'Ask', sub: 'Asks before every action', icon: 'shield' },
+  { id: 'auto', label: 'Auto', sub: 'Asks before deleting or what others see', icon: 'shield-half', checked: true },
+  { id: 'full', label: 'Full permission', sub: 'Never asks, not even before sending', icon: 'shield-off' }
+];
+c1.setPicker('permission', { text: 'Ask', label: 'Permission level: Ask', items: PERMISSION_ITEMS, icon: 'shield' });
 const c2 = bui.chatComposer({ placeholder: 'Ask Claude…', labels: composerLabels, agents: AGENTS, agentId: 'claude', commands: COMMANDS }, {});
 c2.setValue('Keep it short and mention the revised price from March.');
 c2.setRunning(true);
+c2.setPicker('permission', { text: 'Auto', label: 'Permission level: Auto', items: PERMISSION_ITEMS, icon: 'shield-half' });
 const c3 = bui.chatComposer({ placeholder: 'Ask Codex…', labels: composerLabels, agents: AGENTS, agentId: 'codex', commands: COMMANDS }, {});
 c3.setDisabled(true, bui.button({ label: 'Set up Codex', kind: 'link', size: 'sm' }));
 // What goes along with the message: a file that is there (with its x), one still on its way and an email. Until the
@@ -334,6 +347,7 @@ c5.setAttachments([
 ]);
 c5.setValue('Compare these with the offer from March.');
 c5.setHolding(true, 'Wait until the files are added, then send.');
+c5.setPicker('permission', { text: 'Full', label: 'Permission level: Full permission', items: PERMISSION_ITEMS, icon: 'shield-off', tone: 'warn' });
 const c4wrap = document.createElement('div');
 c4wrap.className = 'gpush';
 const c4 = bui.chatComposer({ placeholder: 'Ask Clark…', labels: composerLabels, agents: AGENTS, agentId: 'clark', commands: COMMANDS }, {});

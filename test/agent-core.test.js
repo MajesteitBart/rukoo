@@ -39,14 +39,16 @@ test('config: whitelisted, type-checked updates; secrets encrypted and never in 
   assert.equal(cfg.data.defaultAgent, 'clark');
   assert.equal(cfg.data.mcp.port, 47800);
 
-  cfg.update({ defaultAgent: 'claude', autoMailActions: true, clark: { name: 'Clark', url: 'http://100.91.52.84:8642/', key: 'sneaky' }, evil: 1, mcp: { port: 47801 } });
+  cfg.update({ defaultAgent: 'claude', permission: 'auto', clark: { name: 'Clark', url: 'http://100.91.52.84:8642/', key: 'sneaky' }, evil: 1, mcp: { port: 47801 } });
   assert.equal(cfg.data.defaultAgent, 'claude');
+  assert.equal(cfg.data.permission, 'auto');
   assert.equal(cfg.data.clark.url, 'http://100.91.52.84:8642', 'trailing slash dropped');
   assert.equal(cfg.data.clark.key, null, 'secrets cannot come in through update()');
   assert.equal('evil' in cfg.data, false);
   for (const bad of [
     { defaultAgent: 'gpt' },
-    { autoMailActions: 'yes' },
+    { permission: 'yes' },
+    { permission: null },
     { clark: { url: 'ftp://x' } },
     { clark: { url: 'http://user:pw@host' } },
     { clark: { name: 'x'.repeat(41) } },
@@ -691,7 +693,7 @@ test('a mail action that runs without asking and outlasts its call says so, and 
   const { hub } = fakeHub(env, { adapters: { claude: adapter } });
   await hub.start();
   try {
-    hub.cfg.data.autoMailActions = true;
+    hub.cfg.data.permission = 'auto';
     hub.mailWait = 50;
     const c = hub.create({ agent: 'claude', message: null });
     const call = env.engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
@@ -770,7 +772,7 @@ test('undo waits its turn on the mail chain, and the next message waits for it',
   const { hub } = fakeHub(env, { adapters: { claude: adapter } });
   await hub.start();
   try {
-    hub.cfg.data.autoMailActions = true;
+    hub.cfg.data.permission = 'auto';
     const c = hub.create({ agent: 'claude', message: null });
     const local = { agent: 'claude', conversationId: c.id, remote: false };
     const [a, b] = env.engine.listMessages({ view: 'inbox' }).slice(0, 2);
@@ -814,7 +816,7 @@ test('a mail action that runs without asking waits for an approved one before it
     };
     await hub.callTool(local, 'mail_action', { action: 'archive', message_ids: [a.id] });
     hub.decide(c.id, c.items.find((i) => i.type === 'approval').id, 'approve');
-    hub.cfg.data.autoMailActions = true;
+    hub.cfg.data.permission = 'auto';
     const res = await hub.callTool(local, 'mail_action', { action: 'archive', message_ids: [b.id] });
     assert.equal(res.structuredContent.status, 'done');
     assert.deepEqual(log, ['start a', 'end a', 'start b', 'end b']);
@@ -840,7 +842,7 @@ test('a mail action that fails after its call stopped waiting leaves a note, so 
   const { hub } = fakeHub(env, { adapters: { claude: adapter } });
   await hub.start();
   try {
-    hub.cfg.data.autoMailActions = true;
+    hub.cfg.data.permission = 'auto';
     hub.mailWait = 50;
     const c = hub.create({ agent: 'claude', message: null });
     const call = env.engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
@@ -868,7 +870,7 @@ test('quitting while a mail action still runs leaves a note, so the next message
   const first = fakeHub(env, {}).hub;
   await first.start();
   const c = first.create({ agent: 'claude', message: null });
-  first.cfg.data.autoMailActions = true;
+  first.cfg.data.permission = 'auto';
   first.mailWait = 50;
   const call = env.engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
   let done;
@@ -1090,10 +1092,10 @@ test('a chat keeps its own model and effort: checked against the agent’s list,
     assert.deepEqual([list.efforts, list.defaultModel, list.error], [['low', 'medium', 'high'], '', null]);
 
     // An effort the model does not offer goes back to the default; the panel hears the new choice.
-    assert.deepEqual(first.hub.setChoice(c.id, { effort: 'xhigh' }), { model: 'gpt-6-luna', effort: null });
-    assert.deepEqual(first.events.at(-1), { kind: 'conversation', conversation: { id: c.id, model: 'gpt-6-luna', effort: null } });
-    assert.deepEqual(first.hub.setChoice(c.id, { model: 'gpt-6-astra', effort: 'ultra' }), { model: 'gpt-6-astra', effort: 'ultra' });
-    assert.deepEqual(first.hub.setChoice(c.id, { model: 'gpt-6-luna' }), { model: 'gpt-6-luna', effort: null }, 'Luna has no ultra');
+    assert.deepEqual(first.hub.setChoice(c.id, { effort: 'xhigh' }), { model: 'gpt-6-luna', effort: null, permission: null });
+    assert.deepEqual(first.events.at(-1), { kind: 'conversation', conversation: { id: c.id, model: 'gpt-6-luna', effort: null, permission: null } });
+    assert.deepEqual(first.hub.setChoice(c.id, { model: 'gpt-6-astra', effort: 'ultra' }), { model: 'gpt-6-astra', effort: 'ultra', permission: null });
+    assert.deepEqual(first.hub.setChoice(c.id, { model: 'gpt-6-luna' }), { model: 'gpt-6-luna', effort: null, permission: null }, 'Luna has no ultra');
     assert.throws(() => first.hub.setChoice(c.id, { effort: 'turbo' }), (err) => err.code === 'invalid');
     assert.throws(() => first.hub.setChoice(c.id, { model: 'x'.repeat(201) }), (err) => err.code === 'invalid');
     assert.throws(() => first.hub.setChoice(c.id, { model: 'two\nlines' }), (err) => err.code === 'invalid');
@@ -1129,7 +1131,7 @@ test('a chat keeps its own model and effort: checked against the agent’s list,
     await first.hub.updateConfig({ codex: { model: '' } });
     const failed = await first.hub.models('codex');
     assert.deepEqual([failed.models, failed.error], [[], { code: 'offline', detail: 'connect ECONNREFUSED' }]);
-    assert.deepEqual(first.hub.setChoice(c.id, { effort: 'max' }), { model: 'gpt-6-luna', effort: 'max' });
+    assert.deepEqual(first.hub.setChoice(c.id, { effort: 'max' }), { model: 'gpt-6-luna', effort: 'max', permission: null });
     first.hub.setChoice(c.id, { effort: 'medium' });
   } finally {
     await first.hub.dispose();
@@ -2235,7 +2237,7 @@ test('a mail notice loses its Undo after a restart, since the engine only kept i
   await first.start();
   const c = first.create({ agent: 'claude', message: null });
   const call = env.engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
-  first.cfg.data.autoMailActions = true;
+  first.cfg.data.permission = 'auto';
   await first.callTool({ agent: 'claude', conversationId: c.id, remote: false }, 'mail_action', { action: 'archive', message_ids: [call.id] });
   assert.ok(c.items.find((i) => i.type === 'notice').undo, 'Undo works while the app runs');
   await first.dispose();

@@ -49,7 +49,7 @@ More in [Calendar](docs/calendar.md) and [Booking page](docs/booking.md).
 
 - The chat panel (`Ctrl+J`) sits next to the email. It works with Hermes Agent (such as Clark), Claude Code, Codex and OpenClaw.
 - Quick actions draft a reply, brief you on the sender, plan follow-ups or summarize. You can edit them and add your own.
-- Agents read your mail and calendar and write drafts through Rukoo's own MCP server. They never send mail. Anything other people will see, and every event an agent adds, waits for your approval.
+- Agents read your mail and calendar and write drafts through Rukoo's own MCP server. Rukoo never sends mail for them. Anything other people will see, and every event an agent adds, waits for your approval, unless you give a chat a looser [permission level](docs/agents.md#permission-level).
 - `/name` in the chat starts a skill in the Agent Skills format, from Rukoo's own set or from your skills folder.
 
 More in [Agents](docs/agents.md).

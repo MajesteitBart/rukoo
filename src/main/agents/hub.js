@@ -15,6 +15,7 @@ const ownskills = require('./ownskills');
 const { ChatFiles, shown: shownFile, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
 const { PdfReader } = require('../pdfread');
 const { PhoneHost } = require('./phonehost');
+const { PERMISSIONS, permissionLevel } = require('./permission');
 
 const MAX_CONVERSATIONS = 150;
 // Conversations an agent opened from outside the panel (Clark on WhatsApp) have their own, smaller cap.
@@ -473,6 +474,9 @@ class AgentHub extends EventEmitter {
       // Saved before chats had a model and effort of their own: they follow the agent's default.
       c.model = typeof c.model === 'string' && c.model ? c.model : null;
       c.effort = EFFORTS.includes(c.effort) ? c.effort : null;
+      // Saved before chats had a permission level: they follow the one in Settings, and the agent heard of none.
+      c.permission = permissionLevel(c.permission);
+      c.toldPermission = permissionLevel(c.toldPermission);
       // Saved before files could be attached: none.
       c.files = Array.isArray(c.files) ? c.files.filter((f) => isObj(f) && typeof f.id === 'string' && typeof f.file === 'string') : [];
       // A turn cannot survive a restart: close whatever was still open.
@@ -851,7 +855,7 @@ class AgentHub extends EventEmitter {
     return ref;
   }
 
-  create({ agent, message = null, origin = 'panel', title = '', model = null, effort = null } = {}) {
+  create({ agent, message = null, origin = 'panel', title = '', model = null, effort = null, permission = null } = {}) {
     const id = AGENT_IDS.includes(agent) ? agent : this.cfg.data.defaultAgent;
     if (this.cfg.data[id].enabled === false) throw new AgentError('disabled', `${id} is turned off`);
     const ref = this.messageRef(message);
@@ -868,6 +872,10 @@ class AgentHub extends EventEmitter {
       // The model and effort for this chat, picked in the panel; null follows the agent's default (setChoice()).
       model: null,
       effort: null,
+      // The permission level for this chat, picked in the panel; null follows Settings (permissionOf()).
+      permission: null,
+      // The level the agent was last told about in a turn (runTurn()); null: none yet.
+      toldPermission: null,
       provider: {},
       notes: [],
       // Set once a turn reached the agent; until then every message is a first turn with the email attached.
@@ -884,7 +892,7 @@ class AgentHub extends EventEmitter {
       items: []
     };
     // Picked before the chat started.
-    this.applyChoice(c, { model, effort });
+    this.applyChoice(c, { model, effort, permission });
     this.conversations.set(c.id, c);
     this.enforceLimit(c);
     this.scheduleSave();
@@ -1114,14 +1122,15 @@ class AgentHub extends EventEmitter {
     return m ? m.efforts : list.custom;
   }
 
-  // Applies a model and effort picked in the panel; null follows the agent's default. An effort the model does not
-  // offer goes back to the default. A turn that runs now keeps what it started with: the choice applies to the next.
+  // Applies a model, effort or permission level picked in the panel; null follows the agent's default or, for the
+  // level, Settings. An effort the model does not offer goes back to the default. A turn that runs now keeps the model
+  // and effort it started with; the level counts from the next tool call, as Rukoo checks it there.
   setChoice(id, choice) {
     const c = this.mustGet(id);
     this.applyChoice(c, choice);
     this.touch(c);
-    this.emitEvent({ kind: 'conversation', conversation: { id: c.id, model: c.model, effort: c.effort } });
-    return { model: c.model, effort: c.effort };
+    this.emitEvent({ kind: 'conversation', conversation: { id: c.id, model: c.model, effort: c.effort, permission: c.permission } });
+    return { model: c.model, effort: c.effort, permission: c.permission };
   }
 
   applyChoice(c, choice) {
@@ -1131,8 +1140,16 @@ class AgentHub extends EventEmitter {
     if (effort !== null && !EFFORTS.includes(effort)) throw new AgentError('invalid', `effort must be one of ${EFFORTS.join(', ')}`);
     const offered = effort ? this.effortsFor(c.agent, model) : null;
     if (offered && !offered.includes(effort)) effort = null;
+    const permission = 'permission' in choice ? choice.permission || null : c.permission || null;
+    if (permission !== null && !PERMISSIONS.includes(permission)) throw new AgentError('invalid', `permission must be one of ${PERMISSIONS.join(', ')}`);
     c.model = model;
     c.effort = effort;
+    c.permission = permission;
+  }
+
+  // The level Rukoo's tools go by in this chat: its own, else the one in Settings (permission.js).
+  permissionOf(c) {
+    return (c && permissionLevel(c.permission)) || permissionLevel(this.cfg.data.permission) || 'ask';
   }
 
   // The effort a turn sends: the chat's, unless the agent's current list no longer offers it for the model.
@@ -1371,7 +1388,11 @@ class AgentHub extends EventEmitter {
       const notes = c.notes.splice(0);
       turn.notes = notes;
       const local = this.localAgent(c);
-      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null, attached: turn.attached, local });
+      // The instructions describe Ask. The turn names another level, and Ask again after the agent heard of another.
+      turn.permission = this.permissionOf(c);
+      const told = firstTurn || recap ? null : c.toldPermission;
+      const permission = turn.permission !== 'ask' || (told && told !== 'ask') ? turn.permission : null;
+      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null, attached: turn.attached, local, permission });
       const port = this.mcp ? this.mcp.ports().local : null;
       const attached = turn.attached || { files: [], emails: [] };
       const handle = {
@@ -1424,6 +1445,10 @@ class AgentHub extends EventEmitter {
       if (!c.delivered || c.needsRecap) {
         c.delivered = true;
         c.needsRecap = false;
+        this.touch(c);
+      }
+      if (turn.permission && c.toldPermission !== turn.permission) {
+        c.toldPermission = turn.permission;
         this.touch(c);
       }
       // The agent has the newer emails this turn carried. Any it did not carry still wait (see loadNewer()).
@@ -2230,8 +2255,9 @@ class AgentHub extends EventEmitter {
     this.refreshRemoteHash();
     // The phone may no longer use this computer: its turns stop now and a code shown for pairing stops working.
     if (phoneWas && !this.cfg.data.phone.enabled && this.phoneHost) this.phoneHost.stopAll();
-    // Shortcuts change nothing about the agents themselves: the panel only needs to draw them again.
-    if (isObj(patch) && Object.keys(patch).every((k) => k === 'shortcuts')) {
+    // Shortcuts and the permission level change nothing about the agents themselves: the panel only needs to draw
+    // them again, and Rukoo's tools read the level when they are called.
+    if (isObj(patch) && Object.keys(patch).every((k) => k === 'shortcuts' || k === 'permission')) {
       this.emitEvent({ kind: 'agents', status: this.statuses });
       return this.config();
     }
