@@ -20,7 +20,7 @@ const DAY = 86400000;
 const PRODID = '-//Rukoo Mail//Calendar//EN';
 const PARTSTAT = { ACCEPTED: 'accepted', DECLINED: 'declined', TENTATIVE: 'tentative', 'NEEDS-ACTION': 'needsAction' };
 const ANSWER = { accepted: 'ACCEPTED', tentative: 'TENTATIVE', declined: 'DECLINED' };
-const VIDEO = /^https:\/\/([a-z0-9-]+\.)*(zoom\.us|teams\.microsoft\.com|teams\.live\.com|meet\.google\.com|whereby\.com|webex\.com)\/\S*$/i;
+const VIDEO = /^https:\/\/([a-z0-9-]+\.)*(zoom\.us|teams\.microsoft\.com|teams\.live\.com|meet\.google\.com|meet\.jit\.si|whereby\.com|webex\.com)\/\S*$/i;
 const CLASSES = { PUBLIC: 'public', PRIVATE: 'private', CONFIDENTIAL: 'confidential' };
 const DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 // RFC 9074: an alarm that says the event has none, so "no reminders" isn't read back as "unknown" (Apple writes it).

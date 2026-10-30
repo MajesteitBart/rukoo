@@ -43,7 +43,7 @@ A page has up to 10 meeting types. Each has its own link, `https://meet.rukoo.io
 | Name in the link | `30min` for the first | Up to 40 lowercase letters, digits or hyphens; a few words such as `api` and `mcp` are reserved |
 | Length | 30 minutes | 15, 20, 30, 45 or 90 minutes, or 1 to 4 hours |
 | Description | Empty | Up to 500 characters, shown on the page |
-| Location | Google Meet when the calendar allows it, else none | Google Meet, phone call, in person, a meeting link (https) or none |
+| Location | Google Meet when the calendar allows it, else none | Google Meet, a [video service](#video-meetings) connected on this computer, phone call, in person, a meeting link (https) or none |
 | Free time before, free time after | None | 5, 10, 15, 30, 45 or 60 minutes kept free around each booking, so guests can't book right next to your other meetings |
 | Minimum notice | 4 hours | None, 30 minutes, 1, 2, 4, 8 or 12 hours, 1 or 2 days, or a week |
 | How far ahead | 30 days | 7, 14, 30, 60 or 90 days |
@@ -54,7 +54,60 @@ A page has up to 10 meeting types. Each has its own link, `https://meet.rukoo.io
 
 The fields from Free time to At most per day have a section of their own, When guests can book, which is open when the editor opens. Needs your approval and Hide from the page sit under More options. In Settings → Booking page, each meeting type's row shows its length and location, these settings where they differ from the defaults, such as "15 mins free time after" or "1 day notice", and whether it needs your approval or is hidden.
 
-A location's details (the phone number, address or meeting link) go only into the guest's invitation, unless you turn on "Show these details on the booking page". The page shows a label, such as "Phone call" or "In person, Amsterdam". Google Meet needs a Google calendar that allows Meet under Add bookings to; Google makes the Meet link when the event is created.
+A location's details (the phone number, address or meeting link) go only into the guest's invitation, unless you turn on "Show these details on the booking page". The page shows a label, such as "Phone call" or "In person, Amsterdam". Google Meet needs a Google calendar that allows Meet under Add bookings to; Google makes the Meet link when the event is created. A video service makes its own link for each booking, so that link only ever goes into the invitation, and the page shows the label or the service's name.
+
+## Video meetings
+
+Settings → Video meetings connects Zoom, Microsoft Teams and Jitsi Meet. On the computer that handles bookings, a connected service appears as a location in the meeting type editor, after Google Meet; other computers keep a type's service but can't choose a new one. Each booking of that type then gets a meeting of its own. The computer that handles bookings makes it when the booking becomes an event, on a Google or a CalDAV calendar, and puts its link in the event's location and on the first line of its description, so the guest's invitation has it. The account server never sees the link.
+
+| Service | What you need | What each booking gets |
+|---|---|---|
+| Jitsi Meet | Nothing: turn it on | A room with a name nobody can guess, such as `https://meet.jit.si/rukoo-…`, on meet.jit.si or a Jitsi server of your own |
+| Zoom | A Zoom account, and a [Zoom OAuth app](#zoom-and-teams-clients) in this copy of Rukoo | A scheduled meeting in your Zoom account |
+| Microsoft Teams | A work or school account with Teams, and a [Microsoft OAuth app](#zoom-and-teams-clients) in this copy of Rukoo | A Teams meeting |
+
+When you or the guest move a booking, its Zoom or Teams meeting moves along, and a cancelled booking's meeting is deleted. A Jitsi room has no time, so it stays as it is. On meet.jit.si the first person in a room has to sign in with Google, GitHub or Facebook before the meeting starts, and the others wait until then; a Jitsi server of your own doesn't ask this unless you set it up to.
+
+### When a service fails
+
+The booking always goes through. When the service can't make the meeting, the event still goes in your calendar and the guest still gets the invitation, just without a link. That happens when the service isn't connected on the computer that handles bookings, when its connection needs renewing, or when it refuses or can't be reached. A notice names the booking and the reason, with a Video meetings button: add a link to the event yourself, or cancel the booking. A move or cancellation the service couldn't follow gets a notice too. Rukoo tries such a move again each time it compares the bookings with your calendar, until the service takes it; a notice you dismissed doesn't come back for it. While a meeting type uses a service that can't make meetings on the computer that handles bookings, a notice says that as well.
+
+When the calendar doesn't take a booking's event at first, Rukoo keeps the meeting it already made and puts that one in the event when it tries again, also when you changed the meeting type's location or deleted the type in between. The guest booked with that meeting, and it moves and goes with the booking like any other.
+
+A Zoom or Teams connection needs renewing when the service turns down the sign-in Rukoo kept. Usually someone removed Rukoo's access in the Zoom or Microsoft account, an admin withdrew it, or it went unused for too long (90 days for Zoom). Renew signs in again.
+
+### Computers with an older Rukoo
+
+Every computer signed in to your Rukoo account needs this version once a meeting type uses a video service. An older one can't read booking settings with a video location. Until it updates, it says the page's settings haven't reached it, Use this computer says the page is off, and its agent tools say the page is off and count free time in your working hours instead of your booking hours. Bookings carry on, because a video service can only be chosen on the computer that handles them. If an older computer takes over while you save such a change, Rukoo puts the type's previous location back and refuses the change.
+
+An older computer also doesn't move or delete the meetings of bookings that already have one. That can happen when meeting types stop using a video service and an older computer takes over: a booking with a Zoom or Teams meeting then keeps its meeting at the old time when it moves, and the meeting stays in Zoom or Teams when the booking is cancelled.
+
+### Sign-ins stay on this computer
+
+Rukoo signs in to Zoom and Microsoft in your browser, with OAuth 2.0 and PKCE, and keeps the refresh token on this computer, encrypted the way a Google account's is. Your Rukoo account doesn't carry it, so each computer that handles bookings connects its own services. Disconnect forgets the sign-in on this computer; Rukoo stays listed in your Zoom or Microsoft account's connected apps until you remove it there.
+
+### Zoom and Teams clients
+
+Zoom and Microsoft only let a registered app sign in. Like the client for [Google sign-in](mail.md#google-sign-in), none is in this repository or its builds. Without one, Settings → Video meetings says so and offers Add client file…, instead of a Connect button. Rukoo looks for a client in this order:
+
+- environment variables: `SEM_ZOOM_CLIENT_ID`, and `SEM_ZOOM_CLIENT_SECRET` for a Zoom app with a secret; `SEM_TEAMS_CLIENT_ID`, and `SEM_TEAMS_TENANT` for a single-tenant Microsoft app;
+- a file next to `google-oauth.json` in the profile (`%APPDATA%\Rukoo Mail` on Windows): `zoom-oauth.json` as `{"client_id": "...", "client_secret": "..."}`, or `teams-oauth.json` as `{"client_id": "...", "tenant": "..."}`. The secret and the tenant are optional. Add client file… writes this file for you.
+
+For Zoom, create a General app (user-managed) in the Zoom App Marketplace:
+
+- Set the OAuth redirect URL, and an entry in the allow list, to `http://127.0.0.1/callback`. Zoom ignores the port of a loopback address, so Rukoo can use a free one for each sign-in.
+- Add the scopes `meeting:write:meeting`, `meeting:update:meeting`, `meeting:delete:meeting` and `user:read:user`.
+- Rukoo always uses PKCE. A public client needs no secret; for an app with a secret, give it as above.
+
+For Microsoft Teams, register an app in Microsoft Entra ID under App registrations:
+
+- Supported account types: accounts in any organizational directory, or only your own. Microsoft Graph can't make a Teams meeting for a personal Microsoft account.
+- Add the platform "Mobile and desktop applications" with the redirect URI `http://localhost`. Microsoft ignores the port of a localhost address.
+- Turn on Allow public client flows. The app needs no secret.
+- Add the delegated Microsoft Graph permissions `OnlineMeetings.ReadWrite`, `User.Read` and `offline_access`. Some organizations need an admin to consent to `OnlineMeetings.ReadWrite` first.
+- Rukoo signs in through the `organizations` endpoint. For an app limited to your own directory, set the tenant to its ID or domain.
+
+Rukoo makes Teams meetings with Graph's `onlineMeetings`, which doesn't add an Outlook event of its own, so the guest gets one invitation: the one from the calendar under Add bookings to.
 
 ## Hours and dates
 
@@ -74,7 +127,7 @@ A booking becomes an event in the calendar under Add bookings to:
 
 - The title is the type, your name and the guest's: "30 minute meeting: Sanne de Vries and Jane Doe". Rukoo shortens the guest's name to at most four words and 40 characters of letters, spaces, apostrophes, hyphens and periods.
 - The description is the type's description and a line "Booked via" with your link.
-- The location comes from the type, or Google Meet.
+- The location comes from the type, or Google Meet. With a video service it is the meeting's own link, which also opens the description as "Join with Zoom: …".
 - The guest is invited by address. Google, or the CalDAV server, sends the invitation from your account.
 
 The guest's note, the assistant that booked and the guest's time zone stay out of the event, so nothing a guest typed goes out in mail from your address, apart from the shortened name in the title. Rukoo shows them on the event's card, and the note and the assistant in the bookings list too.
@@ -111,7 +164,7 @@ The computer that handles bookings shows a desktop notification for each new boo
 
 The computer that turned the page on handles it. It publishes your open times when you turn the page on or change it, a minute after a change in your calendars, and at least every 30 minutes. It checks for new bookings every minute. Settings → Booking page shows "Last updated from this computer" with how long ago.
 
-Your other computers signed in to the same Rukoo account show the page, its requests and bookings, and say "Bookings are handled by …". Use this computer makes the computer you're on the one that handles bookings, for example when the other one stays off. Requests can only be answered on the computer that handles bookings. When you delete a booked event on another computer, the booking is cancelled once the handling computer next syncs.
+Your other computers signed in to the same Rukoo account show the page, its requests and bookings, and say "Bookings are handled by …". Use this computer makes the computer you're on the one that handles bookings, for example when the other one stays off. Video services are connected per computer: when a meeting type, or the meeting of an upcoming booking, uses one that isn't connected on the computer you're on, the notice and the row with Use this computer say which to connect first. Requests can only be answered on the computer that handles bookings. When you delete a booked event on another computer, the booking is cancelled once the handling computer next syncs.
 
 ## When the computer is off
 
@@ -149,7 +202,7 @@ For each booking it keeps the time, the type, the status and how it was made (th
 
 A booking is deleted 30 days after the meeting. When it is cancelled, declined or lapses, its sealed details and the email hash go at once, and the rest 30 days later. Guests read this under the booking form and in the privacy statement, at [rukoo.io/privacy](https://rukoo.io/privacy) for the default server.
 
-Your Rukoo account holds the page's settings, its key pair and which event each booking became, end-to-end encrypted like every record. Export my data leaves the key pair out.
+Your Rukoo account holds the page's settings, its key pair, which event each booking became and its video meeting, end-to-end encrypted like every record. Export my data leaves the key pair out.
 
 ## Turning it off and deleting
 
@@ -205,4 +258,5 @@ The default server is set up the second way, with its pages at `meet.rukoo.io`. 
 - Bookings reach your calendar, and guests their invitation, only while Rukoo runs on the computer that handles bookings.
 - Microsoft calendars can't take bookings yet ([#17](https://github.com/MajesteitBart/rukoo/issues/17)), and neither can CalDAV calendars whose server doesn't send invitations.
 - Booking notifications have no setting of their own yet.
+- Video services are for bookings only. The calendar's own event dialog still offers just Google Meet.
 - Rukoo for Android doesn't show or change the booking page. Its `get_booking_link` tool gives agents your link.
