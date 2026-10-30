@@ -8,3 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+
+[dev-dependencies]
+# An independent WAV reader, to prove the segments open outside our own code.
+hound = "=3.5.1"
