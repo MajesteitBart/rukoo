@@ -49,6 +49,11 @@ const INTERVALS = [
   { value: 30, get label() { return t('settings.sync.thirtyMinutes'); } },
   { value: 60, get label() { return t('settings.sync.hour'); } }
 ];
+// Settings > About: which releases the update check offers (main's updates.js).
+const CHANNELS = [
+  { value: 'stable', get label() { return t('settings.updates.stable'); }, get hint() { return t('settings.updates.stableHint'); } },
+  { value: 'nightly', get label() { return t('settings.updates.nightly'); }, get hint() { return t('settings.updates.nightlyHint'); } }
+];
 const COLORS = [
   { value: '#2fd6c0', get label() { return t('settings.colors.turquoise'); } },
   { value: '#4a7dff', get label() { return t('settings.colors.blue'); } },
@@ -213,14 +218,28 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   document.getElementById('overlays').appendChild(page);
   const stack = !start ? ['main'] : start === 'server' ? ['main', 'account', 'server'] : start === 'shortcuts' ? ['main', 'agents', 'shortcuts'] : ['main', start];
   let params = id ? { id } : {};
-  // What the update check found (main's updates.js), for the Check now row.
+  // What the update check found (main's updates.js), and how far its download got (installer.js; null where this
+  // install can't update itself), for the Check now row.
   let updates = null;
-  const updatesValue = () =>
-    updates && updates.available
-      ? t('settings.updates.available', { version: updates.available.version })
-      : updates && updates.checkedAt
-        ? t('settings.updates.upToDate')
-        : '';
+  const download = () => {
+    const install = updates && updates.install;
+    return install && updates.available && install.version === updates.available.version ? install : null;
+  };
+  const updatesValue = () => {
+    const d = download();
+    if (d && d.status === 'downloading') return t('settings.updates.downloading', { version: d.version, percent: d.percent });
+    if (d && d.status === 'ready') return t('settings.updates.ready', { version: d.version });
+    if (updates && updates.available) return t('settings.updates.available', { version: updates.available.version });
+    return updates && updates.checkedAt ? t('settings.updates.upToDate') : '';
+  };
+  // Download progress changes only the value; a finished download also brings the Restart row.
+  const showUpdates = (state) => {
+    const was = download() && download().status;
+    updates = state;
+    if ((download() && download().status) !== was) return render();
+    const value = page.querySelector('[data-a="updates-check"] .value');
+    if (value) value.textContent = updatesValue();
+  };
   // While the pairing code shows: what the dialog does with the phone events from main (paired, expired, burned).
   let pairWatch = null;
 
@@ -240,6 +259,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     }
     // Zoom keys and the wheel work with Settings open; only the zoom row changes.
     if (type === 'zoom') showZoom(payload);
+    if (type === 'updates' && view === 'main') showUpdates(payload);
     if (type === 'account') account.onStatus(payload);
     if (type === 'categories') categoriesPage.onState(payload);
     // The booking page's state from main: the page and the overview follow it, forms keep what is typed.
@@ -1003,7 +1023,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         <div class="card">
           ${row({ title: t('whatsNew.settingsRow'), desc: t('whatsNew.settingsHelp'), action: 'whats-new' })}
           ${row({ title: t('settings.updates.title'), desc: t('settings.updates.help'), action: 'toggle:checkUpdates', toggle: s.checkUpdates !== false })}
+          ${row({ title: t('settings.updates.channel'), value: esc(labelOf(CHANNELS, (updates && updates.channel) || s.updateChannel)), action: 'updates-channel' })}
           ${row({ title: t('settings.updates.checkNow'), value: esc(updatesValue()), action: 'updates-check' })}
+          ${download() && download().status === 'ready' ? row({ title: t('settings.updates.restart'), desc: t('settings.updates.restartHelp'), action: 'updates-install' }) : ''}
           ${row({ title: t('settings.about.title'), desc: t('settings.about.help'), action: 'about' })}
         </div>`;
     }
@@ -1370,11 +1392,19 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         await render();
         // A failed check says so, also when an earlier one found something.
         if (!state || state.failed) toast(t('settings.updates.failed'));
-        else if (state.available) toast(t('settings.updates.available', { version: state.available.version }));
+        else if (state.available) toast(updatesValue());
         else if (state.checkedAt) toast(t('settings.updates.upToDate'));
         else toast(t('settings.updates.failed'));
         return;
       }
+      case 'updates-channel': {
+        const current = (updates && updates.channel) || s.updateChannel || 'stable';
+        const v = await choiceDialog(t('settings.updates.channel'), CHANNELS, current, { stacked: true });
+        if (v && v !== current) set({ updateChannel: v });
+        return;
+      }
+      case 'updates-install':
+        return api('updatesInstall');
       case 'density': {
         const v = await choiceDialog(t('settings.general.density'), DENSITY, s.density);
         if (v) set({ density: v });

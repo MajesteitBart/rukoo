@@ -781,6 +781,11 @@ test('at the narrowest list every button for checked emails is inside it and can
     await win.locator('.list-tools [data-bulk="more"]').focus();
     await win.keyboard.press('Enter');
     await expect(win.locator('.menu [role="menuitem"]', { hasText: move })).toBeVisible();
+    // The language change also sends 'updated', so the list draws once more, a moment later. Here it draws while the
+    // menu is open, as after a sync: the list's rows are new, but its buttons stay, so Escape can go back to More.
+    await win.evaluate(() => (document.querySelector('.list-scroll').firstElementChild.dataset.drawn = 'before'));
+    await win.evaluate(() => window.mail.call('updateSettings', {}));
+    await expect(win.locator('.list-scroll [data-drawn]')).toHaveCount(0);
     await win.keyboard.press('Escape');
     await expect(win.locator('.list-tools [data-bulk="more"]')).toBeFocused();
   }

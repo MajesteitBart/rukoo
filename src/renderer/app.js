@@ -723,10 +723,17 @@ function setMode(mode) {
   }
 }
 
-// A newer Rukoo on GitHub: a small button above the line over the sync status. It opens the release page.
+// A newer Rukoo on GitHub: a small button above the line over the sync status. Where this install updates itself
+// (main's installer.js) it shows once the download is done and restarts into the new version; while it downloads
+// there is no button. Elsewhere, and when the download failed, it opens the release page.
 function updateButton() {
   const u = S.updates && S.updates.available;
   if (!u) return '';
+  const install = S.updates.install && S.updates.install.version === u.version ? S.updates.install : null;
+  if (install && install.status === 'ready') {
+    return `<button class="update-btn" data-action="update-install" title="${esc(t('updates.button.restartTitle', { version: u.version }))}">${icons.sync}<span>${esc(t('updates.button.restart'))}</span></button>`;
+  }
+  if (S.updates.install && (!install || install.status !== 'failed') && u.feed) return '';
   return `<button class="update-btn" data-action="update" title="${esc(t('updates.button.title', { version: u.version }))}">${icons.download}<span>${esc(t('updates.button.label', { version: u.version }))}</span></button>`;
 }
 
@@ -869,6 +876,8 @@ function bindSidebar() {
         return newFolder();
       case 'update':
         return api('updatesOpen');
+      case 'update-install':
+        return api('updatesInstall');
       case 'sort-activity':
         return toggleSortPanel(t);
     }
@@ -992,6 +1001,16 @@ function listTitle() {
   return { title: viewLabel(), sub: unread ? t('mailbox.list.unreadSummary', { count: unread, scope: where }) : where };
 }
 
+// The HTML each toolbar was last drawn with. A redraw with nothing new, such as the second one after a language change
+// or a sync that found no mail, keeps the buttons: the focused one stays focused, and Escape in an open menu can go
+// back to the button that opened it.
+const drawn = new WeakMap();
+function drawHtml(el, html) {
+  if (drawn.get(el) === html) return;
+  el.innerHTML = html;
+  drawn.set(el, html);
+}
+
 function renderListHead() {
   const head = $('.list-head');
   const { title, sub, hint, color } = listTitle();
@@ -999,10 +1018,10 @@ function renderListHead() {
   head.classList.toggle('cat-head', Boolean(color));
   if (color) head.style.setProperty('--cat', color);
   else head.style.removeProperty('--cat');
-  head.innerHTML = `<div class="list-title"><h1>${esc(title)}</h1><div class="sub"${hint ? ` title="${esc(hint)}"` : ''}>${esc(sub)}</div></div>
+  drawHtml(head, `<div class="list-title"><h1>${esc(title)}</h1><div class="sub"${hint ? ` title="${esc(hint)}"` : ''}>${esc(sub)}</div></div>
     ${S.query.trim() ? `<button class="tbtn" data-action="search-clear" data-i18n-title="mailbox.search.clearShortcut" title="${esc(t('mailbox.search.clearShortcut'))}">${icons.close}<span data-i18n="common.actions.clear">${esc(t('common.actions.clear'))}</span></button>` : ''}
     <button class="icon-btn" data-action="sync" title="${esc(tip(t('mailbox.actions.sync'), 'sync'))}">${icons.sync}</button>
-    <button class="icon-btn" data-action="list-more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>`;
+    <button class="icon-btn" data-action="list-more" data-i18n-title="common.actions.moreOptions" title="${esc(t('common.actions.moreOptions'))}" aria-haspopup="menu">${icons.more}</button>`);
 }
 
 function renderListTools() {
@@ -1014,7 +1033,7 @@ function renderListTools() {
     const anyUnread = list.some((m) => m.unread);
     const canArchive = list.some((m) => account(m.accountId)?.archive && m.role !== 'archive');
     tools.className = 'list-tools selecting';
-    tools.innerHTML = `<button class="check ${all ? 'on' : 'some'}" data-action="check-all" title="${all ? t('mailbox.selection.none') : tip(t('mailbox.selection.all'), 'selectAll')}" role="checkbox" aria-checked="${all ? 'true' : 'mixed'}">${icons.check}</button>
+    drawHtml(tools, `<button class="check ${all ? 'on' : 'some'}" data-action="check-all" title="${all ? t('mailbox.selection.none') : tip(t('mailbox.selection.all'), 'selectAll')}" role="checkbox" aria-checked="${all ? 'true' : 'mixed'}">${icons.check}</button>
       <span class="sel-count">${esc(t('mailbox.selection.count', { count: n }))}</span>
       <span class="spacer"></span>
       <button class="icon-btn" data-bulk="${anyUnread ? 'read' : 'unread'}" title="${esc(anyUnread ? tip(t('mailbox.actions.read'), readKey(true)) : tip(t('mailbox.actions.unread'), readKey(false)))}">${anyUnread ? icons.mailOpen : icons.markUnread}</button>
@@ -1023,7 +1042,7 @@ function renderListTools() {
       ${canArchive ? `<button class="icon-btn" data-bulk="archive" title="${esc(tip(t('common.actions.archive'), 'archive'))}">${icons.archive}</button>` : ''}
       <button class="icon-btn" data-bulk="delete" title="${esc(tip(t('common.actions.delete'), 'delete'))}">${icons.trash}</button>
       <button class="icon-btn" data-bulk="more" data-i18n-title="reader.actions.more" title="${esc(t('reader.actions.more'))}" aria-haspopup="menu">${icons.more}</button>
-      <button class="icon-btn" data-bulk="clear" data-i18n-title="mailbox.selection.clearShortcut" title="${esc(t('mailbox.selection.clearShortcut'))}">${icons.close}</button>`;
+      <button class="icon-btn" data-bulk="clear" data-i18n-title="mailbox.selection.clearShortcut" title="${esc(t('mailbox.selection.clearShortcut'))}">${icons.close}</button>`);
     return;
   }
   tools.className = 'list-tools';
@@ -1034,10 +1053,10 @@ function renderListTools() {
     if (id === 'attachments') return list.filter((m) => m.hasAttachments).length;
     return 0;
   };
-  tools.innerHTML = `<div class="filters" role="tablist" data-i18n-aria-label="mailbox.filters.label" aria-label="${esc(t('mailbox.filters.label'))}">${FILTERS.map((f) => {
+  drawHtml(tools, `<div class="filters" role="tablist" data-i18n-aria-label="mailbox.filters.label" aria-label="${esc(t('mailbox.filters.label'))}">${FILTERS.map((f) => {
     const c = n(f.id);
     return `<button class="filter ${S.filter === f.id ? 'active' : ''}" role="tab" aria-selected="${S.filter === f.id}" data-filter="${f.id}">${esc(f.label)}${c ? `<span class="n">${c}</span>` : ''}</button>`;
-  }).join('')}</div>`;
+  }).join('')}</div>`);
 }
 
 // Rows folding out of the list (see letGo). Each renders the list once it is gone.

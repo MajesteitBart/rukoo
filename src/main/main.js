@@ -43,7 +43,8 @@ const { AccountService } = require('./account');
 const { Categories } = require('./categories');
 const { MailNotices } = require('./categories/notices');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
-const { UpdateChecker } = require('./updates');
+const { UpdateChecker, channelFor } = require('./updates');
+const { UpdateInstaller, installKind } = require('./installer');
 // The version whose "What's new" guide everyone sees once, on the first start of it.
 const WHATS_NEW = '2.1.0';
 const { PanelGate } = require('./agents/gate');
@@ -101,6 +102,9 @@ let account = null;
 let categories = null;
 let mailNotices = null;
 let updates = null;
+let installer = null;
+// The user chose Restart to update: the quit installs the new version and starts it.
+let restartForUpdate = false;
 let syncTimer = null;
 // The emails that came in since the main window last had focus, by id; badgeCount() counts the ones still new.
 let newSinceFocus = new Set();
@@ -140,6 +144,12 @@ function windows() {
 
 function broadcast(type, payload) {
   for (const w of windows()) w.webContents.send('mail:event', { type, payload });
+}
+
+// What the update check found, and how far this install got with it: install is null where Rukoo can't update
+// itself, and the sidebar's button opens the release page instead.
+function updatesState() {
+  return { ...updates.state(), install: installer ? installer.state() : null };
 }
 
 function themeColors() {
@@ -414,6 +424,7 @@ function answered(id, closed) {
   if (!closed) {
     quitAsks.clear();
     quitting = false;
+    restartForUpdate = false;
     // The main window closed before the quit was called off. Rukoo stays in the tray with a hidden main window, as
     // after any close: the agents' tools need it, and only a window hears that the Windows session ends.
     if (!win && (process.platform === 'darwin' || engine.settings.closeToTray)) createWindow({ hidden: true });
@@ -647,6 +658,12 @@ const api = {
     if ('syncInterval' in patch) scheduleSync();
     if ('closeToTray' in patch || 'minimizeToTray' in patch) updateTray();
     if ('badge' in patch) refreshBadge();
+    // The other channel's newest release, if any; switched off, the next Check now looks.
+    if ('updateChannel' in patch && updates) {
+      updates.channelChanged();
+      broadcast('updates', updatesState());
+      updates.check().catch(() => {});
+    }
     return s;
   },
   // Settings → General resets it; the keys and the wheel go through watchZoom.
@@ -753,6 +770,19 @@ const api = {
     return res.filePath;
   },
   openExternal: (url) => openUrl(url),
+  updatesState: () => updatesState(),
+  updatesCheck: async () => {
+    await updates.check({ force: true });
+    return updatesState();
+  },
+  // Restart to update: an ordinary quit, which installs at its end (see will-quit) and starts the new version. A
+  // window that calls the quit off calls the restart off too.
+  updatesInstall: () => {
+    if (!installer || installer.status !== 'ready' || !updates.available || installer.version !== updates.available.version) return false;
+    restartForUpdate = true;
+    app.quit();
+    return true;
+  },
   // The context menu in an email. Copy image: the image as a data: URL, which the reader turns into a PNG for
   // copyImage, since PNG is the one image type the clipboard takes. Open image: a copy in the default image viewer.
   copyText: async (text) => {
@@ -779,8 +809,6 @@ const api = {
     if (err) throw new Error(err);
     return true;
   },
-  updatesState: () => updates.state(),
-  updatesCheck: () => updates.check({ force: true }),
   // Only the release page that was found opens; the renderer can't pass another address.
   updatesOpen: () => {
     const found = updates.available;
@@ -1378,10 +1406,20 @@ app.whenReady().then(() => {
     current: app.getVersion(),
     repo: (process.env.SEM_HIDDEN || process.env.SEM_DATA_DIR) && !process.env.RUKOO_RELEASES_URL ? null : PACKAGE_RUKOO.releases,
     url: process.env.RUKOO_RELEASES_URL,
-    enabled: () => engine.settings.checkUpdates !== false
+    enabled: () => engine.settings.checkUpdates !== false,
+    channel: () => channelFor(engine.settings.updateChannel, app.getVersion())
   }).start();
-  if (process.env.SEM_HIDDEN) global.__semUpdates = updates;
-  updates.on('changed', (state) => broadcast('updates', state));
+  // Downloads what a check finds, where this install can replace itself (installer.js). Hidden test windows don't;
+  // a test sets the installer's state itself.
+  installer = new UpdateInstaller({ kind: process.env.SEM_HIDDEN ? null : installKind({ packaged: app.isPackaged }) });
+  if (process.env.SEM_HIDDEN) {
+    global.__semUpdates = updates;
+    global.__semInstaller = installer;
+  }
+  updates.on('changed', () => broadcast('updates', updatesState()));
+  // After every check, so a download that failed tries again with the next one.
+  updates.on('checked', (state) => installer.download(state.available).catch(() => {}));
+  installer.on('changed', () => broadcast('updates', updatesState()));
   // ---- agents ----
   // Starts in the background: the panel shows "starting" until the first 'agents' status event.
   hub = new AgentHub({
@@ -1479,6 +1517,15 @@ app.on('will-quit', (event) => {
   event.preventDefault();
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
-  Promise.race([closeAgents(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))]).finally(() => app.exit(0));
+  // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
+  // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
+  // installs, since Check now can still download one.
+  Promise.race([closeAgents(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))]).finally(() => {
+    const offered = updates && updates.available;
+    if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
+      installer.install({ restart: restartForUpdate });
+    }
+    app.exit(0);
+  });
 });
 // ---- /agents ----

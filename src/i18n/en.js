@@ -7794,7 +7794,7 @@
     "description": "Settings > About: switch for the update check. src/renderer/settings.js."
   },
   "settings.updates.help": {
-    "message": "Rukoo asks GitHub for new releases every few hours. GitHub sees your IP address.",
+    "message": "Rukoo asks GitHub for new releases every few hours. On Windows and in the AppImage it downloads them too. GitHub sees your IP address.",
     "description": "Settings > About: description of the update check switch. src/renderer/settings.js."
   },
   "settings.updates.checkNow": {
@@ -7812,6 +7812,50 @@
   "settings.updates.failed": {
     "message": "Couldn't reach GitHub. Try again later.",
     "description": "Settings > About: toast when the update check failed. src/renderer/settings.js."
+  },
+  "updates.button.restart": {
+    "message": "Restart to update",
+    "description": "Sidebar: the update button once a newer Rukoo has downloaded; restarts into it. src/renderer/app.js (updateButton)."
+  },
+  "updates.button.restartTitle": {
+    "message": "Rukoo {version} has downloaded. Restarts Rukoo to install it.",
+    "description": "Sidebar: tooltip of the Restart to update button. {version}: e.g. 2.1.1. src/renderer/app.js (updateButton)."
+  },
+  "settings.updates.channel": {
+    "message": "Update channel",
+    "description": "Settings > About: row and picker title for which releases the update check offers. src/renderer/settings.js."
+  },
+  "settings.updates.stable": {
+    "message": "Stable",
+    "description": "Settings > About > Update channel: option for tested releases. src/renderer/settings.js (CHANNELS)."
+  },
+  "settings.updates.stableHint": {
+    "message": "Tested releases, about every two weeks. Coming from Nightly, Rukoo waits for the next one.",
+    "description": "Settings > About > Update channel: explanation under Stable. Switching back from Nightly never installs an older version. src/renderer/settings.js (CHANNELS)."
+  },
+  "settings.updates.nightly": {
+    "message": "Nightly",
+    "description": "Settings > About > Update channel: option for daily development builds. Product term; keep it short. src/renderer/settings.js (CHANNELS)."
+  },
+  "settings.updates.nightlyHint": {
+    "message": "The newest changes, built each day something changed. Can contain bugs.",
+    "description": "Settings > About > Update channel: explanation under Nightly. src/renderer/settings.js (CHANNELS)."
+  },
+  "settings.updates.downloading": {
+    "message": "Downloading Rukoo {version} ({percent}%)",
+    "description": "Settings > About: value of Check now while an update downloads. {version}: e.g. 2.1.1; {percent}: 0 to 100. src/renderer/settings.js (updatesValue)."
+  },
+  "settings.updates.ready": {
+    "message": "Rukoo {version} installs when you quit",
+    "description": "Settings > About: value of Check now, and a toast, once an update has downloaded. {version}: e.g. 2.1.1. src/renderer/settings.js (updatesValue)."
+  },
+  "settings.updates.restart": {
+    "message": "Restart to update",
+    "description": "Settings > About: row that restarts Rukoo into a downloaded update. src/renderer/settings.js."
+  },
+  "settings.updates.restartHelp": {
+    "message": "Closes Rukoo, installs the new version and opens it again.",
+    "description": "Settings > About: description of the Restart to update row. src/renderer/settings.js."
   },
   "settings.keyboard.title": {
     "message": "Keyboard shortcuts",
