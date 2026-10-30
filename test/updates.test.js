@@ -129,3 +129,32 @@ test('each check reads the channel, and says it checked even when nothing change
   await checker.check();
   assert.deepEqual(checked, [null, '2.1.1-nightly.20261031.57', '2.1.1-nightly.20261031.57']);
 });
+
+test('switched to stable, a nightly on offer goes at once, also when the next check fails or was already asking', async (t) => {
+  const gh = await fakeGitHub(t, [release('v2.1.0'), nightly('v2.1.1-nightly.20261031.57')]);
+  let channel = 'nightly';
+  const checker = new UpdateChecker({ current: '2.1.0', url: gh.url, channel: () => channel });
+  assert.equal((await checker.check()).available.version, '2.1.1-nightly.20261031.57');
+  const changes = [];
+  checker.on('changed', (s) => changes.push(s.available));
+  checker.channelChanged();
+  assert.equal(checker.available.version, '2.1.1-nightly.20261031.57', 'still on nightly: the offer stays');
+  channel = 'stable';
+  checker.channelChanged();
+  assert.deepEqual([checker.available, changes], [null, [null]]);
+  const down = await fakeGitHub(t, { message: 'rate limited' }, 403);
+  checker.url = down.url;
+  assert.deepEqual([(await checker.check({ force: true })).available, checker.failed], [null, true]);
+  // A check that set out on nightly answers after the switch: it reads the channel when the list arrives.
+  channel = 'nightly';
+  checker.url = gh.url;
+  const asking = checker.check();
+  channel = 'stable';
+  checker.channelChanged();
+  assert.equal((await asking).available, null);
+  // A release stays on offer when stable is picked.
+  const stable = new UpdateChecker({ current: '2.0.0', url: gh.url, channel: () => 'stable' });
+  await stable.check();
+  stable.channelChanged();
+  assert.equal(stable.available.version, '2.1.0');
+});

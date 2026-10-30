@@ -375,17 +375,18 @@ for (const [button, kept] of [["Don't save", false], ['Save', true]]) {
 }
 
 // A downloaded update (main's installer.js) whose installer only writes to the quit log.
-async function updateReady() {
-  await app.evaluate(({}, file) => {
+async function updateReady(version = '9.9.9') {
+  await app.evaluate(({}, { file, version }) => {
     const fs = process.mainModule.require('fs');
-    global.__semUpdates.available = { version: '9.9.9', name: 'v9.9.9', url: 'https://github.com/MajesteitBart/rukoo/releases/tag/v9.9.9', feed: 'https://github.com/MajesteitBart/rukoo/releases/download/v9.9.9/' };
+    const tag = `v${version}`;
+    global.__semUpdates.available = { version, name: tag, url: `https://github.com/MajesteitBart/rukoo/releases/tag/${tag}`, prerelease: version.includes('-'), feed: `https://github.com/MajesteitBart/rukoo/releases/download/${tag}/` };
     Object.assign(global.__semInstaller, {
       kind: 'nsis',
       status: 'ready',
-      version: '9.9.9',
+      version,
       updater: { install: (silent, restart) => (fs.appendFileSync(file, `install ${silent ? 'silent' : 'asking'}${restart ? ' restart' : ''}\n`), true) }
     });
-  }, quitLog);
+  }, { file: quitLog, version });
 }
 
 test('Restart to update asks about a draft first: Cancel installs nothing, Save installs after every window has closed', async () => {
@@ -411,9 +412,12 @@ test('Restart to update asks about a draft first: Cancel installs nothing, Save 
 
 test('a plain quit installs a downloaded update without restarting; switched back to Stable, it installs nothing', async () => {
   await watchQuit();
-  await updateReady();
-  // Back on Stable, nothing is offered any more; the downloaded nightly stays put.
-  await app.evaluate(() => (global.__semUpdates.available = null));
+  await win.evaluate(() => window.mail.call('updateSettings', { updateChannel: 'nightly' }));
+  await updateReady('9.9.9-nightly.20261030.1');
+  // Back on Stable, the downloaded nightly isn't offered any more, before any check: this one can't reach GitHub,
+  // and a failed check keeps what it found before.
+  await win.evaluate(() => window.mail.call('updateSettings', { updateChannel: 'stable' }));
+  expect(await app.evaluate(() => global.__semUpdates.available)).toBeNull();
   await trayMenu('quit');
   expect(await quitEvents()).not.toContain('install silent');
   await launch();
@@ -422,6 +426,14 @@ test('a plain quit installs a downloaded update without restarting; switched bac
   await updateReady();
   await trayMenu('quit');
   expect((await quitEvents()).at(-1)).toBe('install silent');
+});
+
+test('with the automatic check off, Restart to update still installs what Check now downloaded, and restarts', async () => {
+  await watchQuit();
+  await win.evaluate(() => window.mail.call('updateSettings', { checkUpdates: false }));
+  await updateReady();
+  expect(await win.evaluate(() => window.mail.call('updatesInstall'))).toBe(true);
+  expect((await quitEvents()).at(-1)).toBe('install silent restart');
 });
 
 test('a save that fails during a quit keeps Rukoo running with the draft', async () => {

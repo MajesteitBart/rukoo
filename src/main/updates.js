@@ -53,6 +53,12 @@ function channelFor(setting, current) {
   return CHANNELS.includes(setting) ? setting : isNightly(current) ? 'nightly' : 'stable';
 }
 
+// Whether a channel offers a version: stable only releases, nightly also pre-releases.
+function onChannel(channel, version, prerelease) {
+  const v = parse(version);
+  return Boolean(v) && (channel === 'nightly' || (!prerelease && !v[3]));
+}
+
 // The update description electron-builder writes next to this platform's packages (see installer.js).
 function manifestName(platform = process.platform, arch = process.arch) {
   if (platform === 'win32') return 'latest.yml';
@@ -76,7 +82,7 @@ function newest(releases, current, { channel = 'stable', manifest = manifestName
   for (const r of Array.isArray(releases) ? releases : []) {
     const version = r && parse(r.tag_name);
     if (!version || r.draft) continue;
-    if (channel !== 'nightly' && (r.prerelease || version[3])) continue;
+    if (!onChannel(channel, r.tag_name, r.prerelease)) continue;
     if (typeof r.html_url !== 'string' || !/^https:\/\/github\.com\//.test(r.html_url)) continue;
     if (compare(r.tag_name, current) <= 0) continue;
     if (!best || compare(r.tag_name, best.tag_name) > 0) best = r;
@@ -123,6 +129,15 @@ class UpdateChecker extends EventEmitter {
 
   state() {
     return { current: this.current, channel: this.channel(), available: this.available, checkedAt: this.checkedAt, failed: this.failed };
+  }
+
+  // Settings switched the channel. An offer the new channel doesn't make goes at once: the next check can fail and
+  // keep what it found before, and a nightly downloaded before the switch to stable would still install on quit.
+  channelChanged() {
+    const a = this.available;
+    if (!a || onChannel(this.channel(), a.version, a.prerelease)) return;
+    this.available = null;
+    this.emit('changed', this.state());
   }
 
   // Asks GitHub now; resolves to the state. Off in Settings, it asks nothing and keeps what it found before.

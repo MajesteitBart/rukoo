@@ -660,6 +660,7 @@ const api = {
     if ('badge' in patch) refreshBadge();
     // The other channel's newest release, if any; switched off, the next Check now looks.
     if ('updateChannel' in patch && updates) {
+      updates.channelChanged();
       broadcast('updates', updatesState());
       updates.check().catch(() => {});
     }
@@ -1517,10 +1518,11 @@ app.on('will-quit', (event) => {
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
   // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
-  // still what the check offers: not after a switch back to Stable, or with the check turned off.
+  // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
+  // installs, since Check now can still download one.
   Promise.race([closeAgents(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))]).finally(() => {
     const offered = updates && updates.available;
-    if (installer && offered && installer.version === offered.version && engine.settings.checkUpdates !== false) {
+    if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
       installer.install({ restart: restartForUpdate });
     }
     app.exit(0);
