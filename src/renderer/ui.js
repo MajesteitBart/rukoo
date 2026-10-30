@@ -207,14 +207,52 @@ export function runToastAction() {
 // ---------- popover menu ----------
 
 let openMenu = null;
-let menuAnchor = null;
+let menuReturn = null;
+
+// What finds the anchor's copy after a redraw: its id, else its data attributes, which say what a button does (the
+// data-i18n ones only name its label), else its tag and classes, as the mail frame has nothing else.
+function sameAs(el) {
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const data = [...el.attributes].filter((a) => a.name.startsWith('data-') && !a.name.startsWith('data-i18n'));
+  if (data.length) return el.localName + data.map((a) => `[${CSS.escape(a.name)}="${CSS.escape(a.value)}"]`).join('');
+  return el.classList.length ? el.localName + [...el.classList].map((c) => `.${CSS.escape(c)}`).join('') : null;
+}
+
+// Noted when a menu opens, because a redraw while it is open, such as a sync or a language change, can replace the
+// button that opened it. Its ancestors are noted too: the one the redraw kept is where its copy would be.
+function returnPoint(anchor) {
+  if (!anchor) return null;
+  const selector = sameAs(anchor);
+  const ancestors = [];
+  for (let el = anchor.parentElement; el && el !== document.body; el = el.parentElement) ancestors.push(el);
+  return { anchor, selector, index: selector ? [...document.querySelectorAll(selector)].indexOf(anchor) : -1, ancestors };
+}
+
+const FOCUSABLE = 'button, a[href], input, select, textarea, iframe, [tabindex]:not([tabindex="-1"])';
+const takesFocus = (el) => {
+  el.focus();
+  return document.activeElement === el;
+};
+
+// Back to the button that opened the menu, or else to its copy from a redraw. With no copy, such as the More button
+// for checked emails after a sync removed them, the first thing that takes focus where the button was.
+function returnFocus({ anchor, selector, index, ancestors }) {
+  if (document.contains(anchor)) return anchor.focus();
+  const copies = selector ? document.querySelectorAll(selector) : [];
+  const copy = copies[index] || copies[0];
+  if (copy && takesFocus(copy)) return;
+  for (const el of ancestors) {
+    if (!document.contains(el)) continue;
+    if ([el, ...el.querySelectorAll(FOCUSABLE)].some((x) => x.matches(FOCUSABLE) && takesFocus(x))) return;
+  }
+}
 
 export function closeMenu({ refocus = false } = {}) {
   if (!openMenu) return;
   openMenu.remove();
   openMenu = null;
-  if (refocus && menuAnchor && document.contains(menuAnchor)) menuAnchor.focus();
-  menuAnchor = null;
+  if (refocus && menuReturn) returnFocus(menuReturn);
+  menuReturn = null;
 }
 
 export const menuOpen = () => Boolean(openMenu);
@@ -281,7 +319,7 @@ export function showMenu(anchor, items, { above = false, at = null, align = 'rig
     menu.classList.add('scrolls');
   }
   openMenu = menu;
-  menuAnchor = anchor || null;
+  menuReturn = returnPoint(anchor);
   menu.addEventListener('keydown', (e) => {
     const buttons = [...menu.querySelectorAll('button:not(:disabled)')];
     const i = buttons.indexOf(document.activeElement);
@@ -297,7 +335,8 @@ export function showMenu(anchor, items, { above = false, at = null, align = 'rig
       e.stopPropagation();
       closeMenu({ refocus: true });
     } else if (e.key === 'Tab') {
-      closeMenu();
+      // Tab then moves on from the menu's button, not from the end of the page where the menu was.
+      closeMenu({ refocus: true });
     }
   });
   menu.querySelector('button:not(:disabled)')?.focus();
