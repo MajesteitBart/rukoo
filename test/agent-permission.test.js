@@ -442,7 +442,7 @@ test('the turn names the level when it is not Ask, and Ask once more after the a
   }
 });
 
-test('an agent that lost its session hears the level again with the email and the recap', async () => {
+test('an agent that lost its session hears the level again in the first message of the new session', async () => {
   const inputs = [];
   const adapter = {
     async status() {
