@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_bridge::ControlError;
-use voice_meetings::{CreateMeeting, Library};
+use voice_meetings::{CreateMeeting, Library, MeetingFile};
 use voice_protocol::{ScreenMode, StartArgs, StartedBy, Track};
 use voice_recorder::control::Client;
 use voice_recorder::meeting::{self, RecorderFile};
@@ -272,7 +272,7 @@ impl Controller {
                 *inner = Some(Live {
                     id: id.clone(),
                     dir: dir.path().to_path_buf(),
-                    tracks: tracks_of(&lines, &self.sources),
+                    tracks: tracks_of(dir.meeting().ok().as_ref(), &lines, &self.sources),
                     child: None,
                     file,
                     paused,
@@ -782,21 +782,58 @@ fn stop_line(lines: &[Line]) -> Option<(String, u64)> {
     })
 }
 
-/// The tracks a meeting records, from its `track` lines, with the configured sources as a
-/// fallback for a timeline that has none yet.
-fn tracks_of(lines: &[Line], fallback: &[(String, String)]) -> Vec<(String, String)> {
-    let mut tracks: Vec<(String, String)> = Vec::new();
+/// The tracks a meeting records and the source of each. `meeting.json` holds what the meeting was
+/// started with and wins: the timeline's `track` lines only name devices that opened, so a
+/// microphone that was missing from the start would drop out of the meeting after a watchdog
+/// restart, and a call-only meeting would pick up the default microphone. The timeline and then
+/// the configured sources only fill in a source `meeting.json` doesn't name.
+fn tracks_of(
+    meeting: Option<&MeetingFile>,
+    lines: &[Line],
+    fallback: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut opened: Vec<(String, String)> = Vec::new();
     for line in lines {
         if let Line::Track { track, source, .. } = line {
-            if !tracks.iter().any(|(t, _)| t == track) {
-                tracks.push((track.clone(), source.clone()));
+            if !opened.iter().any(|(t, _)| t == track) {
+                opened.push((track.clone(), source.clone()));
             }
         }
     }
-    if tracks.is_empty() {
+    if let Some(meeting) = meeting {
+        let source_of = |name: &str| {
+            meeting
+                .sources
+                .get(name)
+                .cloned()
+                .or_else(|| {
+                    opened
+                        .iter()
+                        .find(|(t, _)| t == name)
+                        .map(|(_, s)| s.clone())
+                })
+                .or_else(|| {
+                    fallback
+                        .iter()
+                        .find(|(t, _)| t == name)
+                        .map(|(_, s)| s.clone())
+                })
+        };
+        let chosen: Vec<(String, String)> = meeting
+            .tracks
+            .iter()
+            .filter_map(|track| {
+                source_of(track.as_str()).map(|source| (track.as_str().to_string(), source))
+            })
+            .collect();
+        if !chosen.is_empty() {
+            return chosen;
+        }
+    }
+    if opened.is_empty() {
         fallback.to_vec()
     } else {
-        tracks
+        opened
     }
 }
 
@@ -875,6 +912,84 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn meeting_file(tracks: &[voice_protocol::Track], sources: &[(&str, &str)]) -> MeetingFile {
+        MeetingFile {
+            id: voice_protocol::MeetingId::parse("m-20261030-171203-4f2a").unwrap(),
+            title: String::new(),
+            created_at: 1_793_000_000_000,
+            tracks: tracks.to_vec(),
+            sources: sources
+                .iter()
+                .map(|(t, s)| (t.to_string(), s.to_string()))
+                .collect(),
+            screen: Default::default(),
+            started_by: voice_protocol::StartedBy::Voice,
+            context: None,
+            version: 1,
+        }
+    }
+
+    fn opened(track: &str, source: &str) -> Line {
+        Line::Track {
+            t: 0,
+            track: track.into(),
+            source: source.into(),
+            device: "Device".into(),
+            device_id: String::new(),
+            native_rate: 48_000,
+            native_channels: 2,
+        }
+    }
+
+    fn pair(track: &str, source: &str) -> (String, String) {
+        (track.to_string(), source.to_string())
+    }
+
+    #[test]
+    fn a_microphone_that_never_opened_stays_in_the_meeting() {
+        use voice_protocol::Track;
+        let meeting = meeting_file(
+            &[Track::Mic, Track::Call],
+            &[("mic", "input:headset"), ("call", "default-output")],
+        );
+        let lines = vec![opened("call", "default-output")];
+        let configured = vec![pair("mic", "default-input"), pair("call", "default-output")];
+        assert_eq!(
+            tracks_of(Some(&meeting), &lines, &configured),
+            vec![pair("mic", "input:headset"), pair("call", "default-output")]
+        );
+    }
+
+    #[test]
+    fn a_call_only_meeting_never_gains_a_microphone() {
+        use voice_protocol::Track;
+        let meeting = meeting_file(&[Track::Call], &[("call", "default-output")]);
+        let configured = vec![pair("mic", "default-input"), pair("call", "default-output")];
+        assert_eq!(
+            tracks_of(Some(&meeting), &[], &configured),
+            vec![pair("call", "default-output")]
+        );
+    }
+
+    #[test]
+    fn a_meeting_file_without_sources_borrows_them_from_the_timeline_then_the_settings() {
+        use voice_protocol::Track;
+        let meeting = meeting_file(&[Track::Mic, Track::Call], &[]);
+        let lines = vec![opened("call", "output:speakers")];
+        let configured = vec![pair("mic", "default-input"), pair("call", "default-output")];
+        assert_eq!(
+            tracks_of(Some(&meeting), &lines, &configured),
+            vec![
+                pair("mic", "default-input"),
+                pair("call", "output:speakers")
+            ]
+        );
+        assert_eq!(
+            tracks_of(None, &lines, &configured),
+            vec![pair("call", "output:speakers")]
+        );
+    }
 
     #[test]
     fn test_sources_keep_their_options() {
