@@ -1363,16 +1363,15 @@ class Booking extends EventEmitter {
   }
 
   // The event a booking becomes (design 2.9): the type's title with the host and the guest's short name in the
-  // page's language, only host-written text in the description, the location's private value or Google Meet, and the
-  // guest as attendee where the calendar sends invitations.
+  // page's language, only host-written text and the guest's links in the description, the location's private value or
+  // Google Meet, and the guest as attendee where the calendar sends invitations.
   eventInput(row, guest, settings, dest) {
     const type = settings.types.find((x) => x.slug === row.type) || { title: row.type, description: '', location: { kind: 'none', label: '', value: '' } };
     const locale = settings.locale;
     const name = rules.shortName(guest.name);
     const typeTitle = bookedTitle(type, row.start, row.end);
     const title = name ? translate(locale, 'booking.event.title', { type: typeTitle, host: settings.name, guest: name }) : translate(locale, 'booking.event.titleNoGuest', { type: typeTitle, host: settings.name });
-    const url = settings.url || (this.file.page && this.file.page.url) || '';
-    const description = [type.description, url ? translate(locale, 'booking.event.description', { url }) : ''].filter(Boolean).join('\n\n');
+    const description = [type.description, this.guestLines(row, guest, settings)].filter(Boolean).join('\n\n');
     const loc = type.location;
     const meet = loc.kind === 'googleMeet' && dest.conference;
     const location = loc.kind === 'googleMeet' || loc.kind === 'none' ? '' : loc.value || loc.label || '';
@@ -1391,6 +1390,27 @@ class Booking extends EventEmitter {
     };
     if (meet) input.addMeet = true;
     return input;
+  }
+
+  // The guest's "Pick another time" and "Cancel booking" lines in the page's language, or '' when the page's address
+  // or the key fails its check (rules.guestLinks): what the account server sends goes into mail from the host's address
+  // only once checked. Pick another time only for a type the page still has.
+  guestLines(row, guest, settings) {
+    const slug = settings.types.some((x) => x.slug === row.type) ? row.type : null;
+    const links = rules.guestLinks(settings.url || (this.file.page && this.file.page.url) || '', { id: row.id, slug, key: this.manageKeyOf(row, guest) });
+    if (!links) return '';
+    const lines = [];
+    if (links.reschedule) lines.push(translate(settings.locale, 'booking.event.reschedule', { url: links.reschedule }));
+    lines.push(translate(settings.locale, 'booking.event.cancel', { url: links.manage }));
+    return lines.join('\n');
+  }
+
+  // The guest's manage key: from the details just opened, else opened again from the sealed blob, because the mapping
+  // record leaves it out (createEvent). null when neither has one.
+  manageKeyOf(row, guest) {
+    if (guest && guest.manageKey) return guest.manageKey;
+    const opened = this.opened.get(row.id) || this.openRow(row);
+    return (opened && opened.manageKey) || null;
   }
 
   calendarKeys(accountId) {
@@ -1465,9 +1485,11 @@ class Booking extends EventEmitter {
       // uid: the one the calendar gave the event (Google may ignore the booking's), kept before handled tells the
       // server, so a handled that fails still has it the next time. The booking's own when the server can't take it.
       const uid = typeof ev.uid === 'string' && UID.test(ev.uid) ? ev.uid : row.uid;
+      // The guest's manage key stays out of the record: Export my data writes records to a file.
+      const { manageKey, ...kept } = guest;
       // The meeting with the time it has, which followMeeting changes once the service takes the booking's.
       const video = meeting ? { video: { ...meeting.ref, start: meeting.start, end: meeting.end } } : {};
-      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid, version: row.version, type: row.type, start: row.start, end: row.end, guest, customLength: false, ...video });
+      this.writeMap({ id: row.id, accountEmail: lower(acc ? acc.email : dest.email), calendarId: ev.calendarId, eventId: ev.eventId, uid, version: row.version, type: row.type, start: row.start, end: row.end, guest: kept, customLength: false, ...video });
       if (meeting) this.dropKept(row.id, meeting.ref);
       // A kept meeting made for an earlier time of the booking goes to this one.
       await this.followMeeting(row, guest);
