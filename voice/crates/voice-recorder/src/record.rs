@@ -268,7 +268,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     };
     for i in 0..recorder.tracks.len() {
         if let Err(error) = recorder.try_open(i, false) {
-            recorder.mark_lost(i, error);
+            recorder.mark_lost(i, error, recorder.clock.now());
         }
     }
     recorder.run(rx);
@@ -696,10 +696,11 @@ impl Recorder {
         Ok(())
     }
 
-    /// Records that the track has no device and schedules the first retry.
-    fn mark_lost(&mut self, i: usize, error: String) {
-        let t = self.clock.now();
+    /// Records that the track has no device from meeting time `at`, or from where its audio ends
+    /// if that is later, and schedules the first retry.
+    fn mark_lost(&mut self, i: usize, error: String, at: u64) {
         let track = &mut self.tracks[i];
+        let t = at.max(track.covered_until);
         track.state = State::Lost {
             error: error.clone(),
             next_try: Instant::now() + RETRY,
@@ -737,14 +738,16 @@ impl Recorder {
         }
     }
 
-    /// The device failed: end the segment, then drop the stream and retry every second.
-    fn lose(&mut self, i: usize, error: String) {
+    /// The device failed at meeting time `at`: end the segment, then drop the stream and retry
+    /// every second. Closing the segment syncs it to disk, which can take a while; the loss
+    /// still counts from `at`.
+    fn lose(&mut self, i: usize, error: String, at: u64) {
         self.close_segment(i, None);
-        self.mark_lost(i, error);
+        self.mark_lost(i, error, at);
     }
 
-    /// The stream must be rebuilt, usually on a new default device.
-    fn rebuild(&mut self, i: usize, reason: String) {
+    /// The stream must be rebuilt at meeting time `at`, usually on a new default device.
+    fn rebuild(&mut self, i: usize, reason: String, at: u64) {
         self.close_segment(i, None);
         // Drop the old stream before opening the new one.
         self.tracks[i].state = State::Lost {
@@ -752,7 +755,7 @@ impl Recorder {
             next_try: Instant::now(),
         };
         if let Err(error) = self.try_open(i, false) {
-            self.mark_lost(i, error);
+            self.mark_lost(i, error, at);
         }
     }
 
@@ -761,8 +764,8 @@ impl Recorder {
             return;
         };
         match live.flags.take_failure() {
-            Some(Failure::Lost(error)) => self.lose(i, error),
-            Some(Failure::Rebuild(reason)) => self.rebuild(i, reason),
+            Some((Failure::Lost(error), at)) => self.lose(i, error, self.clock.at(at)),
+            Some((Failure::Rebuild(reason), at)) => self.rebuild(i, reason, self.clock.at(at)),
             None => {}
         }
     }
@@ -773,7 +776,8 @@ impl Recorder {
             return;
         };
         if !track.spec.is_loopback() && now.duration_since(live.last_packet) > STALL {
-            self.lose(i, "The device stopped delivering audio.".into());
+            let at = self.clock.at(now);
+            self.lose(i, "The device stopped delivering audio.".into(), at);
         }
     }
 
@@ -806,7 +810,8 @@ impl Recorder {
             return;
         };
         if id != live.device.id {
-            self.rebuild(i, "The default device changed.".into());
+            let at = self.clock.now();
+            self.rebuild(i, "The default device changed.".into(), at);
         }
     }
 
@@ -831,7 +836,7 @@ impl Recorder {
         self.journal.write(Line::Suspend { t: from, until });
         for (i, lost) in was_lost.into_iter().enumerate() {
             if let Err(error) = self.try_open(i, lost) {
-                self.mark_lost(i, error);
+                self.mark_lost(i, error, self.clock.now());
             }
         }
         // Opening the devices can take seconds; the next check counts from here.
@@ -986,9 +991,10 @@ impl Recorder {
     /// The disk refused audio: end the segment with what it holds and treat the track like a
     /// lost device, so it retries every second and the gap is marked.
     fn write_failed(&mut self, i: usize, e: &io::Error) {
+        let at = self.clock.now();
         self.tracks[i].pending.clear();
         self.end_segment(i);
-        self.lose(i, format!("Writing the audio failed: {e}"));
+        self.lose(i, format!("Writing the audio failed: {e}"), at);
     }
 
     fn write_heartbeat(&mut self) {

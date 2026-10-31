@@ -168,12 +168,12 @@ pub enum Failure {
 pub struct StreamFlags {
     /// Set when a block was dropped because the recorder fell behind.
     pub overrun: AtomicBool,
-    /// The first failure the stream reported.
-    pub failure: Mutex<Option<Failure>>,
+    /// The first failure the stream reported, and when it reported it.
+    pub failure: Mutex<Option<(Failure, Instant)>>,
 }
 
 impl StreamFlags {
-    pub fn take_failure(&self) -> Option<Failure> {
+    pub fn take_failure(&self) -> Option<(Failure, Instant)> {
         self.failure
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -220,8 +220,11 @@ impl Sink {
         }
     }
 
-    /// Records the failure where the recorder's next tick finds it, and wakes the recorder.
+    /// Records the failure where the recorder's next tick finds it, and wakes the recorder. The
+    /// moment of the report is when the track lost its device, however late the recorder gets
+    /// to it.
     pub fn failed(&self, failure: Failure) {
+        let at = Instant::now();
         {
             let mut slot = self
                 .flags
@@ -229,7 +232,7 @@ impl Sink {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if slot.is_none() {
-                *slot = Some(failure);
+                *slot = Some((failure, at));
             }
         }
         let _ = self.tx.try_send(Event::Failed {
@@ -791,6 +794,29 @@ mod tests {
             faults: Faults::default()
         }
         .is_loopback());
+    }
+
+    #[test]
+    fn a_stream_keeps_its_first_failure_and_when_it_came() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let flags = Arc::new(StreamFlags::default());
+        let sink = Sink::new(tx, 0, 1, flags.clone());
+        let before = Instant::now();
+        sink.failed(Failure::Lost("gone".into()));
+        let after = Instant::now();
+        sink.failed(Failure::Rebuild("moved".into()));
+
+        let (failure, at) = flags.take_failure().unwrap();
+        assert_eq!(failure, Failure::Lost("gone".into()));
+        assert!(before <= at && at <= after);
+        assert!(flags.take_failure().is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Event::Failed {
+                track: 0,
+                generation: 1
+            })
+        ));
     }
 
     #[test]

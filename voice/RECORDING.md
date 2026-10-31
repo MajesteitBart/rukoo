@@ -141,7 +141,7 @@ Two options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit and `--
 - `--resume` continues a meeting whose recorder died. With an empty timeline it starts session 1.
 - It captures each device in the device's own format and converts it to 16 kHz mono.
 - A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed.
-- A failed device closes the segment and writes `device_lost`. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. Unplugging and Bluetooth profile switches show up this way.
+- A failed device closes the segment and writes `device_lost`, timed when the device reported the failure, or where the track's audio ends if that is later. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. Unplugging and Bluetooth profile switches show up this way.
 - It stops on the `stop` command, when the meeting reaches 8 hours (reason `limit`), or when it's killed. It doesn't stop when its parent exits. It never reads stdin, writes nothing to stdout, and reports problems on stderr.
 - On stop it pads healthy loopback tracks up to that moment, closes every segment, writes `stop`, removes `recorder.json` and only then replies.
 - On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app.
