@@ -648,6 +648,8 @@ const KIND_ICONS = {
   file: 'file',
   calendar: 'calendar',
   link: 'link',
+  // Rukoo Voice's meeting tools: the transcript, the notes and the screen.
+  meeting: 'mic',
   tool: 'wrench'
 };
 

@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "The Settings page: the settings_* commands of voice/ui/API.md and Tauri events.",
+  "windows": ["settings"],
+  "permissions": [
+    "core:event:default",
+    "allow-settings-state",
+    "allow-settings-set",
+    "allow-settings-save-provider",
+    "allow-settings-remove-key",
+    "allow-settings-list-models",
+    "allow-settings-model",
+    "allow-settings-choose-folder",
+    "allow-settings-open-folder",
+    "allow-settings-open-link",
+    "allow-settings-clean-preview",
+    "allow-settings-check-updates",
+    "allow-settings-new-token",
+    "allow-settings-import-ownkey",
+    "allow-settings-sync-test",
+    "allow-settings-close"
+  ]
+}

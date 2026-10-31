@@ -65,6 +65,44 @@ for (const a of ACTIONS) {
   Object.defineProperty(a, 'description', { get: () => t(`agent.actions.${a.key}.description`), enumerable: true });
 }
 
+// The quick actions of a chat about a Rukoo Voice meeting. A list of their own, outside the shortcuts: those are kept
+// in agents.json and exported to the phone, which has no meetings. The transcript reaches the agent only through
+// read_meeting_transcript, as untrusted text, so every prompt asks for it there.
+export const MEETING_ACTIONS = [
+  {
+    key: 'catchup',
+    icon: 'clock',
+    prompt:
+      'Catch me up on this meeting. Read what was said since you last read it with read_meeting_transcript, then tell me in a few short bullets what was discussed, what was decided and what is still open. Keep it brief: I am in the meeting.'
+  },
+  {
+    key: 'asked',
+    icon: 'person',
+    prompt:
+      'What did the others in this meeting ask me or expect from me? Read the transcript with read_meeting_transcript (since "start") and list each question or request: who asked it, what they asked, and whether I already answered it.'
+  },
+  {
+    key: 'notes',
+    icon: 'pen',
+    prompt:
+      'Write the notes of this meeting with your own meeting-notes skill, and store them where I keep notes. Read the whole transcript with read_meeting_transcript (since "start") and my own notes with read_meeting_notes. Tell me where you stored them.'
+  },
+  {
+    key: 'followup',
+    icon: 'mail',
+    prompt:
+      'Draft the follow-up email for this meeting to the people who were in it: thanks, what we decided, and who does what by when. Read the transcript with read_meeting_transcript (since "start") and my notes with read_meeting_notes, find the attendees in the calendar with list_events, then put the draft in the composer with write_draft (mode "new"). Do not send anything.'
+  }
+];
+
+for (const a of MEETING_ACTIONS) {
+  a.action = `meeting-${a.key}`;
+  Object.defineProperty(a, 'label', { get: () => t(`agent.meetingActions.${a.key}.label`), enumerable: true });
+  Object.defineProperty(a, 'description', { get: () => t(`agent.meetingActions.${a.key}.description`), enumerable: true });
+}
+
+export const meetingActionByKey = (key) => MEETING_ACTIONS.find((a) => a.key === String(key || '').replace(/^\//, '')) || null;
+
 // ---------- shortcuts ----------
 
 // The user arranges the quick actions in Settings → Agents → Shortcuts: hides Rukoo's, gives them their own label or

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pill",
+  "description": "The pill page: its snapshot, ack and layout commands and Tauri events. A rebuilt pill window gets a new label (pill-r1, pill-r2, ...).",
+  "windows": ["pill", "pill-*"],
+  "permissions": ["core:event:default", "allow-pill-snapshot", "allow-pill-ack", "allow-pill-layout"]
+}

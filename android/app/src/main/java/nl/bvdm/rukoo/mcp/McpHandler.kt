@@ -16,7 +16,7 @@ import nl.bvdm.rukoo.agents.RukooSkills
 
 /** What the handler needs from the tools and the hub; [McpTools] is the real one. */
 interface McpBackend {
-    /** tools/list: the sixteen tools with read_skill's description filled in. */
+    /** tools/list: the twenty tools with read_skill's description filled in. */
     fun listTools(): JsonArray
 
     /** tools/call: a tool result, `isError` for failures the agent should read. */

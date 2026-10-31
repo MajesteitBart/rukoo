@@ -1,0 +1,121 @@
+name: Release Rukoo Voice
+
+# Builds Rukoo Voice's Windows installer and portable zip for a voice-v<version> tag with voice/scripts/package.ps1,
+# and attaches them to that tag's GitHub release as a draft. The maintainer writes the notes and publishes it.
+#
+# Voice tags are voice-v<version>, never v<version> (voice/AGENTS.md, "Pull requests and releases"). This workflow
+# runs only for voice-v tags, and Rukoo's release.yml runs only on request with a v<version> tag. A Voice release is
+# never marked Latest: the README's download link points to the latest release, and that has to stay Rukoo.
+#
+# Voice 0.1 is not code-signed: neither the installer nor the programs carry a signature, so Windows SmartScreen
+# warns on first run.
+
+on:
+  push:
+    tags: ['voice-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing Voice tag, for example voice-v0.1.0 or voice-v0.2.0-rc.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate the tag
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^voice-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$') {
+            throw 'Use voice-vMAJOR.MINOR.PATCH, optionally followed by -alpha.N, -beta.N or -rc.N.'
+          }
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the version and the release commit
+        run: |
+          $meta = (cargo metadata --locked --no-deps --format-version 1 --manifest-path voice/Cargo.toml) -join "`n" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
+          $version = ($meta.packages | Where-Object { $_.name -eq 'voice-app' }).version
+          $tagged = $env:RELEASE_TAG.Substring('voice-v'.Length)
+          if ($version -cne $tagged) { throw "The tag is $env:RELEASE_TAG, but voice/Cargo.toml has version $version." }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Voice release tags must point to a commit merged into main.' }
+
+      # package.ps1 runs Tauri's CLI through npx.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - run: rustup show active-toolchain
+
+      # Builds the three programs and the installer, and checks the notices, the C runtime, the icons, the installer's
+      # contents and its hooks. The files land in voice/target/package.
+      - name: Build the installer and the portable zip
+        run: ./voice/scripts/package.ps1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rukoo-voice-${{ env.RELEASE_TAG }}
+          path: |
+            voice/target/package/Rukoo-Voice-Setup-*.exe
+            voice/target/package/Rukoo-Voice-Portable-*.zip
+            voice/target/package/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach the files to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = $env:RELEASE_TAG.Substring('voice-v'.Length)
+          $files = @(
+            "voice/target/package/Rukoo-Voice-Setup-$version.exe",
+            "voice/target/package/Rukoo-Voice-Portable-$version.zip",
+            'voice/target/package/SHA256SUMS.txt'
+          )
+          $draft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            # No release for this tag yet: make the draft. A tag such as voice-v0.2.0-rc.1 makes a pre-release.
+            $flags = @('--draft', '--latest=false', '--verify-tag', '--title', "$env:RELEASE_TAG - Rukoo Voice $version",
+              '--notes', 'Rukoo Voice for Windows. Write the release notes here, then publish without marking it as the latest release.')
+            if ($version.Contains('-')) { $flags += '--prerelease' }
+            gh release create $env:RELEASE_TAG @files @flags
+            if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+          } elseif ($draft -ne 'true') {
+            # Replacing the files of a published release would change what people already downloaded.
+            throw "$env:RELEASE_TAG is already published. Make a new Voice version instead."
+          } else {
+            gh release upload $env:RELEASE_TAG @files --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'gh release upload failed' }
+            gh release edit $env:RELEASE_TAG --latest=false
+            if ($LASTEXITCODE -ne 0) { throw 'gh release edit failed' }
+          }
+          $summary = @(
+            "Draft release $env:RELEASE_TAG has the installer, the portable zip and SHA256SUMS.txt.",
+            '',
+            "Publish it with ``gh release edit $env:RELEASE_TAG --draft=false --latest=false``,",
+            'or untick "Set as the latest release" when you publish it on GitHub, so Rukoo stays the latest release.'
+          )
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $summary

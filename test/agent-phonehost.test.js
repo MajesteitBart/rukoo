@@ -1169,7 +1169,7 @@ test("tools: Claude's calls in a phone chat go to the phone's MCP server with it
     arguments: { conversation_id: 'c_forged_000000' },
     _meta: { progressToken: 3, 'rukoo/conversation': PHONE_CID, 'rukoo/agent': 'claude', 'rukoo/host': 'test-desk' }
   });
-  assert.equal(list.result.tools.length, 16, "this computer's tool list");
+  assert.equal(list.result.tools.length, 20, "this computer's tool list");
 
   // Between turns the chat's route stays, so a late call still reaches the phone.
   const identity = env.hub.identify(env.adapters.claude.turns[0].mcp.token);

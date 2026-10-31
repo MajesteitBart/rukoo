@@ -1,0 +1,462 @@
+/* The pill: the small status bar during dictation and meetings. Its window is transparent and never takes input;
+   the stop button's clicks go to a native window the app puts over it (voice/ui/API.md, pill_layout).
+
+   A dictation:
+ *    0ms  key down: the pill pops in (200ms) as Starting
+ *   ~40ms  first buffer: Listening, bars breathe; the label cross-fades (140ms in, 90ms out), width eases (160ms)
+ *     …    sound: the bars follow the level (90ms attack, 160ms release)
+ *  key up  Transcribing: the bars bounce, the label shimmers
+ *  done    Inserted: the check pops in (180ms)
+ *  +700ms  the pill fades out (140ms); the app hides the window 180ms after the hide snapshot */
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv11', 'ss01';
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Every color flips in one repaint when the theme changes, instead of running the 120ms color transitions. */
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+}
+
+.stage {
+  position: absolute;
+  top: 24px;
+  left: 0;
+  right: 0;
+  height: var(--pill-h);
+  display: flex;
+  justify-content: center;
+}
+
+.measure {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  visibility: hidden;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+/* ---------- the pill ---------- */
+
+.pill {
+  height: var(--pill-h);
+  max-width: 320px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px 0 12px;
+  border-radius: 9999px;
+  background: var(--pill-bg);
+  box-shadow: var(--pill-shadow);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  animation: voice-pill-in 200ms var(--ease-out-strong) both;
+}
+.edge-top .pill {
+  animation-name: voice-pill-in-top;
+}
+@keyframes voice-pill-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(4px);
+  }
+}
+@keyframes voice-pill-in-top {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-4px);
+  }
+}
+/* Exits are faster than entries. */
+.pill.leaving {
+  opacity: 0;
+  transform: scale(0.98);
+  animation: none;
+  transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
+}
+/* The stop button sits at a 4px inset: 18px outside, 14px for the 28px button. */
+.pill.has-stop {
+  padding-right: 4px;
+}
+/* Rukoo's status rule: a tint over the surface, with saturated text. */
+.pill.is-error {
+  background: linear-gradient(var(--red-tint), var(--red-tint)), var(--pill-bg);
+}
+
+/* ---------- indicator ---------- */
+
+/* The slot is as wide as what it holds (--w, set by pill.js): 24px for the bars, the icon's size, 12px for the
+   recording dot, so the label's distance from the mark stays the same. */
+.ind {
+  width: var(--w, 24px);
+  height: 16px;
+  margin-right: 8px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  transition: width 160ms var(--ease-out-strong), margin 160ms var(--ease-out-strong), color 120ms ease;
+}
+.ind.none {
+  width: 0;
+  margin-right: 0;
+}
+.ind svg {
+  display: block;
+}
+.tone-muted {
+  color: var(--text-3);
+}
+.tone-orange {
+  color: var(--orange);
+}
+.tone-green {
+  color: var(--green);
+}
+.tone-red {
+  color: var(--red);
+}
+.tone-text2 {
+  color: var(--text-2);
+}
+
+/* Five bars tracing the waveform in Voice's logo: 40, 75, 100, 65 and 45% of 16px. They only ever scale
+   vertically from their centre. */
+.bars {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 16px;
+}
+.bar {
+  width: 3px;
+  height: calc(16px * var(--rest));
+  border-radius: 9999px;
+  background: currentColor;
+  transform-origin: center;
+}
+.bars.ripple .bar {
+  animation: voice-bar-ripple 0.8s ease-in-out infinite;
+  animation-delay: calc(var(--i) * 0.1s);
+}
+.bars.breathe .bar,
+.bars.listen:not(.sound) .bar {
+  animation: voice-bar-breathe 2.4s ease-in-out infinite;
+  animation-delay: calc(var(--phase) * -0.4s);
+}
+.bars.bounce .bar {
+  animation: bui-eq-bounce 1.1s ease-in-out infinite;
+  animation-delay: var(--bounce);
+}
+@keyframes voice-bar-ripple {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(0.85);
+  }
+}
+@keyframes voice-bar-breathe {
+  0%,
+  100% {
+    transform: scaleY(0.22);
+  }
+  50% {
+    transform: scaleY(0.42);
+  }
+}
+@keyframes bui-eq-bounce {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.check {
+  animation: voice-check-in 180ms var(--ease-out-strong) both;
+}
+@keyframes voice-check-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--orange);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.spin {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  border: 1.5px solid var(--line-strong);
+  border-top-color: var(--text-2);
+  animation: bui-spin 700ms linear infinite;
+}
+@keyframes bui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- label ---------- */
+
+.label-slot {
+  position: relative;
+  height: 16px;
+  flex: none;
+  overflow: hidden;
+  transition: width 160ms var(--ease-out-strong);
+}
+.label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.label.in {
+  animation: voice-label-in 140ms var(--ease-out) both;
+}
+.label.out {
+  animation: voice-label-out 90ms var(--ease-out) both;
+}
+@keyframes voice-label-in {
+  from {
+    opacity: 0;
+    transform: translateY(1px);
+  }
+}
+@keyframes voice-label-out {
+  to {
+    opacity: 0;
+    transform: translateY(-1px);
+  }
+}
+.label.muted {
+  color: var(--text-2);
+}
+.label.error {
+  color: var(--red);
+}
+/* Beautiful UI's shimmer: the label of live work. */
+.label.shimmer {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  background-image: linear-gradient(90deg, var(--text-3) 35%, var(--text) 50%, var(--text-3) 65%);
+  background-size: 200% 100%;
+  animation: bui-shimmer-text 1.8s linear infinite;
+}
+.label.shimmer.in {
+  animation: voice-label-in 140ms var(--ease-out) both, bui-shimmer-text 1.8s linear infinite;
+}
+@keyframes bui-shimmer-text {
+  from {
+    background-position: 150% center;
+  }
+  to {
+    background-position: -50% center;
+  }
+}
+
+/* ---------- meeting parts ---------- */
+
+.time {
+  margin-left: 8px;
+  flex: none;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  transition: margin 160ms var(--ease-out-strong), color 120ms ease;
+}
+.time.paused {
+  color: var(--text-3);
+}
+/* Time only: the label slot is 0 wide, so the indicator's margin is the only gap. */
+.pill.compact .time {
+  margin-left: 0;
+}
+
+.dev {
+  margin-left: 8px;
+  flex: none;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  background: var(--field);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.stop {
+  position: relative;
+  margin-left: 8px;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--chip);
+  color: var(--text);
+  transition: background-color 120ms ease, color 120ms ease, width 160ms var(--ease-out-strong);
+}
+.stop-ic,
+.stop-label {
+  transition: opacity 120ms var(--ease-out);
+}
+.stop-ic {
+  display: grid;
+}
+/* Out of the flow, so the hidden label doesn't widen the 28px button and push the icon off centre. */
+.stop-label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+/* One step toward the ink: --active sits too close to --chip to show on the pill in either theme. */
+.stop.hover {
+  background: color-mix(in srgb, var(--chip), var(--text) 9%);
+}
+/* A pressed button snaps to 0.96, without a transition. */
+.stop.pressed {
+  transform: scale(0.96);
+}
+.stop-label {
+  opacity: 0;
+}
+.stop.confirm {
+  background: var(--red-tint);
+  color: var(--red);
+}
+.stop.confirm.hover {
+  background: color-mix(in oklch, var(--red-tint), var(--red) 12%);
+}
+.stop.confirm .stop-ic {
+  opacity: 0;
+}
+.stop.confirm .stop-label {
+  opacity: 1;
+}
+
+/* ---------- reduced motion ---------- */
+
+/* Entries and label changes become short fades; loops and pops stop, and the bars rest at their rest heights.
+   The level stays visible in three steps (pill.js), because it tells the user the microphone hears them, and the
+   meeting clock keeps ticking. */
+@media (prefers-reduced-motion: reduce) {
+  .pill,
+  .edge-top .pill {
+    animation: voice-fade-in 80ms linear both;
+  }
+  .pill.leaving {
+    transform: none;
+    transition: opacity 80ms linear;
+  }
+  .label.in,
+  .label.shimmer.in {
+    animation: voice-fade-in 80ms linear both;
+  }
+  .label.out {
+    animation: voice-fade-out 80ms linear both;
+  }
+  .label.shimmer {
+    animation: none;
+    background: none;
+    color: var(--text-2);
+  }
+  .label-slot,
+  .ind,
+  .time,
+  .stop {
+    transition: none;
+  }
+  /* As specific as the rules that start the loops, which a media query doesn't outrank by itself. */
+  .bars.ripple .bar,
+  .bars.breathe .bar,
+  .bars.bounce .bar,
+  .bars.listen:not(.sound) .bar {
+    animation: none;
+  }
+  .check,
+  .rec-dot,
+  .spin {
+    animation: none;
+  }
+}
+@keyframes voice-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes voice-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* ---------- mock mode (?mock), for design work outside the app ---------- */
+
+/* A document behind the pill, so its ring and shadow show as they will over an app. */
+html.mock.backdrop,
+html.mock.backdrop body {
+  background: var(--panel);
+}
+html.mock .stop {
+  pointer-events: auto;
+  cursor: pointer;
+}
+/* Where the app would put its native stop window, from the last pill_layout report. */
+.hit-debug {
+  position: absolute;
+  outline: 1px dashed var(--accent);
+  outline-offset: 0;
+  pointer-events: none;
+}

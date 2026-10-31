@@ -15,6 +15,7 @@ const ownskills = require('./ownskills');
 const { ChatFiles, shown: shownFile, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
 const { PdfReader } = require('../pdfread');
 const { PhoneHost } = require('./phonehost');
+const { isMeetingId } = require('../voice/protocol');
 const { PERMISSIONS, permissionLevel, strictest } = require('./permission');
 // Agents whose tool calls are bound to their chat (resolveCall()): Claude Code by a token for each chat, Codex by its
 // thread id. agent/panel.js has the same list.
@@ -96,6 +97,20 @@ function missingError(code, ids, detail) {
   return err;
 }
 const normId = (v) => String(v || '').trim().replace(/^<|>$/g, '').toLowerCase();
+
+// What a chat about a Rukoo Voice meeting keeps of it: the id, the title and linked event when the chat started, and
+// readSeq, how far the agent has read the transcript (read_meeting_transcript's cursor, in the voice store's change
+// numbers). null for anything else. paging, the places where reads that go on page by page stopped (up to eight), is
+// left out: after a restart those reads start over and move the cursor no more.
+function meetingRef(m) {
+  if (!isObj(m) || !isMeetingId(m.id)) return null;
+  return {
+    id: m.id,
+    title: clip(typeof m.title === 'string' ? m.title : '', 300),
+    eventId: typeof m.eventId === 'string' && m.eventId ? clip(m.eventId, 4000) : null,
+    readSeq: Number.isInteger(m.readSeq) && m.readSeq >= 0 ? m.readSeq : 0
+  };
+}
 
 // Anything thrown or reported becomes {code, detail} with a code from SPEC 4.6.
 function toError(err) {
@@ -488,6 +503,8 @@ class AgentHub extends EventEmitter {
       c.toldPermission = permissionLevel(c.toldPermission);
       // Saved before files could be attached: none.
       c.files = Array.isArray(c.files) ? c.files.filter((f) => isObj(f) && typeof f.id === 'string' && typeof f.file === 'string') : [];
+      // Saved before chats could be about a meeting: none.
+      c.meeting = meetingRef(c.meeting);
       // Messages that waited when Rukoo quit wait again, until the user sends one: the turn they waited for is gone.
       c.queue = cleanQueue(c.queue);
       // A turn cannot survive a restart: close whatever was still open.
@@ -645,6 +662,7 @@ class AgentHub extends EventEmitter {
           agent: c.agent,
           title: c.title,
           message: c.message,
+          meeting: c.meeting ? { id: c.meeting.id, title: c.meeting.title } : null,
           origin: c.origin,
           updatedAt: c.updatedAt,
           lastAt,
@@ -694,6 +712,15 @@ class AgentHub extends EventEmitter {
     for (const c of this.conversations.values()) {
       const hit = about(c.message) || (c.continued || []).some(about);
       if (hit && (!best || c.updatedAt > best.updatedAt)) best = c;
+    }
+    return best;
+  }
+
+  // The most recent chat about this Rukoo Voice meeting, or null.
+  findForMeeting(id) {
+    let best = null;
+    for (const c of this.conversations.values()) {
+      if (c.meeting && c.meeting.id === id && (!best || c.updatedAt > best.updatedAt)) best = c;
     }
     return best;
   }
@@ -867,16 +894,23 @@ class AgentHub extends EventEmitter {
     return ref;
   }
 
-  create({ agent, message = null, origin = 'panel', title = '', model = null, effort = null, permission = null } = {}) {
+  // meeting: {id, title, eventId} for a chat about a Rukoo Voice meeting, which has no email.
+  create({ agent, message = null, meeting = null, origin = 'panel', title = '', model = null, effort = null, permission = null } = {}) {
     const id = AGENT_IDS.includes(agent) ? agent : this.cfg.data.defaultAgent;
     if (this.cfg.data[id].enabled === false) throw new AgentError('disabled', `${id} is turned off`);
-    const ref = this.messageRef(message);
+    const about = meetingRef(meeting);
+    const ref = about ? null : this.messageRef(message);
     const now = Date.now();
+    // Agents get the chat's title (Hermes names its session after it). With agents' access to meetings off, a
+    // meeting chat is named after its first message instead, as a chat without an email is.
+    const meetingTitle = about && about.title && !this.meetingsOff() ? about.title : '';
     const c = {
       id: newConversationId(),
       agent: id,
-      title: clip(ref && ref.subject ? ref.subject : title, 80),
+      title: clip(ref && ref.subject ? ref.subject : meetingTitle || title, 80),
       message: ref,
+      // The meeting this chat is about, with how far the agent read its transcript (read_meeting_transcript).
+      meeting: about ? { ...about, readSeq: 0 } : null,
       origin: origin === 'external' ? 'external' : 'panel',
       createdAt: now,
       updatedAt: now,
@@ -1427,7 +1461,7 @@ class AgentHub extends EventEmitter {
       turn.permission = this.turnPermission(c);
       const told = firstTurn || recap ? null : c.toldPermission;
       const permission = turn.permission !== 'ask' || (told && told !== 'ask') ? turn.permission : null;
-      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null, attached: turn.attached, local, permission });
+      const input = context.turnText({ conversation: c, text, firstTurn, notes, message, openMessage, newer, earlier: recap ? this.earlier(c, turn) : null, attached: turn.attached, local, permission, meeting: this.meetingTurn(c) });
       const port = this.mcp ? this.mcp.ports().local : null;
       const attached = turn.attached || { files: [], emails: [] };
       const handle = {
@@ -1603,6 +1637,11 @@ class AgentHub extends EventEmitter {
     turn.startedOver = true;
     // Kept until a turn reaches the new session, so a turn that fails on the way does not leave it without the email.
     c.needsRecap = true;
+    // The new session has read none of the meeting's transcript either: its next read starts from the beginning.
+    if (c.meeting) {
+      c.meeting.readSeq = 0;
+      delete c.meeting.paging;
+    }
     this.touch(c);
     let message = null;
     try {
@@ -1620,8 +1659,32 @@ class AgentHub extends EventEmitter {
     const openMessage = this.openLine(c, newer);
     // A new session knows only the instructions, which describe Ask: it hears of any other level here.
     const permission = turn.permission && turn.permission !== 'ask' ? turn.permission : null;
-    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, newer, earlier: this.earlier(c, turn), attached: turn.attached, local: this.localAgent(c), permission });
+    handle.input = context.turnText({ conversation: c, text, firstTurn: true, notes: turn.notes, message, openMessage, newer, earlier: this.earlier(c, turn), attached: turn.attached, local: this.localAgent(c), permission, meeting: this.meetingTurn(c) });
     return handle.input;
+  }
+
+  // What a meeting chat's turn says about its meeting (context.turnText): the title and state, and how many passages
+  // changed since the agent last read the transcript. off: the user turned agents' access to meetings off, so the
+  // turn says nothing from the meeting. known: Rukoo has the meeting. null for any other chat.
+  meetingTurn(c) {
+    if (!c.meeting) return null;
+    const off = this.meetingsOff();
+    const voice = this.deps.voice;
+    const m = !off && voice ? voice.meeting(c.meeting.id) : null;
+    return {
+      id: c.meeting.id,
+      off,
+      known: Boolean(m),
+      title: m ? m.meeting.title : c.meeting.title,
+      state: m ? m.meeting.state : null,
+      fresh: m ? m.passages.filter((p) => p.changed > c.meeting.readSeq).length : 0,
+      total: m ? m.passages.length : 0
+    };
+  }
+
+  // The user turned off agents' access to meetings (Settings > Meetings > Agents can read meetings).
+  meetingsOff() {
+    return Boolean(this.engine && this.engine.settings && this.engine.settings.meetingAgentsCanRead === false);
   }
 
   tokenFor(c) {
@@ -2943,7 +3006,11 @@ const RUKOO_LABELS = {
   list_events: 'Checked the calendar',
   find_free_time: 'Looked for free time',
   create_event: 'Proposed an event',
-  get_booking_link: 'Got the booking link'
+  get_booking_link: 'Got the booking link',
+  read_meeting_transcript: 'Read the meeting',
+  search_meetings: 'Searched meetings',
+  read_meeting_notes: 'Read the meeting notes',
+  get_meeting_frame: 'Looked at the screen'
 };
 const COMMANDS = /^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$/i;
 const BUILTINS = [

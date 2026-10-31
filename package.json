@@ -1,6 +1,6 @@
 {
   "name": "rukoo-mail",
-  "version": "2.1.2",
+  "version": "2.2.0",
   "description": "Rukoo Mail: an email client for Windows, macOS and Linux, built with Electron",
   "main": "src/main/main.js",
   "rukoo": {

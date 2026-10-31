@@ -26,7 +26,7 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
 
 ## Rukoo on an Android phone
 
-[Rukoo for Android](../../docs/android.md) serves the same sixteen tools as the desktop app, on the phone's Tailscale address and port 47800, and answers the bridge's challenge the same way. The phone has no calendar yet, so its calendar tools answer that Clark should ask you to use Rukoo on your computer; `get_booking_link` works there too. On the phone, enter the same API server key for Clark and turn on "Let agents use Rukoo on this phone"; the bridge then finds the phone like any other device. A Hermes chat started on the phone belongs to the phone, so its tool calls go there. A call without a chat goes to the device you used last; the phone counts as used while Rukoo is in the foreground.
+[Rukoo for Android](../../docs/android.md) serves the same twenty tools as the desktop app, on the phone's Tailscale address and port 47800, and answers the bridge's challenge the same way. The phone has no calendar yet, so its calendar tools answer that Clark should ask you to use Rukoo on your computer; `get_booking_link` works there too. Meetings are recorded by Rukoo Voice on a computer, so on the phone the four meeting tools answer that it has none. On the phone, enter the same API server key for Clark and turn on "Let agents use Rukoo on this phone"; the bridge then finds the phone like any other device. A Hermes chat started on the phone belongs to the phone, so its tool calls go there. A call without a chat goes to the device you used last; the phone counts as used while Rukoo is in the foreground.
 
 Phones on mobile data often reach the tailnet through a relay. The bridge waits up to 8 seconds for a phone's first answer and its hello, instead of the 4 seconds it gives a computer. Bridge version 4 (`serverInfo.version` `bridge-4`) is the first that looks for phones. With an older bridge, add the phone with `RUKOO_URL=http://<phone's Tailscale IP>:47800/mcp`.
 
@@ -62,7 +62,7 @@ Phones on mobile data often reach the tailnet through a relay. The bridge waits 
    ```sh
    hermes mcp test rukoo
    ```
-   It should list Rukoo's sixteen tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 16 tool(s)`. An older Rukoo on one of your devices serves twelve, without the calendar tools; Clark gets the list of whichever device answered last, so update Rukoo everywhere and send `/reload-mcp`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
+   It should list Rukoo's twenty tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 20 tool(s)`. An older Rukoo on one of your devices serves sixteen, without the meeting tools, or twelve, without the calendar tools as well; Clark gets the list of whichever device answered last, so update Rukoo everywhere and send `/reload-mcp`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
 
 The first `tools/list` has to reach Rukoo once to fill the cache. After that, Hermes keeps the tools even when Rukoo is closed.
 

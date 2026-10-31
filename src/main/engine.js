@@ -76,7 +76,11 @@ const DEFAULT_SETTINGS = {
   // 'stable' or 'nightly'; null follows the installed build (updates.js channelFor).
   updateChannel: null,
   // The version whose "What's new" guide was last shown.
-  whatsNewSeen: ''
+  whatsNewSeen: '',
+  // Settings > Meetings. Rukoo's windows are left out of screen capture while Rukoo Voice records a meeting
+  // (voice/index.js), and the agents' meeting tools answer (agents/tools.js).
+  meetingHideWindow: true,
+  meetingAgentsCanRead: true
 };
 
 const SWIPE_ACTIONS = ['none', 'read', 'archive', 'delete', 'star', 'move', 'category'];
@@ -98,6 +102,8 @@ function normalizeSettings(s) {
   s.checkUpdates = s.checkUpdates !== false;
   s.updateChannel = ['stable', 'nightly'].includes(s.updateChannel) ? s.updateChannel : null;
   s.whatsNewSeen = typeof s.whatsNewSeen === 'string' ? s.whatsNewSeen : '';
+  s.meetingHideWindow = s.meetingHideWindow !== false;
+  s.meetingAgentsCanRead = s.meetingAgentsCanRead !== false;
   s.calendar = normalizeCalendar(s.calendar);
   // A footer text that can't carry the link ({url}), or is longer than 300 characters, falls back to the default.
   const footerText = (v) => (typeof v === 'string' && v.trim() && v.trim().length <= 300 && v.includes('{url}') ? v.trim() : null);

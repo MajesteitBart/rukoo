@@ -319,6 +319,10 @@
     <string name="agentui_tools_find_free_time">Zocht naar vrije tijd</string>
     <string name="agentui_tools_create_event">Stelde een afspraak voor</string>
     <string name="agentui_tools_get_booking_link">Haalde je afsprakenlink op</string>
+    <string name="agentui_tools_read_meeting_transcript">Las de vergadering</string>
+    <string name="agentui_tools_search_meetings">Zocht in je vergaderingen</string>
+    <string name="agentui_tools_read_meeting_notes">Las je vergadernotities</string>
+    <string name="agentui_tools_get_meeting_frame">Bekeek het scherm van de vergadering</string>
     <string name="agentui_tools_unknown">Gebruikte een tool</string>
     <string name="agentui_tools_running_get_context">Kijkt mee op je scherm...</string>
     <string name="agentui_tools_running_get_draft">Bekijkt het concept...</string>
@@ -336,6 +340,10 @@
     <string name="agentui_tools_running_find_free_time">Zoekt naar vrije tijd...</string>
     <string name="agentui_tools_running_create_event">Stelt een afspraak voor...</string>
     <string name="agentui_tools_running_get_booking_link">Haalt je afsprakenlink op...</string>
+    <string name="agentui_tools_running_read_meeting_transcript">Leest de vergadering...</string>
+    <string name="agentui_tools_running_search_meetings">Zoekt in je vergaderingen...</string>
+    <string name="agentui_tools_running_read_meeting_notes">Leest je vergadernotities...</string>
+    <string name="agentui_tools_running_get_meeting_frame">Bekijkt het scherm van de vergadering...</string>
     <string name="agentui_tools_running_unknown">Gebruikt een tool...</string>
 
     <string name="agentui_a11y_expanded">Uitgeklapt</string>

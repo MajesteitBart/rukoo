@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rukoo Voice pill gallery</title>
+    <link rel="stylesheet" href="../tokens.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: 12px;
+      }
+      header {
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+        margin-bottom: 16px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 650;
+      }
+      header a {
+        color: var(--link);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, 384px);
+        gap: 14px 16px;
+      }
+      figure {
+        margin: 0;
+      }
+      figcaption {
+        color: var(--text-3);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        margin-bottom: 4px;
+      }
+      iframe {
+        display: block;
+        width: 384px;
+        height: 100px;
+        border: 0;
+        border-radius: var(--radius-card);
+        box-shadow: var(--shadow-hairline);
+      }
+    </style>
+    <script type="module" src="gallery.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Pill gallery</h1>
+      <span id="switches"></span>
+    </header>
+    <div class="grid" id="grid"></div>
+  </body>
+</html>

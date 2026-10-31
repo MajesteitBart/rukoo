@@ -365,6 +365,10 @@ object AgentText {
         "find_free_time" to R.string.agentui_tools_find_free_time,
         "create_event" to R.string.agentui_tools_create_event,
         "get_booking_link" to R.string.agentui_tools_get_booking_link,
+        "read_meeting_transcript" to R.string.agentui_tools_read_meeting_transcript,
+        "search_meetings" to R.string.agentui_tools_search_meetings,
+        "read_meeting_notes" to R.string.agentui_tools_read_meeting_notes,
+        "get_meeting_frame" to R.string.agentui_tools_get_meeting_frame,
     )
 
     private val RUKOO_RUNNING = mapOf(
@@ -384,6 +388,10 @@ object AgentText {
         "find_free_time" to R.string.agentui_tools_running_find_free_time,
         "create_event" to R.string.agentui_tools_running_create_event,
         "get_booking_link" to R.string.agentui_tools_running_get_booking_link,
+        "read_meeting_transcript" to R.string.agentui_tools_running_read_meeting_transcript,
+        "search_meetings" to R.string.agentui_tools_running_search_meetings,
+        "read_meeting_notes" to R.string.agentui_tools_running_read_meeting_notes,
+        "get_meeting_frame" to R.string.agentui_tools_running_get_meeting_frame,
     )
 
     private val GENERIC_DONE = mapOf(

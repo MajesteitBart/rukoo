@@ -93,6 +93,14 @@ test('stable offers releases only; nightly also nightlies and release candidates
   assert.equal(newest(list.slice(0, 3), '2.1.1-nightly.20261101.58', { channel: 'stable' }), null, 'back on stable, nothing older installs');
 });
 
+test("Rukoo Voice's releases (voice-v tags) are never offered as a Rukoo update, on either channel", () => {
+  const voice = [release('voice-v9.9.9'), nightly('voice-v9.9.10-nightly.20261101.3'), release('voice-v0.1.0')];
+  assert.equal(newest(voice, '2.1.2'), null);
+  assert.equal(newest(voice, '2.1.2', { channel: 'nightly' }), null);
+  assert.equal(newest([...voice, release('v2.2.0')], '2.1.2').version, '2.2.0', "Rukoo's own release still is");
+  assert.equal(newest([release('voice-v3.0.0'), release('v2.2.0')], '2.1.2', { channel: 'nightly' }).version, '2.2.0');
+});
+
 test('a nightly build follows nightly until the setting says otherwise', () => {
   assert.equal(channelFor(null, '2.1.1-nightly.20261031.57'), 'nightly');
   assert.equal(channelFor(null, '2.1.0'), 'stable');

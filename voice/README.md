@@ -1,6 +1,6 @@
 # Rukoo Voice
 
-Rukoo Voice is a desktop app for push-to-talk dictation that also records meetings for Rukoo. It will replace [Ownkey for Windows](https://github.com/MajesteitBart/ownkey-windows). It's in development: this folder holds the design, and the code comes next.
+Rukoo Voice is a desktop app for push-to-talk dictation that also records meetings for Rukoo. It will replace [Ownkey for Windows](https://github.com/MajesteitBart/ownkey-windows). Version 0.1 runs on Windows; [What 0.1 leaves out](#what-01-leaves-out) lists the parts of this design that come later.
 
 ## What it does
 
@@ -65,9 +65,24 @@ Everything records to your computer first. A dropped connection never costs audi
 
 On its first start, Voice imports Ownkey's settings and uses the speech models Ownkey already downloaded, so you don't download them again. Ownkey for Windows has no update check, so Voice has an opt-in update check from its first release. Ownkey Keyboard for Android keeps its name and works on its own.
 
+## How it's built
+
+Voice is a Rust workspace with three processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the pill, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens.
+
+The bridge between Voice and Rukoo is specified in [PROTOCOL.md](PROTOCOL.md), with examples both apps test against in `fixtures/`.
+
+Meeting transcription runs on this computer with Orukeet unless you pick a cloud provider in Settings. A cloud provider gets meeting audio only after you agree to it for that provider and server. Without that agreement, a meeting still records and its transcription waits.
+
+## What 0.1 leaves out
+
+- Screen recording: frames, video and the text read from the screen. The protocol already has the `frame` event and `frame.get`, and Voice answers that it has no frames.
+- Speaker labels with Nemotron 3 Diarization. Voice 0.1 labels the microphone as you and the call audio as one speaker.
+- Sync to your own bucket.
+- Recording a single app's audio through process loopback; Voice records everything the computer plays.
+- macOS and Linux capture. The recorder, the bridge and the transcript pipeline are tested on Linux, but the app runs on Windows only.
+- A signed installer and automatic updates. The opt-in update check tells you a new version exists.
+
 ## Open decisions
 
-- The bridge protocol: the event and command types, the discovery file and versioning. Both apps depend on it, so it comes first. The spec will live in `voice/PROTOCOL.md`.
-- The stack. The plan is a Rust core with local models in a separate worker process, so a crashing model can't take dictation down. That isn't final until the first code lands.
 - In the first version the agent answers only when you ask. Letting it speak up on its own comes later.
 - A ready-made line that tells the other participants their words are recorded and processed.

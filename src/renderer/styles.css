@@ -8259,3 +8259,843 @@ button.cal-gchip-main:hover {
     animation: none;
   }
 }
+
+/* ---------- meetings ---------- */
+
+/* Rukoo Voice's meetings take the place of the list and the reader, as the calendar does (meeting.js). Search looks
+   through mail, so it waits for Mail. The view is a size container: a narrow one shows its parts as tabs. */
+.meeting {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  container: meeting / inline-size;
+}
+.shell.meeting-mode .meeting {
+  display: flex;
+}
+.shell.meeting-mode .listpane,
+.shell.meeting-mode .divider,
+.shell.meeting-mode .reader,
+.shell.meeting-mode .calendar {
+  display: none;
+}
+body.meeting-mode .titlebar-search {
+  visibility: hidden;
+}
+/* Three modes share the sidebar's switch, so its segments keep less room around their labels. */
+.sidebar-mode .segmented button {
+  padding: 0 6px;
+}
+
+/* The header: title, state and clock on the left, the recording's controls on the right. */
+.mt-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 12px 12px 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.mt-titles {
+  flex: 1;
+  min-width: 0;
+}
+.mt-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 4px;
+  min-height: 22px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.mt-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px 0 8px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+.mt-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.mt-state.is-rec i {
+  background: var(--danger);
+}
+.mt-state.is-paused i,
+.mt-state.is-busy i {
+  background: var(--warn);
+}
+.mt-state.is-failed {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.mt-state.is-failed i {
+  background: var(--danger);
+}
+.mt-elapsed {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.mt-hidden {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.mt-hidden svg {
+  width: 14px;
+  height: 14px;
+}
+.mt-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.mt-actions .tbtn:not(.primary) {
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.mt-actions .tbtn:not(.primary):hover {
+  background: var(--hover);
+}
+.mt-actions .tbtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mt-actions .tbtn.primary.is-confirm {
+  background: var(--danger);
+  color: var(--on-primary);
+}
+
+.mt-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 20px 0;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.mt-notice svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--text-3);
+}
+
+.mt-tabs {
+  display: none;
+  padding: 10px 16px 2px;
+}
+.mt-tabs .segmented {
+  display: grid;
+  width: 100%;
+}
+
+.mt-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(260px, 34%, 340px);
+}
+
+/* The transcript: meeting time in the gutter, the voice once per stretch, then what was said. */
+.mt-transcript-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mt-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 20px 28px 8px;
+}
+.mt-transcript {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mt-transcript:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--radius);
+}
+.mt-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  column-gap: 10px;
+  padding: 4px 8px 4px 0;
+  border-radius: var(--radius);
+}
+.mt-row:focus-visible {
+  outline-offset: -2px;
+}
+.mt-passage:not(.cont) {
+  margin-top: 10px;
+}
+.mt-transcript > .mt-passage:first-child {
+  margin-top: 0;
+}
+.mt-at {
+  padding-top: 3px;
+  text-align: right;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.mt-passage.cont .mt-at {
+  visibility: hidden;
+}
+.mt-passage.cont:hover .mt-at,
+.mt-passage.cont:focus-visible .mt-at {
+  visibility: visible;
+}
+.mt-main {
+  min-width: 0;
+}
+.mt-who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 24px;
+}
+.mt-passage.cont .mt-who {
+  display: none;
+}
+.mt-av {
+  --h: 220;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 9.5px;
+  font-weight: 650;
+  background: hsl(var(--h) 38% 27%);
+  color: hsl(var(--h) 70% 84%);
+}
+:root.light .mt-av {
+  background: hsl(var(--h) 60% 93%);
+  color: hsl(var(--h) 45% 32%);
+}
+.mt-av.is-you,
+:root.light .mt-av.is-you {
+  background: var(--chip);
+  color: var(--text-2);
+}
+.mt-av svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 1.9;
+}
+.mt-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px 0 6px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mt-tag svg {
+  width: 12px;
+  height: 12px;
+}
+.mt-text {
+  padding-left: 28px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+  user-select: text;
+}
+/* Words the user dictated into another app reached the call but weren't part of the conversation. */
+.mt-passage.is-dict .mt-text {
+  color: var(--text-3);
+}
+.mt-corrected {
+  padding-left: 28px;
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.mt-mark {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.mt-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-3);
+}
+.mt-line span {
+  min-width: 0;
+}
+.mt-line::after {
+  content: '';
+  flex: 1;
+  min-width: 16px;
+  height: 1px;
+  background: var(--border);
+}
+.mt-line svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.mt-mark.is-user .mt-line {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.mt-mark.is-gap .mt-line svg,
+.mt-mark.is-dropped .mt-line svg {
+  color: var(--warn);
+}
+
+.mt-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 10px 0 0 62px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.mt-live:empty {
+  display: none;
+}
+.mt-live .spinner {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+/* While Voice records the line shimmers: the transcript is still coming. */
+.mt-listening {
+  background: linear-gradient(90deg, var(--text-3) 35%, var(--text) 50%, var(--text-3) 65%);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: mt-shimmer 2.4s linear infinite;
+}
+@keyframes mt-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-listening {
+    animation: none;
+    background: none;
+    color: var(--text-3);
+  }
+}
+.mt-jump {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 9px;
+  border-radius: 9999px;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+  font-weight: 500;
+  animation: pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.mt-jump svg {
+  width: 15px;
+  height: 15px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-jump {
+    animation: none;
+  }
+}
+
+/* Correcting a passage: the text becomes a field in place. */
+.mt-edit-box {
+  padding-left: 28px;
+}
+.mt-edit {
+  display: block;
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 13.5px;
+  line-height: 1.55;
+  user-select: text;
+}
+.mt-edit:focus {
+  border-color: var(--focus);
+}
+.mt-edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mt-edit-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* The side column: the linked event, the voices and the notes. */
+.mt-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+}
+.mt-card {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.mt-card:last-child {
+  border-bottom: 0;
+}
+.mt-card-title {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.mt-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mt-quiet {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.mt-event-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mt-event-ic {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  background: var(--chip);
+  color: var(--text-2);
+}
+.mt-event-ic svg {
+  width: 15px;
+  height: 15px;
+}
+.mt-event-text {
+  flex: 1;
+  min-width: 0;
+}
+.mt-event-title {
+  display: block;
+  max-width: 100%;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-event-title:hover {
+  text-decoration: underline;
+}
+.mt-event-when {
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-event-box .btn {
+  flex: none;
+}
+.mt-people {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 -8px;
+}
+.mt-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+button.mt-person:hover {
+  background: var(--hover);
+}
+button.mt-person:disabled {
+  cursor: default;
+  background: none;
+}
+.mt-person .mt-av {
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
+}
+.mt-person .mt-av svg {
+  width: 14px;
+  height: 14px;
+}
+.mt-person-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.mt-person-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-person-sub {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-person-sub.is-ask {
+  color: var(--text-2);
+}
+.mt-person > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--text-3);
+}
+.mt-notes-card {
+  flex: 1;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
+.mt-notes-status {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.mt-notes-status.error {
+  color: var(--danger);
+}
+.mt-notes-input {
+  flex: 1;
+  width: 100%;
+  min-height: 150px;
+  resize: none;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  font-size: 13px;
+  line-height: 1.55;
+  user-select: text;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.mt-notes-input::placeholder {
+  color: var(--text-3);
+}
+.mt-notes-input:focus {
+  border-color: var(--border-strong);
+  background: var(--panel);
+}
+
+/* Nothing to show yet: how to record, or why Rukoo can't. */
+.mt-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-3);
+}
+.mt-empty > svg {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  opacity: 0.5;
+  stroke-width: 1.3;
+}
+.mt-empty .t {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-wrap: balance;
+}
+.mt-empty-body {
+  max-width: 400px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.mt-empty .btn {
+  margin-top: 10px;
+}
+.mt-empty .btn svg {
+  color: var(--danger);
+}
+.mt-empty-hint {
+  max-width: 380px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-3);
+  text-wrap: pretty;
+}
+
+/* Narrow: the transcript, the notes and the details become tabs, and the controls go under the title. */
+@container meeting (max-width: 720px) {
+  .mt-head {
+    flex-wrap: wrap;
+    padding-left: 16px;
+  }
+  .mt-tabs {
+    display: block;
+  }
+  .mt-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mt-side {
+    border-left: 0;
+  }
+  .meeting[data-tab='transcript'] .mt-side,
+  .meeting:not([data-tab='transcript']) .mt-transcript-pane,
+  .meeting[data-tab='notes'] .mt-card[data-pane='people'],
+  .meeting[data-tab='people'] .mt-card[data-pane='notes'] {
+    display: none;
+  }
+  .mt-scroll {
+    padding-right: 12px;
+  }
+  .mt-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .mt-live {
+    padding-left: 54px;
+  }
+}
+@container meeting (max-width: 460px) {
+  .mt-actions .tbtn:not(.primary) span {
+    display: none;
+  }
+}
+
+/* The sidebar in meeting mode: Record, then the meetings by day; in the rail each shows its day of the month. */
+.mt-record-btn svg {
+  color: var(--danger);
+}
+.mt-record-btn.is-off {
+  color: var(--text-2);
+}
+.mt-record-btn.is-off svg {
+  color: var(--text-3);
+}
+.mt-nav .ic.mdot b {
+  display: none;
+}
+.mt-rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+.mt-nav.is-removed .label {
+  color: var(--text-3);
+}
+.mt-side-empty {
+  margin: 8px 10px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.shell.collapsed .mt-side-empty,
+.shell.collapsed .mt-nav .ic.mdot svg,
+.shell.collapsed .mt-nav .ic.mdot .mt-rec-dot {
+  display: none;
+}
+.shell.collapsed .mt-nav .ic.mdot b {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--chip);
+  color: var(--text-2);
+}
+.shell.collapsed .mt-nav.is-live .ic.mdot b {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.sync-status.rec .dot {
+  background: var(--danger);
+}
+
+/* The title bar while a meeting records: a dot and the meeting's clock, in every mode. A click opens the meeting. */
+.rec-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  margin-right: 6px;
+  padding: 0 10px 0 9px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 120ms ease;
+}
+.rec-indicator:hover {
+  background: var(--active);
+}
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent);
+}
+.rec-indicator.is-paused .rec-dot {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.rec-indicator svg {
+  display: none;
+  width: 14px;
+  height: 14px;
+  color: var(--text-3);
+}
+.rec-indicator.is-hidden svg {
+  display: block;
+}
+
+/* The event card's links: Join and Record with Rukoo Voice. */
+.cal-pop-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+}
+
+/* Settings > Meetings: Rukoo Voice's status as a pill with a dot, tinted when it says something. */
+.mtset-status {
+  gap: 12px;
+}
+.mtset-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  flex: none;
+  padding: 0 10px 0 9px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mtset-pill i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.mtset-pill.is-ok {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: var(--ok);
+}
+.mtset-pill.is-ok i {
+  background: var(--ok);
+}
+.mtset-pill.is-busy i {
+  background: var(--warn);
+}
+.mtset-pill.is-error {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.mtset-pill.is-error i {
+  background: var(--danger);
+}

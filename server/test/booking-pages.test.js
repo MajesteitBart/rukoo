@@ -4,7 +4,7 @@
 import { env, exports } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { call, randomIp, signup } from './helpers.js';
-import { DAY, HOUR, MINUTE, ORIGIN, book, guest, host, iso, meetingType, newHandle, page, publish, slotAhead } from './booking-helpers.js';
+import { DAY, HOUR, MINUTE, ORIGIN, book, guest, host, hours, iso, meetingType, newHandle, page, publish, slotAhead } from './booking-helpers.js';
 import { BOOKER_JS } from '../src/booker-script.js';
 import { MEET_CSP } from '../src/http.js';
 import { CSS, addMonths } from '../src/pages.js';
@@ -1092,7 +1092,9 @@ describe('the host’s own calendar UID', () => {
 
 describe('dates', () => {
   it('fills a whole month grid, a week starting on the locale’s day', async () => {
-    const { handle } = await host(signup);
+    // Closed at weekends, so the month always has days without times. Open every day, the whole month can fall
+    // inside the 30 days ahead, as it does on the last day of a month before a short one.
+    const { handle } = await host(signup, { windows: { default: hours({ weekdays: [1, 2, 3, 4, 5] }) } });
     const month = amsterdam(slotAhead(10)).date.slice(0, 7);
     const html = (await call('GET', `/meet/${handle}/30min?month=${month}`, { headers: { 'accept-language': 'en-GB' } })).text;
     const rows = html.slice(html.indexOf('<tbody>'), html.indexOf('</tbody>')).split('<tr>').slice(1);

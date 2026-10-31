@@ -6,7 +6,39 @@ This file adds to the [root AGENTS.md](../AGENTS.md) for work in `voice/`. The r
 
 Rukoo Voice is push-to-talk dictation plus the meeting recorder for Rukoo. It replaces [Ownkey for Windows](https://github.com/MajesteitBart/ownkey-windows). Voice records and transcribes. Rukoo shows the meeting and runs the user's agent. [README.md](README.md) describes the design and the decisions made so far.
 
-There is no code yet. When you add the first code, add the build, run and test commands to this file in the same PR. When a design decision changes, update README.md in the same PR.
+When a design decision changes, update README.md in the same PR.
+
+## Build and test
+
+Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local speech worker links sherpa-onnx statically; its build downloads a 123 MB archive once per target folder, unless `SHERPA_ONNX_ARCHIVE_DIR` points at a folder that already holds `sherpa-onnx-v2.0.1-win-x64-static-MT-Release-lib.tar.bz2`.
+
+- Everything, as Windows CI runs it: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
+- The two recorder tests this file requires: `cargo test -p voice-recorder --test crash`.
+- Linux CI runs `cargo test -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings`.
+- The local model tests in `voice-local` load Orukeet read-only from Ownkey's model folder when it exists, or from `RUKOO_VOICE_TEST_ORUKEET`, and skip otherwise. `RUKOO_VOICE_TEST_SPEECH` names the WAV they transcribe.
+- `cargo test -p voice-input -- --ignored` runs the tests that use the real clipboard and send keys. Run them only on a desktop nobody is using, such as a VM.
+- The pill and Settings pages run without Voice on mock data: `node voice/ui/dev/serve.js`, then open the address it prints. `node voice/ui/dev/screenshots.js tmp/voice-ui-shots` captures every state, and `node voice/ui/dev/check.js` checks their behavior.
+- Rukoo's side: `node --test test/voice-*.test.js test/agent-tools-meeting.test.js`, and `npx playwright test test/e2e/meeting.spec.js` for the meeting view.
+- Rukoo against Voice's real bridge server: `RUKOO_VOICE_INTEROP=1 node --test test/voice-interop.test.js`, which builds and runs `voice-bridge`'s `serve` example.
+
+## Run
+
+`cargo build -p voice-app -p voice-recorder -p voice-local` puts `rukoo-voice.exe`, `rukoo-voice-recorder.exe` and `rukoo-voice-local.exe` together in `target\debug`; the app finds the other two next to itself. Set `SHERPA_ONNX_ARCHIVE_DIR` first, as above. Tauri embeds `voice/ui` when it compiles, so a page change needs a rebuild.
+
+- A development copy: set `RUKOO_VOICE_DATA_DIR` to a scratch folder under `tmp\` and `RUKOO_VOICE_BRIDGE` to a discovery file path, then run `target\debug\rukoo-voice.exe`. It uses F13 and F14, never imports Ownkey on its own and never starts at login. Its log is `<data folder>\logs\app.log`. It transcribes with Orukeet from Ownkey's model folder, read only; the first meeting window hashes the model once and keeps a stamp in `<data folder>\models`.
+- No microphone or speakers needed: `RUKOO_VOICE_TEST_SOURCES="mic=file:<you.wav>,loop,call=file:<them.wav>,loop"` makes the recorder play WAV files in real time instead (`synthetic:tone:440` works too). Only a development copy reads it.
+- Pair it with a development Rukoo: start Rukoo with `SEM_DATA_DIR` under `tmp\`, the same `RUKOO_VOICE_BRIDGE` and `ELECTRON_RUN_AS_NODE` removed.
+- `--dev-hooks <folder>` lets a script drive a development copy without the tray or the keyboard: it writes `request.json` with `status`, `start_meeting`, `stop_meeting` or `capture` (the pill and Settings at a page, from WebView2) and reads `reply-<id>.json`.
+- The live paired run is the acceptance test for meetings: `node voice/scripts/live-meeting.mjs`, or with `--skip-build` after a build. It makes SAPI speech, runs Voice and a hidden Rukoo on the demo account, and checks passages on both tracks before the stop, the pill, Rukoo's window protection, a Voice restart mid-meeting, a killed recorder, processing then done, `meeting.get`, and a meeting started from Voice. It takes about two minutes and stops every process it started by process id. The report is `tmp\live\<time>\report.json` and the captures go to `tmp\live-shots\`. Voice's pill and Settings show on the desktop while it runs, without taking focus.
+- `--fake-engine[=idle|meeting|dictation|cycle|first-run]` runs the windows against scripted states, and `--self-test <folder>` with it captures both pages in both themes and languages. Both refuse to run without `RUKOO_VOICE_DATA_DIR`.
+
+## Package
+
+`powershell -File voice\scripts\package.ps1` builds the three release programs and writes `voice\target\package\Rukoo-Voice-Setup-<version>.exe`, a per-user installer into `%LOCALAPPDATA%\Programs\Rukoo Voice`, plus `Rukoo-Voice-Portable-<version>.zip` and `SHA256SUMS.txt`. It needs Node for `npx`, 7-Zip and the Visual Studio C++ build tools. It checks the installer by unpacking it, never by installing it: an installed Voice answers Right Alt and Right Ctrl, the same keys as the installed Ownkey.
+
+After a dependency change it stops until you run it once with `-UpdateNotices` and commit the updated `THIRD_PARTY_NOTICES.md`. The icons come from `voice/crates/voice-app/icons/mark.js`; `npx electron voice/crates/voice-app/icons/make-icons.js` renders them again.
+
+Releases: bump the workspace version in `voice/Cargo.toml`, merge, then push a `voice-v<version>` tag from main. `.github/workflows/voice-release.yml` attaches the installer, the zip and the checksums to a draft release that is never marked Latest. 0.1 is unsigned, so SmartScreen warns about the installer.
 
 ## What makes this project special?
 
@@ -49,8 +81,20 @@ The installed Ownkey runs every day on the maintainer's Windows PC as `Ownkey.ex
 
 - `voice/README.md`: the design and the decisions so far.
 - `voice/AGENTS.md`: this file.
-- `voice/PROTOCOL.md`, still to write: the bridge between Voice and Rukoo.
-- Rukoo's side of the bridge goes in `src/main/`, next to the other main-process services. The meeting view goes in `src/renderer/`.
+- `voice/PROTOCOL.md`: the bridge between Voice and Rukoo. `voice/fixtures/protocol-vectors.json` holds the examples both sides test against.
+- `voice/RECORDING.md`: the meeting folder the recorder writes: segments, the timeline and the control port.
+- `voice/crates/`:
+  - `voice-recorder`: the recorder process, `rukoo-voice-recorder`, and its crash tests. It captures and writes to disk and does nothing else.
+  - `voice-audio`: resampling to 16 kHz and the crash-safe WAV segments.
+  - `voice-meetings`: the meeting library, transcript.db and the live transcription that follows the recorded files.
+  - `voice-protocol` and `voice-bridge`: the bridge's messages and checks, the event log, the discovery file and the WebSocket server.
+  - `voice-core`: Settings, the Ownkey import, text cleanup, providers, the local model client and the update check.
+  - `voice-local`: the local speech worker, `rukoo-voice-local`, which runs Orukeet in its own process.
+  - `voice-input`: Windows hotkeys, text insertion and selection capture.
+  - `voice-engine`: dictation, the pill's state, Settings and the meeting controller behind one API.
+  - `voice-app`: the Tauri app, `rukoo-voice`: windows, tray and the native stop button.
+- `voice/ui/`: the pill and Settings pages in plain HTML, CSS and JavaScript. `API.md` lists every command and event between the pages and the app.
+- Rukoo's side of the bridge is in `src/main/voice/`. The meeting view is `src/renderer/meeting.js`, and the agent's meeting tools are in `src/main/agents/tools.js`.
 
 ## Taste
 

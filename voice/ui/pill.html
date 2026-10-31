@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rukoo Voice</title>
+    <!-- No favicon request, which the app's asset server would answer with an error. -->
+    <link rel="icon" href="data:," />
+    <link rel="preload" href="fonts/inter-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="pill.css" />
+    <script type="module" src="pill.js"></script>
+  </head>
+  <body>
+    <!-- The window is 384x100 and click-through; the pill sits 24px from the top and 40px from the bottom,
+         which leaves room for its shadow. -->
+    <div class="stage" id="stage"></div>
+    <!-- Outside the pill, whose entry scales it, so labels measure at their real width (Ownkey 97fa785). -->
+    <span class="measure" id="measure" aria-hidden="true"></span>
+  </body>
+</html>

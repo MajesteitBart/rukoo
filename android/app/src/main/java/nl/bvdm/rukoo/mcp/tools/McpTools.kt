@@ -185,6 +185,9 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         // No calendar on the phone yet. Their arguments were checked as on a computer, so a wrong call still says what's wrong.
         "list_events", "find_free_time", "create_event" -> throw ToolError(BookingLink.NO_CALENDAR)
         "get_booking_link" -> ToolOut.Data(BookingLink.answer(d.bookingSettings()))
+        // Rukoo Voice records meetings on a computer, so the phone has none. Checked as on a computer first, like the
+        // calendar tools.
+        "read_meeting_transcript", "search_meetings", "read_meeting_notes", "get_meeting_frame" -> throw ToolError(NO_MEETINGS)
         else -> throw ToolError("Unknown tool \"$name\".")
     }
 
@@ -614,6 +617,8 @@ class McpTools(private val d: ToolDeps) : McpBackend {
     }
 
     companion object {
+        /** What the meeting tools answer on the phone (tools.js has the meetings on a computer). */
+        const val NO_MEETINGS = "Rukoo on this phone has no meetings. Rukoo Voice records them on the user's computer; ask the user to use Rukoo there."
         private const val EXTERNAL_REUSE_MS = 4 * 60 * 60 * 1000L
         private val SPACES = Regex("[\\s\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+")
         private val TOKEN_EDGES = Regex("^[\"'(\\[]+|[\"')\\].,;:!?]+$")
