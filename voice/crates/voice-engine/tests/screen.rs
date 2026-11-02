@@ -1036,6 +1036,15 @@ fn pill_screen_click_moves_to_the_next_monitor() {
     let h = engine_harness("pill-switch", format!("{SCREEN},monitors=2"));
     h.config(json!({"meetings_screen": "frames"}));
     let engine = h.start();
+    // The probe tells Settings what this computer can record.
+    wait_for("the probe's answer in Settings", || {
+        !engine.settings_state()["screen"].is_null()
+    });
+    let screen = engine.settings_state()["screen"].clone();
+    assert_eq!(screen["available"], true, "{screen}");
+    assert!(screen["monitors"].as_u64().unwrap() >= 1, "{screen}");
+    assert!(screen["ocr"].is_array(), "{screen}");
+    assert!(screen.get("hardwareEncoder").is_some(), "{screen}");
     let id = engine.start_meeting().unwrap();
     let dir = h.data().join("meetings").join(&id);
     wait_for("the screen button", || {

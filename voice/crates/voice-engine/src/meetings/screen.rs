@@ -240,6 +240,18 @@ impl ScreenLive {
     }
 }
 
+/// The live meeting's screen recording, as `screen.get` and `screen.select` read it.
+struct LiveView {
+    mode: ScreenMode,
+    phase: Phase,
+    file: Option<ScreenFile>,
+    /// The newest status the process answered.
+    status: Option<Value>,
+    /// Whether each part still records.
+    video: bool,
+    frames: bool,
+}
+
 #[derive(Debug)]
 struct LaunchError {
     code: Option<i32>,
@@ -478,6 +490,7 @@ impl ScreenSupervisor {
         let mut live = ScreenLive::new(id, dir.path(), meeting.screen, Phase::Running);
         // What happened before the app restarted is known, not news.
         live.read_journal(false);
+        let running = screenfile::live(dir.path());
         {
             let mut slot = self.lock();
             if slot.as_ref().is_some_and(|l| l.id == id) {
@@ -488,7 +501,7 @@ impl ScreenSupervisor {
                 *slot = Some(live);
                 return;
             }
-            if let Some(file) = screenfile::live(dir.path()) {
+            if let Some(file) = running {
                 live.file = Some(file);
                 *slot = Some(live);
                 drop(slot);
@@ -773,32 +786,33 @@ impl ScreenSupervisor {
 
     /// The meeting's screen recording as `screen.get` answers it.
     pub fn describe(&self, id: &str) -> Result<Value, ControlError> {
-        let (mode, phase, file, status, recording) = self.live_of(id)?;
-        let fresh = match (&file, phase) {
+        let view = self.live_of(id)?;
+        let fresh = match (&view.file, view.phase) {
             (Some(file), Phase::Running) => request(file, json!({"cmd": "status"}), REQUEST_WAIT)
                 .ok()
                 .filter(|s| s["ok"] == true),
             _ => None,
         };
-        let status = fresh.or(status).unwrap_or(Value::Null);
-        let state = match phase {
+        let status = fresh.or(view.status).unwrap_or(Value::Null);
+        let state = match view.phase {
             Phase::Starting | Phase::Restarting => "starting",
-            Phase::Stopped | Phase::Ending => "stopped",
-            Phase::Running if !recording => "stopped",
-            Phase::Running => match status["state"].as_str() {
+            Phase::Running if view.frames => match status["state"].as_str() {
                 Some(state @ ("recording" | "paused" | "locked")) => state,
                 Some("stopped" | "stopping") => "stopped",
                 _ => "recording",
             },
+            Phase::Running | Phase::Stopped | Phase::Ending => "stopped",
         };
-        let on = |part: &str| recording && status[part].as_bool().unwrap_or(true);
+        let live = state != "stopped";
+        // The journal knows of every drop; the status says so too, a moment sooner.
+        let on = |part: &str, known: bool| live && known && status[part].as_bool() != Some(false);
         let monitors = self.monitor_list(&status);
         Ok(json!({
-            "screen": mode,
+            "screen": view.mode,
             "state": state,
-            "video": mode == ScreenMode::Video && on("video") && state != "stopped",
-            "frames": on("frames") && state != "stopped",
-            "monitor": status["monitor"].as_str().filter(|_| state != "stopped"),
+            "video": on("video", view.video),
+            "frames": on("frames", view.frames),
+            "monitor": status["monitor"].as_str().filter(|_| live),
             "monitors": monitors
                 .iter()
                 .map(|m| json!({ "id": m.id, "name": m.name, "width": m.width, "height": m.height, "primary": m.primary }))
@@ -820,25 +834,28 @@ impl ScreenSupervisor {
         monitors::ordered(&list)
     }
 
-    /// The live meeting's mode, phase, control file, last status and whether it still records
-    /// the screen; the errors of `screen.get` and `screen.select`.
-    #[allow(clippy::type_complexity)]
-    fn live_of(
-        &self,
-        id: &str,
-    ) -> Result<(ScreenMode, Phase, Option<ScreenFile>, Option<Value>, bool), ControlError> {
+    /// What `screen.get` and `screen.select` need of the meeting that records now, or their
+    /// errors: `not_found` without the meeting, `not_recording` when it doesn't record now,
+    /// `not_available` when it records no screen.
+    fn live_of(&self, id: &str) -> Result<LiveView, ControlError> {
         let Some(dir) = self.lib.dir(id) else {
             return Err(ControlError::not_found("There is no meeting with that id."));
         };
         let slot = self.lock();
         match slot.as_ref() {
-            Some(live) if live.id == id => Ok((
-                live.mode,
-                live.phase,
-                live.file.clone(),
-                live.status.clone(),
-                live.recording(),
-            )),
+            Some(live) if live.id == id && live.phase == Phase::Ending => Err(
+                ControlError::not_recording("The meeting doesn't record now."),
+            ),
+            Some(live) if live.id == id => Ok(LiveView {
+                mode: live.mode,
+                phase: live.phase,
+                file: live.file.clone(),
+                status: live.status.clone(),
+                video: live.recording()
+                    && live.mode == ScreenMode::Video
+                    && live.dropped_video.is_none(),
+                frames: live.recording(),
+            }),
             _ => {
                 drop(slot);
                 if self.recording_now(dir.path()) {
@@ -861,11 +878,11 @@ impl ScreenSupervisor {
 
     /// `screen.select`: records the monitor with that id. Returns the id.
     pub fn select(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
-        let (_, phase, file, _, recording) = self.live_of(id)?;
-        if !recording || phase == Phase::Stopped || phase == Phase::Ending {
+        let view = self.live_of(id)?;
+        if !view.frames || view.phase == Phase::Stopped {
             return Err(ControlError::not_available("The screen recording stopped."));
         }
-        let Some(file) = file.filter(|_| phase == Phase::Running) else {
+        let Some(file) = view.file.filter(|_| view.phase == Phase::Running) else {
             return Err(ControlError::failed("The screen recorder is starting."));
         };
         self.switch(&file, monitor)
