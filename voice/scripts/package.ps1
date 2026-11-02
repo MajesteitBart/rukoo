@@ -429,6 +429,13 @@ try {
 } finally { Pop-Location }
 $version = ($meta.packages | Where-Object { $_.name -eq 'voice-app' }).version
 $target = $meta.target_directory
+# Tauri's bundler drops the drive letter of sidecar and resource paths on another drive than the app's crate, and then
+# can't find them, after the whole release build.
+$targetDrive = (Split-Path -Qualifier $target).ToUpperInvariant()
+$appDrive = (Split-Path -Qualifier $App).ToUpperInvariant()
+if ($targetDrive -ne $appDrive) {
+  throw "The cargo target folder $target is on $targetDrive and the checkout on ${appDrive}: set CARGO_TARGET_DIR to a folder on $appDrive for packaging."
+}
 $release = Join-Path $target 'release'
 $out = Join-Path $target 'package'
 Write-Host "Rukoo Voice $version, building in $target"

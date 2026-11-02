@@ -39,7 +39,7 @@ Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local spe
 
 ## Package
 
-`powershell -File voice\scripts\package.ps1` builds the four release programs, adds the NeMo runtime as `nemo_speech\` and writes `voice\target\package\Rukoo-Voice-Setup-<version>.exe`, a per-user installer into `%LOCALAPPDATA%\Programs\Rukoo Voice`, plus `Rukoo-Voice-Portable-<version>.zip` and `SHA256SUMS.txt`. It needs Node for `npx`, 7-Zip and the Visual Studio C++ build tools. It checks the installer by unpacking it, never by installing it: an installed Voice answers Right Alt and Right Ctrl, the same keys as the installed Ownkey.
+`powershell -File voice\scripts\package.ps1` builds the four release programs, adds the NeMo runtime as `nemo_speech\` and writes `voice\target\package\Rukoo-Voice-Setup-<version>.exe`, a per-user installer into `%LOCALAPPDATA%\Programs\Rukoo Voice`, plus `Rukoo-Voice-Portable-<version>.zip` and `SHA256SUMS.txt`. It needs Node for `npx`, 7-Zip and the Visual Studio C++ build tools. Its cargo target folder must be on the checkout's drive: Tauri's bundler loses the drive letter of sidecar paths on another drive, so `package.ps1` stops before building. It checks the installer by unpacking it, never by installing it: an installed Voice answers Right Alt and Right Ctrl, the same keys as the installed Ownkey.
 
 After a dependency change it stops until you run it once with `-UpdateNotices` and commit the updated `THIRD_PARTY_NOTICES.md`. The icons come from `voice/crates/voice-app/icons/mark.js`; `npx electron voice/crates/voice-app/icons/make-icons.js` renders them again.
 
