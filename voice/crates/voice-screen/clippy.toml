@@ -1,0 +1,22 @@
+# Media Foundation is loaded at run time (src/video/mf.rs). A direct call of any of these adds a
+# load-time import of mfplat.dll or mfreadwrite.dll, and the exe then won't start on a Windows N
+# edition, which would cost the frames as well (spec RUK-108 2.5). The unit test
+# `no_direct_media_foundation_calls` scans the sources for the same thing.
+disallowed-methods = [
+  { path = "windows::Win32::Media::MediaFoundation::MFStartup", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFShutdown", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateAttributes", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateMediaType", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateSample", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateMemoryBuffer", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateDXGIDeviceManager", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateDXGISurfaceBuffer", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFTEnumEx", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateFile", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateMFByteStreamOnStream", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateSinkWriterFromURL", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateSourceReaderFromURL", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateSinkWriterFromMediaSink", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateFMPEG4MediaSink", reason = "call it through video::mf::Mf" },
+  { path = "windows::Win32::Media::MediaFoundation::MFCreateVideoSampleFromSurface", reason = "call it through video::mf::Mf" },
+]
