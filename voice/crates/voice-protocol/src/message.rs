@@ -48,6 +48,8 @@ pub mod commands {
     pub const MEETING_GET: &str = "meeting.get";
     pub const FRAME_GET: &str = "frame.get";
     pub const STATUS_GET: &str = "status.get";
+    pub const MEDIA_OPEN: &str = "media.open";
+    pub const MEDIA_READ: &str = "media.read";
 }
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
@@ -619,6 +621,14 @@ pub enum CommandBody {
         at: u64,
     },
     StatusGet,
+    MediaOpen(MediaOpenArgs),
+    MediaRead {
+        /// An id `media.open` gave.
+        media: String,
+        offset: u64,
+        /// 1 to [`crate::MAX_MEDIA_READ`].
+        length: u64,
+    },
     /// A command this version doesn't know. Voice answers `unknown_command`.
     Unknown {
         command: String,
@@ -639,6 +649,8 @@ impl CommandBody {
             CommandBody::MeetingGet { .. } => commands::MEETING_GET,
             CommandBody::FrameGet { .. } => commands::FRAME_GET,
             CommandBody::StatusGet => commands::STATUS_GET,
+            CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
+            CommandBody::MediaRead { .. } => commands::MEDIA_READ,
             CommandBody::Unknown { command, .. } => command,
         }
     }
@@ -670,6 +682,23 @@ impl CommandBody {
                 args.insert("at".into(), (*at).into());
             }
             CommandBody::StatusGet => {}
+            CommandBody::MediaOpen(open) => {
+                args.insert("meeting".into(), open.meeting.as_str().into());
+                args.insert("kind".into(), open.kind.as_str().into());
+                args.insert("start".into(), open.start.into());
+                if let Some(end) = open.end {
+                    args.insert("end".into(), end.into());
+                }
+            }
+            CommandBody::MediaRead {
+                media,
+                offset,
+                length,
+            } => {
+                args.insert("media".into(), media.as_str().into());
+                args.insert("offset".into(), (*offset).into());
+                args.insert("length".into(), (*length).into());
+            }
             CommandBody::Unknown { args: unknown, .. } => return Value::Object(unknown.clone()),
         }
         Value::Object(args)
@@ -687,6 +716,30 @@ pub struct StartArgs {
     pub screen: Option<ScreenMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<Object>,
+}
+
+/// What `media.open` prepares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MediaKind {
+    /// A WAV of all the meeting's tracks mixed, 16 kHz mono 16-bit, from `start` to `end`.
+    Audio,
+    /// The JPEG of the frame at or before `start`.
+    Frame,
+    /// An MP4 of one stretch of continuous video from `start` to `end`.
+    Video,
+}
+
+named!(MediaKind { Audio => "audio", Frame => "frame", Video => "video" });
+
+/// The arguments of `media.open`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MediaOpenArgs {
+    pub meeting: MeetingId,
+    pub kind: MediaKind,
+    /// Meeting ms.
+    pub start: u64,
+    /// Meeting ms; Voice requires it for audio and video.
+    pub end: Option<u64>,
 }
 
 /// Voice's answer to one command.

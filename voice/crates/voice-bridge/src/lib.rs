@@ -26,7 +26,7 @@ use serde_json::Value;
 pub use discovery::Discovery;
 pub use log::{EventLog, LogError, Stored, DB_FILE};
 pub use server::{BridgeServer, Client, Clients, Handle, Options, Refused};
-pub use voice_protocol::{ErrorCode, MeetingSummary, StartArgs, Status};
+pub use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, StartArgs, Status};
 
 /// What the bridge asks of the app when Rukoo sends a command.
 ///
@@ -59,6 +59,19 @@ pub trait MeetingControl: Send + Sync {
 
     /// The result of `frame.get`: `{ frame, image }`. Voice 0.1 answers `not_available`.
     fn frame(&self, id: &str, at: u64) -> Result<Value, ControlError>;
+
+    /// `media.open`: `{ media, ready: false }` while preparing, then `{ media, ready: true, type, size,
+    /// start, end }`. Must answer quickly; prepare on another thread.
+    fn media_open(&self, _args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't serve meeting media.",
+        ))
+    }
+
+    /// `media.read`: `{ offset, data }`, at most `length` bytes in standard base64.
+    fn media_read(&self, _media: &str, _offset: u64, _length: u64) -> Result<Value, ControlError> {
+        Err(ControlError::not_found("There is no media with that id."))
+    }
 
     fn status(&self) -> Status;
 }

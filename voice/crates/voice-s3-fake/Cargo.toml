@@ -1,0 +1,20 @@
+[package]
+name = "voice-s3-fake"
+description = "A small S3-compatible server with fault injection, for Rukoo Voice's sync tests and live runs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "rukoo-voice-fake-s3"
+path = "src/main.rs"
+
+# The server itself uses std only.
+[dependencies]
+
+# Its own tests talk to it over real HTTP with the client voice-sync uses.
+[dev-dependencies]
+ureq = "=3.5.0"

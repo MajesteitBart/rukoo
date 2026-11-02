@@ -10,13 +10,14 @@ use serde_json::Value;
 
 use crate::message::{
     commands, events, Command, CommandBody, Discovery, ErrorMessage, Event, EventBody, Frame,
-    Hello, Mark, MarkKind, MarkTrack, MeetingStarted, MeetingState, MeetingStateChange, Message,
-    Object, Passage, PassageRemoved, Replay, Reply, ReplyError, ScreenMode, Speaker, StartArgs,
-    StartedBy, Status, Track, Welcome,
+    Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingState,
+    MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply, ReplyError,
+    ScreenMode, Speaker, StartArgs, StartedBy, Status, Track, Welcome,
 };
 use crate::{
-    is_instance, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT, MAX_CONTEXT_BYTES,
-    MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_TITLE_CHARS,
+    is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
+    MAX_CONTEXT_BYTES, MAX_ID_CHARS, MAX_LABEL_CHARS, MAX_MEDIA_READ, MAX_MEDIA_SPAN_MS,
+    MAX_TITLE_CHARS,
 };
 
 /// A message that breaks a rule. `reason` names the field, as the fixtures do.
@@ -342,6 +343,37 @@ fn command(f: &Fields) -> Checked<Command> {
             at: a.uint("at")?,
         },
         commands::STATUS_GET => CommandBody::StatusGet,
+        commands::MEDIA_OPEN => {
+            let meeting = a.meeting("meeting")?;
+            let kind = a.named("kind", MediaKind::parse)?;
+            let start = a.uint("start")?;
+            let end = a.optional_uint("end")?;
+            if end.is_some_and(|end| end < start || end - start > MAX_MEDIA_SPAN_MS) {
+                return invalid("end");
+            }
+            CommandBody::MediaOpen(MediaOpenArgs {
+                meeting,
+                kind,
+                start,
+                end,
+            })
+        }
+        commands::MEDIA_READ => {
+            let media = a.string("media")?;
+            if !is_media_id(media) {
+                return invalid("media");
+            }
+            let offset = a.uint("offset")?;
+            let length = a.uint("length")?;
+            if length == 0 || length > MAX_MEDIA_READ {
+                return invalid("length");
+            }
+            CommandBody::MediaRead {
+                media: media.to_owned(),
+                offset,
+                length,
+            }
+        }
         unknown => CommandBody::Unknown {
             command: unknown.to_owned(),
             args: args.clone(),

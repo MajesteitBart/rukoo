@@ -870,6 +870,12 @@ fn dispatch(control: &dyn MeetingControl, body: CommandBody) -> Result<Object, C
         }
         CommandBody::MeetingGet { meeting } => control.get(meeting.as_str())?,
         CommandBody::FrameGet { meeting, at } => control.frame(meeting.as_str(), at)?,
+        CommandBody::MediaOpen(args) => control.media_open(&args)?,
+        CommandBody::MediaRead {
+            media,
+            offset,
+            length,
+        } => control.media_read(&media, offset, length)?,
         CommandBody::StatusGet => json!(control.status()),
         CommandBody::Unknown { command, .. } => {
             return Err(ControlError::new(

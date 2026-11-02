@@ -31,6 +31,12 @@ const MARK_TRACKS = ['mic', 'call', 'screen'];
 const MEETING_EVENTS = new Set(['meeting.started', 'meeting.state', 'speaker', 'passage', 'passage.removed', 'mark', 'frame', 'meeting.removed']);
 const ERROR_CODES = ['bad_request', 'unknown_command', 'not_found', 'not_recording', 'busy', 'not_available', 'failed'];
 
+// media.open and media.read: what Voice prepares, its ids, the longest range and the most bytes one read returns.
+const MEDIA_KINDS = ['audio', 'frame', 'video'];
+const MEDIA_ID = /^md-[A-Za-z0-9_-]{22}$/;
+const MEDIA_SPAN_MAX = 3600000;
+const MEDIA_READ_MAX = 1024 * 1024;
+
 class Invalid extends Error {
   constructor(reason) {
     super(`invalid ${reason}`);
@@ -131,7 +137,22 @@ const COMMAND_ARGS = {
     pattern(a, 'meeting', MEETING_ID);
     int(a, 'at', 0);
   },
-  'status.get': () => {}
+  'status.get': () => {},
+  'media.open': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    oneOf(a, 'kind', MEDIA_KINDS);
+    int(a, 'start', 0);
+    if (given(a, 'end')) {
+      int(a, 'end', 0);
+      check(a.end >= a.start && a.end - a.start <= MEDIA_SPAN_MAX, 'end');
+    }
+  },
+  'media.read': (a) => {
+    pattern(a, 'media', MEDIA_ID);
+    int(a, 'offset', 0);
+    int(a, 'length', 1);
+    check(a.length <= MEDIA_READ_MAX, 'length');
+  }
 };
 
 function command(m) {
@@ -309,6 +330,10 @@ module.exports = {
   STATES,
   ERROR_CODES,
   MEETING_EVENTS,
+  MEDIA_KINDS,
+  MEDIA_ID,
+  MEDIA_SPAN_MAX,
+  MEDIA_READ_MAX,
   validate,
   validateDiscovery,
   negotiate,

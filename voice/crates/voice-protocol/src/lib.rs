@@ -16,7 +16,8 @@ use std::time::Duration;
 
 pub use handshake::{negotiate, replay_plan};
 pub use ids::{
-    is_instance, is_meeting_id, is_token, new_instance, new_token, passage_id, MeetingId,
+    is_instance, is_media_id, is_meeting_id, is_token, new_instance, new_media_id, new_token,
+    passage_id, MeetingId,
 };
 pub use message::*;
 pub use paths::Platform;
@@ -52,6 +53,10 @@ pub const MAX_LABEL_CHARS: usize = 200;
 pub const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 /// The longest command id and `client` name, in characters.
 pub const MAX_ID_CHARS: usize = 64;
+/// The longest range `media.open` accepts, `end - start` in ms.
+pub const MAX_MEDIA_SPAN_MS: u64 = 3_600_000;
+/// The most bytes one `media.read` returns.
+pub const MAX_MEDIA_READ: u64 = 1 << 20;
 
 /// WebSocket close codes from "Connecting".
 pub mod close {

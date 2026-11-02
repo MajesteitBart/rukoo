@@ -151,6 +151,11 @@ pub fn is_instance(instance: &str) -> bool {
     instance.len() == 22 && is_base64url(instance)
 }
 
+/// True when `media` matches `^md-[A-Za-z0-9_-]{22}$`: a prepared file of `media.open`.
+pub fn is_media_id(media: &str) -> bool {
+    media.strip_prefix("md-").is_some_and(is_instance)
+}
+
 fn is_base64url(text: &str) -> bool {
     text.bytes()
         .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
@@ -164,6 +169,11 @@ pub fn new_token() -> io::Result<String> {
 /// A fresh instance id: 16 random bytes from the operating system, in base64url.
 pub fn new_instance() -> io::Result<String> {
     random_base64url::<16>()
+}
+
+/// A fresh id for a prepared media file: `md-` and 16 random bytes in base64url.
+pub fn new_media_id() -> io::Result<String> {
+    Ok(format!("md-{}", new_instance()?))
 }
 
 fn random_base64url<const N: usize>() -> io::Result<String> {
