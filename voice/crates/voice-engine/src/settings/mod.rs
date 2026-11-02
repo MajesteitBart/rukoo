@@ -464,6 +464,20 @@ fn refuse_while_screen_records(core: &Core) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The recovery code and the key's id, making the key when there is none. Under the engine's key
+/// lock, so the code shown is the key that stays.
+fn show_key(
+    core: &Core,
+    sync: &voice_sync::BucketSync,
+) -> Result<(voice_sync::Zeroizing<String>, String), ApiError> {
+    let shown = {
+        let _key = lock(&core.sync_rt.key);
+        sync.show_key()
+    };
+    let (code, id) = shown.map_err(|e| sync_error(&e))?;
+    Ok((voice_sync::Zeroizing::new(code), id))
+}
+
 /// Test connection for the fields in Settings with the saved secret. A pass stores the URL style
 /// that worked and the fields' fingerprint in one commit, which lets the switch turn on.
 pub fn sync_test(core: &Arc<Core>) -> Result<Value, ApiError> {
@@ -530,8 +544,7 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
         "show" => {
             refuse_while_screen_records(core)?;
             let sync = bucket_sync(core)?;
-            let (code, id) = sync.show_key().map_err(|e| sync_error(&e))?;
-            let code = voice_sync::Zeroizing::new(code);
+            let (code, id) = show_key(core, sync)?;
             json!({ "code": code.as_str(), "id": crate::sync::short_id(&id) })
         }
         "saved" => {
@@ -551,7 +564,11 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
                 return Err(invalid("That isn't a Rukoo Voice key."));
             }
             let sync = bucket_sync(core)?;
-            let id = sync.import_key(code).map_err(|e| match e.kind {
+            let imported = {
+                let _key = lock(&core.sync_rt.key);
+                sync.import_key(code)
+            };
+            let id = imported.map_err(|e| match e.kind {
                 voice_sync::SyncErrorKind::KeyInUse => ApiError::new("key_in_use", e.message),
                 voice_sync::SyncErrorKind::Crypto => invalid(e.message),
                 _ => sync_error(&e),
@@ -568,8 +585,7 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
 /// empties the clipboard after 60 s while it still holds the code.
 pub fn sync_key_copy(core: &Arc<Core>) -> Result<(), ApiError> {
     let sync = bucket_sync(core)?;
-    let (code, _) = sync.show_key().map_err(|e| sync_error(&e))?;
-    let code = voice_sync::Zeroizing::new(code);
+    let (code, _) = show_key(core, sync)?;
     core.svc
         .input
         .copy_hidden(&code)

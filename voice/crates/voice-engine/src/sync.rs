@@ -43,6 +43,11 @@ pub(crate) struct SyncRuntime {
     resweep: AtomicBool,
     /// A Settings state for a sync change is on its way.
     pub status_pending: AtomicBool,
+    /// Held while the engine makes, shows or replaces the encryption key. voice-sync's
+    /// load-or-create isn't atomic: two calls at once could each make a key, and the code one of
+    /// them shows would then open nothing that uploads. An import at that moment could be
+    /// overwritten by a new key the same way.
+    pub key: Mutex<()>,
 }
 
 impl SyncRuntime {
@@ -108,7 +113,11 @@ pub(crate) fn configure_sync(core: &Core, cfg: &Config) {
         // one: voice-sync's load-or-create isn't atomic, and two keys made at once would leave
         // uploads under a key that isn't saved. Nothing uploads here, so importing a key stays
         // allowed.
-        if let Err(e) = sync.show_key() {
+        let made = {
+            let _key = lock(&core.sync_rt.key);
+            sync.show_key()
+        };
+        if let Err(e) = made {
             log::warn!("sync: no encryption key yet: {}", e.message);
         }
     }
