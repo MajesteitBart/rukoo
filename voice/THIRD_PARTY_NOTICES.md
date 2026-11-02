@@ -95,7 +95,7 @@ The Rust crates built into the three programs, by license. The list covers the n
 
 <!-- rust-crates:start: written by voice/scripts/package.ps1 -UpdateNotices; package.ps1 stops when this list is out of date -->
 
-194 crates.
+210 crates.
 
 ### 0BSD OR Apache-2.0 OR MIT
 
@@ -126,6 +126,7 @@ The Rust crates built into the three programs, by license. The list covers the n
 
 ### Apache-2.0 OR MIT
 
+- aead 0.6.1
 - anyhow 1.0.104
 - base64 0.22.1
 - base64 0.23.1
@@ -135,6 +136,9 @@ The Rust crates built into the three programs, by license. The list covers the n
 - bzip2 0.6.1
 - cfg-if 1.0.5
 - chacha20 0.10.2
+- chacha20poly1305 0.11.0
+- cipher 0.5.2
+- cmov 0.5.4
 - const-oid 0.10.2
 - cookie 0.18.2
 - cpufeatures 0.2.17
@@ -145,6 +149,7 @@ The Rust crates built into the three programs, by license. The list covers the n
 - crypto-common 0.1.7
 - crypto-common 0.2.2
 - ctor 1.0.13
+- ctutils 0.4.7
 - dasp_sample 0.11.0
 - deranged 0.5.9
 - digest 0.10.7
@@ -170,12 +175,15 @@ The Rust crates built into the three programs, by license. The list covers the n
 - hashbrown 0.17.1
 - hashlink 0.12.2
 - heck 0.5.0
+- hmac 0.13.0
 - http 1.5.0
 - httparse 1.10.1
 - hybrid-array 0.4.15
 - idna 1.1.0
 - idna_adapter 1.2.2
 - indexmap 2.14.2
+- inout 0.2.5
+- instant-xml 0.7.7
 - itoa 1.0.18
 - json-patch 4.2.0
 - jsonptr 0.7.1
@@ -183,6 +191,7 @@ The Rust crates built into the three programs, by license. The list covers the n
 - libc 0.2.191
 - lock_api 0.4.14
 - log 0.4.34
+- md-5 0.11.0
 - mime 0.3.17
 - muda 0.20.0
 - num-conv 0.2.2
@@ -191,6 +200,7 @@ The Rust crates built into the three programs, by license. The list covers the n
 - parking_lot_core 0.9.12
 - percent-encoding 2.3.2
 - pin-project-lite 0.2.17
+- poly1305 0.9.1
 - powerfmt 0.2.1
 - rand 0.10.3
 - rand_core 0.10.1
@@ -209,6 +219,7 @@ The Rust crates built into the three programs, by license. The list covers the n
 - serialize-to-javascript 0.1.2
 - sha1 0.11.0
 - sha2 0.10.9
+- sha2 0.11.1
 - siphasher 1.0.4
 - smallvec 1.16.4
 - socket2 0.6.5
@@ -232,6 +243,7 @@ The Rust crates built into the three programs, by license. The list covers the n
 - typenum 1.20.1
 - unicase 2.10.0
 - unicode-segmentation 1.13.3
+- universal-hash 0.6.1
 - ureq 3.5.0
 - ureq-proto 0.6.5
 - url 2.5.8
@@ -253,12 +265,17 @@ The Rust crates built into the three programs, by license. The list covers the n
 - windows-threading 0.2.1
 - windows-version 0.1.7
 - wry 0.57.1
+- xmlparser 0.13.6
 - zeroize 1.9.1
 
 ### Apache-2.0 OR MIT OR Zlib
 
 - miniz_oxide 0.9.1
 - raw-window-handle 0.6.2
+
+### BSD-2-Clause
+
+- rusty-s3 0.10.0
 
 ### BSD-3-Clause
 
@@ -313,6 +330,8 @@ The Rust crates built into the three programs, by license. The list covers the n
 ### MIT OR Unlicense
 
 - aho-corasick 1.1.5
+- jiff 0.2.38
+- jiff-core 0.1.1
 - memchr 2.8.3
 - same-file 1.0.6
 - walkdir 2.5.0
