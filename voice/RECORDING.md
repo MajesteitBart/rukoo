@@ -203,6 +203,10 @@ A request line is at most 64 KiB, and the recorder serves at most 16 connections
 
 After a successful `tap` the connection carries raw signed 16-bit little-endian PCM, 16 kHz, mono, as the track captures it, until the client closes it, the track loses its device, the computer sleeps or the recording stops. The recorder notices within about 0.25 s that a client closed its end, also while the track sends nothing, so a closed tap never keeps one of the 16 connections. The tap carries audio also while the meeting is paused, so dictation during a pause still works, and it never carries padding. A client more than about 5 s behind is disconnected rather than handed audio with holes in it. During a meeting the app reads the microphone for dictation from this tap, so the microphone is captured once.
 
+## Other readers
+
+Bucket sync and media links read the meeting folder too, and never write to a file the recorder or the screen recorder writes. They read a segment once its `segment_end` line exists, `timeline.jsonl` once it has `stop`, and `transcript.db` through a snapshot. In `screen/`, they read a frame once a `frame` line names it, a video file once its `video_end` line exists, and `journal.jsonl` once it ends with `stop`; `screen/clips/` and `screen/screen.json` never leave this computer. A file restored from the bucket comes back byte for byte at its own path.
+
 ## Versioning
 
 This document describes version 1, the `version` in `session` lines and in `meeting.json`. New line kinds, new fields and new values for `reason` keep the version, because readers ignore what they don't know. A change an older reader would misread, such as a renamed field or a new unit, raises it.
