@@ -674,14 +674,25 @@ fn retention_holds_when_the_queue_is_unreadable() {
     std::fs::create_dir_all(&queue).unwrap();
     std::fs::write(queue.join("queue.db"), newer_queue_db()).unwrap();
     let engine = h.start();
-    assert_eq!(sync_state(&engine)["available"], false);
+    let view = sync_state(&engine);
+    assert_eq!(view["available"], false);
     assert_eq!(engine.settings_state()["features"]["sync"], false);
+    // What Settings › Storage shows with the switch instead of the sync card: nothing uploads, and
+    // why under Error details.
+    assert_eq!(view["state"], "paused");
+    assert_eq!(view["lastError"]["code"], "failed");
+    assert!(
+        view["lastError"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("from a newer Voice")),
+        "{view}"
+    );
     let id = record(&engine, &h.data(), 2000);
     std::thread::sleep(Duration::from_millis(3000));
     let audio = meeting_dir(&h.data(), &id).join("audio");
     assert!(audio.is_dir(), "a broken queue never lets audio go");
 
-    // Turning the switch off is the way out.
+    // Turning the switch off, which that page keeps, is the way out.
     engine
         .settings_set("storage.sync.enabled", json!(false))
         .unwrap();

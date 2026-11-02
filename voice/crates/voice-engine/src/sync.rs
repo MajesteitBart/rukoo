@@ -14,7 +14,7 @@ use voice_core::config::Config;
 use voice_meetings::{release_held, MediaPart};
 use voice_sync::keys::KeyStore;
 use voice_sync::protect::Protector;
-use voice_sync::{BucketSync, SyncConfig, SyncError, SyncState, SyncStatus};
+use voice_sync::{BucketSync, LastError, SyncConfig, SyncError, SyncState, SyncStatus};
 
 use crate::engine::{lock, Core};
 use crate::meetings::now_ms;
@@ -46,6 +46,8 @@ pub(crate) struct SyncRuntime {
     resweep: AtomicBool,
     /// A Settings state for a sync change is on its way.
     pub status_pending: AtomicBool,
+    /// Why the sync store didn't open at start, for Error details while Voice runs without it.
+    pub open_error: Mutex<Option<LastError>>,
     /// Held while the engine makes, shows or replaces the encryption key. voice-sync's
     /// load-or-create isn't atomic: two calls at once could each make a key, and the code one of
     /// them shows would then open nothing that uploads. An import at that moment could be
@@ -69,6 +71,15 @@ impl SyncRuntime {
     /// Whether a sweep is due because of a sync change; clears the flag.
     pub fn take_resweep(&self) -> bool {
         self.resweep.swap(false, Ordering::SeqCst)
+    }
+
+    /// The sync store didn't open: Settings says why under Error details.
+    pub fn store_failed(&self, error: &SyncError) {
+        *lock(&self.open_error) = Some(LastError {
+            at: now_ms(),
+            code: error.code().to_owned(),
+            message: error.message.clone(),
+        });
     }
 }
 
@@ -168,12 +179,14 @@ pub fn migrate_secret(
 }
 
 /// Settings' `sync` (voice/ui/API.md): voice-sync's status plus `screenRecording`, and `paused`
-/// for a switch that is on while the connection waits for a new Test connection.
+/// for a switch that is on while the connection waits for a new Test connection. Without the
+/// sync store, `lastError` says why it didn't open.
 pub(crate) fn sync_view(core: &Core) -> Value {
     let status = match &core.sync {
         Some(sync) => sync.status(),
         None => SyncStatus {
             available: false,
+            last_error: lock(&core.sync_rt.open_error).clone(),
             ..SyncStatus::default()
         },
     };

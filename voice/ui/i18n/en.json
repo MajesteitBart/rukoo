@@ -1197,6 +1197,14 @@
     "message": "Uploads paused. Test the connection to go on.",
     "description": "Settings > Storage: status under the sync switch while it is on but a connection field or the secret changed since the last passed Test connection. voice/ui/settings.js (syncSection)."
   },
+  "settings.sync.unavailable": {
+    "message": "Voice can't open its list of uploads, so nothing uploads.",
+    "description": "Settings > Storage: status under the sync switch while it is on but the sync store (queue.db) didn't open: locked, damaged or from a newer Voice. Error details follow. voice/ui/settings.js (syncUnavailableCard)."
+  },
+  "settings.sync.unavailableHeld": {
+    "message": "While sync is on, Voice keeps meeting audio on this computer, as long as 10 GB stay free. Turn it off and Voice removes audio again as Keep audio says.",
+    "description": "Settings > Storage: line under settings.sync.unavailable. 'Keep audio' is the name of the setting settings.meetings.retention. voice/ui/settings.js (syncUnavailableCard)."
+  },
   "settings.sync.keyUnreadable": {
     "message": "Voice can't open its encryption key on this computer. Use your saved key.",
     "description": "Settings > Storage: status under the sync switch when the key file cannot be decrypted, with a button to enter the saved key. voice/ui/settings.js (syncSection)."

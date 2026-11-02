@@ -718,7 +718,20 @@ function storagePage() {
   });
   const sections = [section('local', groupTitle(t('settings.storage.local')) + card(folderRow) + (LATER ? paragraph(t('settings.storage.disk')) : ''))];
   if (feature('sync')) sections.push(...syncSections());
+  else if (state.config.storage.sync?.enabled) sections.push(section('sync', groupTitle(t('settings.sync.inBucket')) + syncUnavailableCard()));
   return { title: t('settings.meetings.storage'), sections };
+}
+
+// The sync store didn't open (locked, damaged, or from a newer Voice) while the switch is on: nothing uploads and
+// retention keeps every meeting's media. The switch stays here, because turning it off is the way to let that media go
+// (API.md, sync.available).
+function syncUnavailableCard() {
+  const error = state.sync?.lastError;
+  const details = error?.message ? ` <button class="link-btn" data-a="sync-details:unavailable">${esc(t('common.errorDetails'))}</button>` : '';
+  return card(
+    row({ title: t('settings.sync.title'), toggle: true, action: 'toggle:storage.sync.enabled', cls: 'sync-switch' }) +
+      `<div class="sync-status">${status('bad', t('settings.sync.unavailable'))}<p class="sync-note">${esc(t('settings.sync.unavailableHeld'))}${details}</p></div>`
+  );
 }
 
 // ---------- bucket sync ----------
@@ -1449,6 +1462,7 @@ async function act(action, button) {
     case 'sync-details': {
       if (arg === 'test') return showError(t(SYNC_ERRORS[syncTest?.code] || 'settings.sync.error.failed'), syncTest?.message);
       if (arg === 'restore') return showError(t('settings.sync.restoreFailed'), state.sync?.restore?.error);
+      if (arg === 'unavailable') return showError(t('settings.sync.unavailable'), state.sync?.lastError?.message);
       // As in the status line, `failed` says "Uploads stopped." rather than "The test failed.".
       const last = state.sync?.lastError;
       return showError(t((last?.code !== 'failed' && SYNC_ERRORS[last?.code]) || 'settings.sync.stopped'), last?.message);

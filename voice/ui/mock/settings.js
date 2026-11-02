@@ -9,8 +9,8 @@
 //   <sync> turns the sync feature on and sets bucket sync: fresh (the default: nothing filled in), tested (filled in
 //   and tested, still off), on (up to date), live (a meeting uploads), retrying (the bucket can't be reached), failing
 //   (the bucket refuses, three files lost), paused (a new secret or field waits for Test connection, with files still
-//   waiting), key (the encryption key can't be opened), restore (two meetings to restore), restore-failed (a restore
-//   that stopped). 1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket
+//   waiting), unavailable (the switch is on but the sync store didn't open), key (the encryption key can't be opened),
+//   restore (two meetings to restore), restore-failed (a restore that stopped). 1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket
 //   "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
@@ -256,6 +256,19 @@ const SYNC_SCENARIOS = {
     s.config.storage.sync.tested = false;
     Object.assign(s.sync, { state: 'paused', lost: 0 });
     return true;
+  },
+  // The sync store didn't open while the switch is on: the engine leaves sync out of features and says why.
+  unavailable: (s) => {
+    SYNC_SCENARIOS.on(s);
+    s.features.sync = false;
+    Object.assign(s.sync, {
+      available: false,
+      state: 'paused',
+      lastUpload: null,
+      lastError: { at: NOW - 3 * MIN, code: 'failed', message: 'queue.db has schema version 2, from a newer Voice' },
+      key: { exists: false, id: null, exported: false }
+    });
+    return false;
   },
   key: (s) => {
     SYNC_SCENARIOS.on(s);

@@ -312,6 +312,8 @@
   },
   "settings.sync.stopped": "Uploaden is gestopt.",
   "settings.sync.paused": "Uploaden staat stil. Test de verbinding om verder te gaan.",
+  "settings.sync.unavailable": "Voice kan zijn lijst met uploads niet openen, dus er gaat niets omhoog.",
+  "settings.sync.unavailableHeld": "Zolang synchroniseren aan staat, houdt Voice de audio van vergaderingen op deze computer, als er 10 GB vrij blijft. Zet het uit, dan verwijdert Voice audio weer volgens Audio bewaren.",
   "settings.sync.keyUnreadable": "Voice kan de encryptiesleutel op deze computer niet openen. Gebruik je bewaarde sleutel.",
   "settings.sync.keyNotSaved": "Je hebt hem nog niet bewaard.",
   "settings.sync.keySaved": "Bewaard. Sleutel {id}",

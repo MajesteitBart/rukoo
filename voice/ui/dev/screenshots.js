@@ -78,7 +78,7 @@ const SCENARIOS = [
   ['later-main', 'page=meetings&later=1'],
   ['later-speakers', 'page=speakers&later=1'],
   // Settings > Storage with bucket sync in each of its states (mock/settings.js, &sync=).
-  ...['fresh', 'tested', 'on', 'live', 'retrying', 'failing', 'paused', 'key', 'restore', 'restore-failed'].map((sync) => [`storage-sync-${sync}`, `page=storage&sync=${sync}`])
+  ...['fresh', 'tested', 'on', 'live', 'retrying', 'failing', 'paused', 'unavailable', 'key', 'restore', 'restore-failed'].map((sync) => [`storage-sync-${sync}`, `page=storage&sync=${sync}`])
 ];
 
 async function main() {

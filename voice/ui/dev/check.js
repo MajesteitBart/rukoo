@@ -209,6 +209,24 @@ check('the sync card shows only when the engine lists sync in features', async (
   assert.equal(await page.locator('[data-section="sync-connection"] .form').count(), 1, 'the form shows while sync is off');
 });
 
+check('a sync store that didn\'t open says nothing uploads and leaves the switch to turn off', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=unavailable');
+  const card = page.locator('[data-section="sync"]');
+  assert.equal(await card.count(), 1, 'the switch stays reachable');
+  assert.equal(await page.locator('[data-section="sync-connection"]').count(), 0, 'nothing else of sync shows');
+  const text = await card.innerText();
+  assert.match(text, /Voice can't open its list of uploads, so nothing uploads\./);
+  assert.match(text, /keeps meeting audio on this computer/);
+  await page.click('[data-a="sync-details:unavailable"]');
+  assert.match(await dialogText(page), /from a newer Voice/);
+  await page.keyboard.press('Escape');
+  const toggle = '[data-a="toggle:storage.sync.enabled"]';
+  assert.equal(await page.locator(toggle).getAttribute('aria-checked'), 'true');
+  await page.click(toggle);
+  await page.waitForFunction(() => !document.querySelector('[data-section="sync"]'));
+  assert.equal((await mockState()).config.storage.sync.enabled, false);
+});
+
 check('the switch waits for a passed Test connection, and a changed bucket pauses uploads', async ({ open, page, mockState }) => {
   await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
   const toggle = '[data-a="toggle:storage.sync.enabled"]';

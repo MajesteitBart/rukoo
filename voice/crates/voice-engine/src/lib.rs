@@ -182,16 +182,16 @@ pub fn start_with(
 
     // Bucket sync. When its store doesn't open (locked, damaged, or from a newer Voice), Voice
     // runs without it, and retention keeps every meeting's media while the switch is on.
-    let sync = match voice_sync::BucketSync::open(sync_options(
+    let (sync, sync_error) = match voice_sync::BucketSync::open(sync_options(
         &data_dir,
         &controller,
         &services,
         &engine,
     )) {
-        Ok(sync) => Some(Arc::new(sync)),
+        Ok(sync) => (Some(Arc::new(sync)), None),
         Err(e) => {
             log::error!("sync: Voice runs without bucket sync: {}", e.message);
-            None
+            (None, Some(e))
         }
     };
     if sync::migrate_secret(
@@ -238,6 +238,9 @@ pub fn start_with(
     ));
     let _ = engine.set(Arc::downgrade(&core));
     core.set_this();
+    if let Some(e) = &sync_error {
+        core.sync_rt.store_failed(e);
+    }
 
     let cfg = core.config();
     sync::configure_sync(&core, &cfg);
