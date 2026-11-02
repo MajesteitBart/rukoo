@@ -502,3 +502,44 @@ test('a meeting Voice starts gets the one calendar event that fits, and a 1:1 ge
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(s.get(M2).meeting.eventId, null);
 });
+
+test('speakers come back in one order, the microphone and then the call by number, whatever order Voice sent them in', (t) => {
+  const dir = tempDir('rukoo-voice-order-');
+  const s = service(t, dir, null).init();
+  const now = Date.now();
+  s.onEvent({ type: 'event', seq: 1, event: 'meeting.started', meeting: M1, createdAt: now, data: started('Three voices', now) });
+  let seq = 1;
+  // Voice sends a call speaker right before its first passage, so call-10 can come before call-2.
+  for (const [id, track] of [['call-1', 'call'], ['call-10', 'call'], ['mic', 'mic'], ['call-2', 'call']]) {
+    s.onEvent({ type: 'event', seq: ++seq, event: 'speaker', meeting: M1, createdAt: now, data: { id, track, label: track === 'mic' ? 'You' : `Speaker ${id.slice(5)}` } });
+  }
+  assert.deepEqual(s.speakers(M1).map((x) => x.id), ['mic', 'call-1', 'call-2', 'call-10']);
+  assert.deepEqual(s.get(M1).speakers.map((x) => x.id), ['mic', 'call-1', 'call-2', 'call-10'], 'meetingGet gives the same order');
+  assert.deepEqual(s.setSpeaker(M1, 'call-10', { name: 'Joris' }).map((x) => [x.id, x.name]), [['mic', null], ['call-1', null], ['call-2', null], ['call-10', 'Joris']]);
+});
+
+test("a 1:1's name Rukoo filled in stays when a second voice turns up, gets no second guess, and asks the user to check it", async (t) => {
+  const dir = tempDir('rukoo-voice-autocheck-');
+  const now = Date.now();
+  const event = { id: 'acc:cal:e1', title: 'Sanne / Demo', start: now - 60000, end: now + 1740000, meeting: 'https://meet.example.com/x', attendees: [{ name: 'Demo User', address: 'demo@example.com', response: 'accepted', self: true }, { name: 'Sanne', address: 'sanne@example.com', response: 'accepted' }] };
+  const calendars = { read: async () => ({ events: [event], failed: [] }), event: (id) => (id === event.id ? event : null) };
+  const s = service(t, dir, null, { calendars }).init();
+  const deltas = [];
+  s.on('meeting', (p) => p.kind === 'meeting' && p.speakers && deltas.push(p.speakers));
+  s.onEvent({ type: 'event', seq: 1, event: 'meeting.started', meeting: M1, createdAt: now, data: started('', now) });
+  await until(() => s.get(M1).meeting.eventId === event.id, 'the link');
+  s.onEvent({ type: 'event', seq: 2, event: 'speaker', meeting: M1, createdAt: now, data: { id: 'call-1', track: 'call', label: 'Speaker 1' } });
+  const one = s.speakers(M1)[0];
+  assert.deepEqual([one.name, one.from, one.autoCheck], ['Sanne', 'auto', false], 'one voice: no doubt yet');
+  s.onEvent({ type: 'event', seq: 3, event: 'speaker', meeting: M1, createdAt: now, data: { id: 'call-2', track: 'call', label: 'Speaker 2' } });
+  const [first, second] = s.speakers(M1);
+  assert.deepEqual([first.id, first.name, first.from, first.autoCheck], ['call-1', 'Sanne', 'auto', true]);
+  assert.deepEqual([second.id, second.name, second.from, second.autoCheck], ['call-2', null, null, false], 'the second voice gets no name by itself');
+  assert.deepEqual(second.suggestions.map((c) => [c.name, c.takenBy]), [['Sanne', ['call-1']]]);
+  // The renderer hears it too.
+  await until(() => deltas.some((list) => list.some((x) => x.id === 'call-2')), 'the delta with both voices');
+  assert.equal(deltas.at(-1).find((x) => x.id === 'call-1').autoCheck, true);
+  // The user confirms the guess: it is theirs now, and nothing asks any more.
+  const confirmed = s.setSpeaker(M1, 'call-1', { name: 'Sanne', address: 'sanne@example.com' });
+  assert.deepEqual([confirmed[0].name, confirmed[0].from, confirmed[0].autoCheck], ['Sanne', 'user', false]);
+});
