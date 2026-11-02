@@ -36,6 +36,9 @@ const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 const SCREEN: &str = "synthetic:1280x720,change-every=1000,text=Slide";
 /// Video without a hardware encoder: the software MFT on the system-memory path.
 const VIDEO: &str = "no-hardware,software-encoder";
+/// How soon after the start a screen process that waits for nobody is launched: a thread and a
+/// file open, well under the 500 ms handshake. Generous for a busy CI runner.
+const LAUNCH_SLACK: u64 = 200;
 
 fn main() {
     if std::env::var(ROLE).as_deref() == Ok("child") {
@@ -350,6 +353,16 @@ impl Rig {
         });
     }
 
+    /// When the supervisor launched the meeting's first screen process: it makes the process's
+    /// log right before.
+    fn launched_at(&self, id: &str) -> u64 {
+        let log = self.data.join("logs").join(format!("screen-{id}.log"));
+        std::fs::metadata(log)
+            .and_then(|m| m.created())
+            .map(|at| at.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64)
+            .expect("the screen process's log")
+    }
+
     fn changes(&self) -> Vec<ScreenChange> {
         lock(&self.changes).clone()
     }
@@ -487,14 +500,14 @@ fn voice_started_meeting_waits_for_rukoo_then_captures() {
     // No Rukoo now and none in this run: no event, no wait.
     rig.rukoo(0, false);
     let id = rig.start(StartedBy::Voice, None);
-    let (_, wall) = rig.session(&id);
+    rig.session(&id);
     let started = rig.started_at.load(Ordering::SeqCst);
     assert!(rig.starting_events(&id).is_empty());
-    // The screen process's own start counts here too; it waited for nobody.
+    let launched = rig.launched_at(&id);
     assert!(
-        wall < started + 450,
-        "capture began {} ms after the start",
-        wall.saturating_sub(started)
+        launched < started + LAUNCH_SLACK,
+        "the screen process launched {} ms after the start",
+        launched.saturating_sub(started)
     );
     rig.stop(&id);
 }
@@ -542,13 +555,14 @@ fn rukoo_started_meeting_skips_the_handshake() {
     let rig = Rig::new("rukoo-start", SCREEN);
     rig.rukoo(1, true);
     let id = rig.start(StartedBy::Rukoo, Some(ScreenMode::Frames));
-    let (_, wall) = rig.session(&id);
+    rig.session(&id);
     let started = rig.started_at.load(Ordering::SeqCst);
     assert!(rig.starting_events(&id).is_empty());
+    let launched = rig.launched_at(&id);
     assert!(
-        wall < started + 450,
-        "capture began {} ms after the start",
-        wall.saturating_sub(started)
+        launched < started + LAUNCH_SLACK,
+        "the screen process launched {} ms after the start",
+        launched.saturating_sub(started)
     );
     rig.stop(&id);
 }
