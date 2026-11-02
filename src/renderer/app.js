@@ -2852,6 +2852,8 @@ export const ctx = {
   openMeeting: (id) => openMeeting(id),
   voiceState: () => meeting.voiceState(),
   recordMeeting: (opts) => meeting.record(opts),
+  // The arrow beside a card's Record: what Voice records of the screen. opts: {onPick(screen)} or {title, eventId}.
+  recordMeetingMenu: (anchor, opts) => meeting.recordMenu(anchor, opts),
   openCalendarEvent: (id, start) => openCalendarEvent(id, start),
   agentSync: () => agentViewChanged()
 };

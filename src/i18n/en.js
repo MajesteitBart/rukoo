@@ -1347,6 +1347,10 @@
     "message": "Looked at the meeting's screen",
     "description": "Chat transcript tool chip: the agent looked at the screen Rukoo Voice recorded at a moment in a meeting (get_meeting_frame)."
   },
+  "agent.tools.get_meeting_clip": {
+    "message": "Looked at the meeting's screen over a stretch",
+    "description": "Chat transcript tool chip: the agent looked at the frames, and perhaps a video clip, of the screen Rukoo Voice recorded between two moments of a meeting (get_meeting_clip)."
+  },
   "agent.tools.running.read_meeting_transcript": {
     "message": "Reading the meeting...",
     "description": "Chat transcript tool chip while it runs: the agent reads a meeting's transcript. Present tense; the done form is agent.tools.read_meeting_transcript."
@@ -1362,6 +1366,10 @@
   "agent.tools.running.get_meeting_frame": {
     "message": "Looking at the meeting's screen...",
     "description": "Chat transcript tool chip while it runs: the agent looks at the screen recorded in a meeting. Present tense; the done form is agent.tools.get_meeting_frame."
+  },
+  "agent.tools.running.get_meeting_clip": {
+    "message": "Looking at the meeting's screen over a stretch...",
+    "description": "Chat transcript tool chip while it runs: the agent looks at the screen recorded over a stretch of a meeting. Present tense; the done form is agent.tools.get_meeting_clip."
   },
   "agent.approval.calendarTitle": {
     "message": "{name} wants to add an event to your calendar",
@@ -8809,6 +8817,70 @@
     "message": "Marked at {time}",
     "description": "Meeting view toast after Mark; time is the meeting time, such as 12:03. src/renderer/meeting.js (onClick)"
   },
+  "meeting.actions.screen": {
+    "message": "Screen",
+    "description": "Meeting view header button while a meeting records the screen: opens the list of monitors to record. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.screen.menu": {
+    "message": "Screen recording",
+    "description": "Meeting view sidebar and empty state, calendar event card: accessible name of the small arrow beside Record that opens the choice of what to record of the screen. src/renderer/meeting.js (sidebarHtml, emptyHtml); src/renderer/calendar-event.js"
+  },
+  "meeting.screen.choose": {
+    "message": "Choose what to record",
+    "description": "Screen recording menu: heading above the choices of what Rukoo Voice records of the screen in the new meeting. src/renderer/meeting.js (screenMenu)"
+  },
+  "meeting.screen.default": {
+    "message": "Voice's default ({mode})",
+    "description": "Screen recording menu: the choice that records with Rukoo Voice's own setting; mode is one of meeting.screen.modeOff, modeFrames or modeVideo, in lower case. src/renderer/meeting.js (screenMenu)"
+  },
+  "meeting.screen.defaultPlain": {
+    "message": "Voice's default",
+    "description": "Screen recording menu: the same choice when Rukoo Voice didn't say what its setting is. src/renderer/meeting.js (screenMenu)"
+  },
+  "meeting.screen.off": {
+    "message": "Audio only",
+    "description": "Screen recording menu: records the meeting's audio and nothing of the screen. src/renderer/meeting.js (screenMenu)"
+  },
+  "meeting.screen.frames": {
+    "message": "Audio and screen frames",
+    "description": "Screen recording menu: records the audio and a still image of the screen each time it changes, with the text read from it. src/renderer/meeting.js (screenMenu)"
+  },
+  "meeting.screen.video": {
+    "message": "Audio and screen video",
+    "description": "Screen recording menu: records the audio, a video of the screen and the frames. src/renderer/meeting.js (screenMenu)"
+  },
+  "meeting.screen.modeOff": {
+    "message": "no screen",
+    "description": "What the screen recording is, inside meeting.screen.default and meeting.head.screen: nothing of the screen. Lower case, part of a sentence. src/renderer/meeting.js (screenMode)"
+  },
+  "meeting.screen.modeFrames": {
+    "message": "frames",
+    "description": "What the screen recording is, inside meeting.screen.default and meeting.head.screen: still images of the screen. Lower case, part of a sentence. src/renderer/meeting.js (screenMode)"
+  },
+  "meeting.screen.modeVideo": {
+    "message": "video",
+    "description": "What the screen recording is, inside meeting.screen.default and meeting.head.screen: a video of the screen. Lower case, part of a sentence. src/renderer/meeting.js (screenMode)"
+  },
+  "meeting.monitor.heading": {
+    "message": "Record this monitor",
+    "description": "Screen menu in the meeting view header: heading above the monitors Rukoo Voice can record. src/renderer/meeting.js (monitorMenu)"
+  },
+  "meeting.monitor.primary": {
+    "message": "Main display",
+    "description": "Screen menu: tag beside the monitor Windows uses as its main display. src/renderer/meeting.js (monitorMenu)"
+  },
+  "meeting.monitor.size": {
+    "message": "{width} × {height}",
+    "description": "Screen menu: a monitor's size in pixels under its name, such as 2560 × 1440. src/renderer/meeting.js (monitorMenu)"
+  },
+  "meeting.monitor.stopped": {
+    "message": "Screen recording stopped",
+    "description": "Screen menu: disabled line when Rukoo Voice no longer records the screen in this meeting, for example after a full disk. src/renderer/meeting.js (monitorMenu)"
+  },
+  "meeting.monitor.loading": {
+    "message": "Asking Rukoo Voice…",
+    "description": "Screen menu: shown while Rukoo asks Rukoo Voice which monitors there are. src/renderer/meeting.js (monitorMenu)"
+  },
   "meeting.tabs.label": {
     "message": "What the meeting view shows",
     "description": "Meeting view in a narrow window: accessible name of the tabs that switch between transcript, notes and details. src/renderer/meeting.js (shellHtml)"
@@ -9013,6 +9085,38 @@
     "message": "Rukoo's windows stay out of screen recordings and screen shares until the meeting ends.",
     "description": "Meeting view header and title bar indicator: tooltip explaining Hidden from screen recordings. src/renderer/meeting.js (renderHead, renderIndicator)"
   },
+  "meeting.head.screen": {
+    "message": "Screen: {mode}",
+    "description": "Meeting view header: chip saying what Rukoo Voice records of the screen in this meeting; mode is meeting.screen.modeFrames or modeVideo. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.head.visible": {
+    "message": "Visible in screen recordings",
+    "description": "Meeting view header while a meeting records the screen and Rukoo isn't hidden from screen capture: Rukoo can appear in the meeting's frames. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.head.visibleHelp": {
+    "message": "Rukoo isn't hidden from screen recordings (Settings > Meetings), so this meeting's frames can show Rukoo.",
+    "description": "Meeting view header: tooltip of Visible in screen recordings; names the setting that hides Rukoo. src/renderer/meeting.js (renderHead)"
+  },
+  "meeting.frame.alt": {
+    "message": "The screen at {time}",
+    "description": "Meeting view transcript: description of a screen frame image; time is the meeting time, such as 4:05. src/renderer/meeting.js (frameHtml)"
+  },
+  "meeting.frame.showText": {
+    "message": "Text on screen",
+    "description": "Meeting view transcript: button under a screen frame that shows all the text Rukoo Voice read from the screen. src/renderer/meeting.js (frameHtml)"
+  },
+  "meeting.frame.noText": {
+    "message": "No text read from the screen",
+    "description": "Meeting view transcript: beside a screen frame from which Rukoo Voice read no text. src/renderer/meeting.js (frameHtml)"
+  },
+  "meeting.frame.offline": {
+    "message": "The image shows while Rukoo Voice runs.",
+    "description": "Meeting view transcript: beside a screen frame whose image Rukoo can't get because Rukoo Voice isn't connected; Voice keeps the images. src/renderer/meeting.js (frameHtml)"
+  },
+  "meeting.frame.gone": {
+    "message": "Rukoo Voice no longer has this image.",
+    "description": "Meeting view transcript: beside a screen frame whose image Rukoo Voice removed, with the meeting's audio, under its retention setting. src/renderer/meeting.js (frameHtml)"
+  },
   "meeting.notice.removed": {
     "message": "Rukoo Voice deleted this meeting and its transcript. Your notes stay here.",
     "description": "Meeting view: line under the header of a meeting Rukoo Voice deleted. src/renderer/meeting.js (renderNotice)"
@@ -9116,6 +9220,42 @@
   "meeting.mark.droppedEncoder": {
     "message": "Screen recording stopped to keep recording audio: the video encoder failed",
     "description": "Meeting view transcript: Rukoo Voice dropped the screen recording because the encoder failed. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.droppedVideoDisk": {
+    "message": "Video stopped to keep recording audio: the disk is almost full. Frames go on.",
+    "description": "Meeting view transcript: Rukoo Voice stopped the screen video because the disk is almost full; the screen frames are still recorded. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.droppedVideoEncoder": {
+    "message": "Video stopped: no video encoder on this computer worked. Frames go on.",
+    "description": "Meeting view transcript: Rukoo Voice records the screen as frames only, because no video encoder worked; the screen frames are still recorded. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.droppedDevice": {
+    "message": "Screen recording stopped to keep recording audio: the graphics card couldn't start again",
+    "description": "Meeting view transcript: Rukoo Voice stopped recording the screen because the graphics device was reset and couldn't be started again. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.monitor": {
+    "message": "Screen recording moved to {name}",
+    "description": "Meeting view transcript: the user moved the screen recording to another monitor; name is the monitor's name from Windows. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.monitorLost": {
+    "message": "The recorded monitor went away; screen recording moved to {name}",
+    "description": "Meeting view transcript: the monitor Rukoo Voice recorded was unplugged or turned off, so it records another; name is that monitor's name. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gapScreen": {
+    "message": "Screen: not recorded for {length}",
+    "description": "Meeting view transcript: a stretch without screen frames; length is a duration such as \"1 min, 5 sec\". src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gapScreenCrash": {
+    "message": "Screen: not recorded for {length} while the screen recorder restarted",
+    "description": "Meeting view transcript: no screen frames while Rukoo Voice's screen recorder restarted; length is a duration. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gapScreenLocked": {
+    "message": "Screen: not recorded for {length} while the computer was locked",
+    "description": "Meeting view transcript: no screen frames while the computer was locked or its session disconnected; length is a duration. src/renderer/meeting.js (markText)"
+  },
+  "meeting.mark.gapScreenDevice": {
+    "message": "Screen: not recorded for {length} while the graphics card restarted",
+    "description": "Meeting view transcript: no screen frames while the graphics device was reset; length is a duration. src/renderer/meeting.js (markText)"
   },
   "meeting.sidebar.label": {
     "message": "Meetings",
@@ -9280,6 +9420,10 @@
   "settings.meetings.hideHelpLinux": {
     "message": "Linux has no way to hide a window from screen recordings. Keep Rukoo on a monitor you don't share or record.",
     "description": "Settings > Meetings on Linux, in place of the switch: hiding is not possible there. src/renderer/meeting-settings.js"
+  },
+  "settings.meetings.notices": {
+    "message": "While Rukoo Voice records the screen, Rukoo holds back mail and booking notifications so they stay out of the recording. Calendar reminders still show.",
+    "description": "Settings > Meetings: line under the hide-from-capture switch about notifications held back while a meeting records the screen; the badge still counts. src/renderer/meeting-settings.js"
   },
   "settings.meetings.hiddenNow": {
     "message": "Rukoo is hidden from screen recordings now, because a meeting is recording.",
