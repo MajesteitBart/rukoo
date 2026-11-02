@@ -889,7 +889,12 @@ impl Worker {
         for m in shared.queue.dirty_meetings()? {
             let live = m.phase == "live";
             if live {
-                if m.manifest_at > 0 && now.saturating_sub(m.manifest_at) < live_every {
+                // A stamp from a clock that ran ahead and was set right doesn't hold the next live
+                // manifest off until the clock catches up: the bucket's manifest would miss the
+                // segments that went up meanwhile.
+                let recent =
+                    m.manifest_at > 0 && m.manifest_at <= now && now - m.manifest_at < live_every;
+                if recent {
                     continue;
                 }
             } else if shared.queue.meeting_waiting(&m.id, false)? {
@@ -951,7 +956,10 @@ impl Worker {
         let Some(due) = shared.queue.meta_u64("index_due")? else {
             return Ok(());
         };
-        if now < due {
+        // Due further ahead than the debounce: stamped by a clock that ran ahead and was set
+        // right since. The index goes now instead of when the clock catches up.
+        let debounce = millis(shared.opts.timing.index_debounce);
+        if now < due && due - now <= debounce {
             return Ok(());
         }
         let meetings: Vec<IndexEntry> = shared

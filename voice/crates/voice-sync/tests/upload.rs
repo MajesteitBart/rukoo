@@ -536,6 +536,97 @@ fn a_passed_test_ends_a_stop() {
     assert_eq!(voice.sync.status().state, SyncState::Idle);
 }
 
+/// A wall clock an hour ahead until the test sets it right.
+fn fast_clock() -> (Arc<AtomicU64>, Arc<dyn Fn() -> u64 + Send + Sync>) {
+    let ahead = Arc::new(AtomicU64::new(3_600_000));
+    let offset = ahead.clone();
+    (
+        ahead,
+        Arc::new(move || now_ms() + offset.load(Ordering::SeqCst)),
+    )
+}
+
+/// Whether the meeting's manifest in the bucket lists `path`.
+fn names_file(fake: &voice_s3_fake::FakeS3, voice: &Voice, meeting: &str, path: &str) -> bool {
+    let keys = voice_sync::keys::KeyStore::new(
+        &voice.data.join(voice_sync::SYNC_DIR),
+        Arc::new(voice_sync::protect::TestProtector),
+    );
+    let Ok(Some(key)) = keys.load() else {
+        return false;
+    };
+    manifest(fake, &key, meeting).is_some_and(|mf| mf.files.iter().any(|f| f.path == path))
+}
+
+#[test]
+fn a_live_manifest_follows_a_fast_clock_set_right() {
+    let fake = fake();
+    let data = scratch("upload-live-clock");
+    let _c = Cleanup(data.clone());
+    let (ahead, now) = fast_clock();
+    let voice = Voice::with(
+        &data,
+        Setup {
+            now,
+            ..Setup::default()
+        },
+    );
+    // A meeting that records: its manifest goes up every `manifest_live` (100 ms here).
+    let m = Meeting::new(&voice.meetings(), "Live clock", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    voice.connect(&fake.endpoint());
+    let ok = wait_for(WAIT, || {
+        names_file(&fake, &voice, &m.id, "audio/mic/000001.wav")
+    });
+    assert!(ok, "{:?}", fake.log());
+
+    // The clock is set right; the next segment closes and goes up. Its manifest must not wait an
+    // hour for the clock to reach the stamp the first one left.
+    ahead.store(0, Ordering::SeqCst);
+    m.segment("mic", 2, 1_000, 16_000);
+    let ok = wait_for(Duration::from_secs(10), || {
+        names_file(&fake, &voice, &m.id, "audio/mic/000002.wav")
+    });
+    assert!(ok, "no manifest names segment 2: {:?}", fake.log());
+}
+
+#[test]
+fn the_index_follows_a_fast_clock_set_right() {
+    let fake = fake();
+    let data = scratch("upload-index-clock");
+    let _c = Cleanup(data.clone());
+    let (ahead, now) = fast_clock();
+    let voice = Voice::with(
+        &data,
+        Setup {
+            timing: voice_sync::SyncTiming {
+                index_debounce: Duration::from_secs(2),
+                ..timing()
+            },
+            now,
+            ..Setup::default()
+        },
+    );
+    let m = Meeting::new(&voice.meetings(), "Index clock", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    voice.connect(&fake.endpoint());
+    // The manifest goes up while the clock runs an hour ahead, so the index is due then plus 2 s.
+    let ok = wait_for(WAIT, || names_file(&fake, &voice, &m.id, "timeline.jsonl"));
+    assert!(ok, "{:?}", fake.log());
+    assert!(!index_after_last_manifest(&fake), "the index waits its 2 s");
+    ahead.store(0, Ordering::SeqCst);
+
+    let ok = wait_for(Duration::from_secs(10), || {
+        index_after_last_manifest(&fake) && voice.sync.status().state == SyncState::Idle
+    });
+    assert!(
+        ok,
+        "the index waits for the clock: {:?}",
+        voice.sync.status()
+    );
+}
+
 #[test]
 fn a_changed_file_gets_a_new_object() {
     let fake = fake();
