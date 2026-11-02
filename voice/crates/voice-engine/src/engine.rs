@@ -6,22 +6,24 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Wea
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use voice_bridge::ControlError;
 use voice_core::config::{self as core_config, Config};
 use voice_core::local::ModelRegistry;
 use voice_core::{Hints, ProviderError, Recognized, SpeechToText};
 use voice_input::Key;
-use voice_protocol::{StartArgs, StartedBy};
+use voice_protocol::{ScreenMode, StartArgs, StartedBy};
+use voice_screen_files::policy::{Part, Reason};
 
 use crate::api::{
     ApiError, EngineApi, EngineOptions, Folder, Locale, Notification, PillSnapshot, StopReason,
     Theme, TrayState, UiOptions, UiSink,
 };
 use crate::dictation::Dictation;
-use crate::meetings::controller::Change;
+use crate::meetings::controller::{Change, NOTIFY_MEETING};
+use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
-use crate::pill::{Looks, MeetingPhase, PillDriver};
+use crate::pill::{notices, Looks, MeetingPhase, PillDriver, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
 use crate::services::Services;
 use crate::settings::SettingsRuntime;
@@ -182,6 +184,13 @@ impl Core {
         self.meetings
             .library()
             .set_retention(new.meetings_retention);
+        // So does the screen; Rukoo learns the new default from the next status.
+        if old.meetings_screen != new.meetings_screen {
+            self.meetings
+                .controller
+                .set_screen(screen_mode(new), self.meetings.screen.available());
+            self.meetings.publish_status();
+        }
         let before = looks(&self.opts, &self.svc, old);
         let after = looks(&self.opts, &self.svc, new);
         if before != after || old.pill_hide_from_capture != new.pill_hide_from_capture {
@@ -276,6 +285,10 @@ impl Core {
             Change::Started { id, at_ms } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Recording, at_ms, now));
+                // The recorder runs; the screen process follows on its own thread, after the
+                // start handshake for a meeting Voice started.
+                self.meetings.screen.begin(&id);
+                self.pill_screen(&id);
                 self.follow(&id);
                 self.meeting_changed();
             }
@@ -286,17 +299,21 @@ impl Core {
                     MeetingPhase::Recording
                 };
                 self.pill.update(|p, now| p.meeting(&id, phase, at_ms, now));
+                self.meetings.screen.reattach(&id);
+                self.pill_screen(&id);
                 self.follow(&id);
                 self.meeting_changed();
             }
             Change::Paused { id, at_ms } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Paused, at_ms, now));
+                self.screen_paused(&id, true);
                 self.meeting_changed();
             }
             Change::Resumed { id, at_ms } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Recording, at_ms, now));
+                self.screen_paused(&id, false);
                 self.meeting_changed();
             }
             Change::Clock { at_ms, mic_ok, .. } => {
@@ -310,10 +327,19 @@ impl Core {
             Change::Ended { id, at_ms, .. } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Processing, at_ms, now));
+                // The screen process stops at the timeline's stop; waiting for it takes up to
+                // 15 s, so it happens off this thread.
+                let screen = Arc::clone(&self.meetings.screen);
+                let ended = id.clone();
+                let _ = thread::Builder::new()
+                    .name("screen-end".into())
+                    .spawn(move || screen.end(&ended));
                 self.meeting_changed();
             }
             Change::Finalized { id } => {
                 // Cut off while Voice wasn't running: what was recorded still gets transcribed.
+                // `ScreenSupervisor::recover`, right after the controller's, gives its screen
+                // journal the `stop` it lacks.
                 self.follow(&id);
                 self.notify(
                     crate::meetings::controller::NOTIFY_MEETING,
@@ -323,6 +349,99 @@ impl Core {
             }
             Change::Notify { title_key, body } => self.notify(title_key, body),
         }
+    }
+
+    /// Forwards a pause or resume to the screen process, off the event thread.
+    fn screen_paused(&self, id: &str, paused: bool) {
+        let screen = Arc::clone(&self.meetings.screen);
+        let id = id.to_string();
+        let _ = thread::Builder::new()
+            .name("screen-pause".into())
+            .spawn(move || screen.pause(&id, paused));
+    }
+
+    /// What the pill shows of the meeting's screen recording.
+    fn pill_screen(&self, id: &str) {
+        let (mode, switch) = self.meetings.screen.pill_state(id);
+        let current = self.meetings.controller.current().map(|r| r.id);
+        if current.as_deref() == Some(id) {
+            self.pill
+                .update(|p, _| p.meeting_screen(mode.as_str(), switch));
+        }
+    }
+
+    /// What the screen supervisor reports: drops and give-ups become pill notices and tray
+    /// notifications, a move shows the monitor's name.
+    pub fn on_screen(self: &Arc<Self>, change: ScreenChange) {
+        match change {
+            ScreenChange::Dropped { id, what, reason } => {
+                let key = match (what, reason) {
+                    (Part::Video, Reason::Disk) => Some(notices::VIDEO_DROPPED_DISK),
+                    (Part::Video, Reason::Encoder) => Some(notices::VIDEO_DROPPED_ENCODER),
+                    // Frames stop right after for the same reason; that notice says it.
+                    (Part::Video, Reason::Device) => None,
+                    (Part::Frames, Reason::Disk) => Some(notices::FRAMES_DROPPED_DISK),
+                    (Part::Frames, _) => Some(notices::SCREEN_FAILED),
+                };
+                self.screen_notice(&id, key, Map::new(), DROP_HOLD);
+                if let Some(body) = drop_text(what, reason) {
+                    self.notify(NOTIFY_MEETING, body.to_string());
+                }
+                self.pill_screen(&id);
+            }
+            ScreenChange::GaveUp { id } => {
+                self.screen_notice(&id, Some(notices::SCREEN_FAILED), Map::new(), DROP_HOLD);
+                self.notify(
+                    NOTIFY_MEETING,
+                    "Voice's screen recorder stopped 5 times in a row, so the screen isn't recorded any more. The audio goes on.".to_string(),
+                );
+                self.pill_screen(&id);
+            }
+            ScreenChange::Moved { id, name } => {
+                let mut args = Map::new();
+                args.insert("name".into(), Value::String(name));
+                self.screen_notice(&id, Some(notices::SCREEN_MOVED), args, MOVED_HOLD);
+            }
+            ScreenChange::Monitors { .. } => {
+                // The probe answered or a monitor came or went: Settings shows it, a computer
+                // that can't capture starts meetings with `off`, and the pill's screen button
+                // shows when there is another monitor.
+                let cfg = self.config();
+                self.meetings
+                    .controller
+                    .set_screen(screen_mode(&cfg), self.meetings.screen.available());
+                if let Some(id) = self.meetings.controller.current().map(|r| r.id) {
+                    self.pill_screen(&id);
+                }
+                self.meetings.publish_status();
+                self.settings_changed();
+            }
+        }
+    }
+
+    /// A pill notice about the meeting that records now.
+    fn screen_notice(&self, id: &str, key: Option<&str>, args: Map<String, Value>, hold: Duration) {
+        let Some(key) = key else {
+            return;
+        };
+        if self.meetings.controller.current().map(|r| r.id).as_deref() != Some(id) {
+            return;
+        }
+        self.pill
+            .update(|p, now| p.meeting_notice(key, args, hold, now));
+    }
+
+    /// The pill's screen button: the screen recording moves to the next monitor.
+    pub fn screen_clicked(self: &Arc<Self>) {
+        // Talks to the screen process; the click comes from the app's window thread.
+        let screen = Arc::clone(&self.meetings.screen);
+        let _ = thread::Builder::new()
+            .name("screen-next".into())
+            .spawn(move || {
+                if let Err(e) = screen.next_monitor() {
+                    log::info!("screen: the pill's switch did nothing: {e}");
+                }
+            });
     }
 
     /// Tells Settings and the pill when Rukoo connects, leaves or is refused.
@@ -351,8 +470,16 @@ impl Core {
     /// stored it.
     pub fn sweep(&self) {
         let removed = self.meetings.sweep(self.config().meetings_retention);
+        // Clips are copies made on request, kept an hour after their last use.
+        let clips = voice_screen_files::media::sweep_clips(
+            self.meetings.library().root(),
+            now_ms(),
+            CLIP_LIFETIME_MS,
+        );
         if !removed.is_empty() {
-            log::info!("retention: removed the audio of {}", removed.join(", "));
+            log::info!("retention: removed the media of {}", removed.join(", "));
+        }
+        if !removed.is_empty() || clips > 0 {
             self.settings.forget_storage();
             self.settings_changed();
         }
@@ -392,6 +519,36 @@ impl Core {
         }
         self.svc.input.wait_for_clipboard_restore();
     }
+}
+
+/// How long a clip `clip.get` cut stays after its last use.
+const CLIP_LIFETIME_MS: u64 = 3_600_000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Settings > Meetings > Screen as the protocol names it.
+pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
+    match cfg.meetings_screen {
+        core_config::ScreenMode::Off => ScreenMode::Off,
+        core_config::ScreenMode::Frames => ScreenMode::Frames,
+        core_config::ScreenMode::Video => ScreenMode::Video,
+    }
+}
+
+/// The tray notification for a part of the screen recording that stopped.
+fn drop_text(what: Part, reason: Reason) -> Option<&'static str> {
+    Some(match (what, reason) {
+        (Part::Video, Reason::Disk) => "Voice stopped the screen video to keep recording audio: the disk is almost full. Frames go on.",
+        (Part::Video, Reason::Encoder) => "Voice records the screen as frames only: no video encoder on this computer worked.",
+        (Part::Frames, Reason::Disk) => "Voice stopped recording the screen to keep recording audio: the disk is almost full.",
+        (Part::Frames, Reason::Device) => "Voice stopped recording the screen: the graphics device couldn't be started again. The audio goes on.",
+        // Video stops for a lost device together with the frames, which say it.
+        (Part::Video, Reason::Device) | (Part::Frames, Reason::Encoder) => return None,
+    })
 }
 
 /// How long quitting waits for the local model to stop. Longer than its own 2 s quit grace, so a
@@ -499,6 +656,10 @@ impl EngineApi for EngineImpl {
 
     fn pill_stop_clicked(&self) {
         self.0.stop_clicked();
+    }
+
+    fn pill_screen_clicked(&self) {
+        self.0.screen_clicked();
     }
 
     fn settings_state(&self) -> Value {

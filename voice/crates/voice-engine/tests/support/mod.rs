@@ -4,7 +4,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,6 +17,7 @@ use voice_core::local::{
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{Hints, ProviderError, Recognized, RewriteRequest, Rewriter, SpeechToText};
 use voice_engine::meetings::controller::ControllerTiming;
+use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
 use voice_engine::services::{
     AudioSink, Autostart, Chime, KeyState, MicStream, Microphone, Services, Speech, System,
@@ -642,7 +643,8 @@ impl Updates for UpdatesHandle {
     }
 }
 
-pub struct FakeSystem;
+/// The system, with free disk space a test can set (1 GB unless it does).
+pub struct FakeSystem(pub Arc<AtomicU64>);
 
 impl System for FakeSystem {
     fn theme(&self) -> Theme {
@@ -658,7 +660,7 @@ impl System for FakeSystem {
     }
 
     fn free_bytes(&self, _path: &Path) -> Option<u64> {
-        Some(1_000_000_000)
+        Some(self.0.load(Ordering::SeqCst))
     }
 }
 
@@ -677,9 +679,16 @@ pub struct Harness {
     pub ownkey_models: Option<PathBuf>,
     pub recorder_exe: PathBuf,
     pub timing: ControllerTiming,
+    /// `rukoo-voice-screen`; a path that doesn't exist (the default) records no screen.
+    pub screen_exe: PathBuf,
+    pub screen_timing: ScreenTiming,
+    /// What the fake system says is free on the meetings volume.
+    pub free_bytes: Arc<AtomicU64>,
     pub dev_mode: bool,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
+    pub test_screen: Option<String>,
+    pub test_monitor: Option<String>,
 }
 
 impl Harness {
@@ -688,6 +697,9 @@ impl Harness {
         let dir = TempDir::new(name);
         Harness {
             recorder_exe: dir.join("no-recorder.exe"),
+            screen_exe: dir.join("no-screen.exe"),
+            screen_timing: ScreenTiming::default(),
+            free_bytes: Arc::new(AtomicU64::new(1_000_000_000)),
             dir,
             input: Arc::new(FakeInput::new(keys.clone())),
             keys,
@@ -703,6 +715,8 @@ impl Harness {
             dev_mode: true,
             import_from: None,
             test_sources: None,
+            test_screen: None,
+            test_monitor: None,
         }
     }
 
@@ -741,12 +755,14 @@ impl Harness {
             chime: Arc::new(ChimeHandle(Arc::clone(&self.chime))),
             autostart: Arc::new(AutostartHandle(Arc::clone(&self.autostart))),
             updates: Arc::new(UpdatesHandle(Arc::clone(&self.updates))),
-            system: Arc::new(FakeSystem),
+            system: Arc::new(FakeSystem(Arc::clone(&self.free_bytes))),
             ownkey_config: self.ownkey_config.clone(),
             ownkey_models: self.ownkey_models.clone(),
             recorder_exe: self.recorder_exe.clone(),
+            screen_exe: self.screen_exe.clone(),
             discovery_path: Some(self.dir.join("bridge.json")),
             controller: self.timing.clone(),
+            screen_timing: self.screen_timing.clone(),
         }
     }
 
@@ -756,6 +772,8 @@ impl Harness {
             dev_mode: self.dev_mode,
             exe_dir: self.dir.path().to_path_buf(),
             test_sources: self.test_sources.clone(),
+            test_screen: self.test_screen.clone(),
+            test_monitor: self.test_monitor.clone(),
             import_ownkey_from: self.import_from.clone(),
             version: "0.1.0-test".into(),
         }

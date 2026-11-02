@@ -18,10 +18,16 @@ pub struct EngineOptions {
     pub data_dir: PathBuf,
     /// `RUKOO_VOICE_DATA_DIR` is set: F13/F14, no automatic Ownkey import, no autostart.
     pub dev_mode: bool,
-    /// The folder holding `rukoo-voice-recorder` and `rukoo-voice-local`.
+    /// The folder holding `rukoo-voice-recorder`, `rukoo-voice-screen` and `rukoo-voice-local`.
     pub exe_dir: PathBuf,
     /// Development only: `RUKOO_VOICE_TEST_SOURCES`, e.g. `mic=file:a.wav,call=synthetic:tone:440`.
     pub test_sources: Option<String>,
+    /// Development only: `RUKOO_VOICE_TEST_SCREEN`, the screen process's `--test` spec, e.g.
+    /// `synthetic:1920x1080,change-every=10000,text=Slide`.
+    pub test_screen: Option<String>,
+    /// Development only: `RUKOO_VOICE_TEST_MONITOR`, the monitor every screen process records,
+    /// e.g. `\\.\DISPLAY2`.
+    pub test_monitor: Option<String>,
     /// `--import-ownkey <copy>`: the only way a development copy imports Ownkey's settings.
     pub import_ownkey_from: Option<PathBuf>,
     /// Voice's version, `CARGO_PKG_VERSION` of the app.
@@ -112,7 +118,10 @@ pub struct MeetingPill {
     /// `recording`, `paused`, `processing`, `done` or `failed` (PROTOCOL.md `meeting.state`).
     pub state: String,
     pub at_ms: u64,
+    /// What the meeting records of the screen now: `off`, `frames` or `video`.
     pub screen: String,
+    /// The pill shows its screen button: the screen records and there is another monitor.
+    pub screen_switch: bool,
     pub compact: bool,
     pub confirm_stop: bool,
     pub stop_enabled: bool,
@@ -217,6 +226,9 @@ pub trait EngineApi: Send + Sync + 'static {
     fn pill_ack(&self, seq: u64);
     /// The native stop window took a click: the first asks "Stop?", a second within 3 s stops.
     fn pill_stop_clicked(&self);
+    /// The native screen window took a click: the screen recording moves to the next monitor,
+    /// left to right.
+    fn pill_screen_clicked(&self);
 
     // Settings (API.md "Settings"). Values are the JSON shapes API.md defines.
     fn settings_state(&self) -> Value;

@@ -19,6 +19,7 @@ use voice_meetings::PipelineOptions;
 
 use crate::api::{EngineOptions, Locale, Theme};
 use crate::meetings::controller::ControllerTiming;
+use crate::meetings::screen::{ScreenTiming, SCREEN_EXE};
 
 /// Whether a key is physically down.
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
@@ -129,9 +130,12 @@ pub struct Services {
     /// Ownkey's model folder, read only.
     pub ownkey_models: Option<PathBuf>,
     pub recorder_exe: PathBuf,
+    /// `rukoo-voice-screen`. A path that doesn't exist means this Voice records no screen.
+    pub screen_exe: PathBuf,
     /// `None`: PROTOCOL.md's path for this data folder (`RUKOO_VOICE_BRIDGE` still wins).
     pub discovery_path: Option<PathBuf>,
     pub controller: ControllerTiming,
+    pub screen_timing: ScreenTiming,
 }
 
 impl Services {
@@ -160,8 +164,10 @@ impl Services {
             ownkey_config: voice_core::paths::ownkey_config(),
             ownkey_models,
             recorder_exe: options.exe_dir.join(RECORDER_EXE),
+            screen_exe: options.exe_dir.join(SCREEN_EXE),
             discovery_path: None,
             controller: ControllerTiming::default(),
+            screen_timing: ScreenTiming::default(),
         }
     }
 }
