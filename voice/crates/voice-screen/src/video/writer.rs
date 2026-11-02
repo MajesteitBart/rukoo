@@ -8,9 +8,10 @@
 //! encoder takes on a CI runner that has only WARP.
 //!
 //! A frame is written when the next one arrives, so each sample's duration is the real gap to
-//! the next: the capture rate varies. A still screen re-submits its last frame every second, and
-//! a keyframe is forced at least every second of media time, so fragments stay 1 to 2 s long and
-//! a hard kill loses at most the open one.
+//! the next: the capture rate varies. A still screen re-submits its last frame every half second,
+//! a keyframe is forced once a second of media time has passed since the last one, and the sink
+//! ends a fragment at the first keyframe after half a second, so fragments stay 1 to 1.5 s long
+//! and a hard kill loses at most the open one.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,9 +69,16 @@ pub struct WriterOptions {
     pub disk_fail_at: Option<u64>,
 }
 
-/// One second in 100 ns units: the longest a frame stays without a re-submit, and the most
-/// media time between keyframes.
+/// One second in 100 ns units: the media time between forced keyframes.
 const SECOND: i64 = 10_000_000;
+/// The longest a frame stays without a re-submit.
+const RESUBMIT: i64 = SECOND / 2;
+/// `MF_MPEG4SINK_MIN_FRAGMENT_DURATION`. The sink checks it as a sample arrives and then ends the
+/// fragment at the next keyframe, so with 1 s here the forced keyframe that crosses 1 s is the
+/// one that sets the check off, and the fragment runs on to the keyframe after it, about 2 s and
+/// on a still screen more (2.0 to 2.4 s in the live run). Half a second sets it off on a sample
+/// before the forced keyframe, which then starts the next fragment: 1 to 1.5 s.
+const MIN_FRAGMENT: i64 = SECOND / 2;
 /// The duration of the last sample when the file ends.
 const LAST_DURATION: i64 = SECOND / FPS as i64;
 
@@ -210,7 +218,7 @@ impl VideoWriter {
             // loses less than the open fragment plus the encoder's queue.
             attributes.SetUINT32(&MF_LOW_LATENCY, 1).map_err(classify)?;
             attributes
-                .SetUINT64(&MF_MPEG4SINK_MIN_FRAGMENT_DURATION, SECOND as u64)
+                .SetUINT64(&MF_MPEG4SINK_MIN_FRAGMENT_DURATION, MIN_FRAGMENT as u64)
                 .map_err(classify)?;
             let writer = mf
                 .create_sink_writer(&bytes, &attributes)
@@ -398,8 +406,8 @@ impl VideoWriter {
         Ok(())
     }
 
-    /// After a second without a new frame, the last one goes in again at `boot_now`, so a still
-    /// screen still gets a keyframe and a fragment boundary every second or two.
+    /// After half a second without a new frame, the last one goes in again at `boot_now`, so a
+    /// still screen still gets a keyframe and a fragment boundary every 1 to 1.5 s.
     pub fn tick(&mut self, boot_now: u64) -> Result<(), VideoError> {
         let (Some(start), Some(last), Some(texture)) =
             (self.start_boot, self.last_time, self.last_texture.clone())
@@ -407,7 +415,7 @@ impl VideoWriter {
             return Ok(());
         };
         let now = boot_now.saturating_sub(start) as i64;
-        if now - last >= SECOND {
+        if now - last >= RESUBMIT {
             self.write(&texture, boot_now)?;
         }
         Ok(())

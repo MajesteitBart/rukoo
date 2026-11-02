@@ -118,10 +118,16 @@ mod tests {
     /// at the size of a portrait monitor, still on the synthetic screen.
     pub fn hard_kill_with_hardware_encoder() {
         let size = std::env::var("VOICE_SCREEN_TEST_SIZE").unwrap_or_else(|_| "1920x1080".into());
-        hard_kill(
-            &format!("synthetic:{size},change-every=1000,text=Slide"),
-            true,
-        );
+        // A screen that changes every second, and one that stays still after its first slide, as
+        // a slide deck mostly does: then only the re-submits make the samples, and the fragments
+        // must still end within 2 s.
+        for change in [1_000, 60_000] {
+            println!("    a slide every {change} ms");
+            hard_kill(
+                &format!("synthetic:{size},change-every={change},text=Slide"),
+                true,
+            );
+        }
     }
 
     fn hard_kill(test: &str, hardware: bool) {
