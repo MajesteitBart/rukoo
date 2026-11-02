@@ -421,9 +421,9 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
   assert.match(await statusOf('on'), /Everything is in the bucket[\s\S]*Last upload/);
   assert.match(await statusOf('live'), /Audio and frames go up while the meeting records[\s\S]*3 files waiting/);
   const retrying = await statusOf('retrying');
-  assert.match(retrying, /Can't reach the bucket\. Voice keeps trying\.[\s\S]*Waiting since[\s\S]*as long as 10 GB stay free/);
+  assert.match(retrying, /Can't reach the bucket\. Voice keeps trying\.[\s\S]*14 files waiting[\s\S]*Waiting since[\s\S]*as long as 10 GB stay free/);
   const failing = await statusOf('failing');
-  assert.match(failing, /Uploads stopped\.[\s\S]*doesn't accept this access key and secret/);
+  assert.match(failing, /Uploads stopped\.[\s\S]*doesn't accept this access key and secret[\s\S]*41 files waiting[\s\S]*as long as 10 GB stay free/);
   assert.match(failing, /removed 3 files before they reached the bucket/);
   await page.click('[data-a="sync-details:last"]');
   assert.match(await dialogText(page), /SignatureDoesNotMatch/);

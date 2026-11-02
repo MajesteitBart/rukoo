@@ -750,12 +750,14 @@ function syncSwitchCard() {
   );
 }
 
-// What the bucket is doing, while sync is on, and what never reached it in any state.
+// What the bucket is doing, while sync is on, and what never reached it in any state. While uploads can't go, the count
+// of files still waiting shows too: those are what the 10 GB floor could cost.
 function syncStatus() {
   const s = state.sync;
   if (!s) return '';
   const note = (html, cls = '') => `<p class="sync-note ${cls}">${html}</p>`;
   const details = (which) => ` <button class="link-btn" data-a="sync-details:${which}">${esc(t('common.errorDetails'))}</button>`;
+  const waiting = () => (s.waiting > 0 ? note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet') : '');
   const parts = [];
   if (state.config.storage.sync.enabled) {
     switch (s.state) {
@@ -770,7 +772,7 @@ function syncStatus() {
         parts.push(status('busy', t('settings.sync.live')), note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet'));
         break;
       case 'retrying':
-        parts.push(status('busy', t('settings.sync.retrying')));
+        parts.push(status('busy', t('settings.sync.retrying')), waiting());
         if (s.oldestWaiting) parts.push(note(esc(t('settings.sync.waitingSince', { time: dateTime(s.oldestWaiting) })) + (s.lastError?.message ? details('last') : ''), 'quiet'));
         parts.push(note(esc(t('settings.sync.keptLocal'))));
         break;
@@ -779,16 +781,14 @@ function syncStatus() {
         const reason = s.lastError?.code !== 'failed' && SYNC_ERRORS[s.lastError?.code];
         parts.push(status('bad', t('settings.sync.stopped')));
         if (reason || s.lastError?.message) parts.push(note((reason ? esc(t(reason)) : '') + (s.lastError?.message ? details('last') : '')));
-        parts.push(note(esc(t('settings.sync.keptLocal'))));
+        parts.push(waiting(), note(esc(t('settings.sync.keptLocal'))));
         break;
       }
       case 'key':
         parts.push(status('bad', t('settings.sync.keyUnreadable')), `<button class="btn sm secondary" data-a="sync-key-use">${esc(t('settings.sync.keyUse'))}</button>`);
         break;
       case 'paused':
-        parts.push(status('bad', t('settings.sync.paused')));
-        if (s.waiting > 0) parts.push(note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet'));
-        parts.push(note(esc(t('settings.sync.keptLocal'))));
+        parts.push(status('bad', t('settings.sync.paused')), waiting(), note(esc(t('settings.sync.keptLocal'))));
         break;
     }
   }
