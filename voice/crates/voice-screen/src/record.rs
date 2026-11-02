@@ -668,9 +668,14 @@ impl Screen {
         self.end_video("error");
         self.write(&Line::DeviceLost { t });
         self.release_device();
-        // The policy counts the loss and every failed recreation; after `DEVICE_RETRIES`
-        // failures it drops the video, then the frames, one step per call (spec 2.6).
-        let mut step = self.drops.on_device_lost();
+        // The policy counts this loss and every failed recreation; after `DEVICE_RETRIES`
+        // failures it drops the video, then the frames, one step per call (spec 2.6). Each loss
+        // gets a count of its own, so a device that came back doesn't bring a later loss closer
+        // to a drop: the episode starts from the drops made so far.
+        let mut episode = DropState::new(self.mode == Mode::Video);
+        episode.video = self.drops.video;
+        episode.frames = self.drops.frames;
+        let mut step = episode.on_device_lost();
         for _ in 0..16 {
             match step {
                 EncoderStep::Retry => {
@@ -687,13 +692,17 @@ impl Screen {
                             ));
                             self.release_device();
                             std::thread::sleep(DEVICE_RETRY_PAUSE);
-                            step = self.drops.on_device_lost();
+                            step = episode.on_device_lost();
                         }
                     }
                 }
                 EncoderStep::Drop(part, reason) => {
+                    match part {
+                        Part::Video => self.drops.video = Some(reason),
+                        Part::Frames => self.drops.frames = Some(reason),
+                    }
                     self.apply_drop(part, reason);
-                    step = self.drops.on_device_lost();
+                    step = episode.on_device_lost();
                 }
                 EncoderStep::Ignore => break,
             }
