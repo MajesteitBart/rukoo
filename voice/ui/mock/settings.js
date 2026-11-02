@@ -566,7 +566,7 @@ export function createMock(params) {
       const key = state.sync.key;
       if ((action === 'show' || action === 'import') && state.sync.screenRecording) fail('recording_screen', 'A meeting records the screen.');
       if (action === 'show') {
-        if (state.sync.state === 'key') fail('failed', 'Windows could not open master-key.bin (DPAPI error 0x8009000B).');
+        if (state.sync.state === 'key') fail('key', 'Windows could not open master-key.bin (DPAPI error 0x8009000B).');
         if (!key.exists) state.sync.key = { exists: true, id: '00000000', exported: false };
         emit();
         return { code: ZERO_CODE, id: state.sync.key.id };
@@ -589,6 +589,7 @@ export function createMock(params) {
     },
     settings_sync_key_copy: () => {
       if (!state.sync.key.exists) fail('not_found', 'There is no encryption key yet.');
+      if (state.sync.state === 'key') fail('key', 'Windows could not open master-key.bin (DPAPI error 0x8009000B).');
       return null;
     },
     settings_protect: ({ on }) => {

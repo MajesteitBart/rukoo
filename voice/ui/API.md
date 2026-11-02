@@ -7,7 +7,7 @@ The pill (`pill.html`) and Settings (`settings.html`) are plain HTML, CSS and Ja
 - `tauri.conf.json` sets `app.withGlobalTauri: true`. The pages use `window.__TAURI__.core.invoke(command, args)` and `window.__TAURI__.event.listen(name, handler)`; `lib/bridge.js` wraps both.
 - `frontendDist` is this folder. The pages load `i18n/en.json` and `i18n/nl.json` with `fetch`, so the asset protocol must serve `.json`. Nothing is fetched from the network; Inter is bundled in `fonts/`. `dev/` and `mock/` are development tools and may be left out of the bundle.
 - Arguments are camelCase objects. Tauri maps a top-level argument name to the Rust parameter of the same name in snake_case, so `invoke('pill_ack', { seq })` calls `fn pill_ack(seq: u64)`. Where a command takes one struct, the page passes it under one name (`layout`, `save`, `request`, `preview`), and the Rust parameter has that name. Structs use `#[serde(rename_all = "camelCase")]`.
-- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`, and for bucket sync `needs_test`, `endpoint`, `bucket`, `clock`, `permission`, `no_secret`, `key_in_use`, `recording_screen` and `off`.
+- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`, and for bucket sync `needs_test`, `endpoint`, `bucket`, `clock`, `permission`, `no_secret`, `key`, `key_in_use`, `recording_screen` and `off`.
 - Both windows need `core:event:default` in their capability. App commands registered with `invoke_handler` are allowed for every window unless the app defines command permissions; if it does, allow the `pill_*` commands for the `pill` window and the `settings_*` commands for the `settings` window only.
 - Suggested CSP for both windows: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost`. The pages set custom properties in `style` attributes, hence `'unsafe-inline'` for styles only.
 
@@ -416,15 +416,15 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 `invoke('settings_sync_key', { action, code })`:
 
-- `show` → `{ "code": "RKV1-…", "id": "0f1e2d3c" }`. Makes the key when there is none. Rejects with `recording_screen` while a meeting records the screen.
-- `saved` → nothing: the user saved the code; `sync.key.exported` becomes `true`.
+- `show` → `{ "code": "RKV1-…", "id": "0f1e2d3c" }`. Makes the key when there is none. Rejects with `recording_screen` while a meeting records the screen, and with `key` when Voice can't open its encryption key on this computer, for instance after a Windows password reset.
+- `saved` → nothing: the user saved the code; `sync.key.exported` becomes `true`. Rejects with `key` when there is no key, or Voice can't open it.
 - `import` with `code` → `{ "id" }`: this computer uses that key from now on. Rejects with `invalid_value` for a code that isn't a key, `key_in_use` once this computer uploaded meetings with its own key, and `recording_screen` while a meeting records the screen.
 
 The page shows the code only in its dialog, with the window hidden from capture (`settings_protect`), and closes the dialog when `sync.screenRecording` turns true.
 
 ### Command `settings_sync_key_copy`
 
-`invoke('settings_sync_key_copy')` → nothing. Puts the recovery code on the clipboard, hidden from clipboard history and cloud clipboard, and clears it after 60 seconds if it is still there. The page never gets the code from this command and never uses `navigator.clipboard`.
+`invoke('settings_sync_key_copy')` → nothing. Puts the recovery code on the clipboard, hidden from clipboard history and cloud clipboard, and clears it after 60 seconds if it is still there. Rejects with `key` when Voice can't open its encryption key on this computer. The page never gets the code from this command and never uses `navigator.clipboard`.
 
 ### Command `settings_protect`
 

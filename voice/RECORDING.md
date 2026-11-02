@@ -205,7 +205,7 @@ After a successful `tap` the connection carries raw signed 16-bit little-endian 
 
 ## Other readers
 
-Bucket sync and media links read the meeting folder too, and never write to a file the recorder or the screen recorder writes. They read a segment once its `segment_end` line exists, `timeline.jsonl` once it has `stop`, and `transcript.db` through a snapshot. In `screen/`, they read a frame once a `frame` line names it, a video file once its `video_end` line exists, and `journal.jsonl` once it ends with `stop`; `screen/clips/` and `screen/screen.json` never leave this computer. A file restored from the bucket comes back byte for byte at its own path.
+Bucket sync and media links read the meeting folder too, and never write to a file the recorder or the screen recorder writes. Bucket sync reads a segment once its `segment_end` line exists, `timeline.jsonl` once it has `stop`, and `transcript.db` through a snapshot. A media link may also read the open segment of a meeting that still records, up to the samples its header counts, as any other process may (see "Writing, in crash-safe order"). In `screen/`, both read a frame once a `frame` line names it, a video file once its `video_end` line exists, and `journal.jsonl` once it ends with `stop`; `screen/clips/` and `screen/screen.json` never leave this computer. A file restored from the bucket comes back byte for byte at its own path.
 
 ## Versioning
 

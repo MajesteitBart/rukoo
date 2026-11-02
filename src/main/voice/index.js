@@ -21,8 +21,8 @@ const PROTECT_DELAY_MS = 100;
 const EMIT_MS = 150;
 const LINK_WITHIN_MS = 12 * 60 * 60 * 1000;
 const EVENT_ID_MAX = 4000;
-// media.open and media.read: 10 s, not the default 5 s, because either can wait behind another command Voice runs on
-// the same connection, such as a clip.get of up to 4 s.
+// media.open and media.read: the bridge's own 10 s, kept as an option of its own so tests can shorten it. Either can
+// wait behind another command Voice runs on the same connection, such as a clip.get of up to 4 s.
 const MEDIA_TIMEOUT_MS = 10000;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
