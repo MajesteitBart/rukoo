@@ -43,7 +43,7 @@ use crate::speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 use crate::stt::{Heard, Recognizer, TimedSpeechToText};
 use crate::transcript::{
     call_number, taken_key, Outcome, StoredPassage, StoredSegment, Transcript, BACKFILL_KEY,
-    DIARIZE_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY,
+    DIARIZE_KEY, LABELLED_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY,
 };
 use crate::watcher::{
     mark_key, state_key, tracks_of, Derived, Mapper, Stop, Stretch, TimelineWatcher,
@@ -903,11 +903,14 @@ impl Worker {
             .transcript
             .outcome()?
             .is_some_and(|o| o.state == MeetingState::Failed);
+        // Nemotron heard the whole call after the stop. The meeting can still wait for its
+        // transcription, as for consent, through many Voice starts.
+        let labelled = self.transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1");
         self.run = match mode.as_str() {
             "nemotron" => match &self.labels {
                 // No follower for a meeting that ended `done` or `failed`, such as one restored
-                // from the bucket: its speaker ids stay as stored.
-                Labels::Local { .. } if finished || failed => {
+                // from the bucket, or whose labels are done: its speaker ids stay as stored.
+                Labels::Local { .. } if finished || failed || labelled => {
                     shared.set_labels(LabelView::Fixed(fixed_status(
                         "nemotron",
                         LabelState::Finished,
@@ -932,18 +935,19 @@ impl Worker {
                     }
                 }
                 Labels::Off { reason } => {
+                    let lost = !finished && !failed && !labelled;
                     shared.set_labels(LabelView::Fixed(fixed_status(
                         "nemotron",
-                        if finished || failed {
-                            LabelState::Finished
-                        } else {
+                        if lost {
                             LabelState::Failed
+                        } else {
+                            LabelState::Finished
                         },
-                        (!finished && !failed).then(|| reason.clone()),
+                        lost.then(|| reason.clone()),
                     )));
                     Run::Nemotron {
                         follower: None,
-                        lost: !finished && !failed,
+                        lost,
                     }
                 }
             },

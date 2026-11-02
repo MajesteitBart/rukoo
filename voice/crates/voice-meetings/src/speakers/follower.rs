@@ -761,6 +761,9 @@ impl Ctx {
                     let probs = self.timed("finish", 0, || stream.finish())?;
                     let mut batch = labeller.take(probs)?;
                     labeller.close(&mut batch);
+                    // With the last turns, so a pipeline after this one knows the labels are
+                    // done and opens no worker for them.
+                    batch.finished = true;
                     self.record(batch, &labeller)?;
                     return Ok(End::Finished);
                 }

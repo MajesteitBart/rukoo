@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use voice_bridge::{EventLog, Stored};
 use voice_core::speakers::DiarErrorKind;
 use voice_core::{Hints, ProviderError};
-use voice_meetings::transcript::{DIARIZE_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY};
+use voice_meetings::transcript::{DIARIZE_KEY, LABELLED_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY};
 use voice_meetings::{
     FollowerTiming, LabelState, Labels, Library, MeetingDir, Pipeline, PipelineHandle,
     PipelineOptions, PipelineState, StreamOptions, TimedSpeechToText, TimedText, Timing,
@@ -496,6 +496,68 @@ fn the_switch_going_off_keeps_a_labelled_meeting_labelled() {
     assert_eq!(d.script().opens, opens, "no worker for the new meeting");
     let call = last_revisions(&events(&log, &next.id()), "call");
     assert!(call.iter().all(|p| p.speaker.as_deref() == Some("call-1")));
+}
+
+/// 4c: a stopped meeting whose labels are done but whose transcription waits, as for consent,
+/// opens no new worker each time Voice starts, and its passages still get their speakers once
+/// transcription may go on.
+#[test]
+fn finished_labels_open_no_worker_on_the_next_start() {
+    let tmp = TempDir::new("speakers-labelled");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(6, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let d = ScriptedDiarizer::new();
+    let agreed = Arc::new(AtomicBool::new(false));
+    let options = || PipelineOptions {
+        transcription_allowed: {
+            let agreed = agreed.clone();
+            Arc::new(move || {
+                if agreed.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("Agree to send meeting audio in Settings.".into())
+                }
+            })
+        },
+        ..labelled(&d)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options());
+    wait_until("labels done", WAIT, || {
+        (handle.labels().state == LabelState::Finished).then_some(())
+    });
+    assert!(matches!(handle.state(), PipelineState::Waiting { .. }));
+    handle.shutdown();
+    assert_eq!(meta(&rec.dir, LABELLED_KEY).as_deref(), Some("1"));
+    let (opens, pushed) = {
+        let script = d.script();
+        (script.opens, script.pushed_samples)
+    };
+    // Voice starts twice more before the user agrees.
+    for _ in 0..2 {
+        let handle = Pipeline::start(rec.dir.clone(), log.clone(), options());
+        wait_until("waiting for consent", WAIT, || {
+            matches!(handle.state(), PipelineState::Waiting { .. }).then_some(())
+        });
+        let status = handle.labels();
+        assert_eq!(
+            (status.mode.as_str(), status.state),
+            ("nemotron", LabelState::Finished)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        handle.shutdown();
+    }
+    assert_eq!(d.script().opens, opens, "no new worker");
+    assert_eq!(d.script().pushed_samples, pushed, "nothing heard again");
+    agreed.store(true, Ordering::SeqCst);
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options());
+    wait_done(&handle);
+    handle.shutdown();
+    let call = last_revisions(&events(&log, &rec.id()), "call");
+    assert_eq!(call.len(), 6, "{call:#?}");
+    assert_eq!(assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(), 3);
+    assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
 }
 
 /// 2b: a voice still talking at Stop keeps its last turn to the end of the call, and its last

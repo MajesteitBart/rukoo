@@ -32,6 +32,9 @@ pub const SETTLED_KEY: &str = "speakers.settled.call";
 pub const BACKFILL_KEY: &str = "speakers.backfill.call";
 /// `1` when Mistral labels the call's voices, `0` when its stream only transcribes.
 pub const DIARIZE_KEY: &str = "speakers.diarize";
+/// `1` once Nemotron heard the whole call of a stopped meeting: its turns are final, and a
+/// later pipeline starts no worker for it.
+pub const LABELLED_KEY: &str = "speakers.finished.call";
 
 /// Meeting ms up to which Mistral answered for a track's stream.
 pub fn answered_key(track: Track) -> String {
@@ -149,11 +152,13 @@ pub struct LabelBatch {
     pub turns: Vec<TurnRow>,
     /// The new settled position in meeting ms; a lower value than the stored one is ignored.
     pub settled: Option<u64>,
+    /// The stream heard the whole call of a stopped meeting ([`LABELLED_KEY`]).
+    pub finished: bool,
 }
 
 impl LabelBatch {
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty() && self.turns.is_empty() && self.settled.is_none()
+        self.map.is_empty() && self.turns.is_empty() && self.settled.is_none() && !self.finished
     }
 }
 
@@ -596,6 +601,12 @@ impl Transcript {
         }
         if let Some(settled) = batch.settled {
             raise(tx, SETTLED_KEY, settled)?;
+        }
+        if batch.finished {
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
+                [LABELLED_KEY],
+            )?;
         }
         Ok(())
     }
@@ -1107,8 +1118,10 @@ mod tests {
             }],
             turns: vec![row("call-1", 1_000, None, 1), row("call-2", 5_000, None, 1)],
             settled: Some(6_000),
+            finished: false,
         })
         .unwrap();
+        assert_eq!(t.meta_get(LABELLED_KEY).unwrap(), None);
         // The open turn ends at the settled position.
         let turns = t.turns(Track::Call, 0, 10_000).unwrap();
         assert_eq!(
@@ -1138,6 +1151,14 @@ mod tests {
         assert_eq!(t.turns(Track::Call, 0, 10_000).unwrap()[0].end, 4_000);
         assert_eq!(t.speaker_map().unwrap()[&(1, "0".into())], "call-1");
         assert_eq!(t.highest_speaker_number().unwrap(), 1);
+        // The last batch of a stopped meeting marks its labels done, even with nothing else.
+        let done = LabelBatch {
+            finished: true,
+            ..LabelBatch::default()
+        };
+        assert!(!done.is_empty());
+        t.record_labels(&done).unwrap();
+        assert_eq!(t.meta_get(LABELLED_KEY).unwrap().as_deref(), Some("1"));
 
         // A stream that stopped at 4.5 s: turns past it end there, later ones go.
         t.record_labels(&LabelBatch {
