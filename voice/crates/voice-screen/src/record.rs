@@ -1499,13 +1499,19 @@ impl Screen {
                 },
                 None => error("bad_request"),
             },
+            // The fast path for a pause or resume, which mustn't wait for the next timeline poll.
+            // Each reads the timeline now and counts only when the timeline agrees. The supervisor
+            // sends them on separate connections, so they can arrive out of order: a late resume
+            // mustn't record through a newer pause, and a late pause mustn't stop the recording
+            // after a newer resume. The recorder writes its line before it answers, so a genuine
+            // request finds the line there.
             Some("pause") => {
-                self.pause(None);
+                self.follow_timeline();
+                if self.timeline_paused {
+                    self.pause(None);
+                }
                 json!({ "ok": true })
             }
-            // The fast path for a pause, which mustn't wait for the timeline. A resume reads the
-            // timeline first and counts only when the timeline says resumed: a resume the
-            // supervisor sent late, after a newer pause, mustn't record through that pause.
             Some("resume") => {
                 self.follow_timeline();
                 if !self.timeline_paused {

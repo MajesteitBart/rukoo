@@ -902,6 +902,30 @@ mod tests {
         assert_frames_open(&m, &lines);
     }
 
+    /// A control `pause` the supervisor delivers after the newer resume, while the recorder's
+    /// timeline already says resumed, stops nothing: the screen keeps recording.
+    pub fn a_late_pause_keeps_recording() {
+        let m = TempMeeting::new("late-pause", "frames");
+        let (mut recorder, mut screen) = start(&m, "frames", SLIDES, &[]);
+        m.wait_journal("a frame", |l| first(l, "frame").is_some());
+        let paused = m.recorder_request(json!({ "cmd": "pause" }));
+        assert_eq!(paused["ok"], true, "{paused}");
+        let resumed = m.recorder_request(json!({ "cmd": "resume" }));
+        assert_eq!(resumed["ok"], true, "{resumed}");
+        // The resume arrives first, then the stale pause.
+        assert_eq!(m.screen_request(1, json!({ "cmd": "resume" }))["ok"], true);
+        assert_eq!(m.screen_request(1, json!({ "cmd": "pause" }))["ok"], true);
+        let late_t = t(&m.screen_request(1, json!({ "cmd": "status" })));
+        std::thread::sleep(Duration::from_secs(4));
+        let status = m.screen_request(1, json!({ "cmd": "status" }));
+        assert_eq!(status["state"], "recording", "{status}");
+        m.wait_journal("a frame after the late pause", |l| {
+            of_kind(l, "frame").iter().any(|f| t(f) > late_t)
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_frames_open(&m, &lines);
+    }
+
     pub fn monitor_switch_starts_a_new_file() {
         let m = TempMeeting::new("switch", "video");
         let test = spec("monitors=2");
@@ -1246,6 +1270,11 @@ fn main() {
             name: "a_late_resume_keeps_the_pause",
             ignored: false,
             run: tests::a_late_resume_keeps_the_pause,
+        },
+        Test {
+            name: "a_late_pause_keeps_recording",
+            ignored: false,
+            run: tests::a_late_pause_keeps_recording,
         },
         Test {
             name: "monitor_switch_starts_a_new_file",
