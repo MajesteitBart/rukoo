@@ -797,7 +797,7 @@ impl ScreenSupervisor {
         let state = match view.phase {
             Phase::Starting | Phase::Restarting => "starting",
             Phase::Running if view.frames => match status["state"].as_str() {
-                Some(state @ ("recording" | "paused" | "locked")) => state,
+                Some(state @ ("starting" | "recording" | "paused" | "locked")) => state,
                 Some("stopped" | "stopping") => "stopped",
                 _ => "recording",
             },

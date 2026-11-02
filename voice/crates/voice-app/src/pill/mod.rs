@@ -649,8 +649,8 @@ impl Pill {
                 .and_then(|(origin, scale)| place::css_to_physical(origin, scale, &button)),
             _ => None,
         };
-        let place = |cell: &std::cell::RefCell<Option<hit::HitWindow>>,
-                     rect: Option<place::Rect>| {
+        let show = |cell: &std::cell::RefCell<Option<hit::HitWindow>>,
+                    rect: Option<place::Rect>| {
             let cell = cell.borrow();
             let Some(hit) = cell.as_ref() else {
                 return false;
@@ -666,8 +666,8 @@ impl Pill {
         };
         let stop = rect(want_stop, button);
         let screen = rect(want_screen, screen_button);
-        let visible = HIT.with(|cell| place(cell, stop));
-        let screen_visible = SCREEN_HIT.with(|cell| place(cell, screen));
+        let visible = HIT.with(|cell| show(cell, stop));
+        let screen_visible = SCREEN_HIT.with(|cell| show(cell, screen));
         let mut i = self.lock();
         i.hit_visible = visible;
         i.screen_hit_visible = screen_visible;
