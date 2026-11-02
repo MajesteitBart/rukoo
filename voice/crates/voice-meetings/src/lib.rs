@@ -39,6 +39,8 @@ pub use pipeline::{
 };
 pub use reader::TrackReader;
 pub use retention::{retention_sweep, retention_sweep_at, WEEK_MS};
+pub use speakers::follower::FollowerTiming;
+pub use speakers::turns::Turn;
 pub use speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 pub use stt::{TimedSpeechToText, TimedText};
 pub use transcript::Transcript;

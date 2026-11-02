@@ -1,0 +1,76 @@
+{
+  "about": "Hand-made cases for the speaker label scorer: call passages and reference turns in meeting ms, and the accuracy they score. Each passage's reference speaker is the one whose turns overlap it most (the name that sorts first on a tie); passages that overlap no turn are left out. Ids map one to one to reference speakers by the time of their passages, the largest pair first, ties by id and then by name. Accuracy is the time of passages whose id maps to their reference speaker over all scored passage time; a passage without a speaker counts as wrong. voice-meetings/tests/common/score.rs and voice/scripts/lib/speaker-score.mjs both pass these.",
+  "cases": [
+    {
+      "name": "every passage on its speaker",
+      "passages": [
+        { "start": 100, "end": 3900, "speaker": "call-1" },
+        { "start": 4600, "end": 7900, "speaker": "call-2" },
+        { "start": 8600, "end": 11900, "speaker": "call-3" }
+      ],
+      "reference": [
+        { "start": 0, "end": 4000, "speaker": "S1" },
+        { "start": 4500, "end": 8000, "speaker": "S2" },
+        { "start": 8500, "end": 12000, "speaker": "S3" }
+      ],
+      "accuracy": 1.0
+    },
+    {
+      "name": "ids in another order still map one to one",
+      "passages": [
+        { "start": 0, "end": 4000, "speaker": "call-3" },
+        { "start": 4500, "end": 8000, "speaker": "call-1" },
+        { "start": 8500, "end": 12000, "speaker": "call-2" },
+        { "start": 12500, "end": 14000, "speaker": "call-3" }
+      ],
+      "reference": [
+        { "start": 0, "end": 4000, "speaker": "S1" },
+        { "start": 4500, "end": 8000, "speaker": "S2" },
+        { "start": 8500, "end": 12000, "speaker": "S3" },
+        { "start": 12500, "end": 14000, "speaker": "S1" }
+      ],
+      "accuracy": 1.0
+    },
+    {
+      "name": "a passage without a speaker counts as wrong",
+      "passages": [
+        { "start": 0, "end": 4000, "speaker": "call-1" },
+        { "start": 5000, "end": 7000, "speaker": null },
+        { "start": 8000, "end": 12000, "speaker": "call-2" }
+      ],
+      "reference": [
+        { "start": 0, "end": 4000, "speaker": "S1" },
+        { "start": 5000, "end": 7000, "speaker": "S2" },
+        { "start": 8000, "end": 12000, "speaker": "S3" }
+      ],
+      "accuracy": 0.8
+    },
+    {
+      "name": "one voice heard as two ids scores only the larger",
+      "passages": [
+        { "start": 0, "end": 4000, "speaker": "call-1" },
+        { "start": 4000, "end": 10000, "speaker": "call-2" }
+      ],
+      "reference": [
+        { "start": 0, "end": 10000, "speaker": "S1" }
+      ],
+      "accuracy": 0.6
+    },
+    {
+      "name": "the most overlap decides, a passage outside every turn is left out, and a tie goes to the lower id",
+      "passages": [
+        { "start": 0, "end": 3000, "speaker": "call-1" },
+        { "start": 3000, "end": 5000, "speaker": "call-2" },
+        { "start": 6000, "end": 8000, "speaker": "call-3" },
+        { "start": 20000, "end": 21000, "speaker": "call-1" }
+      ],
+      "reference": [
+        { "start": 0, "end": 3000, "speaker": "S1" },
+        { "start": 3000, "end": 3500, "speaker": "S2" },
+        { "start": 3500, "end": 5000, "speaker": "S1" },
+        { "start": 6000, "end": 8000, "speaker": "S2" }
+      ],
+      "accuracy": 0.7142857142857143
+    }
+  ]
+}

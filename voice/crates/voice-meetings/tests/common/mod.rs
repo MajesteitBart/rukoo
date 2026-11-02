@@ -1,6 +1,14 @@
-//! Helpers for the pipeline tests: temp folders, recognizers that need no model, and a meeting
-//! folder written the way the recorder writes one.
+//! Helpers for the pipeline tests: temp folders, recognizers that need no model, a meeting
+//! folder written the way the recorder writes one, and for speaker labels a scripted diarizer, a
+//! fake realtime stream and the accuracy scorer.
 #![allow(dead_code)]
+
+mod labels;
+pub mod score;
+
+// Only the speaker tests use them.
+#[allow(unused_imports)]
+pub use labels::*;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

@@ -1,0 +1,1004 @@
+//! Speaker labels in the pipeline, with a scripted diarizer and a fake realtime stream instead of
+//! the NeMo worker and Mistral: ids per voice, the gate, stable ids across worker crashes and app
+//! restarts, failures that never cost transcription, backfill, padding at gaps, Mistral's
+//! consent and reconnects, and meetings from Voice 0.1.
+//!
+//! The calls are synthetic: each hidden speaker is a square wave of its own loudness, which the
+//! scripted diarizer and the fake stream hear, and which the test knows from the script.
+
+mod common;
+
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use common::score::{accuracy, Span};
+use common::*;
+use serde_json::{json, Value};
+use voice_bridge::{EventLog, Stored};
+use voice_core::speakers::DiarErrorKind;
+use voice_meetings::transcript::{MODE_KEY, REASON_KEY, SETTLED_KEY};
+use voice_meetings::{
+    FollowerTiming, LabelState, Labels, Library, MeetingDir, Pipeline, PipelineHandle,
+    PipelineOptions, PipelineState, StreamOptions, Timing, Transcript,
+};
+use voice_protocol::{Passage, Track};
+
+const WAIT: Duration = Duration::from_secs(60);
+
+fn fast() -> Timing {
+    Timing {
+        poll: Duration::from_millis(10),
+        busy_poll: Duration::from_millis(1),
+        retry_first: Duration::from_millis(10),
+        retry_max: Duration::from_millis(40),
+        attempts_after_stop: 3,
+    }
+}
+
+fn follower_timing() -> FollowerTiming {
+    FollowerTiming {
+        poll: Duration::from_millis(5),
+        backoff: vec![Duration::from_millis(10)],
+        stream_speed: 1000.0,
+        stream_retry_first: Duration::from_millis(10),
+        stream_retry_max: Duration::from_millis(40),
+        stream_drain: Duration::from_secs(2),
+        ..FollowerTiming::default()
+    }
+}
+
+/// Orukeet-like word timings from [`Bursts`], labels from a scripted diarizer.
+fn labelled(d: &ScriptedDiarizer) -> PipelineOptions {
+    PipelineOptions {
+        timed: Some(Arc::new(Bursts)),
+        timing: fast(),
+        labels: Labels::Local {
+            diarizer: Arc::new(d.clone()),
+        },
+        speakers: follower_timing(),
+        ..PipelineOptions::new(Arc::new(Offline))
+    }
+}
+
+/// Three voices take turns, each burst `talk` s long with 1.2 s pauses between them.
+fn three_voices(rounds: usize, talk: f64) -> Vec<(f64, Option<usize>)> {
+    let order = [0, 1, 2, 0, 2, 1];
+    let mut pieces = vec![(0.5, None)];
+    for i in 0..rounds {
+        pieces.push((talk, Some(order[i % order.len()])));
+        pieces.push((1.2, None));
+    }
+    pieces
+}
+
+fn seconds(pieces: &[(f64, Option<usize>)]) -> f64 {
+    pieces.iter().map(|p| p.0).sum()
+}
+
+fn ms(seconds: f64) -> u64 {
+    (seconds * 1000.0).round() as u64
+}
+
+/// A stopped recording: a quiet microphone and `pieces` on the call.
+fn finished_call(lib: &Library, pieces: &[(f64, Option<usize>)]) -> Recording {
+    let rec = Recording::new(lib, &[Track::Mic, Track::Call]);
+    rec.session(0, 1);
+    let length = seconds(pieces);
+    rec.segment("mic", 1, 0, &voices(&[(length, None)]));
+    rec.segment("call", 1, 0, &voices(pieces));
+    rec.stop(ms(length));
+    rec
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Found {
+    id: String,
+    track: String,
+    start: u64,
+    end: u64,
+    speaker: Option<String>,
+    revision: u64,
+    text: String,
+}
+
+fn found(p: &Value) -> Found {
+    Found {
+        id: p["id"].as_str().unwrap().to_owned(),
+        track: p["track"].as_str().unwrap().to_owned(),
+        start: p["start"].as_u64().unwrap(),
+        end: p["end"].as_u64().unwrap(),
+        speaker: p["speaker"].as_str().map(str::to_owned),
+        revision: p["revision"].as_u64().unwrap(),
+        text: p["text"].as_str().unwrap().to_owned(),
+    }
+}
+
+/// Every passage event in order.
+fn all_passages(events: &[Stored]) -> Vec<Found> {
+    of(events, "passage").into_iter().map(found).collect()
+}
+
+/// Each passage's last revision on `track`, by start.
+fn last_revisions(events: &[Stored], track: &str) -> Vec<Found> {
+    let mut last: HashMap<String, Found> = HashMap::new();
+    for p in all_passages(events) {
+        if p.track == track {
+            last.insert(p.id.clone(), p);
+        }
+    }
+    let mut list: Vec<Found> = last.into_values().collect();
+    list.sort_by_key(|p| p.start);
+    list
+}
+
+/// Every named call passage belongs to one hidden speaker, and every hidden speaker has one id:
+/// the stable-id property. Returns hidden speaker to id.
+fn assert_stable_ids(passages: &[Found], timeline: &[(u64, u64, usize)]) -> HashMap<usize, String> {
+    let mut ids: HashMap<usize, HashSet<String>> = HashMap::new();
+    for p in passages {
+        let Some(id) = &p.speaker else { continue };
+        let hidden = who(timeline, p.start, p.end).unwrap_or_else(|| panic!("nobody in {p:?}"));
+        ids.entry(hidden).or_default().insert(id.clone());
+    }
+    let mut out = HashMap::new();
+    for (hidden, set) in &ids {
+        assert_eq!(set.len(), 1, "voice {hidden} got {set:?}: {passages:#?}");
+        out.insert(*hidden, set.iter().next().unwrap().clone());
+    }
+    let distinct: HashSet<&String> = out.values().collect();
+    assert_eq!(distinct.len(), out.len(), "two voices share an id: {out:?}");
+    out
+}
+
+/// No passage moved from one speaker id to another between revisions.
+fn assert_no_id_moves(events: &[Stored]) {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for p in all_passages(events) {
+        if let Some(id) = p.speaker {
+            if let Some(before) = seen.insert(p.id.clone(), id.clone()) {
+                assert_eq!(before, id, "passage {} moved speakers", p.id);
+            }
+        }
+    }
+}
+
+fn speakers(events: &[Stored]) -> Vec<(String, String)> {
+    of(events, "speaker")
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_str().unwrap().to_owned(),
+                s["label"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Each `call-N` comes before the first passage that names it.
+fn assert_speakers_come_first(events: &[Stored]) {
+    let mut sent = HashSet::new();
+    for e in events {
+        match e.event.as_str() {
+            "speaker" => {
+                sent.insert(e.data["id"].as_str().unwrap().to_owned());
+            }
+            "passage" => {
+                if let Some(id) = e.data["speaker"].as_str() {
+                    assert!(sent.contains(id), "passage before its speaker {id}");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn wait_done(handle: &PipelineHandle) {
+    wait_until("done", WAIT, || {
+        let state = handle.state();
+        assert!(
+            !matches!(state, PipelineState::Failed { .. } | PipelineState::Stopped),
+            "{state:?}"
+        );
+        (state == PipelineState::Done).then_some(())
+    });
+}
+
+fn meta(dir: &MeetingDir, key: &str) -> Option<String> {
+    Transcript::open(dir.path()).unwrap().meta_get(key).unwrap()
+}
+
+/// 1: three voices on the call get three ids, each sent right before its first passage.
+#[test]
+fn three_voices_get_three_ids() {
+    let tmp = TempDir::new("speakers-three");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(9, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_done(&handle);
+    let status = handle.labels();
+    assert_eq!(
+        (status.mode.as_str(), status.state),
+        ("nemotron", LabelState::Finished)
+    );
+    assert_eq!(status.speakers, 3);
+    handle.shutdown();
+
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    assert_speakers_come_first(&all);
+    // Numbered in the order the voices were first heard.
+    assert_eq!(
+        speakers(&all),
+        vec![
+            ("mic".to_owned(), "You".to_owned()),
+            ("call-1".to_owned(), "Speaker 1".to_owned()),
+            ("call-2".to_owned(), "Speaker 2".to_owned()),
+            ("call-3".to_owned(), "Speaker 3".to_owned()),
+        ]
+    );
+    let timeline = timeline_of(&pieces, 0);
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 9, "one passage per burst: {call:#?}");
+    assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
+    let ids = assert_stable_ids(&call, &timeline);
+    assert_eq!(ids[&0], "call-1");
+    assert_eq!(ids[&1], "call-2");
+    assert_eq!(ids[&2], "call-3");
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("nemotron"));
+    // The scorer agrees.
+    let spans: Vec<Span> = call
+        .iter()
+        .map(|p| Span {
+            start: p.start,
+            end: p.end,
+            speaker: p.speaker.clone(),
+        })
+        .collect();
+    let reference: Vec<Span> = timeline
+        .iter()
+        .map(|&(start, end, k)| Span {
+            start,
+            end,
+            speaker: Some(format!("S{k}")),
+        })
+        .collect();
+    assert!((accuracy(&spans, &reference) - 1.0).abs() < 1e-9);
+}
+
+/// 2: while it records, no call passage ends after the follower's settled position.
+#[test]
+fn the_gate_holds_call_windows_at_the_settled_position() {
+    let tmp = TempDir::new("speakers-gate");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let pieces = three_voices(8, 1.5);
+    let call = voices(&pieces);
+    // Model chunks commit 2 s late, so the settled position trails the audio by 2.5 s.
+    let d = ScriptedDiarizer::with(|s| s.lag_frames = 200);
+    let mut writer = rec.open_segment("call", 1, 0);
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    let check = || {
+        let passages = last_revisions(&events(&log, &rec.id()), "call");
+        let settled = handle.labels().settled_ms.unwrap_or(0);
+        for p in &passages {
+            assert!(p.end <= settled, "{p:?} ends after the settled {settled}");
+        }
+        passages.len()
+    };
+    for chunk in call.chunks(4_000) {
+        writer.append(chunk).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        check();
+    }
+    wait_until("passages while it records", WAIT, || {
+        (check() >= 3).then_some(())
+    });
+    let settled = handle.labels().settled_ms.unwrap();
+    assert!(
+        settled + 2_000 < ms(seconds(&pieces)),
+        "the labels trail the audio: settled {settled}"
+    );
+    rec.close_segment(writer, "call", 1, 0);
+    rec.stop(ms(seconds(&pieces)));
+    wait_done(&handle);
+    let all = events(&log, &rec.id());
+    assert_stable_ids(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
+    assert_eq!(last_revisions(&all, "call").len(), 8);
+}
+
+/// 3: a worker crash two thirds into the meeting keeps every voice's id.
+#[test]
+fn a_worker_crash_keeps_the_ids() {
+    let tmp = TempDir::new("speakers-crash");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(12, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    // About 22 one-second pushes in: the second third.
+    let d = ScriptedDiarizer::with(|s| s.crash_on = vec![22]);
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_done(&handle);
+    handle.shutdown();
+    assert_eq!(d.script().opens, 2, "a new stream after the crash");
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    assert_no_id_moves(&all);
+    let call = last_revisions(&all, "call");
+    let ids = assert_stable_ids(&call, &timeline_of(&pieces, 0));
+    assert_eq!(ids.len(), 3);
+    let named = call.iter().filter(|p| p.speaker.is_some()).count();
+    assert!(named >= call.len() - 1, "{call:#?}");
+    let epochs = Transcript::open(rec.dir.path()).unwrap().epochs().unwrap();
+    assert_eq!(
+        epochs.iter().map(|e| e.reason.as_str()).collect::<Vec<_>>(),
+        ["start", "crash"]
+    );
+    assert!(epochs[1].feed_from > 0);
+}
+
+/// 4: a pipeline started again on the same folder keeps every voice's id.
+#[test]
+fn an_app_restart_keeps_the_ids() {
+    let tmp = TempDir::new("speakers-restart");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
+    rec.session(0, 1);
+    let pieces = three_voices(12, 1.5);
+    let call = voices(&pieces);
+    let half = call.len() / 2;
+    let mut writer = rec.open_segment("call", 1, 0);
+    writer.append(&call[..half]).unwrap();
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_until("three ids before the restart", WAIT, || {
+        let ids: HashSet<String> = last_revisions(&events(&log, &rec.id()), "call")
+            .into_iter()
+            .filter_map(|p| p.speaker)
+            .collect();
+        (ids.len() == 3).then_some(())
+    });
+    handle.shutdown();
+
+    // The same diarizer: its next stream numbers the voices differently.
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    writer.append(&call[half..]).unwrap();
+    rec.close_segment(writer, "call", 1, 0);
+    rec.segment("mic", 1, 0, &voices(&[(seconds(&pieces), None)]));
+    rec.stop(ms(seconds(&pieces)));
+    wait_done(&handle);
+    handle.shutdown();
+
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    assert_no_id_moves(&all);
+    let ids = assert_stable_ids(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
+    assert_eq!(ids.len(), 3);
+    let epochs = Transcript::open(rec.dir.path()).unwrap().epochs().unwrap();
+    assert_eq!(epochs.len(), 2);
+    assert_eq!(epochs[1].reason, "restart");
+    assert_eq!(d.script().opens, 2);
+}
+
+/// 5: three crashes in a row stop labels for the meeting; transcription goes on without them.
+#[test]
+fn three_crashes_stop_labels_and_never_transcription() {
+    let tmp = TempDir::new("speakers-failed");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let pieces = three_voices(10, 1.5);
+    let call = voices(&pieces);
+    let first = 4 * RATE * 27 / 10;
+    let mut writer = rec.open_segment("call", 1, 0);
+    writer.append(&call[..first]).unwrap();
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_until("named passages", WAIT, || {
+        let named = last_revisions(&events(&log, &rec.id()), "call")
+            .iter()
+            .filter(|p| p.speaker.is_some())
+            .count();
+        (named >= 2).then_some(())
+    });
+    d.script().crash_all = true;
+    writer.append(&call[first..]).unwrap();
+    wait_until("labels to fail", WAIT, || {
+        (handle.labels().state == LabelState::Failed).then_some(())
+    });
+    let failed_at = handle.labels().settled_ms.unwrap_or(0);
+    rec.close_segment(writer, "call", 1, 0);
+    rec.stop(ms(seconds(&pieces)));
+    wait_done(&handle);
+    let status = handle.labels();
+    assert_eq!(
+        (status.mode.as_str(), status.state, status.reason.as_deref()),
+        ("nemotron", LabelState::Failed, Some("runtimeFailed"))
+    );
+    let all = events(&log, &rec.id());
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 10, "every burst transcribed: {call:#?}");
+    let later: Vec<&Found> = call
+        .iter()
+        .filter(|p| p.start > failed_at + 3_000)
+        .collect();
+    assert!(!later.is_empty());
+    assert!(later.iter().all(|p| p.speaker.is_none()), "{later:#?}");
+    assert_stable_ids(&call, &timeline_of(&pieces, 0));
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("nemotron"));
+}
+
+/// 6: a runtime that refuses before any call passage makes the meeting one without labels.
+#[test]
+fn a_refused_runtime_before_any_passage_falls_back_to_call_1() {
+    let tmp = TempDir::new("speakers-refused");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(4, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let d = ScriptedDiarizer::with(|s| s.refuse = Some(DiarErrorKind::Runtime));
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_done(&handle);
+    let status = handle.labels();
+    assert_eq!(
+        (status.mode.as_str(), status.state, status.reason.as_deref()),
+        ("off", LabelState::Failed, Some("runtimeFailed"))
+    );
+    let all = events(&log, &rec.id());
+    assert_eq!(
+        speakers(&all),
+        vec![
+            ("mic".to_owned(), "You".to_owned()),
+            ("call-1".to_owned(), "Speaker 1".to_owned())
+        ]
+    );
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 4);
+    assert!(call.iter().all(|p| p.speaker.as_deref() == Some("call-1")));
+    assert!(all_passages(&all).iter().all(|p| p.revision == 1));
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("off"));
+    assert_eq!(meta(&rec.dir, REASON_KEY).as_deref(), Some("runtimeFailed"));
+}
+
+/// 7: without labels the events are exactly Voice 0.1's.
+#[test]
+fn without_labels_the_events_are_voice_0_1s() {
+    let tmp = TempDir::new("speakers-off");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
+    rec.session(0, 1);
+    rec.segment("mic", 1, 0, &speech(&[(2.0, true), (1.0, false)]));
+    rec.segment(
+        "call",
+        1,
+        0,
+        &speech(&[(1.0, false), (1.0, true), (1.0, false)]),
+    );
+    rec.stop(3000);
+    let options = PipelineOptions {
+        timing: fast(),
+        labels: Labels::Off {
+            reason: "cpu".into(),
+        },
+        ..PipelineOptions::new(Arc::new(Echo::default()))
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_done(&handle);
+    let status = handle.labels();
+    assert_eq!(
+        (status.mode.as_str(), status.state, status.reason.as_deref()),
+        ("off", LabelState::Off, Some("cpu"))
+    );
+    let all = events(&log, &rec.id());
+    let sequence: Vec<(String, Value)> = all
+        .iter()
+        .skip(1)
+        .map(|e| (e.event.clone(), e.data.clone()))
+        .collect();
+    assert_eq!(all[0].event, "meeting.started");
+    assert_eq!(
+        sequence,
+        vec![
+            (
+                "speaker".into(),
+                json!({"id":"mic","track":"mic","label":"You"})
+            ),
+            (
+                "speaker".into(),
+                json!({"id":"call-1","track":"call","label":"Speaker 1"})
+            ),
+            ("meeting.state".into(), json!({"state":"recording","at":0})),
+            (
+                "meeting.state".into(),
+                json!({"state":"processing","at":3000,"endedAt":1_793_000_003_000u64,"reason":"user"})
+            ),
+            (
+                "passage".into(),
+                json!({"id":"mic-000000000","track":"mic","speaker":"mic","start":0,"end":2400,"text":"heard 2400 ms","revision":1,"dictation":false,"language":"en"})
+            ),
+            (
+                "passage".into(),
+                json!({"id":"call-000000000","track":"call","speaker":"call-1","start":0,"end":2400,"text":"heard 2400 ms","revision":1,"dictation":false,"language":"en"})
+            ),
+            (
+                "meeting.state".into(),
+                json!({"state":"done","at":3000,"endedAt":1_793_000_003_000u64})
+            ),
+        ]
+    );
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("off"));
+}
+
+/// 8: no audio goes to the diarizer while the user dictates; it catches up afterwards.
+#[test]
+fn labels_wait_while_the_user_dictates() {
+    let tmp = TempDir::new("speakers-dictation");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let pieces = three_voices(3, 1.5);
+    let mut writer = rec.open_segment("call", 1, 0);
+    writer.append(&voices(&pieces)).unwrap();
+    rec.line(json!({"kind":"dictation","t":ms(seconds(&pieces)) - 100,"state":"start"}));
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(d.script().pushes, 0, "dictation comes first");
+    assert!(events(&log, &rec.id()).iter().all(|e| e.event != "passage"));
+    rec.line(json!({"kind":"dictation","t":ms(seconds(&pieces)),"state":"end"}));
+    wait_until("pushes after the dictation", WAIT, || {
+        (d.script().pushes > 0).then_some(())
+    });
+    rec.close_segment(writer, "call", 1, 0);
+    rec.stop(ms(seconds(&pieces)) + 100);
+    wait_done(&handle);
+    let all = events(&log, &rec.id());
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 3);
+    assert_eq!(assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(), 3);
+}
+
+/// 9: passages committed without a speaker while the follower stalled get it as a new revision;
+/// a passage with an id never changes it.
+#[test]
+fn passages_from_a_stall_get_their_speaker_later() {
+    let tmp = TempDir::new("speakers-backfill");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(8, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    // The sixth push hangs for 1.5 s; the pipeline stops waiting after 150 ms.
+    let d = ScriptedDiarizer::with(|s| {
+        s.hang_on = vec![6];
+        s.hang = Duration::from_millis(1_500);
+    });
+    let options = PipelineOptions {
+        speakers: FollowerTiming {
+            stall: Duration::from_millis(150),
+            ..follower_timing()
+        },
+        ..labelled(&d)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_done(&handle);
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    assert_no_id_moves(&all);
+    let revised: Vec<Found> = all_passages(&all)
+        .into_iter()
+        .filter(|p| p.track == "call" && p.revision == 2)
+        .collect();
+    assert!(!revised.is_empty(), "{:#?}", all_passages(&all));
+    for p in &revised {
+        assert!(p.speaker.is_some());
+        let first = all_passages(&all)
+            .into_iter()
+            .find(|q| q.id == p.id && q.revision == 1)
+            .unwrap();
+        assert_eq!(
+            first.speaker, None,
+            "only a passage without a speaker is revised"
+        );
+    }
+    let call = last_revisions(&all, "call");
+    assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
+    assert_eq!(assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(), 3);
+    let t = Transcript::open(rec.dir.path()).unwrap();
+    assert_eq!(t.epochs().unwrap().len(), 2);
+}
+
+/// 10: a pause and a recorder crash each get padding once, so labels reach the audio before
+/// the gap and the call is transcribed up to it.
+#[test]
+fn gaps_get_padding_once_and_settle_the_audio_before_them() {
+    let tmp = TempDir::new("speakers-gaps");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let first = [
+        (0.5, None),
+        (1.5, Some(0)),
+        (1.2, None),
+        (1.5, Some(1)),
+        (1.3, None),
+    ];
+    rec.segment("call", 1, 0, &voices(&first));
+    rec.line(json!({"kind":"pause","t":6000}));
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_until("the audio before the pause to settle", WAIT, || {
+        (handle.labels().settled_ms == Some(6_000)).then_some(())
+    });
+    wait_until("both bursts transcribed", WAIT, || {
+        (last_revisions(&events(&log, &rec.id()), "call").len() == 2).then_some(())
+    });
+    assert_eq!(d.script().zero_samples, 49_920, "padding once at the pause");
+
+    rec.line(json!({"kind":"resume","t":12000}));
+    let second = [(1.5, Some(2)), (1.0, None), (1.5, Some(0)), (1.0, None)];
+    rec.segment("call", 2, 12_000, &voices(&second));
+    // The recorder dies at 17 s and is back at 20 s.
+    rec.session(20_000, 2);
+    rec.line(json!({"kind":"crash","t":20000,"lastSeen":17000}));
+    let third = [(1.5, Some(1)), (1.0, None)];
+    rec.segment("call", 3, 20_000, &voices(&third));
+    rec.stop(22_500);
+    wait_done(&handle);
+    assert_eq!(
+        d.script().zero_samples,
+        2 * 49_920,
+        "padding once per gap, none at the end"
+    );
+    let mut timeline = timeline_of(&first, 0);
+    timeline.extend(timeline_of(&second, 12_000));
+    timeline.extend(timeline_of(&third, 20_000));
+    let all = events(&log, &rec.id());
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 5, "{call:#?}");
+    assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
+    assert_eq!(assert_stable_ids(&call, &timeline).len(), 3);
+    assert_eq!(
+        Transcript::open(rec.dir.path())
+            .unwrap()
+            .meta_u64(SETTLED_KEY)
+            .unwrap(),
+        Some(22_500)
+    );
+}
+
+fn stream_options(fake: &FakeStreaming, diarize: bool) -> StreamOptions {
+    StreamOptions {
+        speech: Arc::new(fake.clone()),
+        diarize,
+        delay_ms: 0,
+        language: None,
+        context_bias: Vec::new(),
+    }
+}
+
+/// 11: Mistral's stream: nothing before consent, passages from segments without times in the
+/// right windows, a reconnect that sends references named after the known ids and maps them
+/// back, and microphone deltas as microphone passages.
+#[test]
+fn mistral_streams_after_consent_and_keeps_ids_across_a_reconnect() {
+    let tmp = TempDir::new("speakers-mistral");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(8, 3.5);
+    let length = seconds(&pieces);
+    let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
+    rec.session(0, 1);
+    let mic = [(1.0, None), (2.0, Some(3)), (length - 3.0, None)];
+    rec.segment("mic", 1, 0, &voices(&mic));
+    rec.segment("call", 1, 0, &voices(&pieces));
+    rec.stop(ms(length));
+    let fake = FakeStreaming::default();
+    // The labelling session drops at its 200th push, 20 s into the call.
+    fake.state().fail_on = vec![200];
+    let agreed = Arc::new(AtomicBool::new(false));
+    let options = PipelineOptions {
+        transcription_allowed: {
+            let agreed = agreed.clone();
+            Arc::new(move || {
+                if agreed.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("Agree to stream meeting audio to Mistral in Settings.".into())
+                }
+            })
+        },
+        timing: fast(),
+        labels: Labels::Off {
+            reason: "stream".into(),
+        },
+        stream: Some(stream_options(&fake, true)),
+        // Twenty times real time, so the pipeline keeps up as it would.
+        speakers: FollowerTiming {
+            stream_speed: 20.0,
+            ..follower_timing()
+        },
+        ..PipelineOptions::new(Arc::new(Offline))
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_until("waiting for consent", WAIT, || {
+        matches!(handle.state(), PipelineState::Waiting { .. }).then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        fake.state().sessions.is_empty(),
+        "no connection before consent"
+    );
+    assert_eq!(fake.state().pushes, 0, "no audio before consent");
+    assert_eq!(handle.labels().reason.as_deref(), Some("consent"));
+
+    agreed.store(true, Ordering::SeqCst);
+    handle.wake();
+    wait_done(&handle);
+    assert_eq!(handle.labels().mode, "mistral");
+
+    let state = fake.state();
+    let labelling: Vec<_> = state.sessions.iter().filter(|s| s.diarize).collect();
+    assert_eq!(labelling.len(), 2, "one reconnect");
+    assert!(labelling[0].references.is_empty());
+    let mut names: Vec<&str> = labelling[1]
+        .references
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["call-1", "call-2", "call-3"]);
+    assert_eq!(state.sessions.iter().filter(|s| !s.diarize).count(), 1);
+    drop(state);
+
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    assert_speakers_come_first(&all);
+    let timeline = timeline_of(&pieces, 0);
+    let call = last_revisions(&all, "call");
+    assert!(call.len() >= 8, "{call:#?}");
+    let ids = assert_stable_ids(&call, &timeline);
+    assert_eq!(ids.len(), 3);
+    // Every burst has its passage.
+    for &(start, end, _) in &timeline {
+        assert!(
+            call.iter().any(|p| p.start < end && p.end > start),
+            "nothing for {start}..{end}: {call:#?}"
+        );
+    }
+    let mic = last_revisions(&all, "mic");
+    assert_eq!(mic.len(), 1, "{mic:#?}");
+    assert_eq!(mic[0].speaker.as_deref(), Some("mic"));
+    assert!(mic[0].text.starts_with("w1000"), "{mic:?}");
+}
+
+/// 12: Nemotron never falls back to Mistral: without a diarizer and without a stream, the call
+/// is one speaker and no stream is reached.
+#[test]
+fn nemotron_never_falls_back_to_a_stream() {
+    struct Counting(Arc<AtomicUsize>);
+    impl voice_core::providers::stream::StreamingSpeech for Counting {
+        fn connect(
+            &self,
+            _session: &voice_core::providers::stream::StreamSession,
+        ) -> Result<Box<dyn voice_core::providers::stream::SpeechStream>, voice_core::ProviderError>
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(voice_core::ProviderError::provider("unreachable"))
+        }
+    }
+    let tmp = TempDir::new("speakers-no-fallback");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(3, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let reached = Arc::new(AtomicUsize::new(0));
+    // Stored nowhere the pipeline can reach.
+    let _unused: Arc<dyn voice_core::providers::stream::StreamingSpeech> =
+        Arc::new(Counting(reached.clone()));
+    let options = PipelineOptions {
+        timed: Some(Arc::new(Bursts)),
+        timing: fast(),
+        labels: Labels::Off {
+            reason: "runtime".into(),
+        },
+        stream: None,
+        ..PipelineOptions::new(Arc::new(Offline))
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_done(&handle);
+    assert_eq!(reached.load(Ordering::SeqCst), 0);
+    let all = events(&log, &rec.id());
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 3);
+    assert!(call.iter().all(|p| p.speaker.as_deref() == Some("call-1")));
+    assert_eq!(meta(&rec.dir, REASON_KEY).as_deref(), Some("runtime"));
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// 13: a finished meeting opened again with an empty event log, as after a restore from the
+/// bucket, sends its speakers before its passages and starts no follower.
+#[test]
+fn a_restored_meeting_sends_its_speakers_again_without_a_follower() {
+    let tmp = TempDir::new("speakers-restore");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(6, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let handle = Pipeline::start(
+        rec.dir.clone(),
+        log.clone(),
+        labelled(&ScriptedDiarizer::new()),
+    );
+    wait_done(&handle);
+    handle.shutdown();
+    let before = last_revisions(&events(&log, &rec.id()), "call");
+
+    let other = tmp.path().join("restored");
+    let restored_lib = Library::open(&other).unwrap();
+    let restored_log = EventLog::open(&other).unwrap();
+    let target = restored_lib.root().join(rec.id());
+    copy_dir(rec.dir.path(), &target);
+    let dir = MeetingDir::at(&target).unwrap();
+    // Without the bridge's own record of what it sent.
+    Transcript::open(dir.path())
+        .unwrap()
+        .set_emitted(&HashMap::new())
+        .unwrap();
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(dir.clone(), restored_log.clone(), labelled(&d));
+    wait_done(&handle);
+    handle.shutdown();
+    let script = d.script();
+    assert_eq!((script.opens, script.pushes), (0, 0));
+    drop(script);
+    let all = events(&restored_log, &rec.id());
+    assert_no_repeats(&all);
+    let names: Vec<&str> = all.iter().take(5).map(|e| e.event.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "meeting.started",
+            "speaker",
+            "speaker",
+            "speaker",
+            "speaker"
+        ]
+    );
+    assert_eq!(
+        speakers(&all),
+        vec![
+            ("mic".to_owned(), "You".to_owned()),
+            ("call-1".to_owned(), "Speaker 1".to_owned()),
+            ("call-2".to_owned(), "Speaker 2".to_owned()),
+            ("call-3".to_owned(), "Speaker 3".to_owned()),
+        ]
+    );
+    assert_eq!(all[5].event, "passage");
+    assert_eq!(last_revisions(&all, "call"), before);
+}
+
+/// 14: a meeting Voice 0.1 started transcribing stays without labels; one without call passages
+/// gets the normal choice.
+#[test]
+fn a_meeting_from_voice_0_1_keeps_call_1() {
+    let tmp = TempDir::new("speakers-upgrade");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let pieces = three_voices(6, 1.5);
+    let call = voices(&pieces);
+    let mut writer = rec.open_segment("call", 1, 0);
+    writer.append(&call[..call.len() / 2]).unwrap();
+    // Voice 0.1 stored two whole-call passages before it was updated.
+    let passage = |start: u64, text: &str| voice_meetings::transcript::StoredPassage {
+        passage: Passage {
+            id: String::new(),
+            track: Track::Call,
+            speaker: Some("call-1".into()),
+            start,
+            end: start + 1_500,
+            text: text.into(),
+            revision: 1,
+            dictation: false,
+            language: None,
+        },
+        tokens: Vec::new(),
+    };
+    Transcript::open(rec.dir.path())
+        .unwrap()
+        .commit_window(
+            Track::Call,
+            0,
+            ms(2.7 * 2.0 + 0.5) * 16,
+            "pause",
+            vec![passage(500, "w500"), passage(3_200, "w3200")],
+        )
+        .unwrap()
+        .unwrap();
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    writer.append(&call[call.len() / 2..]).unwrap();
+    rec.close_segment(writer, "call", 1, 0);
+    rec.stop(ms(seconds(&pieces)));
+    wait_done(&handle);
+    assert_eq!(d.script().opens, 0, "no follower");
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("off"));
+    assert_eq!(meta(&rec.dir, REASON_KEY).as_deref(), Some("upgrade"));
+    let status = handle.labels();
+    assert_eq!(
+        (status.mode.as_str(), status.reason.as_deref()),
+        ("off", Some("upgrade"))
+    );
+    let all = events(&log, &rec.id());
+    let call_passages = last_revisions(&all, "call");
+    assert_eq!(call_passages.len(), 6);
+    assert!(call_passages
+        .iter()
+        .all(|p| p.speaker.as_deref() == Some("call-1")));
+
+    // The same kind of folder without call passages labels as usual.
+    let fresh = finished_call(&lib, &three_voices(2, 1.5));
+    let handle = Pipeline::start(
+        fresh.dir.clone(),
+        log.clone(),
+        labelled(&ScriptedDiarizer::new()),
+    );
+    wait_done(&handle);
+    assert_eq!(meta(&fresh.dir, MODE_KEY).as_deref(), Some("nemotron"));
+}
+
+/// The scorer passes the vectors JavaScript's scorer passes too.
+#[test]
+fn the_scorer_passes_the_shared_vectors() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/speaker-score-vectors.json");
+    let vectors: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let spans = |list: &Value| -> Vec<Span> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| Span {
+                start: s["start"].as_u64().unwrap(),
+                end: s["end"].as_u64().unwrap(),
+                speaker: s["speaker"].as_str().map(str::to_owned),
+            })
+            .collect()
+    };
+    let cases = vectors["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 5);
+    for case in cases {
+        let got = accuracy(&spans(&case["passages"]), &spans(&case["reference"]));
+        let want = case["accuracy"].as_f64().unwrap();
+        assert!(
+            (got - want).abs() < 1e-9,
+            "{}: {got} against {want}",
+            case["name"]
+        );
+    }
+}
