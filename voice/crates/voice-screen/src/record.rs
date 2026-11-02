@@ -455,12 +455,13 @@ impl Screen {
             match rx.recv_timeout(wait) {
                 Ok(event) => {
                     self.handle(event);
-                    for event in rx.try_iter().take(EVENT_QUEUE) {
-                        if self.stop.is_some() {
-                            break;
-                        }
-                        self.handle(event);
-                    }
+                    handle_queued(
+                        &rx,
+                        EVENT_QUEUE,
+                        &mut self,
+                        |s| s.stop.is_none(),
+                        Screen::handle,
+                    );
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -1475,4 +1476,63 @@ impl Screen {
 
 fn error(code: &str) -> Value {
     json!({ "ok": false, "error": code })
+}
+
+/// Handles up to `max` events still queued. `running` is checked before each one leaves the
+/// queue, so an event queued behind a stop stays there for `finish` to drain: one taken after
+/// the stop would be lost, a frame without its `frame` line or a request without an answer.
+fn handle_queued<S, T>(
+    rx: &Receiver<T>,
+    max: usize,
+    state: &mut S,
+    running: impl Fn(&S) -> bool,
+    mut handle: impl FnMut(&mut S, T),
+) {
+    for _ in 0..max {
+        if !running(state) {
+            return;
+        }
+        let Ok(event) = rx.try_recv() else {
+            return;
+        };
+        handle(state, event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_behind_a_stop_stay_queued() {
+        let (tx, rx) = mpsc::channel();
+        for event in 0..4 {
+            tx.send(event).unwrap();
+        }
+        // Event 1 stops the loop: 2 and 3 are left for the drain.
+        let mut handled: Vec<u32> = Vec::new();
+        handle_queued(
+            &rx,
+            EVENT_QUEUE,
+            &mut handled,
+            |h| !h.contains(&1),
+            |h, e| h.push(e),
+        );
+        assert_eq!(handled, [0, 1]);
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [2, 3]);
+
+        // Stopped already: nothing leaves the queue.
+        tx.send(4).unwrap();
+        handle_queued(&rx, EVENT_QUEUE, &mut handled, |_| false, |h, e| h.push(e));
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [4]);
+
+        // At most `max` a round, so the tick still runs under a flood of frames.
+        for event in 0..10 {
+            tx.send(event).unwrap();
+        }
+        let mut count = 0;
+        handle_queued(&rx, 3, &mut count, |_| true, |c, _| *c += 1);
+        assert_eq!(count, 3);
+        assert_eq!(rx.try_iter().count(), 7);
+    }
 }
