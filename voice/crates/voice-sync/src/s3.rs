@@ -607,16 +607,25 @@ impl Bucket {
     fn status_error(&self, reply: &Reply, what: &str) -> SyncError {
         let text = reply.text();
         let code = error_code(&text);
-        let message = element(&text, "Message")
-            .map(|m| m.chars().take(300).collect::<String>())
+        let provider = element(&text, "Message");
+        // The kind comes from the whole answer, before anything is left out of the message.
+        let kind = kind_for(reply.status, code.as_deref(), provider.as_deref());
+        // The provider's text is checked whole and only then cut short, so no part of the secret
+        // or a signed URL can end up in the message.
+        let message = provider
             .filter(|m| {
-                !m.contains("X-Amz-")
-                    && !m.contains("Signature=")
+                let lower = m.to_ascii_lowercase();
+                !lower.contains("x-amz-")
+                    && !lower.contains("signature=")
                     && !m.contains(self.credentials.secret())
-            });
-        let kind = kind_for(reply.status, code.as_deref(), message.as_deref());
+            })
+            .map(|m| m.chars().take(300).collect::<String>());
         let mut out = format!("{what} failed: the bucket answered {}", reply.status);
-        if let Some(code) = &code {
+        // An S3 code is a short name; anything else is left out.
+        if let Some(code) = code
+            .as_deref()
+            .filter(|c| c.len() <= 64 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.'))
+        {
             out.push(' ');
             out.push_str(code);
         }
@@ -776,6 +785,62 @@ mod tests {
             .unwrap()
             .errors
             .is_empty());
+    }
+
+    #[test]
+    fn provider_text_never_carries_the_secret_or_a_signed_url() {
+        const SECRET: &str = "the-bucket-secret-value";
+        let cfg = SyncConfig {
+            service: crate::Service::Other,
+            endpoint: "http://127.0.0.1:9".into(),
+            region: "us-east-1".into(),
+            bucket: "test".into(),
+            prefix: String::new(),
+            access_key_id: "key".into(),
+            url_style: UrlStyle::Path,
+            retention: crate::BucketRetention::Keep,
+        };
+        let d = Duration::from_secs(1);
+        let bucket = Bucket::new(&cfg, SECRET, d, d).unwrap();
+        let answer = |status: u16, code: &str, message: &str| Reply {
+            status,
+            etag: None,
+            length: None,
+            body: format!("<Error><Code>{code}</Code><Message>{message}</Message></Error>")
+                .into_bytes(),
+        };
+
+        // A secret that starts where the message would be cut is still caught.
+        let long = format!("{}{SECRET}", "x".repeat(295));
+        let error = bucket.status_error(&answer(403, "AccessDenied", &long), "Uploading");
+        assert!(!error.message.contains("the-b"), "{}", error.message);
+        assert_eq!(
+            error.message,
+            "Uploading failed: the bucket answered 403 AccessDenied."
+        );
+
+        // Lowercase query names are signed URLs too.
+        let quoted = "Bad request to /test/k?x-amz-signature=abc";
+        let error = bucket.status_error(&answer(400, "InvalidRequest", quoted), "Listing");
+        assert!(!error.message.contains("abc"), "{}", error.message);
+
+        // The kind is read from the whole answer, even when its text is left out.
+        let expired = "Request has expired; X-Amz-Expires was 900";
+        let error = bucket.status_error(&answer(403, "AccessDenied", expired), "Downloading");
+        assert_eq!(error.kind, SyncErrorKind::Clock);
+        assert!(!error.message.contains("X-Amz-"), "{}", error.message);
+
+        // A code that isn't an S3 name stays out of the message.
+        let odd = format!("<b>{SECRET}</b>");
+        let error = bucket.status_error(&answer(500, &odd, "Oops"), "Uploading");
+        assert!(!error.message.contains(SECRET), "{}", error.message);
+        assert_eq!(error.kind, SyncErrorKind::Server);
+
+        // Ordinary provider text is kept, cut at 300 characters.
+        let chatty = "y".repeat(400);
+        let error = bucket.status_error(&answer(503, "SlowDown", &chatty), "Uploading");
+        assert!(error.message.ends_with(&"y".repeat(300)));
+        assert!(!error.message.contains(&"y".repeat(301)));
     }
 
     #[test]

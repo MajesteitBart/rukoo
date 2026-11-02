@@ -212,6 +212,7 @@ fn the_key_store_keeps_the_key_and_the_secret_protected() -> Result<(), SyncErro
     assert!(master.starts_with(b"RKVK\x01"));
     assert!(secret_file.starts_with(b"RKVS\x01"));
     assert!(!contains(&secret_file, b"s3cr3t-value"));
+    assert!(!contains(&master, &raw_key(&key)));
     let code = recovery::encode(&key);
     for file in [&master, &secret_file, &key_json.as_bytes().to_vec()] {
         assert!(!contains(file, code.as_bytes()));
@@ -384,6 +385,12 @@ mod dpapi {
         );
         let file = std::fs::read(dir.path().join(SECRET_FILE)).unwrap();
         assert!(!contains(&file, b"dpapi-secret"));
+        // master-key.bin holds DPAPI's blob, not the key's bytes.
+        let master = std::fs::read(dir.path().join(MASTER_KEY_FILE)).unwrap();
+        assert!(master.starts_with(b"RKVK\x01"));
+        let raw = Dpapi.unprotect(&master[5..], MASTER_KEY_LABEL)?;
+        assert_eq!(raw.len(), 32);
+        assert!(!contains(&master, &raw));
         // The test protector can't open what DPAPI wrote, as another user couldn't.
         let other = KeyStore::new(dir.path(), Arc::new(TestProtector));
         assert_eq!(other.load().unwrap_err().kind, SyncErrorKind::Key);

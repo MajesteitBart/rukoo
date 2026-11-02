@@ -229,9 +229,10 @@ impl Shared {
             let part = entry
                 .part
                 .map_or_else(|| "null".to_string(), |p| p.to_string());
-            let _ = writeln!(
-                file,
-                "{{\"op\":\"{}\",\"key\":{},\"part\":{},\"bytes\":{},\"status\":{},\"at\":{}}}",
+            // One write per line: the live run stops the fake by its process id, and a line
+            // written in pieces could be cut in half.
+            let line = format!(
+                "{{\"op\":\"{}\",\"key\":{},\"part\":{},\"bytes\":{},\"status\":{},\"at\":{}}}\n",
                 entry.op.as_str(),
                 json_string(&entry.key),
                 part,
@@ -239,6 +240,7 @@ impl Shared {
                 entry.status,
                 entry.at
             );
+            let _ = file.write_all(line.as_bytes());
         }
         lock(&self.log).push(entry);
     }
