@@ -2,6 +2,9 @@
 //! Mistral's realtime stream), and what Settings reads back about it. The public types here are
 //! frozen; the follower, the binarizer and the matching are private modules of this one.
 
+pub(crate) mod binarizer;
+pub(crate) mod clock;
+
 use std::sync::Arc;
 
 use serde::Serialize;
