@@ -35,15 +35,15 @@ powershell -File voice\nemo-runtime\build.ps1 -Out tmp\nemo\nemo_speech -Jobs 6
 
 It clones NeMo-Speech.cpp next to `-Out` unless you pass `-Source`, seeds the portable flags into `CMakeCache.txt`, runs NeMo's `scripts\windows\build.ps1 -Backend cpu -Profile asr`, reads the flags back, checks every DLL's imports with `dumpbin`, copies the Visual C++ runtime from the same Visual Studio install, and writes `runtime.json`. NeMo's script builds SentencePiece with vcpkg under `%LOCALAPPDATA%\NeMoSpeech` the first time, which takes about half an hour; later builds take a few minutes.
 
-To check a build, label the AMI excerpt with it:
+To check a build, label the AMI excerpt with it. The commands run from the repository root:
 
 ```powershell
 powershell -File voice\scripts\speaker-assets.ps1 -Out tmp\speaker-assets -Model -Ami
-cargo build --release -p voice-speakers
+cargo build --manifest-path voice\Cargo.toml --config voice\.cargo\config.toml --release -p voice-speakers
 voice\target\release\rukoo-voice-speakers.exe --self-test --runtime tmp\nemo\nemo_speech --model tmp\speaker-assets\nemotron\Nemotron-3-Diarization.q8_0.gguf --wav tmp\speaker-assets\ami\ami_en2002d_2132.wav
 ```
 
-It should report at least 3 speakers and about 6,000 frames. The runtime tests run against a local build when `RUKOO_VOICE_TEST_NEMO_DIR` points at it and `RUKOO_VOICE_TEST_NEMOTRON` and `RUKOO_VOICE_TEST_AMI` at the files `speaker-assets.ps1` fetched.
+Cargo reads `voice\.cargo\config.toml` only when it runs inside `voice\`, so from the root `--config` passes it in. That file links the C runtime into the worker statically, as in the worker Voice ships. Without it the worker imports the Visual C++ runtime itself, and the runtime's DLLs bind to that copy instead of the one in `nemo_speech\`. With `CARGO_TARGET_DIR` set, the exe is under that folder instead of `voice\target`. The self-test should report at least 3 speakers and about 6,000 frames. The runtime tests run against a local build when `RUKOO_VOICE_TEST_NEMO_DIR` points at it and `RUKOO_VOICE_TEST_NEMOTRON` and `RUKOO_VOICE_TEST_AMI` at the files `speaker-assets.ps1` fetched.
 
 ## The workflow
 
