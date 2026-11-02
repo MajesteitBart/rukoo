@@ -1,0 +1,106 @@
+name: Voice NeMo runtime
+
+# Builds the NeMo-Speech.cpp runtime that Rukoo Voice's speaker worker loads, checks it on the AMI excerpt and
+# uploads the zip and its manifest as an artifact. Publishing the artifact as a release is a separate, manual step
+# (voice/nemo-runtime/README.md). It runs when its own files change, on any branch, so a branch can produce the
+# artifact without a dispatch from main.
+
+on:
+  pull_request:
+    paths:
+      - 'voice/nemo-runtime/**'
+      - '.github/workflows/voice-nemo-runtime.yml'
+  push:
+    paths:
+      - 'voice/nemo-runtime/**'
+      - '.github/workflows/voice-nemo-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-nemo-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with voice/nemo-runtime/manifest.json.
+  NEMO_COMMIT: 97a15afa5caa9bce5baaa86c1184103877af4101
+  RUNTIME_NAME: nemo-runtime-97a15af-1
+
+jobs:
+  build:
+    # A pinned image: MSVC builds differ between toolsets, and runtime.json records the one used.
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: NVIDIA/NeMo-Speech.cpp
+          ref: ${{ env.NEMO_COMMIT }}
+          path: nemo
+          persist-credentials: false
+      - name: Ninja
+        run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install -y ninja --no-progress }
+      # vcpkg's binary cache holds the SentencePiece build, about 30 minutes uncached. Restored and saved in separate
+      # steps, as NeMo-Speech.cpp's own CI does, so a failing check after the build still keeps the cache.
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: nemo-vcpkg-${{ env.NEMO_COMMIT }}-x64-windows-static-md
+      - name: Build the runtime
+        run: ./voice/nemo-runtime/build.ps1 -Source nemo -Out "$env:RUNNER_TEMP\nemo-runtime\nemo_speech" -Runner windows-2025
+      - name: Save the vcpkg binary cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+      - name: Build the speaker worker
+        working-directory: voice
+        run: cargo build --release --locked -p voice-speakers
+      - name: Cache the model and the AMI excerpt
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\speaker-assets
+          key: speaker-assets-${{ hashFiles('voice/fixtures/ami/manifest.json', 'voice/scripts/speaker-assets.ps1') }}
+      - name: Fetch the model and the AMI excerpt
+        working-directory: voice
+        run: ./scripts/speaker-assets.ps1 -Out "$env:RUNNER_TEMP\speaker-assets" -Model -Ami
+      # The worker loads the runtime in its own process, so a broken build ends that process with an error code
+      # instead of this step's shell.
+      - name: Smoke test on the AMI excerpt
+        working-directory: voice
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP 'speaker-assets'
+          $report = Join-Path $env:RUNNER_TEMP 'self-test.json'
+          & target\release\rukoo-voice-speakers.exe --self-test `
+            --runtime "$env:RUNNER_TEMP\nemo-runtime\nemo_speech" `
+            --model "$assets\nemotron\Nemotron-3-Diarization.q8_0.gguf" `
+            --wav "$assets\ami\ami_en2002d_2132.wav" `
+            --report $report
+          if ($LASTEXITCODE -ne 0) { throw "The self-test failed with exit code $LASTEXITCODE" }
+          $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ($result.speakers -lt 3) { throw "The runtime heard $($result.speakers) speakers on the AMI excerpt instead of at least 3" }
+          if ($result.frames -lt 5900) { throw "The runtime returned $($result.frames) frames for 60 s instead of about 6,000" }
+          Write-Host "Self-test: $(Get-Content -LiteralPath $report -Raw)"
+      - name: Pack the runtime
+        run: |
+          ./voice/nemo-runtime/pack.ps1 -Runtime "$env:RUNNER_TEMP\nemo-runtime\nemo_speech" -Out "$env:RUNNER_TEMP\nemo-release" -Repository $env:GITHUB_REPOSITORY
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP\self-test.json" -Destination "$env:RUNNER_TEMP\nemo-release"
+          Get-Content -LiteralPath "$env:RUNNER_TEMP\nemo-release\manifest.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.RUNTIME_NAME }}
+          path: ${{ runner.temp }}\nemo-release\
+          retention-days: 30
+          if-no-files-found: error

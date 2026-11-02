@@ -1,0 +1,8 @@
+{
+  "source": "https://raw.githubusercontent.com/NVIDIA/NeMo-Speech.cpp/97a15afa5caa9bce5baaa86c1184103877af4101/test_files/diar/",
+  "files": [
+    { "name": "ami_en2002d_2132.wav", "size": 1920044, "sha256": "f00f92e53115a4a6724aec0ddaf9c675df6d5fabd3a489b43fffe56ba52a3ae9", "license": "CC-BY-4.0" },
+    { "name": "ami_en2002d_2132.rttm", "size": 1472, "sha256": "40751c9fc0bb934f741789ce3fafccd2c1f9d7c112585b8b40ac177a9de13b2d", "license": "Apache-2.0" },
+    { "name": "ami_en2002d_2132.json", "size": 2979, "sha256": "8a77aab95e65e301f3cb23cfd0a0641b3295a9da5686ff30f2ab12d0f282e229", "license": "CC-BY-4.0" }
+  ]
+}
