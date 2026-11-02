@@ -2,11 +2,12 @@
 //! the Test connection probe.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use voice_s3_fake::{FakeS3, Op};
-use voice_sync::s3::{Bucket, Part};
+use voice_sync::s3::{Bucket, Part, MAX_LIST_PAGES};
 use voice_sync::{BucketRetention, Service, SyncConfig, SyncErrorKind, UrlStyle};
 
 const SECRET: &str = "secret-that-must-never-show-up";
@@ -145,6 +146,94 @@ fn a_delimiter_groups_keys_into_prefixes_across_pages() {
     let mut sorted = listing.prefixes.clone();
     sorted.dedup();
     assert_eq!(sorted.len(), 1_100, "no prefix twice across pages");
+}
+
+/// A bucket whose listing never ends: the n-th request (from 0) answers one key and the
+/// continuation token `token(n)`. Returns its endpoint and how many requests it answered.
+fn endless_listing(token: fn(u64) -> String) -> (String, Arc<AtomicU64>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let served = Arc::new(AtomicU64::new(0));
+    let count = served.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            let body = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+                 <Name>test</Name><Prefix>rkv1/</Prefix><KeyCount>1</KeyCount><MaxKeys>1000</MaxKeys>\
+                 <IsTruncated>true</IsTruncated><NextContinuationToken>{}</NextContinuationToken>\
+                 <Contents><Key>rkv1/k{n:06}</Key><LastModified>2026-11-02T00:00:00.000Z</LastModified>\
+                 <ETag>\"e\"</ETag><Size>1</Size><StorageClass>STANDARD</StorageClass></Contents>\
+                 </ListBucketResult>",
+                token(n)
+            );
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (endpoint, served)
+}
+
+/// Lists in a thread, so a listing that never ends fails the test instead of hanging it.
+fn list_within(endpoint: &str, limit: Duration) -> voice_sync::SyncError {
+    let b = Bucket::new(
+        &config(endpoint, UrlStyle::Path, ""),
+        SECRET,
+        Duration::from_secs(2),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(b.list("rkv1/", None).map(|l| l.keys.len()));
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Err(error)) => error,
+        Ok(Ok(keys)) => panic!("the listing ended with {keys} keys"),
+        Err(_) => panic!("the listing didn't end within {limit:?}"),
+    }
+}
+
+#[test]
+fn a_listing_that_goes_round_in_circles_or_never_ends_stops() {
+    // Tokens A, B, A, B, …: the third page repeats the first.
+    let (endpoint, served) = endless_listing(|n| if n % 2 == 0 { "A" } else { "B" }.into());
+    let error = list_within(&endpoint, Duration::from_secs(30));
+    assert_eq!(error.kind, SyncErrorKind::Server);
+    assert!(
+        error.message.contains("same page twice"),
+        "{}",
+        error.message
+    );
+    assert_eq!(served.load(Ordering::SeqCst), 3, "A, B, then A again");
+
+    // A new token on every page: the page cap ends it.
+    let (endpoint, served) = endless_listing(|n| format!("t{n}"));
+    let error = list_within(&endpoint, Duration::from_secs(120));
+    assert_eq!(error.kind, SyncErrorKind::Server);
+    assert!(
+        error
+            .message
+            .contains(&format!("more than {MAX_LIST_PAGES} pages")),
+        "{}",
+        error.message
+    );
+    assert_eq!(served.load(Ordering::SeqCst), MAX_LIST_PAGES as u64);
 }
 
 #[test]

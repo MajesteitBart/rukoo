@@ -17,6 +17,7 @@
 //! `NoSuchUpload`; `NoSuchKey` or 404 `NotFound`; 429 or `SlowDown` `Throttled`; a redirect or a
 //! wrong region `Endpoint`; other answers `Server`.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use rusty_s3::actions::{
@@ -37,6 +38,9 @@ const XML_LIMIT: u64 = 16 << 20;
 const GET_LIMIT: u64 = 512 << 20;
 /// Keys per DeleteObjects request.
 const DELETE_BATCH: usize = 1000;
+/// A listing gives up after this many pages: a million keys at S3's 1,000 a page, far more than
+/// the folder of one meeting or the indexes hold.
+pub const MAX_LIST_PAGES: usize = 1000;
 /// The slowest transfer Voice waits for: 32 KiB/s, about 256 kbit/s. A 16 MiB PUT then may take
 /// 120 s plus 512 s, still within the 15 minutes its signed URL lasts.
 pub const MIN_RATE: u64 = 32 << 10;
@@ -287,12 +291,15 @@ impl Bucket {
         Ok(failed)
     }
 
-    /// Follows continuation tokens.
+    /// Follows continuation tokens, at most [`MAX_LIST_PAGES`] pages. A token the bucket sent
+    /// before fails the listing, so a bucket that sends tokens in a circle can't keep Voice
+    /// listing, and collecting keys, for good.
     pub fn list(&self, prefix: &str, delimiter: Option<&str>) -> Result<Listing, SyncError> {
         let full = self.full(prefix);
         let mut listing = Listing::default();
         let mut token: Option<String> = None;
-        loop {
+        let mut seen = HashSet::new();
+        for _ in 0..MAX_LIST_PAGES {
             let mut action = self.bucket.list_objects_v2(Some(&self.credentials));
             action.with_prefix(full.as_str());
             if let Some(delimiter) = delimiter {
@@ -318,7 +325,7 @@ impl Bucket {
             }
             match page.next_continuation_token {
                 Some(next) if !next.is_empty() => {
-                    if token.as_deref() == Some(next.as_str()) {
+                    if !seen.insert(next.clone()) {
                         return Err(SyncError::new(
                             SyncErrorKind::Server,
                             "Listing failed: the bucket sent the same page twice.",
@@ -329,6 +336,10 @@ impl Bucket {
                 _ => return Ok(listing),
             }
         }
+        Err(SyncError::new(
+            SyncErrorKind::Server,
+            format!("Listing failed: the bucket sent more than {MAX_LIST_PAGES} pages."),
+        ))
     }
 
     pub fn create_multipart(&self, key: &str) -> Result<String, SyncError> {
