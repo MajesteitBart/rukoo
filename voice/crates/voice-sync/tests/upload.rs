@@ -1,0 +1,572 @@
+//! Uploads through the worker against the fake bucket (spec 2.8, 2.9; acceptance criteria 2, 3
+//! and 5). Platform-neutral: screen files come from a test `ScreenFiles`.
+
+mod harness;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
+
+use harness::*;
+use voice_s3_fake::Op;
+use voice_sync::{names, SyncState};
+
+const WAIT: Duration = Duration::from_secs(30);
+
+#[test]
+fn audio_and_frames_go_up_while_live_video_after() {
+    let fake = fake();
+    let data = scratch("upload-live");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::with(
+        &data,
+        Setup {
+            screen: Arc::new(TestScreen),
+            ..Setup::default()
+        },
+    );
+    let m = Meeting::new(&voice.meetings(), "Live", 0);
+    let mic1 = m.segment("mic", 1, 0, 16_000);
+    let call1 = m.segment("call", 1, 2, 16_000);
+    let mic2 = m.open_segment("mic", 2, 1_000, 8_000);
+    write(&m, "screen/frames/f-000000500.jpg", &jpeg(1));
+    write(&m, "screen/frames/f-000000900.jpg", &jpeg(2));
+    write(&m, "screen/video/000001.mp4", &mp4(40_000));
+    write(&m, "screen/video/000001.mp4.closed", b"");
+    voice.connect(&fake.endpoint());
+    let key_wait = wait_for(WAIT, || voice.sync.status().key.exists);
+    assert!(key_wait);
+    let key = voice.key();
+
+    let live_files = [
+        "meeting.json",
+        mic1.as_str(),
+        call1.as_str(),
+        "screen/frames/f-000000500.jpg",
+        "screen/frames/f-000000900.jpg",
+    ];
+    let ok = wait_for(WAIT, || {
+        uploaded_files(&fake, &key, &m, &live_files).len() == live_files.len()
+    });
+    assert!(
+        ok,
+        "audio, frames and meeting.json go up during the meeting: {:?}",
+        fake.log()
+    );
+    assert_eq!(voice.sync.status().state, SyncState::Live);
+    // Give the worker time to send anything it would wrongly send.
+    std::thread::sleep(Duration::from_millis(400));
+    let early = uploaded_files(
+        &fake,
+        &key,
+        &m,
+        &[mic2.as_str(), "screen/video/000001.mp4", "timeline.jsonl"],
+    );
+    assert!(early.is_empty(), "went up while live: {early:?}");
+    let live_manifest = manifest(&fake, &key, &m.id).expect("a manifest during the meeting");
+    assert_eq!(live_manifest.state, "live");
+    assert!(
+        fake.log()
+            .iter()
+            .all(|l| l.op != Op::Put || !l.key.contains("/index/")),
+        "the index waits for the meeting's end"
+    );
+
+    // The segment closes and the meeting stops: the rest goes up, then the manifest and the index.
+    m.line(
+        serde_json::json!({"kind":"segment_end","t":1_500,"track":"mic","seq":2,"samples":8_000}),
+    );
+    m.stop(1_600);
+    voice.sync.nudge();
+    voice.settle(&fake, WAIT);
+    let all = [
+        "meeting.json",
+        mic1.as_str(),
+        call1.as_str(),
+        mic2.as_str(),
+        "screen/frames/f-000000500.jpg",
+        "screen/frames/f-000000900.jpg",
+        "screen/video/000001.mp4",
+        "timeline.jsonl",
+    ];
+    assert_eq!(uploaded_files(&fake, &key, &m, &all).len(), all.len());
+    let final_manifest = manifest(&fake, &key, &m.id).unwrap();
+    assert_eq!(final_manifest.state, "processing");
+    assert!(final_manifest.gen > live_manifest.gen);
+    let mut listed: Vec<&str> = final_manifest
+        .files
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
+    listed.sort_unstable();
+    let mut want = all.to_vec();
+    want.sort_unstable();
+    assert_eq!(listed, want);
+    let audio = final_manifest
+        .files
+        .iter()
+        .find(|f| f.path == mic2)
+        .unwrap();
+    assert_eq!(
+        (
+            audio.kind.as_str(),
+            audio.track.as_deref(),
+            audio.seq,
+            audio.t,
+            audio.samples
+        ),
+        ("audio", Some("mic"), Some(2), Some(1_000), Some(8_000))
+    );
+    let index = indexes(&fake, &key);
+    assert_eq!(index.len(), 1);
+    assert_eq!(index[0].meetings.len(), 1);
+    assert_eq!(index[0].meetings[0].id, m.id);
+    assert_eq!(index[0].meetings[0].title, "Live");
+    assert_eq!(index[0].meetings[0].gen, final_manifest.gen);
+    // The order in the log: the video after the stop, after the audio and frames.
+    let log = fake.log();
+    let pos = |object: &str| {
+        log.iter()
+            .position(|l| unprefixed(&l.key) == object && l.status == 200)
+            .unwrap()
+    };
+    let video = file_object(
+        &key,
+        &m.id,
+        "screen/video/000001.mp4",
+        &m.read("screen/video/000001.mp4"),
+    );
+    let frame = file_object(
+        &key,
+        &m.id,
+        "screen/frames/f-000000500.jpg",
+        &m.read("screen/frames/f-000000500.jpg"),
+    );
+    let first_audio = file_object(&key, &m.id, &mic1, &m.read(&mic1));
+    assert!(pos(&first_audio) < pos(&frame), "audio before frames");
+    assert!(pos(&frame) < pos(&video));
+}
+
+/// Whether `hay` holds `needle` anywhere.
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// `RIFF` and 4 bytes and `WAVEfmt `.
+fn wav_signature(bytes: &[u8]) -> bool {
+    bytes
+        .windows(16)
+        .any(|w| &w[0..4] == b"RIFF" && &w[8..16] == b"WAVEfmt ")
+}
+
+/// A 4-byte box size, `ftyp` and four printable ASCII bytes. Any four bytes count as the size, as
+/// the spec and `check-encrypted.mjs` have it.
+fn mp4_signature(bytes: &[u8]) -> bool {
+    bytes
+        .windows(12)
+        .any(|w| &w[4..8] == b"ftyp" && w[8..12].iter().all(|b| (0x20..0x7f).contains(b)))
+}
+
+#[test]
+fn nothing_reaches_the_bucket_unencrypted() {
+    let fake = fake();
+    let data = scratch("upload-encrypted");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::with(
+        &data,
+        Setup {
+            screen: Arc::new(TestScreen),
+            ..Setup::default()
+        },
+    );
+    let title = "Weekly with Anna about the budget";
+    let m = Meeting::new(&voice.meetings(), title, 60_000);
+    let segments = [
+        m.segment("mic", 1, 0, 48_000),
+        m.segment("call", 1, 0, 48_000),
+        m.segment("mic", 2, 3_000, 32_000),
+    ];
+    write(&m, "screen/frames/f-000001000.jpg", &jpeg(7));
+    write(&m, "screen/video/000001.mp4", &mp4(100_000));
+    write(&m, "screen/video/000001.mp4.closed", b"");
+    write(
+        &m,
+        "screen/journal.jsonl",
+        b"{\"kind\":\"start\",\"t\":0}\n{\"kind\":\"stop\",\"t\":5000}\n",
+    );
+    m.stop(5_000);
+    m.transcript(
+        &[
+            ("mic", 0, 2_000, "Anna talks about the budget"),
+            ("call", 2_000, 4_000, "Fine"),
+        ],
+        now_ms(),
+    );
+    voice.connect(&fake.endpoint());
+    voice.settle(&fake, WAIT);
+    let key = voice.key();
+
+    let objects = objects(&fake);
+    assert!(objects.len() >= 10, "{} objects", objects.len());
+    let raw_jfif = [
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00,
+    ];
+    let mut kinds = HashSet::new();
+    let mut snapshot = None;
+    for (object, bytes) in &objects {
+        assert!(bytes.starts_with(b"RKV1"), "{object} starts with RKV1");
+        assert!(!wav_signature(bytes), "{object} holds a WAV header");
+        assert!(!contains(bytes, &raw_jfif), "{object} holds a JPEG header");
+        assert!(!mp4_signature(bytes), "{object} holds an MP4 box");
+        assert!(
+            !contains(bytes, b"SQLite format 3\0"),
+            "{object} holds SQLite"
+        );
+        assert!(
+            !contains(bytes, title.as_bytes()),
+            "{object} holds the title"
+        );
+        assert!(
+            !contains(bytes, m.id.as_bytes()),
+            "{object} holds the meeting id"
+        );
+        for word in ["m-20", ".wav", ".jpg", ".mp4", title] {
+            assert!(!object.contains(word), "the key {object} shows {word}");
+        }
+        if bytes.len() > 4096 {
+            let mut counts = [0usize; 256];
+            for b in bytes {
+                counts[usize::from(*b)] += 1;
+            }
+            let max = counts.iter().max().unwrap();
+            assert!(
+                (*max as f64) <= bytes.len() as f64 * 0.015,
+                "{object}: one byte value makes up {max} of {} bytes",
+                bytes.len()
+            );
+        }
+        // Every object opens with the key and is a file, a snapshot, a manifest or the index.
+        let plain = decrypt(&key, object, bytes);
+        let kind: String = if object.ends_with("/manifest") {
+            serde_json::from_slice::<voice_sync::manifest::Manifest>(&plain).unwrap();
+            "manifest".into()
+        } else if object.contains("/index/") {
+            serde_json::from_slice::<voice_sync::manifest::Index>(&plain).unwrap();
+            "index".into()
+        } else if plain.starts_with(b"SQLite format 3\0") {
+            snapshot = Some(plain.clone());
+            "transcript".into()
+        } else {
+            let rels = [
+                "meeting.json",
+                "timeline.jsonl",
+                "screen/frames/f-000001000.jpg",
+                "screen/video/000001.mp4",
+                "screen/journal.jsonl",
+                segments[0].as_str(),
+                segments[1].as_str(),
+                segments[2].as_str(),
+            ];
+            let rel = rels
+                .iter()
+                .find(|rel| m.read(rel) == plain)
+                .unwrap_or_else(|| panic!("{object} opens to no file of the meeting"));
+            assert_eq!(*object, file_object(&key, &m.id, rel, &plain));
+            (*rel).to_owned()
+        };
+        kinds.insert(kind);
+    }
+    for want in [
+        "meeting.json",
+        "timeline.jsonl",
+        "transcript",
+        "manifest",
+        "index",
+        "screen/frames/f-000001000.jpg",
+        "screen/video/000001.mp4",
+        "screen/journal.jsonl",
+    ] {
+        assert!(kinds.contains(want), "{want} reached the bucket");
+    }
+    // The snapshot has the passages.
+    let plain = snapshot.expect("a transcript snapshot");
+    let probe = scratch("upload-snapshot");
+    let _p = Cleanup(probe.clone());
+    std::fs::write(probe.join("transcript.db"), plain).unwrap();
+    let texts: Vec<String> = Meeting::passages(&probe).into_iter().map(|p| p.2).collect();
+    assert_eq!(texts, ["Anna talks about the budget", "Fine"]);
+    // Uploads carry no metadata about their content.
+    assert!(voice.sync.status().last_upload.is_some());
+}
+
+#[test]
+fn the_live_lane_keeps_its_rate() {
+    let fake = fake();
+    let data = scratch("upload-rate");
+    let _c = Cleanup(data.clone());
+    let rate = 64 * 1024;
+    let voice = Voice::with(
+        &data,
+        Setup {
+            timing: voice_sync::SyncTiming {
+                live_rate: rate,
+                ..timing()
+            },
+            ..Setup::default()
+        },
+    );
+    let m = Meeting::new(&voice.meetings(), "Rate", 0);
+    let mut segments = Vec::new();
+    for seq in 1..=20 {
+        segments.push(m.segment("mic", seq, (seq - 1) * 500, 8_000));
+    }
+    voice.connect(&fake.endpoint());
+    let ok = wait_for(WAIT, || voice.sync.status().key.exists);
+    assert!(ok);
+    let key = voice.key();
+    let objects: HashSet<String> = segments
+        .iter()
+        .map(|s| file_object(&key, &m.id, s, &m.read(s)))
+        .collect();
+    let ok = wait_for(WAIT, || {
+        fake.log()
+            .iter()
+            .filter(|l| l.status == 200 && objects.contains(unprefixed(&l.key)))
+            .count()
+            == 20
+    });
+    assert!(ok, "all 20 segments went up");
+    let puts: Vec<_> = fake
+        .log()
+        .into_iter()
+        .filter(|l| l.status == 200 && objects.contains(unprefixed(&l.key)))
+        .collect();
+    let bytes: u64 = puts.iter().map(|l| l.bytes).sum();
+    let last = puts.last().unwrap();
+    let elapsed = last.at - puts[0].at;
+    let least = (bytes - last.bytes) * 1000 / rate;
+    assert!(
+        elapsed + 50 >= least,
+        "{bytes} bytes at {rate} B/s took {elapsed} ms, at least {least} ms expected"
+    );
+}
+
+#[test]
+fn a_failing_bucket_backs_off_and_recovers() {
+    let fake = fake();
+    let data = scratch("upload-backoff");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    let m = Meeting::new(&voice.meetings(), "Backoff", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    m.transcript(&[("mic", 0, 900, "hello")], now_ms());
+    {
+        let mut faults = fake.faults();
+        for _ in 0..5 {
+            faults.fail.push((Op::Put, 500, "InternalError"));
+        }
+    }
+    voice.connect(&fake.endpoint());
+    let ok = wait_for(WAIT, || {
+        fake.log().iter().filter(|l| l.status == 500).count() >= 5
+    });
+    assert!(ok, "five failures: {:?}", fake.log());
+    // Then the bucket refuses connections for a while, then it is healthy again.
+    fake.faults().refuse = true;
+    let status = voice.sync.status();
+    assert_eq!(status.state, SyncState::Retrying);
+    let error = status.last_error.expect("the last error");
+    assert!(
+        matches!(error.code.as_str(), "failed" | "network"),
+        "{error:?}"
+    );
+    assert!(status.failing_since.is_some());
+    std::thread::sleep(Duration::from_millis(400));
+    let status = voice.sync.status();
+    assert_eq!(status.state, SyncState::Retrying);
+    assert_eq!(
+        status.last_error.map(|e| e.code).as_deref(),
+        Some("network")
+    );
+    fake.faults().refuse = false;
+    voice.settle(&fake, WAIT);
+    let status = voice.sync.status();
+    assert_eq!(status.state, SyncState::Idle);
+    assert!(status.last_error.is_none());
+    assert!(status.failing_since.is_none());
+
+    let log = fake.log();
+    // Attempts of one object follow the backoff: each wait at least 0.8 × min(200, 20 · 2^n) ms.
+    let mut by_key: HashMap<&str, Vec<(u64, u16)>> = HashMap::new();
+    for l in log.iter().filter(|l| l.op == Op::Put) {
+        by_key
+            .entry(l.key.as_str())
+            .or_default()
+            .push((l.at, l.status));
+    }
+    for (key, attempts) in &by_key {
+        let failed: Vec<u64> = attempts
+            .iter()
+            .filter(|a| a.1 == 500)
+            .map(|a| a.0)
+            .collect();
+        for (n, pair) in failed.windows(2).enumerate() {
+            let want = (20u64 << n).min(200) * 8 / 10;
+            assert!(
+                pair[1] - pair[0] + 5 >= want,
+                "{key}: attempt {} came {} ms after the one before, want {want}",
+                n + 2,
+                pair[1] - pair[0]
+            );
+        }
+        // Nothing went up twice.
+        assert!(
+            attempts.iter().filter(|a| a.1 == 200).count() <= 1
+                || key.ends_with("/manifest")
+                || key.contains("/index/"),
+            "{key} went up twice"
+        );
+    }
+}
+
+#[test]
+fn auth_errors_stop_until_the_config_changes() {
+    let fake = fake();
+    let data = scratch("upload-auth");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    let m = Meeting::new(&voice.meetings(), "Auth", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    voice.sync.save_secret(SECRET).unwrap();
+    let mut wrong = config(&fake.endpoint());
+    wrong.access_key_id = "someone-else".into();
+    voice.sync.configure(Some(wrong));
+    let ok = wait_for(WAIT, || voice.sync.status().state == SyncState::Failing);
+    assert!(ok, "{:?}", voice.sync.status());
+    let status = voice.sync.status();
+    assert_eq!(status.last_error.as_ref().unwrap().code, "auth");
+    let tried = fake.log().len();
+    assert!(tried >= 1);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(fake.log().len(), tried, "nothing else is tried");
+    assert_eq!(voice.sync.status().state, SyncState::Failing);
+
+    voice.sync.configure(Some(config(&fake.endpoint())));
+    voice.settle(&fake, WAIT);
+    assert!(voice.sync.status().last_error.is_none());
+}
+
+#[test]
+fn a_changed_file_gets_a_new_object() {
+    let fake = fake();
+    let data = scratch("upload-changed");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    let m = Meeting::new(&voice.meetings(), "Changed", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    m.transcript(&[("mic", 0, 900, "hello")], now_ms());
+    voice.connect(&fake.endpoint());
+    voice.settle(&fake, WAIT);
+    let key = voice.key();
+    let old = m.read("timeline.jsonl");
+    let old_object = file_object(&key, &m.id, "timeline.jsonl", &old);
+    assert!(has_object(&fake, &old_object));
+    let first_gen = manifest(&fake, &key, &m.id).unwrap().gen;
+
+    m.line(serde_json::json!({"kind":"mark","t":900,"id":"k-1","label":null}));
+    let new = m.read("timeline.jsonl");
+    let new_object = file_object(&key, &m.id, "timeline.jsonl", &new);
+    let ok = wait_for(WAIT, || {
+        has_object(&fake, &new_object)
+            && !has_object(&fake, &old_object)
+            && manifest(&fake, &key, &m.id).is_some_and(|mf| mf.gen > first_gen)
+    });
+    assert!(ok, "{:?}", fake.log());
+    voice.settle(&fake, WAIT);
+    let mf = manifest(&fake, &key, &m.id).unwrap();
+    let entry = mf
+        .files
+        .iter()
+        .find(|f| f.path == "timeline.jsonl")
+        .unwrap();
+    assert_eq!(entry.object, new_object);
+    assert_eq!(
+        mf.files
+            .iter()
+            .filter(|f| f.path == "timeline.jsonl")
+            .count(),
+        1
+    );
+    // The old object went only after the manifest that names the new one.
+    let log = fake.log();
+    let manifest_key = manifest_object(&key, &m.id);
+    let new_manifest = log
+        .iter()
+        .rposition(|l| unprefixed(&l.key) == manifest_key && l.status == 200 && l.op == Op::Put)
+        .unwrap();
+    let delete = log
+        .iter()
+        .position(|l| matches!(l.op, Op::Delete | Op::DeleteMany) && l.status == 200)
+        .expect("a delete");
+    assert!(delete > new_manifest);
+}
+
+#[test]
+fn backfill_goes_newest_first() {
+    let fake = fake();
+    let data = scratch("upload-backfill");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    let mut meetings = Vec::new();
+    for (title, ago) in [
+        ("Oldest", 3 * 86_400_000),
+        ("Middle", 2 * 86_400_000),
+        ("Newest", 86_400_000),
+    ] {
+        let m = Meeting::new(&voice.meetings(), title, ago);
+        m.segment("mic", 1, 0, 16_000);
+        m.segment("call", 1, 0, 16_000);
+        m.stop(1_000);
+        m.transcript(&[("mic", 0, 900, "hello")], now_ms());
+        meetings.push(m);
+    }
+    voice.connect(&fake.endpoint());
+    voice.settle(&fake, WAIT);
+    let key = voice.key();
+    let name_key = key.name_key();
+    let folder = |m: &Meeting| {
+        format!(
+            "rkv1/{}/m/{}/o/",
+            key.kid(),
+            names::meeting_hash(&name_key, &m.id)
+        )
+    };
+    let log = fake.log();
+    let span = |m: &Meeting| {
+        let f = folder(m);
+        let at: Vec<usize> = log
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                l.op == Op::Put && l.status == 200 && unprefixed(&l.key).starts_with(&f)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!at.is_empty());
+        (at[0], *at.last().unwrap())
+    };
+    let (oldest, middle, newest) = (span(&meetings[0]), span(&meetings[1]), span(&meetings[2]));
+    assert!(
+        newest.1 < middle.0,
+        "newest {newest:?} before middle {middle:?}"
+    );
+    assert!(
+        middle.1 < oldest.0,
+        "middle {middle:?} before oldest {oldest:?}"
+    );
+    let index = indexes(&fake, &key);
+    assert_eq!(index[0].meetings.len(), 3);
+}

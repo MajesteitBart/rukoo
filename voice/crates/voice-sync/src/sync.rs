@@ -2,14 +2,17 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::keys::{KeyStore, SECRET_FILE};
 use crate::protect::Protector;
-use crate::worker::Shared;
-use crate::{ScreenFiles, SyncConfig, SyncError, UrlStyle};
+use crate::queue::Queue;
+use crate::s3::Bucket;
+use crate::worker::{self, Shared};
+use crate::{recovery, ScreenFiles, SyncConfig, SyncError, SyncErrorKind, UrlStyle, SYNC_DIR};
 
 /// The worker's clocks, rates and sizes. Tests shorten them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,119 +165,388 @@ pub struct BucketSync {
     shared: Arc<Shared>,
 }
 
+/// `Core::shutdown` waits this long for the worker (2.9).
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+/// The key id Settings shows: its first 8 hex characters (voice/ui/API.md).
+const SHOWN_KID: usize = 8;
+
 impl BucketSync {
+    /// Opens `<data>/sync/queue.db`, removes `.restore-<id>` folders a hard kill left, and starts
+    /// the `sync-worker` thread, which stays idle until [`BucketSync::configure`] turns sync on.
+    /// Fails when the queue is locked, damaged or from a newer Voice; Voice then runs without sync
+    /// and retention holds every meeting with media.
     pub fn open(opts: SyncOptions) -> Result<BucketSync, SyncError> {
-        let _ = opts;
-        todo!()
+        let sync_dir = opts.data_dir.join(SYNC_DIR);
+        let queue = Queue::open(&sync_dir)?;
+        crate::restore::clear_partial(&opts.meetings_dir);
+        let keys = KeyStore::new(&sync_dir, opts.protector.clone());
+        let shared = Arc::new(Shared::new(opts, sync_dir, queue, keys));
+        worker::spawn(shared.clone())
+            .map_err(|e| worker::local("Voice can't start the sync worker", &e))?;
+        Ok(BucketSync { shared })
     }
 
-    /// None turns sync off. Wakes the worker.
+    /// None turns sync off. Wakes the worker. Turning it on after it was off makes the meetings
+    /// that exist now a backfill, newest first (D7).
     pub fn configure(&self, cfg: Option<SyncConfig>) {
-        let _ = (&self.shared, cfg);
-        todo!()
+        let shared = &self.shared;
+        let on = cfg.is_some();
+        let was_on = shared.queue.meta("on").ok().flatten().as_deref() == Some("1");
+        if on && !was_on {
+            let now = shared.now().to_string();
+            let _ = shared.queue.set_meta("enabled_at", Some(&now));
+            let _ = shared.queue.set_meta("on", Some("1"));
+        } else if !on && was_on {
+            let _ = shared.queue.set_meta("on", Some("0"));
+        }
+        let changed = {
+            let mut st = shared.lock();
+            let changed = st.cfg != cfg;
+            st.cfg = cfg;
+            st.rescan = true;
+            changed
+        };
+        if changed {
+            shared.bump();
+        } else {
+            shared.poke();
+        }
+        shared.changed();
     }
 
     /// Probes `cfg.url_style`, then the other style when the first fails with bucket, not found or
     /// endpoint. Uses the saved secret (NoSecret without one).
     pub fn test(&self, cfg: &SyncConfig) -> Result<TestReport, SyncError> {
-        let _ = cfg;
-        todo!()
+        let shared = &self.shared;
+        let secret = shared.keys.secret()?.ok_or_else(|| {
+            SyncError::new(SyncErrorKind::NoSecret, "Save the secret access key first.")
+        })?;
+        let own_kid = shared.keys.load().ok().flatten().map(|k| k.kid());
+        let timing = &shared.opts.timing;
+        let probe = |style: UrlStyle| -> Result<u32, SyncError> {
+            let mut cfg = cfg.clone();
+            cfg.url_style = style;
+            Bucket::new(
+                &cfg,
+                &secret,
+                timing.connect_timeout,
+                timing.request_timeout,
+            )?
+            .probe(own_kid.as_deref())
+        };
+        let first = cfg.url_style;
+        let (url_style, other_keys) = match probe(first) {
+            Ok(n) => (first, n),
+            Err(e)
+                if matches!(
+                    e.kind,
+                    SyncErrorKind::Bucket | SyncErrorKind::NotFound | SyncErrorKind::Endpoint
+                ) =>
+            {
+                let other = match first {
+                    UrlStyle::Path => UrlStyle::VirtualHost,
+                    UrlStyle::VirtualHost => UrlStyle::Path,
+                };
+                match probe(other) {
+                    Ok(n) => (other, n),
+                    Err(_) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        let _ = shared
+            .queue
+            .set_meta("other_keys", Some(&other_keys.to_string()));
+        shared.changed();
+        Ok(TestReport {
+            url_style,
+            other_keys,
+        })
     }
 
     pub fn save_secret(&self, secret: &str) -> Result<(), SyncError> {
-        let _ = secret;
-        todo!()
+        self.shared.keys.save_secret(secret)?;
+        self.shared.bump();
+        self.shared.changed();
+        Ok(())
     }
 
     pub fn remove_secret(&self) -> Result<(), SyncError> {
-        todo!()
+        self.shared.keys.remove_secret()?;
+        self.shared.bump();
+        self.shared.changed();
+        Ok(())
     }
 
     pub fn secret_saved(&self) -> bool {
-        todo!()
+        self.shared.sync_dir.join(SECRET_FILE).is_file()
     }
 
     /// (code, id); creates the key when there is none.
     pub fn show_key(&self) -> Result<(String, String), SyncError> {
-        todo!()
+        let shared = &self.shared;
+        let (key, created) = shared.key_or_create(shared.now())?;
+        if created {
+            shared.queue.adopt_kid(&key.kid())?;
+            shared.bump();
+        }
+        shared.changed();
+        Ok((recovery::encode(&key), shown(&key.kid())))
     }
 
     pub fn mark_key_saved(&self) -> Result<(), SyncError> {
-        todo!()
+        self.shared.keys.mark_exported(self.shared.now())?;
+        self.shared.changed();
+        Ok(())
     }
 
     /// Refused with KeyInUse once anything was uploaded with this computer's key and that key
     /// still opens (D5).
     pub fn import_key(&self, code: &str) -> Result<String, SyncError> {
-        let _ = code;
-        todo!()
+        let shared = &self.shared;
+        let key = recovery::decode(code)?;
+        let kid = key.kid();
+        {
+            let _busy = shared.busy();
+            let _key = shared.key_lock();
+            match shared.keys.load() {
+                Ok(Some(current)) if current.kid() == kid => return Ok(shown(&kid)),
+                Ok(Some(current)) => {
+                    if shared.queue.uploaded_with(&current.kid())? {
+                        return Err(SyncError::new(
+                            SyncErrorKind::KeyInUse,
+                            "This computer already uploaded meetings with its own key, so it keeps that key.",
+                        ));
+                    }
+                }
+                Ok(None) => {}
+                // The old key can't be opened any more: nothing it uploaded can be read here anyway.
+                Err(e) if e.kind == SyncErrorKind::Key => {}
+                Err(e) => return Err(e),
+            }
+            shared.keys.replace(&key, shared.now())?;
+            shared.queue.adopt_kid(&kid)?;
+            shared.lock().restore = RestoreState::default();
+        }
+        shared.bump();
+        shared.changed();
+        Ok(shown(&kid))
     }
 
     pub fn status(&self) -> SyncStatus {
-        todo!()
+        let shared = &self.shared;
+        let (on, blocked, failures, last_error, restore) = {
+            let st = shared.lock();
+            (
+                st.cfg.is_some(),
+                st.blocked.clone(),
+                st.failures,
+                st.last_error.clone(),
+                st.restore.clone(),
+            )
+        };
+        let queue = &shared.queue;
+        let (waiting, waiting_bytes, oldest_waiting) = queue.waiting().unwrap_or((0, 0, None));
+        let live = queue.any_live().unwrap_or(false);
+        let state = if !on {
+            SyncState::Off
+        } else if let Some(blocked) = &blocked {
+            if blocked.error.kind == SyncErrorKind::Key {
+                SyncState::Key
+            } else {
+                SyncState::Failing
+            }
+        } else if failures > 0 {
+            SyncState::Retrying
+        } else if live {
+            SyncState::Live
+        } else if waiting > 0 || queue.pending().unwrap_or(true) {
+            // A manifest or the index still to go counts: idle means everything is in the bucket.
+            SyncState::Uploading
+        } else {
+            SyncState::Idle
+        };
+        let info = shared.keys.info();
+        let failing_since = queue.meta_u64("failing_since").ok().flatten();
+        SyncStatus {
+            available: true,
+            state,
+            waiting,
+            waiting_bytes,
+            oldest_waiting,
+            last_upload: queue.last_upload().ok().flatten(),
+            // After a restart the queue remembers the failure that hasn't been followed by a success.
+            last_error: last_error.or_else(|| {
+                failing_since?;
+                let (at, code, message) = queue.last_error().ok().flatten()?;
+                Some(LastError { at, code, message })
+            }),
+            failing_since,
+            lost: queue.lost().unwrap_or(0),
+            key: KeyInfo {
+                exists: info.is_some(),
+                id: info.as_ref().map(|k| shown(&k.kid)),
+                exported: info.is_some_and(|k| k.exported_at.is_some()),
+            },
+            restore,
+            other_keys: queue
+                .meta_u64("other_keys")
+                .ok()
+                .flatten()
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0),
+        }
     }
 
     /// Look at the meetings now: one stopped or became done.
     pub fn nudge(&self) {
-        todo!()
+        self.shared.lock().nudged = true;
+        self.shared.poke();
     }
 
     /// Retention's hold (2.10). `true` on a database error or a poisoned lock: a broken queue never lets media go.
     pub fn holds_media(&self, meeting: &str) -> bool {
-        let _ = meeting;
-        todo!()
+        let shared = &self.shared;
+        let sync_on = match shared.state.lock() {
+            Ok(st) => st.cfg.is_some(),
+            Err(_) => return true,
+        };
+        let has_media = worker::has_media(&shared.meeting_dir(meeting));
+        shared
+            .queue
+            .holds_media(meeting, sync_on, has_media, shared.now())
+            .unwrap_or(true)
     }
 
     /// `true` on error, like holds_media.
     pub fn has_waiting(&self, meeting: &str) -> bool {
-        let _ = meeting;
-        todo!()
+        self.shared.queue.has_waiting(meeting).unwrap_or(true)
     }
 
+    /// Marks the meeting's waiting rows of these kinds `lost`: retention released them below the
+    /// disk floor (2.10). How many.
     pub fn mark_lost(&self, meeting: &str, kinds: &[&str]) -> u64 {
-        let _ = (meeting, kinds);
-        todo!()
+        let n = self.shared.queue.mark_lost(meeting, kinds).unwrap_or(0);
+        if n > 0 {
+            self.shared.changed();
+        }
+        n
     }
 
     /// On, with a readable key and a saved secret.
     pub fn can_fetch(&self) -> bool {
-        todo!()
+        let shared = &self.shared;
+        let ok = {
+            let st = shared.lock();
+            st.cfg.is_some()
+                && !st
+                    .blocked
+                    .as_ref()
+                    .is_some_and(|b| b.error.kind == SyncErrorKind::Key)
+        };
+        ok && shared.keys.info().is_some() && self.secret_saved()
     }
 
+    /// Whether the newest version of this file reached the bucket.
     pub fn in_bucket(&self, meeting: &str, path: &str) -> bool {
-        let _ = (meeting, path);
-        todo!()
+        matches!(self.shared.queue.in_bucket(meeting, path), Ok(Some(_)))
     }
 
+    /// Fetches the files that aren't on disk with their row's size back from the bucket (2.11).
+    /// A text file on disk is never replaced. Two calls for one file fetch it once. Fails with
+    /// `off` when sync is off, `key` when the key can't open them, `not_in_bucket` without a row
+    /// and `local` when `reserve` refuses one.
     pub fn ensure_local(
         &self,
         meeting: &str,
         paths: &[String],
         cancel: &AtomicBool,
     ) -> Result<(), SyncError> {
-        let _ = (meeting, paths, cancel);
-        todo!()
+        crate::restore::ensure_local(&self.shared, meeting, paths, cancel)
     }
 
+    /// The bucket's meetings that aren't on this computer, newest first. Settings' restore count
+    /// follows.
     pub fn remote_meetings(&self) -> Result<Vec<RemoteMeeting>, SyncError> {
-        todo!()
+        let shared = &self.shared;
+        let remote = shared.remote()?;
+        let restoring = shared.lock().restoring;
+        if !restoring {
+            shared.lock().restore.state = "listing";
+            shared.changed();
+        }
+        let listed = crate::restore::list_remote(shared, &remote);
+        if !restoring {
+            {
+                let mut st = shared.lock();
+                match &listed {
+                    Ok(meetings) => {
+                        st.restore.state = "available";
+                        st.restore.available = u32::try_from(meetings.len()).unwrap_or(u32::MAX);
+                        st.restore.error = None;
+                    }
+                    Err(e) => {
+                        st.restore.state = "failed";
+                        st.restore.error = Some(e.message.clone());
+                    }
+                }
+            }
+            shared.changed();
+        }
+        listed
     }
 
+    /// Restores `ids` (every meeting the bucket has that this computer doesn't, when empty) on the
+    /// `sync-restore` thread and returns at once; progress shows in `status().restore`.
+    /// `on_restored` gets each meeting's id once its folder is in place.
     pub fn restore(
         &self,
         ids: Vec<String>,
         on_restored: Box<dyn Fn(&str) + Send>,
     ) -> Result<(), SyncError> {
-        let _ = (ids, on_restored);
-        todo!()
+        crate::restore::spawn_restore(self.shared.clone(), ids, on_restored)
     }
 
+    /// With `delete_objects`, deletes every object of the meeting from the bucket and marks it
+    /// deleted in the next index; without, only forgets its rows (D15).
     pub fn forget_meeting(&self, meeting: &str, delete_objects: bool) -> Result<(), SyncError> {
-        let _ = (meeting, delete_objects);
-        todo!()
+        let _busy = self.shared.busy();
+        crate::prune::forget(&self.shared, meeting, delete_objects)
     }
 
+    /// Stops the worker between two requests and waits for it at most 2 s. An unfinished request
+    /// is resumed next time.
     pub fn shutdown(&self) {
-        todo!()
+        self.signal_stop();
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        let mut st = self.shared.lock();
+        while !st.worker_exited {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                log::warn!("sync: the worker didn't stop within 2 s");
+                break;
+            }
+            st = self
+                .shared
+                .wake
+                .wait_timeout(st, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
     }
+
+    fn signal_stop(&self) {
+        self.shared.lock().stopping = true;
+        self.shared.poke();
+    }
+}
+
+impl Drop for BucketSync {
+    fn drop(&mut self) {
+        self.signal_stop();
+    }
+}
+
+fn shown(kid: &str) -> String {
+    kid.chars().take(SHOWN_KID).collect()
 }
