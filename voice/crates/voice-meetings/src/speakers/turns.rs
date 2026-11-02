@@ -165,9 +165,11 @@ pub fn window_speaker(turns: &[Turn], start_ms: u64, end_ms: u64) -> Option<Stri
 }
 
 /// The speaker a stored passage without one can get later: the only speaker whose turns overlap
-/// it, else none.
+/// it, or with rule (d) a clear majority. A passage the gate let go during a stall wasn't cut
+/// where the voices hand over, so it often overlaps several speakers; with the only-speaker rule
+/// alone it kept no speaker for good.
 pub fn passage_speaker(turns: &[Turn], start_ms: u64, end_ms: u64) -> Option<String> {
-    span_speaker(turns, start_ms as f64, end_ms as f64, false)
+    span_speaker(turns, start_ms as f64, end_ms as f64, MAJORITY_RULE)
 }
 
 /// Passages from the segments Mistral's realtime stream returned for one window: one passage per
@@ -364,6 +366,25 @@ mod tests {
             None,
             "the gap between them"
         );
+    }
+
+    #[test]
+    fn a_passage_from_a_stall_takes_a_clear_majority() {
+        // A long passage across a hand-over and a backchannel: call-2 holds most of it.
+        let turns = vec![
+            turn("call-1", 0, 1000),
+            turn("call-2", 900, 10_000),
+            turn("call-3", 9_500, 10_500),
+        ];
+        assert_eq!(
+            passage_speaker(&turns, 0, 10_000).as_deref(),
+            Some("call-2")
+        );
+        // No clear winner: half and half.
+        let even = vec![turn("call-1", 0, 5_000), turn("call-2", 5_000, 10_000)];
+        assert_eq!(passage_speaker(&even, 0, 10_000), None);
+        // The window rule stays the only-speaker rule.
+        assert_eq!(window_speaker(&turns, 0, 10_000), None);
     }
 
     #[test]
