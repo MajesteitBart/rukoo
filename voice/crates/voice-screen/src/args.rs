@@ -39,9 +39,11 @@ impl Mode {
 
 /// `--test synthetic:<w>x<h>[,change-every=<ms>][,text=<word>][,monitors=<n>][,software-encoder]
 /// [,no-hardware][,free-bytes-file=<path>][,encoder-fail-at=<ms>][,write-fail=<video|frames>@<ms>]
-/// [,device-lost-at=<ms>[x<n>]][,warp]`: a synthetic screen instead of the real monitors, and the
-/// faults the tests need. Times are meeting time in ms. `warp` makes the graphics device
-/// Microsoft's software rasterizer, as on a CI runner without a GPU.
+/// [,device-lost-at=<ms>[x<n>]][,monitor-gone-at=<ms>][,warp]`: a synthetic screen instead of the
+/// real monitors, and the faults the tests need. Times are meeting time in ms. `warp` makes the
+/// graphics device Microsoft's software rasterizer, as on a CI runner without a GPU.
+/// `monitor-gone-at` takes the first monitor out of the list from that moment, without the
+/// capture's `Closed` notice, as when that notice is lost.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TestSpec {
     pub width: u32,
@@ -56,6 +58,7 @@ pub struct TestSpec {
     pub write_fail: Option<(Part, u64)>,
     pub device_lost_at_ms: Option<u64>,
     pub device_create_failures: u32,
+    pub monitor_gone_at_ms: Option<u64>,
     pub warp: bool,
 }
 
@@ -134,6 +137,7 @@ impl TestSpec {
                     test.device_lost_at_ms = Some(ms(at, key)?);
                     test.device_create_failures = times;
                 }
+                ("monitor-gone-at", Some(v)) => test.monitor_gone_at_ms = Some(ms(v, key)?),
                 _ => return Err(format!("unknown synthetic screen option {part:?}")),
             }
         }
@@ -324,7 +328,7 @@ mod tests {
         let test = TestSpec::parse(
             "synthetic:1440x2560,change-every=10000,text=RUKOO DEMO 42,monitors=2,software-encoder,\
              no-hardware,free-bytes-file=C:\\tmp\\free.txt,encoder-fail-at=3000,write-fail=frames@4000,\
-             device-lost-at=3000x2,warp",
+             device-lost-at=3000x2,monitor-gone-at=5000,warp",
         )
         .unwrap();
         assert_eq!(
@@ -342,6 +346,7 @@ mod tests {
                 write_fail: Some((Part::Frames, 4000)),
                 device_lost_at_ms: Some(3000),
                 device_create_failures: 2,
+                monitor_gone_at_ms: Some(5000),
                 warp: true,
             }
         );

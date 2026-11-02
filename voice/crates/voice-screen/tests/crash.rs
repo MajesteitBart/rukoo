@@ -863,6 +863,64 @@ mod tests {
         assert_video_ends_cover(&m, &lines);
     }
 
+    /// A recorded monitor that leaves the monitor list is noticed without the capture's `Closed`
+    /// notice, which the synthetic source never sends: the recording moves to the other monitor
+    /// with a `monitor` line, reason `lost`. Pinned with `--monitor`, the process waits for its
+    /// monitor instead and writes nothing.
+    pub fn a_monitor_that_leaves_the_list_is_noticed() {
+        let m = TempMeeting::new("monitor-gone", "video");
+        let test = spec("monitors=2,monitor-gone-at=3000");
+        let (mut recorder, mut screen) = start(&m, "video", &test, &[]);
+        let lines = m.wait_journal("the move to the other monitor", |l| {
+            position(l, "monitor", |x| x["reason"] == "lost").is_some_and(|at| {
+                l[at..]
+                    .iter()
+                    .any(|x| x["kind"] == "capture" && x["monitor"] == r"\\.\SYNTHETIC2")
+            })
+        });
+        let moved = position(&lines, "monitor", |l| l["reason"] == "lost").unwrap();
+        assert_eq!(lines[moved]["id"], r"\\.\SYNTHETIC2", "{}", show(&lines));
+        assert!(t(&lines[moved]) >= 3_000, "{}", show(&lines));
+        let ended = position(&lines, "video_end", |l| l["reason"] == "monitor")
+            .expect("no video_end monitor");
+        assert!(ended < moved, "{}", show(&lines));
+        let moved_t = t(&lines[moved]);
+        m.wait_journal("a frame of the other monitor", |l| {
+            of_kind(l, "frame").iter().any(|f| t(f) > moved_t)
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert!(
+            of_kind(&lines, "video").iter().any(|v| t(v) >= moved_t),
+            "no video after the move:\n{}",
+            show(&lines)
+        );
+
+        let m = TempMeeting::new("monitor-gone-pinned", "frames");
+        let (mut recorder, mut screen) = start(
+            &m,
+            "frames",
+            "synthetic:640x360,change-every=500,text=Slide,monitors=2,monitor-gone-at=3000",
+            &["--monitor", r"\\.\SYNTHETIC1"],
+        );
+        m.wait_screen_t(1, 6_500);
+        let status = m.screen_request(1, json!({ "cmd": "status" }));
+        assert_eq!(status["ok"], true, "{status}");
+        let lines = m.journal();
+        assert!(
+            of_kind(&lines, "monitor")
+                .iter()
+                .all(|l| l["reason"] == "start"),
+            "{}",
+            show(&lines)
+        );
+        let late: Vec<_> = of_kind(&lines, "frame")
+            .into_iter()
+            .filter(|f| t(f) > 4_000)
+            .collect();
+        assert!(late.is_empty(), "frames after the monitor went: {late:?}");
+        stop(&m, &mut recorder, &mut screen);
+    }
+
     pub fn stops_with_the_recorder() {
         let m = TempMeeting::new("stop", "frames");
         let (mut recorder, mut screen) = start(&m, "frames", SLIDES, &[]);
@@ -1111,6 +1169,11 @@ fn main() {
             name: "monitor_switch_starts_a_new_file",
             ignored: false,
             run: tests::monitor_switch_starts_a_new_file,
+        },
+        Test {
+            name: "a_monitor_that_leaves_the_list_is_noticed",
+            ignored: false,
+            run: tests::a_monitor_that_leaves_the_list_is_noticed,
         },
         Test {
             name: "stops_with_the_recorder",

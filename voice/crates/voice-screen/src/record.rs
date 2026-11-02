@@ -620,7 +620,12 @@ impl Screen {
         if fresh || self.monitor_cache.0.elapsed() >= MONITOR_CACHE {
             self.monitor_cache = (Instant::now(), list_monitors(self.test.as_ref()));
         }
-        let list = self.monitor_cache.1.clone();
+        let mut list = self.monitor_cache.1.clone();
+        if let Some(at) = self.test.as_ref().and_then(|t| t.monitor_gone_at_ms) {
+            if self.now_t() >= at && !list.is_empty() {
+                list.remove(0);
+            }
+        }
         match &self.pinned {
             Some(id) => list.into_iter().filter(|m| &m.id == id).collect(),
             None => list,
@@ -1271,6 +1276,12 @@ impl Screen {
         }
         if self.capturing && self.d3d.as_ref().is_some_and(D3D::removed) {
             self.on_device_lost();
+        }
+        // The capture's `Closed` notice shares the queue with frames and is lost when the queue
+        // is full, so a recorded monitor that left the list counts as gone as well.
+        if self.capturing && !self.monitors(false).iter().any(|m| m.id == self.monitor.id) {
+            log(format_args!("{} left the monitor list", self.monitor.id));
+            self.on_monitor_lost();
         }
         if let Some(video) = &self.video {
             video.tick(clockwin::boot_100ns());
