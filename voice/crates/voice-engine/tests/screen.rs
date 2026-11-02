@@ -655,9 +655,13 @@ fn a_new_supervisor_reattaches() {
     let screen = rig.restart_supervisor(SCREEN);
     screen.recover(Some(&id));
     screen.reattach(&id);
-    let described = screen.describe(&id).unwrap();
+    // The process says `starting` until its first frame arrives.
+    let mut described = Value::Null;
+    wait_for("the reattached process to record", || {
+        described = screen.describe(&id).unwrap();
+        described["state"] == "recording"
+    });
     assert_eq!(described["screen"], "frames");
-    assert_eq!(described["state"], "recording");
     assert_eq!(
         screenfile::live(&rig.dir(&id)).unwrap().pid,
         pid,
@@ -875,14 +879,14 @@ fn screen_get_and_select() {
     let control = rig.control();
     rig.wait_line(&id, "the capture", |l| matches!(l, Line::Capture { .. }));
     let mut described = Value::Null;
-    wait_for("two monitors", || {
+    wait_for("two monitors, recording", || {
         described = control.screen(&id).unwrap();
-        described["monitors"]
-            .as_array()
-            .is_some_and(|m| m.len() == 2)
+        described["state"] == "recording"
+            && described["monitors"]
+                .as_array()
+                .is_some_and(|m| m.len() == 2)
     });
     assert_eq!(described["screen"], "frames");
-    assert_eq!(described["state"], "recording");
     assert_eq!(described["video"], false);
     assert_eq!(described["frames"], true);
     let monitors = described["monitors"].as_array().unwrap().clone();
@@ -1053,14 +1057,18 @@ fn pill_screen_click_moves_to_the_next_monitor() {
             .and_then(|p| p.meeting)
             .is_some_and(|m| m.screen == "frames" && m.screen_switch)
     });
-    let first = journal::read_all(&dir)
-        .unwrap()
-        .into_iter()
-        .find_map(|l| match l {
-            Line::Monitor { id, .. } => Some(id),
-            _ => None,
-        })
-        .unwrap();
+    let mut first = None;
+    wait_for("the first monitor line", || {
+        first = journal::read_all(&dir)
+            .unwrap_or_default()
+            .into_iter()
+            .find_map(|l| match l {
+                Line::Monitor { id, .. } => Some(id),
+                _ => None,
+            });
+        first.is_some()
+    });
+    let first = first.unwrap();
     engine.pill_screen_clicked();
     wait_for("a monitor line from the user", || {
         journal::read_all(&dir).unwrap_or_default().iter().any(

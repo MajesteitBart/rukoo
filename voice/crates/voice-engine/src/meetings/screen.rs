@@ -46,6 +46,9 @@ const REQUEST_WAIT: Duration = Duration::from_secs(1);
 const STOP_WAIT: Duration = Duration::from_secs(5);
 /// How long `probe` and `finalize` may run.
 const TOOL_WAIT: Duration = Duration::from_secs(30);
+/// How long a monitor switch waits for a screen process that is starting. Shorter than Rukoo's
+/// 10 s command timeout.
+const STARTING_PATIENCE: Duration = Duration::from_secs(3);
 
 /// How the supervisor waits and retries. The defaults are for real use; tests shorten them.
 #[derive(Clone, Debug)]
@@ -841,7 +844,7 @@ impl ScreenSupervisor {
         let Some(dir) = self.lib.dir(id) else {
             return Err(ControlError::not_found("There is no meeting with that id."));
         };
-        let slot = self.lock();
+        let slot = self.wait_started(self.lock(), Some(id));
         match slot.as_ref() {
             Some(live) if live.id == id && live.phase == Phase::Ending => Err(
                 ControlError::not_recording("The meeting doesn't record now."),
@@ -907,10 +910,32 @@ impl ScreenSupervisor {
         }
     }
 
+    /// Waits a moment for a screen process that is starting or restarting, so a switch asked
+    /// right then isn't lost.
+    fn wait_started<'a>(
+        &'a self,
+        mut slot: MutexGuard<'a, Option<ScreenLive>>,
+        id: Option<&str>,
+    ) -> MutexGuard<'a, Option<ScreenLive>> {
+        let deadline = Instant::now() + STARTING_PATIENCE;
+        while slot.as_ref().is_some_and(|l| {
+            id.is_none_or(|id| l.id == id)
+                && (l.phase == Phase::Starting || l.phase == Phase::Restarting)
+        }) && Instant::now() < deadline
+        {
+            slot = self
+                .changed
+                .wait_timeout(slot, Duration::from_millis(100))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        slot
+    }
+
     /// The pill's screen button: the recording moves to the next monitor, left to right.
     pub fn next_monitor(&self) -> Result<MonitorInfo, String> {
         let (id, file) = {
-            let slot = self.lock();
+            let slot = self.wait_started(self.lock(), None);
             match slot.as_ref() {
                 Some(live) if live.phase == Phase::Running && live.recording() => (
                     live.id.clone(),
