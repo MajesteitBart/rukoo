@@ -13,10 +13,11 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::score::{accuracy, Span};
 use common::*;
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Stored};
 use voice_core::speakers::DiarErrorKind;
@@ -209,8 +210,45 @@ fn wait_done(handle: &PipelineHandle) {
     });
 }
 
+/// A value in the meta table of `dir`'s `transcript.db`, `None` while the pipeline hasn't created
+/// the store. Tests poll it while the pipeline writes, so it reads without taking the write lock,
+/// which [`Transcript::open`] takes. SQLite can answer busy without waiting for the busy timeout,
+/// while another connection cleans up or recovers the WAL: that read is tried again until [`WAIT`]
+/// is up. Any other error fails the test.
 fn meta(dir: &MeetingDir, key: &str) -> Option<String> {
-    Transcript::open(dir.path()).unwrap().meta_get(key).unwrap()
+    let path = dir.path().join("transcript.db");
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match read_meta(&path, key) {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(e.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            read => return read.unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+        }
+    }
+}
+
+fn read_meta(path: &Path, key: &str) -> rusqlite::Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    let created: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !created {
+        return Ok(None);
+    }
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+        row.get(0)
+    })
+    .optional()
 }
 
 /// 1: three voices on the call get three ids, each sent right before its first passage.
