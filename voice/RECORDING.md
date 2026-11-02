@@ -322,10 +322,10 @@ rukoo-voice-screen inspect <file.mp4>
 
 - It refuses to start while `screen.json` names a process that answers on its port (exit code 4), when the journal has `stop`, and when `screen/` has content and `--resume` isn't given (exit code 3).
 - It waits up to 5 s for a `session` line in the timeline, else it exits with code 1.
-- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. With `--monitor`, it records that monitor or exits with code 1; it never records another one.
+- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, capture stops until it comes back.
 - It follows the timeline every 250 ms: it stops capturing at `pause` and starts again at `resume`, and at `stop` it ends at the `stop` line's `t`, finishes the video file, reads the frames still queued, writes `video_end` and `stop` with reason `meeting`, removes `screen.json` and exits with code 0.
 - It stops by itself, with reason `interrupted`, when the timeline has had no new line for 60 s of awake time and nobody asked its `status` in that time: the screen is never recorded without the audio.
-- It never reads stdin and writes nothing to stdout. Its stderr log never holds frame text, window titles or monitor names, and frames are logged by id and size only.
+- It never reads stdin and writes nothing to stdout. Its stderr log never holds frame text, window titles or monitor names. Frames are logged by id, size, bytes and JPEG and OCR time only. A development copy also logs the graphics memory it uses once a minute.
 
 `finalize` finishes a screen journal whose process died: the repair and orphan frames above, then `stop` at `lastSeen` with the given reason, `interrupted` by default, when the journal has none. It removes a stale `screen.json`, refuses a live process with exit code 4, and changes nothing when run again.
 
@@ -345,13 +345,14 @@ rukoo-voice-screen inspect <file.mp4>
 |---|---|
 | `change-every=<ms>` | The picture changes this often |
 | `text=<word>` | It shows `<word> <n>`, with `n` counting up from 1 at each change |
-| `monitors=<n>` | It pretends there are `n` monitors |
+| `monitors=<n>` | It pretends there are `n` monitors, `\\.\SYNTHETIC1`, `\\.\SYNTHETIC2` and so on, side by side, the first primary |
 | `software-encoder` | Microsoft's software encoder counts as a working encoder |
 | `no-hardware` | No hardware encoder is found |
 | `free-bytes-file=<path>` | The free bytes are read from that file |
 | `encoder-fail-at=<ms>` | The encoder fails at that moment |
 | `write-fail=video@<ms>`, `write-fail=frames@<ms>` | Writing video or frames fails with a full disk from that moment |
 | `device-lost-at=<ms>[x<n>]` | The graphics device is lost then, and the next `n` new devices fail too |
+| `warp` | The graphics device is WARP, Microsoft's software rasterizer, as on a CI runner |
 
 ### The screen control port
 
@@ -359,9 +360,9 @@ The screen process listens on `127.0.0.1` at the port in `screen.json` and speak
 
 | `cmd` | Arguments | Reply |
 |---|---|---|
-| `status` | | `{"ok":true,"state":"recording","t":…,"mode":"video","video":true,"frames":true,"monitor":"\\\\.\\DISPLAY1","monitors":[…],"dropped":{"video":null,"frames":null},"encoder":"NVIDIA H.264 Encoder MFT","saved":12}`; `state` is `starting`, `recording`, `paused`, `locked` or `stopped`, `video` and `frames` whether each part still records, `dropped` the reason for each part that stopped, and `saved` the frames saved |
-| `monitors` | | `{"ok":true,"monitors":[…]}`, left to right, as in `probe` |
-| `monitor` | `id`, 1 to 64 characters | `{"ok":true,"monitor":"\\\\.\\DISPLAY2"}` once capture moved there; `unknown_monitor` for a monitor that isn't there, `stopped` once recording ended |
+| `status` | | `{"ok":true,"state":"recording","t":…,"mode":"video","video":true,"frames":true,"monitor":"\\\\.\\DISPLAY1","monitors":[…],"dropped":{"video":null,"frames":null},"encoder":"NVIDIA H.264 Encoder MFT","hardware":true,"saved":12}`; `state` is `starting`, `recording`, `paused`, `locked` or `stopped`, `video` and `frames` whether each part still records, `dropped` the reason for each part that stopped, `hardware` whether the encoder is a hardware one (`null` without an encoder), and `saved` the frames saved |
+| `monitors` | | `{"ok":true,"monitors":[…]}`, left to right, as in `probe`; with `--monitor`, only that monitor |
+| `monitor` | `id`, 1 to 64 characters | `{"ok":true,"monitor":"\\\\.\\DISPLAY2"}` once capture moved there; `unknown_monitor` for a monitor that isn't there, and with `--monitor` for every other monitor; `stopped` once recording ended |
 | `pause`, `resume` | | `{"ok":true}` |
 | `stop` | | `{"ok":true,"t":…}` once `stop` is written; then the process exits |
 

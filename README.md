@@ -56,7 +56,7 @@ More in [Agents](docs/agents.md).
 
 ### Meetings
 
-- Rukoo Voice, a companion app for Windows, records a meeting's microphone and call audio and transcribes it while you talk. Rukoo shows the transcript in the meeting view (`Ctrl+3`), next to the agent chat.
+- Rukoo Voice, a companion app for Windows, records a meeting's microphone and call audio, and the screen if you want, and transcribes it while you talk. Rukoo shows the transcript and the screen's frames in the meeting view (`Ctrl+3`), next to the agent chat.
 - Start a recording from a calendar event, the meeting view or Voice. Name the voices from the event's guests and keep your own notes next to the transcript.
 - Your agent reads the meeting through Rukoo's MCP tools, as untrusted content, and can't start or stop a recording. While a meeting records, Rukoo keeps its windows out of screen recordings and screen shares on Windows and macOS.
 
