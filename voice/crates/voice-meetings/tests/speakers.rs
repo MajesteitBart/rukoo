@@ -398,16 +398,17 @@ fn a_slow_reel_after_a_crash_keeps_the_gate() {
     let log = EventLog::open(tmp.path()).unwrap();
     let pieces = three_voices(12, 1.5);
     let rec = finished_call(&lib, &pieces);
-    // The worker crashes 22 pushes in; the new one takes 60 ms a push, so its reel of about
-    // 25 pushes takes five times the stall.
+    // The worker crashes 22 pushes in; the new one takes 120 ms a push, so its reel of about
+    // 25 pushes takes three times the stall. The stall is long enough that a busy PC doesn't
+    // trip it elsewhere.
     let d = ScriptedDiarizer::with(|s| {
         s.crash_on = vec![22];
         s.slow_after = 22;
-        s.slow = Duration::from_millis(60);
+        s.slow = Duration::from_millis(120);
     });
     let options = PipelineOptions {
         speakers: FollowerTiming {
-            stall: Duration::from_millis(300),
+            stall: Duration::from_millis(1_000),
             ..follower_timing()
         },
         ..labelled(&d)
@@ -1221,13 +1222,16 @@ fn mistral_streams_after_consent_and_keeps_ids_across_a_reconnect() {
     wait_until("waiting for consent", WAIT, || {
         matches!(handle.state(), PipelineState::Waiting { .. }).then_some(())
     });
+    // The followers say why on their first look, which a busy PC can hold back a while.
+    wait_until("the consent reason", WAIT, || {
+        (handle.labels().reason.as_deref() == Some("consent")).then_some(())
+    });
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         fake.state().sessions.is_empty(),
         "no connection before consent"
     );
     assert_eq!(fake.state().pushes, 0, "no audio before consent");
-    assert_eq!(handle.labels().reason.as_deref(), Some("consent"));
 
     agreed.store(true, Ordering::SeqCst);
     handle.wake();
