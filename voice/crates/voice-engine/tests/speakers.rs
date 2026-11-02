@@ -299,7 +299,7 @@ fn wait_done(data: &Path, id: &str) -> Vec<Stored> {
     events(data, id)
 }
 
-/// Exactly as Voice 0.1 labels a meeting: You, and the whole call as Speaker 1.
+/// A meeting without speaker labels: You, and the whole call as Speaker 1.
 fn assert_one_call_speaker(events: &[Stored]) {
     let speakers: Vec<&Value> = events
         .iter()
@@ -541,9 +541,11 @@ fn removing_nemotron_waits_while_a_meeting_labels() {
     let speech = labelling(&h);
     speech.ready();
     speech.door.close();
-    let _door = OpenOnDrop(Arc::clone(&speech.door));
     let _id = record_meeting(&h.data());
     let engine = start(&h, &speech);
+    // Declared after the engine, so a failing assertion opens the door before the engine's drop
+    // waits for the meeting's pipeline to stop.
+    let _door = OpenOnDrop(Arc::clone(&speech.door));
     // The meeting's labels start: its stream is opening.
     wait_for("the diarizer to open", || {
         speech.opens.load(Ordering::SeqCst) >= 1

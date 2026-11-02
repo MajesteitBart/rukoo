@@ -318,13 +318,13 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
 | Field | Meaning |
 |---|---|
 | `engine` | Who labels new meetings: `mistral` when the meeting model is a realtime model (it labels in the same stream it transcribes), else `nemotron` on this computer. Nemotron never stands in for Mistral or the other way round. |
-| `ready` | New meetings get speaker labels. Otherwise the whole call is one speaker, as in Voice 0.1. |
+| `ready` | New meetings get speaker labels. Otherwise the whole call is one speaker, `call-1`. |
 | `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x64), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2), `runtime` (no NeMo runtime verifies next to Voice), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `consent` (a realtime model without a `stream` agreement for its provider and host). |
 | `detail` | The English error behind `runtimeFailed` and `modelDamaged`, for Error details; else `null`. |
 | `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]`; else `[]`. |
 | `cpu` | This processor's features. |
 | `runtime` | The NeMo runtime Nemotron would use, while it can run: `location` `voice` (next to Voice), `ownkey` (Ownkey's copy, read only) or `dev` (`RUKOO_VOICE_NEMO_DIR` in a development copy), and `commit`, the NeMo-Speech.cpp commit's first seven characters. `null` otherwise. |
-| `live` | One entry per meeting that is transcribing: `mode` `nemotron`, `mistral` or `off`; `state` `off`, `starting`, `matching`, `listening`, `catchingUp`, `restarting`, `finished` or `failed`; `speakers`, the voices labelled so far; `reason`, the code a meeting in mode `off` labels without (the codes above, `stream`, or `upgrade` for a meeting Voice 0.1 started); `workerPid`, the worker's process id in a development copy, else `null`. `failed` means labels stopped for that meeting while its recording and transcription go on. |
+| `live` | One entry per meeting that is transcribing: `mode` `nemotron`, `mistral` or `off`; `state` `off`, `starting`, `matching`, `listening`, `catchingUp`, `restarting`, `finished` or `failed`; `speakers`, the voices labelled so far; `reason`, the code a meeting in mode `off` labels without (the codes above, `stream`, or `upgrade` for a meeting that a Voice without speaker labels started); `workerPid`, the worker's process id in a development copy, else `null`. `failed` means labels stopped for that meeting while its recording and transcription go on. |
 
 A meeting keeps the labels it started with: a change of the switch, the model or the meeting provider applies to the next meeting.
 
