@@ -898,12 +898,19 @@ impl Labeller {
         }
     }
 
+    /// The stream position of a turn event. The runtime's last frames at `finish` reach past
+    /// the audio pushed, by up to a frame, so a voice still talking at Stop ends past it; such an
+    /// event belongs at the end of what was sent, where the stream clock still maps it.
+    fn position(&self, event: &TurnEvent) -> u64 {
+        stream_samples(event.seconds).min(self.clock.sent())
+    }
+
     fn event(&mut self, event: TurnEvent, batch: &mut LabelBatch) {
         if self.matched {
             self.apply(event, batch);
             return;
         }
-        let at = stream_samples(event.seconds);
+        let at = self.position(&event);
         if event.starting {
             if at < self.reel_end {
                 self.reel_open.insert(event.speaker, at);
@@ -1021,7 +1028,7 @@ impl Labeller {
 
     fn apply(&mut self, event: TurnEvent, batch: &mut LabelBatch) {
         let label = event.speaker;
-        let at = stream_samples(event.seconds);
+        let at = self.position(&event);
         if event.starting {
             if at < self.reel_end {
                 self.open.insert(

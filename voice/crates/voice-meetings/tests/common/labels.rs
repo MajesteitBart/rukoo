@@ -92,6 +92,9 @@ pub struct Script {
     /// frames, once `right_frames` more came in. 0 commits every frame at once.
     pub chunk_frames: usize,
     pub right_frames: usize,
+    /// `finish` reports this many frames past the audio, each with the last frame's label, as
+    /// the runtime does: its frame count at the end is one more than the whole frames pushed.
+    pub finish_extra: usize,
 }
 
 impl Script {
@@ -250,12 +253,18 @@ impl DiarStream for ScriptedStream {
 
     fn finish(&mut self) -> Result<Probs, DiarError> {
         self.finished = true;
-        self.script.lock().unwrap().finishes += 1;
+        let extra = {
+            let mut s = self.script.lock().unwrap();
+            s.finishes += 1;
+            s.finish_extra
+        };
         if !self.buffer.is_empty() {
             let rest = std::mem::take(&mut self.buffer);
             let label = hidden_speaker(&rest).map(|k| self.label(k));
             self.frames.push(label);
         }
+        let last = self.frames.last().copied().flatten();
+        self.frames.extend(std::iter::repeat_n(last, extra));
         Ok(self.commit(self.frames.len()))
     }
 

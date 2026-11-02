@@ -317,6 +317,42 @@ fn the_gate_holds_call_windows_at_the_settled_position() {
     assert_eq!(last_revisions(&all, "call").len(), 8);
 }
 
+/// 2b: a voice still talking at Stop keeps its last turn to the end of the call, and its last
+/// passage keeps its speaker, though the runtime's last frame reaches past the audio pushed.
+#[test]
+fn a_voice_talking_at_stop_keeps_its_speaker() {
+    // A call of whole 10 ms frames, and one that ends in a part frame.
+    for (name, last) in [("whole", 2.0), ("part", 2.003)] {
+        let tmp = TempDir::new(&format!("speakers-stop-{name}"));
+        let lib = Library::open(tmp.path()).unwrap();
+        let log = EventLog::open(tmp.path()).unwrap();
+        let pieces = [(0.5, None), (1.5, Some(0)), (1.2, None), (last, Some(1))];
+        let rec = finished_call(&lib, &pieces);
+        let samples = voices(&pieces).len() as i64;
+        let d = ScriptedDiarizer::with(|s| s.finish_extra = 1);
+        let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+        wait_done(&handle);
+        handle.shutdown();
+        let turns = stored_turns(&rec.dir);
+        let last_turn = turns
+            .iter()
+            .find(|t| t.0 == "call-2")
+            .unwrap_or_else(|| panic!("{name}: {turns:?}"));
+        assert_eq!(
+            last_turn.2,
+            Some((samples + 15) / 16),
+            "{name}: the last turn ends with the call: {turns:?}"
+        );
+        let call = last_revisions(&events(&log, &rec.id()), "call");
+        assert_eq!(call.len(), 2, "{name}: {call:#?}");
+        assert_eq!(
+            call[1].speaker.as_deref(),
+            Some("call-2"),
+            "{name}: {call:#?}"
+        );
+    }
+}
+
 /// 3: a worker crash two thirds into the meeting keeps every voice's id.
 #[test]
 fn a_worker_crash_keeps_the_ids() {
