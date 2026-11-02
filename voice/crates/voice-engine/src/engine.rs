@@ -259,6 +259,7 @@ impl Core {
         opts.speakers.log_calls = self.opts.dev_mode;
         let labels = meeting_labels(&cfg, self.svc.speech.as_ref());
         opts.labels = labels.labels;
+        opts.live_speakers = labels.live_speakers;
         match labels.stream {
             Some(Ok(stream)) => opts.stream = Some(stream),
             // The stream can't be built (no key): the windows fail with that reason, the way a
@@ -452,6 +453,8 @@ pub(crate) const STREAM_DELAY_MS: u32 = 480;
 /// Who labels a meeting's call speakers, and the realtime stream when the provider streams.
 pub(crate) struct MeetingLabels {
     pub labels: Labels,
+    /// The Settings switch, which only a meeting that chooses its label mode now reads.
+    pub live_speakers: bool,
     /// `Some` only when the meeting provider streams: the stream, or why it can't be built.
     pub stream: Option<Result<StreamOptions, ProviderError>>,
 }
@@ -459,7 +462,9 @@ pub(crate) struct MeetingLabels {
 /// The label choice for a meeting started now. The meeting provider alone decides whether
 /// Mistral's stream transcribes and labels it; otherwise Nemotron labels on this computer when
 /// the switch is on and it can run, and else the whole call is one speaker. Neither engine
-/// ever stands in for the other.
+/// ever stands in for the other. Nemotron's diarizer comes with the switch off too: a meeting
+/// that started with labels keeps them when its pipeline starts again (Settings: "Applies to
+/// meetings you start from now on"), and the pipeline gives a new meeting none.
 pub(crate) fn meeting_labels(cfg: &Config, speech: &dyn Speech) -> MeetingLabels {
     let audio = cfg.meeting_audio();
     if stream::streams(&audio) {
@@ -477,23 +482,19 @@ pub(crate) fn meeting_labels(cfg: &Config, speech: &dyn Speech) -> MeetingLabels
             labels: Labels::Off {
                 reason: voice_meetings::STREAM_REASON.into(),
             },
+            live_speakers: cfg.meetings_live_speakers,
             stream: Some(stream),
         };
     }
-    let labels = if !cfg.meetings_live_speakers {
-        Labels::Off {
-            reason: "off".into(),
-        }
-    } else {
-        match speech.diarizer() {
-            Ok(diarizer) => Labels::Local { diarizer },
-            Err(unavailable) => Labels::Off {
-                reason: unavailable.code().into(),
-            },
-        }
+    let labels = match speech.diarizer() {
+        Ok(diarizer) => Labels::Local { diarizer },
+        Err(unavailable) => Labels::Off {
+            reason: unavailable.code().into(),
+        },
     };
     MeetingLabels {
         labels,
+        live_speakers: cfg.meetings_live_speakers,
         stream: None,
     }
 }
@@ -840,14 +841,18 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_off_never_asks_for_a_diarizer() {
+    fn the_switch_off_keeps_the_diarizer_for_meetings_that_label() {
         let speech = Labelling::default();
         let mut cfg = Config::defaults(false);
+        assert!(meeting_labels(&cfg, &speech).live_speakers);
         cfg.meetings_live_speakers = false;
         let chosen = meeting_labels(&cfg, &speech);
-        assert_eq!(off_reason(&chosen.labels), Some("off"));
+        // A meeting that started with labels gets its diarizer again after a restart; the
+        // pipeline gives a new meeting none, by the switch.
+        assert!(matches!(chosen.labels, Labels::Local { .. }));
+        assert!(!chosen.live_speakers);
         assert!(chosen.stream.is_none());
-        assert_eq!(speech.diarizers.load(Ordering::SeqCst), 0);
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
     }
 
     #[test]

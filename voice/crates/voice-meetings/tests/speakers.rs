@@ -431,6 +431,73 @@ fn a_slow_reel_after_a_crash_keeps_the_gate() {
     );
 }
 
+/// 2c: Speaker labels switched off mid-meeting apply to the next meeting: a labelled meeting
+/// whose pipeline starts again (a dictionary change, a Voice restart) keeps labelling, and a
+/// new meeting gets none.
+#[test]
+fn the_switch_going_off_keeps_a_labelled_meeting_labelled() {
+    let tmp = TempDir::new("speakers-switch-off");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let first = [
+        (0.5, None),
+        (1.5, Some(0)),
+        (1.2, None),
+        (1.5, Some(1)),
+        (1.3, None),
+    ];
+    rec.segment("call", 1, 0, &voices(&first));
+    rec.line(json!({"kind": "pause", "t": 6000}));
+    let d = ScriptedDiarizer::new();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_until("two labelled call passages", WAIT, || {
+        let call = last_revisions(&events(&log, &rec.id()), "call");
+        (call.len() >= 2 && call.iter().all(|p| p.speaker.is_some())).then_some(())
+    });
+    handle.shutdown();
+    // The switch is off now; the engine still hands over the diarizer.
+    let off = || PipelineOptions {
+        live_speakers: false,
+        ..labelled(&d)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), off());
+    rec.line(json!({"kind": "resume", "t": 12000}));
+    let second = [(1.5, Some(2)), (1.2, None), (1.5, Some(0)), (1.3, None)];
+    rec.segment("call", 2, 12_000, &voices(&second));
+    rec.stop(17_500);
+    wait_done(&handle);
+    let status = handle.labels();
+    handle.shutdown();
+    assert_eq!(
+        (status.mode.as_str(), status.state),
+        ("nemotron", LabelState::Finished),
+        "{status:?}"
+    );
+    let call = last_revisions(&events(&log, &rec.id()), "call");
+    let later: Vec<&Found> = call.iter().filter(|p| p.start >= 12_000).collect();
+    assert_eq!(later.len(), 2, "{call:#?}");
+    assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
+    assert_eq!(later[0].speaker.as_deref(), Some("call-3"), "{call:#?}");
+    assert_eq!(later[1].speaker.as_deref(), Some("call-1"), "{call:#?}");
+
+    // A meeting that starts now gets no labels, though the diarizer could run.
+    let opens = d.script().opens;
+    let pieces = three_voices(3, 1.5);
+    let next = finished_call(&lib, &pieces);
+    let handle = Pipeline::start(next.dir.clone(), log.clone(), off());
+    wait_done(&handle);
+    let status = handle.labels();
+    handle.shutdown();
+    assert_eq!(status.mode, "off");
+    assert_eq!(status.reason.as_deref(), Some("off"));
+    assert_eq!(meta(&next.dir, MODE_KEY).as_deref(), Some("off"));
+    assert_eq!(d.script().opens, opens, "no worker for the new meeting");
+    let call = last_revisions(&events(&log, &next.id()), "call");
+    assert!(call.iter().all(|p| p.speaker.as_deref() == Some("call-1")));
+}
+
 /// 2b: a voice still talking at Stop keeps its last turn to the end of the call, and its last
 /// passage keeps its speaker, though the runtime's last frame reaches past the audio pushed.
 #[test]

@@ -138,6 +138,10 @@ pub struct PipelineOptions {
     /// Who labels the speakers on the call. [`Labels::Off`] makes the whole call `call-1`, as in
     /// Voice 0.1.
     pub labels: Labels,
+    /// Whether a meeting that chooses its label mode now gets labels: the Settings switch. A
+    /// meeting that has its mode keeps it whatever the switch says now, so `labels` still
+    /// carries Nemotron's diarizer when the switch is off.
+    pub live_speakers: bool,
     /// Mistral's realtime stream, when the meeting provider streams; it then transcribes both
     /// tracks and labels the call instead of `stt`.
     pub stream: Option<StreamOptions>,
@@ -157,6 +161,7 @@ impl PipelineOptions {
             labels: Labels::Off {
                 reason: "off".into(),
             },
+            live_speakers: true,
             stream: None,
             speakers: FollowerTiming::default(),
         }
@@ -182,6 +187,7 @@ impl fmt::Debug for PipelineOptions {
             .field("hints", &self.hints)
             .field("timing", &self.timing)
             .field("labels", &labels)
+            .field("live_speakers", &self.live_speakers)
             .field("stream", &self.stream.is_some())
             .finish_non_exhaustive()
     }
@@ -704,6 +710,7 @@ struct Worker {
     next_track: usize,
     begun: bool,
     labels: Labels,
+    live_speakers: bool,
     stream: Option<StreamOptions>,
     speaker_timing: FollowerTiming,
     run: Run,
@@ -761,6 +768,7 @@ impl Worker {
             next_track: 0,
             begun: false,
             labels: opts.labels.clone(),
+            live_speakers: opts.live_speakers,
             stream: opts.stream.clone(),
             speaker_timing: opts.speakers.clone(),
             run: Run::Undecided,
@@ -861,6 +869,10 @@ impl Worker {
                     ("off", Some("upgrade".to_owned()))
                 } else if self.stream.is_some() {
                     ("mistral", None)
+                } else if !self.live_speakers {
+                    // Switched off before this meeting chose; one that chose earlier keeps
+                    // labelling below.
+                    ("off", Some("off".to_owned()))
                 } else {
                     match &self.labels {
                         Labels::Off { reason } => ("off", Some(reason.clone())),

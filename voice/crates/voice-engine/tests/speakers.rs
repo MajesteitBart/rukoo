@@ -516,7 +516,7 @@ fn an_agreement_for_windows_doesn_t_cover_a_stream() {
 }
 
 #[test]
-fn the_switch_off_never_asks_nemotron() {
+fn the_switch_off_starts_no_worker_for_a_new_meeting() {
     let h = Harness::new("speakers-off");
     h.config(json!({"meetings_live_speakers": false}));
     let speech = labelling(&h);
@@ -529,7 +529,9 @@ fn the_switch_off_never_asks_nemotron() {
     assert_eq!(state["speakers"]["reason"], "off");
     let events = wait_done(&h.data(), &id);
     assert_one_call_speaker(&events);
-    assert_eq!(speech.diarizers.load(Ordering::SeqCst), 0);
+    // The diarizer comes along for meetings that started with labels; this one started no
+    // worker.
+    assert_eq!(speech.opens.load(Ordering::SeqCst), 0);
     assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
     engine.shutdown();
 }
