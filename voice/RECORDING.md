@@ -352,6 +352,7 @@ rukoo-voice-screen inspect <file.mp4>
 | `encoder-fail-at=<ms>` | The encoder fails at that moment |
 | `write-fail=video@<ms>`, `write-fail=frames@<ms>` | Writing video or frames fails with a full disk from that moment |
 | `device-lost-at=<ms>[x<n>]` | The graphics device is lost then, and the next `n` new devices fail too |
+| `monitor-gone-at=<ms>` | The first monitor leaves the monitor list then, without the capture's `Closed` notice, as when that notice is lost |
 | `warp` | The graphics device is WARP, Microsoft's software rasterizer, as on a CI runner |
 
 ### The screen control port
