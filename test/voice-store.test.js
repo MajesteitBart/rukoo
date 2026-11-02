@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
 const { VoiceStore } = require('../src/main/voice/store');
-const { suggest, candidateEvents, attendeeCandidates } = require('../src/main/voice/speakers');
+const { suggest, candidateEvents, attendeeCandidates, compareSpeakers, speakerOrder } = require('../src/main/voice/speakers');
 
 const M = 'm-20261030-171203-4f2a';
 const OTHER = 'm-20261030-090000-00ff';
@@ -348,4 +348,69 @@ test('speaker names from the calendar: the matching event, the guests to offer, 
   const oneOnOne = { ...standup, attendees: [standup.attendees[0], standup.attendees[2]] };
   assert.equal(suggest(speakers, oneOnOne).auto['call-1'].name, 'Sanne');
   assert.deepEqual(suggest([...speakers, { id: 'call-2', track: 'call' }], oneOnOne).auto, {}, 'two voices: the user picks');
+});
+
+test('three voices on the call keep their names by id, through a snapshot, a restart and a passage that gets its voice later', () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  s.apply(started());
+  for (const [id, track, label] of [['mic', 'mic', 'You'], ['call-1', 'call', 'Speaker 1'], ['call-10', 'call', 'Speaker 10'], ['call-2', 'call', 'Speaker 2']]) s.apply(ev('speaker', M, { id, track, label }));
+  s.setName(M, 'call-1', { name: 'Anna de Vries', address: 'anna@example.com', from: 'calendar' });
+  s.setName(M, 'call-2', { name: 'Sanne de Vries', address: 'sanne@example.com', from: 'user' });
+  s.apply(passage('call', 101000, "Okay, let's look at the numbers.", 1, { speaker: null }));
+  const names = (x) => Object.fromEntries(x.meeting(M).speakers.map((v) => [v.id, v.name]));
+  const whose = (x) => {
+    const m = x.meeting(M);
+    const p = m.passages.find((q) => q.id === 'call-000101000');
+    return p.speaker === null ? null : m.speakers.find((v) => v.id === p.speaker).name;
+  };
+  assert.equal(whose(s), null, 'Voice does not know yet');
+  // Voice settles the speaker: the same passage, a new revision.
+  s.apply(passage('call', 101000, "Okay, let's look at the numbers.", 2, { speaker: 'call-2' }));
+  assert.equal(whose(s), 'Sanne de Vries');
+  // A snapshot lists the speakers in another order; the names stay on their ids.
+  s.applySnapshot(M, {
+    meeting: { id: M, title: 'Weekly with Anna', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'rukoo', context: null, state: 'recording', endedAt: null },
+    speakers: [{ id: 'call-2', track: 'call', label: 'Speaker 2' }, { id: 'call-10', track: 'call', label: 'Speaker 10' }, { id: 'mic', track: 'mic', label: 'You' }, { id: 'call-1', track: 'call', label: 'Speaker 1' }],
+    passages: [{ ...passage('call', 101000, "Okay, let's look at the numbers.", 2, { speaker: 'call-2' }).data }],
+    marks: [],
+    head: 99
+  });
+  assert.deepEqual(names(s), { 'call-2': 'Sanne de Vries', 'call-10': null, mic: null, 'call-1': 'Anna de Vries' });
+  assert.equal(whose(s), 'Sanne de Vries');
+  s.close();
+  const again = store(dir);
+  assert.deepEqual(names(again), { 'call-2': 'Sanne de Vries', 'call-10': null, mic: null, 'call-1': 'Anna de Vries' });
+  assert.equal(whose(again), 'Sanne de Vries');
+});
+
+test('the order of speakers: the microphone, then the call by number, so call-2 comes before call-10', () => {
+  const list = [{ id: 'call-10', track: 'call' }, { id: 'call-2', track: 'call' }, { id: 'mic', track: 'mic' }, { id: 'call-x', track: 'call' }, { id: 'call-1', track: 'call' }];
+  assert.deepEqual([...list].sort(compareSpeakers).map((x) => x.id), ['mic', 'call-1', 'call-2', 'call-10', 'call-x']);
+  assert.equal(speakerOrder('call-10'), 10);
+  assert.equal(speakerOrder('call-01'), Infinity, 'not a number Voice gives');
+  assert.equal(speakerOrder('mic'), Infinity);
+});
+
+test('with three voices on the call, a guest one of them already has is marked for the others and offered last', () => {
+  const standup = { id: 'e1', start: 0, end: 900000, meeting: 'x', attendees: [{ name: 'Demo User', address: 'demo@example.com', response: 'accepted', self: true }, { name: 'Joris Bakker', address: 'joris@example.com', response: 'tentative' }, { name: 'Sanne de Vries', address: 'sanne@example.com', response: 'accepted' }] };
+  const speakers = [
+    { id: 'call-10', track: 'call', name: null, address: null },
+    { id: 'mic', track: 'mic', name: null, address: null },
+    { id: 'call-2', track: 'call', name: 'Sanne de Vries', address: 'sanne@example.com' },
+    { id: 'call-1', track: 'call', name: null, address: null }
+  ];
+  const offered = (out, id) => out.suggestions[id].map((c) => [c.name, c.takenBy]);
+  const out = suggest(speakers, standup);
+  assert.deepEqual(Object.keys(out.suggestions), ['call-1', 'call-2', 'call-10'], 'the call only, in order');
+  assert.deepEqual(offered(out, 'call-1'), [['Joris Bakker', []], ['Sanne de Vries', ['call-2']]]);
+  assert.deepEqual(offered(out, 'call-10'), [['Joris Bakker', []], ['Sanne de Vries', ['call-2']]]);
+  assert.deepEqual(offered(out, 'call-2'), [['Sanne de Vries', []], ['Joris Bakker', []]], 'its own name is not taken from itself');
+  assert.deepEqual(out.auto, {});
+  // A typed name without an address matches by name; addresses match whatever their case.
+  const typed = suggest([{ id: 'call-1', track: 'call', name: 'joris bakker', address: null }, { id: 'call-2', track: 'call', name: 'S. de Vries', address: 'SANNE@example.com' }, { id: 'call-3', track: 'call', name: null }], standup);
+  assert.deepEqual(offered(typed, 'call-3'), [['Sanne de Vries', ['call-2']], ['Joris Bakker', ['call-1']]]);
+  // One guest and three voices: nobody gets a name by itself.
+  const oneOnOne = { ...standup, attendees: [standup.attendees[0], standup.attendees[2]] };
+  assert.deepEqual(suggest(speakers.map((x) => ({ ...x, name: null, address: null })), oneOnOne).auto, {}, 'three voices: the user picks');
 });
