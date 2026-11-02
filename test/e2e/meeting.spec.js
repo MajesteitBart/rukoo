@@ -666,6 +666,7 @@ test('frames sit between the lines at their moments, load as they come into view
   await expect(frame(9000).locator('.mt-frame-note')).toHaveText('Rukoo Voice no longer has this image.');
   await expect(frame(9000).locator('.mt-frame-line')).toHaveText('Agenda');
   expect(frameGets()).not.toContain(152500);
+  await shot('frame-gone');
 
   // Without Voice, images Rukoo has stay, the others say why they're missing, and the text is still there.
   await voice.close();
@@ -676,6 +677,7 @@ test('frames sit between the lines at their moments, load as they come into view
   await expect(frame(152500).locator('.mt-frame-line')).toHaveText('Support plan');
   await expect(frame(152500)).not.toHaveClass(/has-image/);
   await expect(frame(4000)).toHaveClass(/has-image/);
+  await shot('frames-offline');
 });
 
 test('marks about the screen say what happened to it, apart from the audio', async () => {
@@ -706,6 +708,11 @@ test('marks about the screen say what happened to it, apart from the audio', asy
   await expect(view().locator('.mt-mark.is-monitor svg')).toHaveCount(2);
   await expect(view().locator('.mt-mark.is-screen_gap')).toHaveCount(3);
   await expect(view().locator('.mt-mark.is-video_dropped')).toHaveCount(2);
+  await shot('screen-marks-light-en');
+  await setLanguage('nl');
+  await setTheme('dark');
+  await expect(view().locator('.mt-mark .mt-line').first()).toHaveText('Video gestopt: geen video-encoder op deze computer werkte. Schermbeelden gaan door.');
+  await shot('screen-marks-dark-nl');
 });
 
 test('a meeting Rukoo Voice starts gets Rukoo hidden before Voice captures the screen; a replayed start asks nothing', async () => {
