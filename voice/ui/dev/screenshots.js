@@ -84,6 +84,7 @@ const SCENARIOS = [
   ['speakers-runtime', 'page=speakers&speakers=runtime'],
   ['speakers-runtimeFailed', 'page=speakers&speakers=runtimeFailed'],
   ['speakers-platform', 'page=speakers&speakers=platform'],
+  ['speakers-key', 'page=speakers&speakers=key'],
   ['speakers-consent', 'page=speakers&speakers=consent'],
   ['speakers-mistral', 'page=speakers&speakers=mistral'],
   ['speakers-stopped', 'page=speakers&speakers=stopped'],

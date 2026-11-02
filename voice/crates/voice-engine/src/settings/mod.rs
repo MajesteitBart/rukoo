@@ -219,15 +219,21 @@ pub fn providers() -> Value {
 /// Settings > Speaker labels: who labels new meetings, whether they can, and what each meeting
 /// that transcribes now is doing (voice/ui/API.md, `SpeakersState`).
 fn speakers_state(core: &Core, cfg: &Config) -> Value {
-    let mistral = streams(&cfg.meeting_audio());
+    let audio = cfg.meeting_audio();
+    let mistral = streams(&audio);
     let availability = core.svc.speech.speaker_availability();
     let mut detail = None;
     let mut missing: Vec<String> = Vec::new();
     let reason: Option<&str> = if !cfg.meetings_live_speakers {
         Some("off")
     } else if mistral {
-        // The stream labels the call; Nemotron's state doesn't matter for these meetings.
-        matches!(cfg.meeting_consent(), ConsentState::Required { .. }).then_some("consent")
+        // The stream labels the call; Nemotron's state doesn't matter for these meetings. The
+        // stream needs a key (MistralRealtime::new) and a `stream` agreement before it starts.
+        if audio.api_key.trim().is_empty() {
+            Some("key")
+        } else {
+            matches!(cfg.meeting_consent(), ConsentState::Required { .. }).then_some("consent")
+        }
     } else {
         match &availability {
             Ok(_) => None,

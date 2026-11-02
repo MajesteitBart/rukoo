@@ -1071,6 +1071,10 @@
     "message": "The speaker model is damaged. Remove it and download it again.",
     "description": "Settings > Speaker labels and the Meetings row: the Nemotron model failed its check since Voice started; Error details shows why. voice/ui/settings.js (speakersReason, speakersPage)."
   },
+  "settings.speakers.reason.key": {
+    "message": "Transcription and labels wait for an API key for {provider}. Add one in Meeting transcription.",
+    "description": "Settings > Speaker labels and the Meetings row: meetings stream to a realtime model, which can't start without the meeting API key. Meeting transcription is the page with that key (settings.meetingTranscription.title). {provider}: provider name such as Mistral. voice/ui/settings.js (speakersReason)."
+  },
   "settings.speakers.reason.consent": {
     "message": "Transcription and labels wait until you agree to stream meeting audio to {provider}.",
     "description": "Settings > Speaker labels and the Meetings row: meetings stream to a realtime model and the user hasn't agreed to streaming. {provider}: provider name such as Mistral. voice/ui/settings.js (speakersReason)."

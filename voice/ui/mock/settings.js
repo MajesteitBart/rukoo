@@ -6,7 +6,7 @@
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy).
 //   later=1: every feature's Settings, for design review; features=speakers,screen,sync: only those.
-//   speakers=ready|off|platform|cpu|runtime|runtimeFailed|model|modelDamaged|consent|mistral|stopped: Speaker labels
+//   speakers=ready|off|platform|cpu|runtime|runtimeFailed|model|modelDamaged|key|consent|mistral|stopped: Speaker labels
 //   in that state, with the feature on.
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
@@ -253,6 +253,9 @@ const SPEAKER_SCENARIOS = {
     forced.reason = 'modelDamaged';
     forced.detail = 'Checksum mismatch for Nemotron-3-Diarization.q8_0.gguf: expected 08456d9e…c7a3a1, got 5e01…9b2c. Remove the model and download it again.';
   },
+  key: (s) => {
+    Object.assign(s.config.meetings, MISTRAL_MEETINGS, { keySaved: false, consent: { provider: 'mistral', host: 'api.mistral.ai', mode: 'stream' } });
+  },
   consent: (s) => {
     Object.assign(s.config.meetings, MISTRAL_MEETINGS, { consent: null });
   },
@@ -279,7 +282,8 @@ function speakersState(state, forced) {
   const streamConsent = m.consent?.provider === 'mistral' && m.consent.host === host && m.consent.mode === 'stream';
   let reason = null;
   if (!m.liveSpeakers) reason = 'off';
-  else if (mistral) reason = streamConsent ? null : 'consent';
+  // The stream needs the meeting key before the agreement matters.
+  else if (mistral) reason = !m.keySaved ? 'key' : streamConsent ? null : 'consent';
   else if (forced.reason) reason = forced.reason;
   else if (!installed) reason = 'model';
   return {

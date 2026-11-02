@@ -276,6 +276,7 @@
   "settings.speakers.reason.runtimeFailed": "De runtime voor sprekerlabels kon niet starten. Voice probeert het opnieuw na een herstart.",
   "settings.speakers.reason.model": "Download het sprekermodel om sprekers te labelen.",
   "settings.speakers.reason.modelDamaged": "Het sprekermodel is beschadigd. Verwijder het en download het opnieuw.",
+  "settings.speakers.reason.key": "Transcriptie en labels wachten op een API-sleutel voor {provider}. Voeg er een toe in Vergadertranscriptie.",
   "settings.speakers.reason.consent": "Transcriptie en labels wachten tot je akkoord gaat met het streamen van vergaderaudio naar {provider}.",
   "settings.speakers.engine": "Labels van",
   "settings.speakers.engineLocal": "Nemotron op deze computer",

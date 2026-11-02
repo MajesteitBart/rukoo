@@ -345,6 +345,48 @@ fn a_realtime_model_is_refused_outside_meetings() {
 }
 
 #[test]
+fn mistral_labels_are_not_ready_without_a_meeting_key() {
+    let h = Harness::new("realtime-no-key");
+    h.config(json!({}));
+    let engine = h.start();
+    let mistral = |key: Value, consent: bool| json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-transcribe-realtime-3", "apiKey": key, "consent": consent});
+    // Settings calls labels ready only when the meeting's stream can be built.
+    let stream_builds =
+        || voice_core::providers::streaming_speech(&h.saved_config().meeting_audio()).is_ok();
+    save(&engine, mistral(json!(SECRET), true)).unwrap();
+    let state = engine.settings_state();
+    assert_eq!(state["speakers"]["engine"], "mistral");
+    assert_eq!(state["speakers"]["ready"], true);
+    assert!(stream_builds());
+    // Removing the key keeps the agreement, but the stream can't start without a key.
+    engine.settings_remove_key("meetings").unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.meetings_audio_api_key, "");
+    assert!(
+        cfg.meetings_transcription_consent.is_some(),
+        "consent stays"
+    );
+    assert!(!stream_builds());
+    let state = h.sink.last_settings();
+    assert_eq!(state["config"]["meetings"]["keySaved"], false);
+    assert_eq!(state["speakers"]["engine"], "mistral");
+    assert_eq!(state["speakers"]["ready"], false);
+    assert_eq!(state["speakers"]["reason"], "key");
+    // Without a key and without an agreement, the key comes first: the form that takes it
+    // also asks for the agreement.
+    save(&engine, mistral(json!(""), false)).unwrap();
+    assert_eq!(engine.settings_state()["speakers"]["reason"], "key");
+    save(&engine, mistral(json!(SECRET), false)).unwrap();
+    assert_eq!(engine.settings_state()["speakers"]["reason"], "consent");
+    save(&engine, mistral(Value::Null, true)).unwrap();
+    let state = engine.settings_state();
+    assert_eq!(state["speakers"]["ready"], true);
+    assert_eq!(state["speakers"]["reason"], Value::Null);
+    assert!(stream_builds());
+    engine.shutdown();
+}
+
+#[test]
 fn orukeet_is_loaded_before_it_becomes_the_dictation_provider() {
     let h = Harness::new("orukeet-save");
     h.config(json!({

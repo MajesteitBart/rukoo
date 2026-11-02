@@ -88,6 +88,7 @@ const SPEAKER_REASONS = {
   runtimeFailed: 'settings.speakers.reason.runtimeFailed',
   model: 'settings.speakers.reason.model',
   modelDamaged: 'settings.speakers.reason.modelDamaged',
+  key: 'settings.speakers.reason.key',
   consent: 'settings.speakers.reason.consent'
 };
 const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];

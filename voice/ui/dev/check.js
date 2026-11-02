@@ -182,6 +182,7 @@ const SPEAKER_TEXT = {
   runtimeFailed: "The speaker label runtime couldn't start. Voice tries again after a restart.",
   model: 'Download the speaker model to label speakers.',
   modelDamaged: 'The speaker model is damaged. Remove it and download it again.',
+  key: 'Transcription and labels wait for an API key for Mistral. Add one in Meeting transcription.',
   consent: 'Transcription and labels wait until you agree to stream meeting audio to Mistral.'
 };
 
@@ -248,6 +249,24 @@ check('Mistral labels a streamed meeting, and a stopped meeting is called out', 
   assert.equal(await page.locator('h1').innerText(), 'Meeting transcription');
   await open('settings.html?mock=1&lang=en&page=speakers&speakers=stopped');
   assert.match(await page.locator('[data-section="status"]').innerText(), /Speaker labels stopped for the current meeting\. Recording and transcription go on\./);
+});
+
+check('removing the meeting key turns Mistral labels off and points to Meeting transcription', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=mistral');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Ready\. Mistral labels/);
+  await page.click('[data-a="go:meetingTranscription"]');
+  await page.click('[data-a="remove-key:meetings"]');
+  const state = await mockState();
+  assert.equal(state.config.meetings.keySaved, false);
+  assert.equal(state.config.meetings.consent?.mode, 'stream', 'the agreement stays');
+  assert.equal(state.speakers.reason, 'key');
+  await page.click('[data-a="back"]');
+  const status = await page.locator('[data-section="status"]').innerText();
+  assert.ok(status.includes(SPEAKER_TEXT.key), status);
+  assert.match(status, /Unavailable/);
+  await page.click('[data-a="back"]');
+  const row = await page.locator('[data-a="go:speakers"]').innerText();
+  assert.ok(row.includes(SPEAKER_TEXT.key), row);
 });
 
 check('a realtime model asks to stream, and a batch agreement doesn\'t cover it', async ({ open, page, mockState }) => {
