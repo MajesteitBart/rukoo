@@ -13,7 +13,7 @@ The recorder lives in `voice/crates/voice-recorder`, the segment writer and read
   recorder.json     how to reach the live recorder; removed on a clean stop
   audio/mic/000001.wav, 000002.wav, ...
   audio/call/000001.wav, ...
-  transcript.db     the app's transcript; the recorder never opens it
+  transcript.db     the app's transcript and speaker turns; the recorder never opens it
 ```
 
 `<data>` is Voice's data folder and the meeting id has the form in [PROTOCOL.md](PROTOCOL.md#encoding). `mic` is the user's microphone and `call` the computer's audio output, which holds the other people in a call.

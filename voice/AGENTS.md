@@ -20,23 +20,30 @@ Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local spe
 - The pill and Settings pages run without Voice on mock data: `node voice/ui/dev/serve.js`, then open the address it prints. `node voice/ui/dev/screenshots.js tmp/voice-ui-shots` captures every state, and `node voice/ui/dev/check.js` checks their behavior.
 - Rukoo's side: `node --test test/voice-*.test.js test/agent-tools-meeting.test.js`, and `npx playwright test test/e2e/meeting.spec.js` for the meeting view.
 - Rukoo against Voice's real bridge server: `RUKOO_VOICE_INTEROP=1 node --test test/voice-interop.test.js`, which builds and runs `voice-bridge`'s `serve` example.
+- Speaker labels against the real runtime and model: `powershell -File voice\scripts\speaker-assets.ps1 -Out tmp\speaker-assets` fetches the published NeMo runtime, the Nemotron model and the AMI excerpt, checks their hashes and prints three variables. With `RUKOO_VOICE_TEST_NEMO_DIR`, `RUKOO_VOICE_TEST_NEMOTRON` and `RUKOO_VOICE_TEST_AMI` set, `cargo test -p voice-speakers --test runtime` and `cargo test -p voice-meetings --test speakers_ami` run instead of skipping. `RUKOO_VOICE_TEST_AMI` alone is enough for the AMI oracle check in `speakers_ami`. Until the runtime is published, point `RUKOO_VOICE_TEST_NEMO_DIR` at a local build (`voice/nemo-runtime/README.md`). Windows CI fetches the same assets and sets the variables for what it found.
+- The speaker label scorer: `voice-meetings/tests/common/score.rs` and `voice/scripts/lib/speaker-score.mjs` both pass `voice/fixtures/speaker-score-vectors.json`; `node --test test/voice-speaker-score.test.js` runs the JavaScript side.
+- Pins that must agree: `voice-speakers/tests/assets.rs` and `voice-core/tests/models.rs` fail when `speaker-assets.ps1` downloads another Nemotron than `ModelSpec::nemotron()`. `voice/fixtures/binarizer-vectors.json` comes from Ownkey's binarizer: regenerate it with `py -I voice/scripts/binarizer-vectors.py` (Python with NumPy 2), never by hand.
+- `voice-speakers` is Windows-only and isn't in the Linux list; its tests expect the worker's refusal on other systems.
 
 ## Run
 
-`cargo build -p voice-app -p voice-recorder -p voice-local` puts `rukoo-voice.exe`, `rukoo-voice-recorder.exe` and `rukoo-voice-local.exe` together in `target\debug`; the app finds the other two next to itself. Set `SHERPA_ONNX_ARCHIVE_DIR` first, as above. Tauri embeds `voice/ui` when it compiles, so a page change needs a rebuild.
+`cargo build -p voice-app -p voice-recorder -p voice-local -p voice-speakers` puts `rukoo-voice.exe`, `rukoo-voice-recorder.exe`, `rukoo-voice-local.exe` and `rukoo-voice-speakers.exe` together in `target\debug`; the app finds the other three next to itself. Set `SHERPA_ONNX_ARCHIVE_DIR` first, as above. Tauri embeds `voice/ui` when it compiles, so a page change needs a rebuild.
 
 - A development copy: set `RUKOO_VOICE_DATA_DIR` to a scratch folder under `tmp\` and `RUKOO_VOICE_BRIDGE` to a discovery file path, then run `target\debug\rukoo-voice.exe`. It uses F13 and F14, never imports Ownkey on its own and never starts at login. Its log is `<data folder>\logs\app.log`. It transcribes with Orukeet from Ownkey's model folder, read only; the first meeting window hashes the model once and keeps a stamp in `<data folder>\models`.
 - No microphone or speakers needed: `RUKOO_VOICE_TEST_SOURCES="mic=file:<you.wav>,loop,call=file:<them.wav>,loop"` makes the recorder play WAV files in real time instead (`synthetic:tone:440` works too). Only a development copy reads it.
 - Pair it with a development Rukoo: start Rukoo with `SEM_DATA_DIR` under `tmp\`, the same `RUKOO_VOICE_BRIDGE` and `ELECTRON_RUN_AS_NODE` removed.
+- Speaker labels need the NeMo runtime. Voice looks for it in a fixed order: `RUKOO_VOICE_NEMO_DIR` (a development copy only), then `nemo_speech\` next to the exe, checked against `voice/nemo-runtime/manifest.json`, then the installed Ownkey's `nemo_speech\`, read only, when its DLLs match Ownkey's known hashes. For work on this PC point `RUKOO_VOICE_NEMO_DIR` at a local build, and `LOCALAPPDATA` at a folder under `tmp\` when a run must not read Ownkey's folders. `RUKOO_VOICE_TEST_NO_SPEAKERS=cpu`, `runtime` or `model` makes a development copy behave as if that part were missing.
 - `--dev-hooks <folder>` lets a script drive a development copy without the tray or the keyboard: it writes `request.json` with `status`, `start_meeting`, `stop_meeting` or `capture` (the pill and Settings at a page, from WebView2) and reads `reply-<id>.json`.
 - The live paired run is the acceptance test for meetings: `node voice/scripts/live-meeting.mjs`, or with `--skip-build` after a build. It makes SAPI speech, runs Voice and a hidden Rukoo on the demo account, and checks passages on both tracks before the stop, the pill, Rukoo's window protection, a Voice restart mid-meeting, a killed recorder, processing then done, `meeting.get`, and a meeting started from Voice. It takes about two minutes and stops every process it started by process id. The report is `tmp\live\<time>\report.json` and the captures go to `tmp\live-shots\`. Voice's pill and Settings show on the desktop while it runs, without taking focus.
 - `--fake-engine[=idle|meeting|dictation|cycle|first-run]` runs the windows against scripted states, and `--self-test <folder>` with it captures both pages in both themes and languages. Both refuse to run without `RUKOO_VOICE_DATA_DIR`.
 
 ## Package
 
-`powershell -File voice\scripts\package.ps1` builds the three release programs and writes `voice\target\package\Rukoo-Voice-Setup-<version>.exe`, a per-user installer into `%LOCALAPPDATA%\Programs\Rukoo Voice`, plus `Rukoo-Voice-Portable-<version>.zip` and `SHA256SUMS.txt`. It needs Node for `npx`, 7-Zip and the Visual Studio C++ build tools. It checks the installer by unpacking it, never by installing it: an installed Voice answers Right Alt and Right Ctrl, the same keys as the installed Ownkey.
+`powershell -File voice\scripts\package.ps1` builds the four release programs, adds the NeMo runtime as `nemo_speech\` and writes `voice\target\package\Rukoo-Voice-Setup-<version>.exe`, a per-user installer into `%LOCALAPPDATA%\Programs\Rukoo Voice`, plus `Rukoo-Voice-Portable-<version>.zip` and `SHA256SUMS.txt`. It needs Node for `npx`, 7-Zip and the Visual Studio C++ build tools. It checks the installer by unpacking it, never by installing it: an installed Voice answers Right Alt and Right Ctrl, the same keys as the installed Ownkey.
 
 After a dependency change it stops until you run it once with `-UpdateNotices` and commit the updated `THIRD_PARTY_NOTICES.md`. The icons come from `voice/crates/voice-app/icons/mark.js`; `npx electron voice/crates/voice-app/icons/make-icons.js` renders them again.
+
+The runtime has to be published first: until `voice/nemo-runtime/manifest.json` names its archive, `package.ps1` stops with "Publish the NeMo runtime first". `voice/nemo-runtime/build.ps1` builds the runtime, `pack.ps1` zips it and writes the manifest that pins it, and `voice/nemo-runtime/README.md` says how a workflow artifact becomes the published prerelease. To check a package before that, pass `-RuntimeManifest` with the manifest `pack.ps1` wrote and a `file:///` archive URL; the programs then compile in that manifest, so such a package is for testing only.
 
 Releases: bump the workspace version in `voice/Cargo.toml`, merge, then push a `voice-v<version>` tag from main. `.github/workflows/voice-release.yml` attaches the installer, the zip and the checksums to a draft release that is never marked Latest. 0.1 is unsigned, so SmartScreen warns about the installer.
 
@@ -66,7 +73,7 @@ The installed Ownkey runs every day on the maintainer's Windows PC as `Ownkey.ex
 
 ## Test data
 
-- The 60-second AMI meeting excerpt that ships with NeMo-Speech.cpp has three speakers. Use it for speaker labels.
+- The 60-second AMI meeting excerpt that ships with NeMo-Speech.cpp has three speakers. Use it for speaker labels. `speaker-assets.ps1` fetches it with the hashes in `voice/fixtures/ami/manifest.json`; the audio is never committed.
 - For an end-to-end meeting test, play the AMI excerpt out loud as call audio while Voice records. Check that passages and speaker labels arrive in Rukoo during the recording, not only after Stop.
 - To reproduce a bug with real audio, copy the whole meeting library to a temp folder and point the dev copy at that folder.
 
@@ -90,9 +97,11 @@ The installed Ownkey runs every day on the maintainer's Windows PC as `Ownkey.ex
   - `voice-protocol` and `voice-bridge`: the bridge's messages and checks, the event log, the discovery file and the WebSocket server.
   - `voice-core`: Settings, the Ownkey import, text cleanup, providers, the local model client and the update check.
   - `voice-local`: the local speech worker, `rukoo-voice-local`, which runs Orukeet in its own process.
+  - `voice-speakers`: the speaker worker, `rukoo-voice-speakers`, which loads NeMo-Speech.cpp and turns call audio into speaker probabilities. The labels themselves are made in `voice-meetings`.
   - `voice-input`: Windows hotkeys, text insertion and selection capture.
   - `voice-engine`: dictation, the pill's state, Settings and the meeting controller behind one API.
   - `voice-app`: the Tauri app, `rukoo-voice`: windows, tray and the native stop button.
+- `voice/nemo-runtime/`: the pinned NeMo-Speech.cpp runtime: its manifest, build and pack scripts. `.github/workflows/voice-nemo-runtime.yml` builds it.
 - `voice/ui/`: the pill and Settings pages in plain HTML, CSS and JavaScript. `API.md` lists every command and event between the pages and the app.
 - Rukoo's side of the bridge is in `src/main/voice/`. The meeting view is `src/renderer/meeting.js`, and the agent's meeting tools are in `src/main/agents/tools.js`.
 
