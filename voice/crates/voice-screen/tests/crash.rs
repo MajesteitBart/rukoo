@@ -1,4 +1,758 @@
-//! Crash safety of the screen process next to the real recorder. Placeholder until the tests
-//! land; `harness = false`, so it needs its own main.
+//! The screen process next to the real recorder: crash safety, the drop order, pause, monitor
+//! switching, stopping and the frame text. Every test runs both as real processes, the screen
+//! process on the synthetic screen, so nothing of the desktop is captured. Video uses
+//! Microsoft's software encoder through the system-memory path (`software-encoder`), which is
+//! what a CI runner has; `hard_kill_with_hardware_encoder` covers NVENC on a PC that has it.
 
-fn main() {}
+mod common;
+
+#[cfg(windows)]
+mod tests {
+    use std::fs;
+    use std::time::Duration;
+
+    use serde_json::{json, Value};
+    use voice_screen_files::mp4;
+
+    use super::common::*;
+
+    /// Slides change every 1.5 s, so frames keep coming; 1280 x 720 keeps a CI runner's
+    /// software encoder light.
+    const SLIDES: &str = "synthetic:1280x720,change-every=1500,text=Slide";
+
+    fn spec(extra: &str) -> String {
+        if extra.is_empty() {
+            format!("{SLIDES},software-encoder")
+        } else {
+            format!("{SLIDES},software-encoder,{extra}")
+        }
+    }
+
+    /// Starts the recorder, then the screen process of session 1.
+    fn start(m: &TempMeeting, mode: &str, test: &str, extra: &[&str]) -> (Proc, Proc) {
+        let recorder = m.recorder(&[]);
+        m.wait_recorder(1);
+        let screen = m.screen(mode, Some(test), extra);
+        m.wait_journal("the first capture", |l| first(l, "capture").is_some());
+        (recorder, screen)
+    }
+
+    /// Stops the recorder, which stops the screen process within a moment.
+    fn stop(m: &TempMeeting, recorder: &mut Proc, screen: &mut Proc) -> Vec<Value> {
+        let reply = m.recorder_request(json!({ "cmd": "stop" }));
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert!(recorder.wait_exit(WAIT_TIMEOUT).success());
+        let status = screen.wait_exit(WAIT_TIMEOUT);
+        assert!(status.success(), "the screen process exited with {status}");
+        m.journal()
+    }
+
+    fn video_path(m: &TempMeeting, video: &Value) -> std::path::PathBuf {
+        m.dir.join(video["file"].as_str().unwrap())
+    }
+
+    /// The video media time an index covers, in ms.
+    fn media_ms(index: &mp4::Index) -> u64 {
+        index.fragments.last().map_or(0, |f| {
+            (f.start + f.duration) * 1000 / u64::from(index.timescale)
+        })
+    }
+
+    /// Every journaled frame's JPEG opens, at the size its line says.
+    fn assert_frames_open(m: &TempMeeting, lines: &[Value]) {
+        let frames = of_kind(lines, "frame");
+        assert!(!frames.is_empty(), "no frames:\n{}", show(lines));
+        for frame in frames {
+            let file = frame["file"].as_str().unwrap();
+            let bytes = fs::read(m.dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let size = voice_screen::frames::jpeg::decode_size(&bytes)
+                .unwrap_or_else(|e| panic!("{file} doesn't open: {e}"));
+            assert_eq!(
+                (u64::from(size.0), u64::from(size.1)),
+                (
+                    frame["width"].as_u64().unwrap(),
+                    frame["height"].as_u64().unwrap()
+                ),
+                "{file}"
+            );
+        }
+    }
+
+    /// The file is cut on a fragment boundary and Media Foundation reads every sample in it.
+    fn assert_video_reads(path: &std::path::Path) -> Value {
+        let index = mp4::index_path(path).unwrap();
+        assert_eq!(
+            index.complete_len,
+            index.file_len,
+            "{} ends mid-box",
+            path.display()
+        );
+        let report = voice_screen::inspect::inspect(path);
+        assert_eq!(report["reader"]["error"], Value::Null, "{report}");
+        assert_eq!(
+            report["reader"]["samples"], report["samples"],
+            "Media Foundation reads fewer samples than the file holds: {report}"
+        );
+        report
+    }
+
+    pub fn hard_kill_keeps_video_and_frames() {
+        hard_kill(&spec(""), false);
+    }
+
+    /// NVENC through the GPU path, on a PC that has it. `VOICE_SCREEN_TEST_SIZE=1440x2560` runs it
+    /// at the size of a portrait monitor, still on the synthetic screen.
+    pub fn hard_kill_with_hardware_encoder() {
+        let size = std::env::var("VOICE_SCREEN_TEST_SIZE").unwrap_or_else(|_| "1920x1080".into());
+        hard_kill(
+            &format!("synthetic:{size},change-every=1000,text=Slide"),
+            true,
+        );
+    }
+
+    fn hard_kill(test: &str, hardware: bool) {
+        let m = TempMeeting::new("hard-kill", "video");
+        let (mut recorder, mut screen) = start(&m, "video", test, &[]);
+        let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+        let capture_t = t(first(&lines, "capture").unwrap());
+        let killed_at = m.wait_screen_t(1, capture_t + 6_500);
+        screen.hard_kill();
+
+        let lines = m.journal();
+        assert!(first(&lines, "stop").is_none(), "{}", show(&lines));
+        let video = first(&lines, "video").unwrap().clone();
+        assert_eq!(video["hardware"], hardware, "{video}");
+        if hardware {
+            let probe = voice_screen::probe::probe();
+            let encoder = probe.hardware_encoder.expect("no hardware encoder here");
+            assert_eq!(video["encoder"], encoder.name.as_str(), "{video}");
+        }
+        let path = video_path(&m, &video);
+        let index = mp4::index_path(&path).unwrap();
+        assert!(
+            t(&video) + media_ms(&index) + 2_000 >= killed_at,
+            "the video ends at {} ms, killed at {killed_at}",
+            t(&video) + media_ms(&index)
+        );
+        let report = assert_video_reads(&path);
+        if hardware {
+            let fragments: Vec<u64> = serde_json::from_value(report["fragmentMs"].clone()).unwrap();
+            let (last, full) = fragments.split_last().unwrap();
+            assert!(!full.is_empty() && *last > 0, "{report}");
+            for ms in full {
+                assert!((1_000..=2_000).contains(ms), "a {ms} ms fragment: {report}");
+            }
+        }
+        assert_frames_open(&m, &lines);
+        assert_timeline_continuous(&m);
+
+        // The watchdog starts it again with --resume.
+        let mut screen = m.screen("video", Some(test), &["--resume"]);
+        let lines = m.wait_journal("frames and video after the resume", |l| {
+            let Some(resumed) = l
+                .iter()
+                .find(|x| x["kind"] == "session" && x["session"] == 2)
+            else {
+                return false;
+            };
+            let at = t(resumed);
+            l.iter().any(|x| x["kind"] == "video" && x["seq"] == 2)
+                && l.iter().any(|x| x["kind"] == "frame" && t(x) > at)
+        });
+        let resumed = lines
+            .iter()
+            .find(|l| l["kind"] == "session" && l["session"] == 2)
+            .unwrap();
+        assert_eq!(resumed["resumed"], true);
+        let crash = first(&lines, "crash").expect("no crash line");
+        assert_eq!(t(crash), t(resumed));
+        let last_seen = crash["lastSeen"].as_u64().unwrap();
+        assert!(
+            last_seen <= t(resumed) && last_seen + 2_500 >= killed_at,
+            "{crash}"
+        );
+        let closed = lines
+            .iter()
+            .find(|l| l["kind"] == "video_end" && l["seq"] == 1)
+            .expect("the dead session's video never ended");
+        assert_eq!(closed["reason"], "crash");
+
+        let lines = stop(&m, &mut recorder, &mut screen);
+        let stopped = lines.last().unwrap();
+        assert_eq!(stopped["kind"], "stop", "{}", show(&lines));
+        assert_eq!(stopped["reason"], "meeting");
+        assert!(m.screen_file().is_none(), "screen.json stays after stop");
+        for video in of_kind(&lines, "video") {
+            assert_video_reads(&video_path(&m, video));
+        }
+        assert_frames_open(&m, &lines);
+        assert_timeline_continuous(&m);
+    }
+
+    /// `finalize` closes what a killed session left: the open video and a `stop`.
+    pub fn finalize_closes_a_killed_session() {
+        let m = TempMeeting::new("finalize", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &spec(""), &[]);
+        m.wait_journal("a video file", |l| first(l, "video").is_some());
+        m.wait_screen_t(1, 4_000);
+        screen.hard_kill();
+        let before = m.journal();
+        let (status, out) =
+            m.run_screen(&["finalize", "--meeting", &m.arg(), "--reason", "failed"]);
+        assert!(status.success(), "{out}");
+        let report: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(report["stopped"], true, "{report}");
+        let lines = m.journal();
+        let ended = lines
+            .iter()
+            .find(|l| l["kind"] == "video_end" && l["seq"] == 1)
+            .expect("no video_end");
+        assert_eq!(ended["reason"], "crash");
+        let stopped = lines.last().unwrap();
+        assert_eq!(
+            (stopped["kind"].as_str(), stopped["reason"].as_str()),
+            (Some("stop"), Some("failed"))
+        );
+        let last_seen = before.iter().filter_map(|l| l["t"].as_u64()).max().unwrap();
+        assert!(t(stopped) >= last_seen);
+        assert_eq!(report["t"], stopped["t"]);
+        // Again: nothing changes.
+        let (status, out) = m.run_screen(&["finalize", "--meeting", &m.arg()]);
+        assert!(status.success(), "{out}");
+        assert_eq!(m.journal().len(), lines.len());
+        assert_video_reads(&video_path(&m, first(&lines, "video").unwrap()));
+        let _ = m.recorder_request(json!({ "cmd": "stop" }));
+        recorder.wait_exit(WAIT_TIMEOUT);
+    }
+
+    pub fn portrait_monitor_keeps_its_size() {
+        let m = TempMeeting::new("portrait", "video");
+        let (mut recorder, mut screen) = start(
+            &m,
+            "video",
+            "synthetic:1440x2560,change-every=1500,text=Slide,software-encoder",
+            &[],
+        );
+        let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+        let video = first(&lines, "video").unwrap().clone();
+        assert_eq!(
+            (video["width"].as_u64(), video["height"].as_u64()),
+            (Some(1440), Some(2560))
+        );
+        m.wait_screen_t(1, t(&video) + 3_000);
+        stop(&m, &mut recorder, &mut screen);
+        let report = assert_video_reads(&video_path(&m, &video));
+        assert_eq!(
+            (
+                report["reader"]["width"].as_u64(),
+                report["reader"]["height"].as_u64()
+            ),
+            (Some(1440), Some(2560)),
+            "{report}"
+        );
+
+        let m = TempMeeting::new("ultrawide", "video");
+        let (mut recorder, mut screen) =
+            start(&m, "video", "synthetic:5120x1440,software-encoder", &[]);
+        let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+        let video = first(&lines, "video").unwrap();
+        assert_eq!(
+            (video["width"].as_u64(), video["height"].as_u64()),
+            (Some(4096), Some(1152))
+        );
+        stop(&m, &mut recorder, &mut screen);
+    }
+
+    pub fn pinned_monitor_is_recorded() {
+        let m = TempMeeting::new("pinned", "frames");
+        let (mut recorder, mut screen) = start(
+            &m,
+            "frames",
+            "synthetic:640x360,monitors=2",
+            &["--monitor", r"\\.\SYNTHETIC2"],
+        );
+        let lines = m.journal();
+        let monitor = first(&lines, "monitor").unwrap();
+        assert_eq!(monitor["id"], r"\\.\SYNTHETIC2", "{monitor}");
+        assert_eq!(monitor["reason"], "start");
+        assert_eq!(
+            first(&lines, "capture").unwrap()["monitor"],
+            r"\\.\SYNTHETIC2"
+        );
+        stop(&m, &mut recorder, &mut screen);
+
+        let m = TempMeeting::new("pinned-missing", "frames");
+        let mut recorder = m.recorder(&[]);
+        m.wait_recorder(1);
+        let mut screen = m.screen(
+            "frames",
+            Some("synthetic:640x360,monitors=2"),
+            &["--monitor", r"\\.\SYNTHETIC9"],
+        );
+        let status = screen.wait_exit(WAIT_TIMEOUT);
+        assert_eq!(status.code(), Some(1));
+        assert!(
+            first(&m.journal(), "session").is_none(),
+            "{}",
+            show(&m.journal())
+        );
+        let _ = m.recorder_request(json!({ "cmd": "stop" }));
+        recorder.wait_exit(WAIT_TIMEOUT);
+    }
+
+    pub fn low_disk_drops_video_then_frames_never_audio() {
+        let m = TempMeeting::new("low-disk", "video");
+        let free = m.root.join("free-bytes.txt");
+        fs::write(&free, (10u64 << 30).to_string()).unwrap();
+        let test = spec(&format!("free-bytes-file={}", free.display()));
+        let (mut recorder, mut screen) = start(&m, "video", &test, &[]);
+        let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+        m.wait_screen_t(1, t(first(&lines, "video").unwrap()) + 3_000);
+        fs::write(&free, (3u64 << 30).to_string()).unwrap();
+        m.wait_journal("dropped video", |l| first(l, "dropped").is_some());
+        let frames_before = of_kind(&m.journal(), "frame").len();
+        // Frames go on between the two thresholds.
+        m.wait_journal("a frame after the video dropped", |l| {
+            of_kind(l, "frame").len() > frames_before
+        });
+        fs::write(&free, (1u64 << 30).to_string()).unwrap();
+        let status = screen.wait_exit(WAIT_TIMEOUT);
+        assert!(status.success());
+        let lines = m.journal();
+        let video_end =
+            position(&lines, "video_end", |l| l["reason"] == "disk").expect("no video_end disk");
+        let video = position(&lines, "dropped", |l| {
+            l["what"] == "video" && l["reason"] == "disk"
+        })
+        .unwrap();
+        let frames = position(&lines, "dropped", |l| {
+            l["what"] == "frames" && l["reason"] == "disk"
+        })
+        .expect("frames never dropped");
+        let stop = lines.len() - 1;
+        assert!(
+            video_end < video && video < frames && frames < stop,
+            "{}",
+            show(&lines)
+        );
+        assert_eq!(
+            (lines[stop]["kind"].as_str(), lines[stop]["reason"].as_str()),
+            (Some("stop"), Some("dropped"))
+        );
+        assert!(m.screen_file().is_none());
+        // The audio never noticed.
+        let reply = m.recorder_request(json!({ "cmd": "stop" }));
+        assert_eq!(reply["ok"], true);
+        recorder.wait_exit(WAIT_TIMEOUT);
+        assert_timeline_continuous(&m);
+        assert_eq!(m.timeline().last().unwrap()["kind"], "stop");
+    }
+
+    pub fn encoder_failure_keeps_frames() {
+        let m = TempMeeting::new("encoder-failure", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &spec("encoder-fail-at=3000"), &[]);
+        let lines = m.wait_journal("dropped video", |l| first(l, "dropped").is_some());
+        let dropped = first(&lines, "dropped").unwrap().clone();
+        assert_eq!(
+            (dropped["what"].as_str(), dropped["reason"].as_str()),
+            (Some("video"), Some("encoder"))
+        );
+        let videos = of_kind(&lines, "video");
+        assert_eq!(
+            videos.len(),
+            2,
+            "one retry with a new file:\n{}",
+            show(&lines)
+        );
+        assert_ne!(videos[0]["seq"], videos[1]["seq"]);
+        let ends: Vec<_> = of_kind(&lines, "video_end")
+            .into_iter()
+            .filter(|l| l["reason"] == "error")
+            .collect();
+        assert_eq!(ends.len(), 2, "{}", show(&lines));
+        assert!(
+            t(videos[1]) >= t(ends[0]) + 1_900,
+            "the retry waits 2 s:\n{}",
+            show(&lines)
+        );
+        m.wait_journal("frames after the drop", |l| {
+            of_kind(l, "frame").iter().any(|f| t(f) > t(&dropped))
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_eq!(lines.last().unwrap()["reason"], "meeting");
+        assert_frames_open(&m, &lines);
+        assert_timeline_continuous(&m);
+    }
+
+    pub fn no_hardware_encoder_means_frames_only() {
+        let m = TempMeeting::new("no-hardware", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &format!("{SLIDES},no-hardware"), &[]);
+        let lines = m.wait_journal("dropped video", |l| first(l, "dropped").is_some());
+        let dropped = first(&lines, "dropped").unwrap().clone();
+        assert_eq!(
+            (dropped["what"].as_str(), dropped["reason"].as_str()),
+            (Some("video"), Some("encoder"))
+        );
+        assert!(first(&lines, "video").is_none(), "{}", show(&lines));
+        let capture = position(&lines, "capture", |_| true).unwrap();
+        let drop_at = position(&lines, "dropped", |_| true).unwrap();
+        assert!(
+            drop_at > capture,
+            "dropped at the first capture:\n{}",
+            show(&lines)
+        );
+        m.wait_journal("two frames", |l| of_kind(l, "frame").len() >= 2);
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_frames_open(&m, &lines);
+        assert!(!m
+            .dir
+            .join("screen")
+            .join("video")
+            .join("000001.mp4")
+            .exists());
+    }
+
+    pub fn disk_full_writing_mp4_drops_video() {
+        let m = TempMeeting::new("disk-full-mp4", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &spec("write-fail=video@3000"), &[]);
+        let lines = m.wait_journal("dropped video", |l| first(l, "dropped").is_some());
+        let end =
+            position(&lines, "video_end", |l| l["reason"] == "disk").expect("no video_end disk");
+        let dropped = position(&lines, "dropped", |l| {
+            l["what"] == "video" && l["reason"] == "disk"
+        })
+        .expect("no dropped video disk");
+        assert!(end < dropped, "{}", show(&lines));
+        let dropped_t = t(&lines[dropped]);
+        m.wait_journal("frames after the drop", |l| {
+            of_kind(l, "frame").iter().any(|f| t(f) > dropped_t)
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert!(of_kind(&lines, "dropped")
+            .iter()
+            .all(|l| l["what"] == "video"));
+        assert_video_reads(&video_path(&m, first(&lines, "video").unwrap()));
+        assert_timeline_continuous(&m);
+    }
+
+    pub fn disk_full_writing_jpeg_drops_video_then_frames() {
+        let m = TempMeeting::new("disk-full-jpeg", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &spec("write-fail=frames@3000"), &[]);
+        let status = screen.wait_exit(WAIT_TIMEOUT);
+        assert!(status.success());
+        let lines = m.journal();
+        let video = position(&lines, "dropped", |l| {
+            l["what"] == "video" && l["reason"] == "disk"
+        })
+        .expect("no dropped video disk");
+        let frames = position(&lines, "dropped", |l| {
+            l["what"] == "frames" && l["reason"] == "disk"
+        })
+        .expect("no dropped frames disk");
+        assert!(video < frames, "{}", show(&lines));
+        let stop = lines.last().unwrap();
+        assert_eq!(
+            (stop["kind"].as_str(), stop["reason"].as_str()),
+            (Some("stop"), Some("dropped"))
+        );
+        let leftovers: Vec<_> = fs::read_dir(m.dir.join("screen").join("frames"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let reply = m.recorder_request(json!({ "cmd": "stop" }));
+        assert_eq!(reply["ok"], true);
+        recorder.wait_exit(WAIT_TIMEOUT);
+        assert_timeline_continuous(&m);
+    }
+
+    pub fn device_loss_keeps_frames() {
+        let m = TempMeeting::new("device-lost", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &spec("device-lost-at=3000"), &[]);
+        let lines = m.wait_journal("video and frames after the loss", |l| {
+            let Some(lost) = position(l, "device_lost", |_| true) else {
+                return false;
+            };
+            let after = &l[lost..];
+            first(after, "capture").is_some()
+                && first(after, "video").is_some()
+                && first(after, "frame").is_some()
+        });
+        let lost = position(&lines, "device_lost", |_| true).unwrap();
+        let ended =
+            position(&lines, "video_end", |l| l["reason"] == "error").expect("no video_end error");
+        assert!(ended < lost, "{}", show(&lines));
+        let videos = of_kind(&lines, "video");
+        assert!(videos.len() >= 2 && videos[0]["seq"] != videos[1]["seq"]);
+        assert!(first(&lines, "dropped").is_none(), "{}", show(&lines));
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_frames_open(&m, &lines);
+        assert_timeline_continuous(&m);
+
+        // Two failed recreations: the screen recording stops, the audio doesn't.
+        let m = TempMeeting::new("device-gone", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &spec("device-lost-at=3000x2"), &[]);
+        let status = screen.wait_exit(WAIT_TIMEOUT);
+        assert!(status.success());
+        let lines = m.journal();
+        let video = position(&lines, "dropped", |l| {
+            l["what"] == "video" && l["reason"] == "device"
+        })
+        .expect("no dropped video device");
+        let frames = position(&lines, "dropped", |l| {
+            l["what"] == "frames" && l["reason"] == "device"
+        })
+        .expect("no dropped frames device");
+        assert!(video < frames, "{}", show(&lines));
+        let stop = lines.last().unwrap();
+        assert_eq!(
+            (stop["kind"].as_str(), stop["reason"].as_str()),
+            (Some("stop"), Some("dropped"))
+        );
+        let reply = m.recorder_request(json!({ "cmd": "stop" }));
+        assert_eq!(reply["ok"], true);
+        recorder.wait_exit(WAIT_TIMEOUT);
+        assert_timeline_continuous(&m);
+    }
+
+    pub fn pause_stops_capture() {
+        let m = TempMeeting::new("pause", "video");
+        let (mut recorder, mut screen) = start(&m, "video", &spec(""), &[]);
+        let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+        m.wait_screen_t(1, t(first(&lines, "video").unwrap()) + 3_000);
+        // As the app does: the recorder first, then the screen process at once.
+        let paused = m.recorder_request(json!({ "cmd": "pause" }));
+        assert_eq!(paused["ok"], true, "{paused}");
+        assert_eq!(m.screen_request(1, json!({ "cmd": "pause" }))["ok"], true);
+        std::thread::sleep(Duration::from_secs(3));
+        let resumed = m.recorder_request(json!({ "cmd": "resume" }));
+        assert_eq!(resumed["ok"], true, "{resumed}");
+        assert_eq!(m.screen_request(1, json!({ "cmd": "resume" }))["ok"], true);
+        let (pause_t, resume_t) = (t(&paused), t(&resumed));
+        m.wait_journal("a frame after the resume", |l| {
+            of_kind(l, "frame").iter().any(|f| t(f) >= resume_t)
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        let between: Vec<_> = of_kind(&lines, "frame")
+            .into_iter()
+            .filter(|f| t(f) > pause_t && t(f) < resume_t)
+            .collect();
+        assert!(between.is_empty(), "frames while paused: {between:?}");
+        let ended = of_kind(&lines, "video_end");
+        assert!(
+            ended.iter().any(|l| l["reason"] == "pause"),
+            "{}",
+            show(&lines)
+        );
+        assert!(
+            of_kind(&lines, "video").iter().any(|v| t(v) >= resume_t),
+            "no video after the resume"
+        );
+        assert_frames_open(&m, &lines);
+        assert_timeline_continuous(&m);
+    }
+
+    pub fn monitor_switch_starts_a_new_file() {
+        let m = TempMeeting::new("switch", "video");
+        let test = spec("monitors=2");
+        let (mut recorder, mut screen) = start(&m, "video", &test, &[]);
+        let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+        assert_eq!(first(&lines, "monitor").unwrap()["id"], r"\\.\SYNTHETIC1");
+        let monitors = m.screen_request(1, json!({ "cmd": "monitors" }));
+        let ids: Vec<&str> = monitors["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [r"\\.\SYNTHETIC1", r"\\.\SYNTHETIC2"]);
+        let reply = m.screen_request(1, json!({ "cmd": "monitor", "id": r"\\.\SYNTHETIC2" }));
+        assert_eq!(reply, json!({ "ok": true, "monitor": r"\\.\SYNTHETIC2" }));
+        let unknown = m.screen_request(1, json!({ "cmd": "monitor", "id": r"\\.\SYNTHETIC7" }));
+        assert_eq!(unknown, json!({ "ok": false, "error": "unknown_monitor" }));
+        let lines = m.wait_journal("a new video file", |l| of_kind(l, "video").len() >= 2);
+        let moved =
+            position(&lines, "monitor", |l| l["reason"] == "user").expect("no monitor user");
+        assert_eq!(lines[moved]["id"], r"\\.\SYNTHETIC2");
+        let ended = position(&lines, "video_end", |l| l["reason"] == "monitor")
+            .expect("no video_end monitor");
+        let second = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l["kind"] == "video")
+            .nth(1)
+            .unwrap()
+            .0;
+        assert!(ended < second && moved < second, "{}", show(&lines));
+        let status = m.screen_request(1, json!({ "cmd": "status" }));
+        assert_eq!(status["monitor"], r"\\.\SYNTHETIC2", "{status}");
+        stop(&m, &mut recorder, &mut screen);
+    }
+
+    pub fn stops_with_the_recorder() {
+        let m = TempMeeting::new("stop", "frames");
+        let (mut recorder, mut screen) = start(&m, "frames", SLIDES, &[]);
+        m.wait_journal("a frame", |l| first(l, "frame").is_some());
+        let status = m.screen_request(1, json!({ "cmd": "status" }));
+        assert_eq!(
+            (status["state"].as_str(), status["mode"].as_str()),
+            (Some("recording"), Some("frames")),
+            "{status}"
+        );
+        assert_eq!(status["video"], false);
+        assert_eq!(status["frames"], true);
+        let lines = stop(&m, &mut recorder, &mut screen);
+        let timeline_stop = m.timeline().last().cloned().unwrap();
+        assert_eq!(timeline_stop["kind"], "stop");
+        let stopped = lines.last().unwrap();
+        assert_eq!(stopped["kind"], "stop");
+        assert_eq!(stopped["reason"], "meeting");
+        assert_eq!(t(stopped), t(&timeline_stop));
+        assert!(m.screen_file().is_none(), "screen.json stays after stop");
+        assert!(of_kind(&lines, "frame").iter().all(|f| t(f) <= t(stopped)));
+        assert_frames_open(&m, &lines);
+    }
+
+    pub fn stops_when_the_recorder_is_gone() {
+        let m = TempMeeting::new("orphan", "frames");
+        let mut recorder = m.recorder(&[]);
+        m.wait_recorder(1);
+        let mut screen = m.screen_with(
+            "frames",
+            Some(SLIDES),
+            &[],
+            &[("VOICE_SCREEN_TEST_ORPHAN_MS", "3000")],
+        );
+        m.wait_journal("the first capture", |l| first(l, "capture").is_some());
+        // Killed and not restarted; nobody asks the screen process anything.
+        recorder.hard_kill();
+        let status = screen.wait_exit(WAIT_TIMEOUT);
+        assert!(status.success());
+        let lines = m.journal();
+        let stopped = lines.last().unwrap();
+        assert_eq!(
+            (stopped["kind"].as_str(), stopped["reason"].as_str()),
+            (Some("stop"), Some("interrupted"))
+        );
+        assert!(m.screen_file().is_none());
+    }
+
+    pub fn ocr_reads_demo_text() {
+        if voice_screen::frames::ocr::languages().is_empty() {
+            println!("    skipped: this Windows has no OCR language");
+            return;
+        }
+        let m = TempMeeting::new("ocr", "frames");
+        let (mut recorder, mut screen) =
+            start(&m, "frames", "synthetic:1280x720,text=RUKOO DEMO 42", &[]);
+        let lines = m.wait_journal("a frame with text", |l| first(l, "frame").is_some());
+        let frame = first(&lines, "frame").unwrap();
+        assert_eq!(frame["ocr"], "ok", "{}", show(&lines));
+        assert!(frame["language"].is_string());
+        let text = frame["text"].as_str().unwrap();
+        assert!(text.contains("RUKOO DEMO 42"), "read {text:?}");
+        stop(&m, &mut recorder, &mut screen);
+        let log = fs::read_to_string(m.screen_log()).unwrap();
+        assert!(
+            !log.contains("RUKOO") && !log.contains("DEMO"),
+            "the log holds frame text:\n{log}"
+        );
+        assert!(log.contains("frame f-"), "{log}");
+    }
+}
+
+#[cfg(windows)]
+fn main() {
+    common::play_role();
+    use common::Test;
+    common::run_tests(&[
+        Test {
+            name: "hard_kill_keeps_video_and_frames",
+            ignored: false,
+            run: tests::hard_kill_keeps_video_and_frames,
+        },
+        Test {
+            name: "hard_kill_with_hardware_encoder",
+            ignored: true,
+            run: tests::hard_kill_with_hardware_encoder,
+        },
+        Test {
+            name: "finalize_closes_a_killed_session",
+            ignored: false,
+            run: tests::finalize_closes_a_killed_session,
+        },
+        Test {
+            name: "portrait_monitor_keeps_its_size",
+            ignored: false,
+            run: tests::portrait_monitor_keeps_its_size,
+        },
+        Test {
+            name: "pinned_monitor_is_recorded",
+            ignored: false,
+            run: tests::pinned_monitor_is_recorded,
+        },
+        Test {
+            name: "low_disk_drops_video_then_frames_never_audio",
+            ignored: false,
+            run: tests::low_disk_drops_video_then_frames_never_audio,
+        },
+        Test {
+            name: "encoder_failure_keeps_frames",
+            ignored: false,
+            run: tests::encoder_failure_keeps_frames,
+        },
+        Test {
+            name: "no_hardware_encoder_means_frames_only",
+            ignored: false,
+            run: tests::no_hardware_encoder_means_frames_only,
+        },
+        Test {
+            name: "disk_full_writing_mp4_drops_video",
+            ignored: false,
+            run: tests::disk_full_writing_mp4_drops_video,
+        },
+        Test {
+            name: "disk_full_writing_jpeg_drops_video_then_frames",
+            ignored: false,
+            run: tests::disk_full_writing_jpeg_drops_video_then_frames,
+        },
+        Test {
+            name: "device_loss_keeps_frames",
+            ignored: false,
+            run: tests::device_loss_keeps_frames,
+        },
+        Test {
+            name: "pause_stops_capture",
+            ignored: false,
+            run: tests::pause_stops_capture,
+        },
+        Test {
+            name: "monitor_switch_starts_a_new_file",
+            ignored: false,
+            run: tests::monitor_switch_starts_a_new_file,
+        },
+        Test {
+            name: "stops_with_the_recorder",
+            ignored: false,
+            run: tests::stops_with_the_recorder,
+        },
+        Test {
+            name: "stops_when_the_recorder_is_gone",
+            ignored: false,
+            run: tests::stops_when_the_recorder_is_gone,
+        },
+        Test {
+            name: "ocr_reads_demo_text",
+            ignored: false,
+            run: tests::ocr_reads_demo_text,
+        },
+    ]);
+}
+
+#[cfg(not(windows))]
+fn main() {
+    common::play_role();
+    println!("the screen process's tests need Windows; skipped");
+}
