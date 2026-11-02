@@ -71,6 +71,10 @@ fn main() {
             media_open_for_video_answers_within_50_ms,
         ),
         (
+            "media_open_serves_a_frame_and_opens_a_gone_clip_again",
+            media_open_serves_a_frame_and_opens_a_gone_clip_again,
+        ),
+        (
             "retention_releases_holds_when_the_disk_runs_low",
             retention_releases_holds_when_the_disk_runs_low,
         ),
@@ -725,10 +729,20 @@ fn media_comes_back_from_the_bucket() {
     fake.stop();
 }
 
-/// Stand-in screen media: one video file whose "clip" is a copy of it.
+/// Stand-in screen media: one frame at 1 s, and one video file whose "clip" is a copy of it.
 struct StandInScreen;
 
 const VIDEO: &str = "screen/video/000001.mp4";
+const FRAME: &str = "screen/frames/f-000001000.jpg";
+const FRAME_AT: u64 = 1000;
+
+fn stand_in_jpeg() -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    bytes.extend_from_slice(b"JFIF\0");
+    bytes.extend((0..20_000u32).map(|i| (i % 241) as u8));
+    bytes.extend_from_slice(&[0xFF, 0xD9]);
+    bytes
+}
 
 fn stand_in_mp4() -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -745,20 +759,28 @@ fn stand_in_mp4() -> Vec<u8> {
 
 impl ScreenFiles for StandInScreen {
     fn list(&self, meeting_dir: &Path, stopped: bool) -> Vec<ScreenFile> {
-        if !meeting_dir.join(VIDEO).is_file() {
-            return Vec::new();
+        let mut files = Vec::new();
+        if meeting_dir.join(FRAME).is_file() {
+            files.push(ScreenFile {
+                path: FRAME.into(),
+                kind: ScreenFileKind::Frame,
+                closed: true,
+            });
         }
-        vec![ScreenFile {
-            path: VIDEO.into(),
-            kind: ScreenFileKind::Video,
-            closed: stopped,
-        }]
+        if meeting_dir.join(VIDEO).is_file() {
+            files.push(ScreenFile {
+                path: VIDEO.into(),
+                kind: ScreenFileKind::Video,
+                closed: stopped,
+            });
+        }
+        files
     }
 }
 
 impl ScreenMedia for StandInScreen {
-    fn frame_at(&self, _dir: &Path, _at: u64) -> std::io::Result<Option<(String, u64)>> {
-        Ok(None)
+    fn frame_at(&self, _dir: &Path, at: u64) -> std::io::Result<Option<(String, u64)>> {
+        Ok((at >= FRAME_AT).then(|| (FRAME.to_string(), FRAME_AT)))
     }
 
     fn clip_inputs(&self, _dir: &Path, _start: u64, _end: u64) -> std::io::Result<Vec<String>> {
@@ -822,6 +844,105 @@ fn media_open_for_video_answers_within_50_ms() {
     );
     assert_eq!(read_all(&*control, &ready, 1 << 20), video);
     assert!(dir.join(VIDEO).is_file(), "the video came back");
+    engine.shutdown();
+    fake.stop();
+}
+
+/// The parts of `media_open_serves_a_frame_and_a_clip` that need no real screen recording: a
+/// frame on disk, the same frame fetched back from the bucket, and a clip that went mid-read.
+/// The real cutter's stretches come with RUK-108.
+fn media_open_serves_a_frame_and_opens_a_gone_clip_again() {
+    let mut h = harness("media-frame", json!({"meetings_retention": "keep"}));
+    h.screen_files = Arc::new(StandInScreen);
+    h.screen_media = Arc::new(StandInScreen);
+    let fake = fake_s3();
+    let engine = h.start();
+    connect_bucket(&engine, &fake.endpoint());
+    let code = recovery_code(&engine);
+    let id = record(&engine, &h.data(), 2000);
+    let dir = meeting_dir(&h.data(), &id);
+    let (jpeg, video) = (stand_in_jpeg(), stand_in_mp4());
+    std::fs::create_dir_all(dir.join("screen").join("frames")).unwrap();
+    std::fs::create_dir_all(dir.join("screen").join("video")).unwrap();
+    std::fs::write(dir.join(FRAME), &jpeg).unwrap();
+    std::fs::write(dir.join(VIDEO), &video).unwrap();
+    wait_long(
+        "the frame and the video in the bucket",
+        Duration::from_secs(60),
+        || {
+            let kinds = bucket_kinds(&fake, &code);
+            kinds.contains(&"jpeg") && kinds.contains(&"mp4")
+        },
+    );
+    wait_uploaded(&engine);
+    let control = engine.meeting_control().unwrap();
+    let frame = |start| MediaOpenArgs {
+        kind: MediaKind::Frame,
+        ..audio(&id, start, None)
+    };
+
+    // A frame on disk is ready at once, at its own time.
+    let ready = control.media_open(&frame(1500)).unwrap();
+    assert_eq!(
+        (
+            &ready["ready"],
+            &ready["type"],
+            &ready["start"],
+            &ready["end"]
+        ),
+        (
+            &json!(true),
+            &json!("image/jpeg"),
+            &json!(FRAME_AT),
+            &json!(FRAME_AT)
+        ),
+        "{ready}"
+    );
+    assert_eq!(read_all(&*control, &ready, 7_001), jpeg);
+    assert_eq!(
+        code_of(control.media_open(&frame(500))),
+        ErrorCode::NotFound
+    );
+
+    // Gone from this computer: the same arguments prepare it again from the bucket.
+    std::fs::remove_file(dir.join(FRAME)).unwrap();
+    let again = control.media_open(&frame(1500)).unwrap();
+    assert_eq!(again["ready"], false, "{again}");
+    let back = open_ready(&*control, &frame(1500));
+    assert_eq!(read_all(&*control, &back, 1 << 20), jpeg);
+    assert!(dir.join(FRAME).is_file(), "the frame came back");
+
+    // A clip removed mid-read answers not_found; opening it again cuts it again.
+    let args = MediaOpenArgs {
+        kind: MediaKind::Video,
+        ..audio(&id, 0, Some(10_000))
+    };
+    let clip = open_ready(&*control, &args);
+    let media = clip["media"].as_str().unwrap().to_string();
+    control.media_read(&media, 0, 1000).unwrap();
+    let clips: Vec<PathBuf> = std::fs::read_dir(dir.join("screen").join("clips"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(clips.len(), 1, "{clips:?}");
+    std::fs::remove_file(&clips[0]).unwrap();
+    assert_eq!(
+        code_of(control.media_read(&media, 1000, 1000)),
+        ErrorCode::NotFound
+    );
+    let reopened = open_ready(&*control, &args);
+    assert_ne!(reopened["media"], clip["media"], "a new preparation");
+    assert_eq!(read_all(&*control, &reopened, 1 << 20), video);
+
+    // With sync off, a frame that isn't here isn't available.
+    engine
+        .settings_set("storage.sync.enabled", json!(false))
+        .unwrap();
+    std::fs::remove_file(dir.join(FRAME)).unwrap();
+    assert_eq!(
+        code_of(control.media_open(&frame(1700))),
+        ErrorCode::NotAvailable
+    );
     engine.shutdown();
     fake.stop();
 }
