@@ -8,12 +8,14 @@
 // Hiding Rukoo from screen capture fails closed: while Rukoo believes a meeting records, protect(true) holds, also
 // when the socket drops, until Voice says the meeting ended or the user turns the setting off. A start from Rukoo
 // protects first and waits for the next desktop composition before it asks Voice to start, because protection lags
-// one composition behind setContentProtection.
+// one composition behind setContentProtection. A meeting Voice starts itself says meeting.starting before Voice
+// captures the screen: Rukoo protects the same way, waits, and answers meeting.protected (voice/PROTOCOL.md).
 
+const path = require('path');
 const { EventEmitter } = require('events');
 const { VoiceStore } = require('./store');
 const { VoiceBridge, VoiceError } = require('./bridge');
-const { isMeetingId, TITLE_MAX, LABEL_MAX } = require('./protocol');
+const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS } = require('./protocol');
 const { candidateEvents, suggest, WINDOW_MS } = require('./speakers');
 const { bridgePathHere } = require('./paths');
 
@@ -21,6 +23,16 @@ const PROTECT_DELAY_MS = 100;
 const EMIT_MS = 150;
 const LINK_WITHIN_MS = 12 * 60 * 60 * 1000;
 const EVENT_ID_MAX = 4000;
+// How long a meeting.starting keeps the windows hidden by itself: until the meeting's state says it records, which
+// keeps them hidden from then on, or this long.
+const STARTING_HOLD_MS = 10000;
+// meeting.protected answers quickly or not at all: Voice stops waiting for it after 500 ms.
+const PROTECTED_TIMEOUT_MS = 2000;
+const SCREEN_STATES = ['starting', 'recording', 'paused', 'locked', 'stopped'];
+const ENDED_STATES = ['processing', 'done', 'failed'];
+const MONITOR_MAX = 64;
+const MONITOR_NAME_MAX = 200;
+const CLIP_PATH_MAX = 4096;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -57,6 +69,36 @@ function speakerView(s) {
   return { id: s.id, track: s.track, label: s.label, name: s.name, address: s.address, from: s.from, you: s.track === 'mic' };
 }
 
+const count = (v) => Number.isInteger(v) && v >= 0;
+const badReply = (what) => new VoiceError('failed', `Rukoo Voice sent ${what} Rukoo can't read.`);
+
+// clip.get's answer, checked (voice/PROTOCOL.md "Commands"): each clip an MP4 file on this computer.
+function checkClips(result) {
+  if (!result || !Array.isArray(result.clips)) throw badReply('a clip list');
+  return {
+    clips: result.clips.map((c) => {
+      const ok =
+        c && typeof c.path === 'string' && c.path.length <= CLIP_PATH_MAX && path.isAbsolute(c.path) && /\.mp4$/i.test(c.path) && count(c.start) && count(c.end) && c.end >= c.start && count(c.width) && count(c.height) && count(c.bytes);
+      if (!ok) throw badReply('a clip');
+      return { path: c.path, start: c.start, end: c.end, width: c.width, height: c.height, bytes: c.bytes };
+    })
+  };
+}
+
+// screen.get's answer, checked: the screen recording and the monitors it can move to, left to right.
+function checkScreen(result) {
+  const r = result || {};
+  const monitorId = (v) => typeof v === 'string' && v.length > 0 && Array.from(v).length <= MONITOR_MAX;
+  if (!SCREENS.includes(r.screen) || !SCREEN_STATES.includes(r.state) || typeof r.video !== 'boolean' || typeof r.frames !== 'boolean' || !(r.monitor === null || monitorId(r.monitor)) || !Array.isArray(r.monitors)) {
+    throw badReply('a screen recording');
+  }
+  const monitors = r.monitors.map((m) => {
+    if (!m || !monitorId(m.id) || typeof m.name !== 'string' || !count(m.width) || !count(m.height) || typeof m.primary !== 'boolean') throw badReply('a monitor');
+    return { id: m.id, name: Array.from(m.name).slice(0, MONITOR_NAME_MAX).join(''), width: m.width, height: m.height, primary: m.primary };
+  });
+  return { screen: r.screen, state: r.state, video: r.video, frames: r.frames, monitor: r.monitor, monitors };
+}
+
 class VoiceService extends EventEmitter {
   // discovery: the discovery file (paths.bridgePathHere), or null for a profile that never looks for Voice.
   // hide(): whether the user wants Rukoo hidden from screen capture during a meeting. protect(on): hides or shows
@@ -75,6 +117,13 @@ class VoiceService extends EventEmitter {
     this.now = now;
     this.log = log;
     this.starting = 0;
+    // The meeting.starting holds still counting in starting, by meeting id: their timers.
+    this.holds = new Map();
+    // The screen the last start from Rukoo asked for, until Voice's meeting.started says what it records.
+    this.startScreen = null;
+    // clip.get goes one at a time on a connection (voice/PROTOCOL.md): Voice runs a connection's commands in turn, and
+    // a cut can take 4 s, so a second one in the queue would hold up the heartbeat behind both.
+    this.clipChain = null;
     this.protectedNow = null;
     this.lastRecording = null;
     this.deltas = new Map();
@@ -88,6 +137,10 @@ class VoiceService extends EventEmitter {
     this.store.load();
     this.lastRecording = this.store.status().recording;
     this.bridge.on('state', () => this.emit('state', this.state()));
+    // A new connection has nothing in flight: its clips don't wait for the old one's.
+    this.bridge.on('closed', () => {
+      this.clipChain = null;
+    });
     this.bridge.on('welcome', (msg) => this.onWelcome(msg));
     this.bridge.on('event', (ev) => this.onEvent(ev));
     this.bridge.on('status', (status) => {
@@ -104,11 +157,24 @@ class VoiceService extends EventEmitter {
   state() {
     const s = this.bridge.state();
     const status = this.store.status();
-    return { status: s.status, reason: s.reason, voiceVersion: s.voiceVersion, protocol: s.protocol, older: s.older, recording: status.recording, dictating: status.dictating };
+    return { status: s.status, reason: s.reason, voiceVersion: s.voiceVersion, protocol: s.protocol, older: s.older, recording: status.recording, dictating: status.dictating, screenDefault: status.screenDefault };
   }
 
   recording() {
     return this.store.status().recording;
+  }
+
+  // Whether Voice records the screen now, as far as Rukoo knows: main holds back notifications then, so they stay out
+  // of the frames. Also while a start is on its way, and before meeting.started says what the meeting records: the
+  // screen the start asked for, else Voice's default, and recording when Rukoo doesn't know.
+  screenRecording() {
+    if (this.starting > 0) return true;
+    const id = this.recording();
+    if (!id) return false;
+    const e = this.store.entry(id);
+    if (e && e.startedAt !== null) return e.screen !== 'off';
+    const asked = this.startScreen && this.startScreen.id === id ? this.startScreen.screen : null;
+    return (asked || this.store.status().screenDefault) !== 'off';
   }
 
   get connected() {
@@ -144,6 +210,7 @@ class VoiceService extends EventEmitter {
   // ---------- from Voice ----------
 
   onWelcome(msg) {
+    this.clipChain = null;
     const { reset, gap } = this.store.welcome(msg);
     this.statusChanged();
     if (reset) this.emit('meeting', { kind: 'list' });
@@ -213,6 +280,11 @@ class VoiceService extends EventEmitter {
     } catch (err) {
       this.log('voice', `applying ${ev.event} failed: ${err.message}`);
     }
+    const live = !this.store.isReplay(ev.seq);
+    // A meeting.starting in the replay is history: Voice stopped waiting for it long ago.
+    if (ev.event === 'meeting.starting' && live) this.onStarting(ev.meeting).catch(() => {});
+    // The meeting's state took over from the hold of its meeting.starting.
+    if (ev.event === 'meeting.state' && live) this.releaseStarting(ev.meeting);
     // meeting.started already marks the entry recording, so the meeting.state that follows can change only the
     // status: protection and the windows must still hear that a meeting records.
     const now = this.store.status();
@@ -235,7 +307,7 @@ class VoiceService extends EventEmitter {
     const id = change.meeting;
     let d = this.deltas.get(id);
     if (!d) {
-      d = { from: before, passages: new Set(), removed: new Set(), marks: new Set(), speakers: false, notes: false, all: false };
+      d = { from: before, passages: new Set(), removed: new Set(), marks: new Set(), frames: new Set(), speakers: false, notes: false, all: false };
       this.deltas.set(id, d);
     }
     if (change.kind === 'passage') {
@@ -245,6 +317,7 @@ class VoiceService extends EventEmitter {
       d.passages.delete(change.id);
       d.removed.add(change.id);
     } else if (change.kind === 'mark') d.marks.add(change.id);
+    else if (change.kind === 'frame') d.frames.add(change.id);
     else if (change.kind === 'speaker' || change.kind === 'names') d.speakers = true;
     else if (change.kind === 'notes') d.notes = true;
     else if (change.kind === 'snapshot' || change.kind === 'removed') d.all = true;
@@ -273,6 +346,7 @@ class VoiceService extends EventEmitter {
         if (d.passages.size) payload.passages = full.passages.filter((p) => d.passages.has(p.id));
         if (d.removed.size) payload.removedPassages = [...d.removed];
         if (d.marks.size) payload.marks = full.marks.filter((k) => d.marks.has(k.id));
+        if (d.frames.size) payload.frames = full.frames.filter((f) => d.frames.has(f.id));
         // With the guests of the linked event to pick from, as meetingGet gives them.
         if (d.speakers) payload.speakers = this.speakers(id);
         if (d.notes) payload.notes = full.notes;
@@ -346,6 +420,7 @@ class VoiceService extends EventEmitter {
       const result = await this.bridge.command('meeting.start', args);
       const id = result && isMeetingId(result.meeting) ? result.meeting : null;
       if (id) {
+        this.startScreen = { id, screen: SCREENS.includes(args.screen) ? args.screen : null };
         // The events may still be on their way: the meeting records from now, as far as protection goes.
         if (this.store.setStatus({ ...this.store.status(), recording: id })) this.statusChanged();
         if (eventId) {
@@ -388,10 +463,106 @@ class VoiceService extends EventEmitter {
     return this.bridge.command('meeting.mark', args);
   }
 
-  // The frame closest before at (meeting time in ms): {frame, image: {type, data}}.
+  // The frame at or before at (meeting time in ms): {frame, image: {type, data}}. A frame Rukoo has without its text
+  // (a snapshot left it out) gets the text from the answer, and the renderer hears of it with the next delta.
   async frame(id, at) {
     this.mustConnect();
-    return this.bridge.command('frame.get', { meeting: id, at });
+    const res = await this.bridge.command('frame.get', { meeting: id, at });
+    const before = this.revOf(id);
+    const change = this.store.frameText(id, res && res.frame);
+    if (change) this.note(change, before);
+    return res;
+  }
+
+  // The meeting's video between start and end (ms), cut by Voice into MP4 files on this computer: {clips: [{path,
+  // start, end, width, height, bytes}]}. clips is empty while Voice still cuts; the same call later gets the files.
+  async clip(id, start, end) {
+    this.mustConnect();
+    const prev = this.clipChain || Promise.resolve();
+    const mine = prev.then(() => {
+      this.mustConnect();
+      return this.bridge.command('clip.get', { meeting: id, start, end });
+    });
+    // The next clip waits for this one whatever its answer.
+    const settled = mine.then(
+      () => {},
+      () => {}
+    );
+    this.clipChain = settled;
+    settled.then(() => {
+      if (this.clipChain === settled) this.clipChain = null;
+    });
+    return checkClips(await mine);
+  }
+
+  // The meeting's screen recording: {screen, state, video, frames, monitor, monitors: [{id, name, width, height,
+  // primary}]}.
+  async screenInfo(id) {
+    this.mustConnect();
+    return checkScreen(await this.bridge.command('screen.get', { meeting: id }));
+  }
+
+  // Moves the screen recording to another monitor of screenInfo's list; the id of the monitor it records now.
+  async selectMonitor(id, monitor) {
+    this.mustConnect();
+    const res = await this.bridge.command('screen.select', { meeting: id, monitor });
+    if (!res || typeof res.monitor !== 'string' || !res.monitor) throw badReply('a monitor');
+    return res.monitor;
+  }
+
+  // ---------- the start handshake of a meeting Voice started ----------
+
+  // Voice waits up to 500 ms for this before it captures the screen. starting counts from the moment the event
+  // arrives, so protection is on before the ack and stays on until the meeting's state says it records.
+  async onStarting(id) {
+    this.starting += 1;
+    try {
+      if (this.shouldProtect()) {
+        this.refreshProtection();
+        await delay(this.protectDelayMs);
+      }
+      await this.bridge.command('meeting.protected', { meeting: id }, { timeoutMs: PROTECTED_TIMEOUT_MS });
+    } finally {
+      this.holdStarting(id);
+    }
+  }
+
+  // Keeps one count of starting for the meeting until its meeting.state arrives or ms pass. When that state came
+  // during the wait for the composition, there is nothing to hold: the status keeps the windows hidden while the
+  // meeting records, and a meeting that ended no longer needs them hidden.
+  holdStarting(id, ms = STARTING_HOLD_MS) {
+    const e = this.store.entry(id);
+    if (this.closed || this.recording() === id || (e && ENDED_STATES.includes(e.state))) {
+      this.endStarting();
+      return;
+    }
+    let timers = this.holds.get(id);
+    if (!timers) {
+      timers = new Set();
+      this.holds.set(id, timers);
+    }
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (!timers.size) this.holds.delete(id);
+      this.endStarting();
+    }, ms);
+    if (timer.unref) timer.unref();
+    timers.add(timer);
+  }
+
+  releaseStarting(id) {
+    const timers = this.holds.get(id);
+    if (!timers) return;
+    this.holds.delete(id);
+    for (const timer of timers) {
+      clearTimeout(timer);
+      this.endStarting();
+    }
+  }
+
+  endStarting() {
+    this.starting = Math.max(0, this.starting - 1);
+    if (!this.closed) this.refreshProtection();
   }
 
   // ---------- what Rukoo owns ----------
@@ -494,6 +665,8 @@ class VoiceService extends EventEmitter {
     this.closed = true;
     clearTimeout(this.deltaTimer);
     this.deltaTimer = null;
+    for (const timers of this.holds.values()) for (const timer of timers) clearTimeout(timer);
+    this.holds.clear();
     this.bridge.close();
     this.store.close();
   }

@@ -3010,7 +3010,8 @@ const RUKOO_LABELS = {
   read_meeting_transcript: 'Read the meeting',
   search_meetings: 'Searched meetings',
   read_meeting_notes: 'Read the meeting notes',
-  get_meeting_frame: 'Looked at the screen'
+  get_meeting_frame: 'Looked at the screen',
+  get_meeting_clip: 'Looked at the screen over a stretch'
 };
 const COMMANDS = /^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$/i;
 const BUILTINS = [
