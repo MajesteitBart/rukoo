@@ -251,6 +251,8 @@ pub struct FakeStreamState {
     pub labelled_pushes: usize,
     /// Those pushes that drop the connection.
     pub fail_on: Vec<usize>,
+    /// This many `end` calls of sessions that label voices drop the connection first.
+    pub fail_ends: usize,
     /// Segments carry `start` and `end`.
     pub timed: bool,
 }
@@ -380,6 +382,16 @@ impl SpeechStream for FakeStream {
     }
 
     fn end(&mut self) -> Result<(), ProviderError> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if self.diarize && state.fail_ends > 0 {
+                state.fail_ends -= 1;
+                return Err(ProviderError::new(
+                    ErrorKind::Network,
+                    "The fake stream dropped the connection while it finished.",
+                ));
+            }
+        }
         self.end_burst();
         self.events.push(StreamEvent::Done);
         Ok(())

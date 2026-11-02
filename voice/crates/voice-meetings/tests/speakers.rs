@@ -20,7 +20,7 @@ use common::*;
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Stored};
 use voice_core::speakers::DiarErrorKind;
-use voice_meetings::transcript::{MODE_KEY, REASON_KEY, SETTLED_KEY};
+use voice_meetings::transcript::{DIARIZE_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY};
 use voice_meetings::{
     FollowerTiming, LabelState, Labels, Library, MeetingDir, Pipeline, PipelineHandle,
     PipelineOptions, PipelineState, StreamOptions, Timing, Transcript,
@@ -470,6 +470,60 @@ fn a_refused_runtime_before_any_passage_falls_back_to_call_1() {
     assert_eq!(meta(&rec.dir, REASON_KEY).as_deref(), Some("runtimeFailed"));
 }
 
+/// 6b: labels that stalled, so call passages went out without a speaker, and then failed before
+/// any call speaker reached Rukoo: the meeting goes on without labels, and those passages get
+/// `call-1` as well.
+#[test]
+fn labels_that_stall_then_fail_before_any_id_leave_the_whole_call_on_call_1() {
+    let tmp = TempDir::new("speakers-stall-fail");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(6, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    // The first push of each of three streams hangs; the pipeline stops waiting after 100 ms.
+    let d = ScriptedDiarizer::with(|s| {
+        s.hang_on = vec![1, 2, 3];
+        s.hang = Duration::from_millis(600);
+    });
+    let options = PipelineOptions {
+        speakers: FollowerTiming {
+            stall: Duration::from_millis(100),
+            ..follower_timing()
+        },
+        ..labelled(&d)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_done(&handle);
+    let status = handle.labels();
+    assert_eq!(
+        (status.mode.as_str(), status.state, status.reason.as_deref()),
+        ("off", LabelState::Failed, Some("runtimeFailed"))
+    );
+    handle.shutdown();
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    assert_no_id_moves(&all);
+    assert_eq!(
+        speakers(&all),
+        vec![
+            ("mic".to_owned(), "You".to_owned()),
+            ("call-1".to_owned(), "Speaker 1".to_owned())
+        ]
+    );
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 6, "{call:#?}");
+    assert!(
+        call.iter().all(|p| p.speaker.as_deref() == Some("call-1")),
+        "{call:#?}"
+    );
+    assert!(
+        all_passages(&all)
+            .iter()
+            .any(|p| p.track == "call" && p.speaker.is_none()),
+        "some went out without a speaker during the stall"
+    );
+}
+
 /// 7: without labels the events are exactly Voice 0.1's.
 #[test]
 fn without_labels_the_events_are_voice_0_1s() {
@@ -782,6 +836,111 @@ fn mistral_streams_after_consent_and_keeps_ids_across_a_reconnect() {
     assert_eq!(mic.len(), 1, "{mic:#?}");
     assert_eq!(mic[0].speaker.as_deref(), Some("mic"));
     assert!(mic[0].text.starts_with("w1000"), "{mic:?}");
+}
+
+fn mistral_options(fake: &FakeStreaming, diarize: bool) -> PipelineOptions {
+    PipelineOptions {
+        timing: fast(),
+        labels: Labels::Off {
+            reason: "stream".into(),
+        },
+        stream: Some(stream_options(fake, diarize)),
+        speakers: FollowerTiming {
+            stream_speed: 20.0,
+            ..follower_timing()
+        },
+        ..PipelineOptions::new(Arc::new(Offline))
+    }
+}
+
+/// 11b: a session that drops while it finishes, after the whole call was sent, is followed by a
+/// new one that sends what wasn't answered again, so the last voice still gets its passage.
+#[test]
+fn a_stream_that_drops_while_it_finishes_sends_the_rest_again() {
+    let tmp = TempDir::new("speakers-mistral-drain");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    // The call ends while a voice talks, so its segment only comes when the session ends.
+    let mut pieces = three_voices(4, 3.5);
+    pieces.push((3.5, Some(1)));
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    fake.state().fail_ends = 1;
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_done(&handle);
+    handle.shutdown();
+
+    let labelling = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    assert_eq!(labelling, 2, "a new session after the drop");
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    let timeline = timeline_of(&pieces, 0);
+    let call = last_revisions(&all, "call");
+    let &(start, end, _) = timeline.last().unwrap();
+    assert!(
+        call.iter().any(|p| p.start < end && p.end > start),
+        "nothing for the last voice at {start}..{end}: {call:#?}"
+    );
+    assert_eq!(assert_stable_ids(&call, &timeline).len(), 3);
+}
+
+/// 11c: the stored choice to label the call holds for the whole meeting, also when the stream
+/// options of a later pipeline say otherwise.
+#[test]
+fn a_mistral_meeting_keeps_its_stored_label_choice() {
+    let tmp = TempDir::new("speakers-mistral-stored");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(3, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    // A pipeline before this one chose Mistral with labels.
+    let t = Transcript::open(rec.dir.path()).unwrap();
+    t.meta_set(MODE_KEY, "mistral").unwrap();
+    t.meta_set(DIARIZE_KEY, "1").unwrap();
+    drop(t);
+    let fake = FakeStreaming::default();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, false));
+    wait_done(&handle);
+    handle.shutdown();
+    let state = fake.state();
+    assert_eq!(
+        state.sessions.iter().filter(|s| s.diarize).count(),
+        1,
+        "the call is labelled as stored"
+    );
+    drop(state);
+    let call = last_revisions(&events(&log, &rec.id()), "call");
+    assert_eq!(
+        assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(),
+        3,
+        "{call:#?}"
+    );
+}
+
+/// 11d: a track meeting.json didn't name, which the pipeline follows once the recorder writes
+/// it, is streamed too, so its words aren't lost.
+#[test]
+fn mistral_streams_a_track_that_turns_up_later() {
+    let tmp = TempDir::new("speakers-mistral-new-track");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(3, 3.5);
+    let length = seconds(&pieces);
+    let rec = Recording::new(&lib, &[Track::Mic]);
+    rec.session(0, 1);
+    rec.segment("mic", 1, 0, &voices(&[(length, None)]));
+    rec.segment("call", 1, 0, &voices(&pieces));
+    rec.stop(ms(length));
+    let fake = FakeStreaming::default();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_done(&handle);
+    handle.shutdown();
+    assert_eq!(fake.state().sessions.len(), 2, "a session per track");
+    let all = events(&log, &rec.id());
+    assert_speakers_come_first(&all);
+    let call = last_revisions(&all, "call");
+    assert_eq!(call.len(), 3, "{call:#?}");
+    assert_eq!(assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(), 3);
 }
 
 /// 12: Nemotron never falls back to Mistral: without a diarizer and without a stream, the call

@@ -653,25 +653,28 @@ impl Transcript {
         from_ms: u64,
         to_ms: u64,
     ) -> rusqlite::Result<Vec<StoredPassage>> {
-        Ok(self
-            .passages()?
-            .into_iter()
-            .filter(|p| {
-                p.passage.track == Track::Call
-                    && p.passage.speaker.is_none()
-                    && p.passage.start >= from_ms
-                    && p.passage.end <= to_ms
-            })
-            .collect())
+        // The pipeline asks every step, so the store filters rather than reading every passage.
+        self.query_passages(
+            r#"WHERE track = 'call' AND speaker IS NULL AND start >= ?1 AND "end" <= ?2"#,
+            params![to_i64(from_ms), to_i64(to_ms)],
+        )
     }
 
     /// Every passage, in the order of their start.
     pub fn passages(&self) -> rusqlite::Result<Vec<StoredPassage>> {
-        let mut statement = self.conn.prepare(
+        self.query_passages("", [])
+    }
+
+    fn query_passages(
+        &self,
+        filter: &str,
+        args: impl rusqlite::Params,
+    ) -> rusqlite::Result<Vec<StoredPassage>> {
+        let mut statement = self.conn.prepare(&format!(
             r#"SELECT id, track, speaker, start, "end", text, revision, dictation, language, tokens
-               FROM passages ORDER BY start, track"#,
-        )?;
-        let rows = statement.query_map([], |row| {
+               FROM passages {filter} ORDER BY start, track"#
+        ))?;
+        let rows = statement.query_map(args, |row| {
             let track: String = row.get(1)?;
             let tokens: Option<String> = row.get(9)?;
             Ok(StoredPassage {
@@ -997,6 +1000,51 @@ mod tests {
             (all[0].tokens[0].end - 1.12).abs() < 1e-9,
             "rounded to 10 ms"
         );
+    }
+
+    #[test]
+    fn call_passages_without_a_speaker_by_time() {
+        let tmp = TempDir::new("transcript-unlabelled");
+        let mut t = Transcript::open(tmp.path()).unwrap();
+        let with = |track: Track, start: u64, speaker: Option<&str>| {
+            let mut p = passage(track, start, "x");
+            p.passage.speaker = speaker.map(str::to_owned);
+            p
+        };
+        t.commit_window(
+            Track::Call,
+            0,
+            160_000,
+            "pause",
+            vec![
+                with(Track::Call, 0, None),
+                with(Track::Call, 2_000, Some("call-1")),
+                with(Track::Call, 4_000, None),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        t.commit_window(
+            Track::Mic,
+            0,
+            160_000,
+            "pause",
+            vec![with(Track::Mic, 0, None)],
+        )
+        .unwrap()
+        .unwrap();
+        let starts = |from: u64, to: u64| -> Vec<u64> {
+            t.null_call_passages(from, to)
+                .unwrap()
+                .iter()
+                .map(|p| p.passage.start)
+                .collect()
+        };
+        assert_eq!(starts(0, u64::MAX), [0, 4_000]);
+        assert_eq!(starts(1, u64::MAX), [4_000], "from its start on");
+        assert_eq!(starts(0, 4_999), [0], "ending by the limit");
+        let found = t.null_call_passages(0, u64::MAX).unwrap();
+        assert_eq!(found[0].tokens[0].text, " Hi");
     }
 
     fn row(speaker: &str, start: u64, end: Option<u64>, epoch: u64) -> TurnRow {

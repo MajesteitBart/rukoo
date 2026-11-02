@@ -184,7 +184,7 @@ impl Ctx {
             }
             if (self.allowed)().is_err() {
                 // No audio leaves before the user agreed, and none after they took it back.
-                self.session = None;
+                self.drop_session();
                 self.shared.update(|s| s.reason = Some("consent".into()));
                 self.shared.set_state(LabelState::Starting);
                 self.shared.sleep(self.timing.poll);
@@ -215,7 +215,7 @@ impl Ctx {
                     self.shared.sleep(self.timing.poll);
                 }
                 Err(fail) => {
-                    self.session = None;
+                    self.drop_session();
                     let message = match fail {
                         Fail::Provider(e) if e.message.trim().is_empty() => {
                             "The streaming transcription failed.".to_owned()
@@ -248,6 +248,14 @@ impl Ctx {
                 }
             }
         }
+    }
+
+    /// Closes the session. What it sent past its answers is sent again by the next one, so a
+    /// session that drops after the last audio went out, while it finishes, doesn't end the
+    /// track without those answers.
+    fn drop_session(&mut self) {
+        self.session = None;
+        self.fed = self.answered * PER_MS;
     }
 
     fn reader(&mut self) -> TrackReader {

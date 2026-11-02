@@ -408,6 +408,34 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_silent_in_the_tail_is_matched_through_its_reel_piece() {
+        use crate::speakers::clock::StreamClock;
+        let tmp = TempDir::new("reel-absent");
+        let reader = reader(tmp.path(), &[(0, 60_000)]);
+        // call-1 spoke only at the start; the tail, 40-60 s, is all call-2.
+        let stored = vec![turn("call-1", 0, 5_000), turn("call-2", 10_000, 60_000)];
+        let reel = build_reel(&stored, 60_000, &reader);
+        assert_eq!(
+            ms(&reel),
+            vec![(0, 5_000), (32_000, 40_000), (40_000, 60_000)]
+        );
+        // The new stream hears the reel in that order and calls call-1 "6", call-2 "1".
+        let mut clock = StreamClock::new();
+        for &(a, b) in &reel {
+            clock.append(a, b - a);
+        }
+        let first = 5_000 * 16;
+        let heard: HashMap<usize, Vec<(u64, u64)>> = [
+            (6, clock.split(0, first)),
+            (1, clock.split(first, clock.sent())),
+        ]
+        .into();
+        let matched = match_labels(&heard, &stored);
+        assert_eq!(matched[&6], "call-1");
+        assert_eq!(matched[&1], "call-2");
+    }
+
+    #[test]
     fn range_helpers() {
         assert_eq!(
             subtract(&[(0, 10)], &[(2, 3), (5, 7)]),

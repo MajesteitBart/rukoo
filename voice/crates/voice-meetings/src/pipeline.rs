@@ -907,21 +907,15 @@ impl Worker {
                 match self.stream.clone() {
                     // The stream transcribes as well as labels, so a meeting that failed gets
                     // it again; a reconnect keeps the ids.
-                    Some(opts) if !finished => {
-                        let mut followers = Vec::new();
-                        for &track in &self.tracks {
-                            followers.push((
-                                track,
-                                StreamFollower::start(
-                                    self.dir.clone(),
-                                    track,
-                                    opts.clone(),
-                                    self.allowed.clone(),
-                                    self.speaker_timing.clone(),
-                                    self.timing.attempts_after_stop,
-                                ),
-                            ));
-                        }
+                    Some(mut opts) if !finished => {
+                        // Whether the call is labelled was stored with the mode; a Settings
+                        // change since then applies to the next meeting.
+                        opts.diarize = diarize;
+                        let followers: Vec<(Track, FollowerHandle)> = self
+                            .tracks
+                            .iter()
+                            .map(|&track| (track, self.start_stream(track, &opts)))
+                            .collect();
                         let shown = followers
                             .iter()
                             .find(|(t, _)| *t == Track::Call)
@@ -976,6 +970,18 @@ impl Worker {
         Ok(())
     }
 
+    /// A stream follower for one track of a Mistral meeting.
+    fn start_stream(&self, track: Track, opts: &StreamOptions) -> FollowerHandle {
+        StreamFollower::start(
+            self.dir.clone(),
+            track,
+            opts.clone(),
+            self.allowed.clone(),
+            self.speaker_timing.clone(),
+            self.timing.attempts_after_stop,
+        )
+    }
+
     /// The events that come before anything recorded, and passages a pipeline before this one
     /// stored but didn't send.
     fn begin(&mut self, shared: &Shared) -> Result<(), Error> {
@@ -995,6 +1001,9 @@ impl Worker {
             for id in self.transcript.speaker_ids()? {
                 self.emit_speaker_id(&id)?;
             }
+        }
+        if matches!(self.run, Run::Off) && self.tracks.contains(&Track::Call) {
+            self.unlabelled_to_call_1()?;
         }
         for stored in self.transcript.passages()? {
             self.emit_passage(&stored.passage)?;
@@ -1028,7 +1037,7 @@ impl Worker {
         for derived in self.watcher.poll()? {
             self.apply(derived)?;
         }
-        self.follow_new_tracks()?;
+        self.follow_new_tracks(shared)?;
         self.flag_dictation()?;
         self.snapshot = match &self.run {
             Run::Nemotron {
@@ -1120,8 +1129,9 @@ impl Worker {
         }
     }
 
-    /// A track the recorder records that meeting.json didn't name gets followed too.
-    fn follow_new_tracks(&mut self) -> Result<(), Error> {
+    /// A track the recorder records that meeting.json didn't name gets followed too, and in a
+    /// Mistral meeting streamed, since its windows read only what a stream stored.
+    fn follow_new_tracks(&mut self, shared: &Shared) -> Result<(), Error> {
         let seen = tracks_of(
             self.watcher
                 .mapper()
@@ -1135,6 +1145,29 @@ impl Worker {
                 self.tracks.sort();
                 if track == Track::Mic || self.call_is_one_speaker() {
                     self.emit_speaker(track)?;
+                }
+                // A finished meeting runs no followers and starts none.
+                let follower = match (&self.run, &self.stream) {
+                    (
+                        Run::Mistral {
+                            followers,
+                            diarize,
+                            lost: false,
+                        },
+                        Some(opts),
+                    ) if !followers.is_empty() => {
+                        let mut opts = opts.clone();
+                        opts.diarize = *diarize;
+                        Some(self.start_stream(track, &opts))
+                    }
+                    _ => None,
+                };
+                if let (Some(follower), Run::Mistral { followers, .. }) = (follower, &mut self.run)
+                {
+                    if track == Track::Call {
+                        shared.set_labels(LabelView::Live(follower.shared().clone()));
+                    }
+                    followers.push((track, follower));
                 }
             }
         }
@@ -1163,7 +1196,8 @@ impl Worker {
     }
 
     /// A labelled meeting whose labeller failed before any call speaker reached Rukoo goes on
-    /// as a meeting without labels: no call passage exists yet, since the gate held them all.
+    /// as a meeting without labels. The gate held the call's windows, so usually no call passage
+    /// exists yet; those a stalled labeller let through without a speaker get `call-1` too.
     fn switch_to_off_if_failed(&mut self, shared: &Shared) -> Result<(), Error> {
         let failed = match &self.run {
             Run::Nemotron {
@@ -1201,6 +1235,21 @@ impl Worker {
         )));
         if self.tracks.contains(&Track::Call) {
             self.emit_speaker(Track::Call)?;
+        }
+        self.unlabelled_to_call_1()
+    }
+
+    /// In a meeting without labels the whole call is `call-1`, also the passages a labeller
+    /// that stalled and then failed let through without a speaker. Also run at `begin`, for a
+    /// pipeline that stopped between the switch and this.
+    fn unlabelled_to_call_1(&mut self) -> Result<(), Error> {
+        let call = speaker_of(Track::Call).id;
+        for stored in self.transcript.null_call_passages(0, u64::MAX)? {
+            let mut passage = stored.passage;
+            passage.speaker = Some(call.clone());
+            passage.revision += 1;
+            self.transcript.update_passage(&passage)?;
+            self.emit_passage(&passage)?;
         }
         Ok(())
     }
