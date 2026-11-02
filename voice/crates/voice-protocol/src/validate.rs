@@ -742,6 +742,8 @@ mod tests {
             r"\\.\DISPLAY2"
         );
         assert!(select(json!("m".repeat(64))).is_ok());
+        // Characters, as Rukoo counts them: 64 emoji fit.
+        assert!(select(json!("😀".repeat(64))).is_ok());
         assert_eq!(select(json!("")).unwrap_err().reason, "monitor");
         assert_eq!(select(json!("m".repeat(65))).unwrap_err().reason, "monitor");
     }
