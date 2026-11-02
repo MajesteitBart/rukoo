@@ -530,6 +530,19 @@ test('a media link checks the kind against the screen and the range against the 
   assert.equal(data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100 })).to_seconds, 400);
   assert.equal(data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 900 })).to_seconds, 1000);
   assert.equal(data(await call('get_meeting_media_link', { meeting_id: OLD, kind: 'frame', from_seconds: 5 })).kind, 'frame', 'frames for a frame');
+
+  // Voice already cut that video and it broke at 371.5 s, at a pause: to_seconds says so, rounded down, so the agent
+  // asks for the next stretch from there. The link keeps the range asked for, which opens the same file in Voice.
+  withMedia(hub, voice, (args) => ({ media: MEDIA_ID, ready: true, type: 'video/mp4', size: 4096, start: args.start, end: 371500 }));
+  const cut = data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100, to_seconds: 400 }));
+  assert.equal(cut.to_seconds, 371);
+  assert.equal(hub.mediaLinks.verify(LINK.exec(cut.url)[2]).e, 400000);
+  // An end Voice can't have cut (not after from_seconds, or past what was asked for) leaves to_seconds alone.
+  withMedia(hub, voice, (args) => ({ media: MEDIA_ID, ready: true, type: 'video/mp4', size: 4096, start: args.start, end: args.start }));
+  assert.equal(data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100, to_seconds: 400 })).to_seconds, 400);
+  // Not ready yet: what was asked for.
+  withMedia(hub, voice);
+  assert.equal(data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100, to_seconds: 400 })).to_seconds, 400);
 });
 
 test("a media link turns each of Voice's answers into what the agent can do", async (t) => {

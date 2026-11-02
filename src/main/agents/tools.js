@@ -2622,8 +2622,9 @@ async function getMeetingMediaLink(hub, args, call) {
     if (to - from > span) throw new ToolError(`One link holds at most ${span} seconds of ${kind}. Ask for the next stretch with another link.`);
   }
   if (!voice.connected) throw new ToolError("Rukoo Voice is not running, and it keeps the meeting's media. Ask the user to start Rukoo Voice.");
+  let opened;
   try {
-    await voice.mediaOpen({ meeting: id, kind, start: from * 1000, end: to === null ? undefined : to * 1000 });
+    opened = await voice.mediaOpen({ meeting: id, kind, start: from * 1000, end: to === null ? undefined : to * 1000 });
   } catch (err) {
     const code = (err && err.code) || 'error';
     if (code === 'unknown_command') throw new ToolError('Rukoo Voice on this computer is too old to share meeting media. Ask the user to update Rukoo Voice.');
@@ -2632,6 +2633,11 @@ async function getMeetingMediaLink(hub, args, call) {
     if (code === 'bad_request') throw new ToolError(`Rukoo Voice refused this range: ${(err && err.message) || 'bad request'}`);
     throw new ToolError(`Rukoo Voice could not prepare the media (${code}). Try again in a moment.`);
   }
+  // A file Voice has ready says where it really ends: audio where the recording stops, video where it breaks at a
+  // pause or a monitor switch. That end, in whole seconds, goes back as to_seconds, so the agent asks for the next
+  // stretch from there. The link keeps the range asked for, so fetching it opens the same file in Voice.
+  const ready = to !== null && opened && opened.ready === true && Number.isSafeInteger(opened.end) ? Math.floor(opened.end / 1000) : null;
+  const shown = ready !== null && ready > from && ready < to ? ready : to;
   const link = hub.mediaLinks
     ? hub.mediaLinks.issue({ agent: call.agent, remote: call.remote, peer: call.peer, tokenHash: call.tokenHash, meeting: id, kind, start: from * 1000, end: to === null ? null : to * 1000 })
     : null;
@@ -2644,7 +2650,7 @@ async function getMeetingMediaLink(hub, args, call) {
     kind,
     type: MEDIA_TYPES[kind],
     from_seconds: from,
-    to_seconds: to,
+    to_seconds: shown,
     url: link.url,
     expires_at: iso(link.expiresAt),
     expires_in_seconds: Math.round(hub.mediaLinks.ttlMs / 1000),
