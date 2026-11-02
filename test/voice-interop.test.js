@@ -168,9 +168,10 @@ async function checkMedia(b, meeting, failNext) {
   }
   assert.deepEqual(pieces.map((p) => p.length), [MEDIA_READ_MAX, MEDIA_READ_MAX, opened.size - 2 * MEDIA_READ_MAX]);
   const bytes = Buffer.concat(pieces);
-  assert.equal(bytes.toString('latin1', 0, 4), 'RIFF');
-  assert.equal(bytes.toString('latin1', 8, 16), 'WAVEfmt ');
-  assert.equal(bytes.readUInt32LE(24), 16000);
+  // The canonical header voice_audio::segment_header writes for 1,120,000 samples, written out so both servers
+  // can't drift from Voice's real WAV files together: RIFF, size, WAVE, fmt chunk (PCM, mono, 16 kHz, 32,000
+  // bytes a second, block 2, 16 bits), data and its size.
+  assert.equal(bytes.toString('hex', 0, 44), '52494646242e220057415645666d74201000000001000100803e0000007d00000200100064617461002e2200');
   assert.equal(bytes.readUInt32LE(40), 70000 * 32);
   assert.equal(bytes.readInt16LE(44), -16384);
   assert.equal(bytes.readInt16LE(44 + 2 * 63), 63 * 512 - 16384);
