@@ -149,6 +149,38 @@ pub fn wait_for_clipboard_restore() {
     sys::wait_for_clipboard_restore();
 }
 
+/// Puts `text` on the clipboard for the user to paste somewhere else, hidden from clipboard
+/// history and cloud clipboard the way [`insert_text`] hides a paste. Nothing is restored
+/// afterwards: the user copied it. Waits for a pending restore of [`insert_text`] first.
+///
+/// For a secret the user saves, such as bucket sync's recovery code, whose copy a page's
+/// `navigator.clipboard` would leave in Win+V history and, with cloud clipboard on, online.
+pub fn copy_hidden(text: &str) -> Result<(), InputError> {
+    #[cfg(windows)]
+    {
+        win::copy_hidden(text)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        Err(InputError::Unsupported)
+    }
+}
+
+/// Empties the clipboard, but only while it still holds exactly `text`: something the user copied
+/// since stays. Returns whether it emptied it. For [`copy_hidden`]'s text after a while.
+pub fn clear_if(text: &str) -> Result<bool, InputError> {
+    #[cfg(windows)]
+    {
+        win::clear_if(text)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        Err(InputError::Unsupported)
+    }
+}
+
 /// The foreground window, or `None` when there is none (for example on the
 /// secure desktop) or on other platforms.
 pub fn foreground_window() -> Option<WindowInfo> {
@@ -206,6 +238,8 @@ mod tests {
         );
         assert_eq!(foreground_window(), None);
         assert_eq!(text_target(), TextTarget::Unknown);
+        assert_eq!(copy_hidden("x"), Err(InputError::Unsupported));
+        assert_eq!(clear_if("x"), Err(InputError::Unsupported));
         assert!(!is_key_down(Key::F13));
         let (tx, _rx) = std::sync::mpsc::channel();
         assert_eq!(
