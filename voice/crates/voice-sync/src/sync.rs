@@ -418,7 +418,8 @@ impl BucketSync {
             .unwrap_or(true)
     }
 
-    /// `true` on error, like holds_media.
+    /// Whether the meeting has files that never reached the bucket, counting transcript and manifest
+    /// rows too. A meeting with no row yet counts as waiting. `true` on error, like holds_media.
     pub fn has_waiting(&self, meeting: &str) -> bool {
         self.shared.queue.has_waiting(meeting).unwrap_or(true)
     }

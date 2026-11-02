@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use base64::Engine as _;
 use serde_json::{json, Value};
 use voice_bridge::ControlError;
 use voice_meetings::reader::{segment_samples, PER_MS};
@@ -717,10 +716,7 @@ impl MediaService {
                 )))
             }
         };
-        Ok(json!({
-            "offset": offset,
-            "data": base64::engine::general_purpose::STANDARD.encode(bytes),
-        }))
+        Ok(voice_protocol::media_read_result(offset, &bytes))
     }
 
     /// Forgets files 10 minutes after their last use and deletes the ones in `<data>/media/`.
