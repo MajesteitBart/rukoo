@@ -556,48 +556,6 @@ fn drop_text(what: Part, reason: Reason) -> Option<&'static str> {
     })
 }
 
-#[cfg(test)]
-mod drop_tests {
-    use super::*;
-
-    /// Every drop the screen process can journal reaches the pill, and every one but a frames
-    /// drop for the encoder, which never happens, the tray.
-    #[test]
-    fn every_drop_has_a_notice_and_a_notification() {
-        assert_eq!(
-            drop_notice(Part::Video, Reason::Disk),
-            "pill.videoDropped.disk"
-        );
-        assert_eq!(
-            drop_notice(Part::Video, Reason::Encoder),
-            "pill.videoDropped.encoder"
-        );
-        assert_eq!(
-            drop_notice(Part::Video, Reason::Device),
-            "pill.videoDropped.device"
-        );
-        assert_eq!(
-            drop_notice(Part::Frames, Reason::Disk),
-            "pill.framesDropped.disk"
-        );
-        assert_eq!(
-            drop_notice(Part::Frames, Reason::Device),
-            "pill.screenFailed"
-        );
-        assert!(drop_text(Part::Video, Reason::Encoder)
-            .unwrap()
-            .contains("frames only"));
-        assert!(drop_text(Part::Video, Reason::Device)
-            .unwrap()
-            .contains("video support"));
-        assert!(drop_text(Part::Video, Reason::Disk)
-            .unwrap()
-            .contains("Frames go on"));
-        assert!(drop_text(Part::Frames, Reason::Device).is_some());
-        assert!(drop_text(Part::Frames, Reason::Disk).is_some());
-    }
-}
-
 /// How long quitting waits for the local model to stop. Longer than its own 2 s quit grace, so a
 /// worker that is merely idle always gets to quit cleanly.
 const SPEECH_SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
@@ -832,5 +790,47 @@ struct Unavailable(ProviderError);
 impl SpeechToText for Unavailable {
     fn transcribe(&self, _pcm: &[i16], _hints: &Hints) -> Result<Recognized, ProviderError> {
         Err(self.0.clone())
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    /// Every drop the screen process can journal reaches the pill, and every one but a frames
+    /// drop for the encoder, which never happens, the tray.
+    #[test]
+    fn every_drop_has_a_notice_and_a_notification() {
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Disk),
+            "pill.videoDropped.disk"
+        );
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Encoder),
+            "pill.videoDropped.encoder"
+        );
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Device),
+            "pill.videoDropped.device"
+        );
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Disk),
+            "pill.framesDropped.disk"
+        );
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Device),
+            "pill.screenFailed"
+        );
+        assert!(drop_text(Part::Video, Reason::Encoder)
+            .unwrap()
+            .contains("frames only"));
+        assert!(drop_text(Part::Video, Reason::Device)
+            .unwrap()
+            .contains("video support"));
+        assert!(drop_text(Part::Video, Reason::Disk)
+            .unwrap()
+            .contains("Frames go on"));
+        assert!(drop_text(Part::Frames, Reason::Device).is_some());
+        assert!(drop_text(Part::Frames, Reason::Disk).is_some());
     }
 }
