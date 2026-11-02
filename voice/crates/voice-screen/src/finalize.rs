@@ -108,7 +108,6 @@ pub(crate) fn close_open_video(
     let Some((seq, file)) = history.open_video.clone() else {
         return (None, 0);
     };
-    let path = meeting.join(&file);
     let start = lines
         .iter()
         .rev()
@@ -117,6 +116,20 @@ pub(crate) fn close_open_video(
             _ => None,
         })
         .unwrap_or(history.last_seen);
+    // The repair truncates the file, so only a path of a video file's own shape gets it: a
+    // damaged journal mustn't make it cut the audio or anything else in the meeting folder.
+    let Some(path) = paths::video_path(meeting, &file) else {
+        log(format_args!(
+            "video {seq}: the journal names {file:?}, which isn't a video file; left as it is"
+        ));
+        let _ = journal.write(&Line::VideoEnd {
+            t: start,
+            seq,
+            reason: "crash".into(),
+            bytes: 0,
+        });
+        return (None, start);
+    };
     let repaired = match mp4::repair(&path) {
         Ok(repaired) => Some(repaired),
         Err(e) => {

@@ -64,8 +64,8 @@ pub fn frame_reply(
     let frame = index
         .at_or_before(at)
         .ok_or_else(|| MediaError::NotFound(NO_FRAME.into()))?;
-    let path = paths::resolve(meeting, &frame.file).ok_or_else(|| {
-        MediaError::Failed("The screen journal names a file outside the screen folder.".into())
+    let path = paths::frame_path(meeting, &frame.file).ok_or_else(|| {
+        MediaError::Failed("The screen journal names a file that isn't a frame.".into())
     })?;
     let image = match File::open(&path) {
         Ok(file) => {
@@ -261,7 +261,7 @@ pub fn clip_input_bytes(meeting: &Path, start: u64, end: u64) -> io::Result<u64>
     let (start, end) = capped(start, end);
     let mut bytes = 0;
     for stretch in overlapping(&journal::read_all(meeting)?, start, end) {
-        let Some(path) = paths::resolve(meeting, &stretch.file) else {
+        let Some(path) = paths::video_path(meeting, &stretch.file) else {
             continue;
         };
         let index = match mp4::index_path(&path) {
@@ -282,6 +282,7 @@ pub fn video_inputs(meeting: &Path, start: u64, end: u64) -> io::Result<Vec<Stri
     let (start, end) = capped(start, end);
     Ok(overlapping(&journal::read_all(meeting)?, start, end)
         .into_iter()
+        .filter(|s| paths::video_path(meeting, &s.file).is_some())
         .map(|s| s.file)
         .collect())
 }
@@ -459,7 +460,7 @@ fn plan_clips(meeting: &Path, start: u64, end: u64) -> Result<Vec<Planned>, Medi
     let mut missing = 0;
     let mut planned = Vec::new();
     for stretch in &stretches {
-        let Some(src) = paths::resolve(meeting, &stretch.file) else {
+        let Some(src) = paths::video_path(meeting, &stretch.file) else {
             continue;
         };
         let index = match mp4::index_path(&src) {
@@ -869,6 +870,22 @@ mod tests {
         }]);
         assert!(matches!(
             frame_reply(m.path(), true, 5, &outside),
+            Err(MediaError::Failed(_))
+        ));
+        // Nor read another file of the screen folder, such as screen.json with its token.
+        std::fs::write(paths::screen_file_path(m.path()), br#"{"token":"secret"}"#).unwrap();
+        let token = FrameIndex::from_lines(&[Line::Frame {
+            t: 5,
+            id: "f-000000005".into(),
+            file: "screen/screen.json".into(),
+            width: 1,
+            height: 1,
+            text: String::new(),
+            ocr: "none".into(),
+            language: None,
+        }]);
+        assert!(matches!(
+            frame_reply(m.path(), true, 5, &token),
             Err(MediaError::Failed(_))
         ));
     }

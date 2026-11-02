@@ -103,6 +103,31 @@ pub fn resolve(meeting: &Path, relative: &str) -> Option<PathBuf> {
     any.then_some(path)
 }
 
+/// The full path of a video file the journal names, `None` unless it has the shape
+/// [`video_file`] gives: `screen/video/`, six or more digits, `.mp4`. `finalize` truncates the
+/// file it gets here, so a damaged journal can't make it cut the audio or the journal.
+pub fn video_path(meeting: &Path, relative: &str) -> Option<PathBuf> {
+    let digits = relative
+        .strip_prefix(&format!("{SCREEN_DIR}/{VIDEO_DIR}/"))?
+        .strip_suffix(".mp4")?;
+    if digits.len() < 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    resolve(meeting, relative)
+}
+
+/// The full path of a frame's JPEG the journal names, `None` unless it has the shape
+/// [`frame_file`] gives: `screen/frames/f-`, nine or more digits, `.jpg`. `frame.get` sends what
+/// it reads here to Rukoo, so a damaged journal can't make it send `screen.json` and its token.
+pub fn frame_path(meeting: &Path, relative: &str) -> Option<PathBuf> {
+    let name = relative.strip_prefix(&format!("{SCREEN_DIR}/{FRAMES_DIR}/"))?;
+    if name.contains('/') {
+        return None;
+    }
+    frame_at(name)?;
+    resolve(meeting, relative)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +192,46 @@ mod tests {
             "/screen/x",
         ] {
             assert_eq!(resolve(m, bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn media_paths_take_only_their_own_shape() {
+        let m = Path::new("m");
+        assert_eq!(
+            video_path(m, &video_file(1)),
+            Some(m.join("screen").join("video").join("000001.mp4"))
+        );
+        assert!(video_path(m, &video_file(1_234_567)).is_some());
+        assert_eq!(
+            frame_path(m, &frame_file(&frame_id(412_000))),
+            Some(m.join("screen").join("frames").join("f-000412000.jpg"))
+        );
+        for bad in [
+            "audio/mic/000001.wav",
+            "screen/journal.jsonl",
+            "screen/screen.json",
+            "screen/video/1.mp4",
+            "screen/video/00000x.mp4",
+            "screen/video/000001.mp4.tmp",
+            "screen/video/../../audio/mic/000001.mp4",
+            "screen/frames/f-000412000.jpg",
+            "screen/clips/c-000000000-000001000-000001.mp4",
+            "/screen/video/000001.mp4",
+        ] {
+            assert_eq!(video_path(m, bad), None, "{bad:?}");
+        }
+        for bad in [
+            "screen/screen.json",
+            "screen/journal.jsonl",
+            "screen/frames/f-12.jpg",
+            "screen/frames/sub/f-000412000.jpg",
+            "screen/frames/f-000412000.jpg.tmp",
+            "screen/frames/../screen.json",
+            "screen/video/000001.mp4",
+            "audio/mic/f-000412000.jpg",
+        ] {
+            assert_eq!(frame_path(m, bad), None, "{bad:?}");
         }
     }
 }

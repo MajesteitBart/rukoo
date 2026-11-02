@@ -310,6 +310,41 @@ mod tests {
         recorder.wait_exit(WAIT_TIMEOUT);
     }
 
+    /// `finalize` and `--resume` truncate the open video file to its last complete fragment. A
+    /// journal whose open `video` line names another file, here the meeting's audio, gets its
+    /// `video_end crash` and `stop`, and the file keeps every byte.
+    pub fn finalize_repairs_only_video_files() {
+        let m = TempMeeting::new("finalize-foreign", "video");
+        let wav = m.dir.join("audio").join("mic").join("000001.wav");
+        fs::create_dir_all(wav.parent().unwrap()).unwrap();
+        let mut audio = b"RIFF".to_vec();
+        audio.resize(96_044, 0x11);
+        fs::write(&wav, &audio).unwrap();
+        let journal = [
+            json!({ "kind": "session", "t": 0, "wall": 1_793_000_000_000u64, "boot": 1, "session": 1,
+                    "pid": 1, "resumed": false, "version": 1, "mode": "video", "anchor": "boot",
+                    "screen": "0.1.0" }),
+            json!({ "kind": "video", "t": 1_000, "seq": 1, "file": "audio/mic/000001.wav",
+                    "width": 1280, "height": 720, "fps": 15, "encoder": "x", "hardware": false }),
+        ];
+        let screen = m.dir.join("screen");
+        fs::create_dir_all(&screen).unwrap();
+        let text: String = journal.iter().map(|l| format!("{l}\n")).collect();
+        fs::write(screen.join("journal.jsonl"), text).unwrap();
+
+        let (status, out) =
+            m.run_screen(&["finalize", "--meeting", &m.arg(), "--reason", "interrupted"]);
+        assert!(status.success(), "{out}");
+        assert_eq!(fs::read(&wav).unwrap(), audio, "finalize changed the audio");
+        let lines = m.journal();
+        let ended = lines
+            .iter()
+            .find(|l| l["kind"] == "video_end" && l["seq"] == 1)
+            .expect("no video_end");
+        assert_eq!(ended["reason"], "crash", "{}", show(&lines));
+        assert_eq!(lines.last().unwrap()["kind"], "stop", "{}", show(&lines));
+    }
+
     pub fn portrait_monitor_keeps_its_size() {
         let m = TempMeeting::new("portrait", "video");
         let (mut recorder, mut screen) = start(
@@ -966,6 +1001,11 @@ fn main() {
             name: "finalize_closes_a_killed_session",
             ignored: false,
             run: tests::finalize_closes_a_killed_session,
+        },
+        Test {
+            name: "finalize_repairs_only_video_files",
+            ignored: false,
+            run: tests::finalize_repairs_only_video_files,
         },
         Test {
             name: "portrait_monitor_keeps_its_size",
