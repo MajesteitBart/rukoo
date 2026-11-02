@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { AgentConfig, AgentError, AGENT_IDS, EFFORTS, writeJsonAtomic, tailscaleAddress } = require('./config');
-const { McpServer, INSTRUCTIONS: MCP_INSTRUCTIONS } = require('./mcp');
+const { McpServer, INSTRUCTIONS: MCP_INSTRUCTIONS, json: mcpJson } = require('./mcp');
 const { decodeId } = require('../engine');
 const tools = require('./tools');
 const context = require('./context');
@@ -15,6 +15,7 @@ const ownskills = require('./ownskills');
 const { ChatFiles, shown: shownFile, MAX_FILES, MAX_EMAILS } = require('./chatfiles');
 const { PdfReader } = require('../pdfread');
 const { PhoneHost } = require('./phonehost');
+const { MediaLinks } = require('./media');
 const { isMeetingId } = require('../voice/protocol');
 const { PERMISSIONS, permissionLevel, strictest } = require('./permission');
 // Agents whose tool calls are bound to their chat (resolveCall()): Claude Code by a token for each chat, Codex by its
@@ -214,6 +215,18 @@ class AgentHub extends EventEmitter {
     this.remoteQueue = Promise.resolve();
     // Lets a paired phone run Claude Code and Codex turns here (phonehost.js); made in start(), after the config.
     this.phoneHost = null;
+    // Links to a meeting's media for get_meeting_media_link, served on the MCP listeners (media.js). A test profile
+    // (SEM_HIDDEN) may shorten their life with SEM_MEDIA_LINK_TTL_MS.
+    const ttl = Number(process.env.SEM_MEDIA_LINK_TTL_MS);
+    this.mediaLinks = new MediaLinks({
+      voice: () => this.deps.voice || null,
+      canRead: () => !this.meetingsOff(),
+      agentAllowed: (agent, remote) => this.agentAllowed(agent, remote),
+      tokenLive: (agent, remote, bind) => this.tokenLive(agent, remote, bind),
+      endpoint: (remote) => this.mediaEndpoint(remote),
+      ...(process.env.SEM_HIDDEN && Number.isSafeInteger(ttl) && ttl > 0 ? { ttlMs: ttl } : {}),
+      log: (...a) => this.log('media', ...a)
+    });
     this.started = false;
     this.disposed = false;
   }
@@ -2495,6 +2508,40 @@ class AgentHub extends EventEmitter {
     return found ? { ...found } : null;
   }
 
+  // Whether a token issued to agent for that listener is still accepted and has the hash bind stands for (a media
+  // link's binding, media.js bindOf). The same hashes identify() accepts: a chat's or a Codex process's local token,
+  // Clark's while "Let Clark use Rukoo" is on, OpenClaw's local or remote one. A revoked token is gone from them.
+  tokenLive(agent, remote, bind) {
+    if (typeof bind !== 'string' || !bind) return false;
+    const hashes = [];
+    if (!remote) for (const t of this.tokens) if (t.identity.agent === agent && !t.identity.remote) hashes.push(t.hash);
+    if (agent === 'clark' && remote && this.remoteHash && this.cfg.data.mcp.remote) hashes.push(this.remoteHash);
+    if (agent === 'openclaw') hashes.push(remote ? this.openclawRemoteHash : this.openclawHash);
+    return hashes.some((h) => h && this.mediaLinks.bindOf(h.toString('hex')) === bind);
+  }
+
+  // Whether agent may still use Rukoo on that listener: not turned off, and for the Tailscale listener its own
+  // switch on ("Let Clark use Rukoo", or OpenClaw's remote gateway while OpenClaw is on). Claude Code and Codex run
+  // on this computer only.
+  agentAllowed(agent, remote) {
+    const data = this.cfg.data;
+    const own = AGENT_IDS.includes(agent) ? data[agent] : null;
+    if (!own || own.enabled === false) return false;
+    if (!remote) return true;
+    if (agent === 'clark') return Boolean(data.mcp.remote);
+    if (agent === 'openclaw') return Boolean(data.openclaw.remote && data.openclaw.enabled !== false);
+    return false;
+  }
+
+  // The listener a media link must point at, as its Host check accepts it: 127.0.0.1 and the local port, or the
+  // Tailscale address (or the name in remoteHost) and the remote port. null while that listener isn't open.
+  mediaEndpoint(remote) {
+    const ports = this.mcp && !this.mcp.closed ? this.mcp.ports() : { local: null, remote: null };
+    if (!remote) return ports.local ? { host: '127.0.0.1', port: ports.local } : null;
+    const host = this.cfg.address();
+    return ports.remote && host ? { host, port: ports.remote } : null;
+  }
+
   // Clark's bridge looks for Rukoo on every device in the tailnet and only sends its token to one that proves it
   // has the same key. Keyed with the token's hash and its own prefix, the proof never gives the token away. It
   // covers the address this Rukoo took the connection on, so a listener elsewhere that relays the challenge here
@@ -2763,6 +2810,12 @@ class AgentHub extends EventEmitter {
     return this.phoneHost.handle(entry, req, res, pathname);
   }
 
+  // GET /media/v1/<token> on either listener (mcp.js): a link get_meeting_media_link gave an agent.
+  mediaRequest(entry, req, res, pathname) {
+    if (this.disposed) return mcpJson(res, 404, { error: 'not found' });
+    return this.mediaLinks.handle(entry, req, res, pathname);
+  }
+
   copyHermesSetup() {
     if (this.deps.clipboard) this.deps.clipboard.writeText(this.cfg.hermesSetup({ version: this.deps.appVersion }));
     return true;
@@ -3010,7 +3063,8 @@ const RUKOO_LABELS = {
   read_meeting_transcript: 'Read the meeting',
   search_meetings: 'Searched meetings',
   read_meeting_notes: 'Read the meeting notes',
-  get_meeting_frame: 'Looked at the screen'
+  get_meeting_frame: 'Looked at the screen',
+  get_meeting_media_link: 'Got a link to meeting media'
 };
 const COMMANDS = /^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$/i;
 const BUILTINS = [

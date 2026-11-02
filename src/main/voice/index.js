@@ -21,6 +21,9 @@ const PROTECT_DELAY_MS = 100;
 const EMIT_MS = 150;
 const LINK_WITHIN_MS = 12 * 60 * 60 * 1000;
 const EVENT_ID_MAX = 4000;
+// media.open and media.read: 10 s, not the default 5 s, because either can wait behind another command Voice runs on
+// the same connection, such as a clip.get of up to 4 s.
+const MEDIA_TIMEOUT_MS = 10000;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -60,8 +63,9 @@ function speakerView(s) {
 class VoiceService extends EventEmitter {
   // discovery: the discovery file (paths.bridgePathHere), or null for a profile that never looks for Voice.
   // hide(): whether the user wants Rukoo hidden from screen capture during a meeting. protect(on): hides or shows
-  // every window. calendars, engine: for the linked event and the names of its guests.
-  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, emitMs = EMIT_MS, now = Date.now, log = () => {} } = {}) {
+  // every window. calendars, engine: for the linked event and the names of its guests. mediaTimeoutMs: how long
+  // media.open and media.read may take, shorter in tests.
+  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, emitMs = EMIT_MS, mediaTimeoutMs = MEDIA_TIMEOUT_MS, now = Date.now, log = () => {} } = {}) {
     super();
     this.store = new VoiceStore({ dataDir, now, log });
     // A meeting file found damaged when a meeting is read: Voice sends the meeting again while it is connected.
@@ -72,6 +76,7 @@ class VoiceService extends EventEmitter {
     this.calendars = calendars;
     this.protectDelayMs = protectDelayMs;
     this.emitMs = emitMs;
+    this.mediaTimeoutMs = mediaTimeoutMs;
     this.now = now;
     this.log = log;
     this.starting = 0;
@@ -392,6 +397,21 @@ class VoiceService extends EventEmitter {
   async frame(id, at) {
     this.mustConnect();
     return this.bridge.command('frame.get', { meeting: id, at });
+  }
+
+  // media.open: { media, ready, type?, size?, start?, end? }. Voice answers at once; call again until ready is true.
+  // start and end are meeting ms; end is left out for a frame.
+  async mediaOpen({ meeting, kind, start, end }) {
+    this.mustConnect();
+    const args = { meeting, kind, start };
+    if (Number.isInteger(end)) args.end = end;
+    return this.bridge.command('media.open', args, { timeoutMs: this.mediaTimeoutMs });
+  }
+
+  // media.read: { offset, data } with up to length bytes of a prepared file from offset, in base64.
+  async mediaRead(media, offset, length) {
+    this.mustConnect();
+    return this.bridge.command('media.read', { media, offset, length }, { timeoutMs: this.mediaTimeoutMs });
   }
 
   // ---------- what Rukoo owns ----------

@@ -1407,6 +1407,9 @@ function phoneMcp(m, ip) {
 
 module.exports = {
   PhoneHost,
+  // media.js reuses these for its links' rate limits.
+  Limiter,
+  peerOf,
   normalizeCode,
   imageType,
   CODE_ALPHABET,

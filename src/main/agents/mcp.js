@@ -4,6 +4,7 @@
 // Hermes (mcp 2.0), Claude Code 2.1.291 and Codex 0.160.1: no sessions, no SSE, 202 for notifications.
 
 const http = require('http');
+const crypto = require('crypto');
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const FALLBACK_PROTOCOL = '2025-06-18';
@@ -139,9 +140,27 @@ class McpServer {
         return res.destroy();
       }
     }
+    // Media links (media.js), on both listeners, after the Origin and Host checks.
+    if (pathname.startsWith('/media/')) {
+      if (!this.hub.mediaRequest) return this.reject(req, res, 404, { error: 'not found' });
+      try {
+        return this.hub.mediaRequest(entry, req, res, pathname);
+      } catch (err) {
+        this.log('media request failed', err && err.message);
+        if (!res.headersSent) return this.reject(req, res, 500, { error: 'unknown' });
+        return res.destroy();
+      }
+    }
     if (pathname !== '/mcp') return this.reject(req, res, 404, { error: 'not found' });
     if (req.method !== 'POST') return this.reject(req, res, 405, { error: 'method not allowed' }, { Allow: 'POST' });
-    const identity = this.hub.identify(bearer(req));
+    const token = bearer(req);
+    const identity = this.hub.identify(token);
+    // What a media link the call asks for is bound to (media.js): the address the request came from, from the socket,
+    // and the hash of the token it carried. identify() returns a fresh object.
+    if (identity) {
+      identity.peer = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+      identity.tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    }
     if (!identity || Boolean(identity.remote) !== entry.remote) {
       // Clark's bridge asks before it sends its token: Rukoo proves it has the same key, or says it has none.
       const challenge = String(req.headers['x-rukoo-challenge'] || '');

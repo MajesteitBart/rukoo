@@ -338,6 +338,43 @@ test('oversized bodies are read to the end, so the client gets the 413 and not a
     assert.equal((await request(port, { body: rpc(1, 'ping') })).status, 200, 'the server still answers');
   }));
 
+test('/media/ goes to the hub on both listeners after the Origin and Host checks, and a tool call carries where it came from', async () => {
+  const seen = [];
+  const hub = {
+    ...fakeHub(),
+    mediaRequest: (entry, req, res, pathname) => {
+      seen.push([entry.remote, req.method, pathname]);
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('media');
+    }
+  };
+  const server = new McpServer({ hub });
+  const local = await server.listen({ host: '127.0.0.1', port: 0 });
+  const remote = await server.listen({ host: '127.0.0.1', port: 0, remote: true });
+  try {
+    const route = '/media/v1/abc.def/m-file.wav';
+    assert.equal((await request(local, { method: 'GET', path: route, token: null })).text, 'media');
+    assert.equal((await request(remote, { method: 'HEAD', path: route, token: null })).status, 200);
+    assert.deepEqual(seen, [
+      [false, 'GET', route],
+      [true, 'HEAD', route]
+    ]);
+    assert.equal((await request(local, { method: 'GET', path: route, token: null, headers: { origin: 'null' } })).status, 403);
+    assert.equal((await request(local, { method: 'GET', path: route, token: null, headers: { host: `evil.example:${local}` } })).status, 403);
+    assert.equal(seen.length, 2, 'refused before the hub saw them');
+    // The address from the socket and the hash of the token: what a media link binds to (tools.js callTool).
+    await request(local, { body: rpc(1, 'tools/call', { name: 'echo', arguments: {} }) });
+    assert.equal(hub.calls[0].identity.peer, '127.0.0.1');
+    assert.equal(hub.calls[0].identity.tokenHash, require('crypto').createHash('sha256').update(LOCAL).digest('hex'));
+  } finally {
+    await server.close();
+  }
+  // A hub without media links: nothing there.
+  await withServer(async (port) => {
+    assert.equal((await request(port, { method: 'GET', path: '/media/v1/abc.def', token: null })).status, 404);
+  });
+});
+
 test('end to end: a real hub on a demo engine answers initialize, tools/list and get_context', async () => {
   const dir = tempDir('sem-mcp-');
   const engine = new Engine({ dataDir: dir }).init();
@@ -384,7 +421,8 @@ test('end to end: a real hub on a demo engine answers initialize, tools/list and
         'read_meeting_transcript',
         'search_meetings',
         'read_meeting_notes',
-        'get_meeting_frame'
+        'get_meeting_frame',
+        'get_meeting_media_link'
       ]
     );
     for (const t of list.json.result.tools) {

@@ -61,6 +61,7 @@ object ToolNames {
         "search_meetings" to ToolChipKind.SEARCH,
         "read_meeting_notes" to ToolChipKind.MEETING,
         "get_meeting_frame" to ToolChipKind.MEETING,
+        "get_meeting_media_link" to ToolChipKind.MEETING,
     )
 
     // These put their own card in the transcript, so once they succeed a chip saying the same is noise.
