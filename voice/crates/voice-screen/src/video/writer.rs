@@ -697,8 +697,9 @@ mod tests {
     /// Frames faster and slower than the nominal rate, through the real sink writer: the file
     /// holds one sample per frame and its media time ends where `end_t` says, to the unit.
     /// Microsoft's software encoder on WARP, as on a CI runner, takes the frames through a video
-    /// processor that would lay them on a 15 fps grid; with a hardware encoder, the GPU path at a
-    /// size it scales, which also puts a video processor in front of the encoder, runs too.
+    /// processor that would lay them on a 15 fps grid. With a hardware encoder, the GPU path runs
+    /// too: at a size it scales, which also puts a video processor in front of the encoder, and at
+    /// a size it keeps, where only the sink's rounding of each gap could move the media time.
     #[test]
     fn the_file_keeps_the_capture_times() {
         crate::com::init_mta();
@@ -713,7 +714,8 @@ mod tests {
         ));
         let cases = [
             ("software", d3d::create(false, true), (320, 180), true),
-            ("hardware", d3d::create(true, false), (5120, 1440), false),
+            ("gpu-scaled", d3d::create(true, false), (5120, 1440), false),
+            ("gpu", d3d::create(true, false), (1920, 1080), false),
         ];
         for (name, device, (width, height), software) in cases {
             let device = device.unwrap();
@@ -726,7 +728,7 @@ mod tests {
             let mut writer = match VideoWriter::create(mf, &device, &path, width, height, options) {
                 Ok(writer) => writer,
                 Err(VideoError::Software) if !software => {
-                    println!("no hardware H.264 encoder: only the software path ran");
+                    println!("{name}: skipped, no hardware H.264 encoder");
                     continue;
                 }
                 Err(e) => panic!("{name}: {e}"),
