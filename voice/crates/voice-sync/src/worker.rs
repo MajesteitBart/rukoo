@@ -1260,7 +1260,15 @@ impl Worker {
                 return;
             }
         }
-        match crate::restore::list_remote(&shared, remote) {
+        // Only while the configuration, the secret and the key the worker connected with hold.
+        let check = || {
+            let st = shared.lock();
+            if st.stopping || Some(st.generation) != generation {
+                return Err(SyncError::new(SyncErrorKind::Off, "Bucket sync changed."));
+            }
+            Ok(())
+        };
+        match crate::restore::list_remote(&shared, remote, &check) {
             Ok(meetings) => {
                 let mut st = shared.lock();
                 st.listed = generation;

@@ -675,3 +675,56 @@ fn a_restore_imports_nothing_once_sync_moved_to_another_bucket() {
         .unwrap_err();
     assert_eq!(err.kind, SyncErrorKind::NotInBucket);
 }
+
+#[test]
+fn turning_sync_off_stops_a_restore_before_its_next_request() {
+    let fake = fake();
+    let root = scratch("restore-off");
+    let _c = Cleanup(root.clone());
+    let a = Voice::open(&root.join("a"));
+    let (m, _) = finished(&a.meetings(), "Switched off", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    let key = a.key();
+    let (code, _) = a.sync.show_key().unwrap();
+    drop(a);
+
+    // Held before the first file, after the restore read the manifest.
+    let gate = Gate::at(1);
+    let b = Voice::with(
+        &root.join("b"),
+        Setup {
+            reserve: gate.reserve(),
+            ..Setup::default()
+        },
+    );
+    b.sync.import_key(&code).unwrap();
+    b.connect(&fake.endpoint());
+    let (seen, on_restored) = recorder();
+    b.sync.restore(vec![m.id.clone()], on_restored).unwrap();
+    gate.wait();
+    b.sync.configure(None);
+    gate.open();
+    let restore = wait_restore_end(&b);
+    assert_eq!(restore.state, "failed", "{restore:?}");
+    assert_eq!(restore.error.as_deref(), Some("Bucket sync is off."));
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(!b.meetings().join(&m.id).exists());
+    no_partial_folders(&b);
+
+    // Voice read none of the meeting's files once sync was off (D10). The fake notes a request
+    // after it answered, so a late one gets a moment to show.
+    let files = format!(
+        "rkv1/{}/m/{}/o/",
+        key.kid(),
+        voice_sync::names::meeting_hash(&key.name_key(), &m.id)
+    );
+    let fetched = || {
+        fake.log()
+            .into_iter()
+            .filter(|l| l.op == voice_s3_fake::Op::Get && unprefixed(&l.key).starts_with(&files))
+            .collect::<Vec<_>>()
+    };
+    wait_for(Duration::from_millis(500), || !fetched().is_empty());
+    assert!(fetched().is_empty(), "{:?}", fetched());
+}

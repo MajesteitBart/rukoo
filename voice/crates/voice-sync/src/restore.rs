@@ -162,7 +162,8 @@ fn chunk_span(total: u64, i: u64) -> (u64, u64) {
 }
 
 /// Fetches an object in 8 MiB ranges, decrypts it chunk by chunk into `<dest>.restore`, checks its
-/// size and SHA-256 and renames it into place.
+/// size and SHA-256 and renames it into place. `check` runs before the first request and before
+/// each chunk, so before every ranged request too; its error stops the fetch.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fetch_to_file(
     bucket: &Bucket,
@@ -171,10 +172,11 @@ pub(crate) fn fetch_to_file(
     size: u64,
     sha256: &str,
     dest: &Path,
-    cancel: &AtomicBool,
+    check: &dyn Fn() -> Result<(), SyncError>,
 ) -> Result<(), SyncError> {
     let total = cipher_len(size);
     let span = CHUNKS_PER_GET * (CHUNK + TAG);
+    check()?;
     let first = bucket.get(object, Some((0, (HEADER_LEN + span).min(total) - 1)))?;
     let (header, sealer) = open_header(key, object, &first)?;
     if header.plain_len() != size {
@@ -194,9 +196,7 @@ pub(crate) fn fetch_to_file(
         let mut buffer = first;
         let mut buffer_from = 0u64;
         for i in 0..chunks {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(cancelled());
-            }
+            check()?;
             let (from, to) = chunk_span(total, i);
             if to > buffer_from + buffer.len() as u64 {
                 let end = (from + span).min(total);
@@ -250,7 +250,7 @@ pub(crate) fn ensure_local(
         ));
     }
     let dir = shared.meeting_dir(meeting);
-    let mut remote: Option<Remote> = None;
+    let mut remote: Option<(Remote, Binding)> = None;
     for path in paths {
         if !is_meeting_path(path) {
             return Err(SyncError::new(
@@ -283,11 +283,18 @@ pub(crate) fn ensure_local(
             return Err(SyncError::new(SyncErrorKind::Local, NO_ROOM));
         }
         if remote.is_none() {
-            remote = Some(shared.remote()?.0);
+            remote = Some(shared.remote()?);
         }
-        let r = remote.as_ref().expect("just connected");
+        let (r, binding) = remote.as_ref().expect("just connected");
         // Held from retention while it comes back, not only once it is in place (2.10).
         shared.queue.restored(meeting, path, now)?;
+        // Only while sync stays on for this bucket and key (D10).
+        let check = || {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
+            shared.still(binding)
+        };
         fetch_to_file(
             &r.bucket,
             &r.key,
@@ -295,7 +302,7 @@ pub(crate) fn ensure_local(
             row.size,
             &row.sha256,
             &dest,
-            cancel,
+            &check,
         )?;
         shared.queue.restored(meeting, path, shared.now())?;
     }
@@ -377,16 +384,20 @@ pub(crate) fn clear_partial(meetings: &Path) {
 }
 
 /// The bucket's meetings that aren't on this computer, newest first: every index under
-/// `rkv1/<kid>/index/` merged, deleted ones and ids that don't parse left out.
+/// `rkv1/<kid>/index/` merged, deleted ones and ids that don't parse left out. `check` runs before
+/// every request; its error stops the listing.
 pub(crate) fn list_remote(
     shared: &Shared,
     remote: &Remote,
+    check: &dyn Fn() -> Result<(), SyncError>,
 ) -> Result<Vec<RemoteMeeting>, SyncError> {
+    check()?;
     let listing = remote
         .bucket
         .list(&names::index_prefix(&remote.kid), None)?;
     let mut indexes = Vec::new();
     for (object, _) in &listing.keys {
+        check()?;
         let bytes = match open_object(&remote.bucket, &remote.key, object) {
             Ok(bytes) => bytes,
             Err(e) if e.kind == SyncErrorKind::NotFound => continue,
@@ -491,7 +502,7 @@ fn restore_all(
 ) -> Result<(), SyncError> {
     let (remote, binding) = shared.remote()?;
     let ids = if ids.is_empty() {
-        let ids: Vec<String> = list_remote(shared, &remote)?
+        let ids: Vec<String> = list_remote(shared, &remote, &|| shared.still(&binding))?
             .into_iter()
             .map(|m| m.id)
             .collect();
@@ -588,9 +599,10 @@ fn restore_into(
     tmp: &Path,
     target: &Path,
 ) -> Result<(), SyncError> {
-    let never = AtomicBool::new(false);
+    // Every request only while sync stays on for the bucket and key the restore started with (D10).
+    let check = || shared.still(binding);
     let fetch = |file: &ManifestFile| -> Result<(), SyncError> {
-        shared.still(binding)?;
+        check()?;
         if !(shared.opts.reserve)(file.size) {
             return Err(SyncError::new(SyncErrorKind::Local, NO_ROOM));
         }
@@ -601,7 +613,7 @@ fn restore_into(
             file.size,
             &file.sha256,
             &tmp.join(&file.path),
-            &never,
+            &check,
         )
     };
     // Text first: what Voice shows and sends to Rukoo. RUK-108's journal holds the frame text.
@@ -732,4 +744,98 @@ fn crypto(message: &str) -> SyncError {
 
 fn to_usize(n: u64) -> usize {
     usize::try_from(n).unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use voice_s3_fake::{FakeS3, Op};
+
+    use super::*;
+    use crate::format::Sealer;
+    use crate::{BucketRetention, Service, SyncConfig, UrlStyle};
+
+    fn wait_for(mut f: impl FnMut() -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < end {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        f()
+    }
+
+    #[test]
+    fn a_fetch_checks_before_every_ranged_request() {
+        let fake = FakeS3::start("test", "test", None).unwrap();
+        let cfg = SyncConfig {
+            service: Service::Other,
+            endpoint: fake.endpoint(),
+            region: "us-east-1".into(),
+            bucket: "test".into(),
+            prefix: String::new(),
+            access_key_id: "test".into(),
+            url_style: UrlStyle::Path,
+            retention: BucketRetention::Keep,
+        };
+        let bucket = Bucket::new(
+            &cfg,
+            "secret",
+            Duration::from_secs(2),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        let key = MasterKey::from_bytes([7; 32]);
+        let object = "rkv1/test/m/ranges/o/file";
+        // One chunk more than one request fetches: two ranged requests.
+        let plain: Vec<u8> = (0..(CHUNKS_PER_GET + 1) * CHUNK)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let size = plain.len() as u64;
+        let (header, sealer) = Sealer::new(&key, object, size).unwrap();
+        let body = sealer
+            .read_cipher(
+                &header,
+                &mut Cursor::new(&plain),
+                0,
+                to_usize(cipher_len(size)),
+            )
+            .unwrap();
+        bucket.put(object, &body).unwrap();
+        let sha = hex(&Sha256::digest(&plain));
+        let dir = std::env::temp_dir().join(format!(
+            "voice-sync-fetch-{}-{}",
+            std::process::id(),
+            crate::queue::random_hex(4).unwrap()
+        ));
+        let dest = dir.join("audio/mic/000001.wav");
+        let gets = || fake.log().iter().filter(|l| l.op == Op::Get).count();
+        let off = || Err(SyncError::new(SyncErrorKind::Off, "Bucket sync is off."));
+
+        // Stopped before the first request: nothing is asked for.
+        let err = fetch_to_file(&bucket, &key, object, size, &sha, &dest, &off).unwrap_err();
+        assert_eq!(err.kind, SyncErrorKind::Off);
+        assert_eq!(gets(), 0);
+
+        // Stopped once the first range arrived (the partial file exists then): the second range is
+        // never asked for, and nothing stays on disk.
+        let part = partial_path(&dest);
+        let after_first = || if part.exists() { off() } else { Ok(()) };
+        let err =
+            fetch_to_file(&bucket, &key, object, size, &sha, &dest, &after_first).unwrap_err();
+        assert_eq!(err.kind, SyncErrorKind::Off);
+        assert!(wait_for(|| gets() >= 1));
+        assert_eq!(gets(), 1, "{:?}", fake.log());
+        assert!(!dest.exists());
+        assert!(!part.exists());
+
+        // Allowed throughout, the file comes back whole in two requests.
+        fetch_to_file(&bucket, &key, object, size, &sha, &dest, &|| Ok(())).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), plain);
+        assert!(wait_for(|| gets() >= 3));
+        assert_eq!(gets(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

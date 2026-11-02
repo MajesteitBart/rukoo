@@ -536,13 +536,13 @@ impl BucketSync {
     /// follows.
     pub fn remote_meetings(&self) -> Result<Vec<RemoteMeeting>, SyncError> {
         let shared = &self.shared;
-        let (remote, _) = shared.remote()?;
+        let (remote, binding) = shared.remote()?;
         let restoring = shared.lock().restoring;
         if !restoring {
             shared.lock().restore.state = "listing";
             shared.changed();
         }
-        let listed = crate::restore::list_remote(shared, &remote);
+        let listed = crate::restore::list_remote(shared, &remote, &|| shared.still(&binding));
         if !restoring {
             {
                 let mut st = shared.lock();
