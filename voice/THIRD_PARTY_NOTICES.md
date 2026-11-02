@@ -108,7 +108,7 @@ The Rust crates built into the four programs, by license. The list covers the no
 
 <!-- rust-crates:start: written by voice/scripts/package.ps1 -UpdateNotices; package.ps1 stops when this list is out of date -->
 
-194 crates.
+195 crates.
 
 ### 0BSD OR Apache-2.0 OR MIT
 
@@ -289,6 +289,7 @@ The Rust crates built into the four programs, by license. The list covers the no
 
 ### CDLA-Permissive-2.0
 
+- webpki-roots 0.26.11
 - webpki-roots 1.0.11
 
 ### ISC
