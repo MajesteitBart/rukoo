@@ -1000,13 +1000,13 @@ impl EngineApi for FakeEngine {
             }
             if target == "meetings" {
                 form["consent"] = if save["consent"] == true && provider != "orukeet" {
-                    let mut consent = json!({ "provider": provider, "host": host_of(&endpoint) });
-                    // A batch agreement leaves `mode` out, as one saved before streaming
-                    // existed; the page reads that as `windows`.
-                    if model.starts_with(REALTIME_PREFIX) {
-                        consent["mode"] = json!("stream");
-                    }
-                    consent
+                    // Always with `mode`, as the real engine sends it (API.md, `meetings.consent`).
+                    let mode = if model.starts_with(REALTIME_PREFIX) {
+                        "stream"
+                    } else {
+                        "windows"
+                    };
+                    json!({ "provider": provider, "host": host_of(&endpoint), "mode": mode })
                 } else {
                     Value::Null
                 };

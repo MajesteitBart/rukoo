@@ -463,6 +463,59 @@ fn a_realtime_meeting_waits_for_consent_to_stream() {
 }
 
 #[test]
+fn an_agreement_for_windows_doesn_t_cover_a_stream() {
+    let h = Harness::new("speakers-windows-agreement");
+    h.config(json!({
+        "meetings_audio_provider": "mistral",
+        "meetings_audio_api_key": SECRET,
+        "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+        "meetings_audio_model": REALTIME,
+        "meetings_transcription_consent": {"provider": "mistral", "host": "api.mistral.ai"},
+    }));
+    let speech = labelling(&h);
+    speech.ready();
+    let id = record_meeting(&h.data());
+    let engine = start(&h, &speech);
+    let state = engine.settings_state();
+    // An agreement from Voice 0.1 or a batch model covers recorded windows only.
+    assert_eq!(state["config"]["meetings"]["consent"]["mode"], "windows");
+    assert_eq!(state["speakers"]["reason"], "consent");
+    let refused = voice_engine::meetings::transcription_allowed(&h.saved_config()).unwrap_err();
+    assert!(
+        refused.contains("streaming meeting audio to Mistral at api.mistral.ai"),
+        "{refused}"
+    );
+    wait_for("the meeting to begin", || {
+        events(&h.data(), &id)
+            .iter()
+            .any(|e| e.event == "meeting.started")
+    });
+    thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !events(&h.data(), &id).iter().any(|e| e.event == "passage"),
+        "nothing was transcribed"
+    );
+    assert_eq!(
+        speech.connects.load(Ordering::SeqCst),
+        0,
+        "nothing streamed"
+    );
+    // Agreeing to stream stores a stream agreement and makes labels ready.
+    engine
+        .settings_save_provider(json!({
+            "target": "meetings", "provider": "mistral",
+            "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+            "model": REALTIME, "apiKey": null, "consent": true
+        }))
+        .unwrap();
+    let state = engine.settings_state();
+    assert_eq!(state["config"]["meetings"]["consent"]["mode"], "stream");
+    assert_eq!(state["speakers"]["ready"], true);
+    assert!(voice_engine::meetings::transcription_allowed(&h.saved_config()).is_ok());
+    engine.shutdown();
+}
+
+#[test]
 fn the_switch_off_never_asks_nemotron() {
     let h = Harness::new("speakers-off");
     h.config(json!({"meetings_live_speakers": false}));
@@ -533,7 +586,6 @@ fn voice_s_own_nemotron_copy_is_removed_when_no_meeting_labels() {
 }
 
 #[test]
-#[ignore = "needs voice-meetings' speaker follower, which reports a meeting that labels"]
 fn removing_nemotron_waits_while_a_meeting_labels() {
     let h = Harness::new("speakers-busy");
     h.config(json!({}));

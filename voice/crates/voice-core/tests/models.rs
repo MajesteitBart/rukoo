@@ -449,12 +449,9 @@ fn nemotron_downloads_file_by_file() {
 #[test]
 fn the_asset_script_pins_the_same_nemotron() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/speaker-assets.ps1");
-    let Ok(text) = fs::read_to_string(&script) else {
-        // The script comes with the speaker label runtime work; until it is in this checkout
-        // there is nothing to compare.
-        println!("skipped: {} isn't in this checkout", script.display());
-        return;
-    };
+    // A renamed or deleted script fails here rather than passing without a comparison.
+    let text =
+        fs::read_to_string(&script).unwrap_or_else(|e| panic!("read {}: {e}", script.display()));
     let gguf = &ModelSpec::nemotron().files[0];
     assert!(
         text.contains(gguf.url.as_deref().unwrap()),
