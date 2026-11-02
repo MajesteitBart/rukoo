@@ -51,6 +51,26 @@ pub fn resumed_start(first_wall: u64, now_wall: u64, latest_t: u64) -> u64 {
     now_wall.saturating_sub(first_wall).max(latest_t)
 }
 
+/// Windows interrupt time in 100 ns units: counts sleep, shared by every process, read with the
+/// same counter as `Instant`. `None` elsewhere.
+///
+/// The recorder writes it next to `t` in its `session` and `heartbeat` lines, so another process,
+/// such as the screen recorder, can map any moment to meeting time exactly:
+/// `t + (boot_now - boot) / 10_000`.
+#[cfg(windows)]
+pub fn boot_100ns() -> Option<u64> {
+    use windows::Win32::System::WindowsProgramming::QueryInterruptTimePrecise;
+    // SAFETY: it only writes the u64 the binding hands it.
+    Some(unsafe { QueryInterruptTimePrecise() })
+}
+
+/// Windows interrupt time in 100 ns units: counts sleep, shared by every process, read with the
+/// same counter as `Instant`. `None` elsewhere.
+#[cfg(not(windows))]
+pub fn boot_100ns() -> Option<u64> {
+    None
+}
+
 /// Heartbeats are written this often.
 pub const HEARTBEAT: Duration = Duration::from_secs(1);
 /// The computer slept when more time passed than it was awake, by more than this.
@@ -202,6 +222,20 @@ mod tests {
         assert!(b.awake >= a.awake && b.elapsed >= a.elapsed);
         assert!(b.elapsed - a.elapsed >= 10, "{a:?} {b:?}");
         assert_eq!(slept(&a, &b), None);
+    }
+
+    #[test]
+    fn boot_time_is_there_on_windows_only() {
+        let a = boot_100ns();
+        std::thread::sleep(Duration::from_millis(30));
+        let b = boot_100ns();
+        if cfg!(windows) {
+            let (a, b) = (a.unwrap(), b.unwrap());
+            // 30 ms is 300,000 units; allow for a slow scheduler but not for a wrong unit.
+            assert!(b - a >= 250_000 && b - a < 50_000_000, "{a} {b}");
+        } else {
+            assert_eq!((a, b), (None, None));
+        }
     }
 
     #[test]

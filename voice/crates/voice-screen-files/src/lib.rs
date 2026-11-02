@@ -9,6 +9,7 @@
 pub mod caps;
 pub mod clock;
 pub mod control;
+mod follow;
 pub mod frames;
 pub mod journal;
 pub mod media;
@@ -18,3 +19,6 @@ pub mod paths;
 pub mod policy;
 pub mod screenfile;
 pub mod timeline;
+
+#[cfg(test)]
+mod testdir;
