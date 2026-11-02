@@ -40,6 +40,9 @@ const MAX_GUESS_MS: u64 = 6_000;
 const REFERENCES: usize = 8;
 const REFERENCE_MIN_MS: u64 = 3_000;
 const REFERENCE_MAX_MS: u64 = 15_000;
+/// A voice's stored segments this close together make one stretch for its reference, as words
+/// this close together make one passage.
+const REFERENCE_JOIN_MS: u64 = 900;
 /// A new session sends again at most this much of what the old one sent past its last answer.
 /// Silence gets no answer, so a muted microphone would otherwise be streamed again from the
 /// meeting's start, at twice real time at most; a provider that answered nothing for five
@@ -480,24 +483,47 @@ impl Ctx {
         Ok(())
     }
 
-    /// A clip of each voice heard so far, named after its id: the longest of its call passages
-    /// of at least 3 s, cut to 15 s. The most recently heard first, at most eight.
+    /// A clip of each voice heard so far, named after its id: the longest of its call passages,
+    /// or of its stretches of stored segments, of at least 3 s, cut to 15 s. The most recently
+    /// heard first, at most eight. The segments count because the pipeline cuts passages behind
+    /// the stream: a voice the provider named just before a drop has its id but maybe no
+    /// passage yet, and without a clip the next session would give it a second id.
     fn references(&self, reader: &TrackReader) -> Result<Vec<(String, Vec<u8>)>, Fail> {
-        let mut best: HashMap<String, (u64, u64, u64)> = HashMap::new();
+        let mut spans: Vec<(String, u64, u64)> = Vec::new();
         for stored in self.transcript.passages()? {
             let p = stored.passage;
             let Some(speaker) = p.speaker.filter(|s| call_number(s).is_some()) else {
                 continue;
             };
-            if p.track != Track::Call {
-                continue;
+            if p.track == Track::Call {
+                spans.push((speaker, p.start, p.end));
             }
+        }
+        let map = self.transcript.speaker_map()?;
+        let mut run: Option<(String, u64, u64)> = None;
+        for segment in self.transcript.segments(Track::Call, 0, u64::MAX)? {
+            let id = segment
+                .label
+                .and_then(|label| map.get(&(segment.epoch, label)).cloned());
+            match (&mut run, id) {
+                (Some(r), Some(id)) if r.0 == id && segment.start <= r.2 + REFERENCE_JOIN_MS => {
+                    r.2 = r.2.max(segment.end);
+                }
+                (_, id) => {
+                    spans.extend(run.take());
+                    run = id.map(|id| (id, segment.start, segment.end));
+                }
+            }
+        }
+        spans.extend(run);
+        let mut best: HashMap<String, (u64, u64, u64)> = HashMap::new();
+        for (speaker, start, end) in spans {
             let entry = best.entry(speaker).or_insert((0, 0, 0));
-            entry.2 = entry.2.max(p.end);
-            let length = p.end.saturating_sub(p.start);
+            entry.2 = entry.2.max(end);
+            let length = end.saturating_sub(start);
             if length >= REFERENCE_MIN_MS && length > entry.1.saturating_sub(entry.0) {
-                entry.0 = p.start;
-                entry.1 = p.end;
+                entry.0 = start;
+                entry.1 = end;
             }
         }
         let mut voices: Vec<(String, (u64, u64, u64))> = best

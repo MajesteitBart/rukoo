@@ -1284,6 +1284,53 @@ fn mistral_options(fake: &FakeStreaming, diarize: bool) -> PipelineOptions {
     }
 }
 
+/// 11l: a stream that drops before the pipeline cut any passage still sends a reference for
+/// every voice it named: the clips come from the stored segments, so no voice gets a second id.
+#[test]
+fn a_drop_before_any_passage_keeps_the_ids() {
+    let tmp = TempDir::new("speakers-mistral-early-drop");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(8, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    // The labelling session drops 20 s into the call, after all three voices spoke.
+    fake.state().fail_on = vec![200];
+    let options = PipelineOptions {
+        // The pipeline looks again only after the stream reconnected, so no passage exists
+        // yet when the second session starts.
+        timing: Timing {
+            poll: Duration::from_secs(2),
+            ..fast()
+        },
+        speakers: FollowerTiming {
+            stream_speed: 1000.0,
+            ..follower_timing()
+        },
+        ..mistral_options(&fake, true)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_done(&handle);
+    handle.shutdown();
+    let state = fake.state();
+    let labelling: Vec<_> = state.sessions.iter().filter(|s| s.diarize).collect();
+    assert_eq!(labelling.len(), 2, "one reconnect");
+    let mut names: Vec<&str> = labelling[1]
+        .references
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["call-1", "call-2", "call-3"]);
+    drop(state);
+    let all = events(&log, &rec.id());
+    let call = last_revisions(&all, "call");
+    let ids = assert_stable_ids(&call, &timeline_of(&pieces, 0));
+    let mut ids: Vec<&str> = ids.values().map(String::as_str).collect();
+    ids.sort();
+    assert_eq!(ids, ["call-1", "call-2", "call-3"]);
+}
+
 /// 11k: a meeting stopped while paused keeps the words the stream answered after the padding
 /// at the pause. Their estimated times fall in the padding and map to the last sample before
 /// it, on the end of the last window, and no window comes after that one. On the call, labelled,
