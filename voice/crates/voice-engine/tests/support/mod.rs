@@ -27,7 +27,7 @@ use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
 };
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
-use voice_sync::protect::TestProtector;
+use voice_sync::protect::{Protector, TestProtector};
 use voice_sync::{NoScreen, ScreenFiles, SyncTiming};
 
 /// CI machines are slow; every wait is generous.
@@ -715,6 +715,8 @@ pub struct Harness {
     pub screen_files: Arc<dyn ScreenFiles>,
     pub screen_media: Arc<dyn ScreenMedia>,
     pub sync_timing: SyncTiming,
+    /// The stand-in protector works on every platform; a test of DPAPI itself sets `Dpapi`.
+    pub protector: Arc<dyn Protector>,
 }
 
 impl Harness {
@@ -727,6 +729,7 @@ impl Harness {
             screen_files: Arc::new(NoScreen),
             screen_media: Arc::new(NoScreenMedia),
             sync_timing: SyncTiming::default(),
+            protector: Arc::new(TestProtector),
             recorder_exe: dir.join("no-recorder.exe"),
             dir,
             input: Arc::new(FakeInput::new(keys.clone())),
@@ -789,8 +792,7 @@ impl Harness {
             controller: self.timing.clone(),
             screen_files: Arc::clone(&self.screen_files),
             screen_media: Arc::clone(&self.screen_media),
-            // DPAPI only where a test asks for it: the stand-in works on every platform.
-            protector: Arc::new(TestProtector),
+            protector: Arc::clone(&self.protector),
             sync_timing: self.sync_timing.clone(),
         }
     }
@@ -824,5 +826,156 @@ impl Harness {
             self.mic.delivered.load(Ordering::SeqCst) >= before + 3200
         });
         self.keys.up(key);
+    }
+}
+
+// Bucket sync -------------------------------------------------------------------------------
+
+/// The fake bucket's name, access key and the secret the tests save.
+pub const BUCKET: &str = "test";
+pub const ACCESS_KEY: &str = "test";
+pub const BUCKET_SECRET: &str = "test-secret-4711";
+
+/// A fake S3 on a free port of this computer, objects in memory.
+pub fn fake_s3() -> voice_s3_fake::FakeS3 {
+    voice_s3_fake::FakeS3::start(BUCKET, ACCESS_KEY, None).expect("the fake S3 starts")
+}
+
+/// Fills in the fake bucket in Settings, saves the secret, passes Test connection and turns sync
+/// on, as a user would.
+pub fn connect_bucket(engine: &Engine, endpoint: &str) {
+    for (key, value) in [
+        ("storage.sync.service", "other"),
+        ("storage.sync.endpoint", endpoint),
+        ("storage.sync.region", "us-east-1"),
+        ("storage.sync.bucket", BUCKET),
+        ("storage.sync.accessKeyId", ACCESS_KEY),
+    ] {
+        engine
+            .settings_set(key, serde_json::json!(value))
+            .unwrap_or_else(|e| panic!("{key}: {e}"));
+    }
+    engine
+        .settings_sync_save_secret(BUCKET_SECRET.into())
+        .expect("the secret is saved");
+    engine.settings_sync_test().expect("Test connection passes");
+    engine
+        .settings_set("storage.sync.enabled", serde_json::json!(true))
+        .expect("sync turns on");
+}
+
+/// Settings' `sync` now.
+pub fn sync_state(engine: &Engine) -> Value {
+    engine.settings_state()["sync"].clone()
+}
+
+/// The 32 bytes of the master key in a recovery code: Crockford base32 after `RKV1-`.
+pub fn key_bytes(code: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let body = code.strip_prefix("RKV1-").expect("a recovery code");
+    let mut bits: u64 = 0;
+    let mut count = 0;
+    let mut bytes = Vec::new();
+    for c in body.bytes().filter(|c| *c != b'-') {
+        let value = ALPHABET
+            .iter()
+            .position(|a| *a == c.to_ascii_uppercase())
+            .expect("Crockford base32") as u64;
+        bits = (bits << 5) | value;
+        count += 5;
+        if count >= 8 {
+            count -= 8;
+            bytes.push((bits >> count) as u8);
+            bits &= (1 << count) - 1;
+        }
+    }
+    bytes.truncate(32);
+    bytes
+}
+
+/// Every object of the fake bucket and its plaintext, opened with the key of `code`. Fails when
+/// an object doesn't open: then it isn't RKV1 under that key and that name.
+pub fn decrypt_all(fake: &voice_s3_fake::FakeS3, code: &str) -> Vec<(String, Vec<u8>)> {
+    use voice_sync::format::{Header, Sealer, CHUNK, HEADER_LEN, TAG};
+    let key = voice_sync::recovery::decode(code).expect("the code decodes");
+    fake.objects()
+        .into_iter()
+        .map(|(name, bytes)| {
+            assert!(bytes.starts_with(b"RKV1"), "{name} isn't RKV1");
+            let header = Header::parse(&bytes[..HEADER_LEN as usize]).expect("a header");
+            let sealer = Sealer::open(&key, &name, &header)
+                .unwrap_or_else(|e| panic!("{name} doesn't open: {e}"));
+            let chunks = header.plain_len().div_ceil(CHUNK).max(1);
+            let mut plain = Vec::new();
+            for i in 0..chunks {
+                let from = (HEADER_LEN + i * (CHUNK + TAG)) as usize;
+                let to = (from + (CHUNK + TAG) as usize).min(bytes.len());
+                plain.extend(
+                    sealer
+                        .open_chunk(&header, i, &bytes[from..to])
+                        .unwrap_or_else(|e| panic!("chunk {i} of {name}: {e}")),
+                );
+            }
+            (name, plain)
+        })
+        .collect()
+}
+
+/// What a decrypted object is: `audio`, `transcript`, `meeting`, `timeline`, `manifest`,
+/// `index`, `jpeg`, `mp4` or `other`.
+pub fn kind_of(plain: &[u8]) -> &'static str {
+    if plain.starts_with(b"RIFF") {
+        return "audio";
+    }
+    if plain.starts_with(b"SQLite format 3\0") {
+        return "transcript";
+    }
+    if plain.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return "jpeg";
+    }
+    if plain.len() > 8 && &plain[4..8] == b"ftyp" {
+        return "mp4";
+    }
+    if let Ok(value) = serde_json::from_slice::<Value>(plain) {
+        return if value.get("files").is_some() {
+            "manifest"
+        } else if value.get("meetings").is_some() {
+            "index"
+        } else if value.get("tracks").is_some() {
+            "meeting"
+        } else {
+            "other"
+        };
+    }
+    let text = String::from_utf8_lossy(plain);
+    let first = text.lines().next().unwrap_or_default();
+    match serde_json::from_str::<Value>(first) {
+        Ok(line) if line.get("kind").is_some() => "timeline",
+        _ => "other",
+    }
+}
+
+/// The kinds of the bucket's objects, decrypted with `code`, sorted.
+pub fn bucket_kinds(fake: &voice_s3_fake::FakeS3, code: &str) -> Vec<&'static str> {
+    let mut kinds: Vec<&str> = decrypt_all(fake, code)
+        .iter()
+        .map(|(_, plain)| kind_of(plain))
+        .collect();
+    kinds.sort();
+    kinds
+}
+
+/// Bucket sync's clocks for tests: scans, backoff and debounces in fractions of a second.
+pub fn fast_sync() -> SyncTiming {
+    SyncTiming {
+        scan_live: Duration::from_millis(300),
+        scan_all: Duration::from_secs(2),
+        backoff_min: Duration::from_millis(100),
+        backoff_max: Duration::from_secs(1),
+        manifest_live: Duration::from_secs(1),
+        index_debounce: Duration::from_millis(500),
+        connect_timeout: Duration::from_secs(2),
+        request_timeout: Duration::from_secs(5),
+        ..SyncTiming::default()
     }
 }

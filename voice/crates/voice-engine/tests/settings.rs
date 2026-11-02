@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use support::{lock, wait_for, Harness, TempDir};
+use support::{lock, sync_state, wait_for, Harness, TempDir, BUCKET, BUCKET_SECRET};
 use voice_core::config::Consent;
 use voice_core::{ErrorKind, ProviderError};
 use voice_engine::Folder;
@@ -28,6 +28,7 @@ fn the_state_has_every_part_api_md_lists() {
         "version",
         "devMode",
         "platform",
+        "features",
         "theme",
         "locale",
         "config",
@@ -78,6 +79,10 @@ fn the_state_has_every_part_api_md_lists() {
         "a key never reaches the page"
     );
     assert_eq!(state["config"]["rewriting"]["keySaved"], false);
+    // Bucket sync is off; its part of Settings shows when its store opened.
+    assert_eq!(state["sync"]["state"], "off");
+    assert_eq!(state["features"]["sync"], state["sync"]["available"]);
+    assert_eq!(state["config"]["storage"]["sync"]["enabled"], false);
     engine.shutdown();
 }
 
@@ -742,6 +747,276 @@ fn folders_point_into_the_data_folder() {
     assert_eq!(
         engine.settings_state()["config"]["local"]["modelFolder"],
         h.dir.join("chosen").display().to_string()
+    );
+    engine.shutdown();
+}
+
+// Bucket sync (voice/ui/API.md, settings_sync_*) ---------------------------------------------
+
+fn sync_config(engine: &voice_engine::Engine) -> Value {
+    engine.settings_state()["config"]["storage"]["sync"].clone()
+}
+
+fn saved_sync(h: &Harness) -> Value {
+    h.saved_config()
+        .extra
+        .get("storage_sync")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+#[test]
+fn bucket_sync_turns_on_only_for_a_bucket_that_passed_its_test() {
+    let h = Harness::new("sync-settings");
+    h.config(json!({}));
+    let fake = support::fake_s3();
+    let engine = h.start();
+    assert_eq!(sync_config(&engine)["enabled"], false, "off by default");
+    assert_eq!(sync_state(&engine)["state"], "off");
+    assert_eq!(
+        code(engine.settings_set("storage.sync.enabled", json!(true))),
+        "needs_test"
+    );
+    for (key, value) in [
+        ("storage.sync.service", "other"),
+        ("storage.sync.endpoint", fake.endpoint().as_str()),
+        ("storage.sync.region", "us-east-1"),
+        ("storage.sync.bucket", BUCKET),
+        ("storage.sync.accessKeyId", support::ACCESS_KEY),
+    ] {
+        engine.settings_set(key, json!(value)).unwrap();
+    }
+    assert_eq!(code(engine.settings_sync_test()), "no_secret");
+    assert_eq!(
+        code(engine.settings_set("storage.sync.secret", json!(BUCKET_SECRET))),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(engine.settings_sync_save_secret(String::new())),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(engine.settings_sync_save_secret("x".repeat(1025))),
+        "invalid_value"
+    );
+
+    engine
+        .settings_sync_save_secret(BUCKET_SECRET.into())
+        .unwrap();
+    assert_eq!(sync_config(&engine)["secretSaved"], true);
+    assert_eq!(sync_config(&engine)["secret"], "");
+    let config_json = std::fs::read_to_string(h.data().join("config.json")).unwrap();
+    assert!(
+        !config_json.contains(BUCKET_SECRET),
+        "no secret in config.json"
+    );
+    assert!(h.data().join("sync").join("bucket-secret.bin").is_file());
+    assert!(!engine.settings_state().to_string().contains(BUCKET_SECRET));
+
+    // Test connection against the fake bucket marks exactly these fields as tested.
+    assert_eq!(
+        engine.settings_sync_test().unwrap(),
+        json!({"otherKeys": 0})
+    );
+    let saved = saved_sync(&h);
+    assert_eq!(saved["tested"].as_str().map(str::len), Some(64), "{saved}");
+    assert_eq!(saved["urlStyle"], "path");
+    assert_eq!(sync_config(&engine)["tested"], true);
+    engine
+        .settings_set("storage.sync.enabled", json!(true))
+        .unwrap();
+    assert_eq!(saved_sync(&h)["enabled"], true);
+
+    // Another bucket hasn't passed a test: sync goes off.
+    engine
+        .settings_set("storage.sync.bucket", json!("elsewhere"))
+        .unwrap();
+    assert_eq!(sync_config(&engine)["enabled"], false);
+    assert_eq!(sync_config(&engine)["tested"], false);
+    assert_eq!(
+        code(engine.settings_set("storage.sync.enabled", json!(true))),
+        "needs_test"
+    );
+    engine
+        .settings_set("storage.sync.bucket", json!(BUCKET))
+        .unwrap();
+    engine
+        .settings_set("storage.sync.enabled", json!(true))
+        .unwrap();
+
+    // A new secret needs a new test.
+    engine
+        .settings_sync_save_secret("another-secret".into())
+        .unwrap();
+    assert_eq!(sync_config(&engine)["enabled"], false);
+    assert_eq!(saved_sync(&h).get("tested"), None);
+    engine.settings_sync_test().unwrap();
+    engine
+        .settings_set("storage.sync.enabled", json!(true))
+        .unwrap();
+
+    // Removing the secret turns sync off, and the test needs a secret again.
+    engine.settings_remove_key("sync").unwrap();
+    let after = sync_config(&engine);
+    assert_eq!(
+        (&after["enabled"], &after["secretSaved"], &after["tested"]),
+        (&json!(false), &json!(false), &json!(false))
+    );
+    assert!(!h.data().join("sync").join("bucket-secret.bin").exists());
+    assert_eq!(code(engine.settings_sync_test()), "no_secret");
+    engine.shutdown();
+    fake.stop();
+}
+
+#[test]
+fn a_failed_test_says_why_and_leaves_sync_off() {
+    let h = Harness::new("sync-test-fails");
+    h.config(json!({}));
+    let fake = support::fake_s3();
+    let engine = h.start();
+    for (key, value) in [
+        ("storage.sync.service", "other"),
+        ("storage.sync.endpoint", fake.endpoint().as_str()),
+        ("storage.sync.bucket", "no-such-bucket"),
+        ("storage.sync.accessKeyId", support::ACCESS_KEY),
+    ] {
+        engine.settings_set(key, json!(value)).unwrap();
+    }
+    engine
+        .settings_sync_save_secret(BUCKET_SECRET.into())
+        .unwrap();
+    assert_eq!(code(engine.settings_sync_test()), "bucket");
+    engine
+        .settings_set("storage.sync.bucket", json!(BUCKET))
+        .unwrap();
+    engine
+        .settings_set("storage.sync.accessKeyId", json!("someone-else"))
+        .unwrap();
+    assert_eq!(code(engine.settings_sync_test()), "auth");
+    assert_eq!(sync_config(&engine)["tested"], false);
+    assert_eq!(
+        code(engine.settings_set("storage.sync.enabled", json!(true))),
+        "needs_test"
+    );
+    // An endpoint that isn't https, or on this computer, is never saved.
+    assert_eq!(
+        code(engine.settings_set("storage.sync.endpoint", json!("http://example.com"))),
+        "invalid_value"
+    );
+    engine.shutdown();
+    fake.stop();
+}
+
+#[test]
+fn a_plain_bucket_secret_moves_out_of_config_json_at_start() {
+    let h = Harness::new("sync-migrate");
+    h.config(json!({"storage_sync": {"bucket": "meetings", "secret": "plain-secret-1234"}}));
+    let engine = h.start();
+    let config_json = std::fs::read_to_string(h.data().join("config.json")).unwrap();
+    assert!(!config_json.contains("plain-secret-1234"), "{config_json}");
+    assert_eq!(saved_sync(&h)["bucket"], "meetings", "the rest stays");
+    assert_eq!(sync_config(&engine)["secretSaved"], true);
+    let blob = std::fs::read(h.data().join("sync").join("bucket-secret.bin")).unwrap();
+    assert!(blob.starts_with(b"RKVS"));
+    assert!(!contains(&blob, b"plain-secret-1234"));
+    engine.shutdown();
+    // Started again, nothing moves twice and the secret is still there.
+    let engine = h.start();
+    assert_eq!(sync_config(&engine)["secretSaved"], true);
+    engine.shutdown();
+}
+
+#[test]
+fn the_key_is_shown_marked_saved_copied_hidden_and_imported() {
+    let h = Harness::new("sync-key");
+    h.config(json!({}));
+    let engine = h.start();
+    assert_eq!(sync_state(&engine)["key"]["exists"], false);
+    let shown = engine.settings_sync_key("show", None).unwrap();
+    let code_text = shown["code"].as_str().unwrap().to_string();
+    assert!(code_text.starts_with("RKV1-"), "{code_text}");
+    let id = shown["id"].as_str().unwrap().to_string();
+    assert_eq!(id.len(), 8);
+    let key = sync_state(&engine)["key"].clone();
+    assert_eq!(
+        (&key["exists"], &key["id"], &key["exported"]),
+        (&json!(true), &json!(id), &json!(false))
+    );
+    // The same key every time, and never in Settings' state.
+    assert_eq!(
+        engine.settings_sync_key("show", None).unwrap()["code"],
+        code_text.as_str()
+    );
+    assert!(!engine.settings_state().to_string().contains(&code_text));
+    engine.settings_sync_key("saved", None).unwrap();
+    assert_eq!(sync_state(&engine)["key"]["exported"], true);
+
+    // Copy goes through the hidden clipboard path and never to the page.
+    engine.settings_sync_key_copy().unwrap();
+    assert_eq!(*lock(&h.input.hidden_copies), vec![code_text.clone()]);
+
+    assert_eq!(
+        code(engine.settings_sync_key("import", Some("RKV1-not-a-key".into()))),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(engine.settings_sync_key("import", None)),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(engine.settings_sync_key("forget", None)),
+        "invalid_value"
+    );
+    // Nothing was uploaded yet, so this computer may take a key, in any case and spacing.
+    let messy = code_text.to_lowercase().replace('-', " ");
+    let imported = engine.settings_sync_key("import", Some(messy)).unwrap();
+    assert_eq!(imported["id"], id.as_str());
+    engine.shutdown();
+}
+
+#[cfg(windows)]
+#[test]
+fn dpapi_keeps_neither_the_secret_nor_the_key_in_plain_text() {
+    let mut h = Harness::new("sync-dpapi");
+    h.protector = std::sync::Arc::new(voice_sync::protect::Dpapi);
+    h.config(json!({}));
+    let engine = h.start();
+    engine
+        .settings_sync_save_secret(BUCKET_SECRET.into())
+        .unwrap();
+    let code_text = engine.settings_sync_key("show", None).unwrap()["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let key = support::key_bytes(&code_text);
+    assert_eq!(key.len(), 32);
+    let sync_dir = h.data().join("sync");
+    let master = std::fs::read(sync_dir.join("master-key.bin")).unwrap();
+    let secret = std::fs::read(sync_dir.join("bucket-secret.bin")).unwrap();
+    assert!(master.starts_with(b"RKVK") && secret.starts_with(b"RKVS"));
+    for (name, bytes) in [("master-key.bin", &master), ("bucket-secret.bin", &secret)] {
+        assert!(!contains(bytes, &key), "{name} holds the key");
+        assert!(
+            !contains(bytes, BUCKET_SECRET.as_bytes()),
+            "{name} holds the secret"
+        );
+    }
+    let key_json = std::fs::read_to_string(sync_dir.join("key.json")).unwrap();
+    assert!(!key_json.contains(BUCKET_SECRET) && !key_json.contains(&code_text));
+    let config_json = std::fs::read(h.data().join("config.json")).unwrap();
+    assert!(!contains(&config_json, &key));
+    assert!(!contains(&config_json, BUCKET_SECRET.as_bytes()));
+    engine.shutdown();
+    // A new start opens both again.
+    let engine = h.start();
+    assert_eq!(sync_config(&engine)["secretSaved"], true);
+    assert_eq!(
+        engine.settings_sync_key("show", None).unwrap()["code"],
+        code_text.as_str()
     );
     engine.shutdown();
 }
