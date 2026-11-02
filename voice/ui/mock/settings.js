@@ -44,7 +44,8 @@ const MODELS = {
   anthropic: ['claude-haiku-4-5', 'claude-sonnet-4-5'],
   openrouter: ['mistralai/mistral-small', 'openai/gpt-4o-mini'],
   ollama: ['llama3.2:3b', 'qwen2.5:7b'],
-  custom: []
+  // An OpenAI-compatible proxy in front of Mistral lists Mistral's ids.
+  custom: ['voxtral-mini-latest', REALTIME_MODEL]
 };
 
 // Ownkey's filler lists and protection table (text_cleanup.py), for a preview close to what the app returns.

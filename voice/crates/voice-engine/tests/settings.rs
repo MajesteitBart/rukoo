@@ -329,6 +329,9 @@ fn a_realtime_model_is_refused_outside_meetings() {
             "Realtime models work for meeting transcription only."
         );
     }
+    // The name decides, whatever the provider: a proxy in front of Mistral lists the same ids.
+    let error = save(&engine, json!({"target": "transcription", "provider": "custom", "endpoint": "http://localhost:1234/v1/audio/transcriptions", "model": realtime, "apiKey": null})).unwrap_err();
+    assert_eq!(error.code, "invalid_value", "custom");
     let cfg = h.saved_config();
     assert_eq!(cfg.audio_provider, "orukeet", "nothing was saved");
     assert_ne!(cfg.rewrite_model, realtime);

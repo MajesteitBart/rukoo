@@ -248,6 +248,14 @@ function streams(provider, model) {
   return Boolean(prefix) && String(model || '').trim().startsWith(prefix);
 }
 
+// Whether a model's name is a realtime model's, whatever the provider: an OpenAI-compatible proxy can list Mistral's
+// ids too, and the engine refuses such a name for dictation and rewriting from any provider (API.md,
+// settings_save_provider).
+function realtimeName(model) {
+  const id = String(model || '').trim();
+  return state.providers.audio.some((p) => p.streamingPrefix && id.startsWith(p.streamingPrefix));
+}
+
 // How meeting audio goes to the provider: `stream` for a realtime model, else recorded windows. An agreement covers
 // one of the two.
 function consentMode(provider, model) {
@@ -419,7 +427,7 @@ function providerForm(target) {
   const presets = presetEndpoints(target, provider);
   const models = modelLists[target];
   // Only the meetings form offers realtime models; the other two would refuse them on Save.
-  const offered = (models?.list || []).filter((id) => target === 'meetings' || !streams(provider, id));
+  const offered = (models?.list || []).filter((id) => target === 'meetings' || !realtimeName(id));
   const fs = formStatus[target];
 
   const options = ids.map((id) => `<option value="${esc(id)}" ${id === provider ? 'selected' : ''}>${esc(providerLabel(id, target))}</option>`).join('');

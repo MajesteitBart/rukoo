@@ -281,9 +281,9 @@ check('a realtime model asks to stream, and a batch agreement doesn\'t cover it'
 });
 
 check('only the meetings form offers realtime models', async ({ open, page }) => {
-  const offered = async (form) => {
+  const offered = async (form, provider = 'mistral') => {
     await open(`settings.html?mock=1&lang=en&page=${form === 'meetings' ? 'meetingTranscription' : form}`);
-    await page.selectOption(`[data-field="${form}.provider"]`, 'mistral');
+    await page.selectOption(`[data-field="${form}.provider"]`, provider);
     await page.click(`[data-a="refresh:${form}"]`);
     await page.waitForSelector(`[data-form="${form}"] .field-help:text-matches("models? found")`);
     return page.locator(`#models-${form} option`).evaluateAll((options) => options.map((o) => o.value));
@@ -293,6 +293,10 @@ check('only the meetings form offers realtime models', async ({ open, page }) =>
   assert.ok(!dictation.some((id) => id.startsWith('voxtral-mini-transcribe-realtime')), dictation.join());
   assert.ok(!(await offered('rewriting')).some((id) => id.startsWith('voxtral-mini-transcribe-realtime')));
   assert.ok((await offered('meetings')).includes('voxtral-mini-transcribe-realtime-3'));
+  // The engine refuses the name from every provider, so a proxy that lists it doesn't get it offered for dictation.
+  const proxied = await offered('transcription', 'custom');
+  assert.ok(proxied.includes('voxtral-mini-latest'), proxied.join());
+  assert.ok(!proxied.some((id) => id.startsWith('voxtral-mini-transcribe-realtime')), proxied.join());
 });
 
 check('Dutch is complete on every page', async ({ open, page }) => {
