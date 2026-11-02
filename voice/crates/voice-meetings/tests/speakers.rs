@@ -439,8 +439,9 @@ fn a_slow_reel_after_a_crash_keeps_the_gate() {
     let pieces = three_voices(12, 1.5);
     let rec = finished_call(&lib, &pieces);
     // The worker crashes 22 pushes in; the new one takes 120 ms a push, so its reel of about
-    // 25 pushes takes three times the stall. The stall is long enough that a busy PC doesn't
-    // trip it elsewhere.
+    // 25 pushes takes 1.5 times the stall, and without the reel's progress the test fails. Other
+    // pushes move the settled position every 120 ms, so only a pause of the disk or the scheduler
+    // could trip the stall elsewhere: with a 1 s stall, 1 suite run in 51 failed that way.
     let d = ScriptedDiarizer::with(|s| {
         s.crash_on = vec![22];
         s.slow_after = 22;
@@ -448,7 +449,7 @@ fn a_slow_reel_after_a_crash_keeps_the_gate() {
     });
     let options = PipelineOptions {
         speakers: FollowerTiming {
-            stall: Duration::from_millis(1_000),
+            stall: Duration::from_millis(2_000),
             ..follower_timing()
         },
         ..labelled(&d)
