@@ -768,7 +768,7 @@ function markText(k) {
     }
     // A stretch without frames; a gap stays about missing audio.
     case 'screen_gap': {
-      const key = { locked: 'meeting.mark.gapScreenLocked', crash: 'meeting.mark.gapScreenCrash', device: 'meeting.mark.gapScreenDevice' }[k.detail] || 'meeting.mark.gapScreen';
+      const key = { locked: 'meeting.mark.gapScreenLocked', crash: 'meeting.mark.gapScreenCrash', device: 'meeting.mark.gapScreenDevice', monitor: 'meeting.mark.gapScreenMonitor' }[k.detail] || 'meeting.mark.gapScreen';
       return t(key, { length: span || length(0) });
     }
     default:

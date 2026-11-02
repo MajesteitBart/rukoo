@@ -967,7 +967,7 @@ mod tests {
     /// A recorded monitor that leaves the monitor list is noticed without the capture's `Closed`
     /// notice, which the synthetic source never sends: the recording moves to the other monitor
     /// with a `monitor` line, reason `lost`. Pinned with `--monitor`, the process waits for its
-    /// monitor instead and writes nothing.
+    /// monitor instead and writes one `no_monitor` line, however often it looks again.
     pub fn a_monitor_that_leaves_the_list_is_noticed() {
         let m = TempMeeting::new("monitor-gone", "video");
         let test = spec("monitors=2,monitor-gone-at=3000");
@@ -1019,6 +1019,9 @@ mod tests {
             .filter(|f| t(f) > 4_000)
             .collect();
         assert!(late.is_empty(), "frames after the monitor went: {late:?}");
+        let waits = of_kind(&lines, "no_monitor");
+        assert_eq!(waits.len(), 1, "{}", show(&lines));
+        assert!((3_000..4_500).contains(&t(waits[0])), "{}", show(&lines));
         stop(&m, &mut recorder, &mut screen);
     }
 

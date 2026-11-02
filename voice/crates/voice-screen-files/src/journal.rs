@@ -96,6 +96,8 @@ pub enum Line {
     },
     /// The D3D device was removed or reset; the next `capture` ends the gap.
     DeviceLost { t: u64 },
+    /// No monitor is left to record, or a pinned one went away; the next `capture` ends the wait.
+    NoMonitor { t: u64 },
     /// The session locked or disconnected.
     Lock { t: u64 },
     /// The session came back.
@@ -130,6 +132,7 @@ impl Line {
             | Line::Frame { t, .. }
             | Line::Dropped { t, .. }
             | Line::DeviceLost { t }
+            | Line::NoMonitor { t }
             | Line::Lock { t }
             | Line::Unlock { t }
             | Line::Heartbeat { t, .. }
@@ -422,6 +425,7 @@ mod tests {
                 t: 12_000,
                 last_seen: 9_700,
             },
+            Line::NoMonitor { t: 13_000 },
             Line::Stop {
                 t: 15_000,
                 reason: "meeting".into(),
@@ -462,12 +466,13 @@ mod tests {
             r#"{"kind":"video_end","t":9500,"seq":1,"reason":"error","bytes":1967880}"#
         );
         assert_eq!(text[11], r#"{"kind":"crash","t":12000,"lastSeen":9700}"#);
+        assert_eq!(text[12], r#"{"kind":"no_monitor","t":13000}"#);
         for (line, json) in lines.iter().zip(&text) {
             assert!(json.starts_with(r#"{"kind":""#), "{json}");
             assert_eq!(&serde_json::from_str::<Line>(json).unwrap(), line);
         }
         assert_eq!(lines[0].t(), Some(120));
-        assert_eq!(lines[12].t(), Some(15_000));
+        assert_eq!(lines.last().unwrap().t(), Some(15_000));
         assert_eq!(Line::Unknown.t(), None);
         // A frame line without a language reads as `None`; new fields are ignored.
         let older: Line = serde_json::from_str(

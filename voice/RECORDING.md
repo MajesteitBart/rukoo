@@ -246,13 +246,14 @@ The screen process writes it after its `session` line, to a temporary name that 
 |---|---|---|
 | `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on other platforms |
 | `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the Windows device name, such as `\\.\DISPLAY1` |
-| `capture` | `t`, `wall`, `monitor`, `width`, `height` | The first frame of a capture session arrived: at the start, after a switch, an unlock, a resume or a new graphics device |
+| `capture` | `t`, `wall`, `monitor`, `width`, `height` | The first frame of a capture session arrived: at the start, after a switch, an unlock, a resume, a new graphics device or a monitor that came back |
 | `video` | `t`, `seq`, `file`, `width`, `height`, `fps`, `encoder`, `hardware` | A video file starts; its media time 0 is meeting time `t`. `encoder` is the encoder's name and `hardware` whether it is a hardware encoder |
 | `video_end` | `t`, `seq`, `reason`, `bytes` | A video file ended; `t` is the end of its last sample. `reason` is `pause`, `lock`, `monitor`, `resize`, `clock`, `stop`, `error`, `disk` or `crash` |
 | `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what Windows read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
 | `dropped` | `t`, `what`, `reason` | A part stopped for the rest of the meeting: `what` is `video` or `frames`, `reason` is `disk`, `encoder` or `device` |
 | `lock`, `unlock` | `t` | The session locked or disconnected, and came back. Nothing is captured in between |
 | `device_lost` | `t` | The graphics device was removed or reset. The next `capture` line ends the gap |
+| `no_monitor` | `t` | No monitor is left to record, or the one `--monitor` pinned went away. Written once per wait; the next `capture` line ends it |
 | `heartbeat` | `t`, `wall`, `boot`, `frames`, `videoBytes` | Every 2 s: the frames saved and the bytes of the open video file |
 | `crash` | `t`, `lastSeen` | Written by a resumed session: the previous one died, and the screen is missing from `lastSeen` to `t` |
 | `stop` | `t`, `reason` | Recording the screen ended: `meeting` with the recorder's `stop`, `dropped` when both parts were dropped, `failed` when the app gave up restarting it, `interrupted` when the recording ended without it, such as when the recorder was gone. Nothing follows |
@@ -323,7 +324,7 @@ rukoo-voice-screen inspect <file.mp4>
 
 - It refuses to start while `screen.json` names a process that answers on its port (exit code 4), when the journal has `stop`, and when `screen/` has content and `--resume` isn't given (exit code 3).
 - It waits up to 5 s for a `session` line in the timeline, else it exits with code 1.
-- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, capture stops until it comes back.
+- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, or no monitor is left, capture stops until one is back, with a `no_monitor` line.
 - It follows the timeline every 250 ms: it stops capturing at `pause` and starts again at `resume`, and at `stop` it ends at the `stop` line's `t`, finishes the video file, reads the frames still queued, writes `video_end` and `stop` with reason `meeting`, removes `screen.json` and exits with code 0.
 - It stops by itself, with reason `interrupted`, when the timeline has had no new line for 60 s of awake time and nobody asked its `status` in that time: the screen is never recorded without the audio.
 - It never reads stdin and writes nothing to stdout. Its stderr log never holds frame text, window titles or monitor names. Frames are logged by id, size, bytes and JPEG and OCR time only. A development copy also logs the graphics memory it uses once a minute.

@@ -9265,6 +9265,10 @@
     "message": "Screen: not recorded for {length} while the graphics card restarted",
     "description": "Meeting view transcript: no screen frames while the graphics device was reset; length is a duration. src/renderer/meeting.js (markText)"
   },
+  "meeting.mark.gapScreenMonitor": {
+    "message": "Screen: not recorded for {length} while no monitor was connected",
+    "description": "Meeting view transcript: no screen frames because Rukoo Voice had no monitor to record, for example while the only monitor was turned off or unplugged; length is a duration. src/renderer/meeting.js (markText)"
+  },
   "meeting.sidebar.label": {
     "message": "Meetings",
     "description": "Sidebar in meeting mode: accessible name of the sidebar and of its list of meetings. src/renderer/app.js (renderShell), src/renderer/meeting.js (sidebarHtml)"

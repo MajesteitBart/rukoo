@@ -681,6 +681,7 @@ test('the transcript says where the screen changed, folds a run of changes into 
     ev('mark', M, { id: 'gap-screen-000100000', kind: 'screen_gap', at: 100000, until: 160000, track: 'screen', detail: 'locked', label: null }),
     ev('mark', M, { id: 'gap-screen-000170000', kind: 'screen_gap', at: 170000, until: 173000, track: 'screen', detail: 'crash', label: null }),
     ev('mark', M, { id: 'gap-screen-000180000', kind: 'screen_gap', at: 180000, until: 182000, track: 'screen', detail: 'device', label: null }),
+    ev('mark', M, { id: 'gap-screen-000184000', kind: 'screen_gap', at: 184000, until: 188000, track: 'screen', detail: 'monitor', label: null }),
     ev('mark', M, { id: 'dropped-frames', kind: 'dropped', at: 190000, until: null, track: 'screen', detail: 'disk', label: null })
   ]);
   const res = data(await call('read_meeting_transcript', { meeting_id: M }));
@@ -696,10 +697,11 @@ test('the transcript says where the screen changed, folds a run of changes into 
     '[00:01:40] [No screen for 60 s: the computer was locked]',
     '[00:02:50] [No screen for 3 s: the screen recorder restarted]',
     '[00:03:00] [No screen for 2 s: the graphics device restarted]',
+    '[00:03:04] [No screen for 4 s: no monitor was connected]',
     '[00:03:10] [Rukoo Voice stopped recording the screen to keep the audio]'
   ]);
   assert.doesNotMatch(res.transcript, /Secret|Slide|answers/);
-  assert.equal(res.count, 12);
+  assert.equal(res.count, 13);
   assert.deepEqual([res.meeting.screen, res.meeting.frames], ['frames', 6]);
   const listed = data(await call('search_meetings')).meetings[0];
   assert.deepEqual([listed.screen, listed.frames], ['frames', 6]);
@@ -708,7 +710,7 @@ test('the transcript says where the screen changed, folds a run of changes into 
   assert.deepEqual(untag(stretch.transcript).trim().split('\n'), ['[00:00:20] [Screen changed 2 times until 00:00:30; get_meeting_clip shows them]']);
   // In a meeting chat a frame is new once, like a passage.
   const c = hub.create({ agent: 'claude', meeting: { id: M } });
-  assert.equal(data(await call('read_meeting_transcript', {}, c.id)).count, 12);
+  assert.equal(data(await call('read_meeting_transcript', {}, c.id)).count, 13);
   feed([frameEv(200000, 'Later slide')]);
   assert.deepEqual(untag(data(await call('read_meeting_transcript', {}, c.id)).transcript).trim().split('\n'), ['[00:03:20] [Screen changed; get_meeting_frame shows it]']);
   assert.equal(data(await call('read_meeting_transcript', {}, c.id)).count, 0);

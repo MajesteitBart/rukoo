@@ -2288,7 +2288,7 @@ const FRAME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const TRACK_WORDS = { mic: 'the microphone', call: 'the call audio', screen: 'the screen' };
 const GAP_WHY = { crash: 'the recorder restarted', device: 'the device was lost', suspend: 'the computer was asleep' };
 // Why a screen_gap mark has no screen; gap stays about audio (voice/PROTOCOL.md "mark").
-const SCREEN_GAP_WHY = { locked: 'the computer was locked', crash: 'the screen recorder restarted', device: 'the graphics device restarted' };
+const SCREEN_GAP_WHY = { locked: 'the computer was locked', crash: 'the screen recorder restarted', device: 'the graphics device restarted', monitor: 'no monitor was connected' };
 const DICTATING = ' (dictating into another app; the call heard it, but it was not part of the conversation)';
 // Frames with nothing else between them become one transcript line while they span at most this.
 const FRAME_FOLD_MS = 60000;

@@ -303,6 +303,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         encoder: None,
         rebuild_at: None,
         capture_retry_at: None,
+        no_monitor: false,
         paused: timeline.paused,
         timeline_paused: timeline.paused,
         pause_from: None,
@@ -439,6 +440,8 @@ struct Screen {
     /// The encoder failed once: a new device and a new file at this moment.
     rebuild_at: Option<Instant>,
     capture_retry_at: Option<Instant>,
+    /// A `no_monitor` line is out and no `capture` has ended its wait yet.
+    no_monitor: bool,
     paused: bool,
     /// Whether the timeline's latest `pause` or `resume` line is a `pause`. The timeline is what
     /// the recorder did, so a control `resume` that arrives after a newer pause doesn't resume.
@@ -717,13 +720,19 @@ impl Screen {
             Some(id) => {
                 let _ = self.switch_monitor(&id, "lost");
             }
-            // No monitor, or a pinned one that went away: wait until it is back.
+            // No monitor, or a pinned one that went away: wait until it is back. The journal
+            // says so once, so Rukoo can tell the wait from a screen that didn't change.
             None => {
                 if self.capturing {
                     log(format_args!("{} is gone; waiting for it", self.monitor.id));
                 }
                 self.end_video("monitor");
                 self.stop_capture();
+                if !self.no_monitor {
+                    self.no_monitor = true;
+                    let t = self.now_t();
+                    self.write(&Line::NoMonitor { t });
+                }
                 self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
             }
         }
@@ -818,6 +827,7 @@ impl Screen {
         if self.awaiting_capture {
             self.awaiting_capture = false;
             self.captured = true;
+            self.no_monitor = false;
             let line = Line::Capture {
                 t,
                 wall: now.wall,

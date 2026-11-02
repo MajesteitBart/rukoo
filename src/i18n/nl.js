@@ -2374,6 +2374,7 @@
   "meeting.mark.gapScreenCrash": "Scherm: {length} niet opgenomen terwijl de schermopname opnieuw startte",
   "meeting.mark.gapScreenLocked": "Scherm: {length} niet opgenomen terwijl de computer vergrendeld was",
   "meeting.mark.gapScreenDevice": "Scherm: {length} niet opgenomen terwijl de videokaart opnieuw startte",
+  "meeting.mark.gapScreenMonitor": "Scherm: {length} niet opgenomen terwijl er geen beeldscherm was aangesloten",
   "meeting.sidebar.label": "Meetings",
   "meeting.sidebar.undated": "Nog niet begonnen",
   "meeting.sidebar.recordingTitle": "{title}, wordt nu opgenomen",

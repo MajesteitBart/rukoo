@@ -15,6 +15,7 @@
 //! | `lock` then `unlock` (or `stop`) | mark `gap-screen-<t>`, kind `screen_gap`, detail `locked` |
 //! | `crash` | mark `gap-screen-<lastSeen>`, kind `screen_gap`, detail `crash` |
 //! | `device_lost` then `capture` (or `stop`) | mark `gap-screen-<t>`, kind `screen_gap`, detail `device` |
+//! | `no_monitor` then `capture` (or `stop`) | mark `gap-screen-<t>`, kind `screen_gap`, detail `monitor` |
 //! | `stop` reason `failed`: the app gave up on the screen process | mark `dropped-frames`, kind `dropped`, detail `crash` |
 
 use std::io;
@@ -63,6 +64,8 @@ pub struct ScreenFollower {
     locked: Option<u64>,
     /// The `t` of a `device_lost` without the `capture` that ends it yet.
     device_lost: Option<u64>,
+    /// The `t` of a `no_monitor` without the `capture` that ends it yet.
+    no_monitor: Option<u64>,
     /// The highest `t` of any line, and whether any line came at all.
     last_t: u64,
     seen_lines: bool,
@@ -86,6 +89,7 @@ impl ScreenFollower {
             reader: JournalReader::new(meeting),
             locked: None,
             device_lost: None,
+            no_monitor: None,
             last_t: 0,
             seen_lines: false,
             stopped: None,
@@ -173,9 +177,15 @@ impl ScreenFollower {
             Line::DeviceLost { t } => {
                 self.device_lost.get_or_insert(*t);
             }
+            Line::NoMonitor { t } => {
+                self.no_monitor.get_or_insert(*t);
+            }
             Line::Capture { t, .. } => {
                 if let Some(at) = self.device_lost.take() {
                     out.push(ScreenDerived::Mark(gap(at, *t, "device")));
+                }
+                if let Some(at) = self.no_monitor.take() {
+                    out.push(ScreenDerived::Mark(gap(at, *t, "monitor")));
                 }
             }
             Line::Crash { t, last_seen } => {
@@ -207,7 +217,7 @@ impl ScreenFollower {
         }
     }
 
-    /// Ends an open lock gap and an open device gap at `until`. A gap that would end where it
+    /// Ends an open lock, device or monitor gap at `until`. A gap that would end where it
     /// starts says nothing and is left out.
     fn close_open(&mut self, until: u64, out: &mut Vec<ScreenDerived>) {
         if let Some(at) = self.locked.take().filter(|at| *at < until) {
@@ -215,6 +225,9 @@ impl ScreenFollower {
         }
         if let Some(at) = self.device_lost.take().filter(|at| *at < until) {
             out.push(ScreenDerived::Mark(gap(at, until, "device")));
+        }
+        if let Some(at) = self.no_monitor.take().filter(|at| *at < until) {
+            out.push(ScreenDerived::Mark(gap(at, until, "monitor")));
         }
     }
 
@@ -231,8 +244,8 @@ impl ScreenFollower {
         match self.stopped {
             Some(_) => {}
             None => {
-                // A lock or device gap still open explains the silence to the end; otherwise the
-                // screen process vanished after its last line.
+                // A lock, device or monitor gap still open explains the silence to the end;
+                // otherwise the screen process vanished after its last line.
                 self.close_open(timeline_stop_t.max(self.last_t), &mut out);
                 if out.is_empty() && self.seen_lines && self.last_t < timeline_stop_t {
                     out.push(ScreenDerived::Mark(gap(
@@ -376,6 +389,9 @@ mod tests {
                 json!({"kind":"device_lost","t":10000}),
                 json!({"kind":"capture","t":10500,"wall":3,"monitor":"\\\\.\\DISPLAY2","width":1440,"height":2560}),
                 json!({"kind":"future_kind","t":11000}),
+                json!({"kind":"video_end","t":11100,"seq":1,"reason":"monitor","bytes":100}),
+                json!({"kind":"no_monitor","t":11100}),
+                json!({"kind":"capture","t":11900,"wall":4,"monitor":"\\\\.\\DISPLAY2","width":1440,"height":2560}),
             ],
         );
         // A torn last line waits for its newline.
@@ -442,6 +458,13 @@ mod tests {
                     Some(10500),
                     Some("device".into())
                 ),
+                (
+                    "gap-screen-11100".into(),
+                    "screen_gap".into(),
+                    11100,
+                    Some(11900),
+                    Some("monitor".into())
+                ),
             ]
         );
         assert!(found.iter().all(|m| m.track == Some(MarkTrack::Screen)));
@@ -495,6 +518,7 @@ mod tests {
                 json!({"kind":"crash","t":6000,"lastSeen":3000}),
                 json!({"kind":"lock","t":6000}),
                 json!({"kind":"device_lost","t":6500}),
+                json!({"kind":"no_monitor","t":7000}),
                 json!({"kind":"stop","t":8000,"reason":"meeting"}),
             ],
         );
@@ -518,6 +542,7 @@ mod tests {
                 ("gap-screen-3000".into(), 3000, Some(6000), "crash".into()),
                 ("gap-screen-6000".into(), 6000, Some(8000), "locked".into()),
                 ("gap-screen-6500".into(), 6500, Some(8000), "device".into()),
+                ("gap-screen-7000".into(), 7000, Some(8000), "monitor".into()),
             ]
         );
 
