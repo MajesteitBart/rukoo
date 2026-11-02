@@ -442,6 +442,79 @@ fn network_failures_and_timeouts() {
     assert!(!error.message.contains(SECRET) && !error.message.contains("X-Amz-"));
 }
 
+/// A bucket on a slow uplink: it reads each request's body at `rate` bytes a second, then answers
+/// 200. Returns its endpoint.
+fn slow_reader(rate: u64) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+            let length: u64 = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            let mut left = length;
+            let mut chunk = vec![0u8; 8192];
+            while left > 0 {
+                let n = stream
+                    .read(&mut chunk[..left.min(8192) as usize])
+                    .unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                left -= n as u64;
+                std::thread::sleep(Duration::from_secs_f64(n as f64 / rate as f64));
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nETag: \"slow\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    endpoint
+}
+
+#[test]
+fn a_body_gets_the_time_its_bytes_need_on_a_slow_uplink() {
+    // 192 KiB at 64 KiB/s takes 3 s, three times this bucket's request timeout. The body adds
+    // 192 KiB at 32 KiB/s, 6 s, to it.
+    let endpoint = slow_reader(64 << 10);
+    let b = Bucket::new(
+        &config(&endpoint, UrlStyle::Path, ""),
+        SECRET,
+        Duration::from_secs(2),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let body = vec![7u8; 192 << 10];
+    let started = std::time::Instant::now();
+    b.put("slow", &body).unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "it did go slowly"
+    );
+    assert_eq!(
+        b.upload_part("slow", "upload", 1, &body).unwrap(),
+        "\"slow\""
+    );
+    assert_eq!(
+        Bucket::timeout_for(Duration::from_secs(120), 16 << 20),
+        Duration::from_secs(120 + 512),
+        "a 16 MiB object at 32 KiB/s, within the signed URL's 15 minutes"
+    );
+}
+
 #[test]
 fn an_expired_signed_url_is_refused() {
     let fake = start();

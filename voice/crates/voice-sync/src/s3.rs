@@ -3,6 +3,11 @@
 //! Requests are presigned for 15 minutes. A PUT carries `Content-Type: application/octet-stream`
 //! and no other header of its own. Error messages never contain the secret or a signed URL.
 //!
+//! A request without a body may take the request timeout (120 s in Voice). One that moves a body,
+//! an upload or a ranged download, gets the time its bytes need at [`MIN_RATE`] on top, so a
+//! 16 MiB object or an 8 MiB part still goes up over a slow uplink instead of timing out on every
+//! try.
+//!
 //! Keys passed in and returned are without the user's `<prefix>`; this module adds and strips it.
 //!
 //! Errors from the status and the XML `<Code>`: a failed connection or DNS lookup is `Network`;
@@ -32,11 +37,16 @@ const XML_LIMIT: u64 = 16 << 20;
 const GET_LIMIT: u64 = 512 << 20;
 /// Keys per DeleteObjects request.
 const DELETE_BATCH: usize = 1000;
+/// The slowest transfer Voice waits for: 32 KiB/s, about 256 kbit/s. A 16 MiB PUT then may take
+/// 120 s plus 512 s, still within the 15 minutes its signed URL lasts.
+pub const MIN_RATE: u64 = 32 << 10;
 
 pub struct Bucket {
     bucket: rusty_s3::Bucket,
     credentials: rusty_s3::Credentials,
     agent: ureq::Agent,
+    /// The agent's whole-request timeout, which a request without a body keeps.
+    request: Option<Duration>,
     prefix: String,
     /// The host requests go to, for messages.
     host: String,
@@ -90,8 +100,15 @@ impl Bucket {
         Bucket::with_agent(cfg, secret, agent)
     }
 
+    /// How long a request that moves `bytes` of body may take: the request timeout plus what the
+    /// bytes need at [`MIN_RATE`].
+    pub fn timeout_for(request: Duration, bytes: u64) -> Duration {
+        request.saturating_add(Duration::from_millis(bytes.saturating_mul(1000) / MIN_RATE))
+    }
+
     /// The agent settings [`new`](Self::new) uses: connect and whole-request timeouts, HTTP
-    /// errors as answers, no redirects.
+    /// errors as answers, no redirects. A request with a body gets a longer whole-request timeout
+    /// of its own ([`timeout_for`](Self::timeout_for)).
     #[doc(hidden)]
     pub fn agent_config(connect: Duration, request: Duration) -> ureq::config::Config {
         ureq::Agent::config_builder()
@@ -136,10 +153,12 @@ impl Bucket {
                 )
             })?;
         let host = bucket.base_url().host_str().unwrap_or_default().to_string();
+        let request = agent.config().timeouts().global;
         Ok(Bucket {
             bucket,
             credentials: rusty_s3::Credentials::new(cfg.access_key_id.clone(), secret.to_string()),
             agent,
+            request,
             prefix: cfg.key_prefix(),
             host,
         })
@@ -178,7 +197,8 @@ impl Bucket {
             None => Vec::new(),
         };
         // A server that ignores Range sends the whole object, so the cap stays the same.
-        let reply = self.send(Method::Get, url, &headers, None, GET_LIMIT)?;
+        let expected = range.map_or(0, |(from, to)| to - from + 1);
+        let reply = self.send_sized(Method::Get, url, &headers, None, GET_LIMIT, expected)?;
         match (reply.status, range) {
             (206, Some((from, to))) if reply.body.len() as u64 > to - from + 1 => {
                 Err(SyncError::new(
@@ -502,7 +522,22 @@ impl Bucket {
         body: Option<&[u8]>,
         limit: u64,
     ) -> Result<Reply, SyncError> {
-        fn with<B>(
+        let sent = body.map_or(0, |b| b.len() as u64);
+        self.send_sized(method, url, headers, body, limit, sent)
+    }
+
+    /// [`send`](Self::send) for a request that moves `bytes` of body either way, which may take
+    /// that much longer.
+    fn send_sized(
+        &self,
+        method: Method,
+        url: Url,
+        headers: &[(&'static str, String)],
+        body: Option<&[u8]>,
+        limit: u64,
+        bytes: u64,
+    ) -> Result<Reply, SyncError> {
+        fn with_headers<B>(
             mut request: ureq::RequestBuilder<B>,
             headers: &[(&'static str, String)],
         ) -> ureq::RequestBuilder<B> {
@@ -511,14 +546,21 @@ impl Bucket {
             }
             request
         }
+        fn timed<B>(
+            request: ureq::RequestBuilder<B>,
+            timeout: Option<Duration>,
+        ) -> ureq::RequestBuilder<B> {
+            request.config().timeout_global(timeout).build()
+        }
+        let timeout = self.request.map(|r| Bucket::timeout_for(r, bytes));
         let url = url.as_str();
         let body = body.unwrap_or(&[]);
         let result = match method {
-            Method::Get => with(self.agent.get(url), headers).call(),
-            Method::Head => with(self.agent.head(url), headers).call(),
-            Method::Delete => with(self.agent.delete(url), headers).call(),
-            Method::Put => with(self.agent.put(url), headers).send(body),
-            Method::Post => with(self.agent.post(url), headers).send(body),
+            Method::Get => timed(with_headers(self.agent.get(url), headers), timeout).call(),
+            Method::Head => timed(with_headers(self.agent.head(url), headers), timeout).call(),
+            Method::Delete => timed(with_headers(self.agent.delete(url), headers), timeout).call(),
+            Method::Put => timed(with_headers(self.agent.put(url), headers), timeout).send(body),
+            Method::Post => timed(with_headers(self.agent.post(url), headers), timeout).send(body),
         };
         let mut response = result.map_err(|e| self.transport_error(e))?;
         let status = response.status().as_u16();
