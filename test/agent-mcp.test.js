@@ -384,7 +384,8 @@ test('end to end: a real hub on a demo engine answers initialize, tools/list and
         'read_meeting_transcript',
         'search_meetings',
         'read_meeting_notes',
-        'get_meeting_frame'
+        'get_meeting_frame',
+        'get_meeting_clip'
       ]
     );
     for (const t of list.json.result.tools) {

@@ -187,7 +187,7 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         "get_booking_link" -> ToolOut.Data(BookingLink.answer(d.bookingSettings()))
         // Rukoo Voice records meetings on a computer, so the phone has none. Checked as on a computer first, like the
         // calendar tools.
-        "read_meeting_transcript", "search_meetings", "read_meeting_notes", "get_meeting_frame" -> throw ToolError(NO_MEETINGS)
+        "read_meeting_transcript", "search_meetings", "read_meeting_notes", "get_meeting_frame", "get_meeting_clip" -> throw ToolError(NO_MEETINGS)
         else -> throw ToolError("Unknown tool \"$name\".")
     }
 
