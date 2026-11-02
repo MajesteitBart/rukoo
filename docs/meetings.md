@@ -71,7 +71,7 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 - Rukoo shows the meetings of the Rukoo Voice on this computer. The phone has no meetings.
 - Voice 0.1 labels the whole call as one voice.
 - Rukoo keeps a copy of each transcript in its profile, so the view and the tools work while Voice is closed. Rukoo deletes that copy when Voice deletes the meeting. Your notes stay.
-- Frame images stay with Voice. Rukoo keeps their text, so a frame's row shows its text but no image while Voice isn't running, and after Voice removed the meeting's screen media with its audio.
+- Frame images stay with Voice. Rukoo keeps their text, so while Voice isn't running a frame's row shows its text, and an image only when Rukoo loaded it before. After Voice removed the meeting's screen media with its audio, the rows keep their text and say the image is gone.
 - Rukoo doesn't play a meeting's video. Agents on this computer can get a clip of it (see [the meeting tools](agents.md#rukoos-tools)).
 - Windows' capture border stays around the recorded monitor; Voice doesn't hide it.
 - Other apps' notifications and pop-ups on the recorded monitor end up in the frames. Rukoo holds back only its own.
