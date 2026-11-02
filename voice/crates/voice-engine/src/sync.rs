@@ -41,6 +41,8 @@ pub(crate) struct SyncRuntime {
     held: AtomicBool,
     /// Sweep again soon: sync changed while media was held.
     resweep: AtomicBool,
+    /// A Settings state for a sync change is on its way.
+    pub status_pending: AtomicBool,
 }
 
 impl SyncRuntime {

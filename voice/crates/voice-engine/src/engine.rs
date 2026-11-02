@@ -416,9 +416,24 @@ impl Core {
     }
 
     /// Bucket sync's status changed: Settings show it, and held media may go now.
-    pub fn sync_changed(&self) {
+    ///
+    /// Called on sync's own threads. The state is built on another thread, so building it (which
+    /// asks sync for its status) never waits on the caller.
+    pub fn sync_changed(self: &Arc<Self>) {
         self.sync_rt.changed();
-        self.settings_changed();
+        if self.sync_rt.status_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let core = Arc::clone(self);
+        let spawned = thread::Builder::new()
+            .name("sync-status".into())
+            .spawn(move || {
+                core.sync_rt.status_pending.store(false, Ordering::SeqCst);
+                core.settings_changed();
+            });
+        if spawned.is_err() {
+            self.sync_rt.status_pending.store(false, Ordering::SeqCst);
+        }
     }
 
     /// Lets bucket sync look at the meetings now instead of at its next scan.
