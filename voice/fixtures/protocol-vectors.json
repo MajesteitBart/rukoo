@@ -191,6 +191,51 @@
       "name": "status request with null args, which count as {}",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-34", "command": "status.get", "args": null }
+    },
+    {
+      "name": "open the audio of a range",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-50", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 600000, "end": 1200000 } }
+    },
+    {
+      "name": "open the frame at a moment",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-51", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "frame", "start": 412500 } }
+    },
+    {
+      "name": "open media with a null end, which counts as left out",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-52", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "frame", "start": 0, "end": null } }
+    },
+    {
+      "name": "open an hour of video",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-53", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "video", "start": 0, "end": 3600000 } }
+    },
+    {
+      "name": "read a piece of prepared media",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-54", "command": "media.read", "args": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "offset": 1048576, "length": 1048576 } }
+    },
+    {
+      "name": "media that is still being prepared",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-50", "ok": true, "result": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "ready": false } }
+    },
+    {
+      "name": "media that is ready",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-50", "ok": true, "result": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "ready": true, "type": "audio/wav", "size": 19200044, "start": 600000, "end": 1200000 } }
+    },
+    {
+      "name": "a piece of media",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-54", "ok": true, "result": { "offset": 1048576, "data": "UklGRiQAAABXQVZF" } }
+    },
+    {
+      "name": "media gone from this computer and the bucket",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-50", "ok": false, "error": { "code": "not_available", "message": "The audio of this meeting is no longer on this computer and isn't in a synced bucket." } }
     }
   ],
   "invalid": [
@@ -233,7 +278,17 @@
     { "name": "processing with an empty reason", "from": "voice", "reason": "reason", "message": { "type": "event", "seq": 1, "event": "meeting.state", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "state": "processing", "at": 10, "endedAt": 1793000000010, "reason": "" } } },
     { "name": "frame with a null text", "from": "voice", "reason": "text", "message": { "type": "event", "seq": 1, "event": "frame", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "id": "f-000412000", "at": 412000, "width": 1920, "height": 1080, "text": null } } },
     { "name": "failed reply whose meeting id is malformed", "from": "voice", "reason": "error", "message": { "type": "reply", "id": "c-1", "ok": false, "error": { "code": "busy", "message": "A meeting is already recording.", "meeting": "m-1" } } },
-    { "name": "recording state with an endedAt that is not a number", "from": "voice", "reason": "endedAt", "message": { "type": "event", "seq": 1, "event": "meeting.state", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "state": "recording", "at": 0, "endedAt": "soon" } } }
+    { "name": "recording state with an endedAt that is not a number", "from": "voice", "reason": "endedAt", "message": { "type": "event", "seq": 1, "event": "meeting.state", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "state": "recording", "at": 0, "endedAt": "soon" } } },
+    { "name": "open media of an unknown kind", "from": "rukoo", "reason": "kind", "message": { "type": "command", "id": "c-1", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "transcript", "start": 0 } } },
+    { "name": "open media without a start", "from": "rukoo", "reason": "start", "message": { "type": "command", "id": "c-1", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "end": 5000 } } },
+    { "name": "open media whose end is before its start", "from": "rukoo", "reason": "end", "message": { "type": "command", "id": "c-1", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 5000, "end": 4000 } } },
+    { "name": "open more than an hour of media", "from": "rukoo", "reason": "end", "message": { "type": "command", "id": "c-1", "command": "media.open", "args": { "meeting": "m-20261030-171203-4f2a", "kind": "audio", "start": 0, "end": 3600001 } } },
+    { "name": "open media of a malformed meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-1", "command": "media.open", "args": { "meeting": "m-1", "kind": "audio", "start": 0, "end": 1000 } } },
+    { "name": "read media without an id", "from": "rukoo", "reason": "media", "message": { "type": "command", "id": "c-1", "command": "media.read", "args": { "offset": 0, "length": 1024 } } },
+    { "name": "read media with a malformed id", "from": "rukoo", "reason": "media", "message": { "type": "command", "id": "c-1", "command": "media.read", "args": { "media": "md-short", "offset": 0, "length": 1024 } } },
+    { "name": "read media from a negative offset", "from": "rukoo", "reason": "offset", "message": { "type": "command", "id": "c-1", "command": "media.read", "args": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "offset": -1, "length": 1024 } } },
+    { "name": "read no bytes of media", "from": "rukoo", "reason": "length", "message": { "type": "command", "id": "c-1", "command": "media.read", "args": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "offset": 0, "length": 0 } } },
+    { "name": "read more than 1 MiB of media", "from": "rukoo", "reason": "length", "message": { "type": "command", "id": "c-1", "command": "media.read", "args": { "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "offset": 0, "length": 1048577 } } }
   ],
   "discovery": {
     "valid": [

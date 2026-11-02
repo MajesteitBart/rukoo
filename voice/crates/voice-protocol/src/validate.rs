@@ -709,6 +709,187 @@ mod tests {
         assert_eq!(body.args(), json!({ "from": 1 }));
     }
 
+    /// The body of a command from Rukoo, or the reason it was refused.
+    fn command_body(name: &str, args: Value) -> Result<CommandBody, String> {
+        match validate_incoming(Side::Rukoo, &command("c-1", name, args)) {
+            Ok(Message::Command(Command { body, .. })) => Ok(body),
+            Ok(other) => panic!("not a command: {other:?}"),
+            Err(invalid) => Err(invalid.reason),
+        }
+    }
+
+    #[test]
+    fn media_open_takes_a_range_of_an_hour_at_most() {
+        let meeting = "m-20261030-171203-4f2a";
+        let open = |kind, start, end| {
+            Ok(CommandBody::MediaOpen(MediaOpenArgs {
+                meeting: MeetingId::parse(meeting).unwrap(),
+                kind,
+                start,
+                end,
+            }))
+        };
+        let args = |kind: &str, start: Value, end: Option<Value>| {
+            let mut args = json!({ "meeting": meeting, "kind": kind, "start": start });
+            if let Some(end) = end {
+                args["end"] = end;
+            }
+            command_body("media.open", args)
+        };
+
+        assert_eq!(
+            args("audio", json!(600_000), Some(json!(1_200_000))),
+            open(MediaKind::Audio, 600_000, Some(1_200_000))
+        );
+        // `end` is optional, and null counts as left out.
+        assert_eq!(
+            args("frame", json!(412_500), None),
+            open(MediaKind::Frame, 412_500, None)
+        );
+        assert_eq!(
+            args("frame", json!(0), Some(Value::Null)),
+            open(MediaKind::Frame, 0, None)
+        );
+        // An empty range and exactly an hour pass; the 300 s video cap is Voice's answer, not a check.
+        assert_eq!(
+            args("audio", json!(5_000), Some(json!(5_000))),
+            open(MediaKind::Audio, 5_000, Some(5_000))
+        );
+        assert_eq!(
+            args("video", json!(0), Some(json!(MAX_MEDIA_SPAN_MS))),
+            open(MediaKind::Video, 0, Some(MAX_MEDIA_SPAN_MS))
+        );
+        assert_eq!(
+            args("audio", json!(1), Some(json!(MAX_MEDIA_SPAN_MS + 2))).unwrap_err(),
+            "end"
+        );
+        assert_eq!(
+            args("audio", json!(5_000), Some(json!(4_999))).unwrap_err(),
+            "end"
+        );
+        assert_eq!(
+            args("audio", json!(0), Some(json!(1.5))).unwrap_err(),
+            "end"
+        );
+        assert_eq!(
+            args("audio", json!(-1), Some(json!(10))).unwrap_err(),
+            "start"
+        );
+        assert_eq!(args("audio", json!("0"), None).unwrap_err(), "start");
+        assert_eq!(args("transcript", json!(0), None).unwrap_err(), "kind");
+        assert_eq!(args("Audio", json!(0), None).unwrap_err(), "kind");
+        // A video range far past the end of any meeting still passes: Voice cuts it to what it has.
+        assert_eq!(
+            args("video", json!(u64::MAX - 1), Some(json!(u64::MAX))),
+            open(MediaKind::Video, u64::MAX - 1, Some(u64::MAX))
+        );
+
+        // Fields are checked in the order meeting, kind, start, end, as Rukoo checks them.
+        let bad = |value: Value| command_body("media.open", value).unwrap_err();
+        assert_eq!(
+            bad(json!({ "meeting": "m-1", "kind": "x", "end": 1 })),
+            "meeting"
+        );
+        assert_eq!(bad(json!({ "meeting": meeting, "end": 1 })), "kind");
+        assert_eq!(
+            bad(json!({ "meeting": meeting, "kind": "audio", "end": -1 })),
+            "start"
+        );
+    }
+
+    #[test]
+    fn media_read_reads_one_mebibyte_at_most() {
+        let media = "md-a1B2c3D4e5F6g7H8i9J0kL";
+        let read = |args: Value| command_body("media.read", args);
+        let body = |offset, length| {
+            Ok(CommandBody::MediaRead {
+                media: media.to_owned(),
+                offset,
+                length,
+            })
+        };
+
+        assert_eq!(
+            read(json!({ "media": media, "offset": 0, "length": 1 })),
+            body(0, 1)
+        );
+        assert_eq!(
+            read(json!({ "media": media, "offset": u64::MAX, "length": MAX_MEDIA_READ })),
+            body(u64::MAX, MAX_MEDIA_READ)
+        );
+        let reason = |args: Value| read(args).unwrap_err();
+        assert_eq!(
+            reason(json!({ "media": media, "offset": 0, "length": 0 })),
+            "length"
+        );
+        assert_eq!(
+            reason(json!({ "media": media, "offset": 0, "length": MAX_MEDIA_READ + 1 })),
+            "length"
+        );
+        assert_eq!(reason(json!({ "media": media, "offset": 0 })), "length");
+        assert_eq!(
+            reason(json!({ "media": media, "offset": -1, "length": 1 })),
+            "offset"
+        );
+        assert_eq!(
+            reason(json!({ "media": media, "offset": null, "length": 1 })),
+            "offset"
+        );
+        for id in [
+            "md-short",
+            "MD-a1B2c3D4e5F6g7H8i9J0kL",
+            "md-a1B2c3D4e5F6g7H8i9J0k+",
+            "md-a1B2c3D4e5F6g7H8i9J0kLx",
+            "a1B2c3D4e5F6g7H8i9J0kL",
+        ] {
+            assert_eq!(
+                reason(json!({ "media": id, "offset": 0, "length": 1 })),
+                "media",
+                "{id}"
+            );
+        }
+        assert_eq!(
+            reason(json!({ "media": 5, "offset": 0, "length": 1 })),
+            "media"
+        );
+
+        // Fields are checked in the order media, offset, length.
+        assert_eq!(reason(json!({ "offset": -1, "length": 0 })), "media");
+        assert_eq!(
+            reason(json!({ "media": media, "offset": -1, "length": 0 })),
+            "offset"
+        );
+    }
+
+    #[test]
+    fn media_commands_serialize_back_to_their_arguments() {
+        let meeting = "m-20261030-171203-4f2a";
+        for args in [
+            json!({ "meeting": meeting, "kind": "audio", "start": 600_000, "end": 1_200_000 }),
+            json!({ "meeting": meeting, "kind": "frame", "start": 412_500 }),
+            json!({ "meeting": meeting, "kind": "video", "start": 0, "end": 300_000 }),
+        ] {
+            let body = command_body("media.open", args.clone()).unwrap();
+            assert_eq!(body.name(), "media.open");
+            assert_eq!(body.args(), args);
+        }
+        // A null `end` is left out when the command is written again.
+        let body = command_body(
+            "media.open",
+            json!({ "meeting": meeting, "kind": "frame", "start": 0, "end": null }),
+        )
+        .unwrap();
+        assert_eq!(
+            body.args(),
+            json!({ "meeting": meeting, "kind": "frame", "start": 0 })
+        );
+
+        let args = json!({ "media": "md-a1B2c3D4e5F6g7H8i9J0kL", "offset": 1_048_576, "length": 1_048_576 });
+        let body = command_body("media.read", args.clone()).unwrap();
+        assert_eq!(body.name(), "media.read");
+        assert_eq!(body.args(), args);
+    }
+
     #[test]
     fn marks_name_a_known_track_or_none() {
         let mark = |track: Value| {

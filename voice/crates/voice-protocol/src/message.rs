@@ -1,5 +1,7 @@
 use std::fmt;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
@@ -742,6 +744,15 @@ pub struct MediaOpenArgs {
     pub end: Option<u64>,
 }
 
+/// The result of `media.read`: `{ "offset", "data" }`, the bytes in standard base64 with padding
+/// and without line breaks, as Rukoo reads them.
+pub fn media_read_result(offset: u64, bytes: &[u8]) -> Value {
+    let mut result = Object::new();
+    result.insert("offset".into(), offset.into());
+    result.insert("data".into(), STANDARD.encode(bytes).into());
+    Value::Object(result)
+}
+
 /// Voice's answer to one command.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reply {
@@ -875,6 +886,7 @@ mod tests {
         check(Replay::ALL);
         check(ErrorCode::ALL);
         check(Refusal::ALL);
+        check(MediaKind::ALL);
         assert!(serde_json::from_value::<Track>(json!("room")).is_err());
     }
 
@@ -947,5 +959,22 @@ mod tests {
         assert_eq!(data, json!({ "id": "mic-000000000" }));
         let (name, data) = EventBody::MeetingRemoved.into_parts();
         assert_eq!((name.as_str(), data), ("meeting.removed", json!({})));
+    }
+
+    #[test]
+    fn media_pieces_are_padded_standard_base64() {
+        assert_eq!(
+            media_read_result(1_048_576, b"RIFF$\0\0\0WAVE"),
+            json!({ "offset": 1_048_576, "data": "UklGRiQAAABXQVZF" })
+        );
+        // Bytes that differ between base64 and base64url, and padding.
+        assert_eq!(
+            media_read_result(0, &[0xfb, 0xff, 0xbf, 0xfe])["data"],
+            "+/+//g=="
+        );
+        assert_eq!(
+            media_read_result(7, &[]),
+            json!({ "offset": 7, "data": "" })
+        );
     }
 }
