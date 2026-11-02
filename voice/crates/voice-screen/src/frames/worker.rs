@@ -59,6 +59,8 @@ struct Shared {
 pub struct FrameWorker {
     shared: Arc<Shared>,
     handle: Option<JoinHandle<()>>,
+    /// Closes when the thread's work is done, so `join` can wait with a limit.
+    finished: Option<mpsc::Receiver<()>>,
 }
 
 impl FrameWorker {
@@ -74,15 +76,22 @@ impl FrameWorker {
             ready: Condvar::new(),
         });
         let thread_shared = shared.clone();
+        let (finished_tx, finished) = mpsc::channel::<()>();
         let handle = std::thread::Builder::new()
             .name("frames".into())
             .spawn(move || {
+                // Dropped when the thread ends, also by a panic: `join` stops waiting.
+                let _finished = finished_tx;
                 crate::com::init_mta();
                 let ocr = Ocr::new();
                 run(&meeting, &ocr, &thread_shared, &to_main, write_fail_at);
             })
             .ok();
-        FrameWorker { shared, handle }
+        FrameWorker {
+            shared,
+            handle,
+            finished: Some(finished),
+        }
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -131,10 +140,18 @@ impl FrameWorker {
     }
 
     /// Lets the thread end and waits for it, so its OCR engine and bitmaps are released on
-    /// their own thread before the process exits.
-    pub fn join(&mut self) {
+    /// their own thread before the process exits. A thread still busy after `timeout`, such as
+    /// one stuck in OCR, is left behind.
+    pub fn join(&mut self, timeout: Duration) {
         self.state().closing = true;
         self.shared.ready.notify_all();
+        if let Some(finished) = self.finished.take() {
+            if finished.recv_timeout(timeout) == Err(mpsc::RecvTimeoutError::Timeout) {
+                crate::log("the frame thread didn't end in time; leaving it");
+                self.handle.take();
+                return;
+            }
+        }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }

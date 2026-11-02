@@ -74,6 +74,9 @@ const FINISH_WAIT: Duration = Duration::from_secs(5);
 /// OCR still running at the stop gets this long, then frames keep only their JPEG.
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
 const DRAIN_EXTRA: Duration = Duration::from_secs(2);
+/// After the stop line, the frame thread gets this long to end; a hung OCR call doesn't keep
+/// the process alive.
+const WORKER_JOIN: Duration = Duration::from_secs(5);
 const MEMORY_LOG: Duration = Duration::from_secs(60);
 /// How long to wait for the recorder's `session` line at startup.
 const SESSION_WAIT: Duration = Duration::from_secs(5);
@@ -1355,7 +1358,15 @@ impl Screen {
         for reply in replies {
             let _ = reply.send(json!({ "ok": true, "t": stopping.t }));
         }
-        self.worker.join();
+        // Frames still queued are left out. A JPEG the worker finishes after the stop line has
+        // no line to name it, and `finalize` doesn't look at a stopped journal: remove it.
+        self.worker.clear();
+        self.worker.join(WORKER_JOIN);
+        for event in rx.try_iter() {
+            if let Ev::FrameDone(FrameDone::Saved(Line::Frame { file, .. })) = event {
+                let _ = fs::remove_file(self.dir.join(file));
+            }
+        }
     }
 
     fn handle_stopping(&mut self, event: Ev, replies: &mut Vec<Sender<Value>>) {
