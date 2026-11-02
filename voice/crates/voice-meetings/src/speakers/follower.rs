@@ -12,7 +12,7 @@
 //! transcription go on. The follower shares nothing with the pipeline but `transcript.db` and
 //! its status.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -71,6 +71,11 @@ pub(crate) const STREAM_SPEED: f64 = 2.0;
 pub(crate) const STREAM_DRAIN: Duration = Duration::from_secs(30);
 pub(crate) const STREAM_RETRY_FIRST: Duration = Duration::from_secs(2);
 pub(crate) const STREAM_RETRY_MAX: Duration = Duration::from_secs(60);
+/// In a development copy's log: worker calls slower than this get a line of their own, a
+/// failed one comes with how long the calls before it took, and a summary comes once a minute.
+const SLOW_CALL: Duration = Duration::from_secs(1);
+const CALLS_BEFORE_A_FAILURE: usize = 20;
+const CALL_SUMMARY: Duration = Duration::from_secs(60);
 
 /// The follower's timings, so tests can shrink them. The defaults are the constants above.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +94,9 @@ pub struct FollowerTiming {
     pub stream_drain: Duration,
     pub stream_retry_first: Duration,
     pub stream_retry_max: Duration,
+    /// Logs how long the worker's calls take, in a development copy: a worker that slows down
+    /// under load looks different from one that hangs.
+    pub log_calls: bool,
 }
 
 impl Default for FollowerTiming {
@@ -108,7 +116,82 @@ impl Default for FollowerTiming {
             stream_drain: STREAM_DRAIN,
             stream_retry_first: STREAM_RETRY_FIRST,
             stream_retry_max: STREAM_RETRY_MAX,
+            log_calls: false,
         }
+    }
+}
+
+/// How long the worker's calls took, for a development copy's log.
+struct CallLog {
+    since: Instant,
+    /// Calls since `since`, and the audio they pushed.
+    took: Vec<Duration>,
+    samples: u64,
+    /// The last calls, newest last.
+    recent: VecDeque<Duration>,
+}
+
+impl CallLog {
+    fn new(now: Instant) -> CallLog {
+        CallLog {
+            since: now,
+            took: Vec::new(),
+            samples: 0,
+            recent: VecDeque::new(),
+        }
+    }
+
+    /// One worker call that pushed `samples` and took `took`: the lines to log.
+    fn lines(
+        &mut self,
+        call: &str,
+        samples: usize,
+        took: Duration,
+        failed: Option<&DiarError>,
+        now: Instant,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        let ms = |d: &Duration| d.as_millis();
+        if let Some(error) = failed {
+            let before: Vec<String> = self.recent.iter().map(|d| ms(d).to_string()).collect();
+            lines.push(format!(
+                "speaker worker {call} of {samples} samples failed after {} ms ({:?}); the {} calls before it took {} ms",
+                ms(&took),
+                error.kind,
+                before.len(),
+                before.join(", ")
+            ));
+        } else if took >= SLOW_CALL {
+            lines.push(format!(
+                "speaker worker {call} of {samples} samples took {} ms",
+                ms(&took)
+            ));
+        }
+        self.took.push(took);
+        self.samples += samples as u64;
+        self.recent.push_back(took);
+        if self.recent.len() > CALLS_BEFORE_A_FAILURE {
+            self.recent.pop_front();
+        }
+        let span = now.duration_since(self.since);
+        if span >= CALL_SUMMARY {
+            let mut sorted = self.took.clone();
+            sorted.sort();
+            let busy: Duration = sorted.iter().sum();
+            lines.push(format!(
+                "speaker worker in the last {} s: {} calls, {:.1} s of audio in {:.1} s, median {} ms, slowest {} ms",
+                span.as_secs(),
+                sorted.len(),
+                self.samples as f64 / 16_000.0,
+                busy.as_secs_f64(),
+                ms(&sorted[sorted.len() / 2]),
+                ms(&sorted[sorted.len() - 1])
+            ));
+            self.since = now;
+            self.took.clear();
+            self.samples = 0;
+        }
+        lines
     }
 }
 
@@ -373,6 +456,8 @@ struct Ctx {
     transcript: Transcript,
     watcher: TimelineWatcher,
     lengths: HashMap<(String, u64), u64>,
+    /// In a development copy only.
+    calls: Option<CallLog>,
 }
 
 fn run(
@@ -400,6 +485,7 @@ fn run(
         watcher: TimelineWatcher::new(dir.path()),
         dir,
         diarizer,
+        calls: timing.log_calls.then(|| CallLog::new(Instant::now())),
         timing,
         shared,
         transcript,
@@ -519,13 +605,31 @@ impl Ctx {
         labeller: &mut Labeller,
         pcm: &[i16],
     ) -> Result<(), Fail> {
-        let probs = stream.push(pcm)?;
+        let probs = self.timed("push", pcm.len(), || stream.push(pcm))?;
         let batch = labeller.take(probs)?;
         self.record(batch, labeller)?;
         if labeller.matched {
             self.shared.set_state(LabelState::Listening);
         }
         Ok(())
+    }
+
+    /// A worker call, and in a development copy a note of how long it took.
+    fn timed<T>(
+        &mut self,
+        call: &str,
+        samples: usize,
+        f: impl FnOnce() -> Result<T, DiarError>,
+    ) -> Result<T, DiarError> {
+        let started = Instant::now();
+        let result = f();
+        if let Some(log) = &mut self.calls {
+            let now = Instant::now();
+            for line in log.lines(call, samples, now - started, result.as_ref().err(), now) {
+                eprintln!("voice-meetings: {}: {line}", self.dir.id());
+            }
+        }
+        result
     }
 
     /// Pushes `len` zeros that belong to no meeting time.
@@ -650,7 +754,7 @@ impl Ctx {
                 }
                 None if stopped && fed >= reader.end() => {
                     self.shared.set_state(LabelState::CatchingUp);
-                    let probs = stream.finish()?;
+                    let probs = self.timed("finish", 0, || stream.finish())?;
                     let mut batch = labeller.take(probs)?;
                     labeller.close(&mut batch);
                     self.record(batch, &labeller)?;
@@ -1062,6 +1166,49 @@ mod tests {
         // worker showed.
         let committed = (96_000 + 49_920 - right) / chunk * chunk;
         assert!((committed as f64 / 16_000.0 - lag) < 6.0);
+    }
+
+    #[test]
+    fn the_call_log_notes_slow_calls_the_run_up_to_a_failure_and_each_minute() {
+        let start = Instant::now();
+        let mut log = CallLog::new(start);
+        let ms = Duration::from_millis;
+        // Quick calls log nothing until the minute is up.
+        for i in 0..3 {
+            let at = start + Duration::from_secs(i);
+            assert!(log.lines("push", 16_000, ms(100), None, at).is_empty());
+        }
+        assert_eq!(
+            log.lines(
+                "push",
+                16_000,
+                ms(4_200),
+                None,
+                start + Duration::from_secs(10)
+            ),
+            ["speaker worker push of 16000 samples took 4200 ms"]
+        );
+        let timeout = DiarError::new(DiarErrorKind::Timeout, "no answer");
+        assert_eq!(
+            log.lines("push", 8_000, ms(30_000), Some(&timeout), start + Duration::from_secs(45)),
+            ["speaker worker push of 8000 samples failed after 30000 ms (Timeout); the 4 calls before it took 100, 100, 100, 4200 ms"]
+        );
+        assert_eq!(
+            log.lines("finish", 0, ms(300), None, start + Duration::from_secs(61)),
+            ["speaker worker in the last 61 s: 6 calls, 4.5 s of audio in 34.8 s, median 300 ms, slowest 30000 ms"]
+        );
+        // A new minute starts empty; the run-up keeps the last 20 calls.
+        for i in 0..25 {
+            log.lines("push", 1_600, ms(i), None, start + Duration::from_secs(62));
+        }
+        let line = &log.lines(
+            "push",
+            1_600,
+            ms(1),
+            Some(&timeout),
+            start + Duration::from_secs(63),
+        )[0];
+        assert!(line.contains("the 20 calls before it took 5, 6,"), "{line}");
     }
 
     #[test]

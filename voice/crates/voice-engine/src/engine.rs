@@ -255,6 +255,8 @@ impl Core {
             Err(error) => PipelineOptions::new(Arc::new(Unavailable(error))),
         };
         opts.hints = cfg.meeting_hints();
+        // A development copy logs how long the speaker worker's calls take (spec 7).
+        opts.speakers.log_calls = self.opts.dev_mode;
         let labels = meeting_labels(&cfg, self.svc.speech.as_ref());
         opts.labels = labels.labels;
         match labels.stream {
