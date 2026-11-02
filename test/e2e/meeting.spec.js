@@ -410,6 +410,8 @@ test("a 1:1's guessed name stays when a second voice joins, and the People card 
   }
   await setLanguage('nl');
   await expect(person('call-1').locator('.mt-person-sub')).toHaveText('Geraden uit de uitnodiging; controleer het');
+  // The longer Dutch sentence wraps rather than losing "controleer het" to an ellipsis.
+  expect(await person('call-1').locator('.mt-person-sub').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
   await shot('speakers-autocheck-light-nl');
   await setLanguage('en');
   // Picking the name confirms it.
