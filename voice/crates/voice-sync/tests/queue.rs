@@ -9,7 +9,7 @@ use harness::*;
 use rusqlite::Connection;
 use voice_sync::queue::{NewRow, Queue, RowState, QUEUE_FILE, RESTORED_HOLD_MS, SCHEMA_VERSION};
 use voice_sync::s3::Part;
-use voice_sync::{SyncErrorKind, SYNC_DIR};
+use voice_sync::{BucketSync, SyncErrorKind, SyncOptions, SYNC_DIR};
 
 const KID: &str = "0f1e2d3c4b5a6978";
 
@@ -470,4 +470,41 @@ fn a_broken_queue_holds_every_meeting_with_media() {
         "a broken queue holds with sync off too"
     );
     assert_eq!(voice.sync.mark_lost(&m.id, &["audio"]), 0);
+}
+
+#[test]
+fn configuring_without_a_change_tells_settings_nothing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let fake = fake();
+    let data = scratch("queue-quiet");
+    let _c = Cleanup(data.clone());
+    std::fs::create_dir_all(data.join("meetings")).unwrap();
+    let calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let sync = BucketSync::open(SyncOptions {
+        data_dir: data.clone(),
+        meetings_dir: data.join("meetings"),
+        protector: std::sync::Arc::new(voice_sync::protect::TestProtector),
+        screen: std::sync::Arc::new(voice_sync::NoScreen),
+        now: std::sync::Arc::new(now_ms),
+        reserve: std::sync::Arc::new(|_| true),
+        timing: timing(),
+        on_change: std::sync::Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }),
+    })
+    .unwrap();
+    // The engine's start with sync off: the state Settings already show, nothing to send.
+    sync.configure(None);
+    sync.configure(None);
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // Turning it on is news.
+    sync.save_secret(SECRET).unwrap();
+    let before = calls.load(Ordering::SeqCst);
+    sync.configure(Some(config(&fake.endpoint())));
+    assert!(wait_for(Duration::from_secs(2), || calls
+        .load(Ordering::SeqCst)
+        > before));
+    sync.shutdown();
 }

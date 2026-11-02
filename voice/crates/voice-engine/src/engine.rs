@@ -365,8 +365,17 @@ impl Core {
 
     /// Tells Settings and the pill when Rukoo connects, leaves or is refused.
     pub fn rukoo_changed(&self) {
+        if self.note_rukoo() {
+            self.settings_changed();
+        }
+    }
+
+    /// Records Rukoo's connection as it is now and shows it on the pill; whether it changed. The
+    /// start records it before its first Settings state, so the watch loop's first look doesn't
+    /// send a state of its own for what that state already showed.
+    pub(crate) fn note_rukoo(&self) -> bool {
         let Some(bridge) = self.meetings.bridge.as_ref() else {
-            return;
+            return false;
         };
         let info = bridge.rukoo();
         // `behind` moves with every event; Settings reads it with the next change.
@@ -380,8 +389,8 @@ impl Core {
         if changed {
             let connected = info.connected();
             self.pill.update(|p, _| p.set_rukoo(connected));
-            self.settings_changed();
         }
+        changed
     }
 
     /// Removes meeting audio whose retention ran out. Each meeting keeps the Settings > Meetings >

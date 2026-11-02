@@ -187,11 +187,13 @@ impl BucketSync {
     }
 
     /// None turns sync off. Wakes the worker. Turning it on after it was off makes the meetings
-    /// that exist now a backfill, newest first (D7).
+    /// that exist now a backfill, newest first (D7). Settings hear of it only when the
+    /// configuration or the on/off state changed, so a start with sync off sends them nothing.
     pub fn configure(&self, cfg: Option<SyncConfig>) {
         let shared = &self.shared;
         let on = cfg.is_some();
         let was_on = shared.queue.meta("on").ok().flatten().as_deref() == Some("1");
+        let switched = on != was_on;
         if on && !was_on {
             let now = shared.now().to_string();
             let _ = shared.queue.set_meta("enabled_at", Some(&now));
@@ -211,7 +213,9 @@ impl BucketSync {
         } else {
             shared.poke();
         }
-        shared.changed();
+        if changed || switched {
+            shared.changed();
+        }
     }
 
     /// Probes `cfg.url_style`, then the other style when the first fails with bucket, not found or

@@ -281,6 +281,7 @@ pub fn start_with(
         core.notify(title, body);
     }
     core.sink.tray(core.tray());
+    core.note_rukoo();
     core.settings_changed();
     Ok(Arc::new(EngineImpl(core)))
 }
