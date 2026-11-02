@@ -6,6 +6,8 @@ pub mod size;
 #[cfg(windows)]
 pub mod encoders;
 #[cfg(windows)]
+pub mod fault;
+#[cfg(windows)]
 pub mod mf;
 #[cfg(windows)]
 pub mod thread;

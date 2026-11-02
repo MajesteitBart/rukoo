@@ -13,6 +13,8 @@
 //! a hard kill loses at most the open one.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use voice_screen_files::caps::video_size;
 use windows::core::{Interface, GUID, HSTRING};
@@ -21,6 +23,7 @@ use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Variant::VARIANT;
 
 use super::encoders;
+use super::fault;
 use super::mf::Mf;
 use super::FPS;
 use crate::capture::d3d::{is_device_lost, D3D};
@@ -60,7 +63,8 @@ pub struct WriterOptions {
     pub start_t: u64,
     /// `encoder-fail-at`: from this meeting time every write fails as an encoder error.
     pub encoder_fail_at: Option<u64>,
-    /// `write-fail=video@`: from this meeting time every write fails as a full disk.
+    /// `write-fail=video@`: from this meeting time the MP4 byte stream's writes fail as on a
+    /// full disk (`video::fault`).
     pub disk_fail_at: Option<u64>,
 }
 
@@ -91,6 +95,8 @@ pub struct VideoWriter {
     encoder: String,
     hardware: bool,
     options: WriterOptions,
+    /// Set by the `write-fail=video@` test switch: the byte stream's writes fail from now on.
+    disk_failing: Arc<AtomicBool>,
 }
 
 impl VideoWriter {
@@ -142,6 +148,7 @@ impl VideoWriter {
             encoder: String::new(),
             hardware: false,
             options,
+            disk_failing: Arc::new(AtomicBool::new(false)),
         };
         match writer.open(&hardware_encoders) {
             Ok(()) => Ok(writer),
@@ -169,6 +176,10 @@ impl VideoWriter {
                 &url,
             )
             .map_err(classify)?;
+        let bytes = match self.options.disk_fail_at {
+            Some(_) => fault::wrap(bytes, self.disk_failing.clone()),
+            None => bytes,
+        };
         unsafe {
             let attributes = mf.create_attributes(6).map_err(classify)?;
             attributes
@@ -375,9 +386,8 @@ impl VideoWriter {
             return Err(VideoError::Encoder("encoder-fail-at test switch".into()));
         }
         if self.options.disk_fail_at.is_some_and(|ms| at >= ms) {
-            return Err(VideoError::Disk(
-                "0x80070070, write-fail test switch".into(),
-            ));
+            // The sink writer finds out when it next writes the file, as on a real full disk.
+            self.disk_failing.store(true, Ordering::SeqCst);
         }
         if let Some((previous, previous_time)) = self.pending.take() {
             self.emit(&previous, previous_time, time - previous_time)?;
