@@ -38,6 +38,10 @@ const CRASH: i16 = 7777;
 const HANG: i16 = 8888;
 const BEHIND: i16 = 9999;
 const GARBAGE: i16 = 6666;
+/// Answers with frames that skip ahead of where the stream is.
+const SKIP: i16 = 5555;
+/// Answers with a frame count no buffer could hold.
+const HUGE: i16 = 4444;
 
 fn main() {
     match std::env::var(ROLE).as_deref() {
@@ -149,6 +153,14 @@ fn fake_worker() {
                         continue;
                     }
                     BEHIND => refuse("behind", "Frames were dropped before Voice read them."),
+                    SKIP => {
+                        let frames = (audio.len() / 2 / 160) as u64;
+                        frames_reply(&id, frame + 5, frames)
+                    }
+                    HUGE => json!({
+                        "id": id, "ok": true, "first": frame, "frames": u64::MAX,
+                        "count": u64::MAX, "probs": "",
+                    }),
                     _ if !open => refuse("not_open", "No stream is open."),
                     _ => {
                         let frames = (audio.len() / 2 / 160) as u64;
@@ -464,6 +476,43 @@ fn garbage_ends_the_worker() {
     wait_for("the worker to be ended", || !process_alive(pid));
 }
 
+fn frames_that_dont_continue_the_stream_end_the_worker() {
+    for (what, first_sample) in [("skipped frames", SKIP), ("an absurd frame count", HUGE)] {
+        let s = setup("discontinuous", |_| {});
+        let mut stream = s.open();
+        let pid = stream.worker_pid().unwrap();
+        check_frames(&stream.push(&pcm(1_600)).unwrap(), 0, 10);
+        let error = stream.push(&magic(first_sample)).unwrap_err();
+        assert_eq!(error.kind, DiarErrorKind::Failed, "{what}");
+        assert_eq!(
+            error.message, "Voice's speaker label worker sent an answer Voice couldn't read.",
+            "{what}"
+        );
+        assert_eq!(stream.worker_pid(), None, "{what}");
+        wait_for("the worker to be ended", || !process_alive(pid));
+        // Not a reason to give up on the runtime: the follower starts a new stream.
+        assert_eq!(s.labels.failure(), None, "{what}");
+    }
+}
+
+fn a_stream_outlives_the_labels_that_opened_it() {
+    let s = setup("outlives", |_| {});
+    // Nothing but the stream is kept: the diarizer and this SpeakerLabels are temporaries. The
+    // job they own must stay open, or Windows ends the worker with it.
+    let mut stream = SpeakerLabels::new(s.opts.clone())
+        .worker_diarizer(s.runtime.clone(), s.model.clone())
+        .open()
+        .map_err(|error| error.message)
+        .unwrap();
+    let pid = stream.worker_pid().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(process_alive(pid), "the worker ended with its labels");
+    check_frames(&stream.push(&pcm(1_600)).unwrap(), 0, 10);
+    check_frames(&stream.finish().unwrap(), 10, 3);
+    drop(stream);
+    wait_for("the worker to quit", || !process_alive(pid));
+}
+
 fn a_runtime_refusal_while_loading_is_remembered() {
     let s = setup("refuse-runtime", |_| {});
     s.mark("refuse-runtime");
@@ -708,6 +757,14 @@ fn run_tests() {
         ),
         ("behind_keeps_the_worker", behind_keeps_the_worker),
         ("garbage_ends_the_worker", garbage_ends_the_worker),
+        (
+            "frames_that_dont_continue_the_stream_end_the_worker",
+            frames_that_dont_continue_the_stream_end_the_worker,
+        ),
+        (
+            "a_stream_outlives_the_labels_that_opened_it",
+            a_stream_outlives_the_labels_that_opened_it,
+        ),
         (
             "a_runtime_refusal_while_loading_is_remembered",
             a_runtime_refusal_while_loading_is_remembered,

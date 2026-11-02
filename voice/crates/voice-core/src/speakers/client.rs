@@ -104,6 +104,7 @@ impl Diarizer for WorkerDiarizer {
         }
         call(&mut slot, "open", json!({}), &[], opts.start_timeout)?;
         Ok(Box::new(WorkerStream {
+            _labels: self.labels.clone(),
             worker: slot,
             geometry: StreamGeometry {
                 speakers,
@@ -150,6 +151,9 @@ fn gguf_name(spec: &ModelSpec) -> &str {
 
 /// One open stream in its own worker.
 struct WorkerStream {
+    /// Keeps the kill-on-close job open while the stream lives: closing its last handle would end
+    /// this worker even when the caller has let go of the diarizer and `SpeakerLabels`.
+    _labels: SpeakerLabels,
     worker: Option<Worker>,
     geometry: StreamGeometry,
     push_timeout: Duration,
@@ -169,7 +173,8 @@ impl WorkerStream {
         }
     }
 
-    /// Adds one reply's frames to `into`.
+    /// Adds one reply's frames to `into`. The frames must continue where the last ones ended:
+    /// the worker reports dropped frames as `behind`, so a gap or an overlap means it lost track.
     fn take_frames(&mut self, reply: &Value, into: &mut Probs) -> Result<(), DiarError> {
         let first = reply.get("first").and_then(Value::as_u64);
         let frames = reply.get("frames").and_then(Value::as_u64);
@@ -178,23 +183,32 @@ impl WorkerStream {
         let (Some(first), Some(frames), Ok(bytes)) = (first, frames, decoded) else {
             return Err(self.garbage());
         };
-        let frames = frames as usize;
-        if bytes.len() != frames * self.geometry.speakers * 4 {
+        let expected = usize::try_from(frames)
+            .ok()
+            .and_then(|frames| frames.checked_mul(self.geometry.speakers))
+            .and_then(|values| values.checked_mul(4));
+        if expected != Some(bytes.len()) {
             return Err(self.garbage());
         }
         if frames == 0 {
             return Ok(());
         }
+        if first != self.next_frame {
+            return Err(self.garbage());
+        }
+        let Some(next_frame) = first.checked_add(frames) else {
+            return Err(self.garbage());
+        };
         if into.frames == 0 {
             into.first_frame = first;
         }
-        into.frames += frames;
+        into.frames += frames as usize;
         into.values.extend(
             bytes
                 .chunks_exact(4)
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
         );
-        self.next_frame = first + frames as u64;
+        self.next_frame = next_frame;
         Ok(())
     }
 
