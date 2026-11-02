@@ -164,7 +164,8 @@ pub fn migrate_secret(
     }
 }
 
-/// Settings' `sync` (voice/ui/API.md): voice-sync's status plus `screenRecording`.
+/// Settings' `sync` (voice/ui/API.md): voice-sync's status plus `screenRecording`, and `paused`
+/// for a switch that is on while the connection waits for a new Test connection.
 pub(crate) fn sync_view(core: &Core) -> Value {
     let status = match &core.sync {
         Some(sync) => sync.status(),
@@ -173,7 +174,11 @@ pub(crate) fn sync_view(core: &Core) -> Value {
             ..SyncStatus::default()
         },
     };
+    let paused = status.state == SyncState::Off && switch_on(&core.config());
     let mut view = serde_json::to_value(&status).unwrap_or_else(|_| json!({}));
+    if paused {
+        view["state"] = json!("paused");
+    }
     // API.md shows the key's first 8 hex characters, enough to tell keys apart.
     if let Some(id) = view["key"]["id"].as_str() {
         view["key"]["id"] = json!(short_id(id));
@@ -194,9 +199,13 @@ pub fn api_error(error: &SyncError) -> crate::api::ApiError {
 
 /// Retention's hold for one meeting (spec 2.10): voice-sync's answer while sync is open, which is
 /// `true` on any error; with the switch on but the queue unreadable, every meeting with media.
+///
+/// The hold follows the switch, not whether uploads run: a changed connection field or secret
+/// pauses uploads until Test connection passes again, and repairing a failing bucket that way must
+/// never cost the media it was holding. Only turning the switch off lets that media go (D8).
 pub fn holds(sync: Option<&BucketSync>, switch_on: bool, meeting: &str) -> bool {
     match sync {
-        Some(sync) => sync.holds_media(meeting),
+        Some(sync) => sync.holds_media(meeting, switch_on),
         // The sweep asks only about meetings with media.
         None => switch_on,
     }

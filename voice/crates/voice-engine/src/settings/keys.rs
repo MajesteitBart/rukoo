@@ -114,15 +114,16 @@ fn sync_object(cfg: &mut Config) -> &mut serde_json::Map<String, Value> {
     sync.as_object_mut().expect("made an object above")
 }
 
-/// Saving or removing the bucket secret: sync goes off until Test connection passes again.
+/// Saving or removing the bucket secret clears the passed Test connection. The switch stays as the
+/// user left it: while it is on, uploads pause until a new test passes, and retention keeps
+/// holding media that hasn't reached the bucket (spec D6, D8). Only the user turns it off.
 pub fn untest_sync(cfg: &mut Config) {
-    let sync = sync_object(cfg);
-    sync.remove("tested");
-    sync.insert("enabled".into(), json!(false));
+    sync_object(cfg).remove("tested");
 }
 
-/// One `storage.sync.*` key (voice/ui/API.md). A field of the connection that changes turns sync
-/// off; the switch turns on only for fields that passed Test connection.
+/// One `storage.sync.*` key (voice/ui/API.md). The switch turns on only for fields that passed
+/// Test connection. A changed connection field no longer matches the tested fingerprint, so
+/// uploads pause until the new fields pass; the switch stays where the user put it.
 fn set_sync(cfg: &mut Config, key: &str, value: Value) -> Result<(), ApiError> {
     let field = &key["storage.sync.".len()..];
     let text = |value: &Value| value.as_str().map(|s| s.trim().to_string());
@@ -167,12 +168,7 @@ fn set_sync(cfg: &mut Config, key: &str, value: Value) -> Result<(), ApiError> {
         }
         _ => return Err(invalid(key)),
     };
-    let sync = sync_object(cfg);
-    if sync.get(field).and_then(Value::as_str) != Some(next.as_str()) {
-        // Another bucket or another account hasn't passed Test connection.
-        sync.insert("enabled".into(), json!(false));
-    }
-    sync.insert(field.into(), json!(next));
+    sync_object(cfg).insert(field.into(), json!(next));
     Ok(())
 }
 
@@ -521,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tested_bucket_turns_on_and_a_changed_one_turns_off() {
+    fn a_tested_bucket_turns_on_and_a_changed_one_pauses() {
         let mut cfg = tested_config();
         assert_eq!(view(&cfg, false, true)["storage"]["sync"]["tested"], true);
         set(&mut cfg, "storage.sync.enabled", json!(true)).unwrap();
@@ -531,29 +527,35 @@ mod tests {
         // The bucket's retention isn't part of the connection.
         set(&mut cfg, "storage.sync.retention", json!("days365")).unwrap();
         assert_eq!(cfg.extra[crate::sync::SYNC_KEY]["enabled"], true);
+        // Another bucket hasn't passed a test: nothing goes to it, but the switch stays on, so
+        // retention keeps what hasn't reached the bucket.
         set(&mut cfg, "storage.sync.bucket", json!("other")).unwrap();
         let sync = &view(&cfg, false, true)["storage"]["sync"];
-        assert_eq!(sync["enabled"], false);
+        assert_eq!(sync["enabled"], true);
         assert_eq!(sync["tested"], false);
+        assert_eq!(crate::sync::sync_config(&cfg), None, "paused");
+        // Off, it turns on again only after a test.
+        set(&mut cfg, "storage.sync.enabled", json!(false)).unwrap();
         assert_eq!(
             set(&mut cfg, "storage.sync.enabled", json!(true))
                 .unwrap_err()
                 .code,
             "needs_test"
         );
-        // Back to the tested bucket: its fingerprint matches again, but the switch stays off
-        // until the user turns it on.
+        // Back to the tested bucket: its fingerprint matches again.
         set(&mut cfg, "storage.sync.bucket", json!("test")).unwrap();
         assert_eq!(cfg.extra[crate::sync::SYNC_KEY]["enabled"], false);
         set(&mut cfg, "storage.sync.enabled", json!(true)).unwrap();
+        assert!(crate::sync::sync_config(&cfg).is_some());
 
-        // A new or removed secret needs a new test.
+        // A new or removed secret needs a new test; the switch stays on meanwhile.
         untest_sync(&mut cfg);
         let sync = &view(&cfg, false, true)["storage"]["sync"];
         assert_eq!(
             (&sync["enabled"], &sync["tested"]),
-            (&json!(false), &json!(false))
+            (&json!(true), &json!(false))
         );
+        assert_eq!(crate::sync::sync_config(&cfg), None);
     }
 
     #[test]

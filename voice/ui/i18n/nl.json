@@ -311,6 +311,7 @@
     "other": "De schijf was bijna vol, dus Voice heeft {count} bestanden verwijderd voordat ze in de bucket stonden."
   },
   "settings.sync.stopped": "Uploaden is gestopt.",
+  "settings.sync.paused": "Uploaden staat stil. Test de verbinding om verder te gaan.",
   "settings.sync.keyUnreadable": "Voice kan de encryptiesleutel op deze computer niet openen. Gebruik je bewaarde sleutel.",
   "settings.sync.keyNotSaved": "Je hebt hem nog niet bewaard.",
   "settings.sync.keySaved": "Bewaard. Sleutel {id}",

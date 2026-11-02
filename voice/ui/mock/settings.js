@@ -8,9 +8,10 @@
 //   later=1 turns every feature in state.features on; features=screen,speakers,sync turns on the ones listed.
 //   <sync> turns the sync feature on and sets bucket sync: fresh (the default: nothing filled in), tested (filled in
 //   and tested, still off), on (up to date), live (a meeting uploads), retrying (the bucket can't be reached), failing
-//   (the bucket refuses, three files lost), key (the encryption key can't be opened), restore (two meetings to
-//   restore), restore-failed (a restore that stopped). 1 means on. Test connection fails for the bucket "fail" and
-//   finds another key in the bucket "shared".
+//   (the bucket refuses, three files lost), paused (a new secret or field waits for Test connection, with files still
+//   waiting), key (the encryption key can't be opened), restore (two meetings to restore), restore-failed (a restore
+//   that stopped). 1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket
+//   "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
 
@@ -250,6 +251,12 @@ const SYNC_SCENARIOS = {
     });
     return true;
   },
+  paused: (s) => {
+    SYNC_SCENARIOS.failing(s);
+    s.config.storage.sync.tested = false;
+    Object.assign(s.sync, { state: 'paused', lost: 0 });
+    return true;
+  },
   key: (s) => {
     SYNC_SCENARIOS.on(s);
     Object.assign(s.sync, { state: 'key', key: { exists: true, id: '0f1e2d3c', exported: false } });
@@ -408,10 +415,14 @@ export function createMock(params) {
     }, 400);
   }
 
-  // What the engine does when the connection changes: sync goes off until Test connection passes again.
+  // What the engine does when the connection changes: uploads pause until Test connection passes again. The switch
+  // stays on, and so does retention's hold.
   function syncUntested() {
-    Object.assign(state.config.storage.sync, { tested: false, enabled: false });
-    syncOn(false);
+    state.config.storage.sync.tested = false;
+    if (state.config.storage.sync.enabled) {
+      clearInterval(syncTimer);
+      state.sync.state = 'paused';
+    }
   }
 
   function download(id) {
@@ -537,8 +548,10 @@ export function createMock(params) {
       if (!sync.secretSaved) fail('no_secret', 'No secret access key is saved for the bucket.');
       if (!sync.endpoint) fail('endpoint', 'The endpoint URL is empty.');
       if (!sync.bucket || sync.bucket === 'fail') fail('bucket', `HTTP 404 from ${host(sync.endpoint)}: NoSuchBucket. The specified bucket does not exist.`);
+      const paused = sync.enabled && !sync.tested;
       sync.tested = true;
       state.sync.otherKeys = sync.bucket === 'shared' ? 1 : 0;
+      if (paused) syncOn(true);
       emit();
       return { otherKeys: state.sync.otherKeys };
     },
@@ -583,7 +596,7 @@ export function createMock(params) {
       return null;
     },
     settings_sync_restore: ({ action }) => {
-      if (!state.config.storage.sync.enabled) fail('off', 'Sync is off.');
+      if (!state.config.storage.sync.enabled || !state.config.storage.sync.tested) fail('off', 'Sync is off.');
       if (action === 'list') {
         return {
           meetings: [

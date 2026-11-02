@@ -831,12 +831,19 @@ fn bucket_sync_turns_on_only_for_a_bucket_that_passed_its_test() {
         .unwrap();
     assert_eq!(saved_sync(&h)["enabled"], true);
 
-    // Another bucket hasn't passed a test: sync goes off.
+    // Another bucket hasn't passed a test: uploads pause until it does. The switch stays on, so
+    // retention keeps holding what hasn't reached the bucket.
     engine
         .settings_set("storage.sync.bucket", json!("elsewhere"))
         .unwrap();
-    assert_eq!(sync_config(&engine)["enabled"], false);
+    assert_eq!(sync_config(&engine)["enabled"], true);
     assert_eq!(sync_config(&engine)["tested"], false);
+    assert_eq!(sync_state(&engine)["state"], "paused");
+    // Off, it turns on again only after a test.
+    engine
+        .settings_set("storage.sync.enabled", json!(false))
+        .unwrap();
+    assert_eq!(sync_state(&engine)["state"], "off");
     assert_eq!(
         code(engine.settings_set("storage.sync.enabled", json!(true))),
         "needs_test"
@@ -847,25 +854,26 @@ fn bucket_sync_turns_on_only_for_a_bucket_that_passed_its_test() {
     engine
         .settings_set("storage.sync.enabled", json!(true))
         .unwrap();
+    assert_ne!(sync_state(&engine)["state"], "paused");
 
-    // A new secret needs a new test.
+    // A new secret needs a new test; uploads go on once it passes.
     engine
         .settings_sync_save_secret("another-secret".into())
         .unwrap();
-    assert_eq!(sync_config(&engine)["enabled"], false);
+    assert_eq!(sync_config(&engine)["enabled"], true);
+    assert_eq!(sync_state(&engine)["state"], "paused");
     assert_eq!(saved_sync(&h).get("tested"), None);
     engine.settings_sync_test().unwrap();
-    engine
-        .settings_set("storage.sync.enabled", json!(true))
-        .unwrap();
+    assert_ne!(sync_state(&engine)["state"], "paused");
 
-    // Removing the secret turns sync off, and the test needs a secret again.
+    // Removing the secret pauses sync too, and the test needs a secret again.
     engine.settings_remove_key("sync").unwrap();
     let after = sync_config(&engine);
     assert_eq!(
         (&after["enabled"], &after["secretSaved"], &after["tested"]),
-        (&json!(false), &json!(false), &json!(false))
+        (&json!(true), &json!(false), &json!(false))
     );
+    assert_eq!(sync_state(&engine)["state"], "paused");
     assert!(!h.data().join("sync").join("bucket-secret.bin").exists());
     assert_eq!(code(engine.settings_sync_test()), "no_secret");
     engine.shutdown();

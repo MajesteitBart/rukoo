@@ -87,7 +87,7 @@ const KEY_ERRORS = {
   key_in_use: 'settings.sync.keyInUse',
   recording_screen: 'settings.sync.keyScreen'
 };
-// A change to any of these turns sync off until Test connection passes again (API.md).
+// A change to any of these pauses uploads until Test connection passes again; the switch stays (API.md).
 const SYNC_FIELDS = ['service', 'endpoint', 'region', 'bucket', 'prefix', 'accessKeyId'];
 const SYNC_ENDPOINTS = { upcloud: 'https://….upcloudobjects.com', r2: 'https://….r2.cloudflarestorage.com', other: 'https://' };
 
@@ -726,7 +726,8 @@ function storagePage() {
 // Settings > Storage, in your bucket: the switch and what the bucket is doing, the connection, what leaves this
 // computer, the encryption key, and how long the bucket keeps media. Five sections, so a new waiting count redraws
 // only the first card and never the form someone is typing in. The engine refuses to turn sync on until the current
-// fields and secret passed Test connection, and turns it off when one of them changes (API.md).
+// fields and secret passed Test connection. When one of them changes while sync is on, uploads pause until a test
+// passes again, and the switch and retention's hold stay as they were (API.md).
 function syncSections() {
   const check = `<span class="lead">${icons.check}</span>`;
   return [
@@ -783,6 +784,11 @@ function syncStatus() {
       }
       case 'key':
         parts.push(status('bad', t('settings.sync.keyUnreadable')), `<button class="btn sm secondary" data-a="sync-key-use">${esc(t('settings.sync.keyUse'))}</button>`);
+        break;
+      case 'paused':
+        parts.push(status('bad', t('settings.sync.paused')));
+        if (s.waiting > 0) parts.push(note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet'));
+        parts.push(note(esc(t('settings.sync.keptLocal'))));
         break;
     }
   }
@@ -1458,7 +1464,7 @@ async function act(action, button) {
         await trackSync(invoke('settings_remove_key', { target: 'sync' }));
         secretVersion += 1;
         dropSyncTest();
-        Object.assign(state.config.storage.sync, { secretSaved: false, tested: false, enabled: false });
+        Object.assign(state.config.storage.sync, { secretSaved: false, tested: false });
       } catch (error) {
         await showError(t('settings.errors.failed'), error?.message);
       }
@@ -1508,7 +1514,7 @@ function saveSyncSecret(input) {
         await invoke('settings_sync_save_secret', { secret });
         secretVersion += 1;
         syncReplacing = false;
-        Object.assign(state.config.storage.sync, { secretSaved: true, tested: false, enabled: false });
+        Object.assign(state.config.storage.sync, { secretSaved: true, tested: false });
         render();
       } catch (error) {
         // Test connection goes back to waiting for a secret. Not before the call: this runs from the field's change

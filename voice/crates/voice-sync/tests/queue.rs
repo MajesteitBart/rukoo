@@ -453,7 +453,7 @@ fn a_broken_queue_holds_every_meeting_with_media() {
     voice.connect(&fake.endpoint());
     voice.settle(&fake, Duration::from_secs(30));
     assert!(
-        !voice.sync.holds_media(&m.id),
+        !voice.sync.holds_media(&m.id, true),
         "everything is in the bucket"
     );
     assert!(!voice.sync.has_waiting(&m.id));
@@ -462,11 +462,11 @@ fn a_broken_queue_holds_every_meeting_with_media() {
     db(&data.join(SYNC_DIR))
         .execute_batch("DROP TABLE files; DROP TABLE meetings; DROP TABLE restored;")
         .unwrap();
-    assert!(voice.sync.holds_media(&m.id));
+    assert!(voice.sync.holds_media(&m.id, true));
     assert!(voice.sync.has_waiting(&m.id));
     voice.sync.configure(None);
     assert!(
-        voice.sync.holds_media(&m.id),
+        voice.sync.holds_media(&m.id, false),
         "a broken queue holds with sync off too"
     );
     assert_eq!(voice.sync.mark_lost(&m.id, &["audio"]), 0);

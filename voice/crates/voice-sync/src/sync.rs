@@ -404,13 +404,11 @@ impl BucketSync {
         self.shared.poke();
     }
 
-    /// Retention's hold (2.10). `true` on a database error or a poisoned lock: a broken queue never lets media go.
-    pub fn holds_media(&self, meeting: &str) -> bool {
+    /// Retention's hold (2.10). `sync_on` is the switch in Settings, which stays on while uploads
+    /// pause for a new Test connection: repairing the bucket must never let held media go. `true`
+    /// on a database error or a poisoned lock: a broken queue never lets media go.
+    pub fn holds_media(&self, meeting: &str, sync_on: bool) -> bool {
         let shared = &self.shared;
-        let sync_on = match shared.state.lock() {
-            Ok(st) => st.cfg.is_some(),
-            Err(_) => return true,
-        };
         let has_media = worker::has_media(&shared.meeting_dir(meeting));
         shared
             .queue

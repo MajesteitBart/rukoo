@@ -140,7 +140,7 @@ fn forget_meeting_removes_every_object_and_marks_it_deleted() {
     let index = indexes(&fake, &key);
     let kept_entry = index[0].meetings.iter().find(|e| e.id == kept.id).unwrap();
     assert!(!kept_entry.deleted);
-    assert!(!voice.sync.holds_media(&gone.id));
+    assert!(!voice.sync.holds_media(&gone.id, true));
 
     // Without deleting objects only the rows go.
     let before = objects(&fake).len();

@@ -82,6 +82,10 @@ fn main() {
             "retention_holds_when_the_queue_is_unreadable",
             retention_holds_when_the_queue_is_unreadable,
         ),
+        (
+            "repairing_a_failing_bucket_keeps_held_audio",
+            repairing_a_failing_bucket_keeps_held_audio,
+        ),
     ];
     let filters: Vec<String> = std::env::args()
         .skip(1)
@@ -551,6 +555,68 @@ fn retention_releases_holds_when_the_disk_runs_low() {
         lines(&h.data(), &live)
             .iter()
             .any(|l| matches!(l, Line::Stop { .. }))
+    });
+    engine.shutdown();
+    fake.stop();
+}
+
+/// The usual repair of a failing bucket: a new secret, a corrected field, or the secret removed
+/// and saved again. Each pauses uploads until Test connection passes, and none may let retention
+/// take audio that never reached the bucket (D6, D8, spec 2.15 "Wrong secret").
+fn repairing_a_failing_bucket_keeps_held_audio() {
+    let h = harness(
+        "sync-repair",
+        json!({"meetings_retention": "after_transcription"}),
+    );
+    let fake = fake_s3();
+    let engine = h.start();
+    connect_bucket(&engine, &fake.endpoint());
+    fake.faults().refuse = true;
+    let held = record(&engine, &h.data(), 2000);
+    std::thread::sleep(Duration::from_millis(3000));
+    let audio = meeting_dir(&h.data(), &held).join("audio");
+    assert!(audio.is_dir(), "held for the bucket");
+
+    let sync_settings =
+        |engine: &Engine| engine.settings_state()["config"]["storage"]["sync"].clone();
+    engine
+        .settings_sync_save_secret("a-replacement-secret".into())
+        .unwrap();
+    assert_eq!(
+        sync_settings(&engine)["enabled"],
+        true,
+        "the switch stays on"
+    );
+    assert_eq!(sync_settings(&engine)["tested"], false);
+    assert_eq!(sync_state(&engine)["state"], "paused");
+    engine
+        .settings_set("storage.sync.bucket", json!("corrected-bucket"))
+        .unwrap();
+    engine.settings_remove_key("sync").unwrap();
+    assert_eq!(sync_state(&engine)["state"], "paused");
+    // Longer than the engine waits before it sweeps again after a sync change.
+    std::thread::sleep(Duration::from_millis(7000));
+    assert!(audio.is_dir(), "a paused sync keeps holding");
+    // A start sweeps at once.
+    engine.shutdown();
+    let engine = h.start();
+    std::thread::sleep(Duration::from_millis(3000));
+    assert!(audio.is_dir(), "still held after a sweep");
+    assert_eq!(sync_state(&engine)["state"], "paused");
+
+    // Repaired: the right bucket and secret pass the test, uploads go on by themselves, and the
+    // audio goes once it is in the bucket.
+    engine
+        .settings_set("storage.sync.bucket", json!(support::BUCKET))
+        .unwrap();
+    engine
+        .settings_sync_save_secret(support::BUCKET_SECRET.into())
+        .unwrap();
+    fake.faults().refuse = false;
+    engine.settings_sync_test().unwrap();
+    assert_ne!(sync_state(&engine)["state"], "paused");
+    wait_long("the uploaded audio to go", Duration::from_secs(60), || {
+        !audio.exists()
     });
     engine.shutdown();
     fake.stop();

@@ -513,7 +513,8 @@ pub fn sync_test(core: &Arc<Core>) -> Result<Value, ApiError> {
     Ok(json!({ "otherKeys": report.other_keys }))
 }
 
-/// Keeps the bucket's secret with DPAPI and turns sync off until Test connection passes again.
+/// Keeps the bucket's secret with DPAPI. Uploads pause until Test connection passes with it; the
+/// switch stays on, so retention keeps holding what hasn't reached the bucket.
 pub fn sync_save_secret(core: &Arc<Core>, secret: String) -> Result<(), ApiError> {
     let secret = voice_sync::Zeroizing::new(secret);
     if secret.trim().is_empty() || secret.chars().count() > SECRET_MAX_CHARS {

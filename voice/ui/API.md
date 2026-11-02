@@ -223,7 +223,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
 | `sync.available` | Bucket sync works here: Windows, with the sync store open. The Storage page shows the sync card only then. |
-| `sync.state` | `off`; `idle`, everything is in the bucket; `uploading`; `live`, a meeting records and its audio and frames go up as they close; `retrying`, the bucket can't be reached and Voice tries again; `failing`, the bucket refused (see `lastError`) and nothing uploads until the settings change; `key`, Voice can't open its encryption key. |
+| `sync.state` | `off`; `idle`, everything is in the bucket; `uploading`; `live`, a meeting records and its audio and frames go up as they close; `retrying`, the bucket can't be reached and Voice tries again; `failing`, the bucket refused (see `lastError`) and nothing uploads until the settings change; `key`, Voice can't open its encryption key; `paused`, the switch is on but a connection field or the secret changed since the last passed Test connection, so nothing uploads or comes back from the bucket until a test passes, and retention keeps holding what hasn't uploaded. |
 | `sync.waiting`, `waitingBytes`, `oldestWaiting` | Files waiting to upload, their size, and when the oldest was queued (epoch ms or `null`). |
 | `sync.lastUpload` | When the last file reached the bucket, or `null`. |
 | `sync.lastError` | `{ "at", "code", "message" }` of the last failure, `null` after a success. `code` is one of the Test connection codes; `message` is English, for Error details. |
@@ -271,14 +271,14 @@ Bucket sync, saved in `config.json` under `storage_sync`:
 
 | Key | Values | Default | `config.json` |
 |---|---|---|---|
-| `storage.sync.enabled` | bool; `true` is refused with `needs_test` unless the current fields passed Test connection | `false` | `storage_sync.enabled` |
+| `storage.sync.enabled` | bool; `true` is refused with `needs_test` unless the current fields and secret passed Test connection. Only the user turns it off | `false` | `storage_sync.enabled` |
 | `storage.sync.service` | `upcloud`, `r2`, `other` | `upcloud` | `storage_sync.service` |
 | `storage.sync.endpoint` | `https://…`, or `http://` to this computer for tests; `""` | `""` | `storage_sync.endpoint` |
 | `storage.sync.region`, `bucket`, `prefix`, `accessKeyId` | string | `""` | `storage_sync.<field>` |
 | `storage.sync.retention` | `keep`, `days365`, `days90`: how long the bucket keeps a meeting's media | `keep` | `storage_sync.retention` |
 | `storage.sync.secret` | refused with `invalid_value`; use `settings_sync_save_secret` | | never stored here |
 
-Changing `service`, `endpoint`, `region`, `bucket`, `prefix` or `accessKeyId`, or saving or removing the secret, turns sync off until Test connection passes again. `secretSaved` and `tested` are read-only.
+Changing `service`, `endpoint`, `region`, `bucket`, `prefix` or `accessKeyId`, or saving or removing the secret, clears the passed test. The switch stays where the user put it: while it is on, `sync.state` is `paused` and nothing uploads until Test connection passes again, then uploads go on by themselves. Retention keeps holding media that hasn't uploaded meanwhile, so repairing a failing bucket never costs that media; only turning the switch off lets it go. `secretSaved` and `tested` are read-only.
 
 `meetings.retention` applies to meetings started from then on, as in Ownkey: each meeting keeps the choice it started with in its `meeting.json`, so changing it, or importing Ownkey's, never removes older meetings' audio. Meetings from before Voice stored it follow the current choice.
 
@@ -361,7 +361,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_remove_key`
 
-`invoke('settings_remove_key', { target })` → nothing. Deletes the saved key of `transcription`, `rewriting` or `meetings`, or the bucket's secret for `sync`, at once. Removing the bucket's secret turns sync off.
+`invoke('settings_remove_key', { target })` → nothing. Deletes the saved key of `transcription`, `rewriting` or `meetings`, or the bucket's secret for `sync`, at once. Removing the bucket's secret pauses uploads until Test connection passes again; the switch stays on.
 
 ### Command `settings_list_models`
 
@@ -410,7 +410,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_sync_save_secret`
 
-`invoke('settings_sync_save_secret', { secret })` → nothing. Keeps the bucket's secret access key with Windows DPAPI for this Windows user, never in `config.json`, and turns sync off until Test connection passes again. Rejects with `invalid_value` for an empty secret or one over 1,024 characters, `failed` when Windows can't protect it. `settings_remove_key({ target: "sync" })` removes it. The page calls it when the secret's field loses focus and keeps no copy.
+`invoke('settings_sync_save_secret', { secret })` → nothing. Keeps the bucket's secret access key with Windows DPAPI for this Windows user, never in `config.json`, and pauses uploads until Test connection passes again; the switch stays on. Rejects with `invalid_value` for an empty secret or one over 1,024 characters, `failed` when Windows can't protect it. `settings_remove_key({ target: "sync" })` removes it. The page calls it when the secret's field loses focus and keeps no copy.
 
 ### Command `settings_sync_key`
 
@@ -455,7 +455,7 @@ The page shows the code only in its dialog, with the window hidden from capture 
 | `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group |
 | `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy |
 | `&later=1` | Every part in `features`: screen recording, speaker labels, bucket sync. `&features=screen,speakers,sync` turns on the ones listed. |
-| `&sync=fresh`, `tested`, `on`, `live`, `retrying`, `failing`, `key`, `restore`, `restore-failed` | Bucket sync on Storage: nothing filled in; tested and still off; up to date; a meeting uploading; the bucket out of reach; the bucket refusing, with files lost; an unreadable key; meetings to restore; a stopped restore. `&sync=1` is `on`. Test connection fails for the bucket `fail` and finds another key in the bucket `shared`. |
+| `&sync=fresh`, `tested`, `on`, `live`, `retrying`, `failing`, `paused`, `key`, `restore`, `restore-failed` | Bucket sync on Storage: nothing filled in; tested and still off; up to date; a meeting uploading; the bucket out of reach; the bucket refusing, with files lost; a new secret waiting for Test connection, with files waiting; an unreadable key; meetings to restore; a stopped restore. `&sync=1` is `on`. Test connection fails for the bucket `fail` and finds another key in the bucket `shared`. |
 
 `node voice/ui/dev/screenshots.js <outDir>` saves every pill state and every Settings page in both themes and languages, a narrow window and the dialogs, through the repository's Electron, without taking focus. Keep the images out of Git; they go on the GitHub issue.
 

@@ -209,7 +209,7 @@ check('the sync card shows only when the engine lists sync in features', async (
   assert.equal(await page.locator('[data-section="sync-connection"] .form').count(), 1, 'the form shows while sync is off');
 });
 
-check('the switch waits for a passed Test connection, and a changed bucket turns it off', async ({ open, page, mockState }) => {
+check('the switch waits for a passed Test connection, and a changed bucket pauses uploads', async ({ open, page, mockState }) => {
   await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
   const toggle = '[data-a="toggle:storage.sync.enabled"]';
   assert.equal(await page.locator(toggle).isDisabled(), true);
@@ -234,10 +234,31 @@ check('the switch waits for a passed Test connection, and a changed bucket turns
   await page.waitForSelector(`${toggle}[aria-checked="true"]`);
   assert.equal((await mockState()).config.storage.sync.enabled, true);
   await page.waitForSelector('[data-section="sync"] .sync-status .status');
+  // The switch stays on, so retention keeps holding what hasn't reached the bucket; uploads wait for a test.
   await blurFill(page, 'storage.sync.bucket', 'other-bucket');
-  await page.waitForSelector(`${toggle}[aria-checked="false"][disabled]`);
+  await page.waitForFunction(() => /Uploads paused\. Test the connection to go on\./.test(document.querySelector('[data-section="sync"]').innerText));
+  assert.equal(await page.locator(toggle).getAttribute('aria-checked'), 'true');
+  assert.equal(await page.locator(toggle).isDisabled(), false, 'the user can still turn it off');
   assert.equal(await page.locator('[data-section="sync-connection"] .form-status.ok').count(), 0, 'the old test no longer counts');
-  assert.equal(await page.locator('[data-section="sync"] .sync-status').count(), 0);
+  assert.equal((await mockState()).config.storage.sync.enabled, true);
+  // A passed test lets uploads go on without touching the switch.
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+  await page.waitForFunction(() => !/Uploads paused/.test(document.querySelector('[data-section="sync"]').innerText));
+  assert.notEqual((await mockState()).sync.state, 'paused');
+});
+
+check('a new secret while uploads fail pauses them and keeps the switch on', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=failing');
+  await page.click('[data-a="sync-secret-replace"]');
+  await blurFill(page, 'storage.sync.secret', 'test-secret-7');
+  await page.waitForSelector('[data-section="sync-connection"] .key-saved');
+  await page.waitForFunction(() => /Uploads paused/.test(document.querySelector('[data-section="sync"]').innerText));
+  const text = await page.locator('[data-section="sync"]').innerText();
+  assert.match(text, /Uploads paused\. Test the connection to go on\.[\s\S]*41 files waiting[\s\S]*as long as 10 GB stay free/);
+  const sync = (await mockState()).config.storage.sync;
+  assert.deepEqual([sync.enabled, sync.tested, sync.secretSaved], [true, false, true]);
+  assert.equal(await page.locator('[data-a="toggle:storage.sync.enabled"]').getAttribute('aria-checked'), 'true');
 });
 
 check('a switch the app refuses with needs_test rolls back and says why', async ({ open, page }) => {
@@ -297,13 +318,14 @@ check('a test still running when the secret is replaced never saves it half-type
   assert.deepEqual(await saves(), ['test-secret-5']);
 });
 
-check('Remove deletes the bucket secret and turns sync off', async ({ open, page, calls, mockState }) => {
+check('Remove deletes the bucket secret and pauses uploads', async ({ open, page, calls, mockState }) => {
   await open('settings.html?mock=1&lang=en&page=storage&sync=on');
   await page.click('[data-a="sync-secret-remove"]');
   await page.waitForSelector('[data-field="storage.sync.secret"]');
   assert.ok((await calls()).some(([command, args]) => command === 'settings_remove_key' && args.target === 'sync'));
   const sync = (await mockState()).config.storage.sync;
-  assert.deepEqual([sync.secretSaved, sync.tested, sync.enabled], [false, false, false]);
+  assert.deepEqual([sync.secretSaved, sync.tested, sync.enabled], [false, false, true]);
+  await page.waitForFunction(() => /Uploads paused/.test(document.querySelector('[data-section="sync"]').innerText));
   assert.equal(await page.locator('[data-a="sync-test"]').isDisabled(), true);
 });
 

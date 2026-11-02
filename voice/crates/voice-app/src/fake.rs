@@ -421,12 +421,14 @@ impl FakeEngine {
 }
 
 impl State {
-    /// A new or removed secret: sync goes off until Test connection passes again.
+    /// A changed connection field or a new or removed secret: uploads pause until Test connection
+    /// passes again, and the switch stays where the user put it.
     fn untest_sync(&mut self) {
         let sync = &mut self.settings["config"]["storage"]["sync"];
         sync["tested"] = json!(false);
-        sync["enabled"] = json!(false);
-        self.settings["sync"]["state"] = json!("off");
+        if sync["enabled"] == true {
+            self.settings["sync"]["state"] = json!("paused");
+        }
     }
 
     fn pill_change(&mut self, out: &mut Vec<Out>, f: impl FnOnce(&mut PillSnapshot)) {
@@ -890,10 +892,8 @@ impl EngineApi for FakeEngine {
             }
             if SYNC_FIELDS.contains(&key) {
                 let (_, field) = key.rsplit_once('.').unwrap_or_default();
-                let sync = &mut st.settings["config"]["storage"]["sync"];
-                if sync[field] != value {
-                    sync["enabled"] = json!(false);
-                    sync["tested"] = json!(false);
+                if st.settings["config"]["storage"]["sync"][field] != value {
+                    st.untest_sync();
                 }
             }
             set_path(&mut st.settings["config"], key, value.clone());
@@ -1116,6 +1116,9 @@ impl EngineApi for FakeEngine {
                 ));
             }
             sync["tested"] = json!(true);
+            if sync["enabled"] == true {
+                st.settings["sync"]["state"] = json!("idle");
+            }
             st.settings_changed(out);
             Ok(json!({ "otherKeys": 0 }))
         })
@@ -1174,7 +1177,8 @@ impl EngineApi for FakeEngine {
 
     fn settings_sync_restore(&self, action: &str) -> Result<Value, ApiError> {
         self.apply(|st, out| {
-            if st.settings["config"]["storage"]["sync"]["enabled"] != true {
+            let sync = &st.settings["config"]["storage"]["sync"];
+            if sync["enabled"] != true || sync["tested"] != true {
                 return Err(ApiError::new("off", "Turn sync on first."));
             }
             match action {
@@ -1578,14 +1582,16 @@ pub mod tests {
         engine.settings_sync_restore("start").unwrap();
         assert_eq!(engine.settings_state()["sync"]["restore"]["state"], "done");
 
-        // Changing the bucket or removing the secret turns sync off.
+        // Changing the bucket or removing the secret pauses sync until a new test; the switch
+        // stays on.
         engine
             .settings_set("storage.sync.bucket", json!("elsewhere"))
             .unwrap();
         assert_eq!(
             (sync()["enabled"].clone(), sync()["tested"].clone()),
-            (json!(false), json!(false))
+            (json!(true), json!(false))
         );
+        assert_eq!(engine.settings_state()["sync"]["state"], "paused");
         engine.settings_remove_key("sync").unwrap();
         assert_eq!(sync()["secretSaved"], false);
         assert_eq!(

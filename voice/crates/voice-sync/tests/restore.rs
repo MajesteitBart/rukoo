@@ -113,9 +113,9 @@ fn a_fresh_data_folder_with_the_saved_key_restores_a_meeting() {
         assert_eq!(fs::read(dir.join(s)).unwrap(), m.read(s), "{s}");
     }
     // Fetched media stays at least a day, with sync off too.
-    assert!(b.sync.holds_media(&m.id));
+    assert!(b.sync.holds_media(&m.id, true));
     b.sync.configure(None);
-    assert!(b.sync.holds_media(&m.id));
+    assert!(b.sync.holds_media(&m.id, false));
 }
 
 #[test]

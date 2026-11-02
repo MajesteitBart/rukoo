@@ -234,8 +234,8 @@ pub trait EngineApi: Send + Sync + 'static {
     /// Test connection for `config.storage.sync` with the saved secret: `{ otherKeys }`, and the
     /// fields count as tested.
     fn settings_sync_test(&self) -> Result<Value, ApiError>;
-    /// Keeps the bucket's secret with DPAPI, never in `config.json`; turns sync off until the next
-    /// passed test.
+    /// Keeps the bucket's secret with DPAPI, never in `config.json`; uploads pause until the next
+    /// passed test, and the switch stays on.
     fn settings_sync_save_secret(&self, secret: String) -> Result<(), ApiError>;
     /// The encryption key: `show` (`{ code, id }`), `saved`, or `import` with `code` (`{ id }`).
     fn settings_sync_key(&self, action: &str, code: Option<String>) -> Result<Value, ApiError>;
