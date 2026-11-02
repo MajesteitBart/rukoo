@@ -606,6 +606,18 @@ impl Transcript {
         )
     }
 
+    /// Where the last stored segment of `track` ends, in meeting ms: how far the stream
+    /// demonstrably answered.
+    pub fn segments_end(&self, track: Track) -> rusqlite::Result<Option<u64>> {
+        self.conn
+            .query_row(
+                r#"SELECT MAX("end") FROM stream_segments WHERE track = ?1"#,
+                params![track.as_str()],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map(|end| end.map(to_u64))
+    }
+
     fn query_segments(
         &self,
         filter: &str,

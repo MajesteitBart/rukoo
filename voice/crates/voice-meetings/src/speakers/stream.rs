@@ -7,9 +7,9 @@
 //! pipeline builds passages from them and makes no network call itself. Mistral's realtime
 //! segments may come without times, so Voice estimates them from when they arrived.
 //!
-//! After a dropped connection a new session starts where the old one had answered, and on the
-//! call it first gets a clip of every voice heard so far, named after its `call-N` id, so Mistral
-//! gives those voices the same names again. Mistral never falls back to Nemotron.
+//! After a dropped connection a new session starts after the last answer the old one sent, and on
+//! the call it first gets a clip of every voice heard so far, named after its `call-N` id, so
+//! Mistral gives those voices the same names again. Mistral never falls back to Nemotron.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -40,6 +40,11 @@ const MAX_GUESS_MS: u64 = 6_000;
 const REFERENCES: usize = 8;
 const REFERENCE_MIN_MS: u64 = 3_000;
 const REFERENCE_MAX_MS: u64 = 15_000;
+/// A new session sends again at most this much of what the old one sent past its last answer,
+/// so a long silence, which gets no answer, isn't streamed twice in full.
+const REPLAY_MAX_MS: u64 = 30_000;
+/// A session that took this much audio without an error counts as working, for the retry wait.
+const HEALTHY_SAMPLES: u64 = 30 * 16_000;
 
 /// Starts stream followers.
 pub(crate) struct StreamFollower;
@@ -66,6 +71,7 @@ impl StreamFollower {
                 .ok()
                 .flatten()
                 .unwrap_or(0);
+            let confirmed = transcript.segments_end(track).ok().flatten().unwrap_or(0);
             shared.set_settled(answered);
             let mut ctx = Ctx {
                 watcher: TimelineWatcher::new(dir.path()),
@@ -79,9 +85,12 @@ impl StreamFollower {
                 transcript,
                 lengths: HashMap::new(),
                 answered,
-                fed: answered * PER_MS,
+                confirmed,
+                progressed: false,
+                fed: 0,
                 session: None,
             };
+            ctx.fed = ctx.resume_ms() * PER_MS;
             ctx.run();
         })
     }
@@ -160,8 +169,14 @@ struct Ctx {
     transcript: Transcript,
     watcher: TimelineWatcher,
     lengths: HashMap<(String, u64), u64>,
-    /// Meeting ms up to which the provider answered.
+    /// Meeting ms up to which the provider answered, estimated from what was sent: the pipeline
+    /// cuts windows up to here.
     answered: u64,
+    /// Meeting ms up to which the provider demonstrably answered: the end of the last segment it
+    /// sent, or everything it was sent once it finished.
+    confirmed: u64,
+    /// The provider sent something since the last look: a segment or the end of the stream.
+    progressed: bool,
     /// Meeting samples sent in this session.
     fed: u64,
     session: Option<Session>,
@@ -206,14 +221,26 @@ impl Ctx {
                     self.shared.set_state(LabelState::Finished);
                     return;
                 }
-                Ok(Flow::Busy) => {
-                    attempts = 0;
-                    after_stop = 0;
+                Ok(flow) => {
+                    // Only answers count as progress after the stop: a provider that takes the
+                    // connection and then fails the first audio still runs out of tries.
+                    if std::mem::take(&mut self.progressed) {
+                        attempts = 0;
+                        after_stop = 0;
+                    } else if self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.clock.sent() >= HEALTHY_SAMPLES)
+                    {
+                        attempts = 0;
+                    }
                     retry_at = None;
+                    if matches!(flow, Flow::Idle) {
+                        self.shared.sleep(self.timing.poll);
+                    }
                 }
-                Ok(Flow::Idle) => {
-                    self.shared.sleep(self.timing.poll);
-                }
+                // A follower that was replaced leaves the store to the new one.
+                Err(_) if self.shared.stopping() => return,
                 Err(fail) => {
                     self.drop_session();
                     let message = match fail {
@@ -250,12 +277,21 @@ impl Ctx {
         }
     }
 
-    /// Closes the session. What it sent past its answers is sent again by the next one, so a
-    /// session that drops after the last audio went out, while it finishes, doesn't end the
-    /// track without those answers.
+    /// Closes the session. What it sent past its last answer is sent again by the next one, so
+    /// a session that drops while the provider is behind, or after the last audio went out while
+    /// it finishes, doesn't leave that audio without answers.
     fn drop_session(&mut self) {
         self.session = None;
-        self.fed = self.answered * PER_MS;
+        self.fed = self.resume_ms() * PER_MS;
+    }
+
+    /// Where the next session starts: after the provider's last answer, at most
+    /// [`REPLAY_MAX_MS`] before the estimated position, and never after it.
+    fn resume_ms(&self) -> u64 {
+        self.answered.min(
+            self.confirmed
+                .max(self.answered.saturating_sub(REPLAY_MAX_MS)),
+        )
     }
 
     fn reader(&mut self) -> TrackReader {
@@ -371,6 +407,9 @@ impl Ctx {
             }
             self.answers(left.min(Duration::from_millis(200)))?;
         }
+        if self.shared.stopping() {
+            return Ok(());
+        }
         // Everything that was sent is answered for now.
         let session = self.session.as_ref().expect("connected");
         if let Some(end) = session.clock.at(session.clock.sent(), true) {
@@ -378,6 +417,7 @@ impl Ctx {
             let epoch = session.epoch;
             self.transcript.store_segments(self.track, epoch, &[], ms)?;
             self.answered = self.answered.max(ms);
+            self.confirmed = self.confirmed.max(ms);
             self.shared.set_settled(self.answered);
         }
         Ok(())
@@ -406,10 +446,15 @@ impl Ctx {
             references,
         };
         let stream = self.opts.speech.connect(&session)?;
-        // What the last session sent past its answers is sent again.
+        // A follower that was replaced while it connected leaves the store to the new one.
+        if self.shared.stopping() {
+            return Ok(());
+        }
+        let resume = self.resume_ms();
+        // What the last session sent past its last answer is sent again.
         if let Some(previous) = previous {
             self.transcript
-                .drop_segments_from(self.track, previous, self.answered)?;
+                .drop_segments_from(self.track, previous, resume)?;
         }
         let reason = if previous.is_some() {
             "reconnect"
@@ -418,8 +463,8 @@ impl Ctx {
         };
         let number = self
             .transcript
-            .open_epoch(self.track, "mistral", self.answered, reason)?;
-        self.fed = self.answered * PER_MS;
+            .open_epoch(self.track, "mistral", resume, reason)?;
+        self.fed = resume * PER_MS;
         self.session = Some(Session {
             stream,
             epoch: number,
@@ -474,6 +519,10 @@ impl Ctx {
     fn answers(&mut self, wait: Duration) -> Result<(), Fail> {
         let session = self.session.as_mut().expect("connected");
         let events = session.stream.poll(wait)?;
+        // A follower that was replaced while it waited leaves the store to the new one.
+        if self.shared.stopping() {
+            return Ok(());
+        }
         let sent = session.clock.sent();
         let delay = u64::from(self.opts.delay_ms) * PER_MS;
         let labelled = self.track == Track::Call && self.opts.diarize;
@@ -576,6 +625,13 @@ impl Ctx {
             None
         };
         let answered = answered.unwrap_or(0).max(self.answered);
+        if session.done {
+            self.confirmed = self.confirmed.max(answered);
+        }
+        if let Some(end) = rows.iter().map(|r| r.end).max() {
+            self.confirmed = self.confirmed.max(end);
+        }
+        self.progressed |= session.done || !rows.is_empty();
         let epoch = session.epoch;
         self.transcript.record_labels(&batch)?;
         if !batch.map.is_empty() {

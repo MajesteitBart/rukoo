@@ -255,6 +255,10 @@ pub struct FakeStreamState {
     pub fail_ends: usize,
     /// Segments carry `start` and `end`.
     pub timed: bool,
+    /// The first session that labels voices never answers, as a provider that fell behind.
+    pub mute_first: bool,
+    /// Every push of a session that labels voices drops the connection.
+    pub fail_all: bool,
 }
 
 /// Mistral's realtime stream without a network: one segment per burst of a hidden speaker, sent
@@ -286,11 +290,13 @@ impl StreamingSpeech for FakeStreaming {
                 names.insert(k, name.clone());
             }
         }
+        let labelling = state.sessions.iter().filter(|s| s.diarize).count();
         Ok(Box::new(FakeStream {
             state: self.state.clone(),
             number: state.sessions.len(),
             diarize: session.diarize,
             timed: state.timed,
+            mute: session.diarize && state.mute_first && labelling == 1,
             names,
             heard: 0,
             position: 0,
@@ -305,6 +311,8 @@ struct FakeStream {
     number: usize,
     diarize: bool,
     timed: bool,
+    /// Never answers.
+    mute: bool,
     names: HashMap<usize, String>,
     heard: usize,
     /// Stream samples so far.
@@ -355,7 +363,7 @@ impl SpeechStream for FakeStream {
             if self.diarize {
                 state.labelled_pushes += 1;
             }
-            if self.diarize && state.fail_on.contains(&state.labelled_pushes) {
+            if self.diarize && (state.fail_all || state.fail_on.contains(&state.labelled_pushes)) {
                 return Err(ProviderError::new(
                     ErrorKind::Network,
                     "The fake stream dropped the connection.",
@@ -378,6 +386,9 @@ impl SpeechStream for FakeStream {
     }
 
     fn poll(&mut self, _wait: Duration) -> Result<Vec<StreamEvent>, ProviderError> {
+        if self.mute {
+            return Ok(Vec::new());
+        }
         Ok(std::mem::take(&mut self.events))
     }
 

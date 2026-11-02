@@ -36,6 +36,7 @@ mod test_support;
 pub use library::{CreateMeeting, Library, MeetingDir, MeetingFile, MEETINGS, MEETING_FILE};
 pub use pipeline::{
     speaker_of, ConsentCheck, Pipeline, PipelineHandle, PipelineOptions, PipelineState, Timing,
+    STREAM_REASON,
 };
 pub use reader::TrackReader;
 pub use retention::{retention_sweep, retention_sweep_at, WEEK_MS};

@@ -259,8 +259,9 @@ impl Core {
         opts.labels = labels.labels;
         match labels.stream {
             Some(Ok(stream)) => opts.stream = Some(stream),
-            // The stream can't be built (no key): the meeting fails with that reason, the way
-            // a recognizer that can't be built does, and never falls back to another provider.
+            // The stream can't be built (no key): the windows fail with that reason, the way a
+            // recognizer that can't be built does, and never fall back to another provider. The
+            // meeting keeps its label mode open, so a key added later still streams it.
             Some(Err(error)) => {
                 opts.stt = Arc::new(Unavailable(error));
                 opts.timed = None;
@@ -469,9 +470,10 @@ pub(crate) fn meeting_labels(cfg: &Config, speech: &dyn Speech) -> MeetingLabels
             context_bias: hints.vocabulary,
         });
         return MeetingLabels {
-            // The stream labels the call, not Nemotron.
+            // The stream labels the call, not Nemotron. Without a stream, the pipeline waits
+            // with its choice until there is one.
             labels: Labels::Off {
-                reason: "stream".into(),
+                reason: voice_meetings::STREAM_REASON.into(),
             },
             stream: Some(stream),
         };

@@ -65,6 +65,9 @@ const DICTATION_YIELD_MS: u64 = 120_000;
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// Turns this far around a window still decide its words and cuts.
 const TURN_MARGIN_MS: u64 = 2_000;
+/// The [`Labels::Off`] reason of a meeting provider that streams: the stream labels the call.
+/// Without a stream in the options too, the stream couldn't be set up yet.
+pub const STREAM_REASON: &str = "stream";
 
 /// The reader for one track of a meeting folder, from the timeline read so far. `lengths` keeps
 /// the samples of segments that ended, which can't change any more.
@@ -822,7 +825,16 @@ impl Worker {
         let mode = match stored {
             Some(mode) => mode,
             None => {
-                let (mode, reason) = if self.transcript.has_passage_on(Track::Call)? {
+                let upgrade = self.transcript.has_passage_on(Track::Call)?;
+                let stream_missing = self.stream.is_none()
+                    && matches!(&self.labels, Labels::Off { reason } if reason == STREAM_REASON);
+                if !upgrade && stream_missing {
+                    // The provider streams, but its stream can't be set up yet, as without an
+                    // API key: the windows fail with that reason, and a pipeline that has the
+                    // stream chooses the mode, so adding the key still streams this meeting.
+                    return Ok(());
+                }
+                let (mode, reason) = if upgrade {
                     // Voice 0.1 transcribed part of this meeting with the whole call as
                     // `call-1`; it finishes that way, so a name given to `call-1` keeps its
                     // meaning.
@@ -991,8 +1003,10 @@ impl Worker {
             self.file.started(),
         )?;
         self.decide(shared)?;
+        // Still undecided: a stream that can't be set up yet. Its call speakers come once it can.
+        let decided = !matches!(self.run, Run::Undecided);
         for track in self.tracks.clone() {
-            if track == Track::Mic || self.call_is_one_speaker() {
+            if track == Track::Mic || (decided && self.call_is_one_speaker()) {
                 self.emit_speaker(track)?;
             }
         }

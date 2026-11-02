@@ -389,6 +389,57 @@ fn an_app_restart_keeps_the_ids() {
     assert_eq!(d.script().opens, 2);
 }
 
+/// Every stored turn, open ones with no end, in a fixed order.
+fn stored_turns(dir: &MeetingDir) -> Vec<(String, i64, Option<i64>, i64)> {
+    let conn = rusqlite::Connection::open(dir.path().join("transcript.db")).unwrap();
+    let mut statement = conn
+        .prepare(
+            r#"SELECT speaker, start, "end", epoch FROM speaker_turns ORDER BY start, speaker"#,
+        )
+        .unwrap();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+/// 4b: a follower stopped while a worker call hangs, longer than the 2 s it is waited for,
+/// writes nothing when the call returns, so it can't cut the turns of the follower after it.
+#[test]
+fn a_follower_stopped_during_a_hung_call_writes_nothing_afterwards() {
+    let tmp = TempDir::new("speakers-retired");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    // One voice talks for 20 s, so a turn is open when the call hangs.
+    let pieces = [(0.5, None), (20.0, Some(0))];
+    rec.segment("call", 1, 0, &voices(&pieces));
+    let d = ScriptedDiarizer::with(|s| {
+        s.hang_on = vec![6];
+        s.hang = Duration::from_secs(3);
+    });
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    wait_until("the hung call", WAIT, || {
+        (d.script().pushes >= 6).then_some(())
+    });
+    let open = stored_turns(&rec.dir);
+    assert!(
+        open.iter().any(|(_, _, end, _)| end.is_none()),
+        "a turn is open: {open:?}"
+    );
+    handle.shutdown();
+    let before = stored_turns(&rec.dir);
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(
+        stored_turns(&rec.dir),
+        before,
+        "the stopped follower changed the turns after its call returned"
+    );
+}
+
 /// 5: three crashes in a row stop labels for the meeting; transcription goes on without them.
 #[test]
 fn three_crashes_stop_labels_and_never_transcription() {
@@ -941,6 +992,121 @@ fn mistral_streams_a_track_that_turns_up_later() {
     let call = last_revisions(&all, "call");
     assert_eq!(call.len(), 3, "{call:#?}");
     assert_eq!(assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(), 3);
+}
+
+/// The words of a fake stream's segment for a burst that starts at `ms` of the session: every
+/// burst of the call has its words in some call passage.
+fn every_burst_has_its_words(call: &[Found], timeline: &[(u64, u64, usize)]) {
+    for &(start, _, _) in timeline {
+        let word = format!("w{start}");
+        assert!(
+            call.iter()
+                .any(|p| p.text.split_whitespace().any(|w| w == word)),
+            "no words for the burst at {start} ms: {call:#?}"
+        );
+    }
+}
+
+/// 11e: a session that fell behind and then dropped is followed by one that sends again what
+/// the provider never answered, so no burst loses its words.
+#[test]
+fn a_stream_that_drops_while_behind_sends_the_unanswered_audio_again() {
+    let tmp = TempDir::new("speakers-mistral-behind");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(4, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    {
+        let mut state = fake.state();
+        // The first labelling session answers nothing and drops 15 s into the call.
+        state.mute_first = true;
+        state.fail_on = vec![150];
+    }
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_done(&handle);
+    handle.shutdown();
+    let labelling: Vec<_> = fake
+        .state()
+        .sessions
+        .iter()
+        .filter(|s| s.diarize)
+        .cloned()
+        .collect();
+    assert_eq!(labelling.len(), 2, "a new session after the drop");
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    // The second session started at the call's beginning: its stream ms are meeting ms.
+    every_burst_has_its_words(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
+}
+
+/// 11f: after the stop, a provider that takes every connection and drops it at the first audio
+/// runs out of tries, and the meeting fails instead of trying for ever.
+#[test]
+fn a_stream_that_always_drops_after_the_stop_fails_the_meeting() {
+    let tmp = TempDir::new("speakers-mistral-give-up");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(2, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    fake.state().fail_all = true;
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_until("the meeting to fail", WAIT, || {
+        matches!(handle.state(), PipelineState::Failed { .. }).then_some(())
+    });
+    handle.shutdown();
+    let sessions = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    // `fast()` gives up after three failures in a row.
+    assert!((3..=4).contains(&sessions), "{sessions} sessions");
+}
+
+/// 11g: a meeting whose realtime stream couldn't be set up yet, as without an API key, keeps
+/// its label mode open: the windows fail meanwhile, and a pipeline that has the stream later
+/// streams and labels the call, from `call-1` on.
+#[test]
+fn a_stream_without_its_key_yet_streams_once_it_has_one() {
+    let tmp = TempDir::new("speakers-mistral-no-key");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(3, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    let without = PipelineOptions {
+        timing: fast(),
+        labels: Labels::Off {
+            reason: voice_meetings::STREAM_REASON.into(),
+        },
+        stream: None,
+        ..PipelineOptions::new(Arc::new(Offline))
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), without);
+    wait_until("the meeting to fail", WAIT, || {
+        matches!(handle.state(), PipelineState::Failed { .. }).then_some(())
+    });
+    handle.shutdown();
+    assert_eq!(
+        meta(&rec.dir, MODE_KEY),
+        None,
+        "no mode before the stream exists"
+    );
+    assert!(
+        !speakers(&events(&log, &rec.id()))
+            .iter()
+            .any(|(id, _)| id.starts_with("call-")),
+        "no call speaker before the stream exists"
+    );
+
+    let fake = FakeStreaming::default();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_done(&handle);
+    handle.shutdown();
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("mistral"));
+    let all = events(&log, &rec.id());
+    let call = last_revisions(&all, "call");
+    let ids = assert_stable_ids(&call, &timeline_of(&pieces, 0));
+    let mut numbers: Vec<String> = ids.into_values().collect();
+    numbers.sort();
+    assert_eq!(numbers, ["call-1", "call-2", "call-3"]);
 }
 
 /// 12: Nemotron never falls back to Mistral: without a diarizer and without a stream, the call

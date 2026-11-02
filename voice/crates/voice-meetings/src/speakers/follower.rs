@@ -396,6 +396,9 @@ fn run(
                 return;
             }
             Ok(End::Stopped) => return,
+            // A follower that was replaced while a worker call ran leaves the store to the new
+            // one: closing turns now would cut the new follower's open turns.
+            Err(_) if ctx.shared.stopping() => return,
             Err(Fail::Diar(e))
                 if matches!(
                     e.kind,
@@ -466,6 +469,11 @@ impl Ctx {
     }
 
     fn record(&mut self, batch: LabelBatch, labeller: &Labeller) -> Result<(), Fail> {
+        // A worker call can outlast the 2 s a replaced follower is waited for; what it returns
+        // then belongs to no follower, and the loop ends at its next look.
+        if self.shared.stopping() {
+            return Ok(());
+        }
         if !batch.is_empty() {
             self.transcript.record_labels(&batch)?;
         }
@@ -515,7 +523,8 @@ impl Ctx {
         let mut stream = self.diarizer.open()?;
         let geometry = stream.geometry();
         let pid = stream.worker_pid();
-        if !self.poll()? {
+        // Opening loads the model and can outlast the wait for a replaced follower.
+        if self.shared.stopping() || !self.poll()? {
             return Ok(End::Stopped);
         }
         let epoch_reason = match reason {
