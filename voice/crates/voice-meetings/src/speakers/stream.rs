@@ -630,25 +630,29 @@ impl Ctx {
             None
         };
         let answered = answered.unwrap_or(0).max(self.answered);
+        let mut confirmed = self.confirmed;
         if session.done {
-            self.confirmed = self.confirmed.max(answered);
+            confirmed = confirmed.max(answered);
         }
         if let Some(end) = rows.iter().map(|r| r.end).max() {
-            self.confirmed = self.confirmed.max(end);
+            confirmed = confirmed.max(end);
         }
-        self.progressed |= session.done || !rows.is_empty();
+        let progressed = session.done || !rows.is_empty();
         let epoch = session.epoch;
-        self.transcript.record_labels(&batch)?;
+        if !batch.is_empty() || !rows.is_empty() || answered > self.answered {
+            self.transcript
+                .store_answers(&batch, self.track, epoch, &rows, answered)?;
+        }
+        // Only what was stored counts: after a failed write the next session starts where the
+        // stored answers end, and hears this audio again.
+        self.confirmed = confirmed;
+        self.progressed |= progressed;
+        self.answered = answered;
         if !batch.map.is_empty() {
             let voices: HashSet<String> = self.transcript.speaker_map()?.into_values().collect();
             let count = voices.len() as u32;
             self.shared.update(|s| s.speakers = count);
         }
-        if !rows.is_empty() || answered > self.answered {
-            self.transcript
-                .store_segments(self.track, epoch, &rows, answered)?;
-        }
-        self.answered = answered;
         self.shared.set_settled(answered);
         Ok(())
     }

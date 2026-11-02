@@ -503,29 +503,7 @@ impl Transcript {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for row in &batch.map {
-            tx.execute(
-                "INSERT OR REPLACE INTO speaker_map (epoch, label, speaker, how) VALUES (?1, ?2, ?3, ?4)",
-                params![to_i64(row.epoch), row.label, row.speaker, row.how],
-            )?;
-        }
-        for turn in &batch.turns {
-            tx.execute(
-                r#"INSERT INTO speaker_turns (track, speaker, start, "end", epoch)
-                   VALUES ('call', ?1, ?2, ?3, ?4)
-                   ON CONFLICT (track, speaker, start) DO UPDATE SET
-                       "end" = COALESCE(excluded."end", speaker_turns."end")"#,
-                params![
-                    turn.speaker,
-                    to_i64(turn.start),
-                    turn.end.map(to_i64),
-                    to_i64(turn.epoch)
-                ],
-            )?;
-        }
-        if let Some(settled) = batch.settled {
-            raise(&tx, SETTLED_KEY, settled)?;
-        }
+        Self::write_labels(&tx, batch)?;
         tx.commit()
     }
 
@@ -556,9 +534,23 @@ impl Transcript {
         rows: &[StoredSegment],
         answered_ms: u64,
     ) -> rusqlite::Result<()> {
+        self.store_answers(&LabelBatch::default(), track, epoch, rows, answered_ms)
+    }
+
+    /// Stores what a stream session answered: the ids of new labels, its segments and how far
+    /// it answered, at once, so a failed write stores none of it and uses up no id.
+    pub fn store_answers(
+        &mut self,
+        labels: &LabelBatch,
+        track: Track,
+        epoch: u64,
+        rows: &[StoredSegment],
+        answered_ms: u64,
+    ) -> rusqlite::Result<()> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::write_labels(&tx, labels)?;
         for s in rows {
             tx.execute(
                 r#"INSERT OR REPLACE INTO stream_segments
@@ -578,6 +570,34 @@ impl Transcript {
         }
         raise(&tx, &answered_key(track), answered_ms)?;
         tx.commit()
+    }
+
+    /// Writes the rows of a label batch inside a transaction.
+    fn write_labels(tx: &rusqlite::Transaction<'_>, batch: &LabelBatch) -> rusqlite::Result<()> {
+        for row in &batch.map {
+            tx.execute(
+                "INSERT OR REPLACE INTO speaker_map (epoch, label, speaker, how) VALUES (?1, ?2, ?3, ?4)",
+                params![to_i64(row.epoch), row.label, row.speaker, row.how],
+            )?;
+        }
+        for turn in &batch.turns {
+            tx.execute(
+                r#"INSERT INTO speaker_turns (track, speaker, start, "end", epoch)
+                   VALUES ('call', ?1, ?2, ?3, ?4)
+                   ON CONFLICT (track, speaker, start) DO UPDATE SET
+                       "end" = COALESCE(excluded."end", speaker_turns."end")"#,
+                params![
+                    turn.speaker,
+                    to_i64(turn.start),
+                    turn.end.map(to_i64),
+                    to_i64(turn.epoch)
+                ],
+            )?;
+        }
+        if let Some(settled) = batch.settled {
+            raise(tx, SETTLED_KEY, settled)?;
+        }
+        Ok(())
     }
 
     /// The stored segments of `track` that overlap `[from_ms, to_ms)`, in the order they came.

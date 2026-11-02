@@ -1142,6 +1142,58 @@ fn a_stream_that_drops_while_behind_sends_the_unanswered_audio_again() {
     every_burst_has_its_words(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
 }
 
+/// The words of the call's passages, one count per burst: the passages that overlap it.
+fn words_per_burst(call: &[Found], timeline: &[(u64, u64, usize)]) -> Vec<usize> {
+    timeline
+        .iter()
+        .map(|&(start, end, _)| {
+            call.iter()
+                .filter(|p| p.start < end && p.end > start)
+                .map(|p| p.text.split_whitespace().count())
+                .sum()
+        })
+        .collect()
+}
+
+/// 11h: answers the store failed to write count as unanswered: the next session hears their
+/// audio again, so no word is lost, and the voice in them gets no second id.
+#[test]
+fn answers_that_failed_to_store_are_sent_again() {
+    let tmp = TempDir::new("speakers-mistral-store");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    // Six bursts of 3.5 s, ten words each.
+    let pieces = three_voices(6, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    drop(Transcript::open(rec.dir.path()).unwrap());
+    // The first call session's third segment, the burst at 9.9 s, fails to store, as a write
+    // past the busy timeout does.
+    rusqlite::Connection::open(rec.dir.path().join("transcript.db"))
+        .unwrap()
+        .execute_batch(
+            r#"CREATE TRIGGER refuse BEFORE INSERT ON stream_segments
+               WHEN NEW.track = 'call' AND NEW.n = 2
+                 AND NEW.epoch = (SELECT MIN(epoch) FROM speaker_epochs WHERE track = 'call')
+               BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;"#,
+        )
+        .unwrap();
+    let fake = FakeStreaming::default();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_done(&handle);
+    handle.shutdown();
+    let labelling = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    assert_eq!(labelling, 2, "a new session after the failed write");
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    let timeline = timeline_of(&pieces, 0);
+    let call = last_revisions(&all, "call");
+    assert_eq!(words_per_burst(&call, &timeline), [10; 6], "{call:#?}");
+    let ids = assert_stable_ids(&call, &timeline);
+    let mut ids: Vec<&str> = ids.values().map(String::as_str).collect();
+    ids.sort();
+    assert_eq!(ids, ["call-1", "call-2", "call-3"]);
+}
+
 /// 11f: after the stop, a provider that takes every connection and drops it at the first audio
 /// runs out of tries, and the meeting fails instead of trying for ever.
 #[test]
