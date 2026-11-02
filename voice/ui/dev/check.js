@@ -222,6 +222,8 @@ check('the switch stays usable without the model and applies to new meetings', a
   await page.click('[data-a="model:nemotron:download"]');
   await page.waitForSelector('[data-section="status"] :text("Ready. New meetings label each voice on the call.")', { timeout: 10000 });
   assert.equal((await mockState()).models.nemotron.removable, true);
+  // Nemotron has no loaded state, so its files never read "Not active" next to a ready status.
+  assert.equal(await page.locator('[data-section="model"] .model-status').innerText(), 'Installed');
 });
 
 check('Error details shows why the runtime failed or the model is damaged', async ({ open, page }) => {
@@ -276,6 +278,21 @@ check('a realtime model asks to stream, and a batch agreement doesn\'t cover it'
     );
   });
   assert.equal(refused, 'invalid_value');
+});
+
+check('only the meetings form offers realtime models', async ({ open, page }) => {
+  const offered = async (form) => {
+    await open(`settings.html?mock=1&lang=en&page=${form === 'meetings' ? 'meetingTranscription' : form}`);
+    await page.selectOption(`[data-field="${form}.provider"]`, 'mistral');
+    await page.click(`[data-a="refresh:${form}"]`);
+    await page.waitForSelector(`[data-form="${form}"] .field-help:text-matches("models? found")`);
+    return page.locator(`#models-${form} option`).evaluateAll((options) => options.map((o) => o.value));
+  };
+  const dictation = await offered('transcription');
+  assert.ok(dictation.includes('voxtral-mini-latest'), dictation.join());
+  assert.ok(!dictation.some((id) => id.startsWith('voxtral-mini-transcribe-realtime')), dictation.join());
+  assert.ok(!(await offered('rewriting')).some((id) => id.startsWith('voxtral-mini-transcribe-realtime')));
+  assert.ok((await offered('meetings')).includes('voxtral-mini-transcribe-realtime-3'));
 });
 
 check('Dutch is complete on every page', async ({ open, page }) => {

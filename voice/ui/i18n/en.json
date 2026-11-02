@@ -1095,6 +1095,10 @@
     "message": "Speaker labels stopped for the current meeting. Recording and transcription go on.",
     "description": "Settings > Speaker labels: warning row when the speaker worker failed for a meeting that is still transcribing. voice/ui/settings.js (speakersPage)."
   },
+  "settings.speakers.modelInstalled": {
+    "message": "Installed",
+    "description": "Settings > Speaker labels: status of the Nemotron model files when they are on this computer. Nemotron has no loaded state; the status card says whether it labels. voice/ui/settings.js (modelStatus)."
+  },
   "settings.storage.local": {
     "message": "On this computer",
     "description": "Settings > Storage: group title. voice/ui/settings.js (storagePage)."

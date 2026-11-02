@@ -241,11 +241,17 @@ function consentNeeded(provider, endpoint) {
   return !host || !LOCAL_HOSTS.has(host);
 }
 
+// Whether this is a realtime model (API.md, providers.audio[].streamingPrefix). It streams meetings and does nothing
+// else, so the engine refuses it for dictation and rewriting.
+function streams(provider, model) {
+  const prefix = state.providers.audio.find((p) => p.id === provider)?.streamingPrefix;
+  return Boolean(prefix) && String(model || '').trim().startsWith(prefix);
+}
+
 // How meeting audio goes to the provider: `stream` for a realtime model, else recorded windows. An agreement covers
 // one of the two.
 function consentMode(provider, model) {
-  const prefix = state.providers.audio.find((p) => p.id === provider)?.streamingPrefix;
-  return prefix && String(model || '').trim().startsWith(prefix) ? 'stream' : 'windows';
+  return streams(provider, model) ? 'stream' : 'windows';
 }
 
 function savedConsentFor(provider, endpoint, model) {
@@ -412,6 +418,8 @@ function providerForm(target) {
   const keySaved = saved.keySaved && provider === saved.provider && !d.replacingKey;
   const presets = presetEndpoints(target, provider);
   const models = modelLists[target];
+  // Only the meetings form offers realtime models; the other two would refuse them on Save.
+  const offered = (models?.list || []).filter((id) => target === 'meetings' || !streams(provider, id));
   const fs = formStatus[target];
 
   const options = ids.map((id) => `<option value="${esc(id)}" ${id === provider ? 'selected' : ''}>${esc(providerLabel(id, target))}</option>`).join('');
@@ -431,7 +439,7 @@ function providerForm(target) {
       : models.status === 'failed'
         ? `<span class="field-help bad">${esc(t('settings.provider.modelsFailed', { error: models.error }))}</span>`
         : models.status === 'done'
-          ? `<span class="field-help">${esc(models.list.length ? t('settings.provider.modelsFound', { count: models.list.length }) : t('settings.provider.noModels', { provider: providerLabel(provider, target) }))}</span>`
+          ? `<span class="field-help">${esc(offered.length ? t('settings.provider.modelsFound', { count: offered.length }) : t('settings.provider.noModels', { provider: providerLabel(provider, target) }))}</span>`
           : '';
     fields += `${key}
       <label>${esc(t('settings.provider.endpoint'))}<input type="text" inputmode="url" list="endpoints-${target}" data-field="${target}.endpoint" spellcheck="false" autocomplete="off" />
@@ -441,7 +449,7 @@ function providerForm(target) {
       )}" /><button class="btn secondary" data-a="refresh:${target}" ${models?.status === 'loading' ? 'disabled' : ''}>${esc(
         models?.status === 'loading' ? t('common.loading') : t('common.refresh')
       )}</button></div>
-        <datalist id="models-${target}">${(models?.list || []).map((id) => `<option value="${esc(id)}"></option>`).join('')}</datalist>${modelHelp}</label>`;
+        <datalist id="models-${target}">${offered.map((id) => `<option value="${esc(id)}"></option>`).join('')}</datalist>${modelHelp}</label>`;
   }
 
   if (target === 'transcription') {
@@ -531,6 +539,8 @@ function modelStatus(m) {
   if (m.active === 'error') return { tone: 'bad', text: t('settings.model.loadFailed') };
   if (m.active === 'loading') return { tone: 'busy', text: t('settings.model.loading') };
   if (m.active) return { tone: m.active === 'loaded' ? 'ok' : 'off', text: t('settings.model.active', { state: t(MODEL_ACTIVE[m.active]) }) };
+  // Nemotron is never chosen or loaded like Orukeet; the status card above it says whether it labels.
+  if (m.id === 'nemotron') return { tone: 'off', text: t('settings.speakers.modelInstalled') };
   return { tone: 'off', text: t('settings.model.installed') };
 }
 

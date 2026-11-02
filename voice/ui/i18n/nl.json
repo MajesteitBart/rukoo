@@ -282,6 +282,7 @@
   "settings.speakers.engineMistral": "Mistral, samen met de transcriptie",
   "settings.speakers.liveHelp": "Geldt voor vergaderingen die je vanaf nu start.",
   "settings.speakers.stopped": "Sprekerlabels zijn gestopt voor de huidige vergadering. Opnemen en transcriberen gaan door.",
+  "settings.speakers.modelInstalled": "Geïnstalleerd",
   "settings.storage.local": "Op deze computer",
   "settings.storage.folder": "Map voor opnamen",
   "settings.storage.usage": "Gebruikt {size}. {free} vrij op deze schijf.",
