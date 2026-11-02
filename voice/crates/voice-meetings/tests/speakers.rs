@@ -312,6 +312,7 @@ fn the_gate_holds_call_windows_at_the_settled_position() {
     rec.close_segment(writer, "call", 1, 0);
     rec.stop(ms(seconds(&pieces)));
     wait_done(&handle);
+    handle.shutdown();
     let all = events(&log, &rec.id());
     assert_stable_ids(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
     assert_eq!(last_revisions(&all, "call").len(), 8);
@@ -1046,6 +1047,7 @@ fn labels_wait_while_the_user_dictates() {
     rec.close_segment(writer, "call", 1, 0);
     rec.stop(ms(seconds(&pieces)) + 100);
     wait_done(&handle);
+    handle.shutdown();
     let all = events(&log, &rec.id());
     let call = last_revisions(&all, "call");
     assert_eq!(call.len(), 3);
@@ -1075,6 +1077,7 @@ fn passages_from_a_stall_get_their_speaker_later() {
     };
     let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
     wait_done(&handle);
+    handle.shutdown();
     let all = events(&log, &rec.id());
     assert_no_repeats(&all);
     assert_no_id_moves(&all);
@@ -1238,6 +1241,7 @@ fn mistral_streams_after_consent_and_keeps_ids_across_a_reconnect() {
     handle.wake();
     wait_done(&handle);
     assert_eq!(handle.labels().mode, "mistral");
+    handle.shutdown();
 
     let state = fake.state();
     let labelling: Vec<_> = state.sessions.iter().filter(|s| s.diarize).collect();
