@@ -363,7 +363,7 @@ The screen process listens on `127.0.0.1` at the port in `screen.json` and speak
 | `status` | | `{"ok":true,"state":"recording","t":…,"mode":"video","video":true,"frames":true,"monitor":"\\\\.\\DISPLAY1","monitors":[…],"dropped":{"video":null,"frames":null},"encoder":"NVIDIA H.264 Encoder MFT","hardware":true,"saved":12}`; `state` is `starting`, `recording`, `paused`, `locked` or `stopped`, `video` and `frames` whether each part still records, `dropped` the reason for each part that stopped, `hardware` whether the encoder is a hardware one (`null` without an encoder), and `saved` the frames saved |
 | `monitors` | | `{"ok":true,"monitors":[…]}`, left to right, as in `probe`; with `--monitor`, only that monitor |
 | `monitor` | `id`, 1 to 64 characters | `{"ok":true,"monitor":"\\\\.\\DISPLAY2"}` once capture moved there; `unknown_monitor` for a monitor that isn't there, and with `--monitor` for every other monitor; `stopped` once recording ended |
-| `pause`, `resume` | | `{"ok":true}` |
+| `pause`, `resume` | | `{"ok":true}`. `pause` stops capturing at once. `resume` first reads the recorder's timeline and resumes only when its latest `pause` or `resume` line is a `resume`, so a `resume` that arrives after a newer pause records nothing; the timeline's own `resume` line ends a pause within 250 ms without it |
 | `stop` | | `{"ok":true,"t":…}` once `stop` is written; then the process exits |
 
 Errors are `{"ok":false,"error":"<code>"}`. `bad_token`, and a line that isn't a JSON object (`bad_request`), close the connection; a missing `cmd` or bad arguments (`bad_request`), `unknown_command`, `unknown_monitor` and `stopped` leave it open.

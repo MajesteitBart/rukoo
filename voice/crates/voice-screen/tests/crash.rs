@@ -780,6 +780,51 @@ mod tests {
         assert_timeline_continuous(&m);
     }
 
+    /// A control `resume` the supervisor delivers after a newer pause, while the recorder's
+    /// timeline still says paused, records nothing: the timeline decides, and its resume ends
+    /// the pause.
+    pub fn a_late_resume_keeps_the_pause() {
+        let m = TempMeeting::new("late-resume", "frames");
+        let (mut recorder, mut screen) = start(&m, "frames", SLIDES, &[]);
+        m.wait_journal("a frame", |l| first(l, "frame").is_some());
+        let paused = m.recorder_request(json!({ "cmd": "pause" }));
+        assert_eq!(paused["ok"], true, "{paused}");
+        assert_eq!(m.screen_request(1, json!({ "cmd": "pause" }))["ok"], true);
+        let pause_t = t(&paused);
+        // The stale resume.
+        assert_eq!(m.screen_request(1, json!({ "cmd": "resume" }))["ok"], true);
+        std::thread::sleep(Duration::from_secs(4));
+        let status = m.screen_request(1, json!({ "cmd": "status" }));
+        assert_eq!(status["state"], "paused", "{status}");
+        let lines = m.journal();
+        let pause_at = lines
+            .iter()
+            .rposition(|l| l["kind"] == "capture" && t(l) <= pause_t)
+            .unwrap_or(0);
+        assert!(
+            lines[pause_at + 1..]
+                .iter()
+                .all(|l| l["kind"] != "capture" && !(l["kind"] == "frame" && t(l) > pause_t)),
+            "recorded during the pause:\n{}",
+            show(&lines)
+        );
+
+        // The recorder's resume ends the pause, without the control port.
+        let resumed = m.recorder_request(json!({ "cmd": "resume" }));
+        assert_eq!(resumed["ok"], true, "{resumed}");
+        let resume_t = t(&resumed);
+        m.wait_journal("a frame after the resume", |l| {
+            of_kind(l, "frame").iter().any(|f| t(f) >= resume_t)
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        let between: Vec<_> = of_kind(&lines, "frame")
+            .into_iter()
+            .filter(|f| t(f) > pause_t && t(f) < resume_t)
+            .collect();
+        assert!(between.is_empty(), "frames while paused: {between:?}");
+        assert_frames_open(&m, &lines);
+    }
+
     pub fn monitor_switch_starts_a_new_file() {
         let m = TempMeeting::new("switch", "video");
         let test = spec("monitors=2");
@@ -1056,6 +1101,11 @@ fn main() {
             name: "pause_stops_capture",
             ignored: false,
             run: tests::pause_stops_capture,
+        },
+        Test {
+            name: "a_late_resume_keeps_the_pause",
+            ignored: false,
+            run: tests::a_late_resume_keeps_the_pause,
         },
         Test {
             name: "monitor_switch_starts_a_new_file",

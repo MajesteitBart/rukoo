@@ -304,6 +304,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         rebuild_at: None,
         capture_retry_at: None,
         paused: timeline.paused,
+        timeline_paused: timeline.paused,
         pause_from: None,
         locked: false,
         frames_saved: 0,
@@ -424,6 +425,9 @@ struct Screen {
     rebuild_at: Option<Instant>,
     capture_retry_at: Option<Instant>,
     paused: bool,
+    /// Whether the timeline's latest `pause` or `resume` line is a `pause`. The timeline is what
+    /// the recorder did, so a control `resume` that arrives after a newer pause doesn't resume.
+    timeline_paused: bool,
     pause_from: Option<u64>,
     locked: bool,
     frames_saved: u64,
@@ -1172,8 +1176,14 @@ impl Screen {
                         }
                     }
                 }
-                TimelineLine::Pause { t } => self.pause(Some(*t)),
-                TimelineLine::Resume { .. } => self.resume(),
+                TimelineLine::Pause { t } => {
+                    self.timeline_paused = true;
+                    self.pause(Some(*t));
+                }
+                TimelineLine::Resume { .. } => {
+                    self.timeline_paused = false;
+                    self.resume();
+                }
                 TimelineLine::Suspend { .. } => self.saver.reset(),
                 TimelineLine::Stop { t, .. } => self.request_stop(*t, "meeting", None),
                 _ => {}
@@ -1424,8 +1434,14 @@ impl Screen {
                 self.pause(None);
                 json!({ "ok": true })
             }
+            // The fast path for a pause, which mustn't wait for the timeline. A resume reads the
+            // timeline first and counts only when the timeline says resumed: a resume the
+            // supervisor sent late, after a newer pause, mustn't record through that pause.
             Some("resume") => {
-                self.resume();
+                self.follow_timeline();
+                if !self.timeline_paused {
+                    self.resume();
+                }
                 json!({ "ok": true })
             }
             Some("stop") => {
