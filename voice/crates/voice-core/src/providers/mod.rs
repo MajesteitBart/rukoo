@@ -21,17 +21,22 @@ use serde::{Deserialize, Serialize};
 use crate::local::LocalEngine;
 
 pub use models::list_models;
-pub use realtime::{realtime_url, MistralRealtime};
+pub use realtime::{
+    parse_realtime_event, realtime_url, streaming_delay_ms, MistralRealtime, MistralStream,
+};
 use stream::StreamingSpeech;
 pub use urls::{endpoint_host, endpoint_reachable, is_local_host};
 pub use wav::wav_bytes;
 
-/// The realtime stream for a meeting provider that streams ([`stream::streams`]).
-pub fn streaming_speech(_cfg: &ProviderConfig) -> Result<Box<dyn StreamingSpeech>, ProviderError> {
-    // Placeholder until the realtime client lands.
-    Err(ProviderError::provider(
-        "Streaming transcription isn't available.",
-    ))
+/// The realtime stream for a meeting provider that streams ([`stream::streams`]): Mistral with a
+/// realtime model. Every other choice is refused, so a batch provider never streams by accident.
+pub fn streaming_speech(cfg: &ProviderConfig) -> Result<Box<dyn StreamingSpeech>, ProviderError> {
+    if !stream::streams(cfg) {
+        return Err(ProviderError::config(
+            "Only Mistral's realtime model streams meeting audio.",
+        ));
+    }
+    Ok(Box::new(MistralRealtime::new(cfg)?))
 }
 
 /// The model id Ownkey and Voice store for the local Orukeet model.
