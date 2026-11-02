@@ -881,6 +881,56 @@ fn bucket_sync_turns_on_only_for_a_bucket_that_passed_its_test() {
 }
 
 #[test]
+fn a_test_counts_only_for_the_secret_it_read() {
+    let h = Harness::new("sync-test-secret");
+    h.config(json!({}));
+    let fake = support::fake_s3();
+    let engine = h.start();
+    for (key, value) in [
+        ("storage.sync.service", "other"),
+        ("storage.sync.endpoint", fake.endpoint().as_str()),
+        ("storage.sync.region", "us-east-1"),
+        ("storage.sync.bucket", BUCKET),
+        ("storage.sync.accessKeyId", support::ACCESS_KEY),
+    ] {
+        engine.settings_set(key, json!(value)).unwrap();
+    }
+    engine
+        .settings_sync_save_secret(BUCKET_SECRET.into())
+        .unwrap();
+    // Every answer of the bucket takes a while, so the test runs while the secret changes.
+    fake.faults().stall = Some(std::time::Duration::from_millis(250));
+    for change in ["replace", "remove"] {
+        let testing = {
+            let engine = engine.clone();
+            std::thread::spawn(move || engine.settings_sync_test())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        match change {
+            "replace" => engine
+                .settings_sync_save_secret("an-untested-secret".into())
+                .unwrap(),
+            _ => engine.settings_remove_key("sync").unwrap(),
+        }
+        let result = testing.join().unwrap();
+        assert_eq!(code(result), "failed", "{change}");
+        assert_eq!(sync_config(&engine)["tested"], false, "{change}");
+        assert_eq!(
+            code(engine.settings_set("storage.sync.enabled", json!(true))),
+            "needs_test",
+            "{change}"
+        );
+        if change == "replace" {
+            engine
+                .settings_sync_save_secret(BUCKET_SECRET.into())
+                .unwrap();
+        }
+    }
+    engine.shutdown();
+    fake.stop();
+}
+
+#[test]
 fn a_failed_test_says_why_and_leaves_sync_off() {
     let h = Harness::new("sync-test-fails");
     h.config(json!({}));

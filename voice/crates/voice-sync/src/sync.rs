@@ -1,7 +1,7 @@
 //! The facade the engine uses: one [`BucketSync`] per data folder.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -163,6 +163,9 @@ pub struct TestReport {
     pub url_style: UrlStyle,
     /// Other encryption keys with meetings in this bucket.
     pub other_keys: u32,
+    /// [`BucketSync::secret_generation`] when the test read the secret. A different one now
+    /// means the secret was saved or removed during the test, which then tested another secret.
+    pub secret_generation: u64,
 }
 
 pub struct BucketSync {
@@ -226,6 +229,8 @@ impl BucketSync {
     /// endpoint. Uses the saved secret (NoSecret without one).
     pub fn test(&self, cfg: &SyncConfig) -> Result<TestReport, SyncError> {
         let shared = &self.shared;
+        // Read before the secret: a save in between then counts as a change, never the reverse.
+        let secret_generation = self.secret_generation();
         let secret = shared.keys.secret()?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::NoSecret, "Save the secret access key first.")
         })?;
@@ -289,11 +294,13 @@ impl BucketSync {
         Ok(TestReport {
             url_style,
             other_keys,
+            secret_generation,
         })
     }
 
     pub fn save_secret(&self, secret: &str) -> Result<(), SyncError> {
         self.shared.keys.save_secret(secret)?;
+        self.shared.secret_generation.fetch_add(1, Ordering::SeqCst);
         self.shared.bump();
         self.shared.changed();
         Ok(())
@@ -301,9 +308,15 @@ impl BucketSync {
 
     pub fn remove_secret(&self) -> Result<(), SyncError> {
         self.shared.keys.remove_secret()?;
+        self.shared.secret_generation.fetch_add(1, Ordering::SeqCst);
         self.shared.bump();
         self.shared.changed();
         Ok(())
+    }
+
+    /// Grows with every save or removal of the bucket secret in this run (see [`TestReport`]).
+    pub fn secret_generation(&self) -> u64 {
+        self.shared.secret_generation.load(Ordering::SeqCst)
     }
 
     pub fn secret_saved(&self) -> bool {

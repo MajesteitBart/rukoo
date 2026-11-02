@@ -67,6 +67,9 @@ pub(crate) struct Shared {
     /// Held while the key is read and made or replaced: the worker and `show_key` can both find no
     /// key at once, and `KeyStore::create` checks for the file before it writes it.
     pub(crate) key_lock: Mutex<()>,
+    /// Counts saves and removals of the bucket secret, so a Test connection can tell whether the
+    /// secret it read is still the saved one when its result is stored.
+    pub(crate) secret_generation: AtomicU64,
     notifier: Notifier,
 }
 
@@ -130,6 +133,7 @@ impl Shared {
             fetching: Mutex::new(HashSet::new()),
             fetched: Condvar::new(),
             key_lock: Mutex::new(()),
+            secret_generation: AtomicU64::new(0),
             notifier: Notifier {
                 inner: Mutex::new((None, false)),
             },

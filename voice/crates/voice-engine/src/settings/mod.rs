@@ -491,14 +491,16 @@ pub fn sync_test(core: &Arc<Core>) -> Result<Value, ApiError> {
         ..bucket.clone()
     };
     core.commit(|cfg| {
-        // The fields may have changed while the test ran: then it tested something else.
+        // The fields or the secret may have changed while the test ran: then it tested something
+        // else. A save or removal of the secret clears the pass only once it commits, which may
+        // be after this one.
         let mut now = crate::sync::sync_value(cfg);
         let same = voice_sync::SyncConfig::from_json(&now).is_ok_and(|current| {
             voice_sync::SyncConfig {
                 url_style: report.url_style,
                 ..current
             } == tested
-        });
+        }) && sync.secret_generation() == report.secret_generation;
         if !same {
             return Err(ApiError::new(
                 "failed",
