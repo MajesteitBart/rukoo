@@ -1212,9 +1212,10 @@ function requestHtml(s) {
 
 // ---------- month ----------
 
-// Long events take the top rows of a week, then the rest by start time.
+// Long events take the top rows of a week, then booking requests, which wait for an answer and so never hide behind
+// "+N more", then the rest by start time.
 const isLong = (e) => e.allDay || e.end - e.start >= DAY || startOfDay(e.start) !== startOfDay(Math.max(e.start, e.end - 1));
-const monthOrder = (a, b) => Number(isLong(b)) - Number(isLong(a)) || byStart(a, b);
+const monthOrder = (a, b) => Number(isLong(b)) - Number(isLong(a)) || Number(Boolean(b.req)) - Number(Boolean(a.req)) || byStart(a, b);
 
 function monthHtml(body) {
   const r = range('month');
