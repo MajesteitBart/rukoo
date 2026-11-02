@@ -57,11 +57,14 @@ fn load_from_a_missing_folder_is_a_missing_runtime() {
         return;
     }
     assert_failure(&response, "runtime");
+    // Elsewhere the worker refuses before it looks for the runtime.
+    let expected = if cfg!(windows) {
+        "nemo_speech_asr_c.dll"
+    } else {
+        "Windows only"
+    };
     assert!(
-        response["error"]
-            .as_str()
-            .unwrap()
-            .contains("nemo_speech_asr_c.dll"),
+        response["error"].as_str().unwrap().contains(expected),
         "{response}"
     );
     assert_alive(&mut worker);
@@ -69,6 +72,7 @@ fn load_from_a_missing_folder_is_a_missing_runtime() {
     assert_failure(&worker.request(&json!({"op": "open"})), "bad_request");
 }
 
+#[cfg(windows)]
 #[test]
 fn a_damaged_runtime_dll_fails_the_load_and_the_worker_lives_on() {
     if processor_refused() {

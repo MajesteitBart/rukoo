@@ -39,8 +39,8 @@ $Voice = Split-Path -Parent $PSScriptRoot
 if (-not [IO.Path]::IsPathRooted($Out)) { $Out = Join-Path (Get-Location).Path $Out }
 $Out = [IO.Path]::GetFullPath($Out)
 
-# The pin of ModelSpec::nemotron() in voice/crates/voice-core/src/local/registry.rs. A voice-core test checks that
-# this script carries the same URL and SHA-256.
+# The pin of ModelSpec::nemotron() in voice/crates/voice-core/src/local/registry.rs. voice-speakers' tests/assets.rs
+# checks that this script carries the same URL, size and SHA-256.
 $NemotronUrl = 'https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/f667ed73aee57d40cc39428eb768b4fd87a0a29e/Nemotron-3-Diarization.q8_0.gguf'
 $NemotronSize = 107012128
 $NemotronSha256 = '08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1'
