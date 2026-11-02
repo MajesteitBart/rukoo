@@ -7,7 +7,9 @@
 //!
 //! `nemo_speech_asr_c.dll` is loaded by absolute path with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, so
 //! the ggml DLLs and the Visual C++ runtime next to it are found there before anywhere else. The
-//! DLL is never unloaded.
+//! system DLLs it imports are loaded from System32 before it, so a file of the same name in the
+//! runtime folder or a `dll_dirs` folder never loads. The application folder isn't searched. None
+//! of these DLLs is ever unloaded.
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::os::windows::ffi::OsStrExt;
@@ -20,8 +22,8 @@ use windows::Win32::System::Diagnostics::Debug::{
     SetThreadErrorMode, SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX, THREAD_ERROR_MODE,
 };
 use windows::Win32::System::LibraryLoader::{
-    AddDllDirectory, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
-    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    AddDllDirectory, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_FLAGS,
+    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LOAD_LIBRARY_SEARCH_USER_DIRS,
 };
 
 use crate::backend::{check_cpu, Frames, SAMPLE_RATE};
@@ -30,6 +32,18 @@ use crate::protocol::{ErrorKind, Failure};
 
 /// The DLL with the C ABI; it imports the other four.
 pub const LIBRARY: &str = "nemo_speech_asr_c.dll";
+
+/// The system DLLs the runtime imports, as `build.ps1` allows them. Its `api-ms-win-crt-*` API sets
+/// resolve to `ucrtbase.dll`. kernel32 and advapi32 are KnownDLLs, which the loader never searches
+/// for; dbghelp and ucrtbase it finds by search, starting in the runtime folder.
+/// `tests/runtime.rs` plants a copy of every system DLL a real runtime imports in its folder and
+/// checks that the System32 copy loads, so a new import missing here fails there.
+const SYSTEM_IMPORTS: [&str; 4] = [
+    "kernel32.dll",
+    "advapi32.dll",
+    "dbghelp.dll",
+    "ucrtbase.dll",
+];
 
 /// `nemo_speech_asr_status`: 0 is success.
 type Status = i32;
@@ -130,7 +144,7 @@ fn wide(path: &std::ffi::OsStr) -> Vec<u16> {
     path.encode_wide().chain(std::iter::once(0)).collect()
 }
 
-/// Lets the loader search `dir` for the runtime's imports, as `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`
+/// Lets the loader search `dir` for the runtime's imports, as `LOAD_LIBRARY_SEARCH_USER_DIRS`
 /// includes the folders added this way. For the rest of the process, which loads one runtime.
 fn add_dll_directory(dir: &Path) -> Result<(), Failure> {
     // AddDllDirectory takes only an absolute path.
@@ -150,6 +164,34 @@ fn add_dll_directory(dir: &Path) -> Result<(), Failure> {
         )));
     }
     Ok(())
+}
+
+/// Loads each of [`SYSTEM_IMPORTS`] from System32. An import whose name matches a loaded module
+/// binds to that module without a search, so the runtime gets these copies even when its folder
+/// has a DLL of the same name. The handles are never freed, so the modules stay for the process.
+fn pin_system_imports() -> Result<(), Failure> {
+    for name in SYSTEM_IMPORTS {
+        let wide = wide(name.as_ref());
+        unsafe { LoadLibraryExW(PCWSTR(wide.as_ptr()), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+            .map_err(|error| {
+                runtime_failure(format!(
+                    "The speaker label runtime needs {name} from System32, which did not load: {}",
+                    error.message()
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+/// Where the loader looks for the runtime's imports: the runtime folder, the `dll_dirs` folders
+/// when there are any, then System32. Not the application folder, which holds none of them.
+fn search_flags(has_dll_dirs: bool) -> LOAD_LIBRARY_FLAGS {
+    let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
+    if has_dll_dirs {
+        flags | LOAD_LIBRARY_SEARCH_USER_DIRS
+    } else {
+        flags
+    }
 }
 
 fn runtime_failure(message: impl Into<String>) -> Failure {
@@ -177,9 +219,9 @@ unsafe fn require<T: Copy>(module: HMODULE, name: &'static str) -> Result<T, Fai
 
 impl Runtime {
     /// Checks the processor, then loads `nemo_speech_asr_c.dll` from `dir` and resolves its
-    /// diarization exports. The DLLs it imports come from `dir`, then from `dll_dirs`, such as
-    /// Ownkey's C runtime one folder up, then from the system. The DLL stays loaded until the
-    /// process ends.
+    /// diarization exports. The system DLLs it imports come from System32; the others from `dir`,
+    /// then from `dll_dirs`, such as Ownkey's C runtime one folder up, then from System32. The DLL
+    /// stays loaded until the process ends.
     pub fn load(dir: &Path, dll_dirs: &[PathBuf]) -> Result<&'static Runtime, Failure> {
         check_cpu(cpu::detect())?;
         // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path, and a verbatim \\?\ path would
@@ -200,6 +242,7 @@ impl Runtime {
         for extra in dll_dirs {
             add_dll_directory(extra)?;
         }
+        pin_system_imports()?;
         let wide = wide(library.as_os_str());
         // A damaged or foreign DLL must fail the load instead of opening an error box in a process
         // nobody sees.
@@ -215,7 +258,7 @@ impl Runtime {
             LoadLibraryExW(
                 PCWSTR(wide.as_ptr()),
                 None,
-                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+                search_flags(!dll_dirs.is_empty()),
             )
         };
         if quiet {
@@ -622,6 +665,45 @@ mod tests {
         let failure = missing.unwrap_err();
         assert_eq!(failure.kind, ErrorKind::Runtime);
         assert!(failure.message.contains("missing"), "{}", failure.message);
+    }
+
+    #[test]
+    fn the_system_imports_load_from_system32() {
+        use std::os::windows::ffi::OsStringExt;
+        use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+        use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+        let path = |buffer: &[u16], len: u32| {
+            assert!(len > 0 && (len as usize) < buffer.len());
+            PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len as usize]))
+        };
+        let mut buffer = [0u16; 260];
+        let len = unsafe { GetSystemDirectoryW(Some(&mut buffer)) };
+        let system32 = std::fs::canonicalize(path(&buffer, len)).unwrap();
+
+        assert_eq!(pin_system_imports(), Ok(()));
+        for name in SYSTEM_IMPORTS {
+            let wide = wide(name.as_ref());
+            let module = unsafe { GetModuleHandleW(PCWSTR(wide.as_ptr())) }.unwrap();
+            let mut buffer = [0u16; 260];
+            let len = unsafe { GetModuleFileNameW(Some(module), &mut buffer) };
+            let file = path(&buffer, len);
+            let folder = std::fs::canonicalize(file.parent().unwrap()).unwrap();
+            assert!(
+                folder
+                    .as_os_str()
+                    .eq_ignore_ascii_case(system32.as_os_str()),
+                "{name} is {}",
+                file.display()
+            );
+        }
+    }
+
+    #[test]
+    fn imports_are_searched_for_outside_the_application_folder() {
+        let own = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
+        assert_eq!(search_flags(false), own);
+        assert_eq!(search_flags(true), own | LOAD_LIBRARY_SEARCH_USER_DIRS);
     }
 
     #[test]

@@ -8,7 +8,11 @@
 
 mod common;
 
+#[cfg(windows)]
+use std::collections::BTreeSet;
 use std::fs;
+#[cfg(windows)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -216,4 +220,173 @@ fn the_self_test_hears_at_least_three_speakers() {
     assert!(report["segments"].as_u64().unwrap() >= 3, "{report}");
     assert!(report["realtimeFactor"].as_f64().unwrap() > 1.0, "{report}");
     eprintln!("self-test: {report}");
+}
+
+/// A copy of every system DLL the runtime imports, planted in the runtime folder where the loader
+/// looks first for the runtime's imports, must not be the copy that loads.
+#[cfg(windows)]
+#[test]
+fn the_runtime_takes_its_system_dlls_from_system32_even_with_copies_beside_it() {
+    let Some(assets) = assets() else { return };
+    let temp = TempDir::new("planted");
+    let runtime = temp.path().join("nemo_speech");
+    fs::create_dir(&runtime).unwrap();
+    let mut shipped = BTreeSet::new();
+    for entry in fs::read_dir(&assets.runtime).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            fs::copy(&path, runtime.join(path.file_name().unwrap())).unwrap();
+            let name = lower_file_name(&path);
+            if name.ends_with(".dll") {
+                shipped.insert(name);
+            }
+        }
+    }
+    assert!(shipped.contains("nemo_speech_asr.dll"), "{shipped:?}");
+
+    // What the runtime imports and doesn't ship. The api-ms-win-crt API sets resolve to ucrtbase.dll.
+    let mut system_dlls = BTreeSet::new();
+    for name in &shipped {
+        for import in pe_imports(&runtime.join(name)) {
+            if import.starts_with("api-ms-win-crt-") {
+                system_dlls.insert("ucrtbase.dll".to_owned());
+            } else if !shipped.contains(&import) {
+                system_dlls.insert(import);
+            }
+        }
+    }
+    // nemo_speech_asr.dll imports dbghelp.dll, which is no KnownDLL, so only the worker keeps the
+    // loader from taking a dbghelp.dll from the runtime folder.
+    assert!(system_dlls.contains("dbghelp.dll"), "{system_dlls:?}");
+    let system32 = system_dir();
+    for name in &system_dlls {
+        fs::copy(system32.join(name), runtime.join(name))
+            .unwrap_or_else(|error| panic!("copy {name} from {}: {error}", system32.display()));
+    }
+
+    let mut worker = Worker::spawn();
+    let mut request = load(&assets);
+    request["runtime"] = json!(runtime);
+    let loaded = worker.request(&request);
+    assert_eq!(loaded["ok"], json!(true), "{loaded}\n{}", worker.stderr());
+    let modules = loaded_modules(worker.pid());
+    let folder_of = |name: &str| {
+        modules
+            .iter()
+            .find(|path| lower_file_name(path) == name)
+            .map(|path| canonical_text(path.parent().unwrap()))
+    };
+    // The worker loaded the copied runtime, not the original.
+    assert_eq!(
+        folder_of("nemo_speech_asr.dll"),
+        Some(canonical_text(&runtime)),
+        "{modules:#?}"
+    );
+    for name in &system_dlls {
+        assert_eq!(
+            folder_of(name),
+            Some(canonical_text(&system32)),
+            "{name} loaded from the wrong folder: {modules:#?}"
+        );
+    }
+    worker.send(&json!({"op": "quit"}));
+    assert_eq!(worker.wait().code(), Some(0));
+}
+
+#[cfg(windows)]
+fn lower_file_name(path: &Path) -> String {
+    path.file_name().unwrap().to_string_lossy().to_lowercase()
+}
+
+/// A folder as one comparable string: the long, real path in lowercase.
+#[cfg(windows)]
+fn canonical_text(path: &Path) -> String {
+    fs::canonicalize(path)
+        .unwrap_or_else(|error| panic!("canonicalize {}: {error}", path.display()))
+        .to_string_lossy()
+        .to_lowercase()
+}
+
+#[cfg(windows)]
+fn system_dir() -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = [0u16; 260];
+    let len = unsafe {
+        windows::Win32::System::SystemInformation::GetSystemDirectoryW(Some(&mut buffer))
+    } as usize;
+    assert!(len > 0 && len < buffer.len(), "GetSystemDirectoryW");
+    PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len]))
+}
+
+/// The full path of every module loaded in process `pid`.
+#[cfg(windows)]
+fn loaded_modules(pid: u32) -> Vec<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, MODULEENTRY32W, TH32CS_SNAPMODULE,
+    };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid) }
+        .expect("list the worker's modules");
+    let mut entry = MODULEENTRY32W {
+        dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut paths = Vec::new();
+    let mut found = unsafe { Module32FirstW(snapshot, &mut entry) };
+    while found.is_ok() {
+        let path = &entry.szExePath;
+        let len = path.iter().position(|&c| c == 0).unwrap_or(path.len());
+        paths.push(PathBuf::from(std::ffi::OsString::from_wide(&path[..len])));
+        found = unsafe { Module32NextW(snapshot, &mut entry) };
+    }
+    unsafe { CloseHandle(snapshot) }.unwrap();
+    assert!(!paths.is_empty(), "no modules in process {pid}");
+    paths
+}
+
+/// The DLLs a 64-bit PE file imports, directly and delay-loaded, in lowercase.
+#[cfg(windows)]
+fn pe_imports(file: &Path) -> Vec<String> {
+    let pe = fs::read(file).unwrap();
+    let u16_at = |at: usize| u16::from_le_bytes([pe[at], pe[at + 1]]);
+    let u32_at = |at: usize| u32::from_le_bytes(pe[at..at + 4].try_into().unwrap());
+    assert_eq!(&pe[..2], b"MZ", "{}", file.display());
+    let nt = u32_at(0x3c) as usize;
+    assert_eq!(&pe[nt..nt + 4], b"PE\0\0", "{}", file.display());
+    let sections = u16_at(nt + 6) as usize;
+    let optional = nt + 24;
+    assert_eq!(u16_at(optional), 0x20b, "{} is not PE32+", file.display());
+    let section_table = optional + u16_at(nt + 20) as usize;
+    let offset = |rva: u32| {
+        (0..sections)
+            .map(|n| section_table + n * 40)
+            .find_map(|section| {
+                let start = u32_at(section + 12);
+                let size = u32_at(section + 8).max(u32_at(section + 16));
+                (start..start + size)
+                    .contains(&rva)
+                    .then(|| (rva - start + u32_at(section + 20)) as usize)
+            })
+            .unwrap_or_else(|| panic!("RVA {rva:#x} outside the sections of {}", file.display()))
+    };
+    let name_at = |at: usize| {
+        let end = pe[at..].iter().position(|&b| b == 0).unwrap();
+        String::from_utf8_lossy(&pe[at..at + end]).to_lowercase()
+    };
+    let mut names = Vec::new();
+    // Data directory 1 holds 20-byte import descriptors with the name at 12, directory 13
+    // 32-byte delay-load descriptors with the name at 4. A zero name ends each list.
+    for (directory, descriptor, name) in [(1, 20, 12), (13, 32, 4)] {
+        let rva = u32_at(optional + 112 + directory * 8);
+        if rva == 0 {
+            continue;
+        }
+        let mut at = offset(rva);
+        while u32_at(at + name) != 0 {
+            names.push(name_at(offset(u32_at(at + name))));
+            at += descriptor;
+        }
+    }
+    names
 }

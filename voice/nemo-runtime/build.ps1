@@ -197,6 +197,8 @@ $dumpbin = Get-ChildItem -Path (Join-Path $vs 'VC\Tools\MSVC\*\bin\Hostx64\x64\d
 if (-not $dumpbin) { throw "dumpbin.exe not found in $vs" }
 
 # Everything a DLL may import: each other, the Visual C++ runtime that ships next to them, the UCRT and system DLLs.
+# The worker loads these system DLLs from System32 before the runtime; a new one also goes into SYSTEM_IMPORTS in
+# voice/crates/voice-speakers/src/nemo.rs.
 $allowed = '^(nemo_speech_asr\.dll|ggml(-[a-z]+)?\.dll|msvcp140\.dll|vcruntime140(_1)?\.dll|kernel32\.dll|advapi32\.dll|dbghelp\.dll|api-ms-win-crt-[a-z0-9-]+\.dll)$'
 $bin = Join-Path $BuildDir 'bin'
 foreach ($name in $Libraries) {
