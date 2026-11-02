@@ -4,7 +4,8 @@
 // WebSocket client but no server, and the repo has no ws dependency). It does the upgrade, frames text, ping and
 // close, keeps an event log with sequence numbers, plans the replay like Voice does and answers commands. Tests
 // script it: append events, remove old ones for a gap, change the instance, keep a command unanswered, cut a
-// connection halfway through a message, or leave a stale discovery file behind.
+// connection halfway through a message, or leave a stale discovery file behind. media.open and media.read serve
+// synthetic media (syntheticMedia below), byte for byte what Voice's serve example serves.
 
 const http = require('http');
 const crypto = require('crypto');
@@ -137,6 +138,9 @@ class FakeVoice {
     this.server = null;
     this.port = null;
     this.nextMeeting = 0;
+    // media.open's files by id ({ file, ready }) and their ids by arguments.
+    this.media = new Map();
+    this.mediaIds = new Map();
   }
 
   async listen(port = 0) {
@@ -353,11 +357,97 @@ const DEFAULTS = {
   },
   'frame.get'() {
     return { error: { code: 'not_available', message: 'Voice 0.1 does not record the screen.' } };
+  },
+  // The first media.open for new arguments answers ready: false and the next one ready: true, so every test goes
+  // through Rukoo's polling. The same arguments keep their id; a frame ignores `end`.
+  'media.open'(args) {
+    if (!this.snapshot(args.meeting)) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    const file = syntheticMedia(args);
+    if (file.error) return file;
+    const key = JSON.stringify([args.meeting, args.kind, args.start, args.kind === 'frame' || args.end === undefined ? null : args.end]);
+    const id = this.mediaIds.get(key);
+    if (!id) {
+      const media = `md-${b64u(16)}`;
+      this.mediaIds.set(key, media);
+      this.media.set(media, { file, ready: false });
+      return { media, ready: false };
+    }
+    const prepared = this.media.get(id);
+    prepared.ready = true;
+    return { media: id, ready: true, type: file.type, size: file.size, start: file.start, end: file.end };
+  },
+  'media.read'(args) {
+    const prepared = this.media.get(args.media);
+    if (!prepared) return { error: { code: 'not_found', message: 'There is no media with that id.' } };
+    if (!prepared.ready) return { error: { code: 'bad_request', message: "The media isn't ready yet." } };
+    return { offset: args.offset, data: prepared.file.bytes(args.offset, args.length).toString('base64') };
   }
 };
+
+// ---------- synthetic media ----------
+
+// voice/crates/voice-bridge/examples/serve.rs serves the same bytes, so test/voice-interop.test.js can compare them.
+const SAMPLE_RATE = 16000;
+const FRAME_LEN = 107;
+const FRAME_HEAD = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00]);
+
+// The canonical 44-byte header for `samples` samples of 16 kHz mono 16-bit PCM, as Voice's segment_header writes it.
+function wavHeader(samples) {
+  const data = Math.min(samples, Math.floor((0xffffffff - 36) / 2)) * 2;
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0, 'latin1');
+  h.writeUInt32LE(36 + data, 4);
+  h.write('WAVEfmt ', 8, 'latin1');
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(SAMPLE_RATE, 24);
+  h.writeUInt32LE(SAMPLE_RATE * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36, 'latin1');
+  h.writeUInt32LE(data, 40);
+  return h;
+}
+
+// The bytes of a file of `size` from `offset`, at most `length` of them; none past the end.
+function piece(size, offset, length, byteAt) {
+  const end = Math.min(offset + length, size);
+  const from = Math.min(offset, end);
+  const out = Buffer.alloc(end - from);
+  for (let i = from; i < end; i++) out[i - from] = byteAt(i);
+  return out;
+}
+
+// Sample k (from 0) of the audio is (k mod 64) * 512 - 16384, little-endian.
+function sampleByte(i) {
+  const k = Math.floor((i - 44) / 2);
+  const sample = ((k % 64) * 512 - 16384) & 0xffff;
+  return (i - 44) % 2 === 0 ? sample & 0xff : sample >> 8;
+}
+
+// The file media.open prepares for { kind, start, end }: { type, start, end, size, bytes(offset, length) }, or the
+// { error } Voice answers.
+// - audio: the WAV header for (end - start) * 16 samples, then the samples; size 44 + (end - start) * 32.
+// - frame: 107 bytes, FF D8 FF E0 00 10 'JFIF' 00, zeros, FF D9, at `start` rounded down to a whole second.
+// - video: not_available.
+function syntheticMedia({ kind, start, end }) {
+  if (kind === 'audio') {
+    if (!Number.isInteger(end)) return { error: { code: 'bad_request', message: '`end` is required for audio.' } };
+    const header = wavHeader((end - start) * 16);
+    const size = 44 + (end - start) * 32;
+    return { type: 'audio/wav', start, end, size, bytes: (offset, length) => piece(size, offset, length, (i) => (i < 44 ? header[i] : sampleByte(i))) };
+  }
+  if (kind === 'frame') {
+    const at = Math.floor(start / 1000) * 1000;
+    const byteAt = (i) => (i < FRAME_HEAD.length ? FRAME_HEAD[i] : i === FRAME_LEN - 2 ? 0xff : i === FRAME_LEN - 1 ? 0xd9 : 0);
+    return { type: 'image/jpeg', start: at, end: at, size: FRAME_LEN, bytes: (offset, length) => piece(FRAME_LEN, offset, length, byteAt) };
+  }
+  return { error: { code: 'not_available', message: "This meeting didn't record video." } };
+}
 
 async function startVoiceServer(options) {
   return new FakeVoice(options).listen();
 }
 
-module.exports = { FakeVoice, startVoiceServer };
+module.exports = { FakeVoice, startVoiceServer, syntheticMedia };

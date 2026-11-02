@@ -271,6 +271,30 @@ mod tests {
     }
 
     #[test]
+    fn media_ids_are_md_and_an_instance() {
+        let media = new_media_id().unwrap();
+        assert!(is_media_id(&media), "{media}");
+        assert_eq!(media.len(), 25);
+        assert_ne!(new_media_id().unwrap(), media);
+        assert!(is_media_id("md-a1B2c3D4e5F6g7H8i9J0kL"));
+        assert!(is_media_id("md-______________________"));
+        for bad in [
+            "",
+            "md-",
+            "md-short",
+            "md-a1B2c3D4e5F6g7H8i9J0k",
+            "md-a1B2c3D4e5F6g7H8i9J0kLx",
+            "md-a1B2c3D4e5F6g7H8i9J0k=",
+            "md-a1B2c3D4e5F6g7H8i9J0k/",
+            "MD-a1B2c3D4e5F6g7H8i9J0kL",
+            "mdxa1B2c3D4e5F6g7H8i9J0kL",
+            "Vb3kQ9m2X7pL1sR4tY8wZQ",
+        ] {
+            assert!(!is_media_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
     fn passage_ids_pad_the_start_to_nine_digits() {
         assert_eq!(passage_id("call", 65_320), "call-000065320");
         assert_eq!(passage_id(crate::Track::Mic, 0), "mic-000000000");

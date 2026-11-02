@@ -88,6 +88,9 @@ fn expected_output(name: &str, input: &Value) -> Value {
         "status event with a null meeting, which counts as left out" => {
             object.remove("meeting");
         }
+        "open media with a null end, which counts as left out" => {
+            object["args"].as_object_mut().unwrap().remove("end");
+        }
         _ => {}
     }
     expected
