@@ -961,6 +961,39 @@ mod tests {
         let names = clip_files(m.path());
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(names.iter().all(|n| n.ends_with(".mp4")));
+
+        // The second clip held instead: the first is finished by the deadline and comes back
+        // alone, and a caller joining the running cut gets it too, marked incomplete.
+        let second = paths::clip_path(m.path(), 3_000, 11_000, 2);
+        let guard = lock_path(&second);
+        let reply = clip_reply(
+            m.path(),
+            true,
+            3_000,
+            11_000,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        let clips = reply["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), 1, "{reply}");
+        assert_eq!(
+            PathBuf::from(clips[0]["path"].as_str().unwrap()),
+            paths::clip_path(m.path(), 3_000, 11_000, 1)
+        );
+        let joined = cut_clips(
+            m.path(),
+            3_000,
+            11_000,
+            Instant::now() + Duration::from_millis(200),
+        )
+        .unwrap();
+        assert_eq!((joined.clips.len(), joined.complete), (1, false));
+        assert!(!second.exists());
+        drop(guard);
+        let done = cut_clips(m.path(), 3_000, 11_000, soon()).unwrap();
+        assert_eq!((done.clips.len(), done.complete), (2, true));
+        assert_eq!(done.clips[0], joined.clips[0]);
+        assert!(second.exists());
     }
 
     #[test]
