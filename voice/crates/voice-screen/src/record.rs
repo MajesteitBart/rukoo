@@ -1032,8 +1032,8 @@ impl Screen {
             return;
         };
         let (seq, start, path) = (video.seq, video.t, video.path.clone());
-        let end = video.end_t();
-        let result = video.end(FINISH_WAIT);
+        // Read after the thread wrote the frames still queued, so `video_end` covers them.
+        let (result, end) = video.end(FINISH_WAIT);
         let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         self.write(&Line::VideoEnd {
             t: end.max(start),

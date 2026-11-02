@@ -72,6 +72,32 @@ mod tests {
         })
     }
 
+    /// A finished video file's `video_end` reaches as far as the media in it, so a clip request
+    /// for the file's last moments finds the file. Files ended by an error or a full disk are
+    /// abandoned and hold no more than their journal says.
+    fn assert_video_ends_cover(m: &TempMeeting, lines: &[Value]) {
+        for video in of_kind(lines, "video") {
+            let Some(end) = lines
+                .iter()
+                .find(|l| l["kind"] == "video_end" && l["seq"] == video["seq"])
+            else {
+                continue;
+            };
+            if ["error", "disk", "crash"].contains(&end["reason"].as_str().unwrap_or("")) {
+                continue;
+            }
+            let index = mp4::index_path(&video_path(m, video)).unwrap();
+            let reached = t(video) + media_ms(&index);
+            assert!(
+                t(end) + 2 >= reached,
+                "video {} holds media to {reached} ms; its video_end says {}:\n{}",
+                video["seq"],
+                t(end),
+                show(lines)
+            );
+        }
+    }
+
     /// Every journaled frame's JPEG opens, at the size its line says.
     fn assert_frames_open(m: &TempMeeting, lines: &[Value]) {
         let frames = of_kind(lines, "frame");
@@ -243,6 +269,7 @@ mod tests {
         for video in of_kind(&lines, "video") {
             assert_video_reads(&video_path(&m, video));
         }
+        assert_video_ends_cover(&m, &lines);
         assert_frames_open(&m, &lines);
         assert_timeline_continuous(&m);
     }
@@ -713,6 +740,7 @@ mod tests {
             of_kind(&lines, "video").iter().any(|v| t(v) >= resume_t),
             "no video after the resume"
         );
+        assert_video_ends_cover(&m, &lines);
         assert_frames_open(&m, &lines);
         assert_timeline_continuous(&m);
     }
@@ -751,7 +779,8 @@ mod tests {
         assert!(ended < second && moved < second, "{}", show(&lines));
         let status = m.screen_request(1, json!({ "cmd": "status" }));
         assert_eq!(status["monitor"], r"\\.\SYNTHETIC2", "{status}");
-        stop(&m, &mut recorder, &mut screen);
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_video_ends_cover(&m, &lines);
     }
 
     pub fn stops_with_the_recorder() {

@@ -241,20 +241,23 @@ impl VideoThread {
             .dropped
     }
 
-    /// Writes what is queued, finalizes the file and returns its size. After `timeout` the
-    /// thread is left behind and the file stays as it is.
-    pub fn end(self, timeout: Duration) -> Result<u64, VideoError> {
+    /// Writes what is queued, finalizes the file and returns its size, with the meeting time
+    /// where the written video ends. That time is read once the thread wrote the frames still
+    /// queued, so it covers them. After `timeout` the thread is left behind, the file stays as it
+    /// is and the time is as far as the thread got.
+    pub fn end(self, timeout: Duration) -> (Result<u64, VideoError>, u64) {
         {
             let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             state.end = true;
         }
         self.shared.ready.notify_all();
-        match self.done.recv_timeout(timeout) {
+        let result = match self.done.recv_timeout(timeout) {
             Ok(result) => result,
             Err(_) => Err(VideoError::Encoder(format!(
                 "finishing the video took longer than {} s",
                 timeout.as_secs()
             ))),
-        }
+        };
+        (result, self.end_t())
     }
 }
