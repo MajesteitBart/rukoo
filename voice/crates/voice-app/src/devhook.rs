@@ -8,6 +8,12 @@
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
 //! and writes PNGs of the pill and Settings from WebView2. Nothing here sends input or reads the
 //! screen.
+//!
+//! Settings and bucket sync, as the page would change them: `{"cmd": "settings", "key":
+//! "storage.sync.bucket", "value": "test"}` calls `settings_set`, and `{"cmd": "sync", "action":
+//! ...}` calls the sync commands: `secret` with `secret`, `test`, `key` (the recovery code, which
+//! the caller keeps to itself), `import` with `code`, `restore_list`, `restore_start` and `status`
+//! (Settings' `sync`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,8 +98,35 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
             let page = request["page"].as_str().map(str::to_string);
             capture(app, &shared, &dir, page)
         }
+        "settings" => {
+            let key = request["key"].as_str().ok_or("settings needs a key")?;
+            engine
+                .settings_set(key, request["value"].clone())
+                .map(|()| json!({}))
+                .map_err(|e| e.to_string())
+        }
+        "sync" => sync(&*engine, request),
         other => Err(format!("unknown dev hook {other:?}")),
     }
+}
+
+/// The bucket sync commands of Settings > Storage.
+fn sync(engine: &dyn voice_engine::EngineApi, request: &Value) -> Result<Value, String> {
+    let text = |name: &str| request[name].as_str().map(str::to_string);
+    let result = match request["action"].as_str().unwrap_or_default() {
+        "secret" => {
+            let secret = text("secret").ok_or("secret needs a secret")?;
+            engine.settings_sync_save_secret(secret).map(|()| json!({}))
+        }
+        "test" => engine.settings_sync_test(),
+        "key" => engine.settings_sync_key("show", None),
+        "import" => engine.settings_sync_key("import", text("code")),
+        "restore_list" => engine.settings_sync_restore("list"),
+        "restore_start" => engine.settings_sync_restore("start"),
+        "status" => Ok(engine.settings_state()["sync"].clone()),
+        other => return Err(format!("unknown sync action {other:?}")),
+    };
+    result.map_err(|e| e.to_string())
 }
 
 fn capture(
