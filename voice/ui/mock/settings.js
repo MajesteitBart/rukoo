@@ -7,6 +7,9 @@
 //   (development copy).
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
+//   features=<comma list>: the features this Voice shows (screen, speakers, sync); later=1 turns on all of them.
+//   noEncoder=1, noOcr=1, screenUnavailable=1: a computer without a hardware video encoder, without an OCR language,
+//   or whose Windows can't capture the screen. Each turns on the screen feature too.
 
 const MB = 1_000_000;
 const NOW = Date.UTC(2026, 9, 30, 15, 42);
@@ -69,6 +72,7 @@ function baseState() {
     version: '0.1.0',
     devMode: false,
     platform: 'windows',
+    features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',
     config: {
@@ -138,6 +142,7 @@ function baseState() {
       }
     },
     storage: { folder: 'C:\\Users\\you\\AppData\\Local\\Rukoo Voice\\meetings', usedBytes: 2.4e9, freeBytes: 182e9 },
+    screen: { available: true, hardwareEncoder: 'NVIDIA H.264 Encoder MFT', ocr: ['nl-NL', 'en-US'], monitors: 2 },
     updates: { state: 'idle', version: null },
     ownkey: {
       running: false,
@@ -218,6 +223,13 @@ export function createMock(params) {
   const state = baseState();
   (SCENARIOS[params.get('scenario')] || SCENARIOS.default)(state);
   if (params.get('sync') === '1') state.config.storage.sync = { ...state.config.storage.sync, enabled: true, endpoint: 'https://example.upcloudobjects.com', region: 'europe-1', bucket: 'my-meetings' };
+  // What this Voice shows (contract 1.10): every feature with ?later=1, else the ones listed.
+  const listed = new Set((params.get('features') || '').split(',').map((name) => name.trim()));
+  for (const name of Object.keys(state.features)) state.features[name] = params.get('later') === '1' || listed.has(name);
+  if (params.get('noEncoder') === '1') state.screen.hardwareEncoder = null;
+  if (params.get('noOcr') === '1') state.screen.ocr = [];
+  if (params.get('screenUnavailable') === '1') state.screen = { available: false, hardwareEncoder: null, ocr: [], monitors: 2 };
+  if (['noEncoder', 'noOcr', 'screenUnavailable'].some((name) => params.get(name) === '1')) state.features.screen = true;
   const forced = { theme: params.get('theme'), locale: params.get('lang') };
   const handlers = [];
   let downloadTimer = 0;

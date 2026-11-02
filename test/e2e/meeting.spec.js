@@ -5,6 +5,7 @@
 const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
 const { FakeVoice, startVoiceServer } = require('../fixtures/voice-server');
@@ -33,6 +34,53 @@ const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWin
 const connected = () => app.evaluate(() => global.__semVoice.connected);
 const isProtected = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected()));
 
+// ---------- demo screen frames ----------
+
+// A small PNG encoder, so the fake Voice can send frame images without a file in the repository.
+const CRC = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function png(width, height, paint) {
+  const stride = width * 3 + 1;
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) raw.set(paint(x, y), y * stride + 1 + x * 3);
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const out = Buffer.alloc(body.length + 8);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc32(body), body.length + 4);
+    return out;
+  };
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(width, 0);
+  head.writeUInt32BE(height, 4);
+  head[8] = 8;
+  head[9] = 2;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', head), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+}
+// A demo slide in one accent colour: a title band, three lines of "text" and a bar chart. Nothing real.
+function slide([r, g, b], bars) {
+  const inside = (x, y, x0, y0, x1, y1) => x >= x0 && x < x1 && y >= y0 && y < y1;
+  return png(480, 270, (x, y) => {
+    if (y < 48) return [r, g, b];
+    if (inside(x, y, 32, 78, 290, 90) || inside(x, y, 32, 108, 250, 120) || inside(x, y, 32, 138, 270, 150)) return [96, 102, 116];
+    for (let i = 0; i < bars.length; i++) if (inside(x, y, 320 + i * 34, 230 - bars[i], 344 + i * 34, 230)) return [r, g, b];
+    if (inside(x, y, 312, 230, 456, 232)) return [190, 194, 204];
+    return [250, 250, 252];
+  });
+}
+const SLIDES = [slide([52, 92, 196], [40, 70, 110, 150]), slide([24, 140, 104], [120, 90, 60, 100]), slide([196, 98, 40], [60, 140, 80, 120])];
+const frameId = (at) => `f-${String(at).padStart(9, '0')}`;
+
 // Voice 0.1 has no pause handler in the fixture; these answer as Voice does.
 function voiceHandlers(v) {
   v.handlers['meeting.pause'] = function (args) {
@@ -44,6 +92,14 @@ function voiceHandlers(v) {
     if (this.status.recording !== args.meeting) return { error: { code: 'not_recording', message: 'Not recording.' } };
     this.append('meeting.state', args.meeting, { state: 'recording', at: 6000 });
     return {};
+  };
+  // The frame at or before at, as Voice answers frame.get, with a demo slide for its image.
+  v.handlers['frame.get'] = function (args) {
+    const frames = this.events.filter((e) => e.event === 'frame' && e.meeting === args.meeting).map((e) => e.data);
+    const f = frames.filter((x) => x.at <= args.at).sort((a, b) => b.at - a.at)[0];
+    if (!f) return { error: { code: 'not_found', message: 'No frame at or before that time.' } };
+    const n = frames.sort((a, b) => a.at - b.at).indexOf(f);
+    return { frame: f, image: { type: 'image/png', data: SLIDES[n % SLIDES.length] } };
   };
 }
 
@@ -69,10 +125,11 @@ test.afterEach(async () => {
 
 const pid = (track, start) => `${track}-${String(start).padStart(9, '0')}`;
 
-// A meeting Voice starts on its own, as from its pill: the events Voice sends, with both voices.
-function voiceStarts({ title = '', startedAt = Date.now(), context = null } = {}) {
+// A meeting Voice starts on its own, as from its pill: the events Voice sends, with both voices. screen: what it
+// records of the screen.
+function voiceStarts({ title = '', startedAt = Date.now(), context = null, screen = 'off' } = {}) {
   const id = voice.meetingId();
-  voice.append('meeting.started', id, { title, startedAt, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context });
+  voice.append('meeting.started', id, { title, startedAt, tracks: ['mic', 'call'], screen, startedBy: 'voice', context });
   voice.append('meeting.state', id, { state: 'recording', at: 0 });
   voice.append('status', null, { recording: id, dictating: false });
   voice.append('speaker', id, { id: 'mic', track: 'mic', label: 'You' });
@@ -84,6 +141,14 @@ function voiceStarts({ title = '', startedAt = Date.now(), context = null } = {}
 function say(id, track, start, text, { push = true, ...more } = {}) {
   return voice.append('passage', id, { id: pid(track, start), track, speaker: track === 'mic' ? 'mic' : 'call-1', start, end: start + 3000, text, revision: 1, dictation: false, language: 'en', ...more }, { push });
 }
+
+// A moment the screen changed, with the text Voice read on it.
+function frameAt(id, at, text, { width = 1920, height = 1080, push = true } = {}) {
+  return voice.append('frame', id, { id: frameId(at), at, width, height, text }, { push });
+}
+
+// The at of every frame.get Rukoo sent, in order.
+const frameGets = () => voice.commands.filter((c) => c.command === 'frame.get').map((c) => c.args.at);
 
 // The stand-up the demo calendar has every weekday at 09:30: today's while it isn't long past, else the next one. A
 // meeting at that time stays within the 12 hours in which Rukoo links a meeting Voice started to its event.
@@ -100,6 +165,8 @@ function standupAt(now = new Date()) {
 
 const view = () => win.locator('.meeting');
 const rows = () => win.locator('.meeting .mt-transcript .mt-passage');
+const frame = (at) => win.locator(`.meeting .mt-frame[data-id="${frameId(at)}"]`);
+const menu = () => win.locator('.menu');
 const indicator = () => win.locator('.titlebar [data-meeting-indicator]');
 const person = (id) => win.locator(`.meeting .mt-person[data-speaker="${id}"]`);
 const pane = () => win.locator('.agentpane');
@@ -464,6 +531,352 @@ test('without Rukoo Voice the view says to start it, and Settings > Meetings has
   await expect(page.locator('[data-a="toggle:meetingAgentsCanRead"] .switch')).not.toHaveClass(/on/);
   expect(await win.evaluate(() => window.mail.call('state').then((s) => s.settings.meetingAgentsCanRead))).toBe(false);
   await shot('settings-meetings-off');
+});
+
+// ---------- the screen (RUK-108) ----------
+
+test('records with a screen choice from the Stand-up card, and the header says what Voice records of the screen', async () => {
+  const standup = standupAt();
+  await win.clock.install({ time: new Date(standup - 5 * 60 * 1000) });
+  // Every window's protection, at the moment Rukoo sends meeting.start.
+  await app.evaluate(({ BrowserWindow }) => {
+    const v = global.__semVoice;
+    const command = v.bridge.command.bind(v.bridge);
+    global.__protectedAtStart = null;
+    v.bridge.command = (name, args, opts) => {
+      if (name === 'meeting.start') global.__protectedAtStart = BrowserWindow.getAllWindows().map((w) => w.isContentProtected());
+      return command(name, args, opts);
+    };
+  });
+  await win.keyboard.press('Control+2');
+  await win.locator('[data-cal-view="day"]').click();
+  await win.locator('[data-cal="today"]').click();
+  await win.locator('.calendar [data-ev]', { hasText: 'Stand-up' }).first().click();
+  const card = win.locator('.cal-pop');
+  await expect(card.locator('[data-pop="record"]')).toHaveText('Record with Rukoo Voice');
+  await card.locator('[data-pop="record-menu"]').click();
+  // Voice didn't say what its own setting is, so the first choice names no mode.
+  await expect(menu().locator('.menu-heading')).toHaveText('Choose what to record');
+  await expect(menu().locator('button')).toHaveText(["Voice's default", 'Audio only', 'Audio and screen frames', 'Audio and screen video']);
+  await expect(card).toBeVisible();
+  await shot('card-record-menu');
+  await menu().locator('button', { hasText: 'Audio and screen frames' }).click();
+  await expect(card).toBeHidden();
+
+  await expect(win.locator('[data-mode="meeting"]')).toHaveAttribute('aria-selected', 'true');
+  await expect(view().locator('.mt-title')).toHaveText('Stand-up');
+  const start = voice.commands.find((c) => c.command === 'meeting.start');
+  expect(start.args.screen).toBe('frames');
+  expect(start.args.context.calendarEvent).toMatch(/standup/);
+  if (CAN_HIDE) expect(await app.evaluate(() => global.__protectedAtStart)).toEqual([true]);
+  await expect(view().locator('.mt-screen')).toHaveText('Screen: frames');
+  await expect(view().locator('[data-mt="screen"]')).toBeVisible();
+  // Hidden from capture, Rukoo can't show in the frames.
+  await expect(view().locator('.mt-visible')).toHaveCount(0);
+});
+
+test("Voice's default shows in the record menu, and Record itself leaves the choice to Voice", async () => {
+  voice.handlers['meeting.start'] = function (args) {
+    const id = this.meetingId();
+    this.append('meeting.started', id, { title: args.title || '', startedAt: Date.now(), tracks: ['mic', 'call'], screen: args.screen || this.status.screenDefault || 'off', startedBy: 'rukoo', context: args.context || null });
+    this.append('meeting.state', id, { state: 'recording', at: 0 });
+    this.append('status', null, { recording: id, dictating: false, screenDefault: this.status.screenDefault });
+    return { meeting: id };
+  };
+  voice.append('status', null, { recording: null, dictating: false, screenDefault: 'video' });
+  await openMeetings();
+  await expect(view().locator('.mt-empty .t')).toHaveText('Record a meeting');
+  await view().locator('[data-mt="record-menu"]').click();
+  await expect(menu().locator('button').first()).toHaveText("Voice's default (video)");
+  await expect(menu().locator('button').first()).toHaveAttribute('aria-checked', 'true');
+  await shot('empty-record-menu');
+  await win.keyboard.press('Escape');
+  await expect(menu()).toHaveCount(0);
+  await expect(view().locator('[data-mt="record-menu"]')).toBeFocused();
+
+  // The sidebar's arrow opens the same choice, under the whole button.
+  await win.locator('.sidebar [data-mt-side="record-menu"]').click();
+  await expect(menu().locator('button').first()).toHaveText("Voice's default (video)");
+  const [split, box] = await Promise.all([win.locator('.sidebar .mt-record-split').boundingBox(), menu().boundingBox()]);
+  expect(Math.abs(box.x - split.x)).toBeLessThan(2);
+  await shot('sidebar-record-menu');
+  await win.keyboard.press('Escape');
+
+  await win.locator('.sidebar [data-mt-side="record"]').click();
+  await expect.poll(() => voice.commands.filter((c) => c.command === 'meeting.start').length).toBe(1);
+  expect(voice.commands.find((c) => c.command === 'meeting.start').args).not.toHaveProperty('screen');
+  await expect(view().locator('.mt-screen')).toHaveText('Screen: video');
+});
+
+test('frames sit between the lines at their moments, load as they come into view, open to their text, and say why when Voice is gone', async () => {
+  test.setTimeout(90000);
+  voice.handlers['frame.get'] = ((own) =>
+    function (args) {
+      // Voice removed this frame's image with the meeting's audio.
+      if (args.at === 9000) return { error: { code: 'not_available', message: "The meeting's screen media was removed." } };
+      return own.call(this, args);
+    })(voice.handlers['frame.get']);
+  const id = voiceStarts({ title: 'Roadmap review', screen: 'frames' });
+  for (let i = 0; i < 60; i++) say(id, i % 3 ? 'call' : 'mic', 2000 + i * 5000, `Line ${i + 1} of the roadmap review, about the launch and the pricing page.`);
+  frameAt(id, 4000, 'Q3 roadmap\nLaunch in September\nPricing page first');
+  frameAt(id, 9000, 'Agenda');
+  frameAt(id, 152500, 'Support plan\nTell support on Monday');
+  frameAt(id, 297500, 'Slide 4\nNext steps\nWrite the follow-up');
+  await openMeetings();
+  await expect(rows()).toHaveCount(60);
+
+  // Each frame sits after what was said before it, and before the next line.
+  const keys = await win.locator('.meeting .mt-transcript > li').evaluateAll((els) => els.map((el) => el.dataset.key));
+  expect(keys.slice(0, 4)).toEqual([`p:${pid('mic', 2000)}`, `f:${frameId(4000)}`, `p:${pid('call', 7000)}`, `f:${frameId(9000)}`]);
+  expect(keys.indexOf(`f:${frameId(297500)}`)).toBe(keys.indexOf(`p:${pid('call', 297000)}`) + 1);
+
+  // The view opens at the end: only the frame there asks Voice for its image.
+  await expect(frame(297500)).toHaveClass(/has-image/);
+  await expect(frame(297500).locator('.mt-shot img')).toHaveAttribute('src', /^data:image\/png;base64,/);
+  await expect(frame(297500).locator('.mt-shot img')).toHaveAttribute('alt', 'The screen at 4:57');
+  expect(frameGets()).toEqual([297500]);
+
+  // The first line shows; the rest opens with the toggle, and Enter on the row closes it again.
+  await expect(frame(297500).locator('.mt-frame-line')).toHaveText('Slide 4');
+  await expect(frame(297500).locator('.mt-frame-full')).toBeHidden();
+  await frame(297500).locator('.mt-frame-toggle').click();
+  await expect(frame(297500)).toHaveClass(/is-open/);
+  await expect(frame(297500).locator('.mt-frame-full')).toBeVisible();
+  await expect(frame(297500).locator('.mt-frame-full')).toHaveText('Next steps\nWrite the follow-up');
+  const wide = await frame(297500).locator('.mt-shot').boundingBox();
+  expect(wide.width).toBeGreaterThan(300);
+  // The row was the last one in view; the opened image scrolled into view instead of growing below it.
+  const port = await view().locator('.mt-scroll').boundingBox();
+  expect(wide.y + wide.height).toBeLessThanOrEqual(port.y + port.height + 1);
+  await shot('frame-open');
+  await frame(297500).focus();
+  await win.keyboard.press('Enter');
+  await expect(frame(297500)).not.toHaveClass(/is-open/);
+  await expect(frame(297500).locator('.mt-frame-full')).toBeHidden();
+
+  // A frame that arrives while the meeting records takes its place at once; without text it says so.
+  frameAt(id, 299000, '');
+  await expect(frame(299000)).toHaveCount(1);
+  await expect(frame(299000).locator('.mt-frame-line')).toHaveText('No text read from the screen');
+  await expect(frame(299000)).toHaveClass(/has-image/);
+
+  // At the top: the first frame's image arrives, and the one Voice removed says so.
+  await view().locator('.mt-scroll').evaluate((el) => (el.scrollTop = 0));
+  await expect(frame(4000)).toHaveClass(/has-image/);
+  await expect(frame(9000).locator('.mt-frame-note')).toHaveText('Rukoo Voice no longer has this image.');
+  await expect(frame(9000).locator('.mt-frame-line')).toHaveText('Agenda');
+  expect(frameGets()).not.toContain(152500);
+
+  // Without Voice, images Rukoo has stay, the others say why they're missing, and the text is still there.
+  await voice.close();
+  voice.removeDiscovery();
+  await expect.poll(connected).toBe(false);
+  await frame(152500).scrollIntoViewIfNeeded();
+  await expect(frame(152500).locator('.mt-frame-note')).toHaveText('The image shows while Rukoo Voice runs.');
+  await expect(frame(152500).locator('.mt-frame-line')).toHaveText('Support plan');
+  await expect(frame(152500)).not.toHaveClass(/has-image/);
+  await expect(frame(4000)).toHaveClass(/has-image/);
+});
+
+test('marks about the screen say what happened to it, apart from the audio', async () => {
+  const id = voiceStarts({ title: 'Screen marks', screen: 'video' });
+  say(id, 'call', 500, 'Let me share my screen.');
+  const mark = (data) => voice.append('mark', id, { until: null, track: 'screen', label: null, ...data });
+  mark({ id: 'dropped-video-a', kind: 'video_dropped', at: 900, detail: 'encoder' });
+  mark({ id: 'dropped-video-b', kind: 'video_dropped', at: 60000, detail: 'disk' });
+  mark({ id: 'gap-screen-000070000', kind: 'screen_gap', at: 70000, until: 130000, detail: 'locked' });
+  mark({ id: 'monitor-000140000', kind: 'monitor', at: 140000, detail: 'user', label: 'DELL S3220DGF' });
+  mark({ id: 'gap-screen-000180000', kind: 'screen_gap', at: 180000, until: 183000, detail: 'crash' });
+  mark({ id: 'gap-screen-000200000', kind: 'screen_gap', at: 200000, until: 204000, detail: 'device' });
+  mark({ id: 'monitor-000210000', kind: 'monitor', at: 210000, detail: 'lost', label: 'PHL 275V8' });
+  mark({ id: 'dropped-frames-a', kind: 'dropped', at: 240000, detail: 'disk' });
+  mark({ id: 'dropped-frames-b', kind: 'dropped', at: 250000, detail: 'device' });
+  await openMeetings();
+  await expect(view().locator('.mt-mark .mt-line')).toHaveText([
+    'Video stopped: no video encoder on this computer worked. Frames go on.',
+    'Video stopped to keep recording audio: the disk is almost full. Frames go on.',
+    /^Screen: not recorded for 1 min\w* while the computer was locked$/,
+    'Screen recording moved to DELL S3220DGF',
+    /^Screen: not recorded for 3 sec\w* while the screen recorder restarted$/,
+    /^Screen: not recorded for 4 sec\w* while the graphics card restarted$/,
+    'The recorded monitor went away; screen recording moved to PHL 275V8',
+    'Screen recording stopped to keep recording audio: the disk is full',
+    "Screen recording stopped to keep recording audio: the graphics card couldn't start again"
+  ]);
+  await expect(view().locator('.mt-mark.is-monitor svg')).toHaveCount(2);
+  await expect(view().locator('.mt-mark.is-screen_gap')).toHaveCount(3);
+  await expect(view().locator('.mt-mark.is-video_dropped')).toHaveCount(2);
+});
+
+test('a meeting Rukoo Voice starts gets Rukoo hidden before Voice captures the screen; a replayed start asks nothing', async () => {
+  const acks = [];
+  voice.handlers['meeting.protected'] = function (args) {
+    acks.push({ at: Date.now(), meeting: args.meeting });
+    return {};
+  };
+  // When main first hides a window.
+  await app.evaluate(({ BrowserWindow }) => {
+    global.__protectedAt = null;
+    for (const w of BrowserWindow.getAllWindows()) {
+      const set = w.setContentProtection.bind(w);
+      w.setContentProtection = (on) => {
+        if (on && !global.__protectedAt) global.__protectedAt = Date.now();
+        return set(on);
+      };
+    }
+  });
+  // Voice records the audio already and asks before its first frame. Its status hasn't said it records yet.
+  const id = voice.meetingId();
+  voice.append('meeting.started', id, { title: 'From the pill', startedAt: Date.now(), tracks: ['mic', 'call'], screen: 'frames', startedBy: 'voice', context: null });
+  voice.append('meeting.state', id, { state: 'recording', at: 0 });
+  voice.append('meeting.starting', id, { screen: 'frames' });
+  await expect.poll(() => acks.length).toBe(1);
+  expect(acks[0].meeting).toBe(id);
+  if (CAN_HIDE) {
+    expect(await isProtected()).toEqual([true]);
+    const at = await app.evaluate(() => global.__protectedAt);
+    expect(acks[0].at - at).toBeGreaterThanOrEqual(90);
+  }
+
+  // A start Rukoo missed comes back in the replay after a reconnect: that is history, so no second answer.
+  const other = voice.meetingId();
+  const missed = voice.append('meeting.starting', other, { screen: 'frames' }, { push: false });
+  voice.drop(missed);
+  await expect.poll(connected, { timeout: 15000 }).toBe(false);
+  await expect.poll(connected, { timeout: 15000 }).toBe(true);
+  await win.waitForTimeout(1500);
+  expect(acks.length).toBe(1);
+  expect(voice.commands.filter((c) => c.command === 'meeting.protected').length).toBe(1);
+});
+
+test('the Screen button moves the recording to another monitor; a Voice that can\'t do that loses the button', async () => {
+  const DISPLAY1 = '\\\\.\\DISPLAY1';
+  const DISPLAY2 = '\\\\.\\DISPLAY2';
+  const monitors = [
+    { id: DISPLAY1, name: 'DELL S3220DGF', width: 2560, height: 1440, primary: true },
+    { id: DISPLAY2, name: 'PHL 275V8', width: 1440, height: 2560, primary: false }
+  ];
+  let screen = { screen: 'frames', state: 'recording', video: false, frames: true, monitor: DISPLAY1, monitors };
+  voice.handlers['screen.get'] = () => screen;
+  voice.handlers['screen.select'] = (args) => ({ monitor: args.monitor });
+  const id = voiceStarts({ title: 'Demo for the board', screen: 'frames' });
+  say(id, 'call', 1000, 'Can you show the second screen?');
+  await openMeetings();
+  await view().locator('[data-mt="screen"]').click();
+  await expect(menu().locator('.menu-heading')).toHaveText('Record this monitor');
+  await expect(menu().locator('button')).toHaveText([/DELL S3220DGF\s*2560 × 1440\s*Main display/, /PHL 275V8\s*1440 × 2560/]);
+  await expect(menu().locator('button').first()).toHaveAttribute('aria-checked', 'true');
+  await expect(menu().locator('button').nth(1)).toHaveAttribute('aria-checked', 'false');
+  await shot('screen-menu');
+  await menu().locator('button', { hasText: 'PHL 275V8' }).click();
+  await expect.poll(() => voice.commands.filter((c) => c.command === 'screen.select').map((c) => c.args)).toEqual([{ meeting: id, monitor: DISPLAY2 }]);
+  voice.append('mark', id, { id: 'monitor-000015000', kind: 'monitor', at: 15000, until: null, track: 'screen', detail: 'user', label: 'PHL 275V8' });
+  await expect(view().locator('.mt-mark .mt-line')).toHaveText(['Screen recording moved to PHL 275V8']);
+
+  // Voice stopped recording the screen: the menu says so and offers nothing.
+  screen = { ...screen, state: 'stopped', frames: false, monitor: null };
+  await view().locator('[data-mt="screen"]').click();
+  await expect(menu().locator('button', { hasText: 'Screen recording stopped' })).toBeDisabled();
+  await expect(menu().locator('button', { hasText: 'PHL 275V8' })).toBeDisabled();
+  await win.keyboard.press('Escape');
+
+  // A Voice from before screen recording doesn't know screen.get: the button goes for that Voice.
+  voice.handlers['screen.get'] = () => ({ error: { code: 'unknown_command', message: "Voice doesn't know the command `screen.get`." } });
+  await view().locator('[data-mt="screen"]').click();
+  await expect(win.locator('#toast')).toHaveText("This Rukoo Voice can't do that yet. Update Rukoo Voice.");
+  await expect(view().locator('[data-mt="screen"]')).toHaveCount(0);
+  await expect(view().locator('[data-mt="mark"]')).toBeVisible();
+});
+
+test('mail notifications wait while a meeting records the screen; the badge still counts', async () => {
+  // Nothing reaches the desktop in a test, whatever happens.
+  await app.evaluate(({ Notification }) => {
+    global.__semShown = [];
+    Notification.prototype.show = function () {
+      global.__semShown.push(this.title);
+    };
+  });
+  voiceStarts({ title: 'Screen share', screen: 'frames' });
+  await expect.poll(() => app.evaluate(() => global.__semVoice.screenRecording())).toBe(true);
+  const before = await app.evaluate(() => global.__semHeldNotices || 0);
+  await app.evaluate(() => global.__semEngine.emit('new-mail', [{ id: 'demo:held-1', subject: 'Invoice for October', from: { name: 'Demo', address: 'demo@example.com' } }]));
+  await expect.poll(() => app.evaluate(() => global.__semHeldNotices || 0)).toBe(before + 1);
+  expect(await app.evaluate(() => global.__semShown)).toEqual([]);
+});
+
+test('screenshots: screen frames, the record and screen menus and the chips, in both themes and languages, wide and narrow', async () => {
+  test.setTimeout(180000);
+  voice.handlers['screen.get'] = () => ({
+    screen: 'video',
+    state: 'recording',
+    video: true,
+    frames: true,
+    monitor: '\\\\.\\DISPLAY1',
+    monitors: [
+      { id: '\\\\.\\DISPLAY1', name: 'DELL S3220DGF', width: 2560, height: 1440, primary: true },
+      { id: '\\\\.\\DISPLAY2', name: 'PHL 275V8', width: 1440, height: 2560, primary: false }
+    ]
+  });
+  const id = voiceStarts({ title: 'Roadmap review', startedAt: Date.now() - 6 * 60 * 1000, screen: 'video' });
+  say(id, 'call', 2100, 'Let me share the roadmap. Can everyone see it?');
+  say(id, 'mic', 6400, 'Yes, the Q3 slide is up.');
+  frameAt(id, 8000, 'Q3 roadmap\nLaunch in September\nPricing page first\nSupport plan in October');
+  say(id, 'call', 12500, 'September is the launch. The pricing page goes first.');
+  say(id, 'mic', 19000, 'Can we move support to October?');
+  voice.append('mark', id, { id: 'monitor-000024000', kind: 'monitor', at: 24000, until: null, track: 'screen', detail: 'user', label: 'PHL 275V8' });
+  frameAt(id, 25500, 'Support plan\nTell support on Monday\nTraining in week 41', { width: 1440, height: 2560 });
+  say(id, 'call', 28000, 'Yes. I will tell support on Monday.');
+  voice.append('mark', id, { id: 'dropped-video', kind: 'video_dropped', at: 33000, until: null, track: 'screen', detail: 'disk', label: null });
+  frameAt(id, 36000, 'Next steps\nWrite the follow-up');
+  say(id, 'mic', 38000, 'Agreed. I will write the follow-up.');
+  await openMeetings();
+  await expect(rows()).toHaveCount(6);
+  for (const at of [8000, 25500, 36000]) await expect(frame(at)).toHaveClass(/has-image/);
+  await frame(8000).locator('.mt-frame-toggle').click();
+
+  for (const language of ['en', 'nl']) {
+    await setLanguage(language);
+    await frame(8000).locator('.mt-frame-toggle').waitFor();
+    if (!(await frame(8000).getAttribute('class')).includes('is-open')) await frame(8000).locator('.mt-frame-toggle').click();
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme);
+      await shot(`frames-wide-${theme}-${language}`);
+      await view().locator('[data-mt="screen"]').click();
+      await expect(menu().locator('button')).toHaveCount(2);
+      await shot(`screen-menu-${theme}-${language}`);
+      await win.keyboard.press('Escape');
+    }
+  }
+  await expect(view().locator('.mt-screen')).toHaveText('Scherm: video');
+
+  // Narrow, with Rukoo visible in screen recordings: the chip warns.
+  await win.evaluate(() => window.mail.call('updateSettings', { meetingHideWindow: false }));
+  if (CAN_HIDE) await expect(view().locator('.mt-visible')).toHaveText('Zichtbaar in schermopnames');
+  await setSize(700, 900);
+  for (const language of ['nl', 'en']) {
+    await setLanguage(language);
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme);
+      await shot(`frames-narrow-${theme}-${language}`);
+    }
+  }
+  if (CAN_HIDE) await expect(view().locator('.mt-visible')).toHaveText('Visible in screen recordings');
+
+  // The record menus, with nothing recording.
+  voice.append('meeting.state', id, { state: 'done', at: 40000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false, screenDefault: 'frames' });
+  await setSize(1500, 950);
+  for (const [theme, language] of [
+    ['dark', 'en'],
+    ['light', 'nl']
+  ]) {
+    await setLanguage(language);
+    await setTheme(theme);
+    await win.locator('.sidebar [data-mt-side="record-menu"]').click();
+    await expect(menu().locator('button')).toHaveCount(4);
+    await shot(`record-menu-${theme}-${language}`);
+    await win.keyboard.press('Escape');
+  }
 });
 
 test('screenshots: a recording meeting in dark and light, English and Dutch, wide and narrow', async () => {

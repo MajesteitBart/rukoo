@@ -172,9 +172,44 @@ check('a development copy can\'t import or start at login', async ({ open, page 
   assert.match(await page.locator('.page-actions').innerText(), /--import-ownkey <copy>/);
 });
 
+check('Screen recording shows for a Voice that has it, and saves the choice', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en');
+  assert.equal(await page.locator('[data-a^="seg:meetings.screen:"]').count(), 0, 'no screen feature, no row');
+  await open('settings.html?mock=1&lang=en&page=storage');
+  assert.doesNotMatch(await page.locator('.page').innerText(), /drops the video first/);
+  await open('settings.html?mock=1&lang=en&features=screen');
+  const row = page.locator('.row', { has: page.locator('[data-a^="seg:meetings.screen:"]') });
+  assert.match(await row.innerText(), /Screen recording/);
+  assert.equal(await row.locator('.note').count(), 0, 'this computer records everything');
+  await page.click('[data-a="seg:meetings.screen:video"]');
+  assert.equal((await mockState()).config.meetings.screen, 'video');
+  await page.waitForSelector('[data-a="seg:meetings.screen:video"][aria-selected="true"]');
+  await open('settings.html?mock=1&lang=en&page=storage&features=screen');
+  assert.match(await page.locator('.page').innerText(), /When the disk fills up, Voice drops the video first, then the frames, and never the audio\./);
+});
+
+check('Screen recording says what this computer can\'t record, and is off where Windows can\'t capture', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&noEncoder=1&noOcr=1');
+  const notes = page.locator('.row .note');
+  assert.deepEqual(await notes.allInnerTexts(), [
+    'This computer has no hardware video encoder, so Video records frames only.',
+    'Windows has no text recognition language installed, so frames are saved without their text.'
+  ]);
+  await open('settings.html?mock=1&lang=nl&noEncoder=1&noOcr=1');
+  assert.deepEqual(await notes.allInnerTexts(), [
+    'Deze computer heeft geen hardware-video-encoder, dus Video neemt alleen beelden op.',
+    'Windows heeft geen taal voor tekstherkenning, dus beelden worden zonder tekst bewaard.'
+  ]);
+  await open('settings.html?mock=1&lang=en&screenUnavailable=1');
+  assert.deepEqual(await notes.allInnerTexts(), ['Screen recording needs Windows 10 version 2004 or later.']);
+  assert.equal(await page.locator('[data-a="seg:meetings.screen:frames"]').isDisabled(), true);
+  await page.locator('[data-a="seg:meetings.screen:frames"]').click({ force: true });
+  assert.equal((await mockState()).config.meetings.screen, 'off', 'a disabled choice saves nothing');
+});
+
 check('Dutch is complete on every page', async ({ open, page }) => {
   for (const name of ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'storage', 'rukoo', 'import']) {
-    await open(`settings.html?mock=1&lang=nl&scenario=cloud&page=${name}`);
+    await open(`settings.html?mock=1&lang=nl&scenario=cloud&features=screen&page=${name}`);
     const text = await page.locator('.page').innerText();
     for (const english of ['Settings', 'Save', 'Transcription', 'Dictionary', 'Rewriting', 'Storage', 'Connection', 'Import from']) {
       assert.ok(!new RegExp(`\\b${english}\\b`).test(text), `"${english}" on the Dutch ${name} page`);
@@ -201,6 +236,68 @@ check('the pill reports the stop button for the native window, and null without 
   await page.waitForTimeout(400);
   layout = await page.evaluate(() => window.__pillLayout);
   assert.equal(layout.button, null);
+});
+
+check('the monitor button sits before stop, is reported for its own native window, and moves to the next monitor', async ({ open, page }) => {
+  await open('pill.html?mock=meeting-recording&lang=en');
+  await page.waitForTimeout(400);
+  assert.equal((await page.evaluate(() => window.__pillLayout)).screenButton, null, 'no screenSwitch, no monitor button');
+  await open('pill.html?mock=meeting-screen-button&lang=en');
+  await page.waitForTimeout(400);
+  const layout = await page.evaluate(() => window.__pillLayout);
+  assert.ok([28, 29].includes(layout.screenButton.width), `width ${layout.screenButton.width}`);
+  assert.equal(layout.screenButton.height, 28);
+  assert.equal(layout.screenButton.y, layout.button.y, 'on one line with stop');
+  assert.ok(layout.button.x - (layout.screenButton.x + layout.screenButton.width) <= 5, 'right before the stop button');
+  assert.ok(layout.screenButton.x > layout.pill.x, 'inside the pill');
+  assert.equal(await page.locator('.screen-btn').getAttribute('aria-label'), 'Record another monitor');
+  // The pointer colours the button it is over, and only that one.
+  await page.evaluate(() => window.__pillMock.emit('pill://pointer', { hover: true, pressed: false, target: 'screen' }));
+  assert.equal(await page.locator('.screen-btn.hover').count(), 1);
+  assert.equal(await page.locator('.stop.hover').count(), 0);
+  await page.evaluate(() => window.__pillMock.emit('pill://pointer', { hover: true, pressed: false }));
+  assert.equal(await page.locator('.stop.hover').count(), 1, 'no target means the stop window, as before');
+  await page.click('.screen-btn');
+  await page.waitForSelector('.label:not(.out):text("Screen: Display 2")');
+  await open('pill.html?mock=meeting-screen-button&lang=nl');
+  assert.equal(await page.locator('.screen-btn').getAttribute('aria-label'), 'Ander beeldscherm opnemen');
+});
+
+check('the screen notices read right in both languages, with the screen glyph', async ({ open, page }) => {
+  const notices = {
+    'meeting-video-dropped': ['Video stopped: disk almost full', 'Video gestopt: schijf bijna vol'],
+    'meeting-video-dropped-encoder': ['Video stopped: no encoder', 'Video gestopt: geen encoder'],
+    'meeting-frames-dropped': ['Screen stopped: disk almost full', 'Scherm gestopt: schijf bijna vol'],
+    'meeting-screen-failed': ['Screen recording stopped', 'Schermopname gestopt'],
+    'meeting-screen-moved': ['Screen: DELL U2720Q', 'Scherm: DELL U2720Q']
+  };
+  for (const [state, texts] of Object.entries(notices)) {
+    for (const [i, lang] of ['en', 'nl'].entries()) {
+      await open(`pill.html?mock=${state}&lang=${lang}`);
+      assert.equal(await page.locator('.label:not(.out)').innerText(), texts[i], `${state} in ${lang}`);
+      assert.equal(await page.locator('.ind [data-icon="screen"]').count(), 1, `${state} shows the screen glyph`);
+    }
+  }
+  assert.equal(await page.locator('.ind.tone-text2').count(), 1, 'a move is news, not a warning');
+});
+
+check('a meeting snapshot with an unknown screen mode is ignored', async ({ open, page }) => {
+  await open('pill.html?mock=meeting-recording&lang=en');
+  await page.evaluate(() =>
+    window.__pillMock.emit('pill://snapshot', {
+      seq: 900,
+      visible: true,
+      phase: 'meeting',
+      activity: 'dictate',
+      notice: { key: 'pill.screenFailed', args: {} },
+      meeting: { state: 'recording', atMs: 1000, screen: '4k', screenSwitch: true, compact: false, confirmStop: false, stopEnabled: true, rukooConnected: true },
+      edge: 'bottom',
+      theme: 'dark',
+      locale: 'en'
+    })
+  );
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('.label:not(.out)').innerText(), 'Recording');
 });
 
 check('two clicks stop a meeting; one only asks', async ({ open, page }) => {

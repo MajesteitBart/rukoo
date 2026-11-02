@@ -256,6 +256,16 @@ kbd {
 .segmented button[aria-selected='true'] {
   color: var(--text);
 }
+/* A choice this computer can't make, such as screen recording on an older Windows. */
+.segmented.is-disabled {
+  opacity: 0.5;
+}
+.segmented button:disabled {
+  cursor: default;
+}
+.segmented.is-disabled button:not([aria-selected='true']):hover {
+  color: var(--text-3);
+}
 
 /* ---------- page ---------- */
 
@@ -418,6 +428,20 @@ kbd {
 }
 .row .desc kbd {
   margin: 0 1px;
+}
+/* A note under a row's description: what this computer can't do of what the row offers. */
+.row .desc.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+}
+.row .desc.note svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  color: var(--text-3);
 }
 .row .value {
   font-size: 12.5px;

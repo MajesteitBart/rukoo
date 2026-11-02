@@ -1,15 +1,17 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, hhmm, hue, initials, readerDate, groupLabel, toast, showMenu, segmented, setSegmented } from './ui.js';
+import { api, esc, $, hhmm, hue, initials, readerDate, groupLabel, toast, showMenu, closeMenu, menuOpen, menuCount, segmented, setSegmented } from './ui.js';
 import { promptDialog } from './settings.js';
 
 // The meeting view: Rukoo Voice's meetings, a third mode next to Mail and Calendar (Ctrl+3). Voice records and
 // transcribes; main keeps what Rukoo owns of each meeting (src/main/voice) and sends 'meeting' events. This module
-// draws the meeting on screen with its controls, the transcript as it comes in, who spoke, the linked calendar event
-// and the user's notes. It also draws the list of meetings in the sidebar and the recording indicator in the title bar.
+// draws the meeting on screen with its controls, the transcript as it comes in with the screen's frames at their
+// moments, who spoke, the linked calendar event and the user's notes. It also draws the list of meetings in the
+// sidebar and the recording indicator in the title bar.
 //
 // Everything in a meeting was said, shown or written by other people, and attendee names come from whoever sent the
-// invitation: it reaches the DOM only through esc() or textContent.
+// invitation; text read on the screen and monitor names come from the screen: it reaches the DOM only through esc()
+// or textContent.
 
 const SAVED = 'rukoo.meeting';
 const NOTES_WAIT = 700;
@@ -18,11 +20,19 @@ const STOP_CONFIRM_MS = 3000;
 const SAME_STRETCH_MS = 30000;
 const LIVE = new Set(['recording', 'paused']);
 const VOICE_ERRORS = new Set(['offline', 'timeout', 'busy', 'not_found', 'not_recording', 'not_available', 'failed', 'bad_request', 'unknown_command']);
+// What Voice records of the screen in a meeting (voice/PROTOCOL.md, meeting.started).
+const SCREENS = ['off', 'frames', 'video'];
+const SCREEN_MODES = { off: 'meeting.screen.modeOff', frames: 'meeting.screen.modeFrames', video: 'meeting.screen.modeVideo' };
+// Frame images kept in memory for the meeting on screen; the least recently used goes first.
+const FRAME_CACHE = 60;
+// A frame's image starts loading when its row comes this close to the visible part of the transcript.
+const FRAME_MARGIN = '300px 0px';
 
 const M = {
   open: false,
-  // What main says about Rukoo Voice (voiceState in main.js).
-  voice: { status: 'absent', reason: 'none', voiceVersion: null, older: null, recording: null, dictating: false, hidden: false, canHide: false },
+  // What main says about Rukoo Voice (voiceState in main.js). screenDefault: the screen a meeting records when
+  // Rukoo doesn't choose, from Voice's Settings, or null when Voice didn't say.
+  voice: { status: 'absent', reason: 'none', voiceVersion: null, older: null, recording: null, dictating: false, hidden: false, canHide: false, screenDefault: null },
   // Summaries, newest first (meetingList).
   list: [],
   listLoaded: false,
@@ -37,7 +47,11 @@ const M = {
   starting: false,
   confirmStop: null,
   // The passage whose text the user is correcting; changes to it wait until the editor closes.
-  editing: null
+  editing: null,
+  // The Voice that answered screen.get with unknown_command: its meetings show no Screen button.
+  noScreenSwitch: null,
+  // Frames the user opened: a large image and all of their text.
+  frameOpen: new Set()
 };
 let ctx = null;
 let bound = false;
@@ -102,6 +116,10 @@ function titleOf(s, event = null) {
   if (s && Number.isFinite(s.startedAt)) return t('meeting.untitled', { time: hhmm(s.startedAt) });
   return t('meeting.untitledNoTime');
 }
+// A screen mode in words, inside a sentence: "frames".
+const screenMode = (mode) => t(SCREEN_MODES[mode] || SCREEN_MODES.off);
+// What a meeting records of the screen, or null for nothing (also for a value this Rukoo doesn't know).
+const screenOf = (s) => (s && SCREENS.includes(s.screen) && s.screen !== 'off' ? s.screen : null);
 
 // What Voice said back when a command failed, in the user's words.
 export function voiceError(err) {
@@ -185,6 +203,8 @@ export function open(id) {
   M.data = null;
   M.fetched = null;
   M.tab = 'transcript';
+  M.frameOpen.clear();
+  forgetFrames(id);
   saveId(id);
   renderView();
   redrawSide();
@@ -193,7 +213,8 @@ export function open(id) {
 }
 
 // Starts a recording through Rukoo Voice: from the sidebar, the empty view or a calendar event's card. opts:
-// {title, eventId}. The new meeting opens once Voice has it.
+// {title, eventId, screen}; without screen Voice records with its own default. The new meeting opens once Voice
+// has it.
 export async function record(opts = {}) {
   const why = notReadyText();
   if (why) return toast(why, 5000);
@@ -201,7 +222,8 @@ export async function record(opts = {}) {
   M.starting = true;
   renderSideSoon();
   try {
-    const res = await api('meetingStart', { title: opts.title || '', eventId: opts.eventId || null });
+    const screen = SCREENS.includes(opts.screen) ? { screen: opts.screen } : {};
+    const res = await api('meetingStart', { title: opts.title || '', eventId: opts.eventId || null, ...screen });
     if (res && res.meetingId) {
       await reloadList();
       ctx.openMeeting(res.meetingId);
@@ -212,6 +234,36 @@ export async function record(opts = {}) {
     M.starting = false;
     renderSideSoon();
   }
+}
+
+// What Voice records of the screen in the next meeting: Voice's own default, audio only, frames or video. onPick
+// gets the screen to pass to record(), or undefined for Voice's default.
+export function screenMenu(anchor, onPick, { align = 'right', at = null } = {}) {
+  const def = SCREENS.includes(M.voice.screenDefault) ? M.voice.screenDefault : null;
+  showMenu(
+    anchor,
+    [
+      { heading: t('meeting.screen.choose') },
+      { label: def ? t('meeting.screen.default', { mode: screenMode(def) }) : t('meeting.screen.defaultPlain'), checked: true, action: () => onPick(undefined) },
+      { label: t('meeting.screen.off'), checked: false, action: () => onPick('off') },
+      { label: t('meeting.screen.frames'), checked: false, action: () => onPick('frames') },
+      { label: t('meeting.screen.video'), checked: false, action: () => onPick('video') }
+    ],
+    { align, at }
+  );
+}
+
+// The arrow beside a Record button. opts: {title, eventId} for the recording, or onPick to start it yourself, as
+// the calendar's card does after closing.
+export function recordMenu(anchor, opts = {}) {
+  const why = notReadyText();
+  if (why) return toast(why, 5000);
+  if (M.starting) return;
+  const pick = typeof opts.onPick === 'function' ? opts.onPick : (screen) => record({ title: opts.title, eventId: opts.eventId, screen });
+  // In the sidebar the menu hangs under the whole button, not only its arrow.
+  const split = anchor.closest('.mt-record-split.is-side');
+  const r = split && split.getBoundingClientRect();
+  screenMenu(anchor, pick, r ? { at: { x: r.left, y: r.bottom + 4 } } : {});
 }
 
 // The meeting view takes its keys itself; app.js passes on what reaches the document.
@@ -307,6 +359,8 @@ async function fetchMeeting(id) {
     saveId(null);
     return pickAndOpen();
   }
+  // A main from before frames sends none.
+  if (data && !Array.isArray(data.frames)) data.frames = [];
   M.data = data;
   M.fetched = id;
   if (data && data.meeting) upsertSummary(data.meeting);
@@ -328,6 +382,8 @@ function setVoice(state) {
       renderHead();
       renderNotice();
       renderLive();
+      // Frame images come from Voice: rows that waited for it load now, and the others say why they can't.
+      if (before.status !== M.voice.status) redrawFrames();
     } else renderView();
   }
 }
@@ -373,6 +429,16 @@ function applyDelta(p) {
       else d.marks.push(k);
       changed.push(`k:${k.id}`);
     }
+  }
+  if (Array.isArray(p.frames)) {
+    d.frames = d.frames || [];
+    for (const f of p.frames) {
+      const i = d.frames.findIndex((y) => y.id === f.id);
+      if (i >= 0) d.frames[i] = f;
+      else d.frames.push(f);
+      changed.push(`f:${f.id}`);
+    }
+    d.frames.sort((a, b) => a.at - b.at);
   }
   if (Array.isArray(p.speakers)) d.speakers = p.speakers;
   if (p.notes) notesArrived(p.notes);
@@ -452,7 +518,7 @@ function emptyHtml() {
   let after = `<div class="mt-empty-hint">${esc(t('meeting.empty.voiceHint'))}</div>`;
   if (v.status === 'connected') {
     title = t('meeting.empty.title');
-    after = `<button class="btn primary" data-mt="record">${icons.record}<span>${esc(t('meeting.actions.record'))}</span></button><div class="mt-empty-hint">${esc(t('meeting.empty.calendarHint'))}</div>`;
+    after = `<div class="mt-record-split"><button class="btn primary" data-mt="record">${icons.record}<span>${esc(t('meeting.actions.record'))}</span></button>${recordMoreHtml('btn primary', 'data-mt="record-menu"')}</div><div class="mt-empty-hint">${esc(t('meeting.empty.calendarHint'))}</div>`;
   } else if (v.status === 'connecting') {
     title = t('meeting.voice.connecting');
     after = '';
@@ -462,6 +528,12 @@ function emptyHtml() {
     after = '';
   }
   return `<div class="mt-empty">${icons.mic}<div class="t">${esc(title)}</div><div class="mt-empty-body">${esc(body)}</div>${after}</div>`;
+}
+
+// The arrow half of a Record button, which opens the screen choice (screenMenu).
+function recordMoreHtml(cls, data, extra = '') {
+  const label = esc(t('meeting.screen.menu'));
+  return `<button class="${cls} mt-record-more" ${data} aria-haspopup="menu" aria-label="${label}" title="${label}" ${extra}>${icons.chevronDown}</button>`;
 }
 
 function shellHtml() {
@@ -522,17 +594,26 @@ function renderHead() {
   const disabled = connected ? '' : `disabled title="${esc(notReadyText() || '')}"`;
   const ms = elapsed(s);
   const when = Number.isFinite(s.startedAt) ? readerDate(s.startedAt) : '';
+  const screen = screenOf(s);
+  // Rukoo shows in the frames when it isn't hidden from capture, where it could be.
+  const visible = live(s) && screen && M.voice.canHide && !M.voice.hidden;
   const meta = [
     stateHtml(s),
     ms !== null ? `<span class="mt-elapsed" title="${esc(t('meeting.head.length'))}">${esc(live(s) ? clock(ms) : length(ms))}</span>` : '',
     when ? `<span class="mt-when">${esc(when)}</span>` : '',
-    live(s) && M.voice.hidden ? `<span class="mt-hidden" title="${esc(t('meeting.head.hiddenHelp'))}">${icons.eyeOff}<span>${esc(t('meeting.head.hidden'))}</span></span>` : ''
+    screen ? `<span class="mt-screen">${icons.monitor}<span>${esc(t('meeting.head.screen', { mode: screenMode(screen) }))}</span></span>` : '',
+    live(s) && M.voice.hidden ? `<span class="mt-hidden" title="${esc(t('meeting.head.hiddenHelp'))}">${icons.eyeOff}<span>${esc(t('meeting.head.hidden'))}</span></span>` : '',
+    visible ? `<span class="mt-visible" title="${esc(t('meeting.head.visibleHelp'))}">${icons.eye}<span>${esc(t('meeting.head.visible'))}</span></span>` : ''
   ]
     .filter(Boolean)
     .join('');
   const confirming = M.confirmStop === s.id;
+  // A Voice that can't switch monitors (Voice 0.1) answered unknown_command once; its meetings get no button.
+  const canSwitch = screen && M.noScreenSwitch !== voiceKey();
+  const screenLabel = esc(t('meeting.actions.screen'));
   const actions = live(s)
-    ? `<button class="tbtn" data-mt="mark" ${disabled}>${icons.flag}<span>${esc(t('meeting.actions.mark'))}</span></button>
+    ? `${canSwitch ? `<button class="tbtn" data-mt="screen" aria-haspopup="menu" title="${screenLabel}" ${disabled}>${icons.monitor}<span>${screenLabel}</span></button>` : ''}
+       <button class="tbtn" data-mt="mark" ${disabled}>${icons.flag}<span>${esc(t('meeting.actions.mark'))}</span></button>
        <button class="tbtn" data-mt="${s.state === 'paused' ? 'resume' : 'pause'}" ${disabled}>${s.state === 'paused' ? icons.play : icons.pause}<span>${esc(t(s.state === 'paused' ? 'meeting.actions.resume' : 'meeting.actions.pause'))}</span></button>
        <button class="tbtn primary ${confirming ? 'is-confirm' : ''}" data-mt="stop" ${disabled}>${icons.stop}<span>${esc(t(confirming ? 'meeting.actions.stopConfirm' : 'meeting.actions.stop'))}</span></button>`
     : '';
@@ -554,6 +635,61 @@ function renderNotice() {
   else if (s.state === 'failed') text = t('meeting.notice.failed');
   el.hidden = !text;
   el.innerHTML = text ? `${icons.info}<span>${esc(text)}</span>` : '';
+}
+
+// ---------- the monitor Voice records ----------
+
+// Which Voice is connected, as far as the Screen button cares: the same version answers the same.
+const voiceKey = () => `${M.voice.status}:${M.voice.voiceVersion || ''}`;
+
+// The header's Screen button: the monitors Voice can record, the one it records checked. The menu opens at once and
+// fills in when Voice answers.
+async function monitorMenu(btn) {
+  const d = M.data;
+  if (!d) return;
+  const id = d.meeting.id;
+  const heading = { heading: t('meeting.monitor.heading') };
+  showMenu(btn, [heading, { label: t('meeting.monitor.loading'), disabled: true, action: () => {} }], { align: 'right' });
+  const opened = menuCount();
+  const stillOpen = () => menuOpen() && menuCount() === opened && btn.isConnected && M.data && M.data.meeting.id === id;
+  let info = null;
+  try {
+    info = await api('meetingScreen', id);
+  } catch (err) {
+    if (stillOpen()) closeMenu({ refocus: true });
+    if (err && err.voice === 'unknown_command') {
+      M.noScreenSwitch = voiceKey();
+      renderHead();
+    }
+    return toast(voiceError(err), 5000);
+  }
+  if (!stillOpen()) return;
+  const monitors = info && Array.isArray(info.monitors) ? info.monitors.filter((m) => m && typeof m.id === 'string') : [];
+  const stopped = !info || info.state === 'stopped' || (info.video === false && info.frames === false);
+  showMenu(
+    btn,
+    [
+      heading,
+      stopped ? { label: t('meeting.monitor.stopped'), disabled: true, action: () => {} } : null,
+      ...monitors.map((m) => ({
+        label: m.name || m.id,
+        sub: Number.isInteger(m.width) && Number.isInteger(m.height) ? t('meeting.monitor.size', { width: m.width, height: m.height }) : '',
+        hint: m.primary ? t('meeting.monitor.primary') : '',
+        checked: m.id === info.monitor,
+        disabled: stopped,
+        action: () => m.id !== info.monitor && selectMonitor(id, m.id)
+      }))
+    ],
+    { align: 'right' }
+  );
+}
+
+async function selectMonitor(id, monitor) {
+  try {
+    await api('meetingScreenSelect', id, monitor);
+  } catch (err) {
+    toast(voiceError(err), 5000);
+  }
 }
 
 // The line after the transcript: listening while it records, finishing once it stopped.
@@ -615,16 +751,32 @@ function markText(k) {
       const key = { reconnected: 'meeting.mark.deviceBack', lost: 'meeting.mark.deviceLost' }[k.detail] || 'meeting.mark.deviceMoved';
       return t(key, { track, device });
     }
-    case 'dropped':
-      return t(k.detail === 'disk' ? 'meeting.mark.droppedDisk' : 'meeting.mark.droppedEncoder');
+    // The whole screen recording stopped; the audio goes on (voice/PROTOCOL.md, marks).
+    case 'dropped': {
+      const key = { disk: 'meeting.mark.droppedDisk', device: 'meeting.mark.droppedDevice' }[k.detail] || 'meeting.mark.droppedEncoder';
+      return t(key);
+    }
+    // Only the video stopped; the frames go on.
+    case 'video_dropped':
+      return t(k.detail === 'disk' ? 'meeting.mark.droppedVideoDisk' : 'meeting.mark.droppedVideoEncoder');
+    // Monitor names come from Windows, through Voice.
+    case 'monitor': {
+      const name = k.label || t('meeting.mark.unnamedDevice');
+      return k.detail === 'lost' ? t('meeting.mark.monitorLost', { name }) : t('meeting.mark.monitor', { name });
+    }
+    // A stretch without frames; a gap stays about missing audio.
+    case 'screen_gap': {
+      const key = { locked: 'meeting.mark.gapScreenLocked', crash: 'meeting.mark.gapScreenCrash', device: 'meeting.mark.gapScreenDevice' }[k.detail] || 'meeting.mark.gapScreen';
+      return t(key, { length: span || length(0) });
+    }
     default:
       return k.label ? t('meeting.mark.userLabel', { label: k.label }) : t('meeting.mark.user');
   }
 }
-const MARK_ICONS = { user: 'flag', gap: 'warning', device: 'mic', dictation: 'edit', dropped: 'warning' };
+const MARK_ICONS = { user: 'flag', gap: 'warning', device: 'mic', dictation: 'edit', dropped: 'warning', video_dropped: 'warning', screen_gap: 'warning', monitor: 'monitor' };
 
 function markHtml(k) {
-  const kind = ['user', 'gap', 'device', 'dictation', 'dropped'].includes(k.kind) ? k.kind : 'user';
+  const kind = Object.hasOwn(MARK_ICONS, k.kind) ? k.kind : 'user';
   return `<li class="mt-row mt-mark is-${kind}" data-key="k:${esc(k.id)}" data-at="${k.at}" tabindex="-1">
     <time class="mt-at">${esc(clock(k.at))}</time>
     <div class="mt-line">${icons[MARK_ICONS[kind]]}<span>${esc(markText(k))}</span></div>
@@ -645,16 +797,48 @@ function passageHtml(p) {
   </li>`;
 }
 
+// A moment the screen changed: a thumbnail, filled in from Voice once the row comes into view (fillFrames), and the
+// first line of the text Voice read on the screen. A click on the thumbnail or the toggle, or Enter on the row,
+// opens it: the image at the row's width and all of its text. The text is whatever was on the screen: esc() only.
+function frameHtml(f) {
+  const entry = F.cache.get(f.id) || null;
+  const text = frameText(f, entry);
+  const lines = text === null ? [] : text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const open = M.frameOpen.has(f.id);
+  const note = frameNote(entry);
+  const ratio = Number.isInteger(f.width) && Number.isInteger(f.height) && f.width > 0 && f.height > 0 ? `${f.width} / ${f.height}` : '16 / 9';
+  const label = esc(t('meeting.frame.alt', { time: clock(f.at) }));
+  const first = lines.length
+    ? `<div class="mt-frame-line sel">${esc(lines[0])}</div>`
+    : text === ''
+      ? `<div class="mt-frame-line is-none">${esc(t('meeting.frame.noText'))}</div>`
+      : '';
+  const rest =
+    lines.length > 1
+      ? `<button class="mt-frame-toggle" data-mt="frame" tabindex="-1" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('meeting.frame.showText'))}</span></button>
+        <div class="mt-frame-rest"><div class="mt-frame-full sel">${esc(lines.slice(1).join('\n'))}</div></div>`
+      : '';
+  return `<li class="mt-row mt-frame${open ? ' is-open' : ''}" data-key="f:${esc(f.id)}" data-id="${esc(f.id)}" data-at="${f.at}" tabindex="-1">
+    <time class="mt-at">${esc(clock(f.at))}</time>
+    <div class="mt-main">
+      <button class="mt-shot" data-mt="frame" tabindex="-1" aria-expanded="${open}" aria-label="${label}" style="--ar: ${ratio}">${icons.monitor}<img alt="${label}" loading="lazy" decoding="async" hidden></button>
+      <div class="mt-frame-body">${first}${note ? `<div class="mt-frame-note">${esc(note)}</div>` : ''}${rest}</div>
+    </div>
+  </li>`;
+}
+
 // Marks before a passage that starts at the same moment. A dictation stretch whose words are in the transcript
 // already shows as those lines, tagged; its mark only says when nothing was transcribed in it.
 function items(d) {
   const out = [];
   const dictated = (k) => d.passages.some((p) => p.dictation && p.start < (Number.isFinite(k.until) ? k.until : Infinity) && p.end > k.at);
   for (const k of d.marks) if (!(k.kind === 'dictation' && dictated(k))) out.push({ key: `k:${k.id}`, at: k.at, order: 0, html: () => markHtml(k) });
+  // A frame sits at the moment the screen changed, after a mark and before a passage that start then.
+  for (const f of d.frames || []) out.push({ key: `f:${f.id}`, at: f.at, order: 0.5, html: () => frameHtml(f) });
   for (const p of d.passages) out.push({ key: `p:${p.id}`, at: p.start, order: 1, html: () => passageHtml(p) });
   return out.sort((a, b) => a.at - b.at || a.order - b.order || (a.key < b.key ? -1 : 1));
 }
-const rowKey = (el) => [Number(el.dataset.at), el.classList.contains('mt-mark') ? 0 : 1, el.dataset.key];
+const rowKey = (el) => [Number(el.dataset.at), el.classList.contains('mt-mark') ? 0 : el.classList.contains('mt-frame') ? 0.5 : 1, el.dataset.key];
 const before = (a, b) => a[0] - b[0] || a[1] - b[1] || (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0);
 
 const scroller = () => $('.meeting .mt-scroll');
@@ -665,6 +849,7 @@ function renderTranscript(full, { bottom = false } = {}) {
   const list = $('.meeting .mt-transcript');
   const d = M.data;
   if (!list || !d || !full) return;
+  forgetFrames(d.meeting.id);
   const sc = scroller();
   const stick = bottom || atBottom(sc);
   const top = sc ? sc.scrollTop : 0;
@@ -675,6 +860,7 @@ function renderTranscript(full, { bottom = false } = {}) {
     .map((x) => x.html())
     .join('');
   continuations();
+  fillFrames();
   if (M.editing) {
     const row = list.querySelector(`[data-key="p:${CSS.escape(M.editing)}"]`);
     if (row) {
@@ -700,6 +886,7 @@ function updateRows(keys, removedKeys) {
   const list = $('.meeting .mt-transcript');
   const d = M.data;
   if (!list || !d) return;
+  forgetFrames(d.meeting.id);
   const sc = scroller();
   const stick = atBottom(sc);
   for (const key of removedKeys) list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.remove();
@@ -729,6 +916,7 @@ function updateRows(keys, removedKeys) {
     if (hadFocus) row.focus({ preventScroll: true });
   }
   continuations();
+  fillFrames();
   if (sc && stick) sc.scrollTop = sc.scrollHeight;
   else if (added) $('.meeting .mt-jump')?.removeAttribute('hidden');
 }
@@ -742,6 +930,136 @@ function continuations() {
     row.classList.toggle('cont', Boolean(cont));
     prev = row;
   }
+}
+
+// ---------- screen frames ----------
+
+// The images of the meeting on screen, by frame id, at most FRAME_CACHE of them; an entry is {url, text} once Voice
+// answered, {gone} when Voice no longer has the image and {offline} when it couldn't be asked. loading: frames asked
+// for now. io: watches the rows whose image isn't there yet.
+const F = { meeting: null, cache: new Map(), loading: new Set(), io: null, root: null };
+
+function forgetFrames(id) {
+  if (F.meeting === id) return;
+  F.meeting = id;
+  F.cache = new Map();
+  F.loading = new Set();
+}
+
+function remember(meetingId, frameId, entry) {
+  if (F.meeting !== meetingId) return;
+  F.cache.delete(frameId);
+  F.cache.set(frameId, entry);
+  while (F.cache.size > FRAME_CACHE) F.cache.delete(F.cache.keys().next().value);
+}
+
+// A frame's text: its own, or, when the snapshot left it out to stay small, what meetingFrame brought. null while
+// Rukoo doesn't know it yet.
+function frameText(f, entry) {
+  if (typeof f.text === 'string' && (f.text || !f.textOmitted)) return f.text;
+  return entry && typeof entry.text === 'string' ? entry.text : null;
+}
+
+// Why a frame shows no image, or ''.
+function frameNote(entry) {
+  if (entry && entry.url) return '';
+  if (entry && entry.gone) return t('meeting.frame.gone');
+  if (M.voice.status !== 'connected' || (entry && entry.offline)) return t('meeting.frame.offline');
+  return '';
+}
+
+const plainImage = (url) => (typeof url === 'string' && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(url) ? url : null);
+
+// meetingFrame answers with the image as a data: URL, or with {url, text} when it brings text Rukoo left out of its
+// copy. null means Voice sent something that isn't a plain image.
+function frameResult(res) {
+  if (typeof res === 'string') return plainImage(res) ? { url: res, text: null } : { url: null, text: null, gone: true };
+  if (res && typeof res === 'object') {
+    const text = typeof res.text === 'string' ? res.text : res.frame && typeof res.frame.text === 'string' ? res.frame.text : null;
+    const url = plainImage(res.url);
+    return url ? { url, text } : { url: null, text, gone: true };
+  }
+  return { url: null, text: null, gone: true };
+}
+
+function showImage(row, url) {
+  const img = row.querySelector('.mt-shot img');
+  if (!img) return;
+  if (img.getAttribute('src') !== url) img.src = url;
+  img.hidden = false;
+  row.classList.add('has-image');
+}
+
+// After the transcript drew: rows whose image Rukoo has get it, the others are watched until they come into view.
+function fillFrames() {
+  const list = $('.meeting .mt-transcript');
+  if (!list || !M.data) return;
+  const sc = scroller();
+  if (F.io) F.io.disconnect();
+  if (F.root !== sc) F.io = null;
+  if (!F.io && sc && typeof IntersectionObserver === 'function') {
+    F.root = sc;
+    F.io = new IntersectionObserver(framesSeen, { root: sc, rootMargin: FRAME_MARGIN });
+  }
+  for (const row of list.querySelectorAll('.mt-frame:not(.has-image)')) {
+    const entry = F.cache.get(row.dataset.id);
+    if (entry && entry.url) {
+      remember(F.meeting, row.dataset.id, entry);
+      showImage(row, entry.url);
+    } else if (!entry && M.voice.status === 'connected' && F.io) F.io.observe(row);
+  }
+}
+
+function framesSeen(seen) {
+  for (const e of seen) {
+    if (!e.isIntersecting) continue;
+    F.io.unobserve(e.target);
+    loadFrame(e.target.dataset.id);
+  }
+}
+
+async function loadFrame(frameId) {
+  const d = M.data;
+  const f = d && (d.frames || []).find((x) => x.id === frameId);
+  if (!f || F.loading.has(frameId) || F.meeting !== d.meeting.id) return;
+  const meetingId = d.meeting.id;
+  F.loading.add(frameId);
+  let entry;
+  try {
+    entry = frameResult(await api('meetingFrame', meetingId, f.at));
+  } catch (err) {
+    const code = err && err.voice;
+    entry = code === 'not_available' || code === 'not_found' ? { url: null, text: null, gone: true } : { url: null, text: null, offline: true };
+  } finally {
+    F.loading.delete(frameId);
+  }
+  if (F.meeting !== meetingId) return;
+  remember(meetingId, frameId, entry);
+  const row = $('.meeting .mt-transcript')?.querySelector(`[data-key="f:${CSS.escape(frameId)}"]`);
+  if (!row || !M.data || M.data.meeting.id !== meetingId) return;
+  // The image goes in place; a note or text that just arrived draws the row again.
+  if (entry.url && frameText(f, null) !== null) showImage(row, entry.url);
+  else updateRows([`f:${frameId}`], []);
+}
+
+// Voice came or went: rows that couldn't ask it try again, and the notes follow.
+function redrawFrames() {
+  if (!M.data || !(M.data.frames || []).length) return;
+  for (const [id, entry] of [...F.cache]) if (entry.offline) F.cache.delete(id);
+  renderTranscript(true);
+}
+
+function toggleFrame(row) {
+  if (!row) return;
+  const id = row.dataset.id;
+  const open = !M.frameOpen.has(id);
+  if (open) M.frameOpen.add(id);
+  else M.frameOpen.delete(id);
+  row.classList.toggle('is-open', open);
+  for (const b of row.querySelectorAll('[data-mt="frame"]')) b.setAttribute('aria-expanded', String(open));
+  // A frame opened near the bottom of the view grows below it; the image comes into view, as a row does with the
+  // arrow keys.
+  if (open) row.scrollIntoView({ block: 'nearest' });
 }
 
 // ---------- correcting a passage ----------
@@ -1085,6 +1403,12 @@ async function onClick(e) {
   switch (b.dataset.mt) {
     case 'record':
       return record();
+    case 'record-menu':
+      return recordMenu(b);
+    case 'screen':
+      return monitorMenu(b);
+    case 'frame':
+      return toggleFrame(b.closest('.mt-frame'));
     case 'jump': {
       const sc = scroller();
       if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' });
@@ -1159,7 +1483,11 @@ function onViewKey(e) {
   else if (e.key === 'ArrowUp') next = rows[Math.max(0, at < 0 ? rows.length - 1 : at - 1)];
   else if (e.key === 'Home') next = rows[0];
   else if (e.key === 'End') next = rows[rows.length - 1];
-  else if ((e.key === 'Enter' || e.key === 'F2') && at >= 0) {
+  else if ((e.key === 'Enter' || e.key === ' ') && at >= 0 && rows[at].classList.contains('mt-frame')) {
+    // A frame opens and closes; its text can then be selected and copied.
+    e.preventDefault();
+    return toggleFrame(rows[at]);
+  } else if ((e.key === 'Enter' || e.key === 'F2') && at >= 0) {
     e.preventDefault();
     return editPassage(rows[at]);
   }
@@ -1185,7 +1513,10 @@ function renderSideSoon() {
 // "Record a meeting", then the meetings by day. In the rail a meeting shows as its day of the month.
 export function sidebarHtml() {
   const why = notReadyText();
-  const record = `<button class="btn compose-btn mt-record-btn ${why ? 'is-off' : ''}" data-mt-side="record" title="${esc(why || t('meeting.actions.record'))}" ${M.starting ? 'disabled' : ''}>${icons.record}<span>${esc(t('meeting.actions.record'))}</span></button>`;
+  const off = why ? 'is-off' : '';
+  const busy = M.starting ? 'disabled' : '';
+  // The main part records with Voice's default; the arrow chooses what to record of the screen first.
+  const record = `<div class="mt-record-split is-side"><button class="btn compose-btn mt-record-btn ${off}" data-mt-side="record" title="${esc(why || t('meeting.actions.record'))}" ${busy}>${icons.record}<span>${esc(t('meeting.actions.record'))}</span></button>${recordMoreHtml(`btn compose-btn ${off}`, 'data-mt-side="record-menu"', busy)}</div>`;
   let lastGroup = null;
   const rows = M.list
     .map((m) => {
@@ -1209,6 +1540,10 @@ export function sidebarHtml() {
 export function sidebarClick(btn) {
   if (btn.dataset.mtSide === 'record') {
     record();
+    return true;
+  }
+  if (btn.dataset.mtSide === 'record-menu') {
+    recordMenu(btn);
     return true;
   }
   if (btn.dataset.mtOpen) {
