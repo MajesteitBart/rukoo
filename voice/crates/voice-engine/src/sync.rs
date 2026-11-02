@@ -99,9 +99,20 @@ pub fn sync_config(cfg: &Config) -> Option<SyncConfig> {
 
 /// Tells bucket sync what Settings say now.
 pub(crate) fn configure_sync(core: &Core, cfg: &Config) {
-    if let Some(sync) = &core.sync {
-        sync.configure(sync_config(cfg));
+    let Some(sync) = &core.sync else {
+        return;
+    };
+    let bucket = sync_config(cfg);
+    if bucket.is_some() {
+        // The key exists before the worker connects, so the worker and Show key never both make
+        // one: voice-sync's load-or-create isn't atomic, and two keys made at once would leave
+        // uploads under a key that isn't saved. Nothing uploads here, so importing a key stays
+        // allowed.
+        if let Err(e) = sync.show_key() {
+            log::warn!("sync: no encryption key yet: {}", e.message);
+        }
     }
+    sync.configure(bucket);
 }
 
 /// Moves a bucket secret that `settings_set` could write into `config.json` before Voice kept
