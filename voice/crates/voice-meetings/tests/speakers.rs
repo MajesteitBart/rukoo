@@ -1014,14 +1014,15 @@ fn a_stream_that_drops_while_behind_sends_the_unanswered_audio_again() {
     let tmp = TempDir::new("speakers-mistral-behind");
     let lib = Library::open(tmp.path()).unwrap();
     let log = EventLog::open(tmp.path()).unwrap();
-    let pieces = three_voices(4, 3.5);
+    // 57 s of call.
+    let pieces = three_voices(12, 3.5);
     let rec = finished_call(&lib, &pieces);
     let fake = FakeStreaming::default();
     {
         let mut state = fake.state();
-        // The first labelling session answers nothing and drops 15 s into the call.
+        // The first labelling session answers nothing and drops 45 s into the call.
         state.mute_first = true;
-        state.fail_on = vec![150];
+        state.fail_on = vec![450];
     }
     let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
     wait_done(&handle);

@@ -912,7 +912,7 @@ async function measuredMeeting(label, liveSpeakers, minutes) {
     result.moved = movedPassages(events).length;
     const epochs = await transcriptDb(id, 'SELECT epoch, reason FROM speaker_epochs ORDER BY epoch');
     result.epochs = epochs.map((e) => e.reason);
-    if (minutes > 5) {
+    if (minutes >= 21) {
       const end = Math.max(...passages.map((p) => p.end));
       const head = mainIds(passages.filter((p) => p.end <= 5 * 60000), turns);
       const tail = mainIds(passages.filter((p) => p.start >= end - 5 * 60000), turns);

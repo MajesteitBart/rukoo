@@ -40,9 +40,13 @@ const MAX_GUESS_MS: u64 = 6_000;
 const REFERENCES: usize = 8;
 const REFERENCE_MIN_MS: u64 = 3_000;
 const REFERENCE_MAX_MS: u64 = 15_000;
-/// A new session sends again at most this much of what the old one sent past its last answer,
-/// so a long silence, which gets no answer, isn't streamed twice in full.
-const REPLAY_MAX_MS: u64 = 30_000;
+/// A new session sends again at most this much of what the old one sent past its last answer.
+/// Silence gets no answer, so a muted microphone would otherwise be streamed again from the
+/// meeting's start, at twice real time at most; a provider that answered nothing for five
+/// minutes of speech is broken rather than behind. An answer without times counts up to where
+/// it was estimated to end, so audio a late provider hadn't answered for yet, a second or two
+/// at its configured delay, can still be lost when the connection drops right then.
+const REPLAY_MAX_MS: u64 = 300_000;
 /// A session that took this much audio without an error counts as working, for the retry wait.
 const HEALTHY_SAMPLES: u64 = 30 * 16_000;
 
