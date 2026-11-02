@@ -4,10 +4,12 @@
 //! shared). The worker keeps a private copy of stdout for protocol lines and points descriptor 1
 //! at stderr before anything native runs.
 //!
-//! The NeMo DLLs use the dynamic C runtime, so they have descriptor tables of their own. They
-//! still write to stderr: in a console program, `dup2` onto descriptor 1 also calls
-//! `SetStdHandle(STD_OUTPUT_HANDLE)`, and the dynamic runtime takes its standard handles from
-//! there when the DLLs load, which is after this runs.
+//! The NeMo DLLs use the dynamic C runtime, ucrtbase.dll, which keeps a descriptor table of its
+//! own. System DLLs the worker imports load ucrtbase.dll at process start, before this runs, so
+//! its descriptor 1 still holds the original stdout handle. `dup2` closes that handle, so whatever
+//! the dynamic runtime writes to stdout fails with EBADF and is lost; it can't reach the protocol,
+//! which writes through its own duplicate. NeMo-Speech.cpp and ggml log to stderr, which both
+//! runtimes still share.
 
 use std::io::{self, Write};
 
