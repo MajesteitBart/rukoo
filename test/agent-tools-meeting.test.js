@@ -388,7 +388,7 @@ test('a frame comes as an image after a note that it is untrusted, with no struc
   const res = await call('get_meeting_frame', { meeting_id: M, at_seconds: 413 });
   assert.equal(res.isError, undefined);
   assert.equal(res.structuredContent, undefined);
-  assert.deepEqual(asked, [[M, 413000]]);
+  assert.deepEqual(asked, [[M, 413999]], 'the end of the asked second');
   assert.equal(res.content.length, 2);
   assert.equal(res.content[1].type, 'image');
   assert.equal(res.content[1].mimeType, 'image/jpeg');
@@ -401,6 +401,35 @@ test('a frame comes as an image after a note that it is untrusted, with no struc
   const { feed: feed2, call: call2 } = await setup(t);
   feed2([startedEv()]);
   assert.match(failure(await call2('get_meeting_frame', { meeting_id: M, at_seconds: 1 })), /did not record the screen/);
+});
+
+test('the frame the transcript points at is the one get_meeting_frame gives at that second', async (t) => {
+  const { feed, call, voice } = await setup(t);
+  // Frame times are rarely whole seconds; the transcript rounds them down.
+  const frames = [
+    { id: 'f-000000526', at: 526, width: 1920, height: 1080, text: 'Slide 1' },
+    { id: 'f-000412500', at: 412500, width: 1920, height: 1080, text: 'Slide 2' }
+  ];
+  feed([startedEv(M, { screen: 'frames' }), ...frames.map((f) => ev('frame', M, f))]);
+  const lines = untag(data(await call('read_meeting_transcript', { meeting_id: M })).transcript).trim().split('\n');
+  assert.deepEqual(lines.filter((l) => l.includes('Screen changed')), [
+    '[00:00:00] [Screen changed; get_meeting_frame shows it]',
+    '[00:06:52] [Screen changed; get_meeting_frame shows it]'
+  ]);
+  Object.defineProperty(voice, 'connected', { get: () => true });
+  // Voice's rule: the last frame at or before the asked moment.
+  voice.frame = async (id, at) => {
+    const f = frames.filter((x) => x.at <= at).pop();
+    if (!f) throw Object.assign(new Error('not found'), { code: 'not_found' });
+    return { frame: f, image: { type: 'image/jpeg', data: Buffer.from(`jpeg ${f.id}`).toString('base64') } };
+  };
+  for (const [at, text, frameAt] of [[0, 'Slide 1', 0], [412, 'Slide 2', 412], [411, 'Slide 1', 0]]) {
+    const res = await call('get_meeting_frame', { meeting_id: M, at_seconds: at });
+    assert.equal(res.isError, undefined, `at ${at}: ${res.content[0].text}`);
+    const info = JSON.parse(res.content[0].text);
+    assert.equal(info.frame_at_seconds, frameAt, `at ${at}`);
+    assert.match(info.text, new RegExp(text), `at ${at}`);
+  }
 });
 
 test('with "Agents can read meetings" off, every meeting tool says so, and a meeting chat\'s turn tells nothing from it', async (t) => {

@@ -2616,7 +2616,9 @@ async function getMeetingFrame(hub, args, call) {
   if (!voice.connected) throw new ToolError('Rukoo Voice is not running, and it keeps the screen frames. Ask the user to start Rukoo Voice, or use read_meeting_transcript.');
   let res;
   try {
-    res = await voice.frame(id, args.at_seconds * 1000);
+    // The end of that second: the transcript gives a frame's time in whole seconds, rounded down, so the frame it
+    // shows at 00:06:52 is anywhere in 412,000 to 412,999 ms.
+    res = await voice.frame(id, args.at_seconds * 1000 + 999);
   } catch (err) {
     if (err.code === 'not_found') throw new ToolError(`The meeting ${id} has no frame at or before ${args.at_seconds} seconds.`);
     if (err.code === 'not_available') throw new ToolError(`Rukoo Voice has no frames of the meeting ${id}. read_meeting_transcript has what was said.`);
