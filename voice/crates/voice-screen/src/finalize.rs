@@ -228,6 +228,20 @@ pub(crate) fn remove_temp_files(meeting: &Path) {
     }
 }
 
+/// Whether `screen/` holds a video file or a frame, with or without journal lines: a new
+/// recording must not start over it without `--resume` (`voice/RECORDING.md`).
+pub fn has_media(meeting: &Path) -> bool {
+    [("video", ".mp4"), ("frames", ".jpg")]
+        .iter()
+        .any(|(sub, extension)| {
+            fs::read_dir(paths::screen_dir(meeting).join(sub)).is_ok_and(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.file_name().to_string_lossy().ends_with(extension))
+            })
+        })
+}
+
 /// The highest video file number on disk, also of files a crash left without a `video` line,
 /// so a new file never collides with one.
 pub fn highest_video_seq(meeting: &Path) -> u64 {

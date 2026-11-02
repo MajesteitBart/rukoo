@@ -350,6 +350,63 @@ mod tests {
         recorder.wait_exit(WAIT_TIMEOUT);
     }
 
+    /// `record` into the test meeting on the slides, to its end; its exit code.
+    fn record_code(m: &TempMeeting, resume: bool) -> Option<i32> {
+        let meeting = m.arg();
+        let mut args = vec![
+            "record",
+            "--meeting",
+            meeting.as_str(),
+            "--mode",
+            "frames",
+            "--test",
+            SLIDES,
+        ];
+        if resume {
+            args.push("--resume");
+        }
+        m.run_screen(&args).0.code()
+    }
+
+    /// The startup refusals (spec 4.2, step 1): another screen process recording into the
+    /// meeting (4, also for `finalize`), a journal without `--resume` (3), a journal with `stop`
+    /// (3, also with `--resume`) and frames on disk without journal lines (3). A refused start
+    /// writes nothing.
+    pub fn refuses_what_the_meeting_does_not_allow() {
+        let m = TempMeeting::new("refusals", "frames");
+        let (mut recorder, mut screen) = start(&m, "frames", SLIDES, &[]);
+        assert_eq!(record_code(&m, true), Some(4));
+        assert_eq!(record_code(&m, false), Some(4));
+        let (status, out) = m.run_screen(&["finalize", "--meeting", &m.arg()]);
+        assert_eq!(status.code(), Some(4), "{out}");
+
+        // A killed process leaves its journal and a stale screen.json behind.
+        screen.hard_kill();
+        assert_eq!(record_code(&m, false), Some(3));
+        let mut screen = m.screen("frames", Some(SLIDES), &["--resume"]);
+        m.wait_journal("the resumed session", |l| {
+            l.iter()
+                .any(|x| x["kind"] == "session" && x["session"] == 2)
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_eq!(of_kind(&lines, "session").len(), 2, "{}", show(&lines));
+        assert_eq!(record_code(&m, true), Some(3));
+        assert_eq!(record_code(&m, false), Some(3));
+        assert_eq!(
+            m.journal().len(),
+            lines.len(),
+            "a refused start wrote to the journal"
+        );
+
+        // Frames on disk count as a recording, even without a journal.
+        let m = TempMeeting::new("refusals-media", "frames");
+        let frames = m.dir.join("screen").join("frames");
+        fs::create_dir_all(&frames).unwrap();
+        fs::write(frames.join("f-000001000.jpg"), b"jpeg").unwrap();
+        assert_eq!(record_code(&m, false), Some(3));
+        assert!(m.journal().is_empty());
+    }
+
     pub fn low_disk_drops_video_then_frames_never_audio() {
         let m = TempMeeting::new("low-disk", "video");
         let free = m.root.join("free-bytes.txt");
@@ -841,6 +898,11 @@ fn main() {
             name: "pinned_monitor_is_recorded",
             ignored: false,
             run: tests::pinned_monitor_is_recorded,
+        },
+        Test {
+            name: "refuses_what_the_meeting_does_not_allow",
+            ignored: false,
+            run: tests::refuses_what_the_meeting_does_not_allow,
         },
         Test {
             name: "low_disk_drops_video_then_frames_never_audio",

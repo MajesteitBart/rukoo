@@ -128,7 +128,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             "the meeting's screen recording has stopped; nothing can follow its stop line",
         ));
     }
-    if !lines.is_empty() && !opts.resume {
+    if (!lines.is_empty() || finalize::has_media(&dir)) && !opts.resume {
         return Err(ExitError::conflict(
             "the meeting already has a screen recording; continue it with --resume",
         ));
