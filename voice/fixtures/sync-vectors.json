@@ -1,0 +1,87 @@
+{
+  "about": "Known answers for voice-sync's names, recovery code and RKV1 format (RUK-110 spec 2.4 and 2.5). Made by an implementation independent of the Rust one, on Node's crypto: HChaCha20 written out, ChaCha20-Poly1305 from OpenSSL, checked first against draft-irtf-cfrg-xchacha-03. Plaintexts are byte[i] = i mod 251; every object uses the same DEK, stream prefix and wrap nonce, which only a test may do.",
+  "masterKey": "0b30557a9fc4e90e33587da2c7ec11365b80a5caef14395e83a8cdf2173c6186",
+  "kid": "80307a657ea2a291",
+  "nameKey": "18ae27e16634bb460d0a7677e03ec277ec539cedeb07521286beb50c6ac75ba6",
+  "wrapKey": "3126620af2dea943eb0036ed95e1dd48ceb437c45acc23787c1ee13e58623ffd",
+  "meeting": "m-20261030-171203-4f2a",
+  "meetingHash": "432d4d848c699e6ee9703deec43b9cb4",
+  "manifestObject": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/manifest",
+  "files": [
+    {
+      "path": "meeting.json",
+      "sha256": "f499be24ea0ada094bf60198753b4ce86130be89fb4cb068395651def3933cc7",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/1eaf1ec25538b548989b8eead71454b7"
+    },
+    {
+      "path": "timeline.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/0823b1cfe62b7255e60fbf43ad300d7c"
+    }
+  ],
+  "writer": "00112233445566778899aabbccddeeff",
+  "indexObject": "rkv1/80307a657ea2a291/index/e95e3d8980c2b2a05c28df9ffc2cd941",
+  "indexPrefix": "rkv1/80307a657ea2a291/index/",
+  "recoveryCode": "RKV1-1CR5A-YMZRK-MGWCT-RFPHC-FV0H6-SDR19-EAXWA-3JQM3-N36Z4-5SWC6-387DR",
+  "material": {
+    "dek": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "prefix": "808182838485868788898a8b8c8d8e8f909192",
+    "wrapNonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7"
+  },
+  "objects": [
+    {
+      "path": "audio/mic/000001.wav",
+      "plainLen": 0,
+      "plainSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/7d5955699c39e09ea186fe1c1e71c023",
+      "header": "524b56310101100080307a657ea2a2910000000000000000808182838485868788898a8b8c8d8e8f909192c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d72988b2ece217c5a28e0dfa164ceb3ced30b8151644b96440a00ae2b52036296b026e287f8ba3230e48afd4ab0076e76b",
+      "cipherLen": 131,
+      "cipherSha256": "ca56682b93e41e32d4fd5086bd29273020ac342ec5288cc87c0899a13c0399fb"
+    },
+    {
+      "path": "audio/mic/000002.wav",
+      "plainLen": 1,
+      "plainSha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/849afb12e4f7b24771a5aba7fe497c80",
+      "header": "524b56310101100080307a657ea2a2910000000000000001808182838485868788898a8b8c8d8e8f909192c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d72988b2ece217c5a28e0dfa164ceb3ced30b8151644b96440a00ae2b52036296b29cfca2a5fb838ee21396457863f6cbd",
+      "cipherLen": 132,
+      "cipherSha256": "802dc4e47c4ec5b04b6c2fc3244b3b618fa47d96c519dee14a15bb49a97846ae"
+    },
+    {
+      "path": "audio/mic/000003.wav",
+      "plainLen": 65535,
+      "plainSha256": "dda402a2c028f0cbbdbc5c6ebae965eed9c75f71236e7022b0386d3455d5ae2f",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/16db174b85f01d3a3e2eca659e9c6304",
+      "header": "524b56310101100080307a657ea2a291000000000000ffff808182838485868788898a8b8c8d8e8f909192c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d72988b2ece217c5a28e0dfa164ceb3ced30b8151644b96440a00ae2b52036296b4c555e83b30343e1af5ef6c4f869f568",
+      "cipherLen": 65666,
+      "cipherSha256": "1c9e6f255e17f9bac5df7f5f0974d23ff28baaa2ceaa8e36414819b0cddd0b99"
+    },
+    {
+      "path": "audio/mic/000004.wav",
+      "plainLen": 65536,
+      "plainSha256": "4b640d85ab3ba30fd02c9fc9db4a8928f416322ad27022ea58a65aaee68a4df2",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/a2740b458d9da62cbe113bf5485d21a5",
+      "header": "524b56310101100080307a657ea2a2910000000000010000808182838485868788898a8b8c8d8e8f909192c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d72988b2ece217c5a28e0dfa164ceb3ced30b8151644b96440a00ae2b52036296bca6d46bc080955a45ad362eb13b22e07",
+      "cipherLen": 65667,
+      "cipherSha256": "7fbe8c4a6292e9a0b2b08c40fe1700dc7864711ba628192c15cacd60358a65d8"
+    },
+    {
+      "path": "audio/mic/000005.wav",
+      "plainLen": 65537,
+      "plainSha256": "237356e18b503616912abb8ffaed3a72591e397d4ac294c4637917d48a3f529d",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/d7e4d5399164059456734bb17915dba6",
+      "header": "524b56310101100080307a657ea2a2910000000000010001808182838485868788898a8b8c8d8e8f909192c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d72988b2ece217c5a28e0dfa164ceb3ced30b8151644b96440a00ae2b52036296bc97e2ec24e7c296e9cebf1139c1eddd5",
+      "cipherLen": 65684,
+      "cipherSha256": "efdd1ecd6e414bb7522f551e9dde9d7d33072d21ca364717bc33f6a6a3aebff6"
+    },
+    {
+      "path": "audio/mic/000006.wav",
+      "plainLen": 200000,
+      "plainSha256": "e24bc62381f1224fbbb74688663f8f9743b9680b193edd666835e97b06e730eb",
+      "object": "rkv1/80307a657ea2a291/m/432d4d848c699e6ee9703deec43b9cb4/o/65fcb0c503989dc0216bdb1b66e6a259",
+      "header": "524b56310101100080307a657ea2a2910000000000030d40808182838485868788898a8b8c8d8e8f909192c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d72988b2ece217c5a28e0dfa164ceb3ced30b8151644b96440a00ae2b52036296b68072adb9e58a107dba818413da4a708",
+      "cipherLen": 200179,
+      "cipherSha256": "001da6cc3f41d24e60c553cf823f53b663b7efef2172db7fa65d2c95031a5e7e"
+    }
+  ]
+}
