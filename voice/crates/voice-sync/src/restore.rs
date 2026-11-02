@@ -11,7 +11,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use voice_meetings::MeetingFile;
@@ -189,7 +190,7 @@ pub(crate) fn fetch_to_file(
         let mut buffer_from = 0u64;
         for i in 0..chunks {
             if cancel.load(Ordering::Relaxed) {
-                return Err(SyncError::new(SyncErrorKind::Local, "Cancelled."));
+                return Err(cancelled());
             }
             let (from, to) = chunk_span(total, i);
             if to > buffer_from + buffer.len() as u64 {
@@ -229,7 +230,8 @@ fn partial_path(dest: &Path) -> PathBuf {
 }
 
 /// `ensure_local` (2.11): each path that isn't on disk with its row's size comes back from the
-/// bucket.
+/// bucket. A text file that is on disk stays as it is whatever its size: it may be newer than its
+/// last upload, and `transcript.db` may be open in the pipeline.
 pub(crate) fn ensure_local(
     shared: &Shared,
     meeting: &str,
@@ -251,11 +253,14 @@ pub(crate) fn ensure_local(
                 "That isn't a file sync keeps.",
             ));
         }
+        let dest = dir.join(path);
+        // Another fetch of this file finishes first; then it is on disk and this one skips it.
+        let _claim = Claim::take(shared, &dest, cancel)?;
         let now = shared.now();
         let row = shared.queue.in_bucket(meeting, path)?;
-        let dest = dir.join(path);
         if let Ok(meta) = fs::metadata(&dest) {
-            if meta.is_file() && row.as_ref().is_none_or(|r| r.size == meta.len()) {
+            let keep = !is_media_path(path) || row.as_ref().is_none_or(|r| r.size == meta.len());
+            if meta.is_file() && keep {
                 shared.queue.touch_restored(meeting, path, now)?;
                 continue;
             }
@@ -267,7 +272,7 @@ pub(crate) fn ensure_local(
             SyncError::new(SyncErrorKind::NotInBucket, "That file isn't in the bucket.")
         })?;
         if cancel.load(Ordering::Relaxed) {
-            return Err(SyncError::new(SyncErrorKind::Local, "Cancelled."));
+            return Err(cancelled());
         }
         if !(shared.opts.reserve)(row.size) {
             return Err(SyncError::new(SyncErrorKind::Local, NO_ROOM));
@@ -276,6 +281,8 @@ pub(crate) fn ensure_local(
             remote = Some(shared.remote()?);
         }
         let r = remote.as_ref().expect("just connected");
+        // Held from retention while it comes back, not only once it is in place (2.10).
+        shared.queue.restored(meeting, path, now)?;
         fetch_to_file(
             &r.bucket,
             &r.key,
@@ -288,6 +295,80 @@ pub(crate) fn ensure_local(
         shared.queue.restored(meeting, path, shared.now())?;
     }
     Ok(())
+}
+
+/// Audio, frames and video: files that never change once they went up, so one on disk with
+/// another size than its row is damaged and comes back from the bucket.
+fn is_media_path(path: &str) -> bool {
+    ["audio/", "screen/frames/", "screen/video/"]
+        .iter()
+        .any(|dir| path.starts_with(dir))
+}
+
+fn cancelled() -> SyncError {
+    SyncError::new(SyncErrorKind::Local, "Cancelled.")
+}
+
+/// One fetch of a file at a time: two fetches writing the same `<file>.restore` would interleave,
+/// and each checks the hash of the bytes it wrote, not of the file on disk.
+struct Claim<'a> {
+    shared: &'a Shared,
+    path: PathBuf,
+}
+
+impl<'a> Claim<'a> {
+    fn take(shared: &'a Shared, path: &Path, cancel: &AtomicBool) -> Result<Claim<'a>, SyncError> {
+        let mut fetching = shared
+            .fetching
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while fetching.contains(path) {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
+            fetching = shared
+                .fetched
+                .wait_timeout(fetching, Duration::from_millis(200))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        fetching.insert(path.to_owned());
+        Ok(Claim {
+            shared,
+            path: path.to_owned(),
+        })
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.shared
+            .fetching
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.path);
+        self.shared.fetched.notify_all();
+    }
+}
+
+/// Removes the `.restore-<id>` folders of restores that a hard kill cut off. `open` calls it before
+/// the worker starts, when no restore runs.
+pub(crate) fn clear_partial(meetings: &Path) {
+    let Ok(entries) = fs::read_dir(meetings) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let partial = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(RESTORE_PREFIX))
+            .is_some_and(|id| MeetingId::parse(id).is_some());
+        if partial && entry.path().is_dir() {
+            if let Err(e) = fs::remove_dir_all(entry.path()) {
+                log::warn!("sync: can't remove an unfinished restore: {e}");
+            }
+        }
+    }
 }
 
 /// The bucket's meetings that aren't on this computer, newest first: every index under

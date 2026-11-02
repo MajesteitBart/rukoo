@@ -61,6 +61,14 @@ pub(crate) struct Shared {
     /// Held while the worker makes a request or changes rows, so `forget_meeting` and a key import
     /// run between two steps.
     pub(crate) busy: Mutex<()>,
+    /// Meeting files `ensure_local` is fetching now. Two `media-prepare` threads can ask for the
+    /// same segment; the second waits for the first instead of writing the same file with it.
+    pub(crate) fetching: Mutex<HashSet<PathBuf>>,
+    /// Signalled when a fetch ends.
+    pub(crate) fetched: Condvar,
+    /// Held while the key is read and made or replaced: the worker and `show_key` can both find no
+    /// key at once, and `KeyStore::create` checks for the file before it writes it.
+    pub(crate) key_lock: Mutex<()>,
     notifier: Notifier,
 }
 
@@ -119,6 +127,9 @@ impl Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
             busy: Mutex::new(()),
+            fetching: Mutex::new(HashSet::new()),
+            fetched: Condvar::new(),
+            key_lock: Mutex::new(()),
             notifier: Notifier {
                 inner: Mutex::new((None, false)),
             },
@@ -135,6 +146,20 @@ impl Shared {
 
     pub(crate) fn busy(&self) -> MutexGuard<'_, ()> {
         self.busy.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn key_lock(&self) -> MutexGuard<'_, ()> {
+        self.key_lock.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// This computer's key, made now when it has none; true when it was made. Only one caller
+    /// makes it, so the key on disk is the key every caller got.
+    pub(crate) fn key_or_create(&self, now: u64) -> Result<(MasterKey, bool), SyncError> {
+        let _key = self.key_lock();
+        match self.keys.load()? {
+            Some(key) => Ok((key, false)),
+            None => Ok((self.keys.create(now)?, true)),
+        }
     }
 
     pub(crate) fn cfg(&self) -> Option<SyncConfig> {
@@ -506,10 +531,7 @@ impl Worker {
 
     fn connect(&self, cfg: &SyncConfig, now: u64) -> Result<Remote, SyncError> {
         let keys = &self.shared.keys;
-        let key = match keys.load()? {
-            Some(key) => key,
-            None => keys.create(now)?,
-        };
+        let (key, _) = self.shared.key_or_create(now)?;
         if self.shared.queue.adopt_kid(&key.kid())? {
             log::info!("sync: the encryption key changed; the queue starts again");
         }

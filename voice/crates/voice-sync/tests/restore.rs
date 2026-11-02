@@ -281,6 +281,116 @@ fn ensure_local_refuses_without_sync_and_without_a_row() {
     assert!(!m.path(&segments[1]).exists());
 }
 
+#[test]
+fn ensure_local_fetches_a_file_once_and_keeps_text_on_disk() {
+    let fake = fake();
+    let data = scratch("restore-ensure-once");
+    let _c = Cleanup(data.clone());
+    let a = Voice::open(&data);
+    let (m, segments) = finished(&a.meetings(), "Twice", 3_600_000);
+    a.connect(&fake.endpoint());
+    a.settle(&fake, WAIT);
+    let key = a.key();
+    let originals: Vec<Vec<u8>> = segments.iter().map(|s| m.read(s)).collect();
+    fs::remove_dir_all(m.path("audio")).unwrap();
+
+    // Four media-prepare threads ask for the same segments while the bucket answers slowly.
+    fake.faults().stall = Some(Duration::from_millis(150));
+    std::thread::scope(|scope| {
+        let calls: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    a.sync
+                        .ensure_local(&m.id, &segments, &AtomicBool::new(false))
+                })
+            })
+            .collect();
+        for call in calls {
+            call.join().unwrap().unwrap();
+        }
+    });
+    fake.faults().stall = None;
+    for (s, original) in segments.iter().zip(&originals) {
+        assert_eq!(&fs::read(m.path(s)).unwrap(), original, "{s}");
+        assert!(!m.path(&format!("{s}.restore")).exists());
+        let object = file_object(&key, &m.id, s, original);
+        let gets = fake
+            .log()
+            .iter()
+            .filter(|l| l.op == voice_s3_fake::Op::Get && unprefixed(&l.key) == object)
+            .count();
+        assert_eq!(gets, 1, "{s} came back once");
+    }
+
+    // A text file on disk that differs from its upload is newer, not damaged: it stays. With the
+    // bucket unreachable, any fetch would fail.
+    let uploaded = m.read("timeline.jsonl");
+    m.line(serde_json::json!({"kind":"mark","t":1_200,"id":"k-1","label":null}));
+    let local = m.read("timeline.jsonl");
+    assert_ne!(local.len(), uploaded.len());
+    fake.faults().refuse = true;
+    a.sync
+        .ensure_local(
+            &m.id,
+            &["timeline.jsonl".to_owned()],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(m.read("timeline.jsonl"), local);
+}
+
+#[test]
+fn the_shown_key_is_the_key_uploads_use() {
+    let root = scratch("restore-key-race");
+    let _c = Cleanup(root.clone());
+    for round in 0..5 {
+        // A bucket per round, so `settle` waits for this round's index.
+        let fake = fake();
+        let voice = Voice::open(&root.join(format!("v{round}")));
+        let m = Meeting::new(&voice.meetings(), "Race", 60_000);
+        let segment = m.segment("mic", 1, 0, 16_000);
+        m.stop(1_000);
+        // Sync turns on while Settings asks for the key: the worker and show_key find no key at
+        // the same moment.
+        voice.connect(&fake.endpoint());
+        let shown: Vec<(String, String)> = std::thread::scope(|scope| {
+            let calls: Vec<_> = (0..3)
+                .map(|_| scope.spawn(|| voice.sync.show_key().unwrap()))
+                .collect();
+            calls.into_iter().map(|c| c.join().unwrap()).collect()
+        });
+        assert!(shown.windows(2).all(|w| w[0] == w[1]), "{shown:?}");
+        let key = recovery::decode(&shown[0].0).unwrap();
+        assert_eq!(key.kid(), voice.key().kid(), "the code is the key on disk");
+        voice.settle(&fake, WAIT);
+        let uploaded = uploaded_files(&fake, &key, &m, &["meeting.json", segment.as_str()]);
+        assert_eq!(uploaded.len(), 2, "the code opens what went up");
+    }
+}
+
+#[test]
+fn an_unfinished_restore_is_cleared_at_start() {
+    let data = scratch("restore-partial");
+    let _c = Cleanup(data.clone());
+    let meetings = data.join("meetings");
+    let partial = meetings.join(".restore-m-20261101-120000-0001");
+    let other = meetings.join(".restore-notes");
+    let meeting = meetings.join("m-20261101-110000-0002");
+    for dir in [&partial, &other, &meeting] {
+        fs::create_dir_all(dir.join("audio")).unwrap();
+        fs::write(dir.join("meeting.json"), b"{}").unwrap();
+    }
+    let voice = Voice::open(&data);
+    assert!(!partial.exists(), "a restore a kill cut off leaves nothing");
+    assert!(
+        other.join("meeting.json").is_file(),
+        "not a restore of a meeting id"
+    );
+    assert!(meeting.join("meeting.json").is_file());
+    assert!(meeting.join("audio").is_dir());
+    drop(voice);
+}
+
 /// Puts a manifest encrypted with `key` where the restore of `id` reads it, and an index entry.
 fn plant(
     fake: &voice_s3_fake::FakeS3,

@@ -5,7 +5,7 @@ mod harness;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use harness::*;
 use voice_s3_fake::Op;
@@ -159,14 +159,12 @@ fn wav_signature(bytes: &[u8]) -> bool {
         .any(|w| &w[0..4] == b"RIFF" && &w[8..16] == b"WAVEfmt ")
 }
 
-/// A 4-byte box size, `ftyp` and four printable ASCII bytes.
+/// A 4-byte box size, `ftyp` and four printable ASCII bytes. Any four bytes count as the size, as
+/// the spec and `check-encrypted.mjs` have it.
 fn mp4_signature(bytes: &[u8]) -> bool {
-    bytes.windows(12).any(|w| {
-        &w[4..8] == b"ftyp"
-            && w[8..12].iter().all(|b| (0x20..0x7f).contains(b))
-            && u32::from_be_bytes([w[0], w[1], w[2], w[3]]) >= 8
-            && u32::from_be_bytes([w[0], w[1], w[2], w[3]]) < 4096
-    })
+    bytes
+        .windows(12)
+        .any(|w| &w[4..8] == b"ftyp" && w[8..12].iter().all(|b| (0x20..0x7f).contains(b)))
 }
 
 #[test]
@@ -571,6 +569,4 @@ fn backfill_goes_newest_first() {
     );
     let index = indexes(&fake, &key);
     assert_eq!(index[0].meetings.len(), 3);
-    let started = Instant::now();
-    assert!(started.elapsed() < WAIT);
 }

@@ -171,12 +171,14 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 const SHOWN_KID: usize = 8;
 
 impl BucketSync {
-    /// Opens `<data>/sync/queue.db` and starts the `sync-worker` thread, which stays idle until
-    /// [`BucketSync::configure`] turns sync on. Fails when the queue is locked, damaged or from a
-    /// newer Voice; Voice then runs without sync and retention holds every meeting with media.
+    /// Opens `<data>/sync/queue.db`, removes `.restore-<id>` folders a hard kill left, and starts
+    /// the `sync-worker` thread, which stays idle until [`BucketSync::configure`] turns sync on.
+    /// Fails when the queue is locked, damaged or from a newer Voice; Voice then runs without sync
+    /// and retention holds every meeting with media.
     pub fn open(opts: SyncOptions) -> Result<BucketSync, SyncError> {
         let sync_dir = opts.data_dir.join(SYNC_DIR);
         let queue = Queue::open(&sync_dir)?;
+        crate::restore::clear_partial(&opts.meetings_dir);
         let keys = KeyStore::new(&sync_dir, opts.protector.clone());
         let shared = Arc::new(Shared::new(opts, sync_dir, queue, keys));
         worker::spawn(shared.clone())
@@ -283,15 +285,11 @@ impl BucketSync {
     /// (code, id); creates the key when there is none.
     pub fn show_key(&self) -> Result<(String, String), SyncError> {
         let shared = &self.shared;
-        let key = match shared.keys.load()? {
-            Some(key) => key,
-            None => {
-                let key = shared.keys.create(shared.now())?;
-                shared.queue.adopt_kid(&key.kid())?;
-                shared.bump();
-                key
-            }
-        };
+        let (key, created) = shared.key_or_create(shared.now())?;
+        if created {
+            shared.queue.adopt_kid(&key.kid())?;
+            shared.bump();
+        }
         shared.changed();
         Ok((recovery::encode(&key), shown(&key.kid())))
     }
@@ -310,6 +308,7 @@ impl BucketSync {
         let kid = key.kid();
         {
             let _busy = shared.busy();
+            let _key = shared.key_lock();
             match shared.keys.load() {
                 Ok(Some(current)) if current.kid() == kid => return Ok(shown(&kid)),
                 Ok(Some(current)) => {
@@ -454,8 +453,9 @@ impl BucketSync {
     }
 
     /// Fetches the files that aren't on disk with their row's size back from the bucket (2.11).
-    /// Fails with `off` when sync is off, `key` when the key can't open them, `not_in_bucket`
-    /// without a row and `local` when `reserve` refuses one.
+    /// A text file on disk is never replaced. Two calls for one file fetch it once. Fails with
+    /// `off` when sync is off, `key` when the key can't open them, `not_in_bucket` without a row
+    /// and `local` when `reserve` refuses one.
     pub fn ensure_local(
         &self,
         meeting: &str,
