@@ -35,7 +35,8 @@ pub struct RuntimeInfo {
 }
 
 /// voice/nemo-runtime/manifest.json: the files of Voice's own runtime build and their hashes.
-pub(crate) const MANIFEST: &str = include_str!("../../../../nemo-runtime/manifest.json");
+/// build.rs copies it, or the manifest a test package names (`package.ps1 -RuntimeManifest`).
+pub(crate) const MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/nemo-runtime.json"));
 
 /// The five DLLs of every runtime folder. The worker loads the first; it loads the others.
 pub(crate) const RUNTIME_DLLS: [&str; 5] = [

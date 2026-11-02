@@ -35,7 +35,10 @@ Rewrites the crate list in voice/THIRD_PARTY_NOTICES.md and stops, without build
 
 .PARAMETER RuntimeManifest
 A runtime manifest to package instead of voice/nemo-runtime/manifest.json, such as the manifest.json of a runtime
-workflow artifact, to check a package before the runtime is published. Its archive URL may be a local file.
+workflow artifact or of pack.ps1 on this computer, to check a package before the runtime is published. Its archive URL
+may be a local file (file:///E:/.../nemo-runtime-97a15af-1-win-x64.zip). The programs are built with this manifest
+compiled in (RUKOO_VOICE_NEMO_MANIFEST, read by crates/voice-core/build.rs), so the packaged Voice accepts the runtime
+folder it ships. Such a package is for testing only.
 
 .EXAMPLE
 pwsh voice/scripts/package.ps1
@@ -68,6 +71,9 @@ $NoticesFile = Join-Path $Voice 'THIRD_PARTY_NOTICES.md'
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+# The builds set RUKOO_VOICE_NEMO_MANIFEST (see the runtime manifest below); this puts it back on failure.
+$previousNemoManifest = $env:RUKOO_VOICE_NEMO_MANIFEST
+trap { $env:RUKOO_VOICE_NEMO_MANIFEST = $previousNemoManifest; break }
 
 function Invoke-Native {
   param([string]$File, [string[]]$Arguments)
@@ -404,8 +410,17 @@ if ($UpdateNotices) {
 if (-not (Sync-Notices $crates)) {
   throw "The crate list in $NoticesFile is out of date. Run voice/scripts/package.ps1 -UpdateNotices and commit the change."
 }
+$testRuntime = [bool]$RuntimeManifest
 if (-not $RuntimeManifest) { $RuntimeManifest = Join-Path $Voice 'nemo-runtime\manifest.json' }
+$RuntimeManifest = (Resolve-Path -LiteralPath $RuntimeManifest).Path
 $nemoManifest = Read-RuntimeManifest $RuntimeManifest
+# voice-core compiles in the manifest it checks nemo_speech\ against (crates/voice-core/build.rs). The builds below get
+# the one packaged here, so a test package of an unpublished runtime also accepts the folder it ships. The variable is
+# put back when the script ends, also on failure (the trap at the top).
+$env:RUKOO_VOICE_NEMO_MANIFEST = $RuntimeManifest
+if ($testRuntime) {
+  Write-Warning "Packaging the runtime of $RuntimeManifest instead of voice/nemo-runtime/manifest.json: this package is for testing only."
+}
 
 Push-Location $Voice
 try {
@@ -518,6 +533,7 @@ $sums = foreach ($file in @($installer, $zip)) {
   "$((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant())  $(Split-Path -Leaf $file)"
 }
 [IO.File]::WriteAllText((Join-Path $out 'SHA256SUMS.txt'), (($sums -join "`n") + "`n"), $Utf8)
+$env:RUKOO_VOICE_NEMO_MANIFEST = $previousNemoManifest
 
 Write-Host ''
 foreach ($file in @($installer, $zip)) {
