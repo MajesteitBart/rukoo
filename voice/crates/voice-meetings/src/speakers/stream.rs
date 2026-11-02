@@ -55,7 +55,8 @@ pub(crate) struct StreamFollower;
 
 impl StreamFollower {
     /// Streams `track` of `dir` until the recording stopped and the provider answered for all of
-    /// it. After the stop, `give_up_after` failures in a row end it as failed.
+    /// it. After the stop, `give_up_after` failures in a row end it as failed. `shared` comes
+    /// from [`FollowerShared::new`], so the pipeline can hold on to it before the thread runs.
     pub(crate) fn start(
         dir: MeetingDir,
         track: Track,
@@ -63,8 +64,8 @@ impl StreamFollower {
         allowed: ConsentCheck,
         timing: FollowerTiming,
         give_up_after: u32,
+        shared: Arc<FollowerShared>,
     ) -> FollowerHandle {
-        let shared = FollowerShared::new("mistral");
         let name = format!("stream-{}-{}", track.as_str(), dir.id());
         FollowerHandle::spawn(name, shared, move |shared| {
             let Some(transcript) = open(&dir, &shared, &timing) else {
@@ -411,9 +412,9 @@ impl Ctx {
             }
             self.answers(left.min(Duration::from_millis(200)))?;
         }
-        if self.shared.stopping() {
+        let Some(_writing) = self.shared.writing() else {
             return Ok(());
-        }
+        };
         // Everything that was sent is answered for now.
         let session = self.session.as_ref().expect("connected");
         if let Some(end) = session.clock.at(session.clock.sent(), true) {
@@ -451,9 +452,9 @@ impl Ctx {
         };
         let stream = self.opts.speech.connect(&session)?;
         // A follower that was replaced while it connected leaves the store to the new one.
-        if self.shared.stopping() {
+        let Some(_writing) = self.shared.writing() else {
             return Ok(());
-        }
+        };
         let resume = self.resume_ms();
         // What the last session sent past its last answer is sent again.
         if let Some(previous) = previous {
@@ -524,9 +525,9 @@ impl Ctx {
         let session = self.session.as_mut().expect("connected");
         let events = session.stream.poll(wait)?;
         // A follower that was replaced while it waited leaves the store to the new one.
-        if self.shared.stopping() {
+        let Some(_writing) = self.shared.writing() else {
             return Ok(());
-        }
+        };
         let sent = session.clock.sent();
         let delay = u64::from(self.opts.delay_ms) * PER_MS;
         let labelled = self.track == Track::Call && self.opts.diarize;

@@ -20,10 +20,12 @@ use common::*;
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Stored};
 use voice_core::speakers::DiarErrorKind;
+use voice_core::{Hints, ProviderError};
 use voice_meetings::transcript::{DIARIZE_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY};
 use voice_meetings::{
     FollowerTiming, LabelState, Labels, Library, MeetingDir, Pipeline, PipelineHandle,
-    PipelineOptions, PipelineState, StreamOptions, Timing, Transcript,
+    PipelineOptions, PipelineState, StreamOptions, TimedSpeechToText, TimedText, Timing,
+    Transcript,
 };
 use voice_protocol::{Passage, Track};
 
@@ -437,6 +439,100 @@ fn a_follower_stopped_during_a_hung_call_writes_nothing_afterwards() {
         stored_turns(&rec.dir),
         before,
         "the stopped follower changed the turns after its call returned"
+    );
+}
+
+/// Word timings as [`Bursts`] gives them; once `block` is set, the next call first waits `hold`,
+/// as a slow cloud provider or a loading Orukeet can.
+struct SlowBursts {
+    block: AtomicBool,
+    blocking: AtomicUsize,
+    hold: Duration,
+}
+
+impl TimedSpeechToText for SlowBursts {
+    fn transcribe_timed(&self, pcm: &[i16], hints: &Hints) -> Result<TimedText, ProviderError> {
+        if self.block.swap(false, Ordering::SeqCst) {
+            self.blocking.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.hold);
+        }
+        Bursts.transcribe_timed(pcm, hints)
+    }
+}
+
+/// 4c: a pipeline replaced while a recognition call outlasts the 5 s shutdown wait, as a
+/// Settings change during a meeting does, stops its follower when the shutdown returns. Before,
+/// the old follower went on next to the new one and left a turn open that covered the rest of
+/// the meeting, so every later call passage lost its speaker.
+#[test]
+fn a_pipeline_replaced_during_a_long_recognition_stops_its_follower() {
+    let tmp = TempDir::new("speakers-replaced");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let pieces = three_voices(16, 1.5);
+    let call = voices(&pieces);
+    let at = |s: f64| (s * RATE as f64) as usize;
+    let mut writer = rec.open_segment("call", 1, 0);
+    writer.append(&call[..at(16.7)]).unwrap();
+    let d = ScriptedDiarizer::new();
+    let stt = Arc::new(SlowBursts {
+        block: AtomicBool::new(false),
+        blocking: AtomicUsize::new(0),
+        // Longer than the 5 s the shutdown waits.
+        hold: Duration::from_secs(8),
+    });
+    let options = || PipelineOptions {
+        timed: Some(stt.clone()),
+        ..labelled(&d)
+    };
+    let first = Pipeline::start(rec.dir.clone(), log.clone(), options());
+    wait_until("named passages", WAIT, || {
+        let named = last_revisions(&events(&log, &rec.id()), "call")
+            .iter()
+            .filter(|p| p.speaker.is_some())
+            .count();
+        (named >= 2).then_some(())
+    });
+    stt.block.store(true, Ordering::SeqCst);
+    writer.append(&call[at(16.7)..at(24.8)]).unwrap();
+    wait_until("the slow recognition", WAIT, || {
+        (stt.blocking.load(Ordering::SeqCst) >= 1).then_some(())
+    });
+    first.shutdown();
+
+    // The old pipeline's thread still waits for its recognizer; its follower hears nothing more.
+    let pushes = d.script().pushes;
+    writer.append(&call[at(24.8)..at(28.0)]).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        d.script().pushes,
+        pushes,
+        "the replaced pipeline's follower went on"
+    );
+
+    let second = Pipeline::start(rec.dir.clone(), log.clone(), options());
+    writer.append(&call[at(28.0)..]).unwrap();
+    rec.close_segment(writer, "call", 1, 0);
+    rec.stop(ms(seconds(&pieces)));
+    wait_done(&second);
+    second.shutdown();
+
+    let open: Vec<_> = stored_turns(&rec.dir)
+        .into_iter()
+        .filter(|(_, _, end, _)| end.is_none())
+        .collect();
+    assert!(open.is_empty(), "turns left open: {open:?}");
+    let all = events(&log, &rec.id());
+    assert_no_id_moves(&all);
+    let call = last_revisions(&all, "call");
+    assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
+    assert_eq!(assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(), 3);
+    let epochs = Transcript::open(rec.dir.path()).unwrap().epochs().unwrap();
+    assert_eq!(
+        epochs.iter().map(|e| e.reason.as_str()).collect::<Vec<_>>(),
+        ["start", "restart"]
     );
 }
 

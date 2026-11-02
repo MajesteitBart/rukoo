@@ -108,6 +108,9 @@ impl Default for FollowerTiming {
 pub(crate) struct FollowerShared {
     inner: Mutex<SharedInner>,
     stop: AtomicBool,
+    /// Held while the follower writes to `transcript.db`, and by a stop, so once
+    /// [`FollowerShared::request_stop`] returns the follower writes nothing more.
+    writing: Mutex<()>,
 }
 
 struct SharedInner {
@@ -144,6 +147,7 @@ impl FollowerShared {
                 error: None,
             }),
             stop: AtomicBool::new(false),
+            writing: Mutex::new(()),
         })
     }
 
@@ -207,8 +211,18 @@ impl FollowerShared {
         self.stop.load(Ordering::SeqCst)
     }
 
-    fn request_stop(&self) {
+    /// Asks the thread to stop. Waits for a write that is under way, so after this returns the
+    /// follower never writes again, even when a worker call keeps its thread busy for a while.
+    pub(crate) fn request_stop(&self) {
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         self.stop.store(true, Ordering::SeqCst);
+    }
+
+    /// Leave to write to `transcript.db`, held until the guard drops; `None` once the follower
+    /// was asked to stop. Never taken twice on one thread.
+    pub(crate) fn writing(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        let guard = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        (!self.stopping()).then_some(guard)
     }
 
     /// Sleeps for `wait`, waking early when asked to stop. False when stopping.
@@ -287,13 +301,14 @@ pub(crate) struct Follower;
 
 impl Follower {
     /// Labels the call track of `dir` with streams from `diarizer` until the recording stopped
-    /// and every call sample was heard.
+    /// and every call sample was heard. `shared` comes from [`FollowerShared::new`], so the
+    /// pipeline can hold on to it before the thread runs.
     pub(crate) fn start(
         dir: MeetingDir,
         diarizer: Arc<dyn Diarizer>,
         timing: FollowerTiming,
+        shared: Arc<FollowerShared>,
     ) -> FollowerHandle {
-        let shared = FollowerShared::new("nemotron");
         let name = format!("speakers-{}", dir.id());
         FollowerHandle::spawn(name, shared, move |shared| {
             run(dir, diarizer, timing, shared);
@@ -421,8 +436,13 @@ fn run(
                     ctx.dir.id()
                 );
                 // The next stream hears everything after the settled position again.
-                if let Ok(settled) = ctx.transcript.meta_u64(SETTLED_KEY) {
-                    let _ = ctx.transcript.close_open_turns(settled.unwrap_or(0));
+                {
+                    let Some(_writing) = ctx.shared.writing() else {
+                        return;
+                    };
+                    if let Ok(settled) = ctx.transcript.meta_u64(SETTLED_KEY) {
+                        let _ = ctx.transcript.close_open_turns(settled.unwrap_or(0));
+                    }
                 }
                 let now = Instant::now();
                 failures.push(now);
@@ -469,11 +489,11 @@ impl Ctx {
     }
 
     fn record(&mut self, batch: LabelBatch, labeller: &Labeller) -> Result<(), Fail> {
-        // A worker call can outlast the 2 s a replaced follower is waited for; what it returns
-        // then belongs to no follower, and the loop ends at its next look.
-        if self.shared.stopping() {
+        // A worker call can outlast the stop of a replaced follower; what it returns then
+        // belongs to no follower, and the loop ends at its next look.
+        let Some(_writing) = self.shared.writing() else {
             return Ok(());
-        }
+        };
         if !batch.is_empty() {
             self.transcript.record_labels(&batch)?;
         }
@@ -523,28 +543,35 @@ impl Ctx {
         let mut stream = self.diarizer.open()?;
         let geometry = stream.geometry();
         let pid = stream.worker_pid();
-        // Opening loads the model and can outlast the wait for a replaced follower.
+        // Opening loads the model and can outlast the stop of a replaced follower.
         if self.shared.stopping() || !self.poll()? {
             return Ok(End::Stopped);
         }
-        let epoch_reason = match reason {
-            Some(r) => *r,
-            None if self.transcript.next_epoch()? == 1 => "start",
-            None => "restart",
-        };
-        // The stream before this one, in this or an earlier run, ends at the settled position.
-        let settled_ms = self.transcript.meta_u64(SETTLED_KEY)?.unwrap_or(0);
-        self.transcript.close_open_turns(settled_ms)?;
-        let stored = self.transcript.turns(Track::Call, 0, u64::MAX)?;
         let reader = self.reader();
-        let reel = if stored.is_empty() && settled_ms == 0 {
-            Vec::new()
-        } else {
-            build_reel(&stored, settled_ms, &reader)
+        let (settled_ms, stored, reel, number) = {
+            let Some(_writing) = self.shared.writing() else {
+                return Ok(End::Stopped);
+            };
+            let epoch_reason = match reason {
+                Some(r) => *r,
+                None if self.transcript.next_epoch()? == 1 => "start",
+                None => "restart",
+            };
+            // The stream before this one, in this or an earlier run, ends at the settled
+            // position.
+            let settled_ms = self.transcript.meta_u64(SETTLED_KEY)?.unwrap_or(0);
+            self.transcript.close_open_turns(settled_ms)?;
+            let stored = self.transcript.turns(Track::Call, 0, u64::MAX)?;
+            let reel = if stored.is_empty() && settled_ms == 0 {
+                Vec::new()
+            } else {
+                build_reel(&stored, settled_ms, &reader)
+            };
+            let number =
+                self.transcript
+                    .open_epoch(Track::Call, "nemotron", settled_ms, epoch_reason)?;
+            (settled_ms, stored, reel, number)
         };
-        let number =
-            self.transcript
-                .open_epoch(Track::Call, "nemotron", settled_ms, epoch_reason)?;
         *reason = Some("crash");
         let next = self.transcript.highest_speaker_number()? + 1;
         let mut labeller = Labeller::new(number, settled_ms, next, stored, &reel, geometry);

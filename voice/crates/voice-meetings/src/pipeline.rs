@@ -323,9 +323,10 @@ impl PipelineHandle {
         self.shared.wake();
     }
 
-    /// Stops following the meeting, for an app that quits. The recorder isn't touched. Waits up
-    /// to 5 s for a recognition call that is running; what it returns is still stored. The
-    /// speaker follower stops too.
+    /// Stops following the meeting, for an app that quits or a pipeline that is replaced. The
+    /// recorder isn't touched. The speaker and stream followers stop at once: when this returns
+    /// they write nothing more, also while a recognition call keeps the pipeline's thread busy.
+    /// Waits up to 5 s for such a call; what it returns is still stored.
     pub fn shutdown(mut self) {
         self.shared.request_stop();
         if self.shared.wait_finished(SHUTDOWN_WAIT) {
@@ -382,6 +383,9 @@ struct Shared {
     flags: Mutex<Flags>,
     signal: Condvar,
     labels: Mutex<LabelView>,
+    /// Every follower this pipeline started, so a stop reaches them without waiting for the
+    /// pipeline's thread, which a recognition call can keep busy for minutes.
+    followers: Mutex<Vec<Arc<FollowerShared>>>,
 }
 
 #[derive(Default)]
@@ -407,9 +411,25 @@ impl Shared {
         self.stop.load(Ordering::SeqCst)
     }
 
+    /// Asks the pipeline and its followers to stop. When this returns, no follower writes again.
     fn request_stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        for follower in lock(&self.followers).iter() {
+            follower.request_stop();
+        }
         self.wake();
+    }
+
+    /// The status of a follower that is about to start, kept so a stop reaches it. A pipeline
+    /// asked to stop already stops it before its thread can write.
+    fn follower(&self, mode: &str) -> Arc<FollowerShared> {
+        let follower = FollowerShared::new(mode);
+        let mut followers = lock(&self.followers);
+        if self.stopping() {
+            follower.request_stop();
+        }
+        followers.push(follower.clone());
+        follower
     }
 
     fn wake(&self) {
@@ -891,6 +911,7 @@ impl Worker {
                         self.dir.clone(),
                         diarizer.clone(),
                         self.speaker_timing.clone(),
+                        shared.follower("nemotron"),
                     );
                     shared.set_labels(LabelView::Live(follower.shared().clone()));
                     Run::Nemotron {
@@ -926,7 +947,7 @@ impl Worker {
                         let followers: Vec<(Track, FollowerHandle)> = self
                             .tracks
                             .iter()
-                            .map(|&track| (track, self.start_stream(track, &opts)))
+                            .map(|&track| (track, self.start_stream(shared, track, &opts)))
                             .collect();
                         let shown = followers
                             .iter()
@@ -983,7 +1004,7 @@ impl Worker {
     }
 
     /// A stream follower for one track of a Mistral meeting.
-    fn start_stream(&self, track: Track, opts: &StreamOptions) -> FollowerHandle {
+    fn start_stream(&self, shared: &Shared, track: Track, opts: &StreamOptions) -> FollowerHandle {
         StreamFollower::start(
             self.dir.clone(),
             track,
@@ -991,6 +1012,7 @@ impl Worker {
             self.allowed.clone(),
             self.speaker_timing.clone(),
             self.timing.attempts_after_stop,
+            shared.follower("mistral"),
         )
     }
 
@@ -1172,7 +1194,7 @@ impl Worker {
                     ) if !followers.is_empty() => {
                         let mut opts = opts.clone();
                         opts.diarize = *diarize;
-                        Some(self.start_stream(track, &opts))
+                        Some(self.start_stream(shared, track, &opts))
                     }
                     _ => None,
                 };
