@@ -228,7 +228,7 @@ Relative paths in the journal use forward slashes and start with `screen/`.
 
 - Time never steps back: a frame captured before the last time handed out gets that time.
 - A new recorder `session` line moves the anchor. When the new mapping differs from the old one by more than 50 ms at the same moment, the open video file ends with `video_end` reason `clock` and a new one starts, so each file maps to meeting time with one offset.
-- A video file's media time 0 is the `t` of its `video` line; a sample's meeting time is that `t` plus its media time.
+- A video file's media time 0 is the `t` of its `video` line; a sample's meeting time is that `t` plus its media time. Each sample keeps its frame's capture time, rounded to the file's timescale of 1/15,000 s, whichever encoder wrote it, so the frame rate follows the screen up to the `video` line's `fps`.
 
 ### `screen.json`
 

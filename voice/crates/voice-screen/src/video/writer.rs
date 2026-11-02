@@ -12,6 +12,21 @@
 //! second, and the sample after the first one a second into a fragment is a forced keyframe, which
 //! starts the next fragment, so fragments stay 1 to 2 s long and a hard kill loses at most the open
 //! one.
+//!
+//! The file's media time is the capture time, so `video` line `t` plus media time is meeting time
+//! (spec 2.4) and `clip.get` cuts by one offset per file. Two things in Media Foundation would
+//! move it, and the writer stops both:
+//!
+//! - The video processor the sink writer puts in front of the encoder, on the system-memory path
+//!   (ARGB to IYUV for the software encoder) and on the GPU path when it scales the video, converts
+//!   the frame rate by default: it lays the frames on the nominal 15 fps grid, repeating a still
+//!   screen's frame and dropping frames that come faster. The file then held one sample per 1/15 s
+//!   and strayed up to a frame from the capture times. [`VideoWriter::open`] turns that off with
+//!   `MF_XVP_DISABLE_FRC`.
+//! - The sink counts media time in whole units of its timescale and rounds each gap between two
+//!   sample times on its own. Gaps of 69.44 ms, every tenth refresh of a 144 Hz monitor, each
+//!   gained a third of a unit, about a second an hour. Sample times sit on the timescale's grid
+//!   ([`sample_time`]), so the gaps add up to the capture times exactly.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,8 +96,38 @@ const MIN_FRAGMENT: i64 = SECOND;
 /// The longest a frame stays without a re-submit. With the 250 ms tick, samples are at most 0.5 s
 /// apart, so a fragment ends before 1 s plus two gaps: under 2 s.
 const RESUBMIT: i64 = SECOND / 4;
-/// The duration of the last sample when the file ends.
-const LAST_DURATION: i64 = SECOND / FPS as i64;
+/// The timescale Media Foundation's fMP4 sink gives the track: 1,000 units for each frame of the
+/// nominal rate in `MF_MT_FRAME_RATE`, so 15,000 a second.
+const TIMESCALE: i64 = 1_000 * FPS as i64;
+/// The duration of the last sample when the file ends, one frame at the nominal rate.
+const LAST_UNITS: i64 = TIMESCALE / FPS as i64;
+const LAST_DURATION: i64 = from_units(LAST_UNITS);
+
+/// A media time in 100 ns as whole units of the file's timescale, rounded to the nearest.
+const fn to_units(time: i64) -> i64 {
+    (time * TIMESCALE + SECOND / 2) / SECOND
+}
+
+/// Whole units of the timescale in 100 ns, rounded to the nearest; [`to_units`] gives them back.
+const fn from_units(units: i64) -> i64 {
+    (units * SECOND + TIMESCALE / 2) / TIMESCALE
+}
+
+/// The media time of a frame captured `elapsed` (100 ns) after the file's first frame: on the
+/// timescale's grid, and at least one unit after `last`, the sample before it.
+fn sample_time(elapsed: i64, last: Option<i64>) -> i64 {
+    let mut units = to_units(elapsed.max(0));
+    if let Some(last) = last {
+        units = units.max(to_units(last) + 1);
+    }
+    from_units(units)
+}
+
+/// Where a file whose last sample starts at media time `last` ends, in ms rounded down, as
+/// `mp4::Index::to_ms` reads it from the file.
+fn end_ms(last: i64) -> u64 {
+    ((to_units(last) + LAST_UNITS) * 1_000 / TIMESCALE) as u64
+}
 
 pub struct VideoWriter {
     mf: &'static Mf,
@@ -286,6 +331,9 @@ impl VideoWriter {
             writer
                 .SetInputMediaType(self.stream, &input, None)
                 .map_err(classify)?;
+            // The transforms are in place now; the video processor reads the switch when it
+            // starts streaming.
+            self.keep_frame_times(&writer);
 
             let mut codec = std::ptr::null_mut();
             if writer
@@ -324,6 +372,47 @@ impl VideoWriter {
         Ok(())
     }
 
+    /// The transforms the sink writer put into the stream, in order, with their categories.
+    fn transforms(&self, writer: &IMFSinkWriter) -> Vec<(GUID, IMFTransform)> {
+        let Ok(ex) = writer.cast::<IMFSinkWriterEx>() else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for index in 0..8 {
+            let mut category = GUID::zeroed();
+            let mut transform: Option<IMFTransform> = None;
+            if unsafe {
+                ex.GetTransformForStream(self.stream, index, Some(&mut category), &mut transform)
+            }
+            .is_err()
+            {
+                break;
+            }
+            if let Some(transform) = transform {
+                found.push((category, transform));
+            }
+        }
+        found
+    }
+
+    /// Turns off the frame rate conversion of every video processor in the stream, so each
+    /// frame keeps its capture time (module docs). A processor that refuses still records, with
+    /// samples up to a frame from their capture times.
+    fn keep_frame_times(&self, writer: &IMFSinkWriter) {
+        for (category, transform) in self.transforms(writer) {
+            if category != MFT_CATEGORY_VIDEO_PROCESSOR {
+                continue;
+            }
+            let set = unsafe { transform.GetAttributes() }
+                .and_then(|attributes| unsafe { attributes.SetUINT32(&MF_XVP_DISABLE_FRC, 1) });
+            if let Err(e) = set {
+                crate::log(format_args!(
+                    "the video processor keeps converting the frame rate: {e}"
+                ));
+            }
+        }
+    }
+
     /// Which encoder the sink writer loaded: a transform without a hardware vendor id is
     /// software, whatever was asked for.
     fn identify(
@@ -331,28 +420,12 @@ impl VideoWriter {
         writer: &IMFSinkWriter,
         hardware_encoders: &[voice_screen_files::caps::EncoderInfo],
     ) {
-        let mut found = None;
-        if let Ok(ex) = writer.cast::<IMFSinkWriterEx>() {
-            for index in 0..8 {
-                let mut category = GUID::zeroed();
-                let mut transform: Option<IMFTransform> = None;
-                if unsafe {
-                    ex.GetTransformForStream(
-                        self.stream,
-                        index,
-                        Some(&mut category),
-                        &mut transform,
-                    )
-                }
-                .is_err()
-                {
-                    break;
-                }
-                if category == MFT_CATEGORY_VIDEO_ENCODER {
-                    found = transform;
-                }
-            }
-        }
+        let found = self
+            .transforms(writer)
+            .into_iter()
+            .rev()
+            .find(|(category, _)| *category == MFT_CATEGORY_VIDEO_ENCODER)
+            .map(|(_, transform)| transform);
         let (name, vendor) = match found.and_then(|t| unsafe { t.GetAttributes() }.ok()) {
             Some(attributes) => (
                 Mf::string_attribute(&attributes, &MFT_FRIENDLY_NAME_Attribute),
@@ -390,12 +463,7 @@ impl VideoWriter {
     /// a re-submit or the end gives its duration.
     pub fn write(&mut self, texture: &ID3D11Texture2D, boot: u64) -> Result<(), VideoError> {
         let start = *self.start_boot.get_or_insert(boot);
-        let mut time = boot.saturating_sub(start) as i64;
-        if let Some(last) = self.last_time {
-            if time <= last {
-                time = last + 1;
-            }
-        }
+        let time = sample_time(boot.saturating_sub(start) as i64, self.last_time);
         let at = self.options.start_t + time as u64 / 10_000;
         if self.options.encoder_fail_at.is_some_and(|ms| at >= ms) {
             return Err(VideoError::Encoder("encoder-fail-at test switch".into()));
@@ -501,10 +569,11 @@ impl VideoWriter {
         Ok(buffer)
     }
 
-    /// The meeting time where the file's last sample ends.
+    /// The meeting time where the file's last sample ends: the `video` line's `t` plus the media
+    /// time the file holds, in the units the sink writes.
     pub fn end_t(&self) -> u64 {
         match self.last_time {
-            Some(last) => self.options.start_t + (last + LAST_DURATION) as u64 / 10_000,
+            Some(last) => self.options.start_t + end_ms(last),
             None => self.options.start_t,
         }
     }
@@ -546,5 +615,145 @@ pub fn classify(e: windows::core::Error) -> VideoError {
         VideoError::Disk(format!("{code:#010x}"))
     } else {
         VideoError::Encoder(format!("{code:#010x} {}", e.message()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::d3d;
+
+    /// Gaps between frames in 100 ns: a burst faster than the nominal 15 fps, a still screen's
+    /// quarter-second re-submits, and every tenth refresh of a 144 Hz monitor.
+    const GAPS: [i64; 11] = [
+        400_000, 400_000, 400_000, 2_500_000, 2_500_000, 694_444, 694_444, 694_444, 694_444,
+        694_444, 694_444,
+    ];
+
+    /// The media time the fMP4 sink makes of a file's sample times, in units: it rounds each gap
+    /// between two sample times on its own and adds the last sample's duration.
+    fn sink_units(times: &[i64]) -> i64 {
+        let gaps: i64 = times.windows(2).map(|w| to_units(w[1] - w[0])).sum();
+        gaps + to_units(LAST_DURATION)
+    }
+
+    #[test]
+    fn units_round_trip() {
+        assert_eq!(
+            (TIMESCALE, LAST_UNITS, LAST_DURATION),
+            (15_000, 1_000, 666_667)
+        );
+        for units in [0, 1, 2, 999, 1_000, 1_001, 54_000_000, 432_000_000] {
+            assert_eq!(to_units(from_units(units)), units);
+        }
+        assert_eq!(to_units(333), 0);
+        assert_eq!(to_units(334), 1);
+    }
+
+    #[test]
+    fn sample_times_stay_on_the_grid_and_go_forward() {
+        assert_eq!(sample_time(0, None), 0);
+        assert_eq!(sample_time(694_444, None), from_units(1_042));
+        // A frame captured no later than the last sample still comes after it.
+        let last = sample_time(10_000_000, None);
+        assert_eq!(sample_time(10_000_000, Some(last)), from_units(15_001));
+        assert_eq!(sample_time(9_000_000, Some(last)), from_units(15_001));
+        assert_eq!(sample_time(-5, None), 0);
+    }
+
+    /// An hour of each gap: the sink's rounded gaps add up to the capture times, within half a
+    /// unit, and `end_ms` is where a reader of the file sees the media end. Capture times as they
+    /// are would gain a third of a unit at every 144 Hz gap, 1.2 s in the hour.
+    #[test]
+    fn rounded_gaps_add_up_to_the_capture_times() {
+        for gap in [694_444i64, 666_683, 2_500_013, 400_000] {
+            let frames = 3_600 * SECOND / gap;
+            let (mut times, mut last) = (Vec::new(), None);
+            for n in 0..frames {
+                let time = sample_time(n * gap, last);
+                times.push(time);
+                last = Some(time);
+            }
+            let captured_end = (frames - 1) * gap + LAST_DURATION;
+            let units = sink_units(&times);
+            assert!(
+                (units * SECOND - captured_end * TIMESCALE).abs() <= SECOND / 2,
+                "gap {gap}: the file holds {units} units, the capture {captured_end} x 100 ns"
+            );
+            assert_eq!(units, to_units(*times.last().unwrap()) + LAST_UNITS);
+            assert_eq!(
+                end_ms(*times.last().unwrap()),
+                (units * 1_000 / TIMESCALE) as u64
+            );
+        }
+        let raw: Vec<i64> = (0..51_840).map(|n| n * 694_444).collect();
+        let drift = sink_units(&raw) - (to_units(*raw.last().unwrap()) + LAST_UNITS);
+        assert!(
+            drift > 15_000,
+            "capture times as they are drift by {drift} units"
+        );
+    }
+
+    /// Frames faster and slower than the nominal rate, through the real sink writer: the file
+    /// holds one sample per frame and its media time ends where `end_t` says, to the unit.
+    /// Microsoft's software encoder on WARP, as on a CI runner, takes the frames through a video
+    /// processor that would lay them on a 15 fps grid; with a hardware encoder, the GPU path at a
+    /// size it scales, which also puts a video processor in front of the encoder, runs too.
+    #[test]
+    fn the_file_keeps_the_capture_times() {
+        crate::com::init_mta();
+        let mf = super::super::mf::shared().expect("Media Foundation");
+        let dir = std::env::temp_dir().join(format!(
+            "voice-screen-writer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cases = [
+            ("software", d3d::create(false, true), (320, 180), true),
+            ("hardware", d3d::create(true, false), (5120, 1440), false),
+        ];
+        for (name, device, (width, height), software) in cases {
+            let device = device.unwrap();
+            let path = dir.join(format!("{name}.mp4"));
+            let options = WriterOptions {
+                allow_software: software,
+                start_t: 1_000,
+                ..Default::default()
+            };
+            let mut writer = match VideoWriter::create(mf, &device, &path, width, height, options) {
+                Ok(writer) => writer,
+                Err(VideoError::Software) if !software => {
+                    println!("no hardware H.264 encoder: only the software path ran");
+                    continue;
+                }
+                Err(e) => panic!("{name}: {e}"),
+            };
+            let textures: Vec<_> = [40u8, 200]
+                .iter()
+                .map(|&v| {
+                    let pixels = vec![v; (width * height * 4) as usize];
+                    device.upload(width, height, &pixels).unwrap()
+                })
+                .collect();
+            let frames = 120;
+            let mut boot = 7_000_000_000u64;
+            for n in 0..frames {
+                writer.write(&textures[n % 2], boot).unwrap();
+                boot += GAPS[n % GAPS.len()] as u64;
+            }
+            let (end_t, last) = (writer.end_t(), writer.last_time.unwrap());
+            writer.finish().unwrap();
+            let index = voice_screen_files::mp4::index_path(&path).unwrap();
+            let samples: u32 = index.fragments.iter().map(|f| f.samples).sum();
+            let units = index.fragments.last().unwrap().end();
+            assert_eq!(index.timescale as i64, TIMESCALE, "{name}");
+            assert_eq!(samples as usize, frames, "{name}: a sample per frame");
+            assert_eq!(units as i64, to_units(last) + LAST_UNITS, "{name}");
+            assert_eq!(end_t, 1_000 + index.to_ms(units), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

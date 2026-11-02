@@ -72,9 +72,12 @@ mod tests {
         })
     }
 
-    /// A finished video file's `video_end` reaches as far as the media in it, so a clip request
-    /// for the file's last moments finds the file. Files ended by an error or a full disk are
-    /// abandoned and hold no more than their journal says.
+    /// A finished video file's `video_end` is where the media in it ends, to the millisecond, so a
+    /// clip request for the file's last moments finds the file and meeting time maps to media time
+    /// with the `video` line's `t` alone. The writer keeps each frame's capture time in the file
+    /// on every encoder path (`video::writer`); before, Microsoft's video processor laid the
+    /// software path's frames on a 15 fps grid, up to a frame off. Files ended by an error or a
+    /// full disk are abandoned and hold no more than their journal says.
     fn assert_video_ends_cover(m: &TempMeeting, lines: &[Value]) {
         for video in of_kind(lines, "video") {
             let Some(end) = lines
@@ -88,8 +91,9 @@ mod tests {
             }
             let index = mp4::index_path(&video_path(m, video)).unwrap();
             let reached = t(video) + media_ms(&index);
-            assert!(
-                t(end) + 2 >= reached,
+            assert_eq!(
+                t(end),
+                reached,
                 "video {} holds media to {reached} ms; its video_end says {}:\n{}",
                 video["seq"],
                 t(end),
@@ -1117,7 +1121,9 @@ mod tests {
                 "{size}"
             );
             m.wait_screen_t(1, t(&video) + 4_000);
-            stop(&m, &mut recorder, &mut screen);
+            let lines = stop(&m, &mut recorder, &mut screen);
+            // Scaling puts a video processor in front of NVENC, as on the software path.
+            assert_video_ends_cover(&m, &lines);
             let report = assert_video_reads(&video_path(&m, &video));
             assert_eq!(
                 (
