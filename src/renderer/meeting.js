@@ -518,7 +518,7 @@ function emptyHtml() {
   let after = `<div class="mt-empty-hint">${esc(t('meeting.empty.voiceHint'))}</div>`;
   if (v.status === 'connected') {
     title = t('meeting.empty.title');
-    after = `<div class="mt-record-split is-empty"><button class="btn primary mt-record-main" data-mt="record">${icons.record}<span>${esc(t('meeting.actions.record'))}</span></button>${recordMoreHtml('btn primary', 'data-mt="record-menu"')}</div><div class="mt-empty-hint">${esc(t('meeting.empty.calendarHint'))}</div>`;
+    after = `<div class="mt-record-split"><button class="btn primary" data-mt="record">${icons.record}<span>${esc(t('meeting.actions.record'))}</span></button>${recordMoreHtml('btn primary', 'data-mt="record-menu"')}</div><div class="mt-empty-hint">${esc(t('meeting.empty.calendarHint'))}</div>`;
   } else if (v.status === 'connecting') {
     title = t('meeting.voice.connecting');
     after = '';
@@ -806,7 +806,7 @@ function frameHtml(f) {
   const lines = text === null ? [] : text.split('\n').map((line) => line.trim()).filter(Boolean);
   const open = M.frameOpen.has(f.id);
   const note = frameNote(entry);
-  const ratio = f.width > 0 && f.height > 0 ? `${f.width} / ${f.height}` : '16 / 9';
+  const ratio = Number.isInteger(f.width) && Number.isInteger(f.height) && f.width > 0 && f.height > 0 ? `${f.width} / ${f.height}` : '16 / 9';
   const label = esc(t('meeting.frame.alt', { time: clock(f.at) }));
   const first = lines.length
     ? `<div class="mt-frame-line sel">${esc(lines[0])}</div>`
