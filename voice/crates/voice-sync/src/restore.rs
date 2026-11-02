@@ -767,19 +767,124 @@ mod tests {
         f()
     }
 
-    #[test]
-    fn a_fetch_checks_before_every_ranged_request() {
-        let fake = FakeS3::start("test", "test", None).unwrap();
-        let cfg = SyncConfig {
+    fn config(endpoint: String) -> SyncConfig {
+        SyncConfig {
             service: Service::Other,
-            endpoint: fake.endpoint(),
+            endpoint,
             region: "us-east-1".into(),
             bucket: "test".into(),
             prefix: String::new(),
             access_key_id: "test".into(),
             url_style: UrlStyle::Path,
             retention: BucketRetention::Keep,
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "voice-sync-{name}-{}-{}",
+            std::process::id(),
+            crate::queue::random_hex(4).unwrap()
+        ))
+    }
+
+    /// A restored meeting's rows, read from `target` with key `kid`.
+    fn rows<'a>(meeting: &'a str, target: &'a str, kid: &'a str) -> Import<'a> {
+        Import {
+            meeting,
+            mhash: "0123456789abcdef0123456789abcdef",
+            title: "Restored",
+            created_at: 1,
+            duration_ms: None,
+            state: "done",
+            gen: 1,
+            media_removed_at: None,
+            files: &[],
+            now: 1,
+            target,
+            kid,
+        }
+    }
+
+    /// Sync can move after the restore's last request, past every check `fetch_to_file` makes.
+    /// The rows then stay out: they go in under the worker's lock, and only while sync reads
+    /// from the bucket and with the key the restore read from.
+    #[test]
+    fn a_restore_puts_nothing_in_place_once_sync_moved_after_its_last_request() {
+        let (first, second) = (
+            FakeS3::start("test", "test", None).unwrap(),
+            FakeS3::start("test", "test", None).unwrap(),
+        );
+        let dir = scratch("place");
+        let meetings = dir.join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let sync = crate::BucketSync::open(crate::SyncOptions {
+            data_dir: dir.clone(),
+            meetings_dir: meetings.clone(),
+            protector: Arc::new(crate::protect::TestProtector),
+            screen: Arc::new(crate::NoScreen),
+            now: Arc::new(|| {
+                let since = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap();
+                u64::try_from(since.as_millis()).unwrap()
+            }),
+            reserve: Arc::new(|_| true),
+            timing: crate::SyncTiming::default(),
+            on_change: Arc::new(|| {}),
+        })
+        .unwrap();
+        sync.save_secret("secret").unwrap();
+        sync.configure(Some(config(first.endpoint())));
+        assert!(
+            wait_for(|| sync.can_fetch()),
+            "sync starts with the first bucket"
+        );
+        let shared = sync.shared();
+        let id = "m-20261031-100000-0abc";
+        let tmp = meetings.join(format!("{RESTORE_PREFIX}{id}"));
+        let target = meetings.join(id);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join(voice_meetings::MEETING_FILE), b"{}").unwrap();
+        let put = |binding: &Binding| {
+            let import = rows(id, &binding.target, &binding.kid);
+            put_in_place(shared, binding, &import, &tmp, &target, &[])
         };
+
+        // The restore read everything from the first bucket; then sync moves to the second.
+        let (_, read_first) = shared.remote().unwrap();
+        sync.configure(Some(config(second.endpoint())));
+        let err = put(&read_first).unwrap_err();
+        assert_eq!(err.kind, SyncErrorKind::Off);
+        assert_eq!(
+            err.message,
+            "Bucket sync moved to another bucket, endpoint or folder."
+        );
+        assert!(!target.exists());
+        assert!(shared.queue.meeting(id).unwrap().is_none());
+
+        // Once the worker is on the second bucket, the queue takes no rows of the first.
+        assert!(
+            wait_for(|| sync.can_fetch()),
+            "sync starts with the second bucket"
+        );
+        let (_, read_second) = shared.remote().unwrap();
+        let stale = rows(id, &read_first.target, &read_second.kid);
+        assert!(!shared.queue.import(&stale).unwrap());
+        assert!(shared.queue.meeting(id).unwrap().is_none());
+
+        // Read from the bucket sync uses, the meeting goes in place.
+        put(&read_second).unwrap();
+        assert!(target.join(voice_meetings::MEETING_FILE).is_file());
+        assert!(shared.queue.meeting(id).unwrap().is_some());
+        sync.shutdown();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fetch_checks_before_every_ranged_request() {
+        let fake = FakeS3::start("test", "test", None).unwrap();
+        let cfg = config(fake.endpoint());
         let bucket = Bucket::new(
             &cfg,
             "secret",
@@ -805,11 +910,7 @@ mod tests {
             .unwrap();
         bucket.put(object, &body).unwrap();
         let sha = hex(&Sha256::digest(&plain));
-        let dir = std::env::temp_dir().join(format!(
-            "voice-sync-fetch-{}-{}",
-            std::process::id(),
-            crate::queue::random_hex(4).unwrap()
-        ));
+        let dir = scratch("fetch");
         let dest = dir.join("audio/mic/000001.wav");
         let gets = || fake.log().iter().filter(|l| l.op == Op::Get).count();
         let off = || Err(SyncError::new(SyncErrorKind::Off, "Bucket sync is off."));

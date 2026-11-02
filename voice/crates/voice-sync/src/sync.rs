@@ -193,6 +193,12 @@ impl BucketSync {
         Ok(BucketSync { shared })
     }
 
+    /// The state the worker shares, for this crate's unit tests.
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
     /// None turns sync off. Wakes the worker. Turning it on after it was off makes the meetings
     /// that exist now a backfill, newest first (D7). Settings hear of it only when the
     /// configuration or the on/off state changed, so a start with sync off sends them nothing.
