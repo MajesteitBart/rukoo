@@ -293,7 +293,7 @@ impl Model {
             return Err(rt.failure(ErrorKind::Model, "loading the model", status));
         }
         let speakers = unsafe { (rt.f.num_speakers)(handle) };
-        let seconds_per_frame = unsafe { (rt.f.seconds_per_frame)(handle) };
+        let seconds_per_frame = frame_seconds(unsafe { (rt.f.seconds_per_frame)(handle) });
         if speakers <= 0 || seconds_per_frame.is_nan() || seconds_per_frame <= 0.0 {
             unsafe { (rt.f.destroy)(handle) };
             return Err(model_failure(format!(
@@ -452,6 +452,12 @@ impl Drop for Stream {
     }
 }
 
+/// The frame length to the microsecond. The runtime keeps it as a float32, so 10 ms arrives as
+/// 0.009999999776; a frame is a whole number of samples, and the app counts in exact frames.
+fn frame_seconds(reported: f64) -> f64 {
+    (reported * 1e6).round() / 1e6
+}
+
 /// 16-bit samples as the runtime's floats in [-1, 1).
 pub fn to_f32(pcm: &[i16]) -> Vec<f32> {
     pcm.iter()
@@ -515,6 +521,13 @@ mod tests {
             ),
             (0, 0, 0)
         );
+    }
+
+    #[test]
+    fn the_frame_length_loses_the_float32_noise() {
+        assert_eq!(frame_seconds(f64::from(0.01f32)), 0.01);
+        assert_eq!(frame_seconds(f64::from(0.08f32)), 0.08);
+        assert!(frame_seconds(f64::NAN).is_nan());
     }
 
     #[test]
