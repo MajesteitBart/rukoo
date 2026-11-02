@@ -205,6 +205,9 @@ pub struct Controller {
     on_change: Box<dyn Fn(Change) + Send + Sync>,
     stopped: AtomicBool,
     watchdog: Mutex<Option<JoinHandle<()>>>,
+    /// Settings' screen mode for a meeting that doesn't say, and whether this computer can
+    /// record the screen at all.
+    screen: Mutex<(ScreenMode, bool)>,
 }
 
 #[derive(Debug)]
@@ -230,6 +233,7 @@ impl Controller {
             on_change: Box::new(on_change),
             stopped: AtomicBool::new(false),
             watchdog: Mutex::new(None),
+            screen: Mutex::new((ScreenMode::Off, false)),
         });
         let weak = Arc::downgrade(&controller);
         let thread = thread::Builder::new()
@@ -241,6 +245,27 @@ impl Controller {
 
     pub fn library(&self) -> &Library {
         &self.lib
+    }
+
+    /// Settings > Meetings > Screen, and whether the screen process can record here. A meeting
+    /// started after this records `default` unless its start asks for another mode, and `off`
+    /// when the screen can't be recorded.
+    pub fn set_screen(&self, default: ScreenMode, available: bool) {
+        *lock(&self.screen) = (default, available);
+    }
+
+    /// The `screen` a meeting gets when its start leaves it out (`status.screenDefault`):
+    /// Settings' mode, or `off` when this computer can't record the screen, so Rukoo never
+    /// labels a default that Voice wouldn't record.
+    pub fn screen_default(&self) -> ScreenMode {
+        match *lock(&self.screen) {
+            (default, true) => default,
+            (_, false) => ScreenMode::Off,
+        }
+    }
+
+    fn screen_available(&self) -> bool {
+        lock(&self.screen).1
     }
 
     fn lock(&self) -> MutexGuard<'_, Option<Live>> {
@@ -346,8 +371,12 @@ impl Controller {
                     .filter_map(|(name, _)| Track::parse(name))
                     .collect(),
                 sources: tracks.iter().cloned().collect::<BTreeMap<_, _>>(),
-                // Voice 0.1 doesn't record the screen, whatever was asked.
-                screen: ScreenMode::Off,
+                // A Voice that can't record the screen here starts the meeting with `off`.
+                screen: if self.screen_available() {
+                    args.screen.unwrap_or(self.screen_default())
+                } else {
+                    ScreenMode::Off
+                },
                 started_by: by,
                 context: args.context,
             })
@@ -929,9 +958,9 @@ fn last_line(path: &Path) -> Option<String> {
         .map(|l| l.trim().to_string())
 }
 
-/// Starts the recorder outside the app's console, process group and kill-on-close job, so it
-/// outlives the app (voice/RECORDING.md).
-fn spawn_detached(command: &mut Command) -> io::Result<Child> {
+/// Starts the recorder (or the screen process) outside the app's console, process group and
+/// kill-on-close job, so it outlives the app (voice/RECORDING.md).
+pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -943,7 +972,7 @@ fn spawn_detached(command: &mut Command) -> io::Result<Child> {
             DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
         );
         match command.spawn() {
-            // A job that doesn't allow breakaway refuses the flag; the recorder still runs
+            // A job that doesn't allow breakaway refuses the flag; the process still runs
             // detached, and outlives the app unless that job is closed with it.
             Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
                 command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);

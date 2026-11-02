@@ -1,27 +1,52 @@
 //! Hosts the bridge for Rukoo (voice/PROTOCOL.md): the server, `MeetingControl` over the
 //! controller and the meeting library, and what Settings > Rukoo shows about the client.
 
+use std::collections::HashMap;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use serde_json::Value;
 use voice_bridge::{
     BridgeServer, Clients, ControlError, EventLog, Handle, MeetingControl, Refused,
 };
 use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status};
+use voice_screen_files::frames::FrameIndex;
+use voice_screen_files::media::{self, MediaError};
+use voice_screen_files::{paths, policy};
 
 use super::controller::Controller;
+use super::screen::ScreenSupervisor;
 
 /// What Rukoo's commands do.
 pub struct Control {
     pub controller: Arc<Controller>,
     pub log: EventLog,
     pub dictating: Arc<AtomicBool>,
+    pub screen: Arc<ScreenSupervisor>,
+    /// Each meeting's frame index, read again when its journal grew.
+    frames: Mutex<HashMap<String, (u64, Arc<FrameIndex>)>>,
 }
 
 impl Control {
+    pub fn new(
+        controller: Arc<Controller>,
+        screen: Arc<ScreenSupervisor>,
+        log: EventLog,
+        dictating: Arc<AtomicBool>,
+    ) -> Control {
+        Control {
+            controller,
+            log,
+            dictating,
+            screen,
+            frames: Mutex::new(HashMap::new()),
+        }
+    }
+
     pub fn status(&self) -> Status {
         Status {
             recording: self
@@ -29,8 +54,45 @@ impl Control {
                 .current()
                 .and_then(|r| MeetingId::parse(&r.id)),
             dictating: self.dictating.load(Ordering::SeqCst),
-            screen_default: None,
+            screen_default: Some(self.controller.screen_default()),
         }
+    }
+
+    fn meeting_dir(&self, id: &str) -> Result<PathBuf, ControlError> {
+        self.controller
+            .library()
+            .dir(id)
+            .map(|dir| dir.path().to_path_buf())
+            .ok_or_else(|| ControlError::not_found("There is no meeting with that id."))
+    }
+
+    /// The meeting's frame index, read again only when its journal grew.
+    fn frame_index(&self, id: &str, dir: &Path) -> Result<Arc<FrameIndex>, ControlError> {
+        let length = fs::metadata(paths::journal_path(dir)).map_or(0, |m| m.len());
+        let mut cache = self.frames.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((known, index)) = cache.get(id) {
+            if *known == length {
+                return Ok(Arc::clone(index));
+            }
+        }
+        let index =
+            Arc::new(FrameIndex::load(dir).map_err(|e| {
+                ControlError::failed(format!("The screen journal can't be read: {e}"))
+            })?);
+        // A handful of meetings is plenty: Rukoo asks about the one it shows.
+        if cache.len() >= 8 {
+            cache.clear();
+        }
+        cache.insert(id.to_string(), (length, Arc::clone(&index)));
+        Ok(index)
+    }
+}
+
+fn media_error(error: MediaError) -> ControlError {
+    match error {
+        MediaError::NotFound(message) => ControlError::not_found(message),
+        MediaError::NotAvailable(message) => ControlError::not_available(message),
+        MediaError::Failed(message) => ControlError::failed(message),
     }
 }
 
@@ -66,13 +128,57 @@ impl MeetingControl for Control {
             .ok_or_else(|| ControlError::not_found("There is no meeting with that id."))
     }
 
-    fn frame(&self, id: &str, _at: u64) -> Result<Value, ControlError> {
-        if self.controller.library().dir(id).is_none() {
-            return Err(ControlError::not_found("There is no meeting with that id."));
+    fn frame(&self, id: &str, at: u64) -> Result<Value, ControlError> {
+        let dir = self.meeting_dir(id)?;
+        let (frames, _) = media::recorded(&dir);
+        if !frames {
+            return Err(ControlError::not_available(
+                "The meeting didn't record the screen.",
+            ));
         }
-        Err(ControlError::not_available(
-            "Voice 0.1 doesn't record the screen.",
-        ))
+        let index = self.frame_index(id, &dir)?;
+        media::frame_reply(&dir, frames, at, &index).map_err(media_error)
+    }
+
+    fn clip(
+        &self,
+        id: &str,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        let dir = self.meeting_dir(id)?;
+        let (_, video) = media::recorded(&dir);
+        if !video {
+            return Err(ControlError::not_available(
+                "The meeting didn't record video.",
+            ));
+        }
+        // A cut never eats into the free space the screen recording keeps (RUK-108 2.6).
+        if let Some(free) = self.screen.free_bytes() {
+            let capped = end.min(start.saturating_add(voice_protocol::MAX_CLIP_MS));
+            let bytes = media::clip_input_bytes(&dir, start, capped).unwrap_or(0);
+            if !policy::reserve_ok(free, bytes, self.controller.current().is_some()) {
+                return Err(ControlError::failed(
+                    "Not enough free disk space to cut a clip.",
+                ));
+            }
+        }
+        media::clip_reply(&dir, video, start, end, deadline).map_err(media_error)
+    }
+
+    fn protected(&self, id: &str) -> Result<(), ControlError> {
+        self.meeting_dir(id)?;
+        self.screen.ack(id);
+        Ok(())
+    }
+
+    fn screen(&self, id: &str) -> Result<Value, ControlError> {
+        self.screen.describe(id)
+    }
+
+    fn select_monitor(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
+        self.screen.select(id, monitor)
     }
 
     fn status(&self) -> Status {
@@ -142,6 +248,14 @@ pub fn rukoo_info(clients: &Clients, head: u64) -> RukooInfo {
     }
 }
 
+fn rukoo_count(clients: &Clients) -> usize {
+    clients
+        .connected
+        .iter()
+        .filter(|c| c.client == "rukoo")
+        .count()
+}
+
 /// The running server, which a new token replaces.
 pub struct Bridge {
     log: EventLog,
@@ -150,6 +264,8 @@ pub struct Bridge {
     version: String,
     handle: Mutex<Option<Handle>>,
     error: Mutex<Option<String>>,
+    /// A Rukoo got in during this app run, also through a server a new token replaced.
+    seen: AtomicBool,
 }
 
 impl Bridge {
@@ -161,6 +277,7 @@ impl Bridge {
             version: version.to_string(),
             handle: Mutex::new(None),
             error: Mutex::new(None),
+            seen: AtomicBool::new(false),
         };
         let _ = bridge.listen();
         bridge
@@ -207,12 +324,39 @@ impl Bridge {
     }
 
     pub fn rukoo(&self) -> RukooInfo {
-        rukoo_info(&self.clients(), self.log.head())
+        let clients = self.clients();
+        self.note_seen(&clients);
+        rukoo_info(&clients, self.log.head())
+    }
+
+    /// How many Rukoo clients are connected now.
+    pub fn rukoo_clients(&self) -> usize {
+        let clients = self.clients();
+        self.note_seen(&clients);
+        rukoo_count(&clients)
+    }
+
+    /// Whether a Rukoo completed `hello` earlier in this app run: one that isn't connected now
+    /// is probably reconnecting.
+    pub fn rukoo_seen(&self) -> bool {
+        let clients = self.clients();
+        self.note_seen(&clients);
+        self.seen.load(Ordering::SeqCst)
+    }
+
+    fn note_seen(&self, clients: &Clients) {
+        // A client with the token got in. Only Rukoo connects in normal use; another client
+        // costs a meeting Voice starts at most the reconnect wait.
+        if rukoo_count(clients) > 0 || clients.last_admitted_at.is_some() {
+            self.seen.store(true, Ordering::SeqCst);
+        }
     }
 
     /// A new token: the server restarts, which writes a new discovery file and closes every
     /// client; Rukoo reconnects with the new file (PROTOCOL.md, Connecting).
     pub fn new_token(&self) -> io::Result<()> {
+        // The new server forgets who connected; this app run doesn't.
+        self.note_seen(&self.clients());
         self.stop();
         self.listen()
     }

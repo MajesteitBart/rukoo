@@ -25,6 +25,10 @@ pub const ERROR_HOLD: Duration = Duration::from_millis(2800);
 pub const SAVING_HOLD: Duration = Duration::from_millis(2200);
 pub const FAILED_HOLD: Duration = Duration::from_millis(2800);
 pub const MIC_BACK_HOLD: Duration = Duration::from_millis(2200);
+/// A part of the screen recording stopped: the notice stays this long.
+pub const DROP_HOLD: Duration = Duration::from_millis(4000);
+/// The screen recording moved to another monitor.
+pub const MOVED_HOLD: Duration = Duration::from_millis(2200);
 pub const COMPACT_AFTER: Duration = Duration::from_millis(4000);
 pub const CONFIRM_STOP: Duration = Duration::from_millis(3000);
 /// The page runs the meeting clock itself; a fresh snapshot this often corrects its drift.
@@ -39,6 +43,12 @@ pub mod notices {
     pub const MIC_LOST: &str = "pill.micLost";
     pub const MIC_BACK: &str = "pill.micBack";
     pub const MEETING_FAILED: &str = "pill.meetingFailed";
+    pub const VIDEO_DROPPED_DISK: &str = "pill.videoDropped.disk";
+    pub const VIDEO_DROPPED_ENCODER: &str = "pill.videoDropped.encoder";
+    pub const FRAMES_DROPPED_DISK: &str = "pill.framesDropped.disk";
+    pub const SCREEN_FAILED: &str = "pill.screenFailed";
+    /// `{name}`: the monitor's name.
+    pub const SCREEN_MOVED: &str = "pill.screenMoved";
 }
 
 pub fn notice(key: &str) -> Notice {
@@ -112,6 +122,9 @@ struct Meeting {
     notice: Option<Notice>,
     notice_until: Option<Instant>,
     mic_lost: bool,
+    /// What the meeting records of the screen now, and whether the screen button shows.
+    screen: String,
+    screen_switch: bool,
     /// The last change that shows the label again; the pill compacts 4 s after it.
     changed_at: Instant,
     confirm_until: Option<Instant>,
@@ -325,6 +338,13 @@ impl Pill {
             Some((true, kept, kept_until)) => (true, kept, kept_until),
             _ => (false, notice, notice_until),
         };
+        let (screen, screen_switch) = self
+            .meeting
+            .as_ref()
+            .filter(|m| m.id == id)
+            .map_or(("off".to_string(), false), |m| {
+                (m.screen.clone(), m.screen_switch)
+            });
         self.meeting = Some(Meeting {
             id: id.to_string(),
             state,
@@ -333,10 +353,44 @@ impl Pill {
             notice,
             notice_until,
             mic_lost,
+            screen,
+            screen_switch,
             changed_at: now,
             confirm_until: None,
             until,
         });
+    }
+
+    /// What the meeting records of the screen now (`off`, `frames` or `video`), and whether the
+    /// pill offers its screen button. Not a change that shows the label again.
+    pub fn meeting_screen(&mut self, mode: &str, can_switch: bool) {
+        if let Some(m) = self.meeting.as_mut() {
+            m.screen = mode.to_string();
+            m.screen_switch = can_switch && mode != "off";
+        }
+    }
+
+    /// A notice about the meeting, such as a part of the screen recording that stopped, shown
+    /// for `hold`. A lost microphone shows again after it.
+    pub fn meeting_notice(
+        &mut self,
+        key: &str,
+        args: Map<String, serde_json::Value>,
+        hold: Duration,
+        now: Instant,
+    ) {
+        let Some(m) = self.meeting.as_mut() else {
+            return;
+        };
+        if !m.live() {
+            return;
+        }
+        m.notice = Some(Notice {
+            key: key.to_string(),
+            args,
+        });
+        m.notice_until = Some(now + hold);
+        m.changed_at = now;
     }
 
     /// Meeting `id` ended without anything to show (`done` after the saving hold). Another
@@ -411,7 +465,8 @@ impl Pill {
                 self.meeting = None;
             } else {
                 if m.notice_until.is_some_and(|until| now >= until) {
-                    m.notice = None;
+                    // The microphone is still lost: its notice comes back.
+                    m.notice = m.mic_lost.then(|| notice(notices::MIC_LOST));
                     m.notice_until = None;
                     m.changed_at = now;
                 }
@@ -427,7 +482,8 @@ impl Pill {
         let meeting = self.meeting.as_ref().map(|m| MeetingPill {
             state: m.state.as_str().to_string(),
             at_ms: m.clock(now),
-            screen: "off".to_string(),
+            screen: m.screen.clone(),
+            screen_switch: m.screen_switch && m.live(),
             compact: m.compact_at().is_some_and(|at| now >= at),
             confirm_stop: m.confirm_until.is_some_and(|until| now < until),
             stop_enabled: self.dictation.is_none()
@@ -959,6 +1015,81 @@ mod tests {
         );
         let s = pill.take(t0 + ms(22_000) + MIC_BACK_HOLD).unwrap();
         assert_eq!(s.notice, None);
+    }
+
+    #[test]
+    fn screen_notices_hold_four_seconds_and_the_screen_shows() {
+        let (mut pill, t0) = start();
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
+        pill.meeting_screen("video", true);
+        let s = pill.take(t0).unwrap();
+        let m = s.meeting.as_ref().unwrap();
+        assert_eq!((m.screen.as_str(), m.screen_switch), ("video", true));
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["meeting"]["screen"], "video");
+        assert_eq!(json["meeting"]["screenSwitch"], true);
+
+        let t1 = t0 + ms(10_000);
+        pill.meeting_notice(notices::VIDEO_DROPPED_DISK, Map::new(), DROP_HOLD, t1);
+        pill.meeting_screen("frames", true);
+        let s = pill.take(t1).unwrap();
+        assert_eq!(s.notice.as_ref().unwrap().key, "pill.videoDropped.disk");
+        assert_eq!(s.meeting.as_ref().unwrap().screen, "frames");
+        assert!(
+            !s.meeting.unwrap().compact,
+            "a notice shows the pill in full"
+        );
+        assert!(pill.take(t1 + ms(3999)).is_none());
+        let s = pill.take(t1 + DROP_HOLD).unwrap();
+        assert_eq!(s.notice, None);
+
+        // Pausing keeps the screen; moving shows the monitor's name.
+        let t2 = t1 + ms(20_000);
+        pill.meeting("m-a", MeetingPhase::Paused, 30_000, t2);
+        let mut args = Map::new();
+        args.insert("name".into(), "DELL U2720Q".into());
+        pill.meeting_notice(notices::SCREEN_MOVED, args, MOVED_HOLD, t2);
+        let s = pill.take(t2).unwrap();
+        assert_eq!(s.meeting.as_ref().unwrap().screen, "frames");
+        let notice = s.notice.unwrap();
+        assert_eq!(notice.key, "pill.screenMoved");
+        assert_eq!(notice.args["name"], "DELL U2720Q");
+
+        // With the screen off there is no button, and a stopped meeting shows none either.
+        pill.meeting_screen("off", true);
+        assert!(
+            !pill
+                .take(t2 + ms(1))
+                .unwrap()
+                .meeting
+                .unwrap()
+                .screen_switch
+        );
+        pill.meeting_screen("frames", true);
+        pill.meeting("m-a", MeetingPhase::Processing, 40_000, t2 + ms(2));
+        assert!(
+            !pill
+                .take(t2 + ms(2))
+                .unwrap()
+                .meeting
+                .unwrap()
+                .screen_switch
+        );
+    }
+
+    #[test]
+    fn a_lost_microphone_shows_again_after_a_screen_notice() {
+        let (mut pill, t0) = start();
+        pill.meeting("m-a", MeetingPhase::Recording, 0, t0);
+        pill.meeting_mic(false, t0);
+        pill.take(t0);
+        pill.meeting_notice(notices::SCREEN_FAILED, Map::new(), DROP_HOLD, t0 + ms(100));
+        assert_eq!(
+            pill.take(t0 + ms(100)).unwrap().notice.unwrap().key,
+            "pill.screenFailed"
+        );
+        let s = pill.take(t0 + ms(100) + DROP_HOLD).unwrap();
+        assert_eq!(s.notice.unwrap().key, "pill.micLost");
     }
 
     #[test]

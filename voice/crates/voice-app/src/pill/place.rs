@@ -76,6 +76,9 @@ pub struct Layout {
     pub seq: u64,
     pub pill: Option<CssRect>,
     pub button: Option<CssRect>,
+    /// The screen button, left of the stop button, while the pill shows it.
+    #[serde(default, rename = "screenButton")]
+    pub screen_button: Option<CssRect>,
 }
 
 /// Where the stop window goes on screen: the pill window's client origin plus the button scaled to

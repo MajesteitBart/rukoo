@@ -126,8 +126,15 @@ impl MeetingDir {
         self.path.join("audio")
     }
 
-    pub fn has_audio(&self) -> bool {
-        self.audio_dir().is_dir()
+    /// The screen media folders: `screen/video`, `screen/frames` and `screen/clips`. Retention
+    /// removes them with `audio/`; the screen journal stays, so frame text survives.
+    pub fn screen_media_dirs(&self) -> [PathBuf; 3] {
+        voice_screen_files::paths::media_dirs(&self.path)
+    }
+
+    /// Whether any recorded media is left: audio or screen media.
+    pub fn has_media(&self) -> bool {
+        self.audio_dir().is_dir() || self.screen_media_dirs().iter().any(|d| d.is_dir())
     }
 
     /// How long this meeting's audio is kept, as chosen when it started (Ownkey kept it per
@@ -262,10 +269,12 @@ impl Library {
         all
     }
 
-    /// The snapshot `meeting.get` answers: `{ meeting, speakers, passages, marks, head }`.
+    /// The snapshot `meeting.get` answers: `{ meeting, speakers, passages, marks, frames, head }`.
     ///
     /// It is the current version of everything the event log holds for the meeting, up to the
-    /// head it was read with, so the events after `head` apply on top of it.
+    /// head it was read with, so the events after `head` apply on top of it. Frames keep their
+    /// text newest first while the frames stay under `SNAPSHOT_FRAME_TEXT`; older ones come with
+    /// `"text": ""` and `"textOmitted": true`, and `frame.get` has their text.
     pub fn get(&self, id: &str, log: &EventLog) -> Option<Value> {
         let dir = self.dir(id)?;
         let file = dir.meeting().ok()?;
@@ -376,6 +385,7 @@ struct Snapshot {
     speakers: Vec<(String, Value)>,
     passages: HashMap<String, Value>,
     marks: HashMap<String, Value>,
+    frames: HashMap<String, Value>,
 }
 
 impl Snapshot {
@@ -386,6 +396,7 @@ impl Snapshot {
             speakers: Vec::new(),
             passages: HashMap::new(),
             marks: HashMap::new(),
+            frames: HashMap::new(),
         }
     }
 
@@ -428,6 +439,11 @@ impl Snapshot {
                     self.marks.insert(id, data.clone());
                 }
             }
+            events::FRAME => {
+                if let Some(id) = id() {
+                    self.frames.insert(id, data.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -467,14 +483,61 @@ impl Snapshot {
             key(a).cmp(&key(b))
         });
         let speakers: Vec<Value> = self.speakers.into_iter().map(|(_, v)| v).collect();
+        let frames = snapshot_frames(self.frames.into_values().collect());
         json!({
             "meeting": meeting,
             "speakers": speakers,
             "passages": passages,
             "marks": marks,
+            "frames": frames,
             "head": head,
         })
     }
+}
+
+/// The snapshot's frames, oldest first. Walking from the newest back, each keeps its text while
+/// the frames' JSON stays within `SNAPSHOT_FRAME_TEXT`; every older frame gets `"text": ""` and
+/// `"textOmitted": true`, so a meeting with hours of text-heavy frames still fits one reply.
+fn snapshot_frames(mut frames: Vec<Value>) -> Vec<Value> {
+    frames.sort_by(|a, b| {
+        let key = |v: &Value| {
+            (
+                v["at"].as_u64().unwrap_or(0),
+                v["id"].as_str().unwrap_or("").to_owned(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    let size = |v: &Value| serde_json::to_vec(v).map_or(0, |b| b.len()) + 1;
+    let omitted: Vec<Value> = frames
+        .iter()
+        .map(|frame| {
+            let mut short = frame.clone();
+            // A frame without text has nothing to leave out.
+            if frame["text"].as_str().is_some_and(|text| !text.is_empty()) {
+                short["text"] = json!("");
+                short["textOmitted"] = json!(true);
+            }
+            short
+        })
+        .collect();
+    // What the frames take with no text at all, plus the brackets; each text kept adds to it.
+    let mut total: usize = 2 + omitted.iter().map(size).sum::<usize>();
+    let mut keep = frames.len();
+    for (frame, short) in frames.iter().zip(&omitted).rev() {
+        let extra = size(frame).saturating_sub(size(short));
+        if total + extra > voice_protocol::SNAPSHOT_FRAME_TEXT {
+            break;
+        }
+        total += extra;
+        keep -= 1;
+    }
+    frames
+        .into_iter()
+        .zip(omitted)
+        .enumerate()
+        .map(|(i, (frame, short))| if i < keep { short } else { frame })
+        .collect()
 }
 
 /// Writes JSON to a temporary name and renames it into place, so a reader never sees half.
@@ -663,6 +726,18 @@ mod tests {
         .unwrap();
         log.append("mark", Some(id), json!({"id":"k-1","kind":"user","at":1500,"until":null,"track":null,"detail":null,"label":"Here"})).unwrap();
         log.append(
+            "frame",
+            Some(id),
+            json!({"id":"f-000002500","at":2500,"width":1920,"height":1080,"text":"Q3 roadmap"}),
+        )
+        .unwrap();
+        log.append(
+            "frame",
+            Some(id),
+            json!({"id":"f-000000500","at":500,"width":1920,"height":1080,"text":""}),
+        )
+        .unwrap();
+        log.append(
             "meeting.state",
             Some(id),
             json!({"state":"processing","at":4000,"endedAt":99,"reason":"user"}),
@@ -676,7 +751,7 @@ mod tests {
         .unwrap();
 
         let snap = lib.get(id, &log).unwrap();
-        assert_eq!(snap["head"], 10);
+        assert_eq!(snap["head"], 12);
         assert_eq!(snap["meeting"]["state"], "processing");
         assert_eq!(snap["meeting"]["endedAt"], 99);
         assert_eq!(snap["meeting"]["reason"], "user");
@@ -690,12 +765,25 @@ mod tests {
         assert_eq!(texts, ["first, better", "second"]);
         assert_eq!(snap["speakers"].as_array().unwrap().len(), 1);
         assert_eq!(snap["marks"][0]["label"], "Here");
+        let frames: Vec<(&str, &str)> = snap["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| (f["id"].as_str().unwrap(), f["text"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            frames,
+            [("f-000000500", ""), ("f-000002500", "Q3 roadmap")],
+            "oldest first, with their text"
+        );
+        assert!(snap["frames"][1].get("textOmitted").is_none());
 
         // Every item passes the checks Rukoo applies to events.
         for (event, list) in [
             ("passage", "passages"),
             ("speaker", "speakers"),
             ("mark", "marks"),
+            ("frame", "frames"),
         ] {
             for data in snap[list].as_array().unwrap() {
                 let message = json!({"type":"event","seq":1,"event":event,"meeting":id,"createdAt":0,"data":data});
@@ -708,6 +796,74 @@ mod tests {
         log.remove_meeting(id).unwrap();
         assert!(lib.get(id, &log).is_none(), "a removed meeting isn't found");
         assert!(lib.get("m-20200101-000000-0000", &log).is_none());
+    }
+
+    #[test]
+    fn three_thousand_frames_of_text_still_fit_one_reply() {
+        // 8,000 characters each, many of them three bytes in UTF-8: about 14 KB per frame, so
+        // 3,000 of them would be over 40 MB with every text in it.
+        let text: String = "Agenda \u{6f22}\u{5b57} \u{fc}n\u{ef}c\u{f6}d\u{e9} "
+            .chars()
+            .cycle()
+            .take(8_000)
+            .collect();
+        assert_eq!(text.chars().count(), voice_protocol::MAX_FRAME_TEXT_CHARS);
+        let mut snapshot = Snapshot::new(json!({"title": "Long"}));
+        for n in 0..3_000u64 {
+            let at = n * 10_000;
+            snapshot.apply(
+                events::FRAME,
+                &json!({"id": format!("f-{at:09}"), "at": at, "width": 2560, "height": 1440, "text": text}),
+            );
+        }
+        let known = Known {
+            state: MeetingState::Done,
+            at: Some(30_000_000),
+            ended_at: Some(1),
+            reason: None,
+            length: 30_000_000,
+        };
+        let snap = snapshot.finish("m-20261030-171203-4f2a", known, 3_000);
+        let reply = json!({"type": "reply", "id": "c-1", "ok": true, "result": snap});
+        let bytes = serde_json::to_vec(&reply).unwrap().len();
+        assert!(
+            bytes < voice_protocol::MAX_VOICE_MESSAGE,
+            "{bytes} bytes don't fit"
+        );
+        let frames = snap["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 3_000);
+        assert!(
+            serde_json::to_vec(&snap["frames"]).unwrap().len()
+                <= voice_protocol::SNAPSHOT_FRAME_TEXT
+        );
+        // The newest keep their text, the oldest are marked; nothing in between is mixed up.
+        let kept = frames.iter().filter(|f| f["text"] == text).count();
+        assert!(kept > 100, "only {kept} frames kept their text");
+        let first_kept = frames.len() - kept;
+        assert!(frames[..first_kept]
+            .iter()
+            .all(|f| f["text"] == "" && f["textOmitted"] == true));
+        assert!(frames[first_kept..]
+            .iter()
+            .all(|f| f.get("textOmitted").is_none()));
+        assert_eq!(frames[0]["at"], 0, "oldest first");
+    }
+
+    #[test]
+    fn media_is_audio_or_screen_media() {
+        let tmp = TempDir::new("library-media");
+        let lib = Library::open(tmp.path()).unwrap();
+        let dir = lib.create(&args("Media")).unwrap();
+        assert!(!dir.has_media());
+        let [video, frames, clips] = dir.screen_media_dirs();
+        assert_eq!(video, dir.path().join("screen").join("video"));
+        assert_eq!(frames, dir.path().join("screen").join("frames"));
+        assert_eq!(clips, dir.path().join("screen").join("clips"));
+        fs::create_dir_all(&frames).unwrap();
+        assert!(dir.has_media(), "frames alone are media");
+        fs::remove_dir_all(&frames).unwrap();
+        fs::create_dir_all(dir.audio_dir()).unwrap();
+        assert!(dir.has_media());
     }
 
     #[test]

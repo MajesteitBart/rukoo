@@ -140,6 +140,9 @@ pub fn state(core: &Core) -> Value {
         "version": core.opts.version,
         "devMode": core.opts.dev_mode,
         "platform": platform(),
+        // The parts of Settings this Voice shows (voice/ui/API.md). Speaker labels and bucket
+        // sync come with their own changes.
+        "features": { "screen": true, "speakers": false, "sync": false },
         "theme": match looks.theme { Theme::Light => "light", Theme::Dark => "dark" },
         "locale": match looks.locale { Locale::En => "en", Locale::Nl => "nl" },
         "config": keys::view(&cfg, start_at_login),
@@ -155,10 +158,26 @@ pub fn state(core: &Core) -> Value {
             "usedBytes": slow.used_bytes,
             "freeBytes": core.svc.system.free_bytes(core.meetings.library().root()).unwrap_or(0),
         },
+        "screen": screen(core),
         "updates": { "state": update_state, "version": update_version },
         "ownkey": ownkey::state(core, &cfg, &slow.ownkey_keys, slow.ownkey_found, slow.ownkey_running),
         "sync": { "lastUpload": null, "waiting": 0 },
     })
+}
+
+/// What this computer can record of the screen, from `rukoo-voice-screen probe`: `null` until
+/// the probe answered.
+fn screen(core: &Core) -> Value {
+    let supervisor = &core.meetings.screen;
+    match supervisor.capabilities() {
+        Some(caps) => json!({
+            "available": supervisor.available(),
+            "hardwareEncoder": caps.hardware_encoder.map(|e| e.name),
+            "ocr": caps.ocr,
+            "monitors": caps.monitors.len(),
+        }),
+        None => Value::Null,
+    }
 }
 
 fn platform() -> &'static str {

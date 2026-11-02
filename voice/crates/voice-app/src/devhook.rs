@@ -4,7 +4,8 @@
 //! `<folder>/reply-<id>.json` the same way. `voice/scripts/live-meeting.mjs` uses it.
 //!
 //! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window and the whole Settings
-//! state), `start_meeting` and `stop_meeting` (what the tray's items call), and
+//! state), `start_meeting` and `stop_meeting` (what the tray's items call), `pill_screen_click` (what
+//! a click on the pill's screen button does: the screen recording moves to the next monitor), and
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
 //! and writes PNGs of the pill and Settings from WebView2. Nothing here sends input or reads the
 //! screen.
@@ -84,6 +85,10 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
             .stop_meeting(StopReason::User)
             .map(|()| json!({}))
             .map_err(|e| e.to_string()),
+        "pill_screen_click" => {
+            engine.pill_screen_clicked();
+            Ok(json!({}))
+        }
         "capture" => {
             let dir = request["dir"]
                 .as_str()

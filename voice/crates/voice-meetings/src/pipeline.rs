@@ -18,10 +18,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use voice_bridge::{EventLog, LogError};
 use voice_core::{Hints, LocalEngine, ProviderError, SpeechToText};
-use voice_protocol::{events, MeetingState, MeetingStateChange, Passage, Speaker, Track};
+use voice_protocol::{
+    events, MeetingState, MeetingStateChange, Passage, ScreenMode, Speaker, Track,
+};
 
 use crate::library::{MeetingDir, MeetingFile};
 use crate::reader::{segment_samples, TrackReader, PER_MS};
+use crate::screen::{derived_key, ScreenDerived, ScreenFollower};
 use crate::segmentation::{
     next_boundary, owned_tokens, timed_passages, window_passage, within, worth_recognizing, Draft,
     CORE_LIMIT, LEFT_CONTEXT, RATE, RIGHT_CONTEXT,
@@ -460,6 +463,7 @@ fn event_key(event: &str, data: &Value) -> Option<String> {
         events::SPEAKER => format!("speaker:{}", text("id")?),
         events::PASSAGE => passage_key(text("id")?, data["revision"].as_u64()?),
         events::MARK => mark_key(text("id")?),
+        events::FRAME => format!("frame:{}", text("id")?),
         _ => return None,
     })
 }
@@ -494,6 +498,8 @@ struct Worker {
     failure: Option<Failure>,
     next_track: usize,
     begun: bool,
+    /// The screen journal's follower, for a meeting that records the screen.
+    screen: Option<ScreenFollower>,
 }
 
 impl Worker {
@@ -523,6 +529,7 @@ impl Worker {
         if transcript.emitted()? != keys {
             transcript.set_emitted(&keys)?;
         }
+        let screen = (file.screen != ScreenMode::Off).then(|| ScreenFollower::new(dir.path()));
         let recognizer = match &opts.timed {
             Some(timed) => Recognizer::Timed(timed.clone()),
             None => Recognizer::Text(opts.stt.clone()),
@@ -545,6 +552,7 @@ impl Worker {
             failure: None,
             next_track: 0,
             begun: false,
+            screen,
         }))
     }
 
@@ -611,6 +619,7 @@ impl Worker {
         for derived in self.watcher.poll()? {
             self.apply(derived)?;
         }
+        self.poll_screen()?;
         self.follow_new_tracks()?;
         self.flag_dictation()?;
         let stop = self.watcher.mapper().stop().cloned();
@@ -648,6 +657,9 @@ impl Worker {
                 Advance::Backoff => return Ok(Step::Idle),
                 Advance::GiveUp(reason) => {
                     if let Some(stop) = &stop {
+                        if !self.screen_settled(stop)? {
+                            return Ok(Step::Idle);
+                        }
                         self.fail(stop, reason.clone())?;
                     }
                     shared.set(PipelineState::Failed { reason });
@@ -656,7 +668,7 @@ impl Worker {
             }
         }
         match stop {
-            Some(stop) if complete => {
+            Some(stop) if complete && self.screen_settled(&stop)? => {
                 self.done(&stop)?;
                 shared.set(PipelineState::Done);
                 Ok(Step::Finished)
@@ -975,6 +987,49 @@ impl Worker {
     }
 }
 
+/// The screen journal (RUK-108): frames and screen marks flow while the meeting records and while
+/// transcription waits, and a meeting is `done` or `failed` only once its screen part is settled.
+impl Worker {
+    /// Sends what the screen journal says since the last look.
+    fn poll_screen(&mut self) -> Result<(), Error> {
+        let derived = match self.screen.as_mut() {
+            Some(screen) => screen.poll()?,
+            None => return Ok(()),
+        };
+        for d in derived {
+            self.emit_screen(d)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the screen part of a stopped meeting is over: at once without a screen, else once
+    /// the journal has `stop`, or 60 s after the timeline's stop without a live screen process.
+    /// When it turns true, the marks that close the screen part go out first.
+    fn screen_settled(&mut self, stop: &Stop) -> Result<bool, Error> {
+        let Some(screen) = self.screen.as_mut() else {
+            return Ok(true);
+        };
+        let Some(closing) = screen.settle(stop.t) else {
+            return Ok(false);
+        };
+        for d in closing {
+            self.emit_screen(d)?;
+        }
+        Ok(true)
+    }
+
+    fn emit_screen(&mut self, derived: ScreenDerived) -> Result<(), Error> {
+        let key = derived_key(&derived);
+        match derived {
+            ScreenDerived::Frame(frame) => self.emit(key, events::FRAME, to_data(&frame)),
+            ScreenDerived::Mark(mark) => {
+                self.transcript.save_mark(&mark)?;
+                self.emit(key, events::MARK, to_data(&mark))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1002,6 +1057,10 @@ mod tests {
         assert_eq!(
             event_key("mark", &serde_json::json!({"id":"k-1"})).as_deref(),
             Some("mark:k-1")
+        );
+        assert_eq!(
+            event_key("frame", &serde_json::json!({"id":"f-000412000"})).as_deref(),
+            Some("frame:f-000412000")
         );
         assert_eq!(event_key("status", &serde_json::json!({})), None);
         assert_eq!(event_key("passage", &serde_json::json!({"id": 1})), None);
