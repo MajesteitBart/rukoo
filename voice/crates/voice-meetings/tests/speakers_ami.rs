@@ -12,7 +12,8 @@
 //!
 //! Words come from an oracle instead of a speech model: it finds each window in the excerpt and
 //! returns the reference transcript's words spread over each utterance, so the score measures
-//! the labels alone.
+//! the labels alone. A test that needs only `RUKOO_VOICE_TEST_AMI` checks that the oracle hears
+//! every word through the real recorder, so a low score is about the labels, not the harness.
 #![cfg(windows)]
 
 mod common;
@@ -44,20 +45,47 @@ const EXCERPT_MS: u64 = 60_000;
 /// The three reference speakers with 8 s or more in the excerpt.
 const MAIN: [&str; 3] = ["MEE071", "FEO070", "MEE073"];
 
-struct Assets {
-    runtime: PathBuf,
-    model: PathBuf,
+/// The excerpt, its RTTM turns and its reference words.
+struct Ami {
     wav: PathBuf,
     rttm: PathBuf,
     json: PathBuf,
 }
 
+/// The excerpt plus what Nemotron needs.
+struct Assets {
+    runtime: PathBuf,
+    model: PathBuf,
+    ami: Ami,
+}
+
+fn var(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from)
+}
+
+fn ami() -> Option<Ami> {
+    let ami = var("RUKOO_VOICE_TEST_AMI")?;
+    let wav = if ami.is_dir() {
+        ami.join("ami_en2002d_2132.wav")
+    } else {
+        ami
+    };
+    let ami = Ami {
+        rttm: wav.with_extension("rttm"),
+        json: wav.with_extension("json"),
+        wav,
+    };
+    for path in [&ami.wav, &ami.rttm, &ami.json] {
+        assert!(path.is_file(), "missing {}", path.display());
+    }
+    Some(ami)
+}
+
 fn assets() -> Option<Assets> {
-    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
     let (Some(runtime), Some(model), Some(ami)) = (
         var("RUKOO_VOICE_TEST_NEMO_DIR"),
         var("RUKOO_VOICE_TEST_NEMOTRON"),
-        var("RUKOO_VOICE_TEST_AMI"),
+        ami(),
     ) else {
         eprintln!(
             "skipped: set RUKOO_VOICE_TEST_NEMO_DIR, RUKOO_VOICE_TEST_NEMOTRON and \
@@ -71,27 +99,36 @@ fn assets() -> Option<Assets> {
     } else {
         model
     };
-    let wav = if ami.is_dir() {
-        ami.join("ami_en2002d_2132.wav")
-    } else {
-        ami
-    };
-    let assets = Assets {
-        rttm: wav.with_extension("rttm"),
-        json: wav.with_extension("json"),
+    assert!(model.is_file(), "missing {}", model.display());
+    assert!(runtime.is_dir(), "missing {}", runtime.display());
+    Some(Assets {
         runtime,
         model,
-        wav,
-    };
-    for path in [&assets.model, &assets.wav, &assets.rttm, &assets.json] {
-        assert!(path.is_file(), "missing {}", path.display());
+        ami,
+    })
+}
+
+/// Nemotron through the real worker, for a meeting whose data folder is `data`.
+fn nemotron(assets: &Assets, data: &Path, exe_dir: PathBuf) -> Labels {
+    // The model where Voice's own registry finds it, and the runtime as a development copy
+    // would use it.
+    let registry = ModelRegistry::new(data).with_ownkey_models(None);
+    let spec = ModelSpec::nemotron();
+    let own = registry.own_dir(&spec);
+    fs::create_dir_all(&own).unwrap();
+    let target = own.join(&spec.files[0].name);
+    if fs::hard_link(&assets.model, &target).is_err() {
+        fs::copy(&assets.model, &target).unwrap();
     }
-    assert!(
-        assets.runtime.is_dir(),
-        "missing {}",
-        assets.runtime.display()
-    );
-    Some(assets)
+    std::env::set_var("RUKOO_VOICE_NEMO_DIR", &assets.runtime);
+    let mut options = SpeakerOptions::new(exe_dir, registry);
+    options.worker_exe = Some(speakers_exe().to_owned());
+    options.dev_mode = true;
+    let labels = SpeakerLabels::new(options);
+    match labels.diarizer() {
+        Ok(diarizer) => Labels::Local { diarizer },
+        Err(e) => panic!("speaker labels can't run: {e:?}"),
+    }
 }
 
 /// A program of this workspace, built into this test's target folder when it isn't there, as
@@ -177,8 +214,8 @@ struct AmiOracle {
 }
 
 impl AmiOracle {
-    fn new(assets: &Assets) -> AmiOracle {
-        let utterances: Value = serde_json::from_slice(&fs::read(&assets.json).unwrap()).unwrap();
+    fn new(ami: &Ami) -> AmiOracle {
+        let utterances: Value = serde_json::from_slice(&fs::read(&ami.json).unwrap()).unwrap();
         let mut words = Vec::new();
         for u in utterances.as_array().unwrap() {
             let start = u["start_time"].as_f64().unwrap().max(0.0);
@@ -192,7 +229,7 @@ impl AmiOracle {
         }
         words.sort_by(|a, b| a.0.total_cmp(&b.0));
         AmiOracle {
-            samples: read_wav(&assets.wav),
+            samples: read_wav(&ami.wav),
             words,
         }
     }
@@ -233,7 +270,8 @@ impl TimedSpeechToText for AmiOracle {
     }
 }
 
-/// One meeting recorded by the real recorder from the excerpt and labelled by the real worker.
+/// One meeting recorded by the real recorder from the excerpt, labelled by the real worker or,
+/// without `assets`, not at all.
 struct Run {
     _tmp: TempDir,
     dir: MeetingDir,
@@ -243,14 +281,14 @@ struct Run {
 }
 
 impl Run {
-    fn start(name: &str, assets: &Assets, looped: bool) -> Run {
+    fn start(name: &str, ami: &Ami, looped: bool, assets: Option<&Assets>) -> Run {
         let tmp = TempDir::new(name);
         let data = tmp.path().join("data");
         let library = Library::open(&data).unwrap();
         let log = EventLog::open(&data).unwrap();
         let call = format!(
             "file:{}{}",
-            assets.wav.display(),
+            ami.wav.display(),
             if looped { ",loop" } else { "" }
         );
         let dir = library
@@ -267,25 +305,11 @@ impl Run {
                 context: None,
             })
             .unwrap();
-
-        // The model where Voice's own registry finds it, and the runtime as a development copy
-        // would use it.
-        let registry = ModelRegistry::new(&data).with_ownkey_models(None);
-        let spec = ModelSpec::nemotron();
-        let own = registry.own_dir(&spec);
-        fs::create_dir_all(&own).unwrap();
-        let target = own.join(&spec.files[0].name);
-        if fs::hard_link(&assets.model, &target).is_err() {
-            fs::copy(&assets.model, &target).unwrap();
-        }
-        std::env::set_var("RUKOO_VOICE_NEMO_DIR", &assets.runtime);
-        let mut options = SpeakerOptions::new(tmp.path().join("exe"), registry);
-        options.worker_exe = Some(speakers_exe().to_owned());
-        options.dev_mode = true;
-        let labels = SpeakerLabels::new(options);
-        let diarizer = match labels.diarizer() {
-            Ok(d) => d,
-            Err(e) => panic!("speaker labels can't run: {e:?}"),
+        let labels = match assets {
+            Some(assets) => nemotron(assets, &data, tmp.path().join("exe")),
+            None => Labels::Off {
+                reason: "off".into(),
+            },
         };
 
         let logs = tmp.path().join("logs");
@@ -305,12 +329,12 @@ impl Run {
             dir.clone(),
             log.clone(),
             PipelineOptions {
-                timed: Some(Arc::new(AmiOracle::new(assets))),
+                timed: Some(Arc::new(AmiOracle::new(ami))),
                 timing: Timing {
                     poll: Duration::from_millis(50),
                     ..Timing::default()
                 },
-                labels: Labels::Local { diarizer },
+                labels,
                 ..PipelineOptions::new(Arc::new(Offline))
             },
         );
@@ -423,6 +447,56 @@ fn ids_of_main(
         .collect()
 }
 
+/// The harness: through the real recorder, the oracle finds the windows of the excerpt and hands
+/// back their reference words once each, in order, so the label tests below score the labels
+/// alone. Not every word: a window quieter than -55 dBFS isn't recognized at all, as in Voice
+/// 0.1, and the excerpt has one (FEO072's "Okay" and "Are we done" at 26.7-29.2 s, -55.7 dBFS).
+#[test]
+fn ami_oracle_hears_the_excerpt_through_the_recorder() {
+    let Some(ami) = ami() else {
+        eprintln!("skipped: set RUKOO_VOICE_TEST_AMI to check the AMI oracle");
+        return;
+    };
+    let expected: Vec<String> = AmiOracle::new(&ami)
+        .words
+        .into_iter()
+        .map(|(_, _, w)| w)
+        .collect();
+    let mut run = Run::start("ami-oracle", &ami, false, None);
+    run.wait_for(EXCERPT_MS + 2_000);
+    run.stop();
+    run.wait_done();
+    let heard: Vec<String> = of(&events(&run.log, run.dir.id().as_str()), "passage")
+        .iter()
+        .filter(|p| p["track"] == "call")
+        .flat_map(|p| {
+            p["text"]
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    eprintln!(
+        "AMI oracle: {} of {} reference words",
+        heard.len(),
+        expected.len()
+    );
+    // In order, none twice and none made up: each heard word is the next match in the reference.
+    let mut rest = expected.iter();
+    for (i, word) in heard.iter().enumerate() {
+        assert!(
+            rest.any(|w| w == word),
+            "word {i} {word:?} isn't next in the reference: heard {heard:?}"
+        );
+    }
+    assert!(
+        heard.len() * 10 >= expected.len() * 9,
+        "the oracle lost words: heard {heard:?}"
+    );
+}
+
 /// 1 and 2: three voices before the stop, then at least 90 % of transcript time to the right
 /// speaker.
 #[test]
@@ -430,9 +504,9 @@ fn ami_three_speakers_live_and_ninety_percent_right() {
     let Some(assets) = assets() else {
         return;
     };
-    let mut run = Run::start("ami-score", &assets, false);
+    let mut run = Run::start("ami-score", &assets.ami, false, Some(&assets));
     run.wait_for(EXCERPT_MS + 4_000);
-    let reference = reference(&assets.rttm, run.call_start(), 1);
+    let reference = reference(&assets.ami.rttm, run.call_start(), 1);
     let live = run.call_passages();
     let ids: HashSet<&str> = live.iter().filter_map(|p| p.speaker.as_deref()).collect();
     assert!(ids.len() >= 3, "call ids before the stop: {ids:?}");
@@ -468,7 +542,7 @@ fn ami_ids_survive_a_killed_worker() {
     let Some(assets) = assets() else {
         return;
     };
-    let mut run = Run::start("ami-kill", &assets, true);
+    let mut run = Run::start("ami-kill", &assets.ami, true, Some(&assets));
     let kill_at = EXCERPT_MS + 30_000;
     run.wait_for(kill_at);
     let pid = run
@@ -491,7 +565,7 @@ fn ami_ids_survive_a_killed_worker() {
     run.wait_done();
 
     let start = run.call_start();
-    let reference = reference(&assets.rttm, start, 3);
+    let reference = reference(&assets.ami.rttm, start, 3);
     let passages = run.call_passages();
     let kill = start + kill_at;
     let before = ids_of_main(&passages, &reference, 0, kill);
