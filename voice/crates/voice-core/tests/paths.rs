@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use voice_core::paths::{
-    config_file, data_dir_in, dev_mode_in, models_dir, ownkey_config_in, ownkey_models_in, Platform,
+    config_file, data_dir_in, dev_mode_in, models_dir, ownkey_config_in, ownkey_models_in,
+    ownkey_nemo_runtime_in, Platform,
 };
 
 fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -113,6 +114,25 @@ fn ownkey_locations() {
         ownkey_config_in(Platform::MacOs, &env(&[("HOME", "/Users/me")])),
         None
     );
+}
+
+#[test]
+fn ownkeys_speaker_label_runtime() {
+    let windows = env(&[("LOCALAPPDATA", "C:\\Users\\me\\AppData\\Local")]);
+    assert_eq!(
+        ownkey_nemo_runtime_in(Platform::Windows, &windows).unwrap(),
+        "C:\\Users\\me\\AppData\\Local\\Programs\\Ownkey\\backend\\_internal\\nemo_speech"
+    );
+    let home_only = env(&[("USERPROFILE", "C:\\Users\\me")]);
+    assert_eq!(
+        ownkey_nemo_runtime_in(Platform::Windows, &home_only).unwrap(),
+        "C:\\Users\\me\\AppData\\Local\\Programs\\Ownkey\\backend\\_internal\\nemo_speech"
+    );
+    assert_eq!(ownkey_nemo_runtime_in(Platform::Windows, &env(&[])), None);
+    // Ownkey's speaker labels only ever ran on Windows.
+    let linux = env(&[("HOME", "/home/me")]);
+    assert_eq!(ownkey_nemo_runtime_in(Platform::Linux, &linux), None);
+    assert_eq!(ownkey_nemo_runtime_in(Platform::MacOs, &linux), None);
 }
 
 #[test]
