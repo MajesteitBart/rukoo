@@ -6,9 +6,9 @@
 use std::fs;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tungstenite::client::IntoClientRequest;
@@ -66,6 +66,15 @@ pub struct FakeControl {
     pub calls: Mutex<Vec<String>>,
     /// A mark labelled "wait" blocks until the test sends on this gate's other end.
     pub gate: Mutex<Option<mpsc::Receiver<()>>>,
+    /// What `clip.get` answers for a known meeting; `None` answers `not_available`.
+    pub clips: Mutex<Option<Value>>,
+    /// The deadline of every `clip.get`, in the order they ran.
+    pub deadlines: Mutex<Vec<Instant>>,
+    /// `clip.get` takes until its deadline, like a cut that isn't finished in time.
+    pub slow_clips: AtomicBool,
+    /// What `screen.get` answers for the recording meeting; `None` answers `not_available`.
+    /// `screen.select` knows the ids in its `monitors`.
+    pub screen: Mutex<Option<Value>>,
 }
 
 impl FakeControl {
@@ -179,8 +188,69 @@ impl MeetingControl for FakeControl {
         self.call(format!("frame {id} {at}"));
         self.known(id)?;
         Err(ControlError::not_available(
-            "Voice 0.1 doesn't record the screen.",
+            "The meeting didn't record the screen.",
         ))
+    }
+
+    fn clip(
+        &self,
+        id: &str,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        self.call(format!("clip {id} {start} {end}"));
+        self.deadlines.lock().unwrap().push(deadline);
+        if self.slow_clips.load(Ordering::SeqCst) {
+            // A loop, because a sleep may end a little early.
+            loop {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                std::thread::sleep(deadline - now);
+            }
+        }
+        self.known(id)?;
+        self.clips
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| ControlError::not_available("The meeting didn't record video."))
+    }
+
+    fn protected(&self, id: &str) -> Result<(), ControlError> {
+        self.call(format!("protected {id}"));
+        self.known(id)
+    }
+
+    fn screen(&self, id: &str) -> Result<Value, ControlError> {
+        self.call(format!("screen {id}"));
+        self.recording(id)?;
+        self.screen
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| ControlError::not_available("The meeting records no screen."))
+    }
+
+    fn select_monitor(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
+        self.call(format!("select {id} {monitor}"));
+        self.recording(id)?;
+        let screen = self.screen.lock().unwrap().clone();
+        let Some(screen) = screen else {
+            return Err(ControlError::not_available(
+                "The meeting records no screen.",
+            ));
+        };
+        let known = screen["monitors"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|m| m["id"] == monitor));
+        if known {
+            Ok(monitor.to_owned())
+        } else {
+            Err(ControlError::not_found(format!("No monitor {monitor}.")))
+        }
     }
 
     fn status(&self) -> Status {

@@ -54,15 +54,17 @@ pub trait MeetingControl: Send + Sync {
     /// The newest meetings first, at most `limit` of them.
     fn list(&self, limit: usize) -> Vec<MeetingSummary>;
 
-    /// The snapshot of `meeting.get`: `{ meeting, speakers, passages, marks, head }`, where
-    /// `head` is the log's sequence number the snapshot is complete up to.
+    /// The snapshot of `meeting.get`: `{ meeting, speakers, passages, marks, frames, head }`,
+    /// where `head` is the log's sequence number the snapshot is complete up to. Older frames
+    /// may carry `"text": ""` and `"textOmitted": true` to keep the reply under the size limit.
     fn get(&self, id: &str) -> Result<Value, ControlError>;
 
     /// The result of `frame.get`: `{ frame, image }` for the frame at or before `at`.
     fn frame(&self, id: &str, at: u64) -> Result<Value, ControlError>;
 
     /// The result of `clip.get`: `{ clips: [...] }` with the clips cut by `deadline`, which is
-    /// [`CLIP_WAIT`](voice_protocol::CLIP_WAIT) after the server read the command.
+    /// [`CLIP_WAIT`](voice_protocol::CLIP_WAIT) after the server read the command. It answers
+    /// by then and lets a longer cut go on, because the connection's later commands wait for it.
     fn clip(
         &self,
         id: &str,
