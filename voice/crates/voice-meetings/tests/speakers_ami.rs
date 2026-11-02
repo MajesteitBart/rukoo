@@ -450,7 +450,7 @@ fn ids_of_main(
 /// The harness: through the real recorder, the oracle finds the windows of the excerpt and hands
 /// back their reference words once each, in order, so the label tests below score the labels
 /// alone. Not every word: a window quieter than -55 dBFS isn't recognized at all, as in Voice
-/// 0.1, and the excerpt has one (FEO072's "Okay" and "Are we done" at 26.7-29.2 s, -55.7 dBFS).
+/// 0.1, and the excerpt has one: a soft stretch from 26.7 s to 29.2 s at -55.7 dBFS.
 #[test]
 fn ami_oracle_hears_the_excerpt_through_the_recorder() {
     let Some(ami) = ami() else {
