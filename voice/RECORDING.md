@@ -1,6 +1,6 @@
 # Rukoo Voice meeting folder, version 1
 
-A meeting recording is a folder of plain files: a journal of what happened, and the audio in short WAV segments. The recorder, `rukoo-voice-recorder`, writes them, and nothing else does. A meeting that records the screen also has a `screen/` folder, which the screen process `rukoo-voice-screen` writes; see [The screen folder](#the-screen-folder). It runs as its own process, so transcription, the app and Rukoo can crash while the recording goes on. A hard kill at any moment leaves files that open in any WAV reader and lose at most about the last 0.2 s of audio.
+A meeting recording is a folder of plain files: a journal of what happened, and the audio in short WAV segments. The recorder, `rukoo-voice-recorder`, writes them, and nothing else does. It runs as its own process, so transcription, the app and Rukoo can crash while the recording goes on. A hard kill at any moment leaves files that open in any WAV reader and lose at most about the last 0.2 s of audio. A meeting that records the screen also has a `screen/` folder, which the screen process `rukoo-voice-screen` writes; see [The screen folder](#the-screen-folder).
 
 The recorder lives in `voice/crates/voice-recorder`, the segment writer and reader in `voice/crates/voice-audio`. The app reads the folder through `voice/crates/voice-meetings`.
 
@@ -207,7 +207,7 @@ After a successful `tap` the connection carries raw signed 16-bit little-endian 
 
 ## The screen folder
 
-A meeting that records the screen, with `screen` set to `frames` or `video` in `meeting.json`, gets a `screen/` folder. The screen process, `rukoo-voice-screen`, writes it. It runs detached like the recorder, so a graphics driver, encoder or OCR crash never costs audio. It reads `timeline.jsonl` and never writes it, and the recorder knows nothing about it. The app reads `screen/` and writes only the clips in `screen/clips/`, and `finalize` through the screen executable.
+A meeting that records the screen, with `screen` set to `frames` or `video` in `meeting.json`, gets a `screen/` folder. The screen process, `rukoo-voice-screen`, writes it. It runs detached like the recorder, so a graphics driver, encoder or OCR crash never costs audio. It reads `timeline.jsonl` and never writes it, and the recorder knows nothing about it. The app reads `screen/`. It writes there only the clips in `screen/clips/`, and it runs the screen executable's `finalize` when a screen process died.
 
 The screen process lives in `voice/crates/voice-screen`, the format and its readers in `voice/crates/voice-screen-files`.
 
