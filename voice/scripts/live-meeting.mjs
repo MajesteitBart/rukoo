@@ -926,7 +926,7 @@ const queueRows = (data, meeting) => readDb(path.join(data, 'sync', 'queue.db'),
 
 // 6. Every file in the bucket, encrypted, once; neither the secret nor the code on disk in plain text.
 async function bucketChecks(ctx) {
-  const { id, fromVoice, sync } = ctx;
+  const { id, sync } = ctx;
   const status = await drained('after both meetings');
   check('every file of both meetings reached the bucket and the index followed', status.waiting === 0, { state: status.state, lastError: status.lastError && status.lastError.code });
   await captureStorage('synced');
@@ -942,16 +942,7 @@ async function bucketChecks(ctx) {
   const notUp = segments.filter((p) => !rows.some((r) => r.path === p && r.state === 'done'));
   check("each of the meeting's segments, meeting.json, its timeline and its transcript are in the bucket", notUp.length === 0 && ['meeting', 'timeline', 'transcript', 'manifest'].every((k) => byKind[`${k}:done`]), { segments: segments.length, notUp, rows: byKind });
 
-  const objects = s3Objects();
-  const enc = spawnSync(process.execPath, [path.join(VOICE, 'scripts', 'check-encrypted.mjs'), S3_DIR, '--json', '--forbid', id, '--forbid', fromVoice, '--forbid', TITLE, '--forbid', 'warehouse', '--forbid', 'Amsterdam'], { encoding: 'utf8', windowsHide: true });
-  let result = null;
-  try {
-    result = JSON.parse(enc.stdout);
-  } catch (_) {
-    result = { error: enc.stderr };
-  }
-  check('every object in the bucket passes check-encrypted.mjs', enc.status === 0 && objects.size > 0, { objects: result.objects, bytes: result.bytes, failed: result.failed, error: result.error });
-  check('no object key shows a meeting id', [...objects.keys()].every((k) => !k.includes('m-20')), { objects: objects.size });
+  encrypted('every object in the bucket passes check-encrypted.mjs');
 
   const dup = duplicates(s3Log());
   check('the Voice restart left no file uploaded twice and no part twice', dup.putTwice.length === 0 && dup.partTwice.length === 0, dup);
@@ -978,6 +969,23 @@ async function bucketChecks(ctx) {
     healthy: heartbeats(lines, ctx.t0, ctx.outage.start),
     failing: ctx.outage.heartbeats
   };
+}
+
+// check-encrypted.mjs on the fake's folder, with every meeting id, the title and words of the speech as text no
+// object may hold; and no key shows a meeting id.
+function encrypted(name) {
+  const objects = s3Objects();
+  const ids = fs.readdirSync(path.join(VOICE_DATA, 'meetings')).filter((n) => n.startsWith('m-'));
+  const forbid = [...ids, TITLE, 'warehouse', 'Amsterdam'].flatMap((t) => ['--forbid', t]);
+  const enc = spawnSync(process.execPath, [path.join(VOICE, 'scripts', 'check-encrypted.mjs'), S3_DIR, '--json', ...forbid], { encoding: 'utf8', windowsHide: true });
+  let result = null;
+  try {
+    result = JSON.parse(enc.stdout);
+  } catch (_) {
+    result = { error: enc.stderr };
+  }
+  check(name, enc.status === 0 && objects.size > 0, { meetings: ids.length, objects: result.objects, bytes: result.bytes, failed: result.failed, error: result.error });
+  check('no object key shows a meeting id', [...objects.keys()].every((k) => !k.includes('m-20')), { objects: objects.size });
 }
 
 // The spec's measurements: a 10-minute meeting with sync on, a 3-minute one with sync off, six short ones.
@@ -1014,6 +1022,7 @@ async function measureSync(ctx) {
     shorts.push(meeting);
   }
   await drained('every meeting');
+  encrypted("every object of the measurements' ten meetings passes check-encrypted.mjs");
   ctx.measured = { b: b.meeting, c: c.meeting, shorts };
 
   const m = report.measurements;
