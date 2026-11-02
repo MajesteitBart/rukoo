@@ -723,12 +723,25 @@ impl ScreenSupervisor {
             }
             match slot.as_mut() {
                 Some(live) if live.id == id => match live.phase {
-                    // Nothing launched yet: the begin thread sees this and doesn't launch.
+                    // Nothing launched yet: the begin thread sees this and doesn't launch. No
+                    // screen process will write the journal's `stop`, so this does, or the
+                    // meeting would wait `SCREEN_STOP_WAIT` before it is done.
                     Phase::Starting => {
-                        *slot = None;
+                        let taken = slot.take();
                         drop(slot);
                         self.changed.notify_all();
                         self.acked.notify_all();
+                        if let Some(mut live) = taken {
+                            match self.finalize(id, &live.dir, "interrupted") {
+                                Ok(()) => {
+                                    let changes = live.read_journal(true);
+                                    self.emit_all(changes);
+                                }
+                                Err(e) => log::warn!(
+                                    "screen: {id}: couldn't finish the screen journal: {e}"
+                                ),
+                            }
+                        }
                         return;
                     }
                     Phase::Stopped => {

@@ -70,6 +70,10 @@ fn main() {
             voice_started_meeting_waits_for_a_reconnecting_rukoo,
         ),
         (
+            "a_meeting_stopped_during_the_handshake_ends_its_journal",
+            a_meeting_stopped_during_the_handshake_ends_its_journal,
+        ),
+        (
             "rukoo_started_meeting_skips_the_handshake",
             rukoo_started_meeting_skips_the_handshake,
         ),
@@ -562,6 +566,34 @@ fn voice_started_meeting_waits_for_a_reconnecting_rukoo() {
     );
     assert_eq!(rig.starting_events(&id).len(), 1);
     rig.stop(&id);
+}
+
+fn a_meeting_stopped_during_the_handshake_ends_its_journal() {
+    let rig = Rig::new("stop-early", SCREEN);
+    // A Rukoo seen earlier and away now: the handshake waits up to 5 s for it. The meeting
+    // stops in that wait, so no screen process ever runs; the journal still gets its `stop`
+    // at once, which the pipeline waits for before the meeting is done.
+    rig.rukoo(0, true);
+    let id = rig.start(StartedBy::Voice, None);
+    rig.controller.stop(Some(&id), "user").unwrap();
+    let stopped = Instant::now();
+    let stop = rig.wait_line(&id, "the journal's stop", |l| {
+        matches!(l, Line::Stop { .. })
+    });
+    assert!(
+        matches!(&stop, Line::Stop { reason, .. } if reason == "interrupted"),
+        "{stop:?}"
+    );
+    assert!(
+        stopped.elapsed() < Duration::from_secs(3),
+        "the stop came {} ms after the meeting's",
+        stopped.elapsed().as_millis()
+    );
+    // Nothing launches once the handshake's wait would have ended.
+    thread::sleep(Duration::from_secs(6));
+    let lines = rig.journal(&id);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(screenfile::live(&rig.dir(&id)).is_none());
 }
 
 fn rukoo_started_meeting_skips_the_handshake() {
