@@ -678,10 +678,12 @@ fn screen_of_a_meeting(
     let (c, _) = controller(&data, timing());
     c.set_screen(default, available);
     let control = control(&c, &data);
-    assert_eq!(c.screen_default(), default);
+    // What a start without `screen` gets, which is what Rukoo labels as Voice's default.
+    let expected = if available { default } else { ScreenMode::Off };
+    assert_eq!(c.screen_default(), expected);
     assert_eq!(
         MeetingControl::status(&control).screen_default,
-        Some(default)
+        Some(expected)
     );
     let args = StartArgs {
         tracks: Some(vec![Track::Mic]),
@@ -744,11 +746,12 @@ fn no_screen_process_means_off() {
     assert_eq!(screen, "off");
     assert_eq!(
         default,
-        Some(ScreenMode::Video),
-        "the default is still Settings'"
+        Some(ScreenMode::Off),
+        "Rukoo hears the default a meeting really gets"
     );
-    let (screen, _) = screen_of_a_meeting(ScreenMode::Frames, false, StartedBy::Voice, None);
+    let (screen, default) = screen_of_a_meeting(ScreenMode::Frames, false, StartedBy::Voice, None);
     assert_eq!(screen, "off");
+    assert_eq!(default, Some(ScreenMode::Off));
 }
 
 fn engine_harness(name: &str) -> Harness {

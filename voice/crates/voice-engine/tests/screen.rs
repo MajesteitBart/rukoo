@@ -36,9 +36,9 @@ const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 const SCREEN: &str = "synthetic:1280x720,change-every=1000,text=Slide";
 /// Video without a hardware encoder: the software MFT on the system-memory path.
 const VIDEO: &str = "no-hardware,software-encoder";
-/// How soon after the start a screen process that waits for nobody is launched: a thread and a
-/// file open, well under the 500 ms handshake. Generous for a busy CI runner.
-const LAUNCH_SLACK: u64 = 200;
+/// How soon after the start a screen process that waits for nobody is launched (RUK-108 4.3:
+/// under 100 ms). It takes a thread, a read of meeting.json and a file open.
+const LAUNCH_SLACK: u64 = 100;
 
 fn main() {
     if std::env::var(ROLE).as_deref() == Ok("child") {
@@ -187,6 +187,8 @@ struct Rig {
     changes: Arc<Mutex<Vec<ScreenChange>>>,
     rukoo: Arc<(AtomicUsize, AtomicBool)>,
     started_at: Arc<AtomicU64>,
+    /// What the supervisor's free-space stand-in says, when the rig has one.
+    free: Arc<AtomicU64>,
 }
 
 type Slot = Arc<OnceLock<Mutex<Weak<ScreenSupervisor>>>>;
@@ -235,7 +237,15 @@ impl Rig {
         .unwrap();
         let changes: Arc<Mutex<Vec<ScreenChange>>> = Arc::default();
         let rukoo: Arc<(AtomicUsize, AtomicBool)> = Arc::default();
-        let screen = supervisor(&data, &log, test, &changes, &rukoo, free_bytes);
+        let free = Arc::new(AtomicU64::new(free_bytes.unwrap_or(0)));
+        let screen = supervisor(
+            &data,
+            &log,
+            test,
+            &changes,
+            &rukoo,
+            free_bytes.map(|_| Arc::clone(&free)),
+        );
         let _ = slot.set(Mutex::new(Arc::downgrade(&screen)));
         controller.set_screen(ScreenMode::Frames, screen.available());
         Rig {
@@ -248,6 +258,7 @@ impl Rig {
             changes,
             rukoo,
             started_at,
+            free,
         }
     }
 
@@ -391,7 +402,7 @@ fn supervisor(
     test: &str,
     changes: &Arc<Mutex<Vec<ScreenChange>>>,
     rukoo: &Arc<(AtomicUsize, AtomicBool)>,
-    free_bytes: Option<u64>,
+    free_bytes: Option<Arc<AtomicU64>>,
 ) -> Arc<ScreenSupervisor> {
     let screen = ScreenSupervisor::new(
         ScreenOptions {
@@ -401,7 +412,8 @@ fn supervisor(
             test_monitor: None,
             timing: screen_timing(),
             free_bytes: free_bytes.map(|free| {
-                Arc::new(move |_: &Path| Some(free)) as voice_engine::meetings::screen::FreeBytes
+                Arc::new(move |_: &Path| Some(free.load(Ordering::SeqCst)))
+                    as voice_engine::meetings::screen::FreeBytes
             }),
         },
         Some(log.clone()),
@@ -868,11 +880,24 @@ fn clip_get_refuses_near_the_video_floor() {
     assert_eq!(refused.message, "Not enough free disk space to cut a clip.");
     rig.stop(&live);
 
-    // With 8 GiB free it cuts, also while a meeting records.
+    // The clip's own input counts: one byte short of the floor and margin after it, refused.
     let roomy = Rig::with("clip-roomy", &video_spec(), Some(8 * GIB));
     let id = recorded_video(&roomy, 4);
     let live = roomy.start(StartedBy::Rukoo, Some(ScreenMode::Frames));
     let control = roomy.control();
+    let input = voice_screen_files::media::clip_input_bytes(&roomy.dir(&id), 500, 2_500).unwrap();
+    assert!(input > 0, "the clip reads video fragments");
+    roomy.free.store(6 * GIB + input - 1, Ordering::SeqCst);
+    let refused = control
+        .clip(&id, 500, 2_500, Instant::now() + Duration::from_secs(4))
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Failed);
+    // Exactly enough, and with 8 GiB free, it cuts, also while a meeting records.
+    roomy.free.store(6 * GIB + input, Ordering::SeqCst);
+    assert!(control
+        .clip(&id, 500, 2_500, Instant::now() + Duration::from_secs(4))
+        .is_ok());
+    roomy.free.store(8 * GIB, Ordering::SeqCst);
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let reply = control

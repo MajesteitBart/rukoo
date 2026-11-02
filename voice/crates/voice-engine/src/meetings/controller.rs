@@ -254,9 +254,14 @@ impl Controller {
         *lock(&self.screen) = (default, available);
     }
 
-    /// The `screen` a meeting gets when its start leaves it out (`status.screenDefault`).
+    /// The `screen` a meeting gets when its start leaves it out (`status.screenDefault`):
+    /// Settings' mode, or `off` when this computer can't record the screen, so Rukoo never
+    /// labels a default that Voice wouldn't record.
     pub fn screen_default(&self) -> ScreenMode {
-        lock(&self.screen).0
+        match *lock(&self.screen) {
+            (default, true) => default,
+            (_, false) => ScreenMode::Off,
+        }
     }
 
     fn screen_available(&self) -> bool {

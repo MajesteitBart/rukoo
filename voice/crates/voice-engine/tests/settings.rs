@@ -90,9 +90,25 @@ fn the_state_has_every_part_api_md_lists() {
     engine.shutdown();
 }
 
+/// The newest `status` event's `screenDefault`.
+fn screen_default_sent(h: &Harness) -> Value {
+    let log = voice_bridge::EventLog::open(&h.data()).unwrap();
+    log.after(0)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|e| e.event == "status")
+        .unwrap()
+        .data["screenDefault"]
+        .clone()
+}
+
 #[test]
 fn the_screen_default_is_saved_and_reaches_rukoo() {
-    let h = Harness::new("screen-default");
+    let mut h = Harness::new("screen-default");
+    // A screen program is there; its probe can't run, so capture isn't known to be unsupported.
+    h.screen_exe = h.dir.join("rukoo-voice-screen.exe");
+    std::fs::write(&h.screen_exe, b"not a program").unwrap();
     h.config(json!({}));
     let engine = h.start();
     engine
@@ -107,19 +123,26 @@ fn the_screen_default_is_saved_and_reaches_rukoo() {
         "video"
     );
     // Rukoo hears the new default in a status event.
-    let log = voice_bridge::EventLog::open(&h.data()).unwrap();
-    let status = log
-        .after(0)
-        .unwrap()
-        .into_iter()
-        .rev()
-        .find(|e| e.event == "status")
-        .unwrap();
-    assert_eq!(status.data["screenDefault"], "video");
+    assert_eq!(screen_default_sent(&h), "video");
     assert_eq!(
         code(engine.settings_set("meetings.screen", json!("4k"))),
         "invalid_value"
     );
+    engine.shutdown();
+
+    // Without a screen program a meeting records no screen, and Rukoo hears that as the default
+    // while Settings keeps the choice.
+    let h = Harness::new("screen-default-none");
+    h.config(json!({}));
+    let engine = h.start();
+    engine
+        .settings_set("meetings.screen", json!("video"))
+        .unwrap();
+    assert_eq!(
+        h.saved_config().meetings_screen,
+        voice_core::config::ScreenMode::Video
+    );
+    assert_eq!(screen_default_sent(&h), "off");
     engine.shutdown();
 }
 
