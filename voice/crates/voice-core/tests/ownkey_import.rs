@@ -229,6 +229,35 @@ fn live_transcription_allow_carries_consent_over() {
 }
 
 #[test]
+fn ownkeys_answer_never_covers_a_realtime_model() {
+    // Ownkey sent recorded windows; a realtime meeting model streams, so Settings asks.
+    let dir = TempDir::new("ownkey-consent-stream");
+    let path = write_ownkey(
+        &dir,
+        &json!({
+            "meetings_audio_provider": "mistral",
+            "meetings_audio_api_key": MEETING_KEY,
+            "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+            "meetings_audio_model": "voxtral-mini-transcribe-realtime-2602",
+            "meetings_live_transcription_policy": "allow"
+        }),
+    );
+    let mut cfg = Config::defaults(false);
+    let report = import(&path).unwrap().apply(&mut cfg, false);
+    assert_eq!(
+        cfg.meetings_audio_model,
+        "voxtral-mini-transcribe-realtime-2602"
+    );
+    assert_eq!(cfg.meetings_transcription_consent, None);
+    let consent = report.item("consent").unwrap();
+    assert!(!consent.imported);
+    assert_eq!(
+        consent.text,
+        "Sending meeting audio to Mistral: Voice asks in Settings first"
+    );
+}
+
+#[test]
 fn consent_is_never_invented() {
     // Only the live transcription answer counts, and only for a cloud provider.
     for value in [

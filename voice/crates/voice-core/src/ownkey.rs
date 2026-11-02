@@ -300,11 +300,12 @@ impl ImportResult {
             provider,
             label,
             host,
-            ..
+            mode,
         } = cfg.meeting_consent()
         {
-            if self.live_transcription_allowed {
-                // Ownkey sent recorded windows, so its answer never covers streaming.
+            // Ownkey sent recorded windows, so its answer never covers streaming: a realtime
+            // meeting model asks in Settings.
+            if self.live_transcription_allowed && mode == ConsentMode::Windows {
                 cfg.meetings_transcription_consent = Some(Consent {
                     provider,
                     host: host.clone(),
