@@ -158,7 +158,8 @@ test('Rukoo talks to the real Voice bridge server', { skip: ENABLED ? false : 's
     assert.equal(welcome.instance, ready.instance);
     assert.equal(welcome.head, scripted.head);
     assert.equal(welcome.oldest, 1);
-    assert.deepEqual(welcome.status, { recording: null, dictating: false });
+    // The scripted Voice can't record the screen, so its default is off.
+    assert.deepEqual(welcome.status, { recording: null, dictating: false, screenDefault: 'off' });
     assert.equal(r.bridge.state().status, 'connected');
     await until(() => r.events.length === scripted.head, 'the replay');
     assert.deepEqual(seqs(r.events), range(1, scripted.head));
@@ -200,20 +201,39 @@ test('Rukoo talks to the real Voice bridge server', { skip: ENABLED ? false : 's
     assert.equal(snap.meeting.id, A);
     assert.equal(snap.meeting.state, 'done');
     assert.equal(snap.passages.length, 4);
+    assert.deepEqual(snap.frames, []);
     // Nothing in the snapshot is new to a Rukoo that applied every event.
     assert.equal(store.applySnapshot(A, snap), null);
   });
 
+  await t.test('meeting.get carries the frames, oldest first', async () => {
+    await voice.send({ op: 'frame', meeting: A, at: 412000, text: 'Q3 roadmap' });
+    const last = await voice.send({ op: 'frame', meeting: A, at: 61000, text: '' });
+    await until(() => r.events.some((e) => e.seq === last.seq), 'the frames');
+    assert.deepEqual(r.invalid, []);
+    const snap = await r.bridge.command('meeting.get', { meeting: A });
+    assert.deepEqual(snap.frames, [
+      { id: 'f-000061000', at: 61000, width: 1920, height: 1080, text: '' },
+      { id: 'f-000412000', at: 412000, width: 1920, height: 1080, text: 'Q3 roadmap' }
+    ]);
+    const check = (data) => validate('voice', { type: 'event', seq: 1, event: 'frame', meeting: A, createdAt: 0, data });
+    for (const f of snap.frames) assert.equal(check(f).ok, true, JSON.stringify(f));
+    assert.equal(snap.head, last.seq);
+  });
+
   await t.test('commands get their results and the errors of PROTOCOL.md', async () => {
     const b = r.bridge;
-    assert.deepEqual(await b.command('status.get', {}), { recording: null, dictating: false });
+    assert.deepEqual(await b.command('status.get', {}), { recording: null, dictating: false, screenDefault: 'off' });
     const listed = await b.command('meeting.list', {});
     assert.deepEqual(listed.meetings.map((m) => [m.id, m.state, m.endedAt === null]), [[A, 'done', false]]);
 
-    const { meeting: B } = await b.command('meeting.start', { title: 'From Rukoo', context: { calendarEvent: 'evt-1' } });
+    const { meeting: B } = await b.command('meeting.start', { title: 'From Rukoo', screen: 'video', context: { calendarEvent: 'evt-1' } });
     assert.match(B, /^m-\d{8}-\d{6}-[0-9a-f]{4}$/);
     await until(() => ofMeeting(r.events, B, 'meeting.state').length === 1, 'the new meeting');
-    assert.equal(ofMeeting(r.events, B, 'meeting.started')[0].data.startedBy, 'rukoo');
+    const started = ofMeeting(r.events, B, 'meeting.started')[0].data;
+    assert.equal(started.startedBy, 'rukoo');
+    // A Voice that can't record the screen starts the meeting with off, whatever Rukoo asked.
+    assert.equal(started.screen, 'off');
     assert.equal(store.entry(B).eventId, 'evt-1');
     assert.equal(store.status().recording, B);
 
@@ -229,7 +249,16 @@ test('Rukoo talks to the real Voice bridge server', { skip: ENABLED ? false : 's
     assert.ok(Number.isInteger(mark.at));
     assert.equal((await refusal(b.command('meeting.stop', { meeting: 'm-20200101-000000-0000' }))).code, 'not_found');
     assert.equal((await refusal(b.command('frame.get', { meeting: A, at: 0 }))).code, 'not_available');
+    assert.equal((await refusal(b.command('clip.get', { meeting: A, start: 0, end: 15000 }))).code, 'not_available');
+    assert.equal((await refusal(b.command('clip.get', { meeting: 'm-20200101-000000-0000', start: 0, end: 0 }))).code, 'not_found');
+    assert.deepEqual(await b.command('meeting.protected', { meeting: B }), {});
+    assert.equal((await refusal(b.command('meeting.protected', { meeting: 'm-20200101-000000-0000' }))).code, 'not_found');
+    assert.equal((await refusal(b.command('screen.get', { meeting: B }))).code, 'not_available');
+    assert.equal((await refusal(b.command('screen.select', { meeting: B, monitor: '\\\\.\\DISPLAY2' }))).code, 'not_available');
     assert.equal((await refusal(b.command('example.unknown', { from: 0 }))).code, 'unknown_command');
+    // Voice's own check: a clip that ends before it starts is a bad request.
+    const backwards = await refusal(raw(b, { type: 'command', id: 'c-raw-clip', command: 'clip.get', args: { meeting: B, start: 2000, end: 1000 } }));
+    assert.equal(backwards.code, 'bad_request');
     const bad = await refusal(raw(b, { type: 'command', id: 'c-raw', command: 'meeting.stop', args: { meeting: 'not-a-meeting' } }));
     assert.equal(bad.code, 'bad_request');
 
