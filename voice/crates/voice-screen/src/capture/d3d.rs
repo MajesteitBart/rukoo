@@ -16,7 +16,8 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+    IDXGIAdapter3, IDXGIDevice, DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED,
+    DXGI_ERROR_DEVICE_RESET, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
 };
 use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
 
@@ -126,6 +127,19 @@ impl D3D {
     /// Whether the device was removed, even when no call has failed yet.
     pub fn removed(&self) -> bool {
         unsafe { self.device.GetDeviceRemovedReason() }.is_err()
+    }
+
+    /// The local video memory this process uses on the device's adapter, for the measurements.
+    pub fn memory_in_use(&self) -> Option<u64> {
+        unsafe {
+            let adapter = self.device.cast::<IDXGIDevice>().ok()?.GetAdapter().ok()?;
+            let adapter: IDXGIAdapter3 = adapter.cast().ok()?;
+            let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+            adapter
+                .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
+                .ok()?;
+            Some(info.CurrentUsage)
+        }
     }
 
     /// A BGRA texture the GPU reads and draws, the kind every captured frame is copied into.

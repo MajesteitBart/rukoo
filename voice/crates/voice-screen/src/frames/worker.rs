@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use voice_screen_files::frames::clean_text;
 use voice_screen_files::journal::Line;
@@ -129,6 +129,16 @@ impl FrameWorker {
         self.shared.ready.notify_all();
         self.handle.take();
     }
+
+    /// Lets the thread end and waits for it, so its OCR engine and bitmaps are released on
+    /// their own thread before the process exits.
+    pub fn join(&mut self) {
+        self.state().closing = true;
+        self.shared.ready.notify_all();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 impl Drop for FrameWorker {
@@ -190,14 +200,17 @@ fn process(
     };
     let file = paths::frame_file(&id);
     let path = meeting.join(&file);
+    let started = Instant::now();
     let (bytes, width, height) = match jpeg::bitmap(&pixels).and_then(|b| jpeg::encode(&b)) {
         Ok(encoded) => encoded,
         Err(e) => return failed(false, format!("JPEG encoding failed: {:#010x}", e.code().0)),
     };
+    let jpeg_ms = started.elapsed().as_millis();
     let fault = write_fail_at.is_some_and(|at| t >= at);
     if let Err(e) = write_synced(&path, &bytes, fault) {
         return failed(crate::disk::is_disk_full(&e), e.to_string());
     }
+    let started = Instant::now();
     let (text, status) = if skip_ocr {
         (String::new(), "skipped")
     } else if !ocr.available() {
@@ -208,6 +221,12 @@ fn process(
             Err(_) => (String::new(), "failed"),
         }
     };
+    // By id, size and timing only: never the text (section 7 reads the timings from here).
+    crate::log(format_args!(
+        "frame {id}: {width}x{height}, {} bytes, jpeg {jpeg_ms} ms, ocr {} ms ({status})",
+        bytes.len(),
+        started.elapsed().as_millis()
+    ));
     FrameDone::Saved(Line::Frame {
         t,
         id,

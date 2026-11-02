@@ -73,7 +73,8 @@ const REOFFER_MS: u64 = 250;
 const FINISH_WAIT: Duration = Duration::from_secs(5);
 /// OCR still running at the stop gets this long, then frames keep only their JPEG.
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
-const DRAIN_EXTRA: Duration = Duration::from_secs(3);
+const DRAIN_EXTRA: Duration = Duration::from_secs(2);
+const MEMORY_LOG: Duration = Duration::from_secs(60);
 /// How long to wait for the recorder's `session` line at startup.
 const SESSION_WAIT: Duration = Duration::from_secs(5);
 /// No new timeline line and no status request for this long, awake: the recorder is gone.
@@ -315,6 +316,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         next_heartbeat: Instant::now() + HEARTBEAT,
         next_disk_check: Instant::now(),
         next_lock_check: Instant::now(),
+        next_memory_log: Instant::now() + MEMORY_LOG,
         session,
     };
     log(format_args!(
@@ -434,6 +436,8 @@ struct Screen {
     next_heartbeat: Instant,
     next_disk_check: Instant,
     next_lock_check: Instant,
+    /// A development copy logs the GPU memory it uses once a minute, for the measurements.
+    next_memory_log: Instant,
     session: u64,
 }
 
@@ -510,6 +514,14 @@ impl Screen {
     fn try_start(&mut self) -> windows::core::Result<()> {
         if self.d3d.is_none() {
             let device = self.make_device()?;
+            log(format_args!(
+                "graphics device: {}",
+                match (device.warp, device.video) {
+                    (true, _) => "WARP",
+                    (false, true) => "GPU with video support",
+                    (false, false) => "GPU",
+                }
+            ));
             self.d3d = Some(device);
             self.source = None;
             self.thumbs = None;
@@ -839,7 +851,6 @@ impl Screen {
         };
         match jpeg::pixels(&d3d, frame) {
             Ok(pixels) => {
-                log(format_args!("frame {id}: {}x{}", frame.width, frame.height));
                 self.worker.send(FrameJob {
                     id: id.clone(),
                     t,
@@ -1213,7 +1224,12 @@ impl Screen {
         }
         if self.capture_retry_at.is_some_and(|at| now >= at) {
             self.capture_retry_at = None;
-            self.start_capture();
+            if self.monitors(true).iter().any(|m| m.id == self.monitor.id) {
+                self.start_capture();
+            } else {
+                // The monitor went away while capture was down: choose again.
+                self.on_monitor_lost();
+            }
         }
         if self.capturing && self.d3d.as_ref().is_some_and(D3D::removed) {
             self.on_device_lost();
@@ -1222,6 +1238,19 @@ impl Screen {
             video.tick(clockwin::boot_100ns());
         }
         self.reoffer();
+        if now >= self.next_memory_log {
+            self.next_memory_log = now + MEMORY_LOG;
+            if crate::dev_mode() {
+                if let Some(bytes) = self.d3d.as_ref().and_then(D3D::memory_in_use) {
+                    let dropped = self.video.as_ref().map_or(0, VideoThread::dropped);
+                    log(format_args!(
+                        "gpu memory in use: {} MB; frames saved: {}; video frames the encoder dropped: {dropped}",
+                        bytes >> 20,
+                        self.frames_saved
+                    ));
+                }
+            }
+        }
         let awake = clockwin::awake_100ns();
         if awake.saturating_sub(self.last_activity) >= self.orphan_100ns
             && awake.saturating_sub(self.last_status) >= self.orphan_100ns
@@ -1316,7 +1345,7 @@ impl Screen {
         for reply in replies {
             let _ = reply.send(json!({ "ok": true, "t": stopping.t }));
         }
-        self.worker.close();
+        self.worker.join();
     }
 
     fn handle_stopping(&mut self, event: Ev, replies: &mut Vec<Sender<Value>>) {
@@ -1374,10 +1403,11 @@ impl Screen {
         let _ = request.reply.send(reply);
     }
 
+    /// The `status` reply as `voice/RECORDING.md` "The screen control port" describes it.
     fn status(&mut self) -> Value {
         let t = self.now_t();
         let state = if self.stop.is_some() {
-            "stopping"
+            "stopped"
         } else if self.paused {
             "paused"
         } else if self.locked {
@@ -1401,7 +1431,8 @@ impl Screen {
                 "video": self.drops.video.map(Reason::as_str),
                 "frames": self.drops.frames.map(Reason::as_str),
             },
-            "encoder": self.encoder.as_ref().map(|(name, hardware)| json!({ "name": name, "hardware": hardware })),
+            "encoder": self.encoder.as_ref().map(|(name, _)| name.as_str()),
+            "hardware": self.encoder.as_ref().map(|(_, hardware)| *hardware),
             "saved": self.frames_saved,
         })
     }

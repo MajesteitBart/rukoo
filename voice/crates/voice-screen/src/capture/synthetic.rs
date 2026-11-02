@@ -141,7 +141,7 @@ fn run(
         let slide = slide_at(now);
         if slide != shown {
             shown = slide;
-            canvas.draw(&format!("{word} {slide}"), monitor);
+            canvas.draw(&format!("{word} {slide}"), slide, monitor);
             burst = BURST;
         }
         if burst > 0 {
@@ -237,8 +237,11 @@ impl Canvas {
         }
     }
 
-    /// Black text on white, centered, under a band whose colour says which monitor this is.
-    fn draw(&mut self, text: &str, monitor: u32) {
+    /// Black text on white, centered, under a band whose colour says which monitor this is, over
+    /// a row of eight cells that show the slide number in binary. A new slide flips at least one
+    /// cell, 2% of the screen, so it counts as a change the way a real slide does; one changed
+    /// digit alone stays under the saver's 1% threshold.
+    fn draw(&mut self, text: &str, slide: u64, monitor: u32) {
         const BANDS: [u32; 4] = [0x00B5_7A2D, 0x0030_9A3B, 0x002F_4FC7, 0x0080_3A8E];
         unsafe {
             let all = RECT {
@@ -257,6 +260,21 @@ impl Canvas {
             let colour = CreateSolidBrush(COLORREF(BANDS[(monitor as usize - 1) % BANDS.len()]));
             FillRect(self.dc, &band, colour);
             let _ = DeleteObject(colour.into());
+            let grey = CreateSolidBrush(COLORREF(0x0040_4040));
+            let cell = self.width as i32 / 8;
+            for bit in 0..8 {
+                if slide >> bit & 1 == 1 {
+                    let left = (7 - bit) * cell;
+                    let lit = RECT {
+                        left,
+                        top: self.height as i32 * 5 / 6,
+                        right: left + cell,
+                        bottom: self.height as i32,
+                    };
+                    FillRect(self.dc, &lit, grey);
+                }
+            }
+            let _ = DeleteObject(grey.into());
             SetTextColor(self.dc, COLORREF(0));
             let wide: Vec<u16> = text.encode_utf16().collect();
             let mut size = SIZE::default();
