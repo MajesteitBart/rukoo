@@ -76,5 +76,5 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 - Windows' capture border stays around the recorded monitor; Voice doesn't hide it.
 - Other apps' notifications and pop-ups on the recorded monitor end up in the frames. Rukoo holds back only its own.
 - With Rukoo's hide switch off, a meeting started from Rukoo records Rukoo's monitor, because Rukoo is the window you're working in. Move it with Screen in the header or with the pill's monitor button.
-- A Rukoo that connects to Voice more than 5 seconds after a meeting started from Voice can show in that meeting's first frames.
+- A Rukoo that isn't connected to Voice when a meeting starts from Voice can show in that meeting's first frames. Voice waits up to 5 seconds only for a Rukoo it has seen since Voice started, so right after Voice restarts it doesn't wait at all.
 - Native file dialogs and system notifications can't be hidden from screen capture.
