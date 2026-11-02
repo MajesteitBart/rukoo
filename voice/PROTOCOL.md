@@ -127,7 +127,7 @@ What Voice is doing right now. `welcome` carries the same object. Every dictatio
 ```
 
 - `tracks` are the audio tracks Voice records: `mic` is the user's microphone, `call` the computer's audio output, which holds the other people in a call.
-- `screen` is `off`, `frames` or `video`: what Voice records of the screen in this meeting, from `meeting.start` or else Voice's Settings. A Voice that can't record the screen on this computer starts the meeting with `off`. A `dropped` mark says when Voice stopped part of the screen recording.
+- `screen` is `off`, `frames` or `video`: what Voice records of the screen in this meeting, from `meeting.start` or else Voice's Settings. A Voice that can't record the screen on this computer starts the meeting with `off`. A `video_dropped` mark says when Voice stopped the video, and a `dropped` mark when it stopped recording the screen.
 - `startedBy` is `voice` or `rukoo`.
 - `context` is the object `meeting.start` passed, unchanged, or `null`. Voice stores it and doesn't read it.
 
