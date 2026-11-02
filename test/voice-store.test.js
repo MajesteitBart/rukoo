@@ -385,6 +385,7 @@ test("a snapshot replaces the frames, keeps the newer ones, and keeps the text R
   s.apply(at(frameEv(20000, 'Gone from Voice'), 3));
   const newer = at(frameEv(40000, 'After the head'), 9);
   s.apply(newer);
+  const newerTick = s.meeting(M).frames.find((f) => f.id === 'f-000040000').changed;
   const snap = {
     meeting: { id: M, title: 'Weekly with Anna', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'frames', startedBy: 'rukoo', context: null, state: 'recording', endedAt: null },
     speakers: [],
@@ -409,6 +410,8 @@ test("a snapshot replaces the frames, keeps the newer ones, and keeps the text R
       ['f-000040000', 'After the head', false]
     ]
   );
+  // Not a new change: a meeting chat that read it doesn't hear of it again.
+  assert.equal(frames[3].changed, newerTick, 'the frame newer than the snapshot keeps its tick');
   // frame.get brings the text later; it moves the meeting's rev for the renderer, but not the frame's tick.
   const rev = s.meeting(M).rev;
   const tick = frames[1].changed;

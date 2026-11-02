@@ -179,8 +179,9 @@ function voiceState() {
 }
 
 // While Rukoo Voice records the screen, Rukoo's own mail and booking notifications would land in its frames, and
-// from there with the agent and on disk. They wait out the meeting instead; the badge still counts, and calendar
-// reminders still show, because a missed reminder costs more than its title. Other apps' notifications aren't ours.
+// from there with the agent and on disk. Rukoo doesn't show them then, and doesn't show them later either: the badge
+// still counts the mail, and calendar reminders still show, because a missed reminder costs more than its title.
+// Other apps' notifications aren't ours.
 function screenRecording() {
   return Boolean(voice && voice.screenRecording());
 }
