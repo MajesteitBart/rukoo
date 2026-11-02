@@ -46,8 +46,9 @@ jobs:
         with:
           path: ${{ runner.temp }}\speaker-assets
           key: speaker-assets-${{ hashFiles('voice/nemo-runtime/manifest.json', 'voice/fixtures/ami/manifest.json', 'voice/scripts/speaker-assets.ps1') }}
-      # A failed download (a rate limit, say) doesn't fail the job: the tests whose assets are missing skip and say so.
-      # The runtime is skipped until it is published (voice/nemo-runtime/README.md).
+      # A failed download (a rate limit, say) doesn't fail this step. The tests whose assets are missing return early and
+      # libtest reports them as passed, so the next step warns about the skip, and once the runtime is published
+      # (voice/nemo-runtime/README.md) it fails the job instead: a green run then means the AMI and runtime tests ran.
       - name: Fetch the speaker label assets
         id: speaker-assets
         continue-on-error: true
@@ -71,7 +72,15 @@ jobs:
             Write-Host "$name=$($found[$name])"
             "$name=$($found[$name])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
-          if ($found.Count -lt 3) { Write-Host 'Some speaker label assets are missing; the tests that need them skip.' }
+          $missing = @('RUKOO_VOICE_TEST_NEMO_DIR', 'RUKOO_VOICE_TEST_NEMOTRON', 'RUKOO_VOICE_TEST_AMI') | Where-Object { -not $found.Contains($_) }
+          if ($missing) {
+            $published = $null -ne (Get-Content -Raw -LiteralPath 'nemo-runtime/manifest.json' | ConvertFrom-Json).archive
+            if ($published) {
+              Write-Host "::error::Speaker label assets missing: $($missing -join ', '). The runtime is published, so the AMI and runtime tests must run; rerun the job."
+              exit 1
+            }
+            Write-Host "::warning::Speaker label assets missing: $($missing -join ', '). The AMI label cases and the runtime tests skip, and the test output reports them as passed."
+          }
       # Includes the two recorder tests voice/AGENTS.md requires: a hard kill and a lost microphone mid-meeting.
       - run: cargo test --workspace --no-fail-fast
       # Rukoo's real bridge client against Voice's real bridge server (the voice-bridge `serve` example, built above).

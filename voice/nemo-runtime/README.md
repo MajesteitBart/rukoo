@@ -62,6 +62,6 @@ Publishing needs the maintainer's approval. It makes the runtime a prerelease of
    ```powershell
    gh release create nemo-runtime-97a15af-1 tmp\nemo-release\nemo-runtime-97a15af-1-win-x64.zip --prerelease --latest=false --title "NeMo-Speech.cpp runtime for Rukoo Voice" --notes-file tmp\nemo-release\notes.md
    ```
-4. Copy `tmp\nemo-release\manifest.json` over `voice/nemo-runtime/manifest.json` and commit it on the same branch. From then on, CI fetches the runtime and runs the runtime tests instead of skipping them.
+4. Copy `tmp\nemo-release\manifest.json` over `voice/nemo-runtime/manifest.json` and commit it on the same branch. From then on, CI fetches the runtime and runs the runtime tests instead of skipping them, and a run that couldn't fetch an asset fails rather than passing without them.
 
 A new runtime, for a new NeMo-Speech.cpp commit or a new toolset, gets a new name: change `name` and the pins in `manifest.json`, set `archive` back to `null` and `files` to `[]`, update `NEMO_COMMIT` and `RUNTIME_NAME` in the workflow, and publish under the new name. A published release is never replaced: `package.ps1` on older commits downloads it and checks it against the hashes those commits pinned.
