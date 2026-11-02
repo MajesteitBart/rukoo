@@ -248,11 +248,14 @@ pub fn rukoo_info(clients: &Clients, head: u64) -> RukooInfo {
     }
 }
 
+/// Rukoo clients whose `welcome` went out. A `meeting.starting` appended before a client's
+/// welcome can land in its replay, which Rukoo treats as history and never acks, so the start
+/// handshake counts a client only from its welcome on.
 fn rukoo_count(clients: &Clients) -> usize {
     clients
         .connected
         .iter()
-        .filter(|c| c.client == "rukoo")
+        .filter(|c| c.client == "rukoo" && c.welcomed)
         .count()
 }
 
@@ -329,7 +332,7 @@ impl Bridge {
         rukoo_info(&clients, self.log.head())
     }
 
-    /// How many Rukoo clients are connected now.
+    /// How many Rukoo clients are connected now and have their `welcome`.
     pub fn rukoo_clients(&self) -> usize {
         let clients = self.clients();
         self.note_seen(&clients);
@@ -385,8 +388,27 @@ mod tests {
             protocol: 1,
             after: 0,
             sent,
+            welcomed: true,
             connected_at: at,
         }
+    }
+
+    #[test]
+    fn the_handshake_counts_rukoo_from_its_welcome_on() {
+        let mut admitted = client("rukoo", 3, 0);
+        admitted.welcomed = false;
+        let clients = Clients {
+            connected: vec![admitted, client("probe", 4, 0)],
+            last_admitted_at: Some(4),
+            ..Clients::default()
+        };
+        assert_eq!(rukoo_count(&clients), 0);
+        let clients = Clients {
+            connected: vec![client("rukoo", 3, 0), client("probe", 4, 0)],
+            last_admitted_at: Some(4),
+            ..Clients::default()
+        };
+        assert_eq!(rukoo_count(&clients), 1);
     }
 
     fn refused(refusal: Refusal, protocol: Option<u64>, at: u64) -> Option<Refused> {

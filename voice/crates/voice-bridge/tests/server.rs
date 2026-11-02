@@ -777,9 +777,10 @@ fn the_handle_reports_its_clients_and_the_last_refused_hello() {
             rukoo.client_version.as_deref(),
             rukoo.protocol,
             rukoo.after,
-            rukoo.sent
+            rukoo.sent,
+            rukoo.welcomed
         ),
-        ("rukoo", Some("2.2.0"), 1, 1, 3)
+        ("rukoo", Some("2.2.0"), 1, 1, 3, true)
     );
     bridge
         .log

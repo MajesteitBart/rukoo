@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -87,6 +87,10 @@ pub struct Client {
     /// The highest sequence number the client has: sent on this connection, or `after` before
     /// the replay sent anything.
     pub sent: u64,
+    /// Its `welcome` went out, so every event appended from now on reaches it after the replay,
+    /// as a live event. An event appended between the `hello` and the `welcome` can fall inside
+    /// the replay, which Rukoo reads as history.
+    pub welcomed: bool,
     /// When it connected, in ms since the epoch.
     pub connected_at: u64,
 }
@@ -127,6 +131,7 @@ struct Registry {
 struct Entry {
     client: Client,
     sent: AtomicU64,
+    welcomed: AtomicBool,
 }
 
 /// Removes a connection from the registry when its task ends, also when it is aborted.
@@ -290,6 +295,7 @@ impl Handle {
                 .values()
                 .map(|entry| Client {
                     sent: entry.sent.load(Ordering::SeqCst),
+                    welcomed: entry.welcomed.load(Ordering::SeqCst),
                     ..entry.client.clone()
                 })
                 .collect(),
@@ -358,9 +364,11 @@ impl Shared {
                 protocol: hello.protocol,
                 after: hello.after,
                 sent: hello.after,
+                welcomed: false,
                 connected_at: now_ms(),
             },
             sent: AtomicU64::new(hello.after),
+            welcomed: AtomicBool::new(false),
         });
         let mut registry = lock(&self.registry);
         registry.last_admitted_at = Some(entry.client.connected_at);
@@ -662,6 +670,7 @@ impl Session {
             status,
         };
         self.send(Message::Welcome(welcome).to_json()).await?;
+        self.client.welcomed.store(true, Ordering::SeqCst);
         self.reached(from.saturating_sub(1));
         self.catch_up().await?;
 
