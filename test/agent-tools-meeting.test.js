@@ -607,6 +607,21 @@ test("get_meeting_clip's video notes: an older Voice, a full disk, and a cut tha
   assert.ok(Date.now() - t0 >= 1900, 'a second apart');
 });
 
+test('the transcript says why the screen video stopped after a lost graphics device, without promising frames', async (t) => {
+  const { feed, call } = await setup(t);
+  feed([
+    startedEv(M, { screen: 'video' }),
+    ev('mark', M, { id: 'dropped-video', kind: 'video_dropped', at: 5000, until: null, track: 'screen', detail: 'device', label: null }),
+    ev('mark', M, { id: 'dropped-frames', kind: 'dropped', at: 5000, until: null, track: 'screen', detail: 'device', label: null })
+  ]);
+  const res = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.deepEqual(untag(res.transcript).trim().split('\n'), [
+    "[00:00:05] [Rukoo Voice stopped the screen video: the graphics device didn't come back with video support]",
+    '[00:00:05] [Rukoo Voice stopped recording the screen to keep the audio]'
+  ]);
+  assert.doesNotMatch(res.transcript, /frames go on/);
+});
+
 test('the transcript says where the screen changed, folds a run of changes into one line, and never holds the screen text', async (t) => {
   const { feed, call, hub } = await setup(t);
   feed([

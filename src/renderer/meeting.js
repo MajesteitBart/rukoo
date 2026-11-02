@@ -756,9 +756,11 @@ function markText(k) {
       const key = { disk: 'meeting.mark.droppedDisk', device: 'meeting.mark.droppedDevice' }[k.detail] || 'meeting.mark.droppedEncoder';
       return t(key);
     }
-    // Only the video stopped; the frames go on.
-    case 'video_dropped':
-      return t(k.detail === 'disk' ? 'meeting.mark.droppedVideoDisk' : 'meeting.mark.droppedVideoEncoder');
+    // Only the video stopped. After a lost graphics device the frames may stop right after; their own mark says so.
+    case 'video_dropped': {
+      const key = { disk: 'meeting.mark.droppedVideoDisk', device: 'meeting.mark.droppedVideoDevice' }[k.detail] || 'meeting.mark.droppedVideoEncoder';
+      return t(key);
+    }
     // Monitor names come from Windows, through Voice.
     case 'monitor': {
       const name = k.label || t('meeting.mark.unnamedDevice');

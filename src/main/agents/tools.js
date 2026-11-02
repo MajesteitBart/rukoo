@@ -2363,7 +2363,10 @@ function markLine(k) {
     case 'dropped':
       return `${at} [Rukoo Voice stopped recording the screen to keep the audio]`;
     case 'video_dropped':
-      return `${at} [Rukoo Voice stopped the screen video to keep the audio; frames go on]`;
+      // After a lost graphics device the frames may stop too; a dropped mark then follows.
+      return k.detail === 'device'
+        ? `${at} [Rukoo Voice stopped the screen video: the graphics device didn't come back with video support]`
+        : `${at} [Rukoo Voice stopped the screen video to keep the audio; frames go on]`;
     case 'monitor':
       return `${at} [The screen recording moved to ${line(k.label) || 'another monitor'}]`;
     case 'screen_gap': {

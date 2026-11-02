@@ -9229,6 +9229,10 @@
     "message": "Video stopped: no video encoder on this computer worked. Frames go on.",
     "description": "Meeting view transcript: Rukoo Voice records the screen as frames only, because no video encoder worked; the screen frames are still recorded. src/renderer/meeting.js (markText)"
   },
+  "meeting.mark.droppedVideoDevice": {
+    "message": "Video stopped: the graphics card couldn't start the video again",
+    "description": "Meeting view transcript: Rukoo Voice stopped the screen video because the graphics device was reset and didn't come back with video support; the screen frames go on unless a mark that the screen recording stopped follows. src/renderer/meeting.js (markText)"
+  },
   "meeting.mark.droppedDevice": {
     "message": "Screen recording stopped to keep recording audio: the graphics card couldn't start again",
     "description": "Meeting view transcript: Rukoo Voice stopped recording the screen because the graphics device was reset and couldn't be started again. src/renderer/meeting.js (markText)"

@@ -692,6 +692,7 @@ test('marks about the screen say what happened to it, apart from the audio', asy
   mark({ id: 'gap-screen-000200000', kind: 'screen_gap', at: 200000, until: 204000, detail: 'device' });
   mark({ id: 'monitor-000210000', kind: 'monitor', at: 210000, detail: 'lost', label: 'PHL 275V8' });
   mark({ id: 'dropped-frames-a', kind: 'dropped', at: 240000, detail: 'disk' });
+  mark({ id: 'dropped-video-c', kind: 'video_dropped', at: 245000, detail: 'device' });
   mark({ id: 'dropped-frames-b', kind: 'dropped', at: 250000, detail: 'device' });
   await openMeetings();
   await expect(view().locator('.mt-mark .mt-line')).toHaveText([
@@ -703,15 +704,17 @@ test('marks about the screen say what happened to it, apart from the audio', asy
     /^Screen: not recorded for 4 sec\w* while the graphics card restarted$/,
     'The recorded monitor went away; screen recording moved to PHL 275V8',
     'Screen recording stopped to keep recording audio: the disk is full',
+    "Video stopped: the graphics card couldn't start the video again",
     "Screen recording stopped to keep recording audio: the graphics card couldn't start again"
   ]);
   await expect(view().locator('.mt-mark.is-monitor svg')).toHaveCount(2);
   await expect(view().locator('.mt-mark.is-screen_gap')).toHaveCount(3);
-  await expect(view().locator('.mt-mark.is-video_dropped')).toHaveCount(2);
+  await expect(view().locator('.mt-mark.is-video_dropped')).toHaveCount(3);
   await shot('screen-marks-light-en');
   await setLanguage('nl');
   await setTheme('dark');
   await expect(view().locator('.mt-mark .mt-line').first()).toHaveText('Video gestopt: geen video-encoder op deze computer werkte. Schermbeelden gaan door.');
+  await expect(view().locator('.mt-mark.is-video_dropped .mt-line').nth(2)).toHaveText('Video gestopt: de videokaart kon de video niet opnieuw starten');
   await shot('screen-marks-dark-nl');
 });
 
