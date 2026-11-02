@@ -155,10 +155,14 @@ mod tests {
         }
         let path = video_path(&m, &video);
         let index = mp4::index_path(&path).unwrap();
+        let reached = t(&video) + media_ms(&index);
+        println!(
+            "    the video reaches {reached} ms, killed at {killed_at}: {} ms lost",
+            killed_at.saturating_sub(reached)
+        );
         assert!(
-            t(&video) + media_ms(&index) + 2_000 >= killed_at,
-            "the video ends at {} ms, killed at {killed_at}",
-            t(&video) + media_ms(&index)
+            reached + 2_000 >= killed_at,
+            "the video ends at {reached} ms, killed at {killed_at}"
         );
         let report = assert_video_reads(&path);
         if hardware {

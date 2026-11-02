@@ -195,6 +195,9 @@ impl VideoWriter {
             attributes
                 .SetUINT32(&MF_SINK_WRITER_DISABLE_THROTTLING, 1)
                 .map_err(classify)?;
+            // Encoded samples reach the file without waiting for more input, so a hard kill
+            // loses less than the open fragment plus the encoder's queue.
+            attributes.SetUINT32(&MF_LOW_LATENCY, 1).map_err(classify)?;
             attributes
                 .SetUINT64(&MF_MPEG4SINK_MIN_FRAGMENT_DURATION, SECOND as u64)
                 .map_err(classify)?;
