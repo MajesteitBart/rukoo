@@ -1687,6 +1687,63 @@ fn a_stream_that_never_finishes_fails_the_meeting() {
     assert_eq!(sessions, 3);
 }
 
+/// 11n: after the stop, a provider that answers every session but never finishes runs out of
+/// tries. Each new session sends the last audio again and hears the same words, which reach no
+/// further than an earlier session's did, so they aren't progress: the meeting fails after the
+/// limit instead of sending that audio again for ever.
+#[test]
+fn a_stream_that_answers_but_never_finishes_fails_the_meeting() {
+    let tmp = TempDir::new("speakers-mistral-answers-unfinished");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    // The call ends while a voice talks, so every session answers that voice when it ends.
+    let mut pieces = three_voices(2, 1.5);
+    pieces.push((1.5, Some(2)));
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    fake.state().never_done = true;
+    let options = PipelineOptions {
+        speakers: FollowerTiming {
+            stream_speed: 20.0,
+            stream_drain: Duration::from_millis(300),
+            ..follower_timing()
+        },
+        ..mistral_options(&fake, true)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    let state = wait_until("the meeting to end", WAIT, || {
+        let sessions = fake.state().sessions.iter().filter(|s| s.diarize).count();
+        assert!(sessions <= 10, "{sessions} sessions and no end");
+        let state = handle.state();
+        state.is_final().then_some(state)
+    });
+    handle.shutdown();
+    let PipelineState::Failed { reason } = state else {
+        panic!("{state:?}");
+    };
+    assert!(reason.contains("stopped answering"), "{reason}");
+    let sessions = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    // `fast()` gives up after three failures in a row.
+    assert_eq!(sessions, 3);
+    // The last session answered too: text without an end, not silence.
+    let t = Transcript::open(rec.dir.path()).unwrap();
+    let last = t
+        .epochs()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.track == Track::Call)
+        .map(|e| e.epoch)
+        .max()
+        .unwrap();
+    let answered = t.segments(Track::Call, 0, u64::MAX).unwrap();
+    assert!(
+        answered
+            .iter()
+            .any(|s| s.epoch == last && !s.text.trim().is_empty()),
+        "{answered:#?}"
+    );
+}
+
 /// 11f: after the stop, a provider that takes every connection and drops it at the first audio
 /// runs out of tries, and the meeting fails instead of trying for ever.
 #[test]

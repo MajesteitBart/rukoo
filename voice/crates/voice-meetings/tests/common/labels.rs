@@ -306,6 +306,8 @@ pub struct FakeStreamState {
     /// Sessions that don't label voices send each word and each space before it as a delta of
     /// its own, as Mistral's realtime model can.
     pub spaced_deltas: bool,
+    /// Sessions that label voices answer, also for the words they hear last, but never finish.
+    pub never_done: bool,
 }
 
 /// Mistral's realtime stream without a network: one segment per burst of a hidden speaker, sent
@@ -346,6 +348,7 @@ impl StreamingSpeech for FakeStreaming {
             mute: session.diarize && (state.mute_all || (state.mute_first && labelling == 1)),
             slow: state.slow_answers.filter(|_| session.diarize),
             spaced: state.spaced_deltas && !session.diarize,
+            never_done: state.never_done && session.diarize,
             released: Instant::now(),
             names,
             heard: 0,
@@ -367,6 +370,8 @@ struct FakeStream {
     slow: Option<Duration>,
     /// Words and the spaces before them as deltas of their own.
     spaced: bool,
+    /// `end` answers but sends no `Done`.
+    never_done: bool,
     released: Instant,
     names: HashMap<usize, String>,
     heard: usize,
@@ -479,7 +484,9 @@ impl SpeechStream for FakeStream {
             }
         }
         self.end_burst();
-        self.events.push(StreamEvent::Done);
+        if !self.never_done {
+            self.events.push(StreamEvent::Done);
+        }
         Ok(())
     }
 }

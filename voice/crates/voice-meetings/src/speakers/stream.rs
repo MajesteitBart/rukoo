@@ -94,7 +94,7 @@ impl StreamFollower {
                 lengths: HashMap::new(),
                 answered,
                 confirmed,
-                progressed: false,
+                counted: confirmed,
                 fed: 0,
                 session: None,
             };
@@ -183,8 +183,10 @@ struct Ctx {
     /// Meeting ms up to which the provider demonstrably answered: the end of the last segment it
     /// sent, or everything it was sent once it finished.
     confirmed: u64,
-    /// The provider sent something since the last look: a segment or the end of the stream.
-    progressed: bool,
+    /// `confirmed` when the failures were last counted from zero or a session last failed. Only
+    /// answers stored past it are progress: a new session sends the audio after the last answer
+    /// again, and the same words for it again move nothing.
+    counted: u64,
     /// Meeting samples sent in this session.
     fed: u64,
     session: Option<Session>,
@@ -230,9 +232,11 @@ impl Ctx {
                     return;
                 }
                 Ok(flow) => {
-                    // Only answers count as progress after the stop: a provider that takes the
-                    // connection and then fails the first audio still runs out of tries.
-                    if std::mem::take(&mut self.progressed) {
+                    // Only answers past the last confirmed position count as progress after the
+                    // stop: a provider that takes the connection and then fails the first audio,
+                    // or answers the audio sent again and never finishes, still runs out of tries.
+                    if self.confirmed > self.counted {
+                        self.counted = self.confirmed;
                         attempts = 0;
                         after_stop = 0;
                     } else if self
@@ -251,6 +255,9 @@ impl Ctx {
                 Err(_) if self.shared.stopping() => return,
                 Err(fail) => {
                     self.drop_session();
+                    // What the failed session answered resets nothing: the next one has to
+                    // answer past it.
+                    self.counted = self.counted.max(self.confirmed);
                     let message = match fail {
                         Fail::Provider(e) if e.message.trim().is_empty() => {
                             "The streaming transcription failed.".to_owned()
@@ -661,7 +668,6 @@ impl Ctx {
         if let Some(end) = rows.iter().map(|r| r.end).max() {
             confirmed = confirmed.max(end);
         }
-        let progressed = session.done || !rows.is_empty();
         let epoch = session.epoch;
         if !batch.is_empty() || !rows.is_empty() || answered > self.answered {
             self.transcript
@@ -670,7 +676,6 @@ impl Ctx {
         // Only what was stored counts: after a failed write the next session starts where the
         // stored answers end, and hears this audio again.
         self.confirmed = confirmed;
-        self.progressed |= progressed;
         self.answered = answered;
         if !batch.map.is_empty() {
             let voices: HashSet<String> = self.transcript.speaker_map()?.into_values().collect();
