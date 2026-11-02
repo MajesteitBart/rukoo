@@ -62,7 +62,7 @@ Settings → Meetings shows whether Rukoo Voice is connected, and has two switch
   - Linux has no way to hide a window. Keep Rukoo on a monitor you don't share or record.
 - **Agents can read meetings.** Off, the meeting tools give agents nothing from your meetings, and a new chat about a meeting is named after your first message instead of the meeting.
 
-While a meeting records the screen, Rukoo holds back its mail and booking notifications, so their text stays out of the frames. The badge still counts new mail. Calendar reminders still show, because a missed reminder costs more than its title on the screen.
+While a meeting records the screen, Rukoo holds back its mail and booking notifications, so their text stays out of the frames. The badge still counts new mail. When Voice stops recording the screen for good, for example because the disk is nearly full, the notifications come back for the rest of the meeting; the ones held until then aren't shown later. Calendar reminders still show, because a missed reminder costs more than its title on the screen.
 
 In meeting mode, the status line at the bottom of the sidebar says how Voice is, and opens these settings.
 

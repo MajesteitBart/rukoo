@@ -644,6 +644,12 @@ class VoiceStore {
     return isMeetingId(id) ? this.index.meetings[id] || null : null;
   }
 
+  // Whether Voice stopped recording the meeting's screen for good: it sends a dropped mark on the screen track then.
+  screenDropped(id) {
+    const m = this.data(id);
+    return Boolean(m) && Object.values(m.marks).some((k) => k.kind === 'dropped' && k.track === 'screen');
+  }
+
   // Newest first.
   list() {
     return Object.values(this.index.meetings).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0) || (a.id < b.id ? 1 : -1));

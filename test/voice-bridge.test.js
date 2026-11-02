@@ -617,6 +617,25 @@ test('screenRecording: a recording meeting that records the screen, by what meet
   assert.equal(s.screenRecording(), true, 'Rukoo does not know, so it holds back');
 });
 
+test('screenRecording: not after a dropped mark says the screen recording stopped for good', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const s = service(t, dir, file, { hide: () => false }).init();
+  await until(() => s.connected, 'the connection');
+  voice.append('meeting.started', M1, { ...started('Long review'), screen: 'frames' });
+  voice.append('meeting.state', M1, { state: 'recording', at: 0 });
+  await until(() => s.recording() === M1, 'the recording');
+  assert.equal(s.screenRecording(), true);
+  // The video stopping leaves the frames, which still record the screen.
+  voice.append('mark', M1, { id: 'dropped-video', kind: 'video_dropped', at: 1_700_000, until: null, track: 'screen', detail: 'disk', label: null });
+  await until(() => s.store.meeting(M1).marks.length === 1, 'the video_dropped mark');
+  assert.equal(s.screenRecording(), true, 'the frames go on');
+  voice.append('mark', M1, { id: 'dropped-frames', kind: 'dropped', at: 1_800_000, until: null, track: 'screen', detail: 'disk', label: null });
+  await until(() => s.store.meeting(M1).marks.length === 2, 'the dropped mark');
+  assert.equal(s.recording(), M1, 'the audio still records');
+  assert.equal(s.screenRecording(), false, 'Voice records no screen any more');
+});
+
 test('clip, screen and monitor commands reach Voice, and answers of the wrong shape fail', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();

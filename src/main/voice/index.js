@@ -166,13 +166,14 @@ class VoiceService extends EventEmitter {
 
   // Whether Voice records the screen now, as far as Rukoo knows: main holds back notifications then, so they stay out
   // of the frames. Also while a start is on its way, and before meeting.started says what the meeting records: the
-  // screen the start asked for, else Voice's default, and recording when Rukoo doesn't know.
+  // screen the start asked for, else Voice's default, and recording when Rukoo doesn't know. Not after a dropped mark
+  // on the screen track, which says the screen recording stopped for good.
   screenRecording() {
     if (this.starting > 0) return true;
     const id = this.recording();
     if (!id) return false;
     const e = this.store.entry(id);
-    if (e && e.startedAt !== null) return e.screen !== 'off';
+    if (e && e.startedAt !== null) return e.screen !== 'off' && !this.store.screenDropped(id);
     const asked = this.startScreen && this.startScreen.id === id ? this.startScreen.screen : null;
     return (asked || this.store.status().screenDefault) !== 'off';
   }
