@@ -823,6 +823,10 @@ impl Queue {
     ///   finished ones (transcript snapshots) are gone, so the next scan makes them again;
     /// - rows a restore imported, manifests and the index are dropped: they describe objects in the
     ///   old place;
+    /// - so are rows of objects the old place removed, and no meeting's media counts as removed by
+    ///   bucket retention any more: the next scan queues the media still on this computer again,
+    ///   unless the new place's retention would remove it, and retention holds it until it
+    ///   reached the new place;
     /// - every meeting needs a new manifest, none counts as synced or in the index, and bucket
     ///   retention runs again soon.
     ///
@@ -872,7 +876,7 @@ impl Queue {
             tx.execute_batch(
                 "DELETE FROM parts; \
                  DELETE FROM files WHERE kind IN ('manifest', 'index') OR header IS NULL \
-                   OR state = 'gone'; \
+                   OR state IN ('gone', 'removed'); \
                  UPDATE files SET \
                    state = CASE WHEN source IS NOT NULL AND state = 'done' THEN 'gone' \
                      ELSE 'waiting' END, \
@@ -881,7 +885,7 @@ impl Queue {
                    lane = CASE WHEN (SELECT phase FROM meetings m WHERE m.id = files.meeting) = 'live' \
                      THEN lane ELSE 2 END \
                  WHERE state IN ('waiting', 'uploading', 'done'); \
-                 UPDATE meetings SET uploaded_gen = 0, \
+                 UPDATE meetings SET uploaded_gen = 0, media_removed_at = NULL, \
                    manifest_dirty = CASE WHEN phase = 'forgotten' THEN 0 ELSE 1 END, \
                    phase = CASE WHEN phase IN ('synced', 'restored') THEN 'after' ELSE phase END; \
                  DELETE FROM meta WHERE key IN ('index_due', 'pruned_at');",

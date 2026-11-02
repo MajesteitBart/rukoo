@@ -148,3 +148,68 @@ fn forget_meeting_removes_every_object_and_marks_it_deleted() {
     assert_eq!(objects(&fake).len(), before);
     assert!(!voice.sync.in_bucket(&kept.id, "meeting.json"));
 }
+
+#[test]
+fn a_new_bucket_gets_media_the_old_buckets_retention_removed() {
+    let (first, second) = (fake(), fake());
+    let data = scratch("prune-move");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::with(
+        &data,
+        Setup {
+            timing: SyncTiming {
+                prune_every: Duration::from_millis(200),
+                ..timing()
+            },
+            ..Setup::default()
+        },
+    );
+    let (old, audio) = finished(&voice.meetings(), "Old", 100);
+    voice.connect(&first.endpoint());
+    voice.settle(&first, WAIT);
+    let key = voice.key();
+    let object = |rel: &str| file_object(&key, &old.id, rel, &old.read(rel));
+
+    // The first bucket's retention removes the audio; this computer keeps its copy.
+    let mut cfg = config(&first.endpoint());
+    cfg.retention = BucketRetention::Days90;
+    voice.sync.configure(Some(cfg));
+    let ok = wait_for(WAIT, || {
+        audio.iter().all(|rel| !has_object(&first, &object(rel)))
+            && manifest(&first, &key, &old.id).is_some_and(|m| m.media_removed_at.is_some())
+    });
+    assert!(ok, "{:?}", first.log());
+    voice.settle(&first, WAIT);
+    for rel in &audio {
+        assert!(old.path(rel).is_file());
+    }
+
+    // Sync moves to a second bucket that keeps media and can't be reached yet: the audio waits
+    // again with meeting.json, the timeline and the transcript, and stays held meanwhile.
+    second.faults().refuse = true;
+    voice.sync.configure(Some(config(&second.endpoint())));
+    let ok = wait_for(WAIT, || voice.sync.status().waiting == 5);
+    assert!(ok, "the audio waits too: {:?}", voice.sync.status());
+    assert!(voice.sync.holds_media(&old.id, true));
+    for rel in &audio {
+        assert!(!voice.sync.in_bucket(&old.id, rel), "{rel}");
+    }
+
+    second.faults().refuse = false;
+    voice.settle(&second, WAIT);
+    let mf = manifest(&second, &key, &old.id).expect("a manifest in the second bucket");
+    assert!(mf.media_removed_at.is_none());
+    for rel in &audio {
+        assert!(mf.files.iter().any(|f| f.path == *rel), "{rel} is listed");
+    }
+    let rels: Vec<&str> = audio.iter().map(String::as_str).collect();
+    assert_eq!(
+        uploaded_files(&second, &key, &old, &rels).len(),
+        audio.len()
+    );
+    let ok = wait_for(WAIT, || {
+        audio.iter().all(|rel| voice.sync.in_bucket(&old.id, rel))
+            && !voice.sync.holds_media(&old.id, true)
+    });
+    assert!(ok, "the hold lets go once the second bucket has the audio");
+}
