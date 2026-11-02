@@ -194,12 +194,13 @@ const protectedNow = (page) => page.evaluate(() => window.__settingsMockProtecte
 const dialogText = (page) => page.locator('.dialog').innerText();
 // Test connection pressed with the mouse, as a user does: the press takes the focus from the field being edited, which
 // saves it, before the click lands. page.click() would focus the button first. Scrolling doesn't move the focus.
-const pressTest = async (page) => {
-  const test = page.locator('[data-a="sync-test"]');
-  await test.scrollIntoViewIfNeeded();
-  const box = await test.boundingBox();
+const press = async (page, selector) => {
+  const target = page.locator(selector);
+  await target.scrollIntoViewIfNeeded();
+  const box = await target.boundingBox();
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 };
+const pressTest = (page) => press(page, '[data-a="sync-test"]');
 
 check('the sync card shows only when the engine lists sync in features', async ({ open, page }) => {
   await open('settings.html?mock=1&lang=en&page=storage');
@@ -429,6 +430,66 @@ check('an http endpoint is refused with its own text and stays in the field', as
   assert.match(await dialogText(page), /It starts with https:\/\//);
   await page.keyboard.press('Escape');
   assert.equal(await page.inputValue('[data-field="storage.sync.endpoint"]'), 'http://example.com');
+});
+
+// Test connection and the switch both use the saved fields, so neither may run while a field shows a value the app
+// refused: the page would say "Connected to the bucket", or sync would start, for an endpoint the form doesn't show.
+check('a refused connection value blocks Test connection and the switch until a value saves', async ({ open, page, calls, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=tested');
+  const endpoint = '[data-field="storage.sync.endpoint"]';
+  const toggle = '[data-a="toggle:storage.sync.enabled"]';
+  const connection = page.locator('[data-section="sync-connection"]');
+  const sent = async (match) => (await calls()).filter(match).length;
+  const tests = () => sent(([command]) => command === 'settings_sync_test');
+  const switchesOn = () => sent(([command, args]) => command === 'settings_set' && args.key === 'storage.sync.enabled' && args.value === true);
+  const blocked = async (why) => {
+    assert.equal(await connection.locator('.form-status.ok').count(), 0, `${why}: a passed test shows next to the refused endpoint`);
+    assert.equal(await page.locator('[data-a="sync-test"]').isDisabled(), true, `${why}: Test connection waits`);
+    assert.equal(await page.locator(toggle).isDisabled(), true, `${why}: the switch waits`);
+    assert.match(await connection.locator('.form-status').innerText(), /Voice didn't save the marked field\./, why);
+    assert.equal(await page.locator(endpoint).getAttribute('aria-invalid'), 'true', why);
+  };
+  const unblocked = async () => {
+    await page.waitForFunction(() => !document.querySelector('[data-a="sync-test"]').disabled);
+    assert.equal(await page.locator(endpoint).getAttribute('aria-invalid'), null);
+  };
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+
+  // Refused when the field loses focus: the value stays to be fixed, and the passed test no longer shows.
+  await blurFill(page, 'storage.sync.endpoint', 'http://example.com');
+  await page.waitForSelector('.dialog');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  await blocked('refused on blur');
+  assert.equal(await page.inputValue(endpoint), 'http://example.com');
+  await blurFill(page, 'storage.sync.endpoint', 'https://fixed.example.com');
+  await unblocked();
+
+  // Typed, then Test or the switch pressed at once while the app takes a moment to answer: the press saves the field,
+  // the app refuses it, and the test or the switch that waited for that save doesn't run with the saved endpoint.
+  await page.evaluate(() => (window.__settingsMockSlow.settings_set = 300));
+  for (const [target, ran] of [
+    ['[data-a="sync-test"]', tests],
+    [toggle, switchesOn]
+  ]) {
+    await page.click('[data-a="sync-test"]');
+    await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+    assert.equal(await page.locator(toggle).isDisabled(), false, 'tested, so the switch can turn on');
+    const before = await ran();
+    await page.click(endpoint);
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('http://typed.example.com');
+    await press(page, target);
+    await page.waitForSelector('.dialog');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    assert.equal(await ran(), before, `${target} ran with the saved endpoint`);
+    await blocked(target);
+    assert.equal((await mockState()).config.storage.sync.enabled, false);
+    await blurFill(page, 'storage.sync.endpoint', 'https://fixed.example.com');
+    await unblocked();
+  }
 });
 
 check('the sync status says what the bucket is doing', async ({ open, page }) => {

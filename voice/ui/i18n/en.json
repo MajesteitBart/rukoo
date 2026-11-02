@@ -1114,6 +1114,10 @@
     "message": "Test the connection before you turn sync on.",
     "description": "Settings > Storage: description of the sync switch while it waits for a passed Test connection; also the message when the app refuses to turn sync on. voice/ui/settings.js (syncSection)."
   },
+  "settings.sync.refused": {
+    "message": "Voice didn't save the marked field. Fix it before you test the connection or turn sync on.",
+    "description": "Settings > Storage: beside Test connection and as the sync switch's description while a connection field shows a value the app refused, such as an http:// endpoint; the field is marked. voice/ui/settings.js (syncConnectionCard)."
+  },
   "settings.sync.backfill": {
     "message": "Voice then also uploads the meetings on this computer now, newest first.",
     "description": "Settings > Storage: added to the sync switch description while sync is off. voice/ui/settings.js (syncSection)."

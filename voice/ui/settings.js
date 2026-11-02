@@ -123,13 +123,14 @@ let tokenDone = false;
 let importStatus = null;
 let idleError = false;
 // Bucket sync: the last Test connection on this page (for the fields and secret it ran with), whether the saved
-// secret's field is open for a new one, the settings_set and secret calls still running (a test waits for them), and
-// the close function of an open key dialog.
+// secret's field is open for a new one, the settings_set and secret calls still running (a test waits for them), the
+// connection fields whose value the app refused and which still show it, and the close function of an open key dialog.
 let syncTest = null;
 let syncTestRun = 0;
 let secretVersion = 0;
 let syncReplacing = false;
 const syncPending = new Set();
+const syncRefused = new Set();
 let keyDialog = null;
 
 // ---------- small helpers ----------
@@ -752,10 +753,19 @@ function syncSections() {
   ];
 }
 
+// The switch turns on only for the fields on screen. While one of them shows a value the app refused, sync would start
+// with the saved value instead, so it waits; turning sync off never does.
 function syncSwitchCard() {
   const sync = state.config.storage.sync;
-  const waits = !sync.tested && !sync.enabled;
-  const desc = waits ? t('settings.sync.needsTest') : sync.enabled ? t('settings.sync.help') : `${t('settings.sync.help')} ${t('settings.sync.backfill')}`;
+  const refused = !sync.enabled && syncRefused.size > 0;
+  const waits = (!sync.tested && !sync.enabled) || refused;
+  const desc = refused
+    ? t('settings.sync.refused')
+    : waits
+      ? t('settings.sync.needsTest')
+      : sync.enabled
+        ? t('settings.sync.help')
+        : `${t('settings.sync.help')} ${t('settings.sync.backfill')}`;
   const lines = syncStatus();
   return card(
     row({ title: t('settings.sync.title'), desc, toggle: sync.enabled, action: 'toggle:storage.sync.enabled', disabled: waits, cls: 'sync-switch' }) +
@@ -810,12 +820,15 @@ function syncStatus() {
 }
 
 // The fields save on blur through settings_set. The secret never does: it goes to settings_sync_save_secret and
-// then shows as Key saved, like a provider's API key.
+// then shows as Key saved, like a provider's API key. A field whose value the app refused is marked, and Test connection
+// waits until a value saves there: the test would run with the saved value, not the one on screen.
 function syncConnectionCard() {
   const sync = state.config.storage.sync;
   const service = formValue('storage', 'sync.service') || 'upcloud';
   const field = (name, label, placeholder = '', extra = '') =>
-    `<label>${esc(t(label))}<input type="text" data-field="storage.sync.${name}" spellcheck="false" autocomplete="off" ${extra} ${placeholder ? `placeholder="${esc(placeholder)}"` : ''} /></label>`;
+    `<label>${esc(t(label))}<input type="text" data-field="storage.sync.${name}" spellcheck="false" autocomplete="off" ${extra} ${
+      placeholder ? `placeholder="${esc(placeholder)}"` : ''
+    } ${syncRefused.has(`sync.${name}`) ? 'aria-invalid="true"' : ''} /></label>`;
   const services = [
     ['upcloud', 'UpCloud Managed Object Storage'],
     ['r2', 'Cloudflare R2'],
@@ -837,21 +850,24 @@ function syncConnectionCard() {
           ? `<span class="form-status grow bad"><span>${esc(t(SYNC_ERRORS[test.code] || 'settings.sync.error.failed'))}${
               test.message ? ` <button class="link-btn" data-a="sync-details:test">${esc(t('common.errorDetails'))}</button>` : ''
             }</span></span>`
-          : '<span class="form-status grow"></span>';
+          : syncRefused.size
+            ? `<span class="form-status grow bad"><span>${esc(t('settings.sync.refused'))}</span></span>`
+            : '<span class="form-status grow"></span>';
   const otherKeys = test?.kind === 'ok' && test.otherKeys > 0 ? `<span class="field-help">${esc(t('settings.sync.otherKeys'))}</span>` : '';
   return card(`<div class="form" data-form="sync">
     <label>${esc(t('settings.sync.service'))}<select data-field="storage.sync.service">${services.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select></label>
     ${field('endpoint', 'settings.sync.endpoint', SYNC_ENDPOINTS[service], 'inputmode="url"')}${field('region', 'settings.sync.region', service === 'r2' ? 'auto' : '')}
     ${field('bucket', 'settings.sync.bucket')}${field('prefix', 'settings.sync.prefix')}${field('accessKeyId', 'settings.sync.accessKey')}
     ${secret}${otherKeys}
-    <div class="form-actions">${statusHtml}<button class="btn primary" data-a="sync-test" ${test?.kind === 'testing' || !sync.secretSaved ? 'disabled' : ''}>${esc(
+    <div class="form-actions">${statusHtml}<button class="btn primary" data-a="sync-test" ${test?.kind === 'testing' || !sync.secretSaved || syncRefused.size ? 'disabled' : ''}>${esc(
       t('settings.sync.test')
     )}</button></div></div>`);
 }
 
-// A test result counts only for the fields and the secret it ran with.
+// A test result counts only for the fields and the secret it ran with. Those are the saved fields, so none shows while
+// a field holds a value the app refused.
 const syncConnectionKey = () => JSON.stringify([...SYNC_FIELDS.map((name) => state.config.storage.sync[name] ?? ''), secretVersion]);
-const currentSyncTest = () => (syncTest && syncTest.for === syncConnectionKey() ? syncTest : null);
+const currentSyncTest = () => (syncTest && !syncRefused.size && syncTest.for === syncConnectionKey() ? syncTest : null);
 
 function syncKeyCard() {
   const s = state.sync || {};
@@ -1358,6 +1374,7 @@ async function act(action, button) {
       return go(arg);
     case 'toggle':
       if (arg === 'fillers.enabled') schedulePreview();
+      if (arg === 'storage.sync.enabled' && !state.config.storage.sync.enabled) return turnSyncOn();
       return setValue(arg, !getPath(state.config, arg));
     case 'choose':
       return CHOICES[arg]?.();
@@ -1503,16 +1520,29 @@ async function act(action, button) {
 
 // ---------- bucket sync: secret and Test connection ----------
 
-// Remembers a settings_set or secret call for the storage.sync fields, so Test connection runs after it: a click on
-// Test blurs the field first, and the test must see the value that was just typed.
+// Remembers a settings_set or secret call for the storage.sync fields, so Test connection and turning sync on run after
+// it: a press on either blurs the field first, and they must see the value that was just typed. Each call settles to
+// whether it saved, so they don't run when it didn't (syncSaved).
 function trackSync(promise) {
   const settled = promise.then(
-    () => {},
-    () => {}
+    (saved) => saved !== false,
+    () => false
   );
   syncPending.add(settled);
   settled.then(() => syncPending.delete(settled));
   return promise;
+}
+
+// Waits for the storage.sync calls still running. Resolves to whether each saved and no field shows a refused value.
+async function syncSaved() {
+  const saved = await Promise.all([...syncPending]);
+  return saved.every(Boolean) && !syncRefused.size;
+}
+
+// Turning sync on, which waits for the fields being saved (see trackSync).
+async function turnSyncOn() {
+  if (!(await syncSaved())) return render();
+  return setValue('storage.sync.enabled', true);
 }
 
 // The bucket's secret goes to settings_sync_save_secret when its field loses focus, never through settings_set. The
@@ -1530,11 +1560,13 @@ function saveSyncSecret(input) {
         syncReplacing = false;
         Object.assign(state.config.storage.sync, { secretSaved: true, tested: false });
         render();
+        return true;
       } catch (error) {
         // Test connection goes back to waiting for a secret. Not before the call: this runs from the field's change
         // event, and a click on Test that took the focus must still land on the button it pressed.
         syncTestButton();
         await showError(t('settings.errors.failed'), error?.message);
+        return false;
       }
     })()
   );
@@ -1547,7 +1579,7 @@ function saveSyncSecret(input) {
 function syncTestButton() {
   const test = page.querySelector('[data-a="sync-test"]');
   const typed = page.querySelector('[data-field="storage.sync.secret"]')?.value.trim();
-  if (test) test.disabled = currentSyncTest()?.kind === 'testing' || (!state.config.storage.sync.secretSaved && !typed);
+  if (test) test.disabled = currentSyncTest()?.kind === 'testing' || syncRefused.size > 0 || (!state.config.storage.sync.secretSaved && !typed);
 }
 
 // The secret is being replaced or removed, so a test still running is about the old one. Its answer would also redraw
@@ -1558,11 +1590,18 @@ function dropSyncTest() {
 }
 
 async function testSync() {
+  if (syncRefused.size) return;
   const run = ++syncTestRun;
   syncTest = { kind: 'testing', for: syncConnectionKey() };
   render();
-  await Promise.all([...syncPending]);
+  const saved = await syncSaved();
   if (run !== syncTestRun) return;
+  // A value the pressed button saved was refused: the test would run with the saved one, which the form doesn't show.
+  if (!saved) {
+    syncTest = null;
+    render();
+    return;
+  }
   const asked = syncConnectionKey();
   syncTest = { kind: 'testing', for: asked };
   render();
@@ -1856,6 +1895,7 @@ function back() {
     // Leaving Storage starts its forms afresh next time. A field focused as the page goes still saves, as on blur.
     if (leaving === 'storage') {
       delete drafts.storage;
+      syncRefused.clear();
       syncReplacing = false;
       syncTest = null;
     }
@@ -1920,10 +1960,17 @@ page.addEventListener('change', (e) => {
   if (key.startsWith('storage.sync.')) {
     const value = e.target.value;
     delete drafts[form]?.[name];
-    // A refused value, such as an http:// endpoint, stays in the field to be fixed.
+    // A refused value, such as an http:// endpoint, stays in the field to be fixed. Test connection and turning sync on
+    // wait until a value saves there (syncConnectionCard).
     return trackSync(
       setValue(key, value).then((ok) => {
-        if (!ok) draft(form)[name] = value;
+        if (ok) syncRefused.delete(name);
+        else {
+          draft(form)[name] = value;
+          syncRefused.add(name);
+        }
+        render();
+        return ok;
       })
     );
   }

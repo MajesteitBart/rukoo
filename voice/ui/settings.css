@@ -614,6 +614,10 @@ kbd {
   opacity: 0.55;
   cursor: default;
 }
+/* A value the app refused, which stays in the field to be fixed. */
+.form input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
 .form .field-help {
   color: var(--text-3);
   font-size: 12px;

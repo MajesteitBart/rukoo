@@ -361,6 +361,9 @@ export function createMock(params) {
   // For dev/check.js: every command the page sent, with its arguments, as the app would receive them.
   const calls = [];
   window.__settingsMockCalls = calls;
+  // For dev/check.js: commands that answer only after this many ms, as the app's do after a round trip.
+  const slow = {};
+  window.__settingsMockSlow = slow;
   window.__settingsMockProtected = () => protectedWindow;
 
   const resolve = () => {
@@ -657,6 +660,7 @@ export function createMock(params) {
     invoke: async (command, args = {}) => {
       calls.push([command, structuredClone(args)]);
       if (!(command in commands)) throw { code: 'unknown_command', message: `mock: unknown command ${command}` };
+      if (slow[command]) await wait(slow[command]);
       return commands[command](args);
     },
     listen: async (name, handler) => {

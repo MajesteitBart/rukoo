@@ -289,6 +289,7 @@
   },
   "settings.sync.inBucket": "In je bucket",
   "settings.sync.needsTest": "Test de verbinding voordat je synchroniseren aanzet.",
+  "settings.sync.refused": "Voice heeft het gemarkeerde veld niet opgeslagen. Verbeter het voordat je de verbinding test of synchroniseren aanzet.",
   "settings.sync.backfill": "Voice uploadt dan ook de vergaderingen die nu op deze computer staan, de nieuwste eerst.",
   "settings.sync.testing": "Testen…",
   "settings.sync.otherKeys": "Deze bucket bevat ook vergaderingen die met een andere encryptiesleutel zijn opgeslagen. Gebruik die sleutel om ze te openen.",
