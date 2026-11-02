@@ -25,7 +25,7 @@ Double-click a line, or press Enter on it, to correct its text; Enter saves and 
 Beside the transcript:
 
 - **Calendar event**: the event the meeting is linked to. Change picks another event within 15 minutes of the start, or unlinks it, and a click on the title opens the event in the calendar.
-- **People**: the voices Voice heard. Your microphone is You. Voice 0.1 hears the whole call as one voice, Speaker 1. Pick who it is from the linked event's guests, or type a name. Rukoo fills the name in by itself only when the event has exactly one other guest.
+- **People**: the voices Voice heard. Your microphone is You. With speaker labels on in Rukoo Voice, each voice on the call gets its own row, Speaker 1, Speaker 2 and so on; without them the whole call is one voice, Speaker 1. Pick who each one is from the linked event's guests, or type a name. A guest you already picked for another voice is marked. Rukoo fills in a name by itself only when the call has one voice and the event exactly one other guest; when a second voice turns up later, Rukoo asks you to check that name. A name stays on its voice for the whole meeting, also when Voice settles later who said a passage.
 - **Your notes**: saved a moment after you stop typing. Your agent can read them.
 
 In a narrow window these parts become tabs: Transcript, Notes and Details.
@@ -53,6 +53,7 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 ## Limits
 
 - Rukoo shows the meetings of the Rukoo Voice on this computer. The phone has no meetings.
-- Voice 0.1 records audio only, so there are no screen frames yet, and labels the whole call as one voice.
+- Voice 0.1 records audio only, so there are no screen frames yet.
+- Speaker labels tell voices apart, not people. Voice can hear one person as two voices or two similar voices as one, and it doesn't label people who share your microphone.
 - Rukoo keeps a copy of each transcript in its profile, so the view and the tools work while Voice is closed. Rukoo deletes that copy when Voice deletes the meeting. Your notes stay.
 - Native file dialogs and system notifications can't be hidden from screen capture.
