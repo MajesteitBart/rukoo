@@ -376,6 +376,8 @@ test("an agent gets a link to the meeting's audio that stops working", async () 
   await setLanguage('nl');
   await expect(transcript().locator('.bui-tool', { hasText: 'Haalde een link naar geluid of scherm' })).toBeVisible();
   await shot('media-link-light-nl');
+  await setTheme('dark');
+  await shot('media-link-dark-nl');
 
   // Four seconds after it was made, the same link is refused.
   await expect.poll(async () => (await fetch(url)).status, { timeout: 10000, intervals: [500] }).toBe(410);
