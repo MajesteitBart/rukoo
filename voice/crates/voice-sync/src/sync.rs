@@ -451,6 +451,10 @@ impl BucketSync {
     pub fn holds_media(&self, meeting: &str, sync_on: bool) -> bool {
         let shared = &self.shared;
         let has_media = worker::has_media(&shared.meeting_dir(meeting));
+        // Rows of the old bucket say nothing about a new one until the worker starts again.
+        if sync_on && has_media && shared.lock().moving() {
+            return true;
+        }
         shared
             .queue
             .holds_media(meeting, sync_on, has_media, shared.now())
@@ -460,7 +464,7 @@ impl BucketSync {
     /// Whether the meeting has files that never reached the bucket, counting transcript and manifest
     /// rows too. A meeting with no row yet counts as waiting. `true` on error, like holds_media.
     pub fn has_waiting(&self, meeting: &str) -> bool {
-        self.shared.queue.has_waiting(meeting).unwrap_or(true)
+        self.shared.lock().moving() || self.shared.queue.has_waiting(meeting).unwrap_or(true)
     }
 
     /// Marks the meeting's waiting rows of these kinds `lost`: retention released them below the
@@ -479,6 +483,7 @@ impl BucketSync {
         let ok = {
             let st = shared.lock();
             st.cfg.is_some()
+                && !st.moving()
                 && !st
                     .blocked
                     .as_ref()
@@ -499,9 +504,11 @@ impl BucketSync {
         }
     }
 
-    /// Whether the newest version of this file reached the bucket.
+    /// Whether the newest version of this file reached the bucket. Never while sync moves to
+    /// another bucket and the queue hasn't started again for it.
     pub fn in_bucket(&self, meeting: &str, path: &str) -> bool {
-        matches!(self.shared.queue.in_bucket(meeting, path), Ok(Some(_)))
+        !self.shared.lock().moving()
+            && matches!(self.shared.queue.in_bucket(meeting, path), Ok(Some(_)))
     }
 
     /// Fetches the files that aren't on disk with their row's size back from the bucket (2.11).

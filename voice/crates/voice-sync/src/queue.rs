@@ -744,7 +744,8 @@ impl Queue {
     }
 
     /// Whether this computer uploaded anything with this kid (D5): a finished or removed object, or
-    /// a part of one. Rows a restore imported (no header) were uploaded by another computer.
+    /// a part of one, here or in a bucket it synced with before. Rows a restore imported (no
+    /// header) were uploaded by another computer.
     pub fn uploaded_with(&self, kid: &str) -> Result<bool, SyncError> {
         let prefix = format!("rkv1/{kid}/%");
         self.with(|c| {
@@ -752,8 +753,9 @@ impl Queue {
                 "SELECT EXISTS (SELECT 1 FROM files WHERE object LIKE ?1 AND header IS NOT NULL \
                    AND state IN ('done', 'removed')) \
                  OR EXISTS (SELECT 1 FROM parts p JOIN files f ON f.id = p.file \
-                   WHERE f.object LIKE ?1)",
-                [&prefix],
+                   WHERE f.object LIKE ?1) \
+                 OR EXISTS (SELECT 1 FROM meta WHERE key = 'uploaded_kid' AND value = ?2)",
+                params![prefix, kid],
                 |r| r.get(0),
             )
         })
@@ -806,6 +808,82 @@ impl Queue {
             )?;
             tx.commit()?;
             Ok(reset)
+        })
+    }
+
+    /// The rows say what reached `target` ([`SyncConfig::target`](crate::SyncConfig::target)):
+    /// another bucket, endpoint or folder has none of it. Then the queue starts again for the new
+    /// place, keeping each file's header so the same object name gets the same bytes:
+    ///
+    /// - files this computer uploaded wait again, newest meeting first; the staged copies of the
+    ///   finished ones (transcript snapshots) are gone, so the next scan makes them again;
+    /// - rows a restore imported, manifests and the index are dropped: they describe objects in the
+    ///   old place;
+    /// - every meeting needs a new manifest, none counts as synced or in the index, and bucket
+    ///   retention runs again soon.
+    ///
+    /// Returns the multipart uploads left open in the old place, (object, upload id), when it
+    /// started again; `None` when nothing changed. The first target only gets noted.
+    pub(crate) fn adopt_target(
+        &self,
+        target: &str,
+    ) -> Result<Option<Vec<(String, String)>>, SyncError> {
+        self.with(|c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let old: Option<String> = tx
+                .query_row("SELECT value FROM meta WHERE key = 'target'", [], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if old.as_deref() == Some(target) {
+                return Ok(None);
+            }
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('target', ?1)",
+                [target],
+            )?;
+            if old.is_none() {
+                tx.commit()?;
+                return Ok(None);
+            }
+            let open: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT object, upload_id FROM files WHERE upload_id IS NOT NULL ORDER BY id",
+                )?;
+                let open = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?;
+                open
+            };
+            // Import stays refused for the key this computer uploaded with (D5), although no row
+            // says so until something reached the new place.
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value) \
+                 SELECT 'uploaded_kid', value FROM meta WHERE key = 'kid' \
+                   AND (EXISTS (SELECT 1 FROM files WHERE header IS NOT NULL \
+                          AND state IN ('done', 'removed')) \
+                        OR EXISTS (SELECT 1 FROM parts))",
+                [],
+            )?;
+            tx.execute_batch(
+                "DELETE FROM parts; \
+                 DELETE FROM files WHERE kind IN ('manifest', 'index') OR header IS NULL \
+                   OR state = 'gone'; \
+                 UPDATE files SET \
+                   state = CASE WHEN source IS NOT NULL AND state = 'done' THEN 'gone' \
+                     ELSE 'waiting' END, \
+                   attempts = 0, next_at = 0, upload_id = NULL, part_size = NULL, done_at = NULL, \
+                   last_error = NULL, \
+                   lane = CASE WHEN (SELECT phase FROM meetings m WHERE m.id = files.meeting) = 'live' \
+                     THEN lane ELSE 2 END \
+                 WHERE state IN ('waiting', 'uploading', 'done'); \
+                 UPDATE meetings SET uploaded_gen = 0, \
+                   manifest_dirty = CASE WHEN phase = 'forgotten' THEN 0 ELSE 1 END, \
+                   phase = CASE WHEN phase IN ('synced', 'restored') THEN 'after' ELSE phase END; \
+                 DELETE FROM meta WHERE key IN ('index_due', 'pruned_at');",
+            )?;
+            tx.commit()?;
+            Ok(Some(open))
         })
     }
 

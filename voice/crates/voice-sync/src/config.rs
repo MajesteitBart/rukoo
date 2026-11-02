@@ -176,6 +176,27 @@ impl SyncConfig {
         }
     }
 
+    /// Where the objects go: hex SHA-256 of the endpoint's origin, the bucket and the folder. The
+    /// queue's rows say what reached this place, so another one means everything goes up again.
+    /// The region, the access key, the URL style and the service name only change how Voice
+    /// reaches the same objects, so they don't count.
+    pub fn target(&self) -> String {
+        let origin = SyncConfig::check_endpoint(&self.endpoint)
+            .map(|url| url.origin().ascii_serialization())
+            .unwrap_or_else(|_| self.endpoint.trim().to_ascii_lowercase());
+        let mut hash = Sha256::new();
+        for (i, field) in [origin.as_str(), &self.bucket, &self.key_prefix()]
+            .iter()
+            .enumerate()
+        {
+            if i > 0 {
+                hash.update([0u8]);
+            }
+            hash.update(field.as_bytes());
+        }
+        crate::names::hex(&hash.finalize())
+    }
+
     /// Hex SHA-256 of service, endpoint, region, bucket, prefix, access key id and URL style (2.3).
     pub fn fingerprint(&self) -> String {
         let mut hash = Sha256::new();
@@ -360,6 +381,40 @@ mod tests {
         b.bucket = "a".into();
         b.prefix = "bc".into();
         assert_ne!(a.fingerprint(), b.fingerprint());
+    }
+
+    #[test]
+    fn the_target_follows_the_endpoint_bucket_and_folder_only() {
+        let base = SyncConfig::from_json(&sample()).unwrap();
+        let target = base.target();
+        assert_eq!(target.len(), 64);
+        // Other ways to reach the same objects.
+        let same: [fn(&mut SyncConfig); 8] = [
+            |c| c.service = Service::Other,
+            |c| c.region = "eu".into(),
+            |c| c.access_key_id = "B".into(),
+            |c| c.url_style = UrlStyle::Path,
+            |c| c.retention = BucketRetention::Keep,
+            |c| c.endpoint.push('/'),
+            |c| c.endpoint = "https://ABC.r2.cloudflarestorage.com:443".into(),
+            |c| c.prefix = "rukoo-voice".into(),
+        ];
+        for change in same {
+            let mut cfg = base.clone();
+            change(&mut cfg);
+            assert_eq!(cfg.target(), target, "{cfg:?}");
+        }
+        let other: [fn(&mut SyncConfig); 4] = [
+            |c| c.endpoint = "https://def.r2.cloudflarestorage.com".into(),
+            |c| c.endpoint = "https://abc.r2.cloudflarestorage.com:8443".into(),
+            |c| c.bucket = "other".into(),
+            |c| c.prefix = "elsewhere".into(),
+        ];
+        for change in other {
+            let mut cfg = base.clone();
+            change(&mut cfg);
+            assert_ne!(cfg.target(), target, "{cfg:?}");
+        }
     }
 
     #[test]

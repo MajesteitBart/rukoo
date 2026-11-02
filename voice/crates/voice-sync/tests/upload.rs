@@ -703,6 +703,90 @@ fn a_segment_that_cant_be_read_keeps_its_meeting_held() {
 }
 
 #[test]
+fn a_new_bucket_gets_everything_still_on_this_computer() {
+    let (a, b) = (fake(), fake());
+    let root = scratch("upload-move");
+    let _c = Cleanup(root.clone());
+    let voice = Voice::open(&root.join("first"));
+    let before = Meeting::new(&voice.meetings(), "Before the move", 7_200_000);
+    let segment = before.segment("mic", 1, 0, 16_000);
+    before.stop(1_000);
+    before.transcript(&[("mic", 0, 900, "hello")], now_ms());
+    voice.connect(&a.endpoint());
+    voice.settle(&a, WAIT);
+    let key = voice.key();
+    assert!(voice.sync.in_bucket(&before.id, &segment));
+    assert!(!voice.sync.holds_media(&before.id, true));
+
+    // The user moves to bucket B, which can't be reached yet. Nothing counts as in the bucket
+    // meanwhile, so retention keeps the audio only bucket A has.
+    b.faults().refuse = true;
+    voice.sync.configure(Some(config(&b.endpoint())));
+    assert!(!voice.sync.in_bucket(&before.id, &segment));
+    assert!(voice.sync.holds_media(&before.id, true));
+    let ok = wait_for(WAIT, || voice.sync.status().waiting >= 3);
+    assert!(ok, "everything waits again: {:?}", voice.sync.status());
+    assert!(!voice.sync.in_bucket(&before.id, &segment));
+    assert!(voice.sync.holds_media(&before.id, true));
+    // This computer uploaded with its key, in bucket A: it still keeps that key.
+    let stranger = Voice::open(&root.join("stranger"));
+    let (code, _) = stranger.sync.show_key().unwrap();
+    assert_eq!(
+        voice.sync.import_key(&code).unwrap_err().kind,
+        voice_sync::SyncErrorKind::KeyInUse
+    );
+
+    b.faults().refuse = false;
+    let after = Meeting::new(&voice.meetings(), "After the move", 60_000);
+    after.segment("mic", 1, 0, 16_000);
+    after.stop(1_000);
+    after.transcript(&[("mic", 0, 900, "again")], now_ms());
+    voice.settle(&b, WAIT);
+    for m in [&before, &after] {
+        let files = ["meeting.json", "audio/mic/000001.wav", "timeline.jsonl"];
+        assert_eq!(
+            uploaded_files(&b, &key, m, &files).len(),
+            files.len(),
+            "{} is in bucket B",
+            m.title
+        );
+        let mf = manifest(&b, &key, &m.id).expect("a manifest in bucket B");
+        assert!(mf.files.iter().any(|f| f.path == "transcript.db"));
+    }
+    let ok = wait_for(WAIT, || {
+        voice.sync.in_bucket(&before.id, &segment) && !voice.sync.holds_media(&before.id, true)
+    });
+    assert!(ok, "the hold lets go once bucket B has it");
+    let index = indexes(&b, &key);
+    assert_eq!(index.len(), 1);
+    assert_eq!(index[0].meetings.len(), 2);
+
+    // Another computer with the key restores both from bucket B.
+    let (code, _) = voice.sync.show_key().unwrap();
+    let other = Voice::open(&root.join("second"));
+    other.sync.import_key(&code).unwrap();
+    other.connect(&b.endpoint());
+    assert_eq!(other.sync.remote_meetings().unwrap().len(), 2);
+    let (seen, on_restored) = recorder();
+    other.sync.restore(Vec::new(), on_restored).unwrap();
+    let ok = wait_for(WAIT, || other.sync.status().restore.state != "restoring");
+    assert!(ok);
+    assert_eq!(
+        other.sync.status().restore.state,
+        "done",
+        "{:?}",
+        other.sync.status().restore
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    for m in [&before, &after] {
+        assert_eq!(
+            std::fs::read(other.meetings().join(&m.id).join("meeting.json")).unwrap(),
+            m.read("meeting.json")
+        );
+    }
+}
+
+#[test]
 fn a_changed_file_gets_a_new_object() {
     let fake = fake();
     let data = scratch("upload-changed");

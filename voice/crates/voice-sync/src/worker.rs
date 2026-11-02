@@ -97,6 +97,18 @@ pub(crate) struct State {
     pub(crate) last_error: Option<LastError>,
     /// The generation whose remote meetings were counted for `restore.available`.
     pub(crate) listed: Option<u64>,
+    /// The place the queue's rows describe ([`SyncConfig::target`]), as `queue.db` has it.
+    pub(crate) target: Option<String>,
+}
+
+impl State {
+    /// Sync is on for another bucket, endpoint or folder than the rows describe, and the worker
+    /// hasn't started the queue again for it yet: no row says anything about the new place.
+    pub(crate) fn moving(&self) -> bool {
+        self.cfg
+            .as_ref()
+            .is_some_and(|cfg| self.target.as_deref() != Some(cfg.target().as_str()))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -121,13 +133,17 @@ impl Shared {
         keys: KeyStore,
     ) -> Shared {
         let staging = sync_dir.join(STAGING_DIR);
+        let state = State {
+            target: queue.meta("target").ok().flatten(),
+            ..State::default()
+        };
         Shared {
             opts,
             sync_dir,
             staging,
             queue,
             keys,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(state),
             wake: Condvar::new(),
             busy: Mutex::new(()),
             fetching: Mutex::new(HashSet::new()),
@@ -409,6 +425,9 @@ struct Worker {
     generation: Option<u64>,
     cfg: Option<SyncConfig>,
     remote: Option<Remote>,
+    /// The last connection before this one, until the next connect: when it was to another
+    /// bucket, the uploads left open there are cancelled with it.
+    previous: Option<Remote>,
     scanned_live: Option<Instant>,
     scanned_all: Option<Instant>,
     /// The live lane's token bucket in bytes, never above 0: a request may put it into debt by
@@ -447,6 +466,7 @@ impl Worker {
             generation: None,
             cfg: None,
             remote: None,
+            previous: None,
             scanned_live: None,
             scanned_all: None,
             tokens: 0.0,
@@ -499,7 +519,7 @@ impl Worker {
         };
         let Some(cfg) = cfg else {
             if self.cfg.take().is_some() {
-                self.remote = None;
+                self.keep_previous();
                 self.generation = None;
                 shared.changed();
             }
@@ -523,13 +543,14 @@ impl Worker {
         if self.generation == Some(generation) && self.remote.is_some() {
             return Ready::Yes;
         }
-        self.remote = None;
+        self.keep_previous();
         self.listed.clear();
         self.wait_until = None;
         // Retries that a clock running ahead scheduled for later than any backoff can.
         self.reschedule_ahead(now);
         match self.connect(&cfg, now) {
-            Ok(remote) => {
+            Ok((remote, left_open)) => {
+                self.cancel_left_open(left_open);
                 self.remote = Some(remote);
                 self.cfg = Some(cfg);
                 self.generation = Some(generation);
@@ -555,18 +576,64 @@ impl Worker {
         }
     }
 
-    fn connect(&self, cfg: &SyncConfig, now: u64) -> Result<Remote, SyncError> {
-        let keys = &self.shared.keys;
-        let (key, _) = self.shared.key_or_create(now)?;
-        if self.shared.queue.adopt_kid(&key.kid())? {
+    /// The bucket and the key, and the multipart uploads a change of bucket left open in the old
+    /// one, (object, upload id).
+    fn connect(
+        &self,
+        cfg: &SyncConfig,
+        now: u64,
+    ) -> Result<(Remote, Vec<(String, String)>), SyncError> {
+        let shared = &self.shared;
+        let (key, _) = shared.key_or_create(now)?;
+        if shared.queue.adopt_kid(&key.kid())? {
             log::info!("sync: the encryption key changed; the queue starts again");
         }
-        let secret = keys.secret()?.ok_or_else(|| {
+        let secret = shared.keys.secret()?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::NoSecret, "Save the secret access key first.")
         })?;
-        let timing = &self.shared.opts.timing;
+        let timing = &shared.opts.timing;
         let bucket = Bucket::new(cfg, &secret, timing.connect_timeout, timing.request_timeout)?;
-        Ok(Remote::new(bucket, key))
+        let target = cfg.target();
+        let left_open = shared.queue.adopt_target(&target)?;
+        if left_open.is_some() {
+            log::info!(
+                "sync: the bucket, its endpoint or the folder changed; everything still on this computer goes up again"
+            );
+        }
+        shared.lock().target = Some(target);
+        Ok((Remote::new(bucket, key), left_open.unwrap_or_default()))
+    }
+
+    /// The connection Voice stops using, so a change of bucket can still cancel the uploads it left
+    /// open there.
+    fn keep_previous(&mut self) {
+        if let Some(remote) = self.remote.take() {
+            self.previous = Some(remote);
+        }
+    }
+
+    /// Cancels, as far as the old bucket lets Voice, the multipart uploads a change of bucket left
+    /// open there, so they don't keep taking space. Nothing else depends on it.
+    fn cancel_left_open(&mut self, left_open: Vec<(String, String)>) {
+        let previous = self.previous.take();
+        if left_open.is_empty() {
+            return;
+        }
+        let Some(old) = previous else {
+            log::info!(
+                "sync: {} uploads stay open in the old bucket until it expires them",
+                left_open.len()
+            );
+            return;
+        };
+        for (object, upload_id) in left_open {
+            if self.shared.stopping() {
+                return;
+            }
+            if let Err(e) = old.bucket.abort_multipart(&object, &upload_id) {
+                log::info!("sync: can't cancel an upload in the old bucket: {e}");
+            }
+        }
     }
 
     /// Scans, manifests, the index, bucket retention and tidying, each when it is due.
