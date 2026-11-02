@@ -13,11 +13,11 @@
 
 const crypto = require('crypto');
 const { Limiter, peerOf } = require('./phonehost');
-const { isMeetingId } = require('../voice/protocol');
+const { isMeetingId, MEDIA_ID, MEDIA_READ_MAX } = require('../voice/protocol');
 
 const MEDIA_LINK_TTL_MS = 5 * 60 * 1000;
-// = MEDIA_READ_MAX in voice/protocol.js: the most one media.read returns.
-const READ_CHUNK = 1024 * 1024;
+// The most one media.read returns.
+const READ_CHUNK = MEDIA_READ_MAX;
 const PREPARE_WAIT_MS = 120 * 1000;
 // A download that started before expiry may finish, but never later than this after the link expired.
 const STREAM_MAX_MS = 15 * 60 * 1000;
@@ -36,7 +36,6 @@ const TYPES = { audio: 'audio/wav', frame: 'image/jpeg', video: 'video/mp4' };
 const EXTENSIONS = { audio: 'wav', frame: 'jpg', video: 'mp4' };
 const PATH = /^\/media\/v1\/([A-Za-z0-9_-]{20,600})\.([A-Za-z0-9_-]{43})(\/[^/]*)?$/;
 const TOKEN = /^([A-Za-z0-9_-]{20,600})\.([A-Za-z0-9_-]{43})$/;
-const MEDIA_ID = /^md-[A-Za-z0-9_-]{22}$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const SIGN_PREFIX = 'rukoo-media-v1.';
 
