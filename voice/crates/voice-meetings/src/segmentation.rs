@@ -2,8 +2,9 @@
 //!
 //! A port of Ownkey's live segmentation (`meetings/segmentation.py`): wait for 800 ms of low
 //! energy and cut inside it; after 12 s accept 300 ms; never own more than 27 s, cutting at the
-//! quietest frame of the last 8 s; 5 s without speech moves on. The threshold uses only the 10 s
-//! before each frame, so a window can be decided while the meeting is still recording.
+//! quietest frame of the last 8 s; 5 s without speech moves on; with speaker labels, cut where
+//! one voice on the call hands over to another. The threshold uses only the 10 s before each
+//! frame, so a window can be decided while the meeting is still recording.
 //!
 //! Orukeet drops words when one decode window is long or mixes languages, which is why meetings
 //! are recognized in windows of at most 27 s plus a little context, not in one go.
@@ -40,7 +41,11 @@ const LIMIT_SEARCH: usize = 8 * RATE;
 const DEFAULT_TOKEN_SECONDS: f64 = 0.2;
 const MIN_TOKEN_SECONDS: f64 = 0.02;
 /// A pause this long inside a window starts a new passage.
-const PASSAGE_PAUSE_SECONDS: f64 = 0.9;
+pub(crate) const PASSAGE_PAUSE_SECONDS: f64 = 0.9;
+/// A speaker cut needs more than this much of the window before it: 0.15 s.
+const CUT_AFTER: usize = 2_400;
+/// And this much audio after it, so overlap and jitter can't move it: 0.4 s.
+const CUT_FOLLOWED_BY: usize = 6_400;
 
 /// Why a window ends where it does. Stored with each window in `transcript.db`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +58,8 @@ pub enum Reason {
     Limit,
     /// The recording ended.
     Tail,
+    /// One voice on the call handed over to another.
+    Speaker,
 }
 
 impl Reason {
@@ -62,6 +69,7 @@ impl Reason {
             Reason::Silence => "silence",
             Reason::Limit => "limit",
             Reason::Tail => "tail",
+            Reason::Speaker => "speaker",
         }
     }
 }
@@ -78,6 +86,14 @@ pub struct Boundary {
 /// `last` says that `samples` runs to the end of the recording, so the rest becomes a window
 /// even without a pause. Otherwise a cut also needs [`RIGHT_CONTEXT`] after it.
 pub fn next_boundary(samples: &[i16], last: bool) -> Option<Boundary> {
+    next_boundary_with(samples, last, &[])
+}
+
+/// [`next_boundary`] that also cuts where one voice hands over to another. `speaker_cuts` are
+/// positions in `samples`, from `turn_cuts`. A cut counts when it lies more than 0.15 s into the
+/// window, within 27 s, and 0.4 s of audio follows it; the earliest such cut wins over a later
+/// pause. A port of Ownkey's `next_boundary` with `speaker_cuts`.
+pub fn next_boundary_with(samples: &[i16], last: bool, speaker_cuts: &[usize]) -> Option<Boundary> {
     let total = samples.len();
     if total == 0 {
         return None;
@@ -111,6 +127,20 @@ pub fn next_boundary(samples: &[i16], last: bool) -> Option<Boundary> {
                 reason: Reason::Silence,
             });
             break;
+        }
+    }
+    // A cut must have arrived with enough following audio to survive overlap and jitter.
+    let cut = speaker_cuts
+        .iter()
+        .copied()
+        .filter(|&c| CUT_AFTER < c && c <= CORE_LIMIT && c + CUT_FOLLOWED_BY <= total)
+        .min();
+    if let Some(cut) = cut {
+        if boundary.is_none_or(|b| cut < b.end) {
+            boundary = Some(Boundary {
+                end: cut,
+                reason: Reason::Speaker,
+            });
         }
     }
     if boundary.is_none() && total >= CORE_LIMIT + RIGHT_CONTEXT {
@@ -249,19 +279,8 @@ fn starts_word(piece: &str) -> bool {
     piece.chars().next().is_some_and(char::is_whitespace)
 }
 
-/// A passage before it gets its id: meeting times in milliseconds, and the tokens it was built
-/// from, if the recognizer timed them.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Draft {
-    pub start: u64,
-    pub end: u64,
-    pub text: String,
-    pub tokens: Vec<Token>,
-}
-
-/// Groups a window's owned tokens into passages: a pause of 0.9 s or more starts a new one.
-pub fn timed_passages(owned: &[Token]) -> Vec<Draft> {
-    let mut passages: Vec<(f64, f64, Vec<Token>)> = Vec::new();
+/// The owned tokens grouped into words: a piece that starts with whitespace starts a word.
+pub(crate) fn words(owned: &[Token]) -> Vec<&[Token]> {
     let mut words: Vec<&[Token]> = Vec::new();
     let mut from = 0;
     for i in 1..=owned.len() {
@@ -270,7 +289,27 @@ pub fn timed_passages(owned: &[Token]) -> Vec<Draft> {
             from = i;
         }
     }
-    for word in words.into_iter().filter(|w| !w.is_empty()) {
+    words.retain(|w| !w.is_empty());
+    words
+}
+
+/// A passage before it gets its id: meeting times in milliseconds, the tokens it was built from
+/// if the recognizer timed them, and its speaker when speaker labels decided it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Draft {
+    pub start: u64,
+    pub end: u64,
+    pub text: String,
+    pub tokens: Vec<Token>,
+    /// Set only by speaker labels; `None` leaves the track's own speaker, or none on a labelled
+    /// call.
+    pub speaker: Option<String>,
+}
+
+/// Groups a window's owned tokens into passages: a pause of 0.9 s or more starts a new one.
+pub fn timed_passages(owned: &[Token]) -> Vec<Draft> {
+    let mut passages: Vec<(f64, f64, Vec<Token>)> = Vec::new();
+    for word in words(owned) {
         let (at, until) = (word[0].start, word[word.len() - 1].end);
         match passages.last_mut() {
             Some(last) if at - last.1 < PASSAGE_PAUSE_SECONDS => {
@@ -305,17 +344,18 @@ pub fn window_passage(text: &str, start: u64, end: u64) -> Option<Draft> {
     draft(start, end, text, Vec::new())
 }
 
-fn draft(start: u64, end: u64, text: &str, tokens: Vec<Token>) -> Option<Draft> {
+pub(crate) fn draft(start: u64, end: u64, text: &str, tokens: Vec<Token>) -> Option<Draft> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     (!text.is_empty()).then(|| Draft {
         start,
         end: end.max(start),
         text,
         tokens,
+        speaker: None,
     })
 }
 
-fn seconds_to_ms(seconds: f64) -> u64 {
+pub(crate) fn seconds_to_ms(seconds: f64) -> u64 {
     (seconds.max(0.0) * 1000.0).round() as u64
 }
 
@@ -345,6 +385,7 @@ mod tests {
             end: 20_300,
             text: "so".into(),
             tokens: Vec::new(),
+            speaker: None,
         }];
         within(&mut early, 20_000, 25_198);
         assert_eq!((early[0].start, early[0].end), (20_000, 20_300));
@@ -512,8 +553,64 @@ mod tests {
                 end: 4_000,
                 text: "Let's move the launch".into(),
                 tokens: Vec::new(),
+                speaker: None,
             })
         );
         assert_eq!(window_passage(" \n", 0, 10), None);
+    }
+
+    #[test]
+    fn a_speaker_change_cuts_before_the_pause() {
+        // 6 s of speech without a long pause: one voice hands over to another at 2.5 s.
+        let audio = signal(&[(6.0, true), (1.0, false)]);
+        assert_eq!(
+            next_boundary(&audio, false).unwrap().end,
+            6 * RATE + 400 * 16
+        );
+        let b = next_boundary_with(&audio, false, &[40_000]).unwrap();
+        assert_eq!(
+            b,
+            Boundary {
+                end: 40_000,
+                reason: Reason::Speaker
+            }
+        );
+        assert_eq!(b.reason.as_str(), "speaker");
+        // Too early in the window, past 27 s, or without 0.4 s after it: no cut.
+        assert_eq!(
+            next_boundary_with(&audio, false, &[2_400]).unwrap().reason,
+            Reason::Pause
+        );
+        assert_eq!(
+            next_boundary_with(&audio[..46_000], false, &[40_000]),
+            None,
+            "0.375 s after the cut isn't enough"
+        );
+        assert_eq!(
+            next_boundary_with(&audio[..46_400], false, &[40_000])
+                .unwrap()
+                .end,
+            40_000
+        );
+        assert_eq!(
+            next_boundary_with(&audio, false, &[CORE_LIMIT + 1])
+                .unwrap()
+                .reason,
+            Reason::Pause
+        );
+        // The earliest cut wins; a pause before a cut wins over it.
+        assert_eq!(
+            next_boundary_with(&audio, false, &[60_000, 30_000])
+                .unwrap()
+                .end,
+            30_000
+        );
+        let paused = signal(&[(1.0, true), (1.0, false), (3.0, true)]);
+        assert_eq!(
+            next_boundary_with(&paused, false, &[60_000])
+                .unwrap()
+                .reason,
+            Reason::Pause
+        );
     }
 }
