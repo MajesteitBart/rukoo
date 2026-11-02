@@ -121,7 +121,9 @@ test('a booking whose type uses a video service gets its own meeting, with the l
   assert.deepEqual(map.video, { service: 'zoom', id: 'm1', url: 'https://us05web.zoom.us/j/8101?pwd=p1', start, end: start + 30 * 60000 });
   assert.equal(ev.location, map.video.url);
   assert.ok(ev.description.startsWith(`Join with Zoom: ${map.video.url}\n\n`), ev.description);
-  assert.ok(ev.description.includes('Booked via'));
+  // The guest's own links follow the meeting's.
+  assert.match(ev.description, /\n\nPick another time: \S+\nCancel booking: \S+$/);
+  assert.ok(!ev.description.includes('Booked via'));
   assert.equal(ev.conferenceData, undefined, 'no Google Meet besides');
   assert.equal(bookingEvent(host.fake, b.id).location, mapOf(host, b.id).video.url);
   assert.notEqual(mapOf(host, b.id).video.url, map.video.url);
@@ -646,12 +648,12 @@ test("on a CalDAV calendar the booking's event carries the link as its location 
   const settings = host.booking.settings();
   const start = slot(3, 10);
   const row = { id: 'Rf63vMqqWdS0MICDAHKmrw', type: '30min', start, end: start + 30 * 60000 };
-  const input = host.booking.eventInput(row, { name: 'Jane Doe', email: 'jane@example.com' }, settings, { accountId: 'c1', calendarId: home.id, conference: false });
+  const input = host.booking.eventInput(row, { name: 'Jane Doe', email: 'jane@example.com', manageKey: 'k'.repeat(43) }, settings, { accountId: 'c1', calendarId: home.id, conference: false });
   const meeting = { service: 'zoom', id: '81', url: 'https://us05web.zoom.us/j/81?pwd=abc' };
   await provider.create(home, withMeeting(input, meeting, { locale: settings.locale, name: 'Zoom' }), { bookingId: row.id, uid: `${row.id}@meet.example` });
   const [name] = dav.names();
   const unfolded = dav.object(name).data.replace(/\r\n[ \t]/g, '');
   assert.match(unfolded, /\r\nLOCATION:https:\/\/us05web\.zoom\.us\/j\/81\?pwd=abc\r\n/);
-  assert.match(unfolded, /\r\nDESCRIPTION:Join with Zoom: https:\/\/us05web\.zoom\.us\/j\/81\?pwd=abc\\n\\nBooked via /);
+  assert.match(unfolded, /\r\nDESCRIPTION:Join with Zoom: https:\/\/us05web\.zoom\.us\/j\/81\?pwd=abc\\n\\nPick another time: [^\r]+\\nCancel booking: [^\r]+\r\n/);
   assert.match(unfolded, /ATTENDEE[^\r]*mailto:jane@example\.com/i);
 });

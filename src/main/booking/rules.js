@@ -14,6 +14,11 @@ const QUARTER = 15 * MINUTE;
 const HANDLE = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,31}$/;
 const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
 const BOOKING_ID = /^[A-Za-z0-9_-]{22}$/;
+// A guest's manage key: 32 random bytes as base64url (server/PROTOCOL.md, Sealed guest details).
+const MANAGE_KEY = /^[A-Za-z0-9_-]{43}$/;
+// The booking page's address as the account server reports it, which Rukoo only partly trusts: URL characters only,
+// at most 300 of them. get_booking_link has the same rule (agents/tools.js bookingUrl).
+const PAGE_URL = /^[A-Za-z0-9\-._~:/?#[\]@!$&()*+,;=%]{1,300}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 // The server's reserved handles and slugs (server/src/input.js): its own paths, words people would take for Rukoo's,
 // and the website's paths at the root of rukoo.io. The renderer keeps a copy (booking-settings.js);
@@ -443,7 +448,9 @@ function shortName(name) {
 
 // The guest's details as opened from the sealed blob, checked again here (PROTOCOL.md, Sealed guest details): name
 // at most 80 characters without control characters, notes at most 1000, a plain address, a known zone, and the
-// type and times the booking was made for. Returns { name, email, notes, timeZone, locale, via } or null.
+// type and times the booking was made for. Returns { name, email, notes, timeZone, locale, via, manageKey } or null.
+// manageKey is null when it isn't 43 characters of base64url: the event then goes without the guest's links, and the
+// booking still goes through.
 function checkGuest(text, row) {
   let d;
   try {
@@ -461,7 +468,34 @@ function checkGuest(text, row) {
   if (!isZone(d.timeZone)) return null;
   if (d.locale !== 'en' && d.locale !== 'nl') return null;
   if (d.type !== row.type || d.start !== row.bookedStart || d.end !== row.bookedEnd) return null;
-  return { name, email, notes, timeZone: d.timeZone, locale: d.locale, via };
+  const manageKey = typeof d.manageKey === 'string' && MANAGE_KEY.test(d.manageKey) ? d.manageKey : null;
+  return { name, email, notes, timeZone: d.timeZone, locale: d.locale, via, manageKey };
+}
+
+// The page's address when it may go into mail: a plain https address without a query or fragment, or http on this
+// computer (wrangler dev, the test server). null otherwise.
+function pageUrl(v) {
+  if (typeof v !== 'string' || !PAGE_URL.test(v) || /[?#]/.test(v)) return null;
+  try {
+    const u = new URL(v);
+    if (u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname))) return v.replace(/\/+$/, '');
+  } catch (_) {
+    // Not an address.
+  }
+  return null;
+}
+
+// The guest's links to a booking, as its manage page has them (server/PROTOCOL.md, Public routes): reschedule opens the
+// booker for a move, manage the page with Cancel. Opening either changes nothing. A move keeps the booking's id and
+// key, so the links keep working after one. null when the address, the id or the key fails its check; reschedule is
+// null without a slug the page has.
+function guestLinks(url, { id, slug = null, key }) {
+  const page = pageUrl(url);
+  if (!page || typeof id !== 'string' || !BOOKING_ID.test(id) || typeof key !== 'string' || !MANAGE_KEY.test(key)) return null;
+  return {
+    reschedule: slugProblem(slug) === null ? `${page}/${slug}?reschedule=${id}&k=${key}` : null,
+    manage: `${page}/booking/${id}?k=${key}`
+  };
 }
 
 // The page's first open date: today in its zone, for dropping old date overrides.
@@ -491,5 +525,7 @@ module.exports = {
   payloadHash,
   shortName,
   checkGuest,
+  pageUrl,
+  guestLinks,
   todayIn
 };

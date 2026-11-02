@@ -410,6 +410,37 @@ test('requests are accepted or declined and bookings cancelled from the page; gu
   expect(await win.evaluate(() => window.__pwned)).toBeUndefined();
 });
 
+test("a booking's event gives the guest links to move and cancel, in the page's language, also for an accepted request", async () => {
+  await pageOn();
+  const direct = await server.book({ handle: HANDLE, type: '30min', start: slot(3, 10), guest: { name: 'Ann Example' } });
+  const request = await server.book({ handle: HANDLE, type: '30min', start: slot(4, 11), guest: { name: 'Bob Example' }, status: 'pending' });
+  await call('bookingSync');
+  await call('bookingAction', request.id, 'accept');
+  await call('bookingSave', { locale: 'nl' });
+  const dutch = await server.book({ handle: HANDLE, type: '30min', start: slot(5, 10), guest: { name: 'Cleo Example' } });
+  await call('bookingSync');
+
+  const url = `${server.url}/meet/${HANDLE}`;
+  const reschedule = (b) => `${url}/30min?reschedule=${b.id}&k=${b.manageKey}`;
+  const manage = (b) => `${url}/booking/${b.id}?k=${b.manageKey}`;
+  const { bookings } = await booking();
+  const eventOf = (b) => bookings.find((x) => x.id === b.id).eventId;
+  expect((await call('calendarEvent', eventOf(direct))).description).toBe(`Pick another time: ${reschedule(direct)}\nCancel booking: ${manage(direct)}`);
+  expect((await call('calendarEvent', eventOf(request))).description).toBe(`Pick another time: ${reschedule(request)}\nCancel booking: ${manage(request)}`);
+  expect((await call('calendarEvent', eventOf(dutch))).description).toBe(`Andere tijd kiezen: ${reschedule(dutch)}\nAfspraak annuleren: ${manage(dutch)}`);
+
+  // On the event's card both are links, and Cancel booking's opens the whole address, key and all.
+  const ev = await call('calendarEvent', eventOf(direct));
+  await app.evaluate(({ BrowserWindow }, payload) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'calendar-open', payload }), { id: ev.id, start: ev.start });
+  const desc = win.locator('.cal-pop .cal-desc');
+  await expect(desc).toContainText(`Pick another time: ${reschedule(direct)}`);
+  await expect(desc.locator('[data-href]')).toHaveCount(2);
+  await desc.locator('[data-href]').nth(1).click();
+  await expect.poll(() => app.evaluate(() => global.__opened)).toBe(manage(direct));
+  // Opening it cancelled nothing; that takes the page's Cancel booking.
+  expect(published().bookings.get(direct.id).status).toBe('confirmed');
+});
+
 test('the availability panel uses booking hours while the page is on and blocks a day as a date override', async () => {
   // The page in another zone than this computer's: its dates are days there, so the panel blocks days only when it
   // shows them in that zone.

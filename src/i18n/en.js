@@ -7029,9 +7029,13 @@
     "message": "{type}: {host}",
     "description": "Title of the calendar event a booking becomes when the guest's name has nothing usable. type is the meeting type's title, host the page's display name. src/main/booking/index.js (eventInput)."
   },
-  "booking.event.description": {
-    "message": "Booked via {url}",
-    "description": "Last line of a booked event's description, in the booking page's language; guests see it in their invitation. url is the booking page. src/main/booking/index.js (eventInput)."
+  "booking.event.reschedule": {
+    "message": "Pick another time: {url}",
+    "description": "Line in a booked event's description, in the booking page's language; the guest reads it in their invitation. url is the long link that opens the booking page to move this booking; keep it at the end of the line. Same words as the button on the guest's manage page (server/src/booking-text.js manage.reschedule). src/main/booking/index.js (guestLines)."
+  },
+  "booking.event.cancel": {
+    "message": "Cancel booking: {url}",
+    "description": "Last line of a booked event's description, in the booking page's language; the guest reads it in their invitation. url is the long link to the guest's manage page, which has the Cancel button (opening it cancels nothing); keep it at the end of the line. Same words as that button (server/src/booking-text.js manage.cancel). src/main/booking/index.js (guestLines)."
   },
   "booking.event.video": {
     "message": "Join with {service}: {url}",
