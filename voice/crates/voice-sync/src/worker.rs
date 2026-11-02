@@ -99,6 +99,10 @@ pub(crate) struct State {
     pub(crate) listed: Option<u64>,
     /// The place the queue's rows describe ([`SyncConfig::target`]), as `queue.db` has it.
     pub(crate) target: Option<String>,
+    /// Counts changes of where Voice reads from and with which key: sync turned on or off, moved
+    /// to another bucket, endpoint or folder, or got another key. A restore made before reads
+    /// from a place or with a key sync no longer uses ([`Binding`]).
+    pub(crate) place: u64,
 }
 
 impl State {
@@ -305,11 +309,15 @@ impl Shared {
         }
     }
 
-    /// The bucket, the key and its derived name key, for restores and fetches.
-    pub(crate) fn remote(&self) -> Result<Remote, SyncError> {
-        let cfg = self
-            .cfg()
-            .ok_or_else(|| SyncError::new(SyncErrorKind::Off, "Bucket sync is off."))?;
+    /// The bucket, the key and its derived name key, for restores and fetches, and the binding
+    /// that tells whether they are still the ones sync uses.
+    pub(crate) fn remote(&self) -> Result<(Remote, Binding), SyncError> {
+        // Read together, before the key: any change from here on moves `place` on.
+        let (cfg, place) = {
+            let st = self.lock();
+            (st.cfg.clone(), st.place)
+        };
+        let cfg = cfg.ok_or_else(|| SyncError::new(SyncErrorKind::Off, "Bucket sync is off."))?;
         let key = self.keys.load()?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::Key, "Voice has no encryption key yet.")
         })?;
@@ -323,13 +331,50 @@ impl Shared {
             timing.connect_timeout,
             timing.request_timeout,
         )?;
-        Ok(Remote::new(bucket, key))
+        let remote = Remote::new(bucket, key);
+        let binding = Binding {
+            place,
+            target: cfg.target(),
+            kid: remote.kid.clone(),
+        };
+        Ok((remote, binding))
+    }
+
+    /// Err once Voice quits, or once `binding` no longer names the bucket and key sync uses: sync
+    /// was turned off, moved to another bucket, endpoint or folder, or got another key (D10).
+    pub(crate) fn still(&self, binding: &Binding) -> Result<(), SyncError> {
+        let st = self.lock();
+        if st.stopping {
+            return Err(SyncError::new(SyncErrorKind::Local, "Voice is quitting."));
+        }
+        let Some(cfg) = &st.cfg else {
+            return Err(SyncError::new(SyncErrorKind::Off, "Bucket sync is off."));
+        };
+        if st.place == binding.place {
+            return Ok(());
+        }
+        let message = if cfg.target() == binding.target {
+            "Bucket sync was turned off, or the encryption key changed, while Voice read from the bucket."
+        } else {
+            "Bucket sync moved to another bucket, endpoint or folder."
+        };
+        Err(SyncError::new(SyncErrorKind::Off, message))
     }
 
     /// The meeting's folder in the library.
     pub(crate) fn meeting_dir(&self, meeting: &str) -> PathBuf {
         self.opts.meetings_dir.join(meeting)
     }
+}
+
+/// What a restore or a fetch reads with: the bucket sync was on for and the key, when it started.
+#[derive(Clone, Debug)]
+pub(crate) struct Binding {
+    /// [`State::place`] then.
+    place: u64,
+    /// [`SyncConfig::target`] of that bucket, endpoint and folder.
+    pub(crate) target: String,
+    pub(crate) kid: String,
 }
 
 /// A connection to the bucket with the key that opens it.

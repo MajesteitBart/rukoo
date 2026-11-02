@@ -70,7 +70,7 @@ pub(crate) fn forget(
         shared.changed();
         return Ok(());
     }
-    let remote = shared.remote()?;
+    let (remote, _) = shared.remote()?;
     let rows = shared.queue.rows_of(meeting)?;
     let mhash = match shared.queue.meeting(meeting)? {
         Some(m) => m.mhash,

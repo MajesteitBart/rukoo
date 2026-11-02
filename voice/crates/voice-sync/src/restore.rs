@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use voice_meetings::MeetingFile;
@@ -28,7 +28,7 @@ use crate::names;
 use crate::queue::{hex, Import, MEDIA_KINDS};
 use crate::s3::Bucket;
 use crate::sync::RemoteMeeting;
-use crate::worker::{background_thread, local, panic_text, Remote, Shared};
+use crate::worker::{background_thread, local, panic_text, Binding, Remote, Shared};
 use crate::{SyncError, SyncErrorKind};
 
 /// What a refused manifest or index says (2.11).
@@ -39,6 +39,8 @@ pub const NO_ROOM: &str = "Not enough free disk space.";
 const CHUNKS_PER_GET: u64 = 128;
 /// The prefix of a restore's temporary folder in `<meetings>`, skipped by the library.
 pub const RESTORE_PREFIX: &str = ".restore-";
+/// How long a restore waits for the worker to start the queue for the bucket it restores from.
+const QUEUE_WAIT: Duration = Duration::from_secs(30);
 
 /// A timeline in voice/RECORDING.md's format from the manifest's audio entries, sorted by `t`: a
 /// `session` line at 0 with `wall` = `created_at`, a `segment` and `segment_end` per entry, and
@@ -281,7 +283,7 @@ pub(crate) fn ensure_local(
             return Err(SyncError::new(SyncErrorKind::Local, NO_ROOM));
         }
         if remote.is_none() {
-            remote = Some(shared.remote()?);
+            remote = Some(shared.remote()?.0);
         }
         let r = remote.as_ref().expect("just connected");
         // Held from retention while it comes back, not only once it is in place (2.10).
@@ -487,7 +489,7 @@ fn restore_all(
     ids: Vec<String>,
     on_restored: &(dyn Fn(&str) + Send),
 ) -> Result<(), SyncError> {
-    let remote = shared.remote()?;
+    let (remote, binding) = shared.remote()?;
     let ids = if ids.is_empty() {
         let ids: Vec<String> = list_remote(shared, &remote)?
             .into_iter()
@@ -500,10 +502,8 @@ fn restore_all(
         ids
     };
     for id in ids {
-        if shared.stopping() {
-            return Err(SyncError::new(SyncErrorKind::Local, "Voice is quitting."));
-        }
-        if restore_one(shared, &remote, &id)? {
+        shared.still(&binding)?;
+        if restore_one(shared, &remote, &binding, &id)? {
             on_restored(&id);
         }
         shared.lock().restore.done += 1;
@@ -512,8 +512,13 @@ fn restore_all(
     Ok(())
 }
 
-/// One meeting (2.11 steps 1 to 5). False when it is on this computer already.
-pub(crate) fn restore_one(shared: &Shared, remote: &Remote, id: &str) -> Result<bool, SyncError> {
+/// One meeting (2.11 steps 1 to 5), read with `binding`. False when it is on this computer already.
+pub(crate) fn restore_one(
+    shared: &Shared,
+    remote: &Remote,
+    binding: &Binding,
+    id: &str,
+) -> Result<bool, SyncError> {
     if MeetingId::parse(id).is_none() {
         return Err(crypto(BAD_MANIFEST));
     }
@@ -540,7 +545,9 @@ pub(crate) fn restore_one(shared: &Shared, remote: &Remote, id: &str) -> Result<
     let tmp = meetings.join(format!("{RESTORE_PREFIX}{id}"));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| local("Voice can't make a folder to restore into", &e))?;
-    let result = restore_into(shared, remote, &manifest, id, &mhash, &tmp, &target);
+    let result = restore_into(
+        shared, remote, binding, &manifest, id, &mhash, &tmp, &target,
+    );
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -570,9 +577,11 @@ fn check_manifest(manifest: &Manifest, id: &str, kid: &str, mhash: &str) -> Resu
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn restore_into(
     shared: &Shared,
     remote: &Remote,
+    binding: &Binding,
     manifest: &Manifest,
     id: &str,
     mhash: &str,
@@ -581,9 +590,7 @@ fn restore_into(
 ) -> Result<(), SyncError> {
     let never = AtomicBool::new(false);
     let fetch = |file: &ManifestFile| -> Result<(), SyncError> {
-        if shared.stopping() {
-            return Err(SyncError::new(SyncErrorKind::Local, "Voice is quitting."));
-        }
+        shared.still(binding)?;
         if !(shared.opts.reserve)(file.size) {
             return Err(SyncError::new(SyncErrorKind::Local, NO_ROOM));
         }
@@ -651,13 +658,12 @@ fn restore_into(
     for file in &audio {
         fetch(file)?;
     }
-    let now = shared.now();
     let duration_ms = manifest
         .files
         .iter()
         .filter_map(|f| Some(f.t? + samples_to_ms(f.samples?)))
         .max();
-    shared.queue.import(&Import {
+    let import = Import {
         meeting: id,
         mhash,
         title: &meeting_file.title,
@@ -667,17 +673,57 @@ fn restore_into(
         gen: manifest.gen,
         media_removed_at: manifest.media_removed_at,
         files: &manifest.files,
-        now,
-    })?;
-    fs::rename(tmp, target)
-        .map_err(|e| local("Voice can't put a restored meeting in place", &e))?;
-    for file in audio
+        now: shared.now(),
+        target: &binding.target,
+        kid: &binding.kid,
+    };
+    let media: Vec<&str> = audio
         .iter()
         .filter(|f| MEDIA_KINDS.contains(&f.kind.as_str()))
-    {
-        shared.queue.restored(id, &file.path, now)?;
+        .map(|f| f.path.as_str())
+        .collect();
+    put_in_place(shared, binding, &import, tmp, target, &media)
+}
+
+/// Imports the meeting's rows and renames its folder into place, under the worker's lock and only
+/// while the restore's binding holds and the queue describes the bucket and key it read from. Rows
+/// imported for another bucket would say that bucket has files it never got; rows imported before
+/// the worker started the queue for this bucket would be dropped when it does.
+fn put_in_place(
+    shared: &Shared,
+    binding: &Binding,
+    import: &Import<'_>,
+    tmp: &Path,
+    target: &Path,
+    media: &[&str],
+) -> Result<(), SyncError> {
+    let deadline = Instant::now() + QUEUE_WAIT;
+    for attempt in 0.. {
+        {
+            let _busy = shared.busy();
+            shared.still(binding)?;
+            if shared.queue.import(import)? {
+                fs::rename(tmp, target)
+                    .map_err(|e| local("Voice can't put a restored meeting in place", &e))?;
+                for path in media {
+                    shared.queue.restored(import.meeting, path, import.now)?;
+                }
+                return Ok(());
+            }
+        }
+        // The worker hasn't started the queue for this bucket yet.
+        if Instant::now() >= deadline {
+            break;
+        }
+        if attempt == 0 {
+            shared.poke();
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
-    Ok(())
+    Err(SyncError::new(
+        SyncErrorKind::Local,
+        "Sync hasn't started with this bucket yet.",
+    ))
 }
 
 fn crypto(message: &str) -> SyncError {

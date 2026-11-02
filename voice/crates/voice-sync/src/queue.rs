@@ -242,6 +242,10 @@ pub(crate) struct Import<'a> {
     pub(crate) media_removed_at: Option<u64>,
     pub(crate) files: &'a [ManifestFile],
     pub(crate) now: u64,
+    /// The bucket, endpoint and folder ([`SyncConfig::target`](crate::SyncConfig::target)) and
+    /// the key id the files were read with: the rows describe objects there.
+    pub(crate) target: &'a str,
+    pub(crate) kid: &'a str,
 }
 
 impl Queue {
@@ -1233,10 +1237,23 @@ impl Queue {
     }
 
     /// A restored meeting's rows, all `done` without a header, and its `meetings` row with phase
-    /// `restored` (2.11 step 1).
-    pub(crate) fn import(&self, m: &Import<'_>) -> Result<(), SyncError> {
+    /// `restored` (2.11 step 1). False, writing nothing, while the rows describe another place or
+    /// key than `m.target` and `m.kid`: the worker hasn't started the queue for them yet, and
+    /// would drop these rows when it does.
+    pub(crate) fn import(&self, m: &Import<'_>) -> Result<bool, SyncError> {
         self.with(|c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let meta = |key: &str| {
+                tx.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()
+            };
+            if meta("target")?.as_deref() != Some(m.target)
+                || meta("kid")?.as_deref() != Some(m.kid)
+            {
+                return Ok(false);
+            }
             tx.execute(
                 "INSERT INTO meetings (id, mhash, phase, title, created_at, duration_ms, \
                    manifest_gen, media_removed_at, state, uploaded_gen) \
@@ -1278,7 +1295,8 @@ impl Queue {
                     ],
                 )?;
             }
-            tx.commit()
+            tx.commit()?;
+            Ok(true)
         })
     }
 

@@ -3,7 +3,7 @@
 mod harness;
 
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,6 +41,55 @@ fn wait_restore(voice: &Voice, state: &str) -> voice_sync::RestoreState {
     let restore = voice.sync.status().restore;
     assert!(ok, "restore ended as {restore:?}, not {state}");
     restore
+}
+
+/// Waits until the restore stopped, however it ended.
+fn wait_restore_end(voice: &Voice) -> voice_sync::RestoreState {
+    let ok = wait_for(WAIT, || voice.sync.status().restore.state != "restoring");
+    let restore = voice.sync.status().restore;
+    assert!(ok, "the restore never ended: {restore:?}");
+    restore
+}
+
+/// A `reserve` that holds its `n`-th call until the test opens it. A restore asks `reserve` before
+/// each file it fetches, so the test can change sync at a known point of the restore.
+struct Gate {
+    n: u32,
+    calls: AtomicU32,
+    reached: AtomicBool,
+    open: AtomicBool,
+}
+
+impl Gate {
+    fn at(n: u32) -> Arc<Gate> {
+        Arc::new(Gate {
+            n,
+            calls: AtomicU32::new(0),
+            reached: AtomicBool::new(false),
+            open: AtomicBool::new(false),
+        })
+    }
+
+    fn reserve(self: &Arc<Gate>) -> Arc<dyn Fn(u64) -> bool + Send + Sync> {
+        let gate = self.clone();
+        Arc::new(move |_| {
+            if gate.calls.fetch_add(1, Ordering::SeqCst) + 1 == gate.n {
+                gate.reached.store(true, Ordering::SeqCst);
+                wait_for(WAIT, || gate.open.load(Ordering::SeqCst));
+            }
+            true
+        })
+    }
+
+    /// Waits until the restore is held.
+    fn wait(&self) {
+        let ok = wait_for(WAIT, || self.reached.load(Ordering::SeqCst));
+        assert!(ok, "the restore never asked for room");
+    }
+
+    fn open(&self) {
+        self.open.store(true, Ordering::SeqCst);
+    }
 }
 
 /// No `.restore-*` folder is left in the library.
@@ -572,4 +621,57 @@ fn restore_stops_at_the_floor() {
     assert!(b.meetings().join(&first.id).join("meeting.json").is_file());
     assert!(!b.meetings().join(&second.id).exists());
     no_partial_folders(&b);
+}
+
+#[test]
+fn a_restore_imports_nothing_once_sync_moved_to_another_bucket() {
+    let (first, second) = (fake(), fake());
+    let root = scratch("restore-moved");
+    let _c = Cleanup(root.clone());
+    let a = Voice::open(&root.join("a"));
+    let (m, segments) = finished(&a.meetings(), "Moved away", 3_600_000);
+    a.connect(&first.endpoint());
+    a.settle(&first, WAIT);
+    let (code, _) = a.sync.show_key().unwrap();
+    drop(a);
+
+    // The restore fetches meeting.json, timeline.jsonl and transcript.db; it is held before the
+    // last, after which it imports the meeting's rows.
+    let gate = Gate::at(3);
+    let b = Voice::with(
+        &root.join("b"),
+        Setup {
+            reserve: gate.reserve(),
+            ..Setup::default()
+        },
+    );
+    b.sync.import_key(&code).unwrap();
+    b.connect(&first.endpoint());
+    let (seen, on_restored) = recorder();
+    b.sync.restore(vec![m.id.clone()], on_restored).unwrap();
+    gate.wait();
+    // The user moves sync to the second bucket while the restore reads from the first.
+    b.sync.configure(Some(config(&second.endpoint())));
+    gate.open();
+    let restore = wait_restore_end(&b);
+    assert_eq!(restore.state, "failed", "{restore:?}");
+    assert_eq!(
+        restore.error.as_deref(),
+        Some("Bucket sync moved to another bucket, endpoint or folder.")
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(!b.meetings().join(&m.id).exists());
+    no_partial_folders(&b);
+
+    // Nothing says the second bucket has the meeting's files, so nothing is fetched from it.
+    let ok = wait_for(WAIT, || b.sync.can_fetch());
+    assert!(ok, "the worker starts the queue for the second bucket");
+    for path in segments.iter().map(String::as_str).chain(["meeting.json"]) {
+        assert!(!b.sync.in_bucket(&m.id, path), "{path}");
+    }
+    let err = b
+        .sync
+        .ensure_local(&m.id, &segments[..1], &AtomicBool::new(false))
+        .unwrap_err();
+    assert_eq!(err.kind, SyncErrorKind::NotInBucket);
 }

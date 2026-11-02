@@ -211,6 +211,11 @@ impl BucketSync {
         let changed = {
             let mut st = shared.lock();
             let changed = st.cfg != cfg;
+            // On, off or another bucket, endpoint or folder: a restore of the old place stops.
+            let target = |cfg: &Option<SyncConfig>| cfg.as_ref().map(SyncConfig::target);
+            if target(&st.cfg) != target(&cfg) {
+                st.place += 1;
+            }
             st.cfg = cfg;
             st.rescan = true;
             changed
@@ -367,7 +372,10 @@ impl BucketSync {
             }
             shared.keys.replace(&key, shared.now())?;
             shared.queue.adopt_kid(&kid)?;
-            shared.lock().restore = RestoreState::default();
+            let mut st = shared.lock();
+            st.restore = RestoreState::default();
+            // Under `busy`, so a restore reading with the old key never imports rows after this.
+            st.place += 1;
         }
         shared.bump();
         shared.changed();
@@ -528,7 +536,7 @@ impl BucketSync {
     /// follows.
     pub fn remote_meetings(&self) -> Result<Vec<RemoteMeeting>, SyncError> {
         let shared = &self.shared;
-        let remote = shared.remote()?;
+        let (remote, _) = shared.remote()?;
         let restoring = shared.lock().restoring;
         if !restoring {
             shared.lock().restore.state = "listing";
