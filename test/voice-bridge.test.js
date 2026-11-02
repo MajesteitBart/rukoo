@@ -669,12 +669,36 @@ test('screenRecording: a recording meeting that records the screen, by what meet
   assert.equal(s.recording(), video.meetingId);
   assert.equal(s.screenRecording(), true);
   await s.stop(video.meetingId);
-  // Before meeting.started arrives: the screen the start asked for, else Voice's default, else unknown, which counts.
-  const id = 'm-20261030-110000-0e3f';
-  s.store.setStatus({ recording: id, dictating: false, screenDefault: 'off' });
-  assert.equal(s.screenRecording(), false, "Voice's default is audio only");
-  s.store.setStatus({ recording: id, dictating: false, screenDefault: null });
-  assert.equal(s.screenRecording(), true, 'Rukoo does not know, so it holds back');
+  await until(() => !s.recording(), 'the stop');
+  // Before meeting.started arrives, only the screen the start asked for says what the meeting records. Voice's
+  // default doesn't: the meeting may have started with another one.
+  voice.append('status', null, { recording: null, dictating: false, screenDefault: 'off' });
+  await until(() => s.state().screenDefault === 'off', "Voice's default");
+  voice.handlers['meeting.start'] = function () {
+    return { meeting: this.meetingId() };
+  };
+  const asked = await s.start({ screen: 'off' });
+  assert.equal(s.recording(), asked.meetingId);
+  assert.equal(s.screenRecording(), false, 'the start asked for audio only');
+  const unsaid = await s.start({});
+  assert.equal(s.recording(), unsaid.meetingId);
+  assert.equal(s.screenRecording(), true, "Voice's default is audio only, but Rukoo doesn't know what this meeting got");
+});
+
+test("screenRecording: a meeting Rukoo has no meeting.started for counts as recording the screen, whatever Voice's default", async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  // Rukoo connects while Voice records a meeting whose meeting.started hasn't reached it.
+  voice.status = { recording: M1, dictating: false, screenDefault: 'off' };
+  const s = service(t, dir, file, { hide: () => false }).init();
+  await until(() => s.connected, 'the connection');
+  assert.equal(s.recording(), M1);
+  assert.equal(s.state().screenDefault, 'off');
+  assert.equal(s.screenRecording(), true, 'the meeting may record the screen');
+  // Its meeting.started says what it records.
+  voice.append('meeting.started', M1, { ...started('Board review'), screen: 'off' });
+  await until(() => s.store.entry(M1), 'the meeting');
+  assert.equal(s.screenRecording(), false, 'audio only');
 });
 
 test('screenRecording: not after a dropped mark says the screen recording stopped for good', async (t) => {
