@@ -38,6 +38,11 @@ impl Fragment {
     pub fn bytes(&self) -> u64 {
         self.moof_size + self.mdat_size
     }
+
+    /// Where its media time ends, in the track's timescale.
+    pub fn end(&self) -> u64 {
+        self.start.saturating_add(self.duration)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,7 +77,7 @@ impl Index {
     pub fn duration_ms(&self) -> u64 {
         self.fragments
             .last()
-            .map_or(0, |f| self.to_ms_ceil(f.start + f.duration))
+            .map_or(0, |f| self.to_ms_ceil(f.end()))
     }
 
     fn units(&self, ms: u64) -> u64 {
@@ -99,6 +104,7 @@ struct Header {
 }
 
 impl Header {
+    /// `read_header` checked that this doesn't overflow.
     fn end(&self) -> u64 {
         self.offset + self.size
     }
@@ -106,7 +112,9 @@ impl Header {
 
 /// The header of the box at `offset`, or `None` when no complete, sane header is there. A size
 /// of 0 ("to the end of the file") counts as incomplete: the screen process never writes it, and
-/// in a growing file it can't be told from a box still being written.
+/// in a growing file it can't be told from a box still being written. Neither is a size whose
+/// end lies past what a `u64` holds, which only a damaged or crafted file has: walking on from
+/// a wrapped end would loop forever.
 fn read_header(file: &mut (impl Read + Seek), offset: u64, len: u64) -> io::Result<Option<Header>> {
     if offset.checked_add(8).is_none_or(|end| end > len) {
         return Ok(None);
@@ -119,7 +127,7 @@ fn read_header(file: &mut (impl Read + Seek), offset: u64, len: u64) -> io::Resu
     let (size, header) = match size {
         0 => return Ok(None),
         1 => {
-            if offset + 16 > len {
+            if offset.checked_add(16).is_none_or(|end| end > len) {
                 return Ok(None);
             }
             let mut large = [0u8; 8];
@@ -128,7 +136,7 @@ fn read_header(file: &mut (impl Read + Seek), offset: u64, len: u64) -> io::Resu
         }
         n => (u64::from(n), 8),
     };
-    if size < header {
+    if size < header || offset.checked_add(size).is_none() {
         return Ok(None);
     }
     Ok(Some(Header { kind, offset, size }))
@@ -157,18 +165,21 @@ fn children(buf: &[u8], start: usize, end: usize) -> Vec<([u8; 4], usize, usize,
         let Some(size) = be32(buf, at) else { break };
         let kind: [u8; 4] = buf[at + 4..at + 8].try_into().unwrap();
         let (size, header) = match size {
-            1 => match be64(buf, at + 8) {
-                Some(large) => (large as usize, 16),
+            1 => match be64(buf, at + 8).and_then(|large| usize::try_from(large).ok()) {
+                Some(large) => (large, 16),
                 None => break,
             },
             0 => (end - at, 8),
             n => (n as usize, 8),
         };
-        if size < header || at + size > end {
+        let Some(box_end) = at.checked_add(size).filter(|e| *e <= end) else {
+            break;
+        };
+        if size < header {
             break;
         }
-        out.push((kind, at, at + header, at + size));
-        at += size;
+        out.push((kind, at, at + header, box_end));
+        at = box_end;
     }
     out
 }
@@ -287,7 +298,7 @@ fn parse_traf(
             u64::from(be32(buf, tfdt + 4)?)
         });
     }
-    for (kind, _, trun, _) in children(buf, start, end) {
+    for (kind, _, trun, trun_end) in children(buf, start, end) {
         if &kind != b"trun" {
             continue;
         }
@@ -301,6 +312,35 @@ fn parse_traf(
         if flags & 0x004 != 0 {
             first_flags = Some(be32(buf, at)?);
             at += 4;
+        }
+        let per_sample = [0x100, 0x200, 0x400, 0x800]
+            .iter()
+            .filter(|f| flags & *f != 0)
+            .count()
+            * 4;
+        if per_sample == 0 {
+            // Every sample takes the defaults: no bytes to walk, so a huge count costs nothing.
+            if count > 0 {
+                let first = first_flags.unwrap_or(default_flags) & NON_SYNC == 0;
+                let rest = default_flags & NON_SYNC == 0;
+                if moof.samples == 0 {
+                    moof.first_sync = first;
+                }
+                moof.has_sync |= first || (count > 1 && rest);
+                moof.samples = moof.samples.saturating_add(count);
+                moof.duration = moof
+                    .duration
+                    .saturating_add(u64::from(count) * u64::from(default_duration));
+            }
+            continue;
+        }
+        // A count the box can't hold is a damaged box.
+        if (count as usize)
+            .checked_mul(per_sample)
+            .and_then(|bytes| at.checked_add(bytes))
+            .is_none_or(|samples_end| samples_end > trun_end)
+        {
+            return None;
         }
         for i in 0..count {
             let mut duration = default_duration;
@@ -328,8 +368,8 @@ fn parse_traf(
                 moof.first_sync = sync;
             }
             moof.has_sync |= sync;
-            moof.samples += 1;
-            moof.duration += u64::from(duration);
+            moof.samples = moof.samples.saturating_add(1);
+            moof.duration = moof.duration.saturating_add(u64::from(duration));
         }
     }
     Some(())
@@ -373,7 +413,7 @@ pub fn index(file: &mut (impl Read + Seek), len: u64) -> io::Result<Index> {
             b"mdat" => {
                 if let Some((moof_header, moof)) = pending.take() {
                     let start = moof.decode_time.unwrap_or(next_start);
-                    next_start = start + moof.duration;
+                    next_start = start.saturating_add(moof.duration);
                     index.fragments.push(Fragment {
                         offset: moof_header.offset,
                         moof_size: moof_header.size,
@@ -437,7 +477,7 @@ pub struct Cut {
 pub fn select(index: &Index, from_ms: u64, to_ms: u64) -> Option<Range<usize>> {
     let fragments = &index.fragments;
     let (from, to) = (index.units(from_ms), index.units(to_ms.max(from_ms)));
-    let first = fragments.iter().position(|f| f.start + f.duration > from)?;
+    let first = fragments.iter().position(|f| f.end() > from)?;
     if fragments[first].start > to {
         return None;
     }
@@ -463,7 +503,7 @@ pub fn plan(index: &Index, from_ms: u64, to_ms: u64) -> Option<Cut> {
     let head = (index.ftyp.end - index.ftyp.start) + (index.moov.end - index.moov.start);
     Some(Cut {
         start_ms: index.to_ms(first.start),
-        end_ms: index.to_ms_ceil(last.start + last.duration),
+        end_ms: index.to_ms_ceil(last.end()),
         bytes: head + fragments.iter().map(Fragment::bytes).sum::<u64>(),
     })
 }
@@ -509,7 +549,7 @@ pub(crate) fn cut_until(
     let (first, last) = (fragments[0], fragments[fragments.len() - 1]);
     Ok(Some(Cut {
         start_ms: index.to_ms(first.start),
-        end_ms: index.to_ms_ceil(last.start + last.duration),
+        end_ms: index.to_ms_ceil(last.end()),
         bytes,
     }))
 }
@@ -569,7 +609,7 @@ pub fn fragment_ms(index: &Index) -> Vec<u64> {
     index
         .fragments
         .iter()
-        .map(|f| index.to_ms(f.start + f.duration) - index.to_ms(f.start))
+        .map(|f| index.to_ms(f.end()) - index.to_ms(f.start))
         .collect()
 }
 
@@ -593,7 +633,8 @@ pub mod synth {
         out
     }
 
-    fn full(version: u8, flags: u32, rest: &[u8]) -> Vec<u8> {
+    /// A full box's payload: version, flags, then `rest`.
+    pub fn full(version: u8, flags: u32, rest: &[u8]) -> Vec<u8> {
         let mut out = vec![version];
         out.extend_from_slice(&flags.to_be_bytes()[1..]);
         out.extend_from_slice(rest);
@@ -791,6 +832,66 @@ mod tests {
         odd.extend(&bytes[fifth.offset as usize..(fifth.offset + fifth.moof_size) as usize]);
         odd.extend(bx(b"free", &[0; 4]));
         assert_eq!(index_bytes(&odd).fragments.len(), 4);
+    }
+
+    /// A box whose 64-bit size runs past what a `u64` holds ends the walk; walking on from the
+    /// wrapped end went back to an earlier box and looped forever.
+    #[test]
+    fn a_size_that_wraps_ends_the_walk() {
+        // A 16-byte ftyp whose payload looks like an 8-byte free box, then a size-1 free box
+        // with largesize 2^64 - 8: its end wraps to 8, inside the ftyp.
+        let mut bytes = 16u32.to_be_bytes().to_vec();
+        bytes.extend_from_slice(b"ftyp");
+        bytes.extend_from_slice(&8u32.to_be_bytes());
+        bytes.extend_from_slice(b"free");
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(b"free");
+        bytes.extend_from_slice(&(u64::MAX - 7).to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 16]);
+        assert_eq!(bytes.len(), 48);
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(index(&mut Cursor::new(&bytes), 48).map(|i| i.complete_len));
+        });
+        let complete = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the walk didn't end")
+            .unwrap();
+        assert_eq!(complete, 16);
+
+        // The same inside a moof: a child box whose size wraps ends the children.
+        let mut buf = 24u32.to_be_bytes().to_vec();
+        buf.extend_from_slice(b"moof");
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(b"traf");
+        buf.extend_from_slice(&(u64::MAX - 7).to_be_bytes());
+        assert!(children(&buf, 8, buf.len()).is_empty());
+    }
+
+    /// A `trun` that claims four billion samples is read without a walk when every sample takes
+    /// the defaults, and refused when its samples can't fit in the box.
+    #[test]
+    fn a_huge_sample_count_costs_nothing() {
+        let movie = Movie {
+            timescale: TS,
+            default_duration: FRAME,
+            default_flags: NON_SYNC,
+        };
+        let trun = |flags: u32| {
+            let mut payload = u32::MAX.to_be_bytes().to_vec();
+            payload.extend_from_slice(&0u32.to_be_bytes()); // data offset
+            bx(b"trun", &full(0, flags, &payload))
+        };
+        let tfhd = bx(b"tfhd", &full(0, 0, &1u32.to_be_bytes()));
+        let moof = |trun: Vec<u8>| bx(b"moof", &bx(b"traf", &[tfhd.clone(), trun].concat()));
+        let started = Instant::now();
+        let parsed = parse_moof(&moof(trun(0x000001)), &movie).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(parsed.samples, u32::MAX);
+        assert_eq!(parsed.duration, u64::from(u32::MAX) * u64::from(FRAME));
+        assert!(!parsed.first_sync && !parsed.has_sync);
+        // Per-sample durations promised for four billion samples in 16 bytes: damaged.
+        assert!(parse_moof(&moof(trun(0x000101)), &movie).is_none());
     }
 
     #[test]

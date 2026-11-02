@@ -147,9 +147,7 @@ pub(crate) fn close_open_video(
 /// The media time an index covers, in ms.
 pub fn media_ms(index: &mp4::Index) -> u64 {
     match index.fragments.last() {
-        Some(last) if index.timescale > 0 => {
-            (last.start + last.duration) * 1000 / u64::from(index.timescale)
-        }
+        Some(last) if index.timescale > 0 => index.to_ms(last.end()),
         _ => 0,
     }
 }
