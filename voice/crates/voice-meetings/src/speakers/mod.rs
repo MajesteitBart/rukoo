@@ -4,6 +4,8 @@
 
 pub(crate) mod binarizer;
 pub(crate) mod clock;
+pub(crate) mod matching;
+pub(crate) mod turns;
 
 use std::sync::Arc;
 
