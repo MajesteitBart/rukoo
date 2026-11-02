@@ -20,6 +20,7 @@ mod log;
 mod server;
 
 use std::fmt;
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -57,8 +58,43 @@ pub trait MeetingControl: Send + Sync {
     /// `head` is the log's sequence number the snapshot is complete up to.
     fn get(&self, id: &str) -> Result<Value, ControlError>;
 
-    /// The result of `frame.get`: `{ frame, image }`. Voice 0.1 answers `not_available`.
+    /// The result of `frame.get`: `{ frame, image }` for the frame at or before `at`.
     fn frame(&self, id: &str, at: u64) -> Result<Value, ControlError>;
+
+    /// The result of `clip.get`: `{ clips: [...] }` with the clips cut by `deadline`, which is
+    /// [`CLIP_WAIT`](voice_protocol::CLIP_WAIT) after the server read the command.
+    fn clip(
+        &self,
+        id: &str,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        let _ = (id, start, end, deadline);
+        Err(ControlError::not_available("This Voice doesn't cut clips."))
+    }
+
+    /// `meeting.protected`: a Rukoo hid its windows after `meeting.starting`.
+    fn protected(&self, id: &str) -> Result<(), ControlError> {
+        let _ = id;
+        Ok(())
+    }
+
+    /// The result of `screen.get`: `{ screen, state, video, frames, monitor, monitors }`.
+    fn screen(&self, id: &str) -> Result<Value, ControlError> {
+        let _ = id;
+        Err(ControlError::not_available(
+            "This Voice doesn't record the screen.",
+        ))
+    }
+
+    /// `screen.select`: records the monitor with that id. Returns the id.
+    fn select_monitor(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
+        let _ = (id, monitor);
+        Err(ControlError::not_available(
+            "This Voice doesn't record the screen.",
+        ))
+    }
 
     fn status(&self) -> Status;
 }

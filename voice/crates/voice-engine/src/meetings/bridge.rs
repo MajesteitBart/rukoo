@@ -29,6 +29,7 @@ impl Control {
                 .current()
                 .and_then(|r| MeetingId::parse(&r.id)),
             dictating: self.dictating.load(Ordering::SeqCst),
+            screen_default: None,
         }
     }
 }

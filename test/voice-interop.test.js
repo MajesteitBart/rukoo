@@ -229,7 +229,7 @@ test('Rukoo talks to the real Voice bridge server', { skip: ENABLED ? false : 's
     assert.ok(Number.isInteger(mark.at));
     assert.equal((await refusal(b.command('meeting.stop', { meeting: 'm-20200101-000000-0000' }))).code, 'not_found');
     assert.equal((await refusal(b.command('frame.get', { meeting: A, at: 0 }))).code, 'not_available');
-    assert.equal((await refusal(b.command('clip.get', { from: 0 }))).code, 'unknown_command');
+    assert.equal((await refusal(b.command('example.unknown', { from: 0 }))).code, 'unknown_command');
     const bad = await refusal(raw(b, { type: 'command', id: 'c-raw', command: 'meeting.stop', args: { meeting: 'not-a-meeting' } }));
     assert.equal(bad.code, 'bad_request');
 

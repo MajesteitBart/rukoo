@@ -145,7 +145,7 @@
     {
       "name": "command from a newer Rukoo",
       "from": "rukoo",
-      "message": { "type": "command", "id": "c-23", "command": "clip.get", "args": { "meeting": "m-20261030-171203-4f2a", "from": 1000, "to": 5000 } }
+      "message": { "type": "command", "id": "c-23", "command": "example.unknown", "args": { "meeting": "m-20261030-171203-4f2a", "from": 1000, "to": 5000 } }
     },
     {
       "name": "reply with a result",

@@ -188,6 +188,7 @@ impl MeetingControl for FakeControl {
         Status {
             recording: recording.as_deref().and_then(MeetingId::parse),
             dictating: false,
+            screen_default: None,
         }
     }
 }

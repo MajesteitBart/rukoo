@@ -871,6 +871,23 @@ fn dispatch(control: &dyn MeetingControl, body: CommandBody) -> Result<Object, C
         CommandBody::MeetingGet { meeting } => control.get(meeting.as_str())?,
         CommandBody::FrameGet { meeting, at } => control.frame(meeting.as_str(), at)?,
         CommandBody::StatusGet => json!(control.status()),
+        CommandBody::ClipGet {
+            meeting,
+            start,
+            end,
+        } => {
+            // Counted from here until the server stamps the moment it read the command.
+            let deadline = std::time::Instant::now() + voice_protocol::CLIP_WAIT;
+            control.clip(meeting.as_str(), start, end, deadline)?
+        }
+        CommandBody::MeetingProtected { meeting } => {
+            control.protected(meeting.as_str())?;
+            json!({})
+        }
+        CommandBody::ScreenGet { meeting } => control.screen(meeting.as_str())?,
+        CommandBody::ScreenSelect { meeting, monitor } => {
+            json!({ "monitor": control.select_monitor(meeting.as_str(), &monitor)? })
+        }
         CommandBody::Unknown { command, .. } => {
             return Err(ControlError::new(
                 ErrorCode::UnknownCommand,

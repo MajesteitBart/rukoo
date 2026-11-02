@@ -591,7 +591,7 @@ fn bad_and_unknown_commands_get_error_replies() {
 
     client.command(
         "c-3",
-        "clip.get",
+        "example.unknown",
         json!({ "meeting": A, "from": 1000, "to": 5000 }),
     );
     let reply = client.read_reply("c-3");
