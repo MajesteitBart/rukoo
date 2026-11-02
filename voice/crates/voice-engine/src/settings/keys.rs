@@ -76,7 +76,7 @@ pub fn view(cfg: &Config, start_at_login: bool) -> Value {
             "retention": enum_text(json!(cfg.meetings_retention)),
             "stopKey": cfg.meetings_stop_key,
             "screen": enum_text(json!(cfg.meetings_screen)),
-            "liveSpeakers": cfg.meetings_auto_speakers,
+            "liveSpeakers": cfg.meetings_live_speakers,
         },
         "ui": {
             "language": enum_text(json!(cfg.ui_language)),
@@ -226,7 +226,9 @@ pub fn set(cfg: &mut Config, key: &str, value: Value) -> Result<(), ApiError> {
         "rewriting.instructions" => cfg.rewrite_custom_instructions = string(key, &value)?,
         "meetings.retention" => cfg.meetings_retention = choice::<Retention>(key, &value)?,
         "meetings.screen" => cfg.meetings_screen = choice::<ScreenMode>(key, &value)?,
-        "meetings.liveSpeakers" => cfg.meetings_auto_speakers = boolean(key, &value)?,
+        // Ownkey's `meetings_auto_speakers` meant "label after Stop"; Voice labels while a
+        // meeting records, under its own key, and leaves Ownkey's unread.
+        "meetings.liveSpeakers" => cfg.meetings_live_speakers = boolean(key, &value)?,
         "ui.language" => cfg.ui_language = choice::<UiLanguage>(key, &value)?,
         "ui.theme" => cfg.ui_theme = choice::<Theme>(key, &value)?,
         "updates.check" => cfg.updates_check = boolean(key, &value)?,
@@ -290,7 +292,7 @@ mod tests {
             ("meetings.retention", json!("after_transcription")),
             ("meetings.stopKey", json!("pause")),
             ("meetings.screen", json!("off")),
-            ("meetings.liveSpeakers", json!(true)),
+            ("meetings.liveSpeakers", json!(false)),
             ("ui.language", json!("nl")),
             ("ui.theme", json!("dark")),
             ("updates.check", json!(true)),
@@ -305,6 +307,24 @@ mod tests {
         }
         assert_eq!(cfg.hotkey, "f15");
         assert_eq!(cfg.meetings_retention, Retention::AfterTranscription);
+        assert!(!cfg.meetings_live_speakers);
+        assert!(
+            !cfg.meetings_auto_speakers,
+            "Ownkey's after-Stop flag isn't the switch"
+        );
+    }
+
+    #[test]
+    fn the_speaker_switch_ignores_ownkey_s_after_stop_flag() {
+        let mut cfg = Config::defaults(true);
+        cfg.meetings_auto_speakers = true;
+        cfg.meetings_live_speakers = false;
+        assert_eq!(view(&cfg, false)["meetings"]["liveSpeakers"], false);
+        set(&mut cfg, "meetings.liveSpeakers", json!(true)).unwrap();
+        assert!(cfg.meetings_live_speakers);
+        set(&mut cfg, "meetings.liveSpeakers", json!(false)).unwrap();
+        assert!(!cfg.meetings_live_speakers);
+        assert!(cfg.meetings_auto_speakers, "the import's value stays");
     }
 
     #[test]

@@ -933,7 +933,11 @@
   },
   "settings.meetings.speakers": {
     "message": "Speaker labels",
-    "description": "Settings > Meetings: row that opens Speaker labels; also that page's title. Hidden in Voice 0.1. voice/ui/settings.js (mainPage, speakersPage)."
+    "description": "Settings > Meetings: row that opens Speaker labels; also that page's title. voice/ui/settings.js (mainPage, speakersPage)."
+  },
+  "settings.meetings.speakersUnavailable": {
+    "message": "Unavailable",
+    "description": "Settings > Meetings: value of the Speaker labels row when the switch is on but labels can't run; also the red status pill on the Speaker labels page. voice/ui/settings.js (speakersRow, speakersPage)."
   },
   "settings.meetings.storage": {
     "message": "Storage",
@@ -959,6 +963,10 @@
     "message": "The recorded tracks go to {provider} in short pieces while the meeting records, over your own key. Pause stops sending new audio. Choose Orukeet to keep the audio on this computer.",
     "description": "Settings > Meeting transcription: first paragraph of the disclosure. {provider}: provider name. voice/ui/settings.js (consentBlock)."
   },
+  "settings.consent.introStream": {
+    "message": "Voice streams the recorded tracks to {provider} while the meeting records, over your own key. {provider} returns the text and tells the voices on the call apart. After a dropped connection, Voice sends short clips of the voices heard so far, so their labels stay the same. Pausing stops the stream.",
+    "description": "Settings > Meeting transcription: first paragraph of the disclosure when the model is a realtime model, which streams the meeting. {provider}: provider name such as Mistral. voice/ui/settings.js (consentBlock)."
+  },
   "settings.consent.provider": {
     "message": "Provider",
     "description": "Settings > Meeting transcription: label in the disclosure; the value is provider and model. voice/ui/settings.js (consentBlock)."
@@ -974,6 +982,10 @@
   "settings.consent.sentValue": {
     "message": "Your microphone and the call audio, as recorded",
     "description": "Settings > Meeting transcription: what goes to the provider. voice/ui/settings.js (consentBlock)."
+  },
+  "settings.consent.sentValueStream": {
+    "message": "Microphone and call audio as a continuous stream, and clips of up to 15 seconds per voice after a reconnect",
+    "description": "Settings > Meeting transcription: what goes to the provider when the model is a realtime model. voice/ui/settings.js (consentBlock)."
   },
   "settings.consent.notSent": {
     "message": "Not sent",
@@ -995,6 +1007,10 @@
     "message": "Send meeting audio to {provider} at {host}",
     "description": "Settings > Meeting transcription: the consent checkbox. Saved with the form. {provider}: provider name. {host}: the endpoint's host name, such as api.mistral.ai. voice/ui/settings.js (consentBlock)."
   },
+  "settings.consent.agreeStream": {
+    "message": "Stream meeting audio to {provider} at {host}",
+    "description": "Settings > Meeting transcription: the consent checkbox for a realtime model; a batch agreement doesn't cover streaming. {provider}: provider name. {host}: the endpoint's host name, such as api.mistral.ai. voice/ui/settings.js (consentBlock)."
+  },
   "settings.consent.again": {
     "message": "Another provider or server asks again.",
     "description": "Settings > Meeting transcription: line under the consent checkbox. voice/ui/settings.js (consentBlock)."
@@ -1004,16 +1020,84 @@
     "description": "Settings > Meeting transcription: line under the checkbox while it is not checked. voice/ui/settings.js (consentBlock)."
   },
   "settings.speakers.about": {
-    "message": "Who said what, from NVIDIA Nemotron 3 Diarization running on this computer. It separates up to eight voices per track; audio never leaves this computer. Without the model, passages keep their Microphone and Call audio labels.",
-    "description": "Settings > Speaker labels: paragraph in the model card. Hidden in Voice 0.1. voice/ui/settings.js (speakersPage)."
+    "message": "Who said what, from NVIDIA Nemotron 3 Diarization running on this computer. It tells apart up to eight voices on the call, and their audio never leaves this computer. Without labels, the call is one speaker.",
+    "description": "Settings > Speaker labels: paragraph in the model card. voice/ui/settings.js (speakersPage)."
   },
   "settings.speakers.live": {
     "message": "Label speakers during the meeting",
-    "description": "Settings > Speaker labels: switch. Hidden in Voice 0.1. voice/ui/settings.js (speakersPage)."
+    "description": "Settings > Speaker labels: switch. voice/ui/settings.js (speakersPage)."
   },
   "settings.speakers.licence": {
     "message": "Weights under the OpenMDW License 1.1. Runs through NVIDIA NeMo-Speech.cpp.",
-    "description": "Settings > Speaker labels: license line. Hidden in Voice 0.1. voice/ui/settings.js (speakersPage)."
+    "description": "Settings > Speaker labels: license line. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.status": {
+    "message": "Status",
+    "description": "Settings > Speaker labels: title of the first row, which says whether new meetings get labels. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.ready": {
+    "message": "Ready. New meetings label each voice on the call.",
+    "description": "Settings > Speaker labels: the status row when Nemotron can label new meetings. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.readyMistral": {
+    "message": "Ready. Mistral labels the voices on the call, because your meetings stream to its realtime model.",
+    "description": "Settings > Speaker labels: the status row when meetings stream to Mistral's realtime model, which labels them. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.reason.off": {
+    "message": "Off. Meetings label the whole call as one speaker.",
+    "description": "Settings > Speaker labels: the status row with the switch off. voice/ui/settings.js (speakersPage, speakersReason)."
+  },
+  "settings.speakers.reason.platform": {
+    "message": "Speaker labels work on Windows only in this version.",
+    "description": "Settings > Speaker labels and the Meetings row: why labels are off on macOS or Linux. voice/ui/settings.js (speakersReason)."
+  },
+  "settings.speakers.reason.cpu": {
+    "message": "This processor lacks {missing}, which speaker labels need. Meetings label the whole call as one speaker.",
+    "description": "Settings > Speaker labels and the Meetings row: the processor lacks instructions the speaker model needs. {missing}: a list of names such as \"AVX2 and BMI2\". voice/ui/settings.js (speakersReason)."
+  },
+  "settings.speakers.reason.runtime": {
+    "message": "The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.",
+    "description": "Settings > Speaker labels and the Meetings row: the NeMo runtime files next to Voice are missing or don't match. voice/ui/settings.js (speakersReason)."
+  },
+  "settings.speakers.reason.runtimeFailed": {
+    "message": "The speaker label runtime couldn't start. Voice tries again after a restart.",
+    "description": "Settings > Speaker labels and the Meetings row: the speaker worker failed to load since Voice started; Error details shows why. voice/ui/settings.js (speakersReason, speakersPage)."
+  },
+  "settings.speakers.reason.model": {
+    "message": "Download the speaker model to label speakers.",
+    "description": "Settings > Speaker labels and the Meetings row: the Nemotron model isn't on this computer. voice/ui/settings.js (speakersReason)."
+  },
+  "settings.speakers.reason.modelDamaged": {
+    "message": "The speaker model is damaged. Remove it and download it again.",
+    "description": "Settings > Speaker labels and the Meetings row: the Nemotron model failed its check since Voice started; Error details shows why. voice/ui/settings.js (speakersReason, speakersPage)."
+  },
+  "settings.speakers.reason.consent": {
+    "message": "Transcription and labels wait until you agree to stream meeting audio to {provider}.",
+    "description": "Settings > Speaker labels and the Meetings row: meetings stream to a realtime model and the user hasn't agreed to streaming. {provider}: provider name such as Mistral. voice/ui/settings.js (speakersReason)."
+  },
+  "settings.speakers.engine": {
+    "message": "Labels from",
+    "description": "Settings > Speaker labels: title of the row that says who labels the speakers. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.engineLocal": {
+    "message": "Nemotron on this computer",
+    "description": "Settings > Speaker labels: value of Labels from when Nemotron labels on this computer. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.engineMistral": {
+    "message": "Mistral, with meeting transcription",
+    "description": "Settings > Speaker labels: value of Labels from when meetings stream to Mistral; the row opens Meeting transcription. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.liveHelp": {
+    "message": "Applies to meetings you start from now on.",
+    "description": "Settings > Speaker labels: description under the switch; a meeting keeps the choice it started with. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.stopped": {
+    "message": "Speaker labels stopped for the current meeting. Recording and transcription go on.",
+    "description": "Settings > Speaker labels: warning row when the speaker worker failed for a meeting that is still transcribing. voice/ui/settings.js (speakersPage)."
+  },
+  "settings.speakers.modelInstalled": {
+    "message": "Installed",
+    "description": "Settings > Speaker labels: status of the Nemotron model files when they are on this computer. Nemotron has no loaded state; the status card says whether it labels. voice/ui/settings.js (modelStatus)."
   },
   "settings.storage.local": {
     "message": "On this computer",
@@ -1240,7 +1324,7 @@
   },
   "settings.licenses.nemotron": {
     "message": "Nemotron 3 Diarization by NVIDIA, under the OpenMDW License 1.1, run through NeMo-Speech.cpp.",
-    "description": "Settings > About > Licenses: line in the dialog. Hidden in Voice 0.1. voice/ui/settings.js (licensesDialog)."
+    "description": "Settings > About > Licenses: line in the dialog. voice/ui/settings.js (licensesDialog)."
   },
   "settings.licenses.beautifulUi": {
     "message": "Parts of the interface follow Beautiful UI by Shane Levine, under the MIT License.",

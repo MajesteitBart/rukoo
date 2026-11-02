@@ -79,7 +79,7 @@ check('consent is saved per provider and host, and the top page stops waiting', 
   await page.locator('[data-field="meetings.consent"]').check();
   await page.click('[data-a="save:meetings"]');
   await page.waitForSelector('.form-status.ok');
-  assert.deepEqual((await mockState()).config.meetings.consent, { provider: 'mistral', host: 'api.mistral.ai' });
+  assert.deepEqual((await mockState()).config.meetings.consent, { provider: 'mistral', host: 'api.mistral.ai', mode: 'windows' });
   const save = await page.evaluate(() => window.__lastSave);
   assert.equal(save.apiKey, null, 'the saved key is kept, never sent back');
   await page.fill('[data-field="meetings.endpoint"]', 'https://eu.api.mistral.ai/v1/audio/transcriptions');
@@ -172,9 +172,132 @@ check('a development copy can\'t import or start at login', async ({ open, page 
   assert.match(await page.locator('.page-actions').innerText(), /--import-ownkey <copy>/);
 });
 
+// ---------- speaker labels ----------
+
+const SPEAKER_TEXT = {
+  off: 'Off. Meetings label the whole call as one speaker.',
+  platform: 'Speaker labels work on Windows only in this version.',
+  cpu: 'This processor lacks BMI2, which speaker labels need. Meetings label the whole call as one speaker.',
+  runtime: 'The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.',
+  runtimeFailed: "The speaker label runtime couldn't start. Voice tries again after a restart.",
+  model: 'Download the speaker model to label speakers.',
+  modelDamaged: 'The speaker model is damaged. Remove it and download it again.',
+  consent: 'Transcription and labels wait until you agree to stream meeting audio to Mistral.'
+};
+
+check('the Speaker labels row shows only with the feature, and says why labels are off', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=meetings');
+  assert.equal(await page.locator('[data-a="go:speakers"]').count(), 0, 'no speakers feature, no row');
+  await open('settings.html?mock=1&lang=en&page=meetings&speakers=ready');
+  assert.match(await page.locator('[data-a="go:speakers"]').innerText(), /Speaker labels\s+On/);
+  await open('settings.html?mock=1&lang=en&page=meetings&speakers=cpu');
+  const text = await page.locator('[data-a="go:speakers"]').innerText();
+  assert.match(text, /Unavailable/);
+  assert.ok(text.includes(SPEAKER_TEXT.cpu), text);
+  await open('settings.html?mock=1&lang=en&page=meetings&speakers=off');
+  assert.match(await page.locator('[data-a="go:speakers"]').innerText(), /Speaker labels\s+Off/);
+});
+
+check('every reason labels are off shows its text on the Speaker labels page', async ({ open, page }) => {
+  for (const [reason, text] of Object.entries(SPEAKER_TEXT)) {
+    await open(`settings.html?mock=1&lang=en&page=speakers&speakers=${reason}`);
+    const status = await page.locator('[data-section="status"]').innerText();
+    assert.ok(status.includes(text), `${reason}: ${status}`);
+    assert.match(status, reason === 'off' ? /\bOff\b/ : /Unavailable/, reason);
+  }
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Ready\. New meetings label each voice on the call\.[\s\S]*Nemotron on this computer/);
+});
+
+check('the switch stays usable without the model and applies to new meetings', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=model');
+  const toggle = page.locator('[data-a="toggle:meetings.liveSpeakers"]');
+  assert.equal(await toggle.isDisabled(), false);
+  assert.match(await toggle.innerText(), /Applies to meetings you start from now on\./);
+  await toggle.click();
+  assert.equal((await mockState()).config.meetings.liveSpeakers, false);
+  await page.waitForSelector('[data-section="status"] :text("Off. Meetings label the whole call as one speaker.")');
+  // Downloading the model makes labels ready once the switch is on again.
+  await toggle.click();
+  await page.click('[data-a="model:nemotron:download"]');
+  await page.waitForSelector('[data-section="status"] :text("Ready. New meetings label each voice on the call.")', { timeout: 10000 });
+  assert.equal((await mockState()).models.nemotron.removable, true);
+  // Nemotron has no loaded state, so its files never read "Not active" next to a ready status.
+  assert.equal(await page.locator('[data-section="model"] .model-status').innerText(), 'Installed');
+});
+
+check('Error details shows why the runtime failed or the model is damaged', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=runtimeFailed');
+  await page.click('[data-a="speakers-details"]');
+  assert.match(await page.locator('.dialog .detail').innerText(), /nemo_speech_asr_c\.dll/);
+  await page.keyboard.press('Escape');
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=modelDamaged');
+  await page.click('[data-a="speakers-details"]');
+  assert.match(await page.locator('.dialog .detail').innerText(), /Checksum mismatch/);
+  await page.keyboard.press('Escape');
+  // A reason without an error text has no Error details.
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=runtime');
+  assert.equal(await page.locator('[data-a="speakers-details"]').count(), 0);
+});
+
+check('Mistral labels a streamed meeting, and a stopped meeting is called out', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=mistral');
+  const status = await page.locator('[data-section="status"]').innerText();
+  assert.match(status, /Ready\. Mistral labels the voices on the call/);
+  await page.click('[data-a="go:meetingTranscription"]');
+  assert.equal(await page.locator('h1').innerText(), 'Meeting transcription');
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=stopped');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Speaker labels stopped for the current meeting\. Recording and transcription go on\./);
+});
+
+check('a realtime model asks to stream, and a batch agreement doesn\'t cover it', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=meetingTranscription&scenario=cloud');
+  assert.match(await page.locator('.consent').innerText(), /in short pieces/);
+  await page.locator('[data-field="meetings.consent"]').check();
+  await page.click('[data-a="save:meetings"]');
+  await page.waitForSelector('.form-status.ok');
+  assert.equal((await mockState()).config.meetings.consent.mode, 'windows');
+  await page.fill('[data-field="meetings.model"]', 'voxtral-mini-transcribe-realtime-3');
+  await page.locator('[data-field="meetings.model"]').blur();
+  const consent = page.locator('.consent');
+  assert.match(await consent.innerText(), /Voice streams the recorded tracks to Mistral/);
+  assert.match(await consent.innerText(), /continuous stream, and clips of up to 15 seconds per voice/);
+  assert.match(await consent.innerText(), /Stream meeting audio to Mistral at api\.mistral\.ai/);
+  assert.equal(await page.locator('[data-field="meetings.consent"]').isChecked(), false, 'the batch agreement is for windows');
+  await page.locator('[data-field="meetings.consent"]').check();
+  await page.click('[data-a="save:meetings"]');
+  await page.waitForSelector('.form-status.ok');
+  assert.deepEqual((await mockState()).config.meetings.consent, { provider: 'mistral', host: 'api.mistral.ai', mode: 'stream' });
+  // Dictation can't use a realtime model.
+  const refused = await page.evaluate(async () => {
+    const { invoke } = await import('./lib/bridge.js');
+    const save = { target: 'transcription', provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: 'voxtral-mini-transcribe-realtime-3', apiKey: null };
+    return invoke('settings_save_provider', { save }).then(
+      () => null,
+      (error) => error?.code
+    );
+  });
+  assert.equal(refused, 'invalid_value');
+});
+
+check('only the meetings form offers realtime models', async ({ open, page }) => {
+  const offered = async (form) => {
+    await open(`settings.html?mock=1&lang=en&page=${form === 'meetings' ? 'meetingTranscription' : form}`);
+    await page.selectOption(`[data-field="${form}.provider"]`, 'mistral');
+    await page.click(`[data-a="refresh:${form}"]`);
+    await page.waitForSelector(`[data-form="${form}"] .field-help:text-matches("models? found")`);
+    return page.locator(`#models-${form} option`).evaluateAll((options) => options.map((o) => o.value));
+  };
+  const dictation = await offered('transcription');
+  assert.ok(dictation.includes('voxtral-mini-latest'), dictation.join());
+  assert.ok(!dictation.some((id) => id.startsWith('voxtral-mini-transcribe-realtime')), dictation.join());
+  assert.ok(!(await offered('rewriting')).some((id) => id.startsWith('voxtral-mini-transcribe-realtime')));
+  assert.ok((await offered('meetings')).includes('voxtral-mini-transcribe-realtime-3'));
+});
+
 check('Dutch is complete on every page', async ({ open, page }) => {
-  for (const name of ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'storage', 'rukoo', 'import']) {
-    await open(`settings.html?mock=1&lang=nl&scenario=cloud&page=${name}`);
+  for (const name of ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import']) {
+    await open(`settings.html?mock=1&lang=nl&scenario=cloud&speakers=cpu&page=${name}`);
     const text = await page.locator('.page').innerText();
     for (const english of ['Settings', 'Save', 'Transcription', 'Dictionary', 'Rewriting', 'Storage', 'Connection', 'Import from']) {
       assert.ok(!new RegExp(`\\b${english}\\b`).test(text), `"${english}" on the Dutch ${name} page`);
