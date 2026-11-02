@@ -9,6 +9,8 @@ the asr profile, which contains diarization, and stages the runtime folder Voice
   nemo_speech_asr_c.dll, nemo_speech_asr.dll, ggml.dll, ggml-base.dll, ggml-cpu.dll
   msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll    the Visual C++ runtime the DLLs need, from this toolset
   licenses\LICENSE, NOTICE, THIRD_PARTY_NOTICES.md      NeMo-Speech.cpp's own
+  licenses\darts-clone.txt                              the license of Darts-clone, which SentencePiece compiles in,
+                                                        from licenses\ next to this script
   licenses\vcpkg\<package>.txt                          the licenses of what vcpkg linked in: SentencePiece and
                                                         the libraries it uses
   runtime.json                                          manifest.json without the archive: pins, flags, toolset,
@@ -60,6 +62,10 @@ $Manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -
 $Libraries = @('nemo_speech_asr_c.dll', 'nemo_speech_asr.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll')
 $Crt = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 $Licenses = @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')
+# SentencePiece compiles in Darts-clone (its third_party\darts_clone), whose BSD license wants its notice with every
+# binary. vcpkg's port installs only SentencePiece's own LICENSE, and on a binary-cache hit the source isn't there, so
+# the text is kept next to this script: Darts-clone's LICENSE from SentencePiece 0.2.1, unchanged.
+$OwnLicenses = @('darts-clone.txt')
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 
 function Invoke-Native {
@@ -233,12 +239,13 @@ New-Item -ItemType Directory -Force -Path (Join-Path $staging 'licenses\vcpkg') 
 foreach ($name in $Libraries) { Copy-Item -LiteralPath (Join-Path $bin $name) -Destination $staging }
 foreach ($name in $Crt) { Copy-Item -LiteralPath (Join-Path $crtDir.FullName $name) -Destination (Join-Path $staging $name) }
 foreach ($name in $Licenses) { Copy-Item -LiteralPath (Join-Path $Source $name) -Destination (Join-Path $staging 'licenses') }
+foreach ($name in $OwnLicenses) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot "licenses\$name") -Destination (Join-Path $staging 'licenses') }
 foreach ($name in $vcpkgLicenses) {
   Copy-Item -LiteralPath (Join-Path $vcpkgShare "$name\copyright") -Destination (Join-Path $staging "licenses\vcpkg\$name.txt")
 }
 
 $files = @()
-$licensePaths = @($Licenses | ForEach-Object { "licenses/$_" }) + @($vcpkgLicenses | ForEach-Object { "licenses/vcpkg/$_.txt" })
+$licensePaths = @($Licenses + $OwnLicenses | ForEach-Object { "licenses/$_" }) + @($vcpkgLicenses | ForEach-Object { "licenses/vcpkg/$_.txt" })
 foreach ($path in @($Libraries + $Crt + $licensePaths)) {
   $file = Join-Path $staging $path
   $entry = [ordered]@{ path = $path; size = (Get-Item -LiteralPath $file).Length; sha256 = (Get-Sha256 $file) }

@@ -6,11 +6,11 @@ Voice labels the speakers on a call with NVIDIA Nemotron 3 Diarization, which ru
 nemo_speech\nemo_speech_asr_c.dll, nemo_speech_asr.dll, ggml.dll, ggml-base.dll, ggml-cpu.dll
 nemo_speech\msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll
 nemo_speech\runtime.json
-nemo_speech\licenses\LICENSE, NOTICE, THIRD_PARTY_NOTICES.md
+nemo_speech\licenses\LICENSE, NOTICE, THIRD_PARTY_NOTICES.md, darts-clone.txt
 nemo_speech\licenses\vcpkg\abseil.txt, protobuf.txt, sentencepiece.txt, utf8-range.txt
 ```
 
-The `vcpkg` licenses belong to SentencePiece and the libraries it uses, which vcpkg links statically into `nemo_speech_asr.dll`. NeMo-Speech.cpp's own `THIRD_PARTY_NOTICES.md` names them but doesn't carry their texts.
+The `vcpkg` licenses belong to SentencePiece and the libraries it uses, which vcpkg links statically into `nemo_speech_asr.dll`. NeMo-Speech.cpp's own `THIRD_PARTY_NOTICES.md` names them but doesn't carry their texts. SentencePiece also compiles in Darts-clone, whose BSD license vcpkg doesn't install, so `build.ps1` adds it from `licenses/darts-clone.txt` in this folder.
 
 Voice builds this runtime itself, once per pinned commit, because MSVC builds differ between toolsets: Ownkey's copy and Voice's copy of the same commit have different hashes. The build is portable, an AVX2 baseline with FMA, F16C and BMI2 and no OpenMP, so it runs on any processor that has those four. The Visual C++ runtime ships next to the DLLs, because they use the dynamic C runtime and Voice installs without administrator rights.
 
@@ -19,6 +19,7 @@ Voice builds this runtime itself, once per pinned commit, because MSVC builds di
 | `manifest.json` | The pins: commit, submodules, flags and vcpkg. Once the runtime is published, also the archive's URL, size and SHA-256 and the size and SHA-256 of every file in it. |
 | `build.ps1` | Builds the runtime folder from source. |
 | `pack.ps1` | Checks a built folder, zips it, and writes the filled-in `manifest.json` and the release notes. |
+| `licenses/darts-clone.txt` | Darts-clone's license from SentencePiece 0.2.1, unchanged, for the runtime's `licenses\`. |
 
 Who reads `manifest.json`: voice-core compiles it in to check the `nemo_speech\` folder next to the exe before it offers speaker labels; `voice/scripts/package.ps1` downloads the archive, checks every hash and puts the folder into the installer and the portable zip; `voice/scripts/speaker-assets.ps1 -Runtime` fetches it for the tests.
 

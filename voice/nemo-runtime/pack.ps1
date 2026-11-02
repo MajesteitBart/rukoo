@@ -109,7 +109,7 @@ $featureText = $features[-1]
 if ($features.Count -gt 1) { $featureText = ($features[0..($features.Count - 2)] -join ', ') + ' and ' + $features[-1] }
 [void]$notes.Append("- Needs a 64-bit processor with $featureText.`n")
 $linked = @($built.files | Where-Object { $_.path -like 'licenses/vcpkg/*' } | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.path) })
-[void]$notes.Append("- Licenses: NeMo-Speech.cpp is Apache-2.0, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. ``licenses\LICENSE``, ``licenses\NOTICE`` and ``licenses\THIRD_PARTY_NOTICES.md`` come with it and name what the DLLs contain, such as ggml (MIT). ``licenses\vcpkg\`` holds the licenses of the libraries vcpkg linked in: $($linked -join ', '). ``msvcp140.dll``, ``vcruntime140.dll`` and ``vcruntime140_1.dll`` are unmodified Microsoft Visual C++ runtime files, redistributed under the Visual Studio license terms.`n`n")
+[void]$notes.Append("- Licenses: NeMo-Speech.cpp is Apache-2.0, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. ``licenses\LICENSE``, ``licenses\NOTICE`` and ``licenses\THIRD_PARTY_NOTICES.md`` come with it and name what the DLLs contain, such as ggml (MIT). ``licenses\darts-clone.txt`` is the BSD 2-Clause license of Darts-clone, which SentencePiece compiles in. ``licenses\vcpkg\`` holds the licenses of the libraries vcpkg linked in: $($linked -join ', '). ``msvcp140.dll``, ``vcruntime140.dll`` and ``vcruntime140_1.dll`` are unmodified Microsoft Visual C++ runtime files, redistributed under the Visual Studio license terms.`n`n")
 [void]$notes.Append("| File | Bytes | SHA-256 |`n|---|---:|---|`n")
 [void]$notes.Append("| ``$zipName`` | $($manifest.archive.size) | ``$($manifest.archive.sha256)`` |`n")
 foreach ($file in $built.files) {
