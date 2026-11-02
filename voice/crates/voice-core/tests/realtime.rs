@@ -709,10 +709,7 @@ fn a_chunked_refusal_reads_as_its_body() {
         Err(error) => error,
     };
     assert_eq!(error.kind, ErrorKind::Auth);
-    assert_eq!(
-        error.message,
-        r#"API error 401: {"detail":"Invalid API Key"}"#
-    );
+    assert_eq!(error.message, "API error 401: Invalid API Key");
     server.join().unwrap();
 }
 

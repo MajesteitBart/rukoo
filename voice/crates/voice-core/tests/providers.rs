@@ -402,7 +402,17 @@ fn describe_api_error_vectors() {
         (
             422,
             r#"{"detail": "fastapi detail"}"#,
-            r#"API error 422: {"detail": "fastapi detail"}"#,
+            "API error 422: fastapi detail",
+        ),
+        (
+            401,
+            r#"{"detail":"Invalid API Key"}"#,
+            "API error 401: Invalid API Key",
+        ),
+        (
+            422,
+            r#"{"detail": [{"loc": ["body"], "msg": "field required"}]}"#,
+            r#"API error 422: {"detail": [{"loc": ["body"], "msg": "field required"}]}"#,
         ),
         (
             400,

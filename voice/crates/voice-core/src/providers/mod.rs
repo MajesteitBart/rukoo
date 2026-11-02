@@ -372,7 +372,8 @@ pub fn models_endpoint(provider: &str, activity_endpoint: &str) -> String {
     }
 }
 
-/// Ownkey's `describe_api_error`: keeps the provider's own explanation of a failed request.
+/// Ownkey's `describe_api_error`: keeps the provider's own explanation of a failed request. Unlike
+/// Ownkey's, it also reads a FastAPI-style `detail` string.
 /// `status` is None when no response arrived.
 pub fn describe_api_error(status: Option<u16>, reason: Option<&str>, body: &str) -> String {
     let Some(status) = status else {
@@ -394,6 +395,13 @@ pub fn describe_api_error(status: Option<u16>, reason: Option<&str>, body: &str)
                     }
                     Some(other) => other.to_string(),
                 };
+                // Mistral, like other FastAPI servers, says why in `detail`:
+                // {"detail":"Invalid API Key"}.
+                if message.is_empty() {
+                    if let Some(serde_json::Value::String(text)) = detail.get("detail") {
+                        message = text.clone();
+                    }
+                }
             }
             serde_json::Value::String(text) => message = text,
             _ => {}
