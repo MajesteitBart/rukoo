@@ -34,6 +34,23 @@ pub struct RuntimeInfo {
     pub commit: String,
 }
 
+impl RuntimeInfo {
+    /// Folders besides `dir` that the worker searches for the runtime's own imports: for
+    /// Ownkey's copy, its C runtime one folder up, which the worker's DLL search wouldn't find
+    /// on a PC without a system copy.
+    pub fn dll_dirs(&self) -> Vec<PathBuf> {
+        match self.location {
+            RuntimeLocation::Ownkey => self
+                .dir
+                .parent()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect(),
+            RuntimeLocation::Voice | RuntimeLocation::Dev => Vec::new(),
+        }
+    }
+}
+
 /// voice/nemo-runtime/manifest.json: the files of Voice's own runtime build and their hashes.
 /// build.rs copies it, or the manifest a test package names (`package.ps1 -RuntimeManifest`).
 pub(crate) const MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/nemo-runtime.json"));
@@ -47,11 +64,15 @@ pub(crate) const RUNTIME_DLLS: [&str; 5] = [
     "ggml-cpu.dll",
 ];
 
+/// The Visual C++ runtime the five DLLs import. Voice's own folder holds it; Ownkey's sits one
+/// folder up, in Ownkey's `_internal\`.
+pub(crate) const CRT_DLLS: [&str; 3] = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
+
 /// The NeMo-Speech.cpp commit of Ownkey's runtime: the same one Voice builds.
 const OWNKEY_COMMIT: &str = "97a15afa5caa9bce5baaa86c1184103877af4101";
 
 /// The installed Ownkey's build of that commit (2026-10-02): size and SHA-256 per DLL, from its
-/// `runtime.json`. Its MSVC runtime sits one folder up and isn't checked.
+/// `runtime.json`. Its MSVC runtime sits one folder up: it has to be there, unhashed.
 const OWNKEY_RUNTIME: [(&str, u64, &str); 5] = [
     (
         "nemo_speech_asr_c.dll",
@@ -204,9 +225,23 @@ pub(crate) fn verify_voice(dir: &Path, manifest: &Manifest) -> bool {
         })
 }
 
-/// Ownkey's copy: its five DLLs at the known sizes and hashes.
+/// Ownkey's copy: its five DLLs at the known sizes and hashes, and its C runtime one folder up.
 pub(crate) fn verify_ownkey(dir: &Path) -> bool {
-    verify_known(dir, &OWNKEY_RUNTIME)
+    verify_ownkey_with(dir, &OWNKEY_RUNTIME)
+}
+
+fn verify_ownkey_with(dir: &Path, known: &[(&str, u64, &str)]) -> bool {
+    verify_known(dir, known) && crt_beside(dir)
+}
+
+/// Ownkey's C runtime in the folder above its runtime folder. Without it the DLLs load only on a
+/// PC that has a system copy, so such a folder doesn't count as a runtime.
+fn crt_beside(dir: &Path) -> bool {
+    dir.parent().is_some_and(|up| {
+        CRT_DLLS.iter().all(|name| {
+            fs::symlink_metadata(up.join(name)).is_ok_and(|meta| meta.file_type().is_file())
+        })
+    })
 }
 
 fn verify_known(dir: &Path, known: &[(&str, u64, &str)]) -> bool {
@@ -417,6 +452,59 @@ mod tests {
             .map(|(name, size, sha)| (name.as_str(), *size, sha.as_str()))
             .collect();
         assert!(verify_known(&ownkey, &known));
+    }
+
+    #[test]
+    fn ownkeys_folder_counts_only_with_its_c_runtime_one_folder_up() {
+        let temp = TempDir::new("runtime-ownkey-crt");
+        let internal = temp.join("_internal");
+        let ownkey = internal.join("nemo_speech");
+        fs::create_dir_all(&ownkey).unwrap();
+        for (i, name) in RUNTIME_DLLS.iter().enumerate() {
+            fs::write(ownkey.join(name), format!("fake dll {i}")).unwrap();
+        }
+        let known: Vec<(String, u64, String)> = RUNTIME_DLLS
+            .iter()
+            .map(|name| {
+                let path = ownkey.join(name);
+                (
+                    name.to_string(),
+                    fs::metadata(&path).unwrap().len(),
+                    sha(&path),
+                )
+            })
+            .collect();
+        let known: Vec<(&str, u64, &str)> = known
+            .iter()
+            .map(|(name, size, sha)| (name.as_str(), *size, sha.as_str()))
+            .collect();
+        assert!(verify_known(&ownkey, &known));
+        // The DLLs match, but nothing they import is there.
+        assert!(!verify_ownkey_with(&ownkey, &known));
+        for name in &CRT_DLLS[..2] {
+            fs::write(internal.join(name), "crt").unwrap();
+        }
+        assert!(
+            !verify_ownkey_with(&ownkey, &known),
+            "one of three is missing"
+        );
+        fs::write(internal.join(CRT_DLLS[2]), "crt").unwrap();
+        assert!(verify_ownkey_with(&ownkey, &known));
+        // The worker searches that folder too.
+        let info = RuntimeInfo {
+            dir: ownkey.clone(),
+            location: RuntimeLocation::Ownkey,
+            commit: "97a15af".into(),
+        };
+        assert_eq!(info.dll_dirs(), vec![internal.clone()]);
+        for location in [RuntimeLocation::Voice, RuntimeLocation::Dev] {
+            assert!(RuntimeInfo {
+                location,
+                ..info.clone()
+            }
+            .dll_dirs()
+            .is_empty());
+        }
     }
 
     #[test]

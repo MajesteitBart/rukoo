@@ -20,6 +20,8 @@ pub const SAMPLE_RATE: u32 = 16_000;
 pub struct LoadRequest {
     /// The folder holding `nemo_speech_asr_c.dll` and the DLLs it needs.
     pub runtime: PathBuf,
+    /// More folders to search for those DLLs' imports, such as Ownkey's C runtime one folder up.
+    pub dll_dirs: Vec<PathBuf>,
     /// The Nemotron GGUF.
     pub model: PathBuf,
     pub preset: String,
@@ -76,7 +78,7 @@ pub struct Native {
 #[cfg(windows)]
 impl Backend for Native {
     fn load(&mut self, request: &LoadRequest) -> Result<Loaded, Failure> {
-        let runtime = crate::nemo::Runtime::load(&request.runtime)?;
+        let runtime = crate::nemo::Runtime::load(&request.runtime, &request.dll_dirs)?;
         let model = crate::nemo::Model::create(
             runtime,
             &request.model,

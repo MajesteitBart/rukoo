@@ -116,7 +116,7 @@ pub fn run(options: &Options) -> Result<Report, String> {
     let failed = |failure: crate::protocol::Failure| failure.message;
 
     let started = Instant::now();
-    let runtime = Runtime::load(&options.runtime).map_err(failed)?;
+    let runtime = Runtime::load(&options.runtime, &[]).map_err(failed)?;
     let model = Model::create(
         runtime,
         &options.model,

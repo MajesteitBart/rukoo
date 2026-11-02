@@ -11,7 +11,7 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::os::windows::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 
 use windows::core::{PCSTR, PCWSTR};
@@ -20,7 +20,7 @@ use windows::Win32::System::Diagnostics::Debug::{
     SetThreadErrorMode, SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX, THREAD_ERROR_MODE,
 };
 use windows::Win32::System::LibraryLoader::{
-    GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+    AddDllDirectory, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
     LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
 };
 
@@ -125,6 +125,33 @@ pub struct Runtime {
     f: Functions,
 }
 
+/// A path as the NUL-terminated UTF-16 Windows takes.
+fn wide(path: &std::ffi::OsStr) -> Vec<u16> {
+    path.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// Lets the loader search `dir` for the runtime's imports, as `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`
+/// includes the folders added this way. For the rest of the process, which loads one runtime.
+fn add_dll_directory(dir: &Path) -> Result<(), Failure> {
+    // AddDllDirectory takes only an absolute path.
+    let absolute = std::path::absolute(dir).map_err(|error| {
+        runtime_failure(format!(
+            "The folder {} for the speaker label runtime is not usable: {error}",
+            dir.display()
+        ))
+    })?;
+    let path = wide(absolute.as_os_str());
+    let cookie = unsafe { AddDllDirectory(PCWSTR(path.as_ptr())) };
+    if cookie.is_null() {
+        return Err(runtime_failure(format!(
+            "The speaker label runtime can't use the folder {}: {}",
+            absolute.display(),
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
 fn runtime_failure(message: impl Into<String>) -> Failure {
     Failure::new(ErrorKind::Runtime, message)
 }
@@ -150,8 +177,10 @@ unsafe fn require<T: Copy>(module: HMODULE, name: &'static str) -> Result<T, Fai
 
 impl Runtime {
     /// Checks the processor, then loads `nemo_speech_asr_c.dll` from `dir` and resolves its
-    /// diarization exports. The DLL stays loaded until the process ends.
-    pub fn load(dir: &Path) -> Result<&'static Runtime, Failure> {
+    /// diarization exports. The DLLs it imports come from `dir`, then from `dll_dirs`, such as
+    /// Ownkey's C runtime one folder up, then from the system. The DLL stays loaded until the
+    /// process ends.
+    pub fn load(dir: &Path, dll_dirs: &[PathBuf]) -> Result<&'static Runtime, Failure> {
         check_cpu(cpu::detect())?;
         // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path, and a verbatim \\?\ path would
         // keep the loader from searching the DLL's folder, so no canonicalize.
@@ -168,11 +197,10 @@ impl Runtime {
                 library.display()
             )));
         }
-        let wide: Vec<u16> = library
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+        for extra in dll_dirs {
+            add_dll_directory(extra)?;
+        }
+        let wide = wide(library.as_os_str());
         // A damaged or foreign DLL must fail the load instead of opening an error box in a process
         // nobody sees.
         let mut previous = THREAD_ERROR_MODE(0);
@@ -572,7 +600,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("rukoo-voice-speakers-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let failure = Runtime::load(&dir).err().unwrap();
+        let failure = Runtime::load(&dir, &[]).err().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         if cpu::detect().refusal().is_some() {
             assert_eq!(failure.kind, ErrorKind::Cpu);
@@ -580,6 +608,20 @@ mod tests {
         }
         assert_eq!(failure.kind, ErrorKind::Runtime);
         assert!(failure.message.contains(LIBRARY), "{}", failure.message);
+    }
+
+    #[test]
+    fn a_folder_for_imports_is_added_and_a_missing_one_refused() {
+        let dir =
+            std::env::temp_dir().join(format!("rukoo-voice-speakers-crt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let added = add_dll_directory(&dir);
+        let missing = add_dll_directory(&dir.join("missing"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(added, Ok(()));
+        let failure = missing.unwrap_err();
+        assert_eq!(failure.kind, ErrorKind::Runtime);
+        assert!(failure.message.contains("missing"), "{}", failure.message);
     }
 
     #[test]
@@ -591,7 +633,7 @@ mod tests {
             std::env::temp_dir().join(format!("rukoo-voice-speakers-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(LIBRARY), b"MZ but not a DLL").unwrap();
-        let failure = Runtime::load(&dir).err().unwrap();
+        let failure = Runtime::load(&dir, &[]).err().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(failure.kind, ErrorKind::Runtime);
         assert!(

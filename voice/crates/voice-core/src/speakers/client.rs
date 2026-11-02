@@ -86,6 +86,12 @@ impl Diarizer for WorkerDiarizer {
         call(&mut slot, "ping", json!({}), &[], opts.start_timeout)?;
         let load = json!({
             "runtime": self.runtime.dir.display().to_string(),
+            "dllDirs": self
+                .runtime
+                .dll_dirs()
+                .iter()
+                .map(|dir| dir.display().to_string())
+                .collect::<Vec<_>>(),
             "model": self.model.dir.join(gguf_name(&opts.model)).display().to_string(),
             "preset": PRESET,
             "chunkFrames": CHUNK_FRAMES,

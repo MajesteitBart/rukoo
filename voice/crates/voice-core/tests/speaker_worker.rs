@@ -400,6 +400,8 @@ fn probabilities_decode() {
     assert_eq!(load["preset"], "v3-streaming");
     assert_eq!(load["chunkFrames"], 38);
     assert_eq!(load["rightContextFrames"], 1);
+    // A development folder needs no other folder for its imports.
+    assert_eq!(load["dllDirs"], serde_json::json!([]));
     assert_eq!(s.labels.failure(), None);
 }
 

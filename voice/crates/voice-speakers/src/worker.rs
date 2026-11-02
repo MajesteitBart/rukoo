@@ -211,6 +211,23 @@ fn load_request(request: &Request) -> Result<LoadRequest, Failure> {
     };
     let runtime = path("runtime", "the runtime folder")?;
     let model = path("model", "the model file")?;
+    let dll_dirs = match request.field("dllDirs") {
+        None => Vec::new(),
+        Some(Value::Array(dirs)) => dirs
+            .iter()
+            .map(|dir| match dir {
+                Value::String(dir) if !dir.trim().is_empty() => Ok(PathBuf::from(dir)),
+                _ => Err(Failure::bad_request(
+                    "dllDirs must list folders by their paths.",
+                )),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => {
+            return Err(Failure::bad_request(
+                "dllDirs must list folders by their paths.",
+            ))
+        }
+    };
     let preset = match request.field("preset") {
         None => PRESET.to_owned(),
         Some(Value::String(preset)) if !preset.trim().is_empty() => preset.clone(),
@@ -222,6 +239,7 @@ fn load_request(request: &Request) -> Result<LoadRequest, Failure> {
     };
     Ok(LoadRequest {
         runtime,
+        dll_dirs,
         model,
         preset,
         chunk_frames: geometry(request, "chunkFrames", CHUNK_FRAMES)?,
@@ -425,6 +443,7 @@ mod tests {
             worker.backend.loads,
             [LoadRequest {
                 runtime: "C:\\rt".into(),
+                dll_dirs: Vec::new(),
                 model: "C:\\m.gguf".into(),
                 preset: "v3-streaming".into(),
                 chunk_frames: 38,
@@ -444,6 +463,21 @@ mod tests {
         let request = &worker.backend.loads[0];
         assert_eq!(request.preset, "v3-offline");
         assert_eq!((request.chunk_frames, request.right_context_frames), (0, 2));
+
+        // Ownkey's runtime comes with the folder of its C runtime.
+        let mut worker = Worker::new(Fake::default());
+        run(
+            &mut worker,
+            &line(
+                &json!({"op": "load", "runtime": "C:\\ok\\_internal\\nemo_speech", "model": "m",
+                        "dllDirs": ["C:\\ok\\_internal"]}),
+                &[],
+            ),
+        );
+        assert_eq!(
+            worker.backend.loads[0].dll_dirs,
+            [PathBuf::from("C:\\ok\\_internal")]
+        );
     }
 
     #[test]
@@ -457,6 +491,9 @@ mod tests {
             json!({"op": "load", "runtime": "r", "model": "m", "chunkFrames": -1}),
             json!({"op": "load", "runtime": "r", "model": "m", "rightContextFrames": 2.5}),
             json!({"op": "load", "runtime": "r", "model": "m", "preset": 3}),
+            json!({"op": "load", "runtime": "r", "model": "m", "dllDirs": "C:\\up"}),
+            json!({"op": "load", "runtime": "r", "model": "m", "dllDirs": [""]}),
+            json!({"op": "load", "runtime": "r", "model": "m", "dllDirs": [3]}),
         ] {
             input.extend(line(&request, &[]));
         }
