@@ -8,7 +8,7 @@ The main process handles accounts, mail, calendar data, local storage and agent 
 
 The repository also holds Rukoo for Android in `android/`: a native Kotlin and Jetpack Compose app that ports the desktop's mail engine, agent hub, MCP tools and design to a phone, built for the Galaxy Z Fold7. It reaches Hermes and OpenClaw itself and runs Claude Code and Codex through desktop Rukoo (`src/main/agents/phonehost.js`). [docs/android.md](docs/android.md) describes it.
 
-Rukoo Voice is being built in `voice/`: push-to-talk dictation plus the meeting recorder for Rukoo, replacing Ownkey for Windows. It has no code yet. [voice/README.md](voice/README.md) has the design and [voice/AGENTS.md](voice/AGENTS.md) the rules for working there.
+Rukoo Voice lives in `voice/`: push-to-talk dictation plus the meeting recorder for Rukoo, replacing Ownkey for Windows. It's a Rust workspace with its own version and releases. [voice/README.md](voice/README.md) has the design and [voice/AGENTS.md](voice/AGENTS.md) the rules for working there.
 
 ## What makes this project special?
 

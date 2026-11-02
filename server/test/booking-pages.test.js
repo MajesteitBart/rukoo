@@ -178,7 +178,8 @@ describe('the landing page', () => {
       expect(html).toMatch(/<thead><tr><th scope="col" abbr="maandag">ma<\/th>/);
       // Dates start with a capital in headings only.
       expect(html).toMatch(/<h2 id="times-title">[A-Z][a-z]+dag \d+ [a-z]+<\/h2>/);
-      expect(html).toMatch(/data-status="\d+ tijden vrij op [a-z]+dag \d+ [a-z]+"/);
+      // Late in the day one time may be left, which the page writes in the singular.
+      expect(html).toMatch(/data-status="(1 tijd|\d+ tijden) vrij op [a-z]+dag \d+ [a-z]+"/);
       // The link to the guide for assistants speaks the page's language; the guide itself is English.
       expect(html).toContain('Voor AI-assistenten</a>');
     }
