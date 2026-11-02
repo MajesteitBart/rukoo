@@ -34,7 +34,7 @@ fn main() -> ExitCode {
         .skip(1)
         .filter(|a| !a.starts_with('-'))
         .collect();
-    let cases: [(&str, fn()); 4] = [
+    let cases: [(&str, fn()); 5] = [
         (
             "a_killed_multipart_upload_resumes_without_finished_parts",
             a_killed_multipart_upload_resumes_without_finished_parts,
@@ -42,6 +42,10 @@ fn main() -> ExitCode {
         (
             "a_kill_after_the_bucket_answered_leaves_one_object",
             a_kill_after_the_bucket_answered_leaves_one_object,
+        ),
+        (
+            "a_kill_after_the_bucket_completed_an_upload_sends_no_part_again",
+            a_kill_after_the_bucket_completed_an_upload_sends_no_part_again,
         ),
         (
             "a_forgotten_upload_starts_again",
@@ -294,6 +298,53 @@ fn a_kill_after_the_bucket_answered_leaves_one_object() {
     assert!((1..=2).contains(&puts), "{puts} PUTs");
     println!("  meeting.json went up {puts} times");
     assert_eq!(decrypt(&key, &object, &after[0]), meeting_json);
+}
+
+fn a_kill_after_the_bucket_completed_an_upload_sends_no_part_again() {
+    let fake = fake();
+    let data = scratch("resume-complete");
+    let _c = Cleanup(data.clone());
+    // 20 MiB: parts of 8, 8 and 4 MiB.
+    let m = meeting_with_video(&data, 20 * MIB);
+    let video = m.read("screen/video/000001.mp4");
+    // The fake completes an upload before its answer, which stalls, so the child is killed after
+    // the bucket finished and before the child heard.
+    fake.faults().stall = Some(Duration::from_millis(600));
+    let first = Uploader::start(&fake, &data);
+    let key = child_key(&data);
+    let object = file_object(&key, &m.id, "screen/video/000001.mp4", &video);
+    let ok = wait_for(WAIT, || has_object(&fake, &object));
+    assert!(ok, "the upload completed: {:?}", fake.log());
+    first.kill();
+    fake.faults().stall = None;
+
+    let second = Uploader::start(&fake, &data);
+    wait_settled(&fake, &second, &object);
+    second.kill();
+    assert_eq!(
+        answered(&fake, Op::Create, &object, None, 200),
+        1,
+        "no new upload: {:?}",
+        fake.log()
+    );
+    for part in 1..=3 {
+        assert_eq!(
+            answered(&fake, Op::UploadPart, &object, Some(part), 200),
+            1,
+            "part {part} went up once"
+        );
+    }
+    assert!(
+        answered(&fake, Op::Head, &object, None, 200) >= 1,
+        "it looked"
+    );
+    let stored: Vec<_> = fake
+        .objects()
+        .into_iter()
+        .filter(|(k, _)| unprefixed(k) == object)
+        .collect();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(decrypt(&key, &object, &stored[0].1), video);
 }
 
 fn a_forgotten_upload_starts_again() {

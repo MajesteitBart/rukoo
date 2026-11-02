@@ -1489,6 +1489,25 @@ impl Worker {
         log::info!("sync: an upload failed: {error}");
         self.listed.remove(&row.id);
         if error.kind == SyncErrorKind::NoSuchUpload {
+            // The bucket also forgets an upload it completed. When Voice was killed after
+            // CompleteMultipartUpload, or its answer got lost, the whole object is there already.
+            if row.upload_id.is_some() {
+                match self.completed_already(row) {
+                    Ok(true) => {
+                        log::info!("sync: a multipart upload had completed already");
+                        return match self.finished(row, None, now) {
+                            Ok(()) => Step::Did,
+                            Err(e) => {
+                                log::warn!("sync: {e}");
+                                Step::Idle(TICK)
+                            }
+                        };
+                    }
+                    Ok(false) => {}
+                    // Can't tell now: retry later as for any failed request, upload id kept.
+                    Err(e) => return self.failed(row, e),
+                }
+            }
             // R2 aborts uploads after 7 days: start this one again.
             if let Err(e) = shared.queue.set_upload(row.id, None, None) {
                 log::warn!("sync: {e}");
@@ -1532,6 +1551,16 @@ impl Worker {
         }
         shared.changed();
         Step::Did
+    }
+
+    /// Whether the row's object is in the bucket with its whole length. The name holds the
+    /// plaintext's SHA-256 and the stored header fixes every byte, so such an object is the one
+    /// this row's upload would complete.
+    fn completed_already(&self, row: &Row) -> Result<bool, SyncError> {
+        let Some(remote) = &self.remote else {
+            return Ok(false);
+        };
+        Ok(remote.bucket.head(&row.object)? == Some(cipher_len(row.size)))
     }
 
     /// `min(backoff_max, backoff_min · 2^n)` with ±20 % jitter, in ms.
