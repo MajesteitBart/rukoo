@@ -930,6 +930,65 @@ fn a_test_counts_only_for_the_secret_it_read() {
     fake.stop();
 }
 
+/// A new secret is never trusted with the old secret's test (spec D6). When `config.json` can't be
+/// replaced, the save of the secret fails and leaves the tested secret in place, also after a
+/// restart; once `config.json` can be written, the new secret pauses uploads until it passes.
+#[cfg(windows)]
+#[test]
+fn a_secret_isn_t_replaced_while_config_json_can_t_be_saved() {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// `FILE_SHARE_READ` alone: nobody may delete or replace the file while it is open.
+    const SHARE_READ: u32 = 0x1;
+
+    let h = Harness::new("sync-secret-unsaved");
+    h.config(json!({}));
+    let fake = support::fake_s3();
+    let engine = h.start();
+    support::connect_bucket(&engine, &fake.endpoint());
+    let secret_file = h.data().join("sync").join("bucket-secret.bin");
+    let tested_secret = std::fs::read(&secret_file).unwrap();
+    let tested = saved_sync(&h)["tested"].clone();
+    assert!(tested.is_string(), "{tested}");
+
+    // A virus scanner or an editor holds config.json open without delete sharing.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_READ)
+        .open(h.data().join("config.json"))
+        .unwrap();
+    assert_eq!(
+        code(engine.settings_sync_save_secret("an-untested-secret".into())),
+        "failed"
+    );
+    assert_eq!(
+        std::fs::read(&secret_file).unwrap(),
+        tested_secret,
+        "the tested secret stays"
+    );
+    assert_eq!(sync_config(&engine)["tested"], true);
+    assert_ne!(sync_state(&engine)["state"], "paused");
+    drop(held);
+    engine.shutdown();
+    let engine = h.start();
+    assert_eq!(saved_sync(&h)["tested"], tested);
+    assert_eq!(std::fs::read(&secret_file).unwrap(), tested_secret);
+    assert_ne!(sync_state(&engine)["state"], "paused");
+
+    // Saved, the new secret pauses uploads until Test connection passes with it.
+    engine
+        .settings_sync_save_secret("an-untested-secret".into())
+        .unwrap();
+    assert_ne!(std::fs::read(&secret_file).unwrap(), tested_secret);
+    assert_eq!(sync_config(&engine)["tested"], false);
+    assert_eq!(sync_state(&engine)["state"], "paused");
+    engine.shutdown();
+    let engine = h.start();
+    assert_eq!(saved_sync(&h).get("tested"), None);
+    assert_eq!(sync_state(&engine)["state"], "paused");
+    engine.shutdown();
+    fake.stop();
+}
+
 #[test]
 fn a_failed_test_says_why_and_leaves_sync_off() {
     let h = Harness::new("sync-test-fails");

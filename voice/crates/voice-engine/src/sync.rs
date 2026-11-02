@@ -53,6 +53,9 @@ pub(crate) struct SyncRuntime {
     /// them shows would then open nothing that uploads. An import at that moment could be
     /// overwritten by a new key the same way.
     pub key: Mutex<()>,
+    /// Held while Settings save or remove the bucket secret, from clearing the passed Test
+    /// connection to changing the secret, and while a passed test commits.
+    pub secret: Mutex<()>,
 }
 
 impl SyncRuntime {

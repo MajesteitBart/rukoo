@@ -410,7 +410,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_sync_save_secret`
 
-`invoke('settings_sync_save_secret', { secret })` → nothing. Keeps the bucket's secret access key with Windows DPAPI for this Windows user, never in `config.json`, and pauses uploads until Test connection passes again; the switch stays on. Rejects with `invalid_value` for an empty secret or one over 1,024 characters, `failed` when Windows can't protect it. `settings_remove_key({ target: "sync" })` removes it. The page calls it when the secret's field loses focus and keeps no copy.
+`invoke('settings_sync_save_secret', { secret })` → nothing. Keeps the bucket's secret access key with Windows DPAPI for this Windows user, never in `config.json`, and pauses uploads until Test connection passes again; the switch stays on. Rejects with `invalid_value` for an empty secret or one over 1,024 characters, `failed` when Windows can't protect it or `config.json` can't be saved. The passed test leaves `config.json` before the secret changes, so a failed save keeps the secret that was tested. `settings_remove_key({ target: "sync" })` removes it. The page calls it when the secret's field loses focus and keeps no copy.
 
 ### Command `settings_sync_key`
 

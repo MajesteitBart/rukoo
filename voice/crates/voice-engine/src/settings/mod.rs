@@ -408,15 +408,9 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
 
 pub fn remove_key(core: &Arc<Core>, target: &str) -> Result<(), ApiError> {
     if target == "sync" {
-        let sync = bucket_sync(core)?;
-        sync.remove_secret().map_err(|e| sync_error(&e))?;
-        let result = core.commit(|cfg| {
-            keys::untest_sync(cfg);
-            Ok(())
+        return change_secret(core, |sync| {
+            sync.remove_secret().map_err(|e| sync_error(&e))
         });
-        // The secret is gone even when nothing in config.json changed.
-        core.settings_changed();
-        return result;
     }
     core.commit(|cfg| {
         match target {
@@ -490,10 +484,12 @@ pub fn sync_test(core: &Arc<Core>) -> Result<Value, ApiError> {
         url_style: report.url_style,
         ..bucket.clone()
     };
+    // A change of the secret clears the pass before it replaces the secret, under this lock: the
+    // pass of a test that read the old secret never lands after that clear.
+    let _secret = lock(&core.sync_rt.secret);
     core.commit(|cfg| {
         // The fields or the secret may have changed while the test ran: then it tested something
-        // else. A save or removal of the secret clears the pass only once it commits, which may
-        // be after this one.
+        // else.
         let mut now = crate::sync::sync_value(cfg);
         let same = voice_sync::SyncConfig::from_json(&now).is_ok_and(|current| {
             voice_sync::SyncConfig {
@@ -524,17 +520,34 @@ pub fn sync_save_secret(core: &Arc<Core>, secret: String) -> Result<(), ApiError
             "The secret is 1 to {SECRET_MAX_CHARS} characters."
         )));
     }
+    change_secret(core, |sync| {
+        sync.save_secret(secret.trim()).map_err(|e| {
+            ApiError::new(
+                "failed",
+                format!("Windows couldn't protect the secret: {}", e.message),
+            )
+        })
+    })
+}
+
+/// Saves or removes the bucket secret (spec D6: a test counts only for the current fields and
+/// secret). The passed Test connection leaves `config.json` first, which pauses uploads, and only
+/// then does the secret change. When `config.json` can't be saved, the tested secret stays and the
+/// error comes back; a failed `change` leaves the test cleared for a secret that stayed.
+fn change_secret(
+    core: &Arc<Core>,
+    change: impl FnOnce(&voice_sync::BucketSync) -> Result<(), ApiError>,
+) -> Result<(), ApiError> {
     let sync = bucket_sync(core)?;
-    sync.save_secret(secret.trim()).map_err(|e| {
-        ApiError::new(
-            "failed",
-            format!("Windows couldn't protect the secret: {}", e.message),
-        )
-    })?;
-    let result = core.commit(|cfg| {
-        keys::untest_sync(cfg);
-        Ok(())
-    });
+    let result = {
+        let _secret = lock(&core.sync_rt.secret);
+        core.commit(|cfg| {
+            keys::untest_sync(cfg);
+            Ok(())
+        })?;
+        change(sync)
+    };
+    // The secret changed even when nothing in config.json did.
     core.settings_changed();
     result
 }
