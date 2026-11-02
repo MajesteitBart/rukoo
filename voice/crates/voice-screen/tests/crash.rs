@@ -353,7 +353,26 @@ mod tests {
             first(&lines, "capture").unwrap()["monitor"],
             r"\\.\SYNTHETIC2"
         );
-        stop(&m, &mut recorder, &mut screen);
+        // Pinned, it never records another monitor, not even on request.
+        let monitors = m.screen_request(1, json!({ "cmd": "monitors" }));
+        let ids: Vec<&str> = monitors["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [r"\\.\SYNTHETIC2"], "{monitors}");
+        let moved = m.screen_request(1, json!({ "cmd": "monitor", "id": r"\\.\SYNTHETIC1" }));
+        assert_eq!(moved, json!({ "ok": false, "error": "unknown_monitor" }));
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert!(
+            lines
+                .iter()
+                .filter(|l| l["kind"] == "monitor" || l["kind"] == "capture")
+                .all(|l| l["id"] == r"\\.\SYNTHETIC2" || l["monitor"] == r"\\.\SYNTHETIC2"),
+            "{}",
+            show(&lines)
+        );
 
         let m = TempMeeting::new("pinned-missing", "frames");
         let mut recorder = m.recorder(&[]);

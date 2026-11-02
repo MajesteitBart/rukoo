@@ -296,6 +296,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         captured: false,
         monitor_cache: (Instant::now(), monitor_list),
         monitor,
+        pinned: opts.monitor,
         video: None,
         video_seq,
         video_bytes_closed: 0,
@@ -413,6 +414,8 @@ struct Screen {
     captured: bool,
     monitor_cache: (Instant, Vec<MonitorInfo>),
     monitor: MonitorInfo,
+    /// `--monitor`: the only monitor this process may record (spec 2.7).
+    pinned: Option<String>,
     video: Option<VideoThread>,
     video_seq: u64,
     video_bytes_closed: u64,
@@ -605,11 +608,18 @@ impl Screen {
         });
     }
 
+    /// The monitors this process may record: every one, or with `--monitor` only that one. So
+    /// a pinned process never moves to another monitor: not on request, and not when its own
+    /// goes away, when it waits for it to come back (spec 2.7).
     fn monitors(&mut self, fresh: bool) -> Vec<MonitorInfo> {
         if fresh || self.monitor_cache.0.elapsed() >= MONITOR_CACHE {
             self.monitor_cache = (Instant::now(), list_monitors(self.test.as_ref()));
         }
-        self.monitor_cache.1.clone()
+        let list = self.monitor_cache.1.clone();
+        match &self.pinned {
+            Some(id) => list.into_iter().filter(|m| &m.id == id).collect(),
+            None => list,
+        }
     }
 
     fn switch_monitor(&mut self, id: &str, reason: &str) -> Result<String, &'static str> {
@@ -653,7 +663,11 @@ impl Screen {
             Some(id) => {
                 let _ = self.switch_monitor(&id, "lost");
             }
+            // No monitor, or a pinned one that went away: wait until it is back.
             None => {
+                if self.capturing {
+                    log(format_args!("{} is gone; waiting for it", self.monitor.id));
+                }
                 self.end_video("monitor");
                 self.stop_capture();
                 self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
