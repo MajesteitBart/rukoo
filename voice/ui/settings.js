@@ -986,11 +986,35 @@ const PAGE_BUILDERS = {
 
 // ---------- rendering ----------
 
+// A redraw between a button's mousedown and its click puts a new button in its place, and Chromium drops the click.
+// It happens when a field saves because the press took the focus from it: the bucket name fixed after a failed Test
+// connection, then Test clicked, would only clear the old result. While a button is pressed, redraws wait until its
+// click has gone out.
+let pressing = false;
+let redrawAfterPress = null;
+document.addEventListener('pointerdown', (e) => (pressing = Boolean(e.target.closest?.('button, [data-a]'))), true);
+function pressDone() {
+  if (!pressing) return;
+  pressing = false;
+  if (!redrawAfterPress) return;
+  const wanted = redrawAfterPress;
+  redrawAfterPress = null;
+  // A task later, so after the click this press makes.
+  setTimeout(() => render(wanted));
+}
+document.addEventListener('pointerup', pressDone, true);
+document.addEventListener('pointercancel', pressDone, true);
+window.addEventListener('blur', pressDone);
+
 // Builds the current page. A full render replaces everything; an update replaces only the sections whose markup
 // changed, so a download's progress doesn't reset the form next to it. Typed text isn't part of the markup: it
 // lives in drafts and fill() puts it back, so it survives any re-render.
 function render({ full = false } = {}) {
   if (!state) return;
+  if (pressing) {
+    redrawAfterPress = { full: full || Boolean(redrawAfterPress?.full) };
+    return;
+  }
   const view = PAGE_BUILDERS[current()]();
   const top = current() === 'main';
   if (full || !page.querySelector('.page-inner') || page.dataset.view !== current()) {
@@ -1419,11 +1443,13 @@ async function act(action, button) {
     case 'sync-details': {
       if (arg === 'test') return showError(t(SYNC_ERRORS[syncTest?.code] || 'settings.sync.error.failed'), syncTest?.message);
       if (arg === 'restore') return showError(t('settings.sync.restoreFailed'), state.sync?.restore?.error);
+      // As in the status line, `failed` says "Uploads stopped." rather than "The test failed.".
       const last = state.sync?.lastError;
-      return showError(t(SYNC_ERRORS[last?.code] || 'settings.sync.stopped'), last?.message);
+      return showError(t((last?.code !== 'failed' && SYNC_ERRORS[last?.code]) || 'settings.sync.stopped'), last?.message);
     }
     case 'sync-secret-replace':
       syncReplacing = true;
+      dropSyncTest();
       render();
       return focusField('storage.sync.secret');
     case 'sync-secret-remove':
@@ -1431,6 +1457,7 @@ async function act(action, button) {
       try {
         await trackSync(invoke('settings_remove_key', { target: 'sync' }));
         secretVersion += 1;
+        dropSyncTest();
         Object.assign(state.config.storage.sync, { secretSaved: false, tested: false, enabled: false });
       } catch (error) {
         await showError(t('settings.errors.failed'), error?.message);
@@ -1484,10 +1511,30 @@ function saveSyncSecret(input) {
         Object.assign(state.config.storage.sync, { secretSaved: true, tested: false, enabled: false });
         render();
       } catch (error) {
+        // Test connection goes back to waiting for a secret. Not before the call: this runs from the field's change
+        // event, and a click on Test that took the focus must still land on the button it pressed.
+        syncTestButton();
         await showError(t('settings.errors.failed'), error?.message);
       }
     })()
   );
+}
+
+// Test connection turns on with the first character of a secret and off when its field is emptied again: clicking Test
+// takes the focus from the field, which saves the secret, and the test waits for that save (testSync). In place, not
+// through the markup: a redraw while the secret is typed would take the focused field out of the page, and Chromium
+// then commits it as on blur, half-typed.
+function syncTestButton() {
+  const test = page.querySelector('[data-a="sync-test"]');
+  const typed = page.querySelector('[data-field="storage.sync.secret"]')?.value.trim();
+  if (test) test.disabled = currentSyncTest()?.kind === 'testing' || (!state.config.storage.sync.secretSaved && !typed);
+}
+
+// The secret is being replaced or removed, so a test still running is about the old one. Its answer would also redraw
+// the card under the new secret's field while it is typed (see syncTestButton), so it is dropped when it comes.
+function dropSyncTest() {
+  syncTestRun += 1;
+  syncTest = null;
 }
 
 async function testSync() {
@@ -1550,7 +1597,9 @@ async function showKeyDialog() {
   try {
     ({ code } = await invoke('settings_sync_key', { action: 'show' }));
   } catch (error) {
-    return error?.code === 'recording_screen' ? 'screen' : { error, message: t('settings.sync.keyUnreadable') };
+    if (error?.code === 'recording_screen') return 'screen';
+    // Without a key, show makes one, so its failure isn't an unreadable key; "use your saved key" would mislead.
+    return { error, message: t(state.sync?.key?.exists ? 'settings.sync.keyUnreadable' : 'settings.errors.failed') };
   }
   if (state.sync?.screenRecording) return 'screen';
   const value = await dialog({
@@ -1829,6 +1878,7 @@ page.addEventListener('input', (e) => {
     }
   }
   if (form === 'fillers' && name === 'custom') schedulePreview();
+  if (field === 'storage.sync.secret') syncTestButton();
 });
 
 page.addEventListener('change', (e) => {
