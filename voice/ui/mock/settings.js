@@ -1,15 +1,24 @@
 // Mock of the app's side of Settings, for settings.html?mock=1. Not used inside the app. Paths and versions are
 // made up; no real profile is read.
 //
-// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&eventFirst=1
+// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&features=<list>&sync=<sync>&eventFirst=1
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy).
+//   later=1 turns every feature in state.features on; features=screen,speakers,sync turns on the ones listed.
+//   <sync> turns the sync feature on and sets bucket sync: fresh (the default: nothing filled in), tested (filled in
+//   and tested, still off), on (up to date), live (a meeting uploads), retrying (the bucket can't be reached), failing
+//   (the bucket refuses, three files lost), key (the encryption key can't be opened), restore (two meetings to
+//   restore), restore-failed (a restore that stopped). 1 means on. Test connection fails for the bucket "fail" and
+//   finds another key in the bucket "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
 
 const MB = 1_000_000;
+const MIN = 60_000;
 const NOW = Date.UTC(2026, 9, 30, 15, 42);
+// settings_sync_key's code in the mock is zeros, never a key: 11 groups of 5, as voice-sync writes them.
+const ZERO_CODE = `RKV1-${Array(11).fill('00000').join('-')}`;
 
 const PROVIDERS = {
   audio: [
@@ -69,6 +78,7 @@ function baseState() {
     version: '0.1.0',
     devMode: false,
     platform: 'windows',
+    features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',
     config: {
@@ -106,7 +116,9 @@ function baseState() {
       },
       ui: { language: 'system', theme: 'system', pillEdge: 'bottom', hidePillFromCapture: true },
       updates: { check: false },
-      storage: { sync: { enabled: false, service: 'upcloud', endpoint: '', region: '', bucket: '', prefix: 'meetings/', accessKeyId: '', secret: '' } }
+      storage: {
+        sync: { enabled: false, service: 'upcloud', endpoint: '', region: '', bucket: '', prefix: '', accessKeyId: '', retention: 'keep', secretSaved: false, tested: false, secret: '' }
+      }
     },
     providers: PROVIDERS,
     dictation: { status: 'ready' },
@@ -159,9 +171,105 @@ function baseState() {
         skipped: ['summaries']
       }
     },
-    sync: { lastUpload: null, waiting: 0 }
+    sync: {
+      available: false,
+      state: 'off',
+      waiting: 0,
+      waitingBytes: 0,
+      oldestWaiting: null,
+      lastUpload: null,
+      lastError: null,
+      failingSince: null,
+      lost: 0,
+      screenRecording: false,
+      key: { exists: false, id: null, exported: false },
+      restore: { state: 'idle', available: 0, done: 0, total: 0, error: null },
+      otherKeys: 0
+    }
   };
 }
+
+// Made-up bucket details; nothing here is a real bucket or key.
+const FILLED = {
+  service: 'upcloud',
+  endpoint: 'https://example.upcloudobjects.com',
+  region: 'europe-1',
+  bucket: 'my-meetings',
+  prefix: 'rukoo-voice',
+  accessKeyId: 'example-access-key',
+  secretSaved: true,
+  tested: true
+};
+
+// Each returns whether this computer has uploaded with its own key, which refuses another key (API.md).
+const SYNC_SCENARIOS = {
+  fresh: () => false,
+  tested: (s) => {
+    Object.assign(s.config.storage.sync, FILLED);
+    return false;
+  },
+  on: (s) => {
+    Object.assign(s.config.storage.sync, FILLED, { enabled: true });
+    Object.assign(s.sync, { state: 'idle', lastUpload: NOW - 4 * MIN, key: { exists: true, id: '0f1e2d3c', exported: true } });
+    return true;
+  },
+  live: (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, { state: 'live', waiting: 3, waitingBytes: 2.9 * MB, oldestWaiting: NOW - 40_000, lastUpload: NOW - 20_000 });
+    return true;
+  },
+  retrying: (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, {
+      state: 'retrying',
+      waiting: 14,
+      waitingBytes: 13.4 * MB,
+      oldestWaiting: NOW - 25 * MIN,
+      lastUpload: NOW - 26 * MIN,
+      failingSince: NOW - 25 * MIN,
+      lastError: { at: NOW - 30_000, code: 'network', message: 'Connection refused (os error 10061) connecting to example.upcloudobjects.com:443.' },
+      key: { exists: true, id: '0f1e2d3c', exported: false }
+    });
+    return true;
+  },
+  failing: (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, {
+      state: 'failing',
+      waiting: 41,
+      waitingBytes: 39.2 * MB,
+      oldestWaiting: NOW - 26 * 60 * MIN,
+      lastUpload: NOW - 26 * 60 * MIN,
+      failingSince: NOW - 26 * 60 * MIN,
+      lastError: {
+        at: NOW - 2 * MIN,
+        code: 'auth',
+        message: 'HTTP 403 from example.upcloudobjects.com: SignatureDoesNotMatch. The request signature we calculated does not match the signature you provided.'
+      },
+      lost: 3
+    });
+    return true;
+  },
+  key: (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, { state: 'key', key: { exists: true, id: '0f1e2d3c', exported: false } });
+    return false;
+  },
+  restore: (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, { lastUpload: null, restore: { state: 'available', available: 2, done: 0, total: 0, error: null } });
+    return false;
+  },
+  'restore-failed': (s) => {
+    SYNC_SCENARIOS.restore(s);
+    s.sync.restore = { state: 'failed', available: 1, done: 1, total: 2, error: 'The disk has less room than Voice keeps free, so it stopped before "Weekly".' };
+    return false;
+  }
+};
+SYNC_SCENARIOS['1'] = SYNC_SCENARIOS.on;
+
+const SYNC_FIELDS = ['service', 'endpoint', 'region', 'bucket', 'prefix', 'accessKeyId'];
+const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/;
 
 const SCENARIOS = {
   default: () => {},
@@ -217,11 +325,23 @@ const SCENARIOS = {
 export function createMock(params) {
   const state = baseState();
   (SCENARIOS[params.get('scenario')] || SCENARIOS.default)(state);
-  if (params.get('sync') === '1') state.config.storage.sync = { ...state.config.storage.sync, enabled: true, endpoint: 'https://example.upcloudobjects.com', region: 'europe-1', bucket: 'my-meetings' };
+  // state.features as the engine builds it: every part with later=1, else those listed, and sync with &sync=.
+  const later = params.get('later') === '1';
+  const listed = (params.get('features') || '').split(',');
+  for (const name of Object.keys(state.features)) state.features[name] = later || listed.includes(name);
+  if (params.has('sync')) state.features.sync = true;
+  state.sync.available = state.features.sync;
+  let ownUploads = params.has('sync') ? (SYNC_SCENARIOS[params.get('sync')] || SYNC_SCENARIOS.fresh)(state) : false;
   const forced = { theme: params.get('theme'), locale: params.get('lang') };
   const handlers = [];
   let downloadTimer = 0;
+  let syncTimer = 0;
+  let protectedWindow = false;
   let eventFirst = params.get('eventFirst') === '1';
+  // For dev/check.js: every command the page sent, with its arguments, as the app would receive them.
+  const calls = [];
+  window.__settingsMockCalls = calls;
+  window.__settingsMockProtected = () => protectedWindow;
 
   const resolve = () => {
     const ui = state.config.ui;
@@ -240,6 +360,12 @@ export function createMock(params) {
   };
   // For dev/check.js: sends a state exactly as given, seq included, as a misbehaving app would.
   window.__settingsMockSend = (next) => handlers.forEach((handler) => handler(structuredClone(next)));
+  // For dev/check.js: changes what the app holds, such as a meeting that starts recording the screen, and sends the
+  // new state unless { emit: false }, which leaves the page behind the app, as a race would.
+  window.__settingsMockEdit = (change, { emit: send = true } = {}) => {
+    change(state);
+    if (send) emit();
+  };
   const wait = (ms) => new Promise((done) => setTimeout(done, ms));
   // Tauri rejects a failed command with the command's error value; API.md defines it as { code, message }.
   const fail = (code, message) => {
@@ -258,6 +384,35 @@ export function createMock(params) {
       return '';
     }
   };
+
+  // Sync turned on uploads what is on this computer, newest first, then is up to date.
+  function syncOn(on) {
+    clearInterval(syncTimer);
+    if (!on) {
+      state.sync.state = 'off';
+      return;
+    }
+    if (!state.sync.key.exists) state.sync.key = { exists: true, id: '00000000', exported: false };
+    Object.assign(state.sync, { state: 'uploading', waiting: 5, waitingBytes: 4.8 * MB, oldestWaiting: Date.now() });
+    syncTimer = setInterval(() => {
+      if (!state.config.storage.sync.enabled) return clearInterval(syncTimer);
+      ownUploads = true;
+      state.sync.waiting -= 1;
+      state.sync.waitingBytes = state.sync.waiting * 0.96 * MB;
+      state.sync.lastUpload = Date.now();
+      if (state.sync.waiting <= 0) {
+        Object.assign(state.sync, { state: 'idle', waiting: 0, waitingBytes: 0, oldestWaiting: null });
+        clearInterval(syncTimer);
+      }
+      emit();
+    }, 400);
+  }
+
+  // What the engine does when the connection changes: sync goes off until Test connection passes again.
+  function syncUntested() {
+    Object.assign(state.config.storage.sync, { tested: false, enabled: false });
+    syncOn(false);
+  }
 
   function download(id) {
     const m = state.models[id];
@@ -295,6 +450,7 @@ export function createMock(params) {
       const roles = ['dictation.hotkey', 'dictation.rewriteHotkey', 'meetings.stopKey'];
       if (roles.includes(key) && value !== 'off' && roles.some((role) => role !== key && getPath(role) === value)) fail('same_key', `${value} is already in use`);
       if (key === 'dictation.startAtLogin' && state.devMode) fail('dev_mode', 'Autostart is never registered in development mode.');
+      if (key.startsWith('storage.sync.')) return setSync(key.slice('storage.sync.'.length), value);
       setPath(key, value);
       if (key.startsWith('ui.')) resolve();
       emit();
@@ -320,7 +476,10 @@ export function createMock(params) {
       return null;
     },
     settings_remove_key: ({ target }) => {
-      state.config[target].keySaved = false;
+      if (target === 'sync') {
+        state.config.storage.sync.secretSaved = false;
+        syncUntested();
+      } else state.config[target].keySaved = false;
       emit();
       return null;
     },
@@ -374,14 +533,102 @@ export function createMock(params) {
     },
     settings_sync_test: async () => {
       await wait(600);
-      if (!state.config.storage.sync.bucket) fail('config', 'Fill in the bucket first.');
+      const sync = state.config.storage.sync;
+      if (!sync.secretSaved) fail('no_secret', 'No secret access key is saved for the bucket.');
+      if (!sync.endpoint) fail('endpoint', 'The endpoint URL is empty.');
+      if (!sync.bucket || sync.bucket === 'fail') fail('bucket', `HTTP 404 from ${host(sync.endpoint)}: NoSuchBucket. The specified bucket does not exist.`);
+      sync.tested = true;
+      state.sync.otherKeys = sync.bucket === 'shared' ? 1 : 0;
+      emit();
+      return { otherKeys: state.sync.otherKeys };
+    },
+    settings_sync_save_secret: ({ secret }) => {
+      if (typeof secret !== 'string' || !secret || secret.length > 1024) fail('invalid_value', 'The secret is empty or longer than 1,024 characters.');
+      state.config.storage.sync.secretSaved = true;
+      syncUntested();
+      emit();
+      return null;
+    },
+    settings_sync_key: ({ action, code }) => {
+      const key = state.sync.key;
+      if ((action === 'show' || action === 'import') && state.sync.screenRecording) fail('recording_screen', 'A meeting records the screen.');
+      if (action === 'show') {
+        if (state.sync.state === 'key') fail('failed', 'Windows could not open master-key.bin (DPAPI error 0x8009000B).');
+        if (!key.exists) state.sync.key = { exists: true, id: '00000000', exported: false };
+        emit();
+        return { code: ZERO_CODE, id: state.sync.key.id };
+      }
+      if (action === 'saved') {
+        key.exported = true;
+        emit();
+        return null;
+      }
+      if (action === 'import') {
+        const letters = String(code || '').toUpperCase().replace(/[\s-]/g, '');
+        if (!/^RKV1[0-9A-Z]{55}$/.test(letters)) fail('invalid_value', "That isn't a recovery code.");
+        if (ownUploads) fail('key_in_use', 'This computer uploaded meetings with its own key.');
+        state.sync.key = { exists: true, id: '0f1e2d3c', exported: true };
+        if (state.sync.state === 'key') state.sync.state = 'idle';
+        emit();
+        return { id: state.sync.key.id };
+      }
+      return fail('invalid_value', `Unknown action ${action}.`);
+    },
+    settings_sync_key_copy: () => {
+      if (!state.sync.key.exists) fail('not_found', 'There is no encryption key yet.');
+      return null;
+    },
+    settings_protect: ({ on }) => {
+      protectedWindow = Boolean(on);
+      return null;
+    },
+    settings_sync_restore: ({ action }) => {
+      if (!state.config.storage.sync.enabled) fail('off', 'Sync is off.');
+      if (action === 'list') {
+        return {
+          meetings: [
+            { id: 'm-20261020-093000-a1b2', title: 'Design review', startedAt: NOW - 10 * 1440 * MIN, duration: 2_700_000 },
+            { id: 'm-20261023-140000-c3d4', title: 'Weekly', startedAt: NOW - 7 * 1440 * MIN, duration: 1_800_000 }
+          ].slice(0, state.sync.restore.available)
+        };
+      }
+      if (action !== 'start') fail('invalid_value', `Unknown action ${action}.`);
+      const total = state.sync.restore.available;
+      state.sync.restore = { state: 'restoring', available: total, done: 0, total, error: null };
+      emit();
+      const timer = setInterval(() => {
+        const r = state.sync.restore;
+        r.done += 1;
+        if (r.done >= r.total) {
+          state.sync.restore = { state: 'done', available: 0, done: r.total, total: r.total, error: null };
+          clearInterval(timer);
+        }
+        emit();
+      }, 500);
       return null;
     },
     settings_close: () => null
   };
 
+  // settings_set for storage.sync.*, with the engine's rules (API.md).
+  function setSync(field, value) {
+    const sync = state.config.storage.sync;
+    if (field === 'secret') fail('invalid_value', 'Save the secret with settings_sync_save_secret.');
+    if (field === 'secretSaved' || field === 'tested') fail('invalid_value', `storage.sync.${field} is read-only.`);
+    if (field === 'enabled' && value === true && !sync.tested) fail('needs_test', 'Test the connection before you turn sync on.');
+    if (field === 'service' && !['upcloud', 'r2', 'other'].includes(value)) fail('invalid_value', `Unknown service ${value}.`);
+    if (field === 'retention' && !['keep', 'days365', 'days90'].includes(value)) fail('invalid_value', `Unknown retention ${value}.`);
+    if (field === 'endpoint' && value && !value.startsWith('https://') && !LOOPBACK.test(value)) fail('invalid_value', 'The endpoint must start with https://, or http:// to this computer.');
+    if (SYNC_FIELDS.includes(field) && sync[field] !== value) syncUntested();
+    sync[field] = value;
+    if (field === 'enabled') syncOn(value === true);
+    emit();
+    return null;
+  }
+
   return {
     invoke: async (command, args = {}) => {
+      calls.push([command, structuredClone(args)]);
       if (!(command in commands)) throw { code: 'unknown_command', message: `mock: unknown command ${command}` };
       return commands[command](args);
     },

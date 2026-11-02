@@ -7,7 +7,7 @@ The pill (`pill.html`) and Settings (`settings.html`) are plain HTML, CSS and Ja
 - `tauri.conf.json` sets `app.withGlobalTauri: true`. The pages use `window.__TAURI__.core.invoke(command, args)` and `window.__TAURI__.event.listen(name, handler)`; `lib/bridge.js` wraps both.
 - `frontendDist` is this folder. The pages load `i18n/en.json` and `i18n/nl.json` with `fetch`, so the asset protocol must serve `.json`. Nothing is fetched from the network; Inter is bundled in `fonts/`. `dev/` and `mock/` are development tools and may be left out of the bundle.
 - Arguments are camelCase objects. Tauri maps a top-level argument name to the Rust parameter of the same name in snake_case, so `invoke('pill_ack', { seq })` calls `fn pill_ack(seq: u64)`. Where a command takes one struct, the page passes it under one name (`layout`, `save`, `request`, `preview`), and the Rust parameter has that name. Structs use `#[serde(rename_all = "camelCase")]`.
-- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`.
+- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`, and for bucket sync `needs_test`, `endpoint`, `bucket`, `clock`, `permission`, `no_secret`, `key_in_use`, `recording_screen` and `off`.
 - Both windows need `core:event:default` in their capability. App commands registered with `invoke_handler` are allowed for every window unless the app defines command permissions; if it does, allow the `pill_*` commands for the `pill` window and the `settings_*` commands for the `settings` window only.
 - Suggested CSP for both windows: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost`. The pages set custom properties in `style` attributes, hence `'unsafe-inline'` for styles only.
 
@@ -129,7 +129,9 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 - `settings.title`: the Settings window's title.
 - `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`. Settings 0.1 asks only for `models` (see the command below).
 - `app.tray.tooltip`, `app.tray.tooltipRecording`, `app.tray.settings`, `app.tray.startMeeting`, `app.tray.pauseMeeting`, `app.tray.resumeMeeting`, `app.tray.stopMeeting`, `app.tray.quit`: the tray.
-- `app.notify.dictationFailed`, `app.notify.rewriteFailed`, `app.notify.noTextBox`, `app.notify.meeting`, `app.notify.settings`, `app.notify.welcome`: the titles of the engine's tray notifications (`Notification.title_key`). The body comes from the engine as it is.
+- `app.notify.dictationFailed`, `app.notify.rewriteFailed`, `app.notify.noTextBox`, `app.notify.meeting`, `app.notify.settings`, `app.notify.welcome`, `app.notify.sync`: the titles of the engine's tray notifications (`Notification.title_key`). The body comes from the engine as it is.
+
+`app.notify.sync`, "Bucket sync", goes out once a day while uploads have failed for more than a day, with the body "Voice couldn't upload to your bucket for a day. Your audio stays on this computer until it can, as long as 10 GB stay free." When held media had to go because less than 10 GiB were free, the body is "The disk was almost full, so Voice removed meeting media that hadn't reached your bucket yet. Settings > Storage lists how much.", or, with an unreadable upload queue, "The disk was almost full, so Voice removed meeting media it couldn't check against your bucket." The engine writes these bodies as it writes the other meeting notifications.
 
 `test/voice-ui-i18n.test.js` checks that every key in this list exists in both catalogs.
 
@@ -157,6 +159,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "version": "0.1.0",
   "devMode": false,
   "platform": "windows",
+  "features": { "screen": false, "speakers": false, "sync": true },
   "theme": "dark",
   "locale": "en",
   "config": {
@@ -169,7 +172,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
     "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": false },
     "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
     "updates": { "check": false },
-    "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "secret": "" } }
+    "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "retention": "keep", "secretSaved": false, "tested": false, "secret": "" } }
   },
   "providers": {
     "audio": [{ "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"] }],
@@ -181,7 +184,21 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "storage": { "folder": "C:\\Users\\…\\Rukoo Voice\\meetings", "usedBytes": 2400000000, "freeBytes": 182000000000 },
   "updates": { "state": "idle", "version": null },
   "ownkey": "OwnkeyState",
-  "sync": { "lastUpload": null, "waiting": 0 }
+  "sync": {
+    "available": true,
+    "state": "off",
+    "waiting": 0,
+    "waitingBytes": 0,
+    "oldestWaiting": null,
+    "lastUpload": null,
+    "lastError": null,
+    "failingSince": null,
+    "lost": 0,
+    "screenRecording": false,
+    "key": { "exists": false, "id": null, "exported": false },
+    "restore": { "state": "idle", "available": 0, "done": 0, "total": 0, "error": null },
+    "otherKeys": 0
+  }
 }
 ```
 
@@ -191,8 +208,9 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `version` | Voice's version, shown under About. |
 | `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14. |
 | `platform` | `windows`, `macos` or `linux`. |
+| `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
 | `theme`, `locale` | `ui.theme` and `ui.language` resolved: `light` or `dark`, `en` or `nl`. The page follows these, never the raw setting. |
-| `config` | Every setting, see below. API keys and the bucket secret appear only as `keySaved` flags; `secret` is always `""`. |
+| `config` | Every setting, see below. API keys appear only as `keySaved` flags and the bucket secret only as `storage.sync.secretSaved`; `storage.sync.secret` is always `""`. |
 | `providers` | Voice-core's provider registry in Ownkey's order (ownkey-providers.md 2): `audio` is OpenAI, Google, Mistral, Custom, Orukeet; `rewrite` is OpenAI, Anthropic, Google, Mistral, Ollama, OpenRouter, Custom. `endpoints` are the presets, the first is the default. The page translates the labels of `custom` and `orukeet` and shows the brand names for the rest. |
 | `dictation.status` | `ready`, `loadingModel`, `modelMissing`, `noKey` or `noMic`: the status on the top page. |
 | `rukoo.state` | `connected`, `notRunning`, `rukooOutdated` or `voiceOutdated` (from `unsupported_protocol`, PROTOCOL.md Versioning), `refused` (a client sent a wrong token). A refusal shows until a client connects again. |
@@ -204,7 +222,17 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
-| `sync` | Later than 0.1: the last upload (epoch ms) and the files waiting. |
+| `sync.available` | Bucket sync works here: Windows, with the sync store open. The Storage page shows the sync card only then. |
+| `sync.state` | `off`; `idle`, everything is in the bucket; `uploading`; `live`, a meeting records and its audio and frames go up as they close; `retrying`, the bucket can't be reached and Voice tries again; `failing`, the bucket refused (see `lastError`) and nothing uploads until the settings change; `key`, Voice can't open its encryption key. |
+| `sync.waiting`, `waitingBytes`, `oldestWaiting` | Files waiting to upload, their size, and when the oldest was queued (epoch ms or `null`). |
+| `sync.lastUpload` | When the last file reached the bucket, or `null`. |
+| `sync.lastError` | `{ "at", "code", "message" }` of the last failure, `null` after a success. `code` is one of the Test connection codes; `message` is English, for Error details. |
+| `sync.failingSince` | When uploads started failing without a success since, or `null`. |
+| `sync.lost` | Files Voice removed from this computer before they reached the bucket, because the disk was almost full (under 10 GiB free). |
+| `sync.screenRecording` | A meeting records the screen now. The page closes the key dialogs when it turns true. |
+| `sync.key` | `exists`: Voice has an encryption key; `id`: its first 8 hex characters, to tell keys apart; `exported`: the user said they saved it. Never the key. |
+| `sync.restore` | `state`: `idle`, `listing`, `available`, `restoring`, `done` or `failed`; `available`: meetings in the bucket that aren't on this computer; `done` and `total` while restoring; `error`: English text after a failure. |
+| `sync.otherKeys` | How many other encryption keys have meetings in this bucket, from the last Test connection. |
 
 `config`, by the key `settings_set` takes for each field:
 
@@ -238,7 +266,19 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.language` | `system`, `en`, `nl` | `system` | new |
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
-| `storage.sync.*` | later than 0.1 | | new |
+
+Bucket sync, saved in `config.json` under `storage_sync`:
+
+| Key | Values | Default | `config.json` |
+|---|---|---|---|
+| `storage.sync.enabled` | bool; `true` is refused with `needs_test` unless the current fields passed Test connection | `false` | `storage_sync.enabled` |
+| `storage.sync.service` | `upcloud`, `r2`, `other` | `upcloud` | `storage_sync.service` |
+| `storage.sync.endpoint` | `https://…`, or `http://` to this computer for tests; `""` | `""` | `storage_sync.endpoint` |
+| `storage.sync.region`, `bucket`, `prefix`, `accessKeyId` | string | `""` | `storage_sync.<field>` |
+| `storage.sync.retention` | `keep`, `days365`, `days90`: how long the bucket keeps a meeting's media | `keep` | `storage_sync.retention` |
+| `storage.sync.secret` | refused with `invalid_value`; use `settings_sync_save_secret` | | never stored here |
+
+Changing `service`, `endpoint`, `region`, `bucket`, `prefix` or `accessKeyId`, or saving or removing the secret, turns sync off until Test connection passes again. `secretSaved` and `tested` are read-only.
 
 `meetings.retention` applies to meetings started from then on, as in Ownkey: each meeting keeps the choice it started with in its `meeting.json`, so changing it, or importing Ownkey's, never removes older meetings' audio. Meetings from before Voice stored it follow the current choice.
 
@@ -321,7 +361,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_remove_key`
 
-`invoke('settings_remove_key', { target })` → nothing. Deletes the saved key of `transcription`, `rewriting` or `meetings` at once.
+`invoke('settings_remove_key', { target })` → nothing. Deletes the saved key of `transcription`, `rewriting` or `meetings`, or the bucket's secret for `sync`, at once. Removing the bucket's secret turns sync off.
 
 ### Command `settings_list_models`
 
@@ -364,9 +404,38 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 `invoke('settings_import_ownkey')` → the new `report`. Reads `%APPDATA%\Ownkey\config.json` and never writes to Ownkey's folders. Rejects with `dev_mode` in dev mode, where the import runs only with `--import-ownkey <copy>`, and with `not_found` when Ownkey's config is missing. The page asks before it imports over an earlier import.
 
-### Command `settings_sync_test` (later than 0.1)
+### Command `settings_sync_test`
 
-`invoke('settings_sync_test')` → nothing when Voice can write to the bucket in `config.storage.sync`; rejects with the reason otherwise. Only the bucket sync card uses it, and that card shows only with `?later=1`.
+`invoke('settings_sync_test')` → `{ "otherKeys": 0 }` when Voice can write, read, list and delete in the bucket of `config.storage.sync` with the saved secret, and start and abort a multipart upload. It marks the fields as tested. Rejects with `endpoint`, `network`, `auth`, `bucket`, `clock`, `permission`, `no_secret` or `failed`, with an English `message` for Error details.
+
+### Command `settings_sync_save_secret`
+
+`invoke('settings_sync_save_secret', { secret })` → nothing. Keeps the bucket's secret access key with Windows DPAPI for this Windows user, never in `config.json`, and turns sync off until Test connection passes again. Rejects with `invalid_value` for an empty secret or one over 1,024 characters, `failed` when Windows can't protect it. `settings_remove_key({ target: "sync" })` removes it. The page calls it when the secret's field loses focus and keeps no copy.
+
+### Command `settings_sync_key`
+
+`invoke('settings_sync_key', { action, code })`:
+
+- `show` → `{ "code": "RKV1-…", "id": "0f1e2d3c" }`. Makes the key when there is none. Rejects with `recording_screen` while a meeting records the screen.
+- `saved` → nothing: the user saved the code; `sync.key.exported` becomes `true`.
+- `import` with `code` → `{ "id" }`: this computer uses that key from now on. Rejects with `invalid_value` for a code that isn't a key, `key_in_use` once this computer uploaded meetings with its own key, and `recording_screen` while a meeting records the screen.
+
+The page shows the code only in its dialog, with the window hidden from capture (`settings_protect`), and closes the dialog when `sync.screenRecording` turns true.
+
+### Command `settings_sync_key_copy`
+
+`invoke('settings_sync_key_copy')` → nothing. Puts the recovery code on the clipboard, hidden from clipboard history and cloud clipboard, and clears it after 60 seconds if it is still there. The page never gets the code from this command and never uses `navigator.clipboard`.
+
+### Command `settings_protect`
+
+`invoke('settings_protect', { on })` → nothing. `true` hides the Settings window from screen capture and screen sharing, as the pill is hidden; `false` shows it again. The Storage page uses it while a key dialog is open. Closing the window resets it.
+
+### Command `settings_sync_restore`
+
+`invoke('settings_sync_restore', { action })`:
+
+- `list` → `{ "meetings": [ { "id", "title", "startedAt", "duration" } ] }`: the meetings in the bucket that aren't on this computer. Rejects like `settings_sync_test`, or with `off` when sync is off.
+- `start` → nothing. Restores those meetings' text now and their audio when it's needed; progress in `sync.restore`.
 
 ### Command `settings_close`
 
@@ -385,8 +454,9 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 | `dev/gallery.html?theme=dark&lang=en` | Every pill state side by side |
 | `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group |
 | `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy |
-| `&later=1` | The rows designed for later releases: screen recording, speaker labels, bucket sync (`&sync=1` turns sync on) |
+| `&later=1` | Every part in `features`: screen recording, speaker labels, bucket sync. `&features=screen,speakers,sync` turns on the ones listed. |
+| `&sync=fresh`, `tested`, `on`, `live`, `retrying`, `failing`, `key`, `restore`, `restore-failed` | Bucket sync on Storage: nothing filled in; tested and still off; up to date; a meeting uploading; the bucket out of reach; the bucket refusing, with files lost; an unreadable key; meetings to restore; a stopped restore. `&sync=1` is `on`. Test connection fails for the bucket `fail` and finds another key in the bucket `shared`. |
 
 `node voice/ui/dev/screenshots.js <outDir>` saves every pill state and every Settings page in both themes and languages, a narrow window and the dialogs, through the repository's Electron, without taking focus. Keep the images out of Git; they go on the GitHub issue.
 
-`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider or host, keys never carried to another provider, the stop button's layout report, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.
+`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider or host, keys never carried to another provider, the bucket secret never going through `settings_set`, the sync switch waiting for Test connection, the key dialogs' screen protection and clean-up, the stop button's layout report, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.
