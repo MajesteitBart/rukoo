@@ -9,7 +9,9 @@
 // when the socket drops, until Voice says the meeting ended or the user turns the setting off. A start from Rukoo
 // protects first and waits for the next desktop composition before it asks Voice to start, because protection lags
 // one composition behind setContentProtection. A meeting Voice starts itself says meeting.starting before Voice
-// captures the screen: Rukoo protects the same way, waits, and answers meeting.protected (voice/PROTOCOL.md).
+// captures the screen: Rukoo protects the same way, waits, and answers meeting.protected (voice/PROTOCOL.md). From
+// that event on the meeting records as far as Rukoo knows, as after a start from Rukoo, so a connection that drops
+// before Voice's status arrives keeps the windows hidden.
 
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -23,8 +25,8 @@ const PROTECT_DELAY_MS = 100;
 const EMIT_MS = 150;
 const LINK_WITHIN_MS = 12 * 60 * 60 * 1000;
 const EVENT_ID_MAX = 4000;
-// How long a meeting.starting keeps the windows hidden by itself: until the meeting's state says it records, which
-// keeps them hidden from then on, or this long.
+// How long a meeting.starting keeps the windows hidden by itself, besides the status it sets: until the meeting's
+// state arrives, or this long.
 const STARTING_HOLD_MS = 10000;
 // meeting.protected answers quickly or not at all: Voice stops waiting for it after 500 ms.
 const PROTECTED_TIMEOUT_MS = 2000;
@@ -103,7 +105,7 @@ class VoiceService extends EventEmitter {
   // discovery: the discovery file (paths.bridgePathHere), or null for a profile that never looks for Voice.
   // hide(): whether the user wants Rukoo hidden from screen capture during a meeting. protect(on): hides or shows
   // every window. calendars, engine: for the linked event and the names of its guests.
-  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, emitMs = EMIT_MS, now = Date.now, log = () => {} } = {}) {
+  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, startingHoldMs = STARTING_HOLD_MS, emitMs = EMIT_MS, now = Date.now, log = () => {} } = {}) {
     super();
     this.store = new VoiceStore({ dataDir, now, log });
     // A meeting file found damaged when a meeting is read: Voice sends the meeting again while it is connected.
@@ -113,12 +115,15 @@ class VoiceService extends EventEmitter {
     this.protect = protect;
     this.calendars = calendars;
     this.protectDelayMs = protectDelayMs;
+    this.startingHoldMs = startingHoldMs;
     this.emitMs = emitMs;
     this.now = now;
     this.log = log;
     this.starting = 0;
-    // The meeting.starting holds still counting in starting, by meeting id: their timers.
+    // The meeting.starting holds still counting in starting, by meeting id: their timers. heldOver: how many of them
+    // ran out of time while the connection was down, and still count until the next welcome.
     this.holds = new Map();
+    this.heldOver = 0;
     // The screen the last start from Rukoo asked for, until Voice's meeting.started says what it records.
     this.startScreen = null;
     // clip.get goes one at a time on a connection (voice/PROTOCOL.md): Voice runs a connection's commands in turn, and
@@ -214,6 +219,7 @@ class VoiceService extends EventEmitter {
     this.clipChain = null;
     const { reset, gap } = this.store.welcome(msg);
     this.statusChanged();
+    this.endHeldOver();
     if (reset) this.emit('meeting', { kind: 'list' });
     // Voice already deleted events Rukoo missed: ask for every meeting Rukoo has. A done meeting can't change, but
     // Voice may have deleted it meanwhile, and its meeting.removed may be among the events Rukoo missed.
@@ -283,7 +289,10 @@ class VoiceService extends EventEmitter {
     }
     const live = !this.store.isReplay(ev.seq);
     // A meeting.starting in the replay is history: Voice stopped waiting for it long ago.
-    if (ev.event === 'meeting.starting' && live) this.onStarting(ev.meeting).catch(() => {});
+    if (ev.event === 'meeting.starting' && live) {
+      this.startedByVoice(ev.meeting);
+      this.onStarting(ev.meeting).catch(() => {});
+    }
     // The meeting's state took over from the hold of its meeting.starting.
     if (ev.event === 'meeting.state' && live) this.releaseStarting(ev.meeting);
     // meeting.started already marks the entry recording, so the meeting.state that follows can change only the
@@ -513,6 +522,16 @@ class VoiceService extends EventEmitter {
 
   // ---------- the start handshake of a meeting Voice started ----------
 
+  // Voice records the audio when it says meeting.starting, and its status may still be on its way: the meeting
+  // records from now, as far as protection and notifications go, as after a start from Rukoo. Only what Voice says
+  // next lets go of that: its status, the meeting's end, or the status of the next welcome. The store keeps it, so
+  // it also holds across a restart of Rukoo while Voice is out of reach.
+  startedByVoice(id) {
+    const e = this.store.entry(id);
+    if (e && ENDED_STATES.includes(e.state)) return;
+    this.store.setStatus({ ...this.store.status(), recording: id });
+  }
+
   // Voice waits up to 500 ms for this before it captures the screen. starting counts from the moment the event
   // arrives, so protection is on before the ack and stays on until the meeting's state says it records.
   async onStarting(id) {
@@ -531,7 +550,7 @@ class VoiceService extends EventEmitter {
   // Keeps one count of starting for the meeting until its meeting.state arrives or ms pass. When that state came
   // during the wait for the composition, there is nothing to hold: the status keeps the windows hidden while the
   // meeting records, and a meeting that ended no longer needs them hidden.
-  holdStarting(id, ms = STARTING_HOLD_MS) {
+  holdStarting(id, ms = this.startingHoldMs) {
     const e = this.store.entry(id);
     if (this.closed || this.recording() === id || (e && ENDED_STATES.includes(e.state))) {
       this.endStarting();
@@ -545,7 +564,9 @@ class VoiceService extends EventEmitter {
     const timer = setTimeout(() => {
       timers.delete(timer);
       if (!timers.size) this.holds.delete(id);
-      this.endStarting();
+      // Without a connection nothing can say whether Voice still records: the hold lasts until the next welcome.
+      if (this.connected || this.closed) this.endStarting();
+      else this.heldOver += 1;
     }, ms);
     if (timer.unref) timer.unref();
     timers.add(timer);
@@ -564,6 +585,11 @@ class VoiceService extends EventEmitter {
   endStarting() {
     this.starting = Math.max(0, this.starting - 1);
     if (!this.closed) this.refreshProtection();
+  }
+
+  // The holds whose time ran out while the connection was down, once the welcome's status says what records.
+  endHeldOver() {
+    for (; this.heldOver > 0; this.heldOver -= 1) this.endStarting();
   }
 
   // ---------- what Rukoo owns ----------

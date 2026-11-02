@@ -556,6 +556,66 @@ test('a meeting Voice starts itself: Rukoo hides its windows, waits a frame, con
   assert.equal(sent('meeting.protected').length, 1);
 });
 
+test("a connection that drops between meeting.starting and Voice's status keeps the windows hidden past the hold, also across a restart of Rukoo", async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const sent = arrivals(voice);
+  const s1 = service(t, dir, file, { startingHoldMs: 100 }).init();
+  await until(() => s1.connected, 'the connection');
+  voice.append('meeting.started', M1, { ...started('From a key'), screen: 'frames' });
+  voice.append('meeting.starting', M1, { screen: 'frames' });
+  await until(() => sent('meeting.protected').length === 1, 'meeting.protected');
+  // Voice's status and the meeting's state never reach Rukoo: the connection drops, and Voice stays out of reach
+  // while it records.
+  voice.removeDiscovery();
+  voice.drop();
+  await until(() => !s1.connected, 'the drop');
+  voice.append('meeting.state', M1, { state: 'recording', at: 0 });
+  await pause(400);
+  assert.equal(s1.protects.at(-1).on, true, 'still hidden after the hold');
+  assert.equal(s1.screenRecording(), true, 'notifications still held back');
+  // Rukoo restarts while Voice is out of reach: the windows start hidden.
+  s1.close();
+  const s2 = service(t, dir, file, { startingHoldMs: 100 }).init();
+  assert.deepEqual(s2.protects.map((p) => p.on), [true]);
+  assert.equal(s2.screenRecording(), true);
+  // Voice is back and still records: its status keeps them hidden, and the end of the meeting lets go.
+  voice.writeDiscovery();
+  await until(() => s2.connected, 'the reconnect');
+  assert.equal(s2.protects.at(-1).on, true);
+  voice.append('meeting.state', M1, { state: 'processing', at: 5000, endedAt: Date.now(), reason: 'user' });
+  await until(() => s2.protects.at(-1).on === false, 'protection to go');
+  assert.equal(s2.screenRecording(), false);
+});
+
+test('a hold whose time runs out while the connection is down lasts until the next welcome says what records', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const sent = arrivals(voice);
+  // The heartbeat brings a status that hasn't caught up with the start: nothing records, as far as it says.
+  const s = service(t, dir, file, { startingHoldMs: 300, bridge: { ...FAST, heartbeatMs: 30 } }).init();
+  await until(() => s.connected, 'the connection');
+  voice.append('meeting.started', M1, { ...started('From the tray'), screen: 'video' });
+  voice.append('meeting.starting', M1, { screen: 'video' });
+  await until(() => sent('meeting.protected').length === 1, 'meeting.protected');
+  await until(() => s.holds.has(M1), 'the hold');
+  assert.equal(s.recording(), null);
+  voice.removeDiscovery();
+  voice.drop();
+  await until(() => !s.connected, 'the drop');
+  await until(() => !s.holds.has(M1), 'the hold to run out', 2000);
+  await pause(100);
+  assert.equal(s.protects.at(-1).on, true, 'still hidden');
+  assert.equal(s.screenRecording(), true, 'notifications still held back');
+  // The meeting ended while Rukoo was away: the welcome's status says nothing records, and the hold goes.
+  voice.append('meeting.state', M1, { state: 'processing', at: 5000, endedAt: Date.now(), reason: 'user' });
+  voice.writeDiscovery();
+  await until(() => s.connected, 'the reconnect');
+  await until(() => s.protects.at(-1).on === false, 'protection to go');
+  assert.equal(s.starting, 0);
+  assert.equal(s.screenRecording(), false);
+});
+
 test('a meeting.starting in the replay is history and gets no answer; the fresh one Voice sends after a reconnect does', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
