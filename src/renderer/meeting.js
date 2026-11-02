@@ -1057,6 +1057,9 @@ function toggleFrame(row) {
   else M.frameOpen.delete(id);
   row.classList.toggle('is-open', open);
   for (const b of row.querySelectorAll('[data-mt="frame"]')) b.setAttribute('aria-expanded', String(open));
+  // A frame opened near the bottom of the view grows below it; the image comes into view, as a row does with the
+  // arrow keys.
+  if (open) row.scrollIntoView({ block: 'nearest' });
 }
 
 // ---------- correcting a passage ----------

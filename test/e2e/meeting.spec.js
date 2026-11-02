@@ -645,6 +645,9 @@ test('frames sit between the lines at their moments, load as they come into view
   await expect(frame(297500).locator('.mt-frame-full')).toHaveText('Next steps\nWrite the follow-up');
   const wide = await frame(297500).locator('.mt-shot').boundingBox();
   expect(wide.width).toBeGreaterThan(300);
+  // The row was the last one in view; the opened image scrolled into view instead of growing below it.
+  const port = await view().locator('.mt-scroll').boundingBox();
+  expect(wide.y + wide.height).toBeLessThanOrEqual(port.y + port.height + 1);
   await shot('frame-open');
   await frame(297500).focus();
   await win.keyboard.press('Enter');
