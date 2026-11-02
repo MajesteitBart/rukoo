@@ -18,7 +18,8 @@ use base64::Engine as _;
 use serde_json::{json, Map, Value};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::error::ProtocolError;
-use tungstenite::http::header::{HeaderValue, AUTHORIZATION, USER_AGENT};
+use tungstenite::http::header::{HeaderValue, AUTHORIZATION, TRANSFER_ENCODING, USER_AGENT};
+use tungstenite::http::Response;
 use tungstenite::protocol::CloseFrame;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error as WsError, HandshakeError, Message, WebSocket};
@@ -47,6 +48,15 @@ const DRAIN: Duration = Duration::from_millis(1);
 
 /// How long a failed write looks for an `error` event that explains it.
 const WRITE_FAILURE_READ: Duration = Duration::from_millis(200);
+
+/// The longest single wait: a larger `poll` wait or connect timeout is cut to this, so adding it
+/// to the clock can't overflow.
+const MAX_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// `wait` from now, with `wait` cut to [`MAX_WAIT`].
+fn deadline_after(wait: Duration) -> Instant {
+    Instant::now() + wait.min(MAX_WAIT)
+}
 
 /// The `target_streaming_delay_ms` Voice sends for a requested delay. Mistral only takes the
 /// values its model was trained on, 80 to 1200 ms or 2400 ms, and refuses others with an error
@@ -165,13 +175,14 @@ impl MistralRealtime {
 
     /// Replaces [`CONNECT_TIMEOUT`], for tests.
     pub fn with_timeout(mut self, timeout: Duration) -> MistralRealtime {
-        self.connect_timeout = timeout.max(Duration::from_millis(1));
+        self.connect_timeout = timeout.clamp(Duration::from_millis(1), MAX_WAIT);
         self
     }
 
     /// Opens a session: connects, sends `session.update` and waits for `session.updated`.
     pub fn open(&self, session: &StreamSession) -> Result<MistralStream, ProviderError> {
-        self.open_inner(session).map_err(|error| self.scrub(error))
+        self.open_inner(session)
+            .map_err(|error| scrub(&self.api_key, error))
     }
 
     fn open_inner(&self, session: &StreamSession) -> Result<MistralStream, ProviderError> {
@@ -214,6 +225,7 @@ impl MistralRealtime {
             ws,
             url,
             timeout: self.connect_timeout,
+            secret: self.api_key.clone(),
             queued: Vec::new(),
             failed: None,
             ended: false,
@@ -222,7 +234,7 @@ impl MistralRealtime {
         };
         stream.send(session_update(session))?;
 
-        let deadline = Instant::now() + self.connect_timeout;
+        let deadline = deadline_after(self.connect_timeout);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -278,11 +290,7 @@ impl MistralRealtime {
         match error {
             WsError::Http(response) => {
                 let status = response.status();
-                let body = response
-                    .body()
-                    .as_deref()
-                    .map(String::from_utf8_lossy)
-                    .unwrap_or_default();
+                let body = handshake_body(&response);
                 let kind = match status.as_u16() {
                     401 | 403 => ErrorKind::Auth,
                     _ => ErrorKind::Provider,
@@ -299,14 +307,66 @@ impl MistralRealtime {
             other => transport_error(other, url, self.connect_timeout),
         }
     }
+}
 
-    /// Belt and braces: no message Voice builds holds the key, but a server could echo it.
-    fn scrub(&self, mut error: ProviderError) -> ProviderError {
-        if !self.api_key.is_empty() && error.message.contains(&self.api_key) {
-            error.message = error.message.replace(&self.api_key, "<redacted>");
+/// The body of a refused handshake as text. tungstenite hands over the bytes that came after the
+/// headers as they are, so a chunked body, which is how Mistral sends its 401, still holds the
+/// chunk sizes. They are taken out here.
+fn handshake_body(response: &Response<Option<Vec<u8>>>) -> String {
+    let raw = response.body().as_deref().unwrap_or_default();
+    let chunked = response
+        .headers()
+        .get_all(TRANSFER_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| value.to_ascii_lowercase().contains("chunked"));
+    let body = if chunked {
+        dechunk(raw).unwrap_or_else(|| raw.to_vec())
+    } else {
+        raw.to_vec()
+    };
+    String::from_utf8_lossy(&body).into_owned()
+}
+
+/// The data of a chunked body, as far as it arrived. `None` when it doesn't start with a chunk.
+fn dechunk(mut raw: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut first = true;
+    loop {
+        let size = raw
+            .windows(2)
+            .position(|pair| pair == b"\r\n")
+            .and_then(|end| {
+                let line = std::str::from_utf8(&raw[..end]).ok()?;
+                let size = line.split(';').next()?.trim();
+                let size = usize::from_str_radix(size, 16).ok()?;
+                raw = &raw[end + 2..];
+                Some(size)
+            });
+        let Some(size) = size else {
+            return (!first).then_some(out);
+        };
+        first = false;
+        if size == 0 {
+            return Some(out);
         }
-        error
+        let take = size.min(raw.len());
+        out.extend_from_slice(&raw[..take]);
+        raw = &raw[take..];
+        if take < size {
+            return Some(out);
+        }
+        raw = raw.strip_prefix(b"\r\n").unwrap_or(raw);
     }
+}
+
+/// Belt and braces: no message Voice builds holds the key, but a server could echo it in a
+/// refusal, an `error` event or a close reason.
+fn scrub(secret: &str, mut error: ProviderError) -> ProviderError {
+    if !secret.is_empty() && error.message.contains(secret) {
+        error.message = error.message.replace(secret, "<redacted>");
+    }
+    error
 }
 
 impl StreamingSpeech for MistralRealtime {
@@ -366,6 +426,8 @@ pub struct MistralStream {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,
     url: String,
     timeout: Duration,
+    /// The API key, kept only to scrub it from errors. Never in `Debug`.
+    secret: String,
     /// Messages read but not yet handed out, such as `session.created` during `open`.
     queued: Vec<Value>,
     /// Sticky: once the session failed, every later call returns this.
@@ -435,7 +497,7 @@ impl MistralStream {
         if self.failed.is_some() || self.closed {
             return;
         }
-        let deadline = Instant::now() + wait;
+        let deadline = deadline_after(wait);
         loop {
             let left = if out.is_empty() {
                 deadline.saturating_duration_since(Instant::now())
@@ -443,7 +505,7 @@ impl MistralStream {
                 Duration::ZERO
             };
             if self.set_read_timeout(left.max(DRAIN)).is_err() {
-                self.failed = Some(network_error(&self.url));
+                self.fail(network_error(&self.url));
                 return;
             }
             match self.ws.read() {
@@ -475,7 +537,7 @@ impl MistralStream {
                     return;
                 }
                 Err(error) => {
-                    self.failed = Some(transport_error(error, &self.url, self.timeout));
+                    self.fail(transport_error(error, &self.url, self.timeout));
                     return;
                 }
             }
@@ -490,7 +552,7 @@ impl MistralStream {
         let reason = frame
             .map(|frame| crate::cleanup::collapse_whitespace(frame.reason.as_str()))
             .filter(|reason| !reason.is_empty());
-        self.failed = Some(match reason {
+        self.fail(match reason {
             Some(reason) => {
                 ProviderError::provider(format!("Mistral closed the stream: {}", shorten(&reason)))
             }
@@ -499,6 +561,13 @@ impl MistralStream {
                 "Mistral closed the stream before it finished.",
             ),
         });
+    }
+
+    /// Stores the failure every later call returns, without the key, and returns it.
+    fn fail(&mut self, error: ProviderError) -> ProviderError {
+        let error = scrub(&self.secret, error);
+        self.failed = Some(error.clone());
+        error
     }
 
     fn send(&mut self, message: Value) -> Result<(), ProviderError> {
@@ -520,8 +589,7 @@ impl MistralStream {
             error = event_error(reason);
         }
         self.queued.extend(received);
-        self.failed = Some(error.clone());
-        Err(error)
+        Err(self.fail(error))
     }
 }
 
@@ -554,7 +622,7 @@ impl SpeechStream for MistralStream {
                 Ok(None) => {}
                 // The events before it still count; the error comes with the next call.
                 Err(error) => {
-                    self.failed = Some(error);
+                    self.fail(error);
                     break;
                 }
             }
@@ -763,6 +831,27 @@ mod tests {
         assert_eq!(references.len(), 8);
         assert!(references.contains_key("call-1"));
         assert!(!references.contains_key("call-9"));
+    }
+
+    #[test]
+    fn chunked_bodies_lose_their_chunk_sizes() {
+        let body = br#"{"detail":"Invalid API Key"}"#;
+        let mut framed = format!("{:x}\r\n", body.len()).into_bytes();
+        framed.extend_from_slice(body);
+        framed.extend_from_slice(b"\r\n0\r\n\r\n");
+        assert_eq!(dechunk(&framed).as_deref(), Some(&body[..]));
+        // Several chunks, an extension, upper-case hex.
+        assert_eq!(
+            dechunk(b"3;x=1\r\nabc\r\nA\r\n0123456789\r\n0\r\n\r\n").as_deref(),
+            Some(&b"abc0123456789"[..])
+        );
+        // A body cut short keeps what arrived.
+        assert_eq!(dechunk(b"a\r\nabc").as_deref(), Some(&b"abc"[..]));
+        assert_eq!(dechunk(b"3\r\nabc\r\n").as_deref(), Some(&b"abc"[..]));
+        assert_eq!(dechunk(b"0\r\n\r\n").as_deref(), Some(&b""[..]));
+        // Not chunked after all: the caller keeps the raw body.
+        assert_eq!(dechunk(br#"{"message":"x"}"#), None);
+        assert_eq!(dechunk(b""), None);
     }
 
     #[test]

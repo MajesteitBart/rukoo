@@ -1,6 +1,7 @@
 //! Mistral's realtime client against a loopback WebSocket server that plays Mistral. No real key
 //! and no provider is ever contacted.
 
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -9,6 +10,8 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::StatusCode;
+use tungstenite::protocol::frame::coding::CloseCode;
+use tungstenite::protocol::CloseFrame;
 use tungstenite::{Message, WebSocket};
 use voice_core::providers::stream::{
     streams, SpeechStream, StreamEvent, StreamSession, StreamingSpeech,
@@ -117,12 +120,12 @@ impl Fake {
     }
 
     /// A server that refuses the handshake with this status and body.
-    fn refusing(status: u16, body: &'static str) -> Fake {
-        Fake::start_with(Some((status, body)), |_| {})
+    fn refusing(status: u16, body: impl Into<String>) -> Fake {
+        Fake::start_with(Some((status, body.into())), |_| {})
     }
 
     fn start_with(
-        refuse: Option<(u16, &'static str)>,
+        refuse: Option<(u16, String)>,
         script: impl FnOnce(&mut Server) + Send + 'static,
     ) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -139,7 +142,7 @@ impl Fake {
                     .map(str::to_string);
                 match refuse {
                     Some((status, body)) => {
-                        let mut refusal = ErrorResponse::new(Some(body.to_string()));
+                        let mut refusal = ErrorResponse::new(Some(body));
                         *refusal.status_mut() = StatusCode::from_u16(status).unwrap();
                         Err(refusal)
                     }
@@ -576,6 +579,141 @@ fn a_refused_handshake_names_the_status() {
     assert_eq!(error.message, "API error 400: Invalid model: voxtral-x");
     assert_no_key(&error);
     fake.finish();
+}
+
+#[test]
+fn a_key_the_server_echoes_never_reaches_an_error() {
+    // In the handshake refusal.
+    let fake = Fake::refusing(401, format!(r#"{{"message":"Invalid API key: {KEY}"}}"#));
+    let error = match fake.client().connect(&StreamSession::default()) {
+        Ok(_) => panic!("connected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert_eq!(error.message, "API error 401: Invalid API key: <redacted>");
+    assert_no_key(&error);
+    fake.finish();
+
+    // In an error event during the session: every later call returns the scrubbed error too.
+    let fake = Fake::start(|server| {
+        server.accept_session();
+        server.recv_type("input_audio.append");
+        server.send(json!({"type": "error", "error": {"message": format!("Key {KEY} was revoked."), "code": 401}}));
+        server.wait_for_close();
+    });
+    let mut stream = fake.client().connect(&StreamSession::default()).unwrap();
+    stream.push(&pcm(1600, 2)).unwrap();
+    let (events, error) = poll_all(stream.as_mut());
+    assert!(events.is_empty(), "{events:?}");
+    let error = error.expect("an error");
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert_eq!(error.message, "API error 401: Key <redacted> was revoked.");
+    assert_no_key(&error);
+    assert_no_key(&stream.push(&pcm(10, 1)).unwrap_err());
+    assert_no_key(&stream.end().unwrap_err());
+    drop(stream);
+    fake.finish();
+
+    // In the reason of a close frame.
+    let fake = Fake::start(|server| {
+        server.accept_session();
+        server.recv_type("input_audio.append");
+        server
+            .ws
+            .close(Some(CloseFrame {
+                code: CloseCode::Policy,
+                reason: format!("bad key {KEY}").into(),
+            }))
+            .unwrap();
+        server.wait_for_close();
+    });
+    let mut stream = fake.client().connect(&StreamSession::default()).unwrap();
+    stream.push(&pcm(1600, 2)).unwrap();
+    let (_, error) = poll_all(stream.as_mut());
+    let error = error.expect("an error");
+    assert_eq!(
+        error.message,
+        "Mistral closed the stream: bad key <redacted>"
+    );
+    assert_no_key(&error);
+    drop(stream);
+    fake.finish();
+}
+
+#[test]
+fn a_huge_wait_is_a_long_wait_not_a_panic() {
+    let fake = Fake::start(|server| {
+        server.accept_session();
+        server.recv_type("input_audio.append");
+        server.send(json!({"type": "transcription.done", "text": "", "segments": []}));
+        server.wait_for_close();
+    });
+    let client = fake.client().with_timeout(Duration::MAX);
+    let mut stream = client.open(&StreamSession::default()).unwrap();
+    let kinds: Vec<String> = stream
+        .poll_raw(Duration::ZERO)
+        .unwrap()
+        .iter()
+        .map(|m| m["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["session.created", "session.updated"]);
+    stream.push(&pcm(160, 1)).unwrap();
+    // Returns as soon as the first event arrives.
+    assert_eq!(stream.poll(Duration::MAX), Ok(vec![StreamEvent::Done]));
+    assert!(stream.is_done());
+    drop(stream);
+    fake.finish();
+}
+
+/// A plain TCP server that answers the upgrade request with this raw HTTP response, as a real
+/// server's refusal arrives: Mistral sends its 401 with a chunked body.
+fn raw_refusal(response: Vec<u8>) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let thread = thread::spawn(move || {
+        let (mut tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(WAIT)).unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            match tcp.read(&mut byte) {
+                Ok(1) => request.push(byte[0]),
+                _ => return,
+            }
+        }
+        tcp.write_all(&response).unwrap();
+        tcp.flush().unwrap();
+        // Until the client hangs up.
+        let _ = tcp.read(&mut byte);
+    });
+    (
+        format!("http://127.0.0.1:{port}/v1/audio/transcriptions"),
+        thread,
+    )
+}
+
+#[test]
+fn a_chunked_refusal_reads_as_its_body() {
+    let body = br#"{"detail":"Invalid API Key"}"#;
+    let mut response = format!(
+        "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response.extend_from_slice(b"\r\n0\r\n\r\n");
+    let (endpoint, server) = raw_refusal(response);
+    let client = MistralRealtime::new(&cfg(&endpoint, MODEL, KEY)).unwrap();
+    let error = match client.connect(&StreamSession::default()) {
+        Ok(_) => panic!("connected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert_eq!(
+        error.message,
+        r#"API error 401: {"detail":"Invalid API Key"}"#
+    );
+    server.join().unwrap();
 }
 
 #[test]
