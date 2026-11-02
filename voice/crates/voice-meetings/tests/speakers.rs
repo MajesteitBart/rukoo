@@ -1726,6 +1726,67 @@ fn a_stream_that_never_finishes_fails_the_meeting() {
     assert_eq!(sessions, 3);
 }
 
+/// 11o: after the stop, sessions that each answer part of what is left and then drop before they
+/// finish are making progress. Every one moves the answered position forward, so the meeting
+/// gets its tries back each time and finishes once a session gets through the rest, even when
+/// that takes more sessions than the limit on failures in a row.
+#[test]
+fn sessions_that_answer_part_of_the_rest_and_drop_still_finish() {
+    let tmp = TempDir::new("speakers-mistral-partial");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(9, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    {
+        let mut state = fake.state();
+        state.timed = true;
+        // Every answer comes after the audio ended, while Voice waits for the session to
+        // finish. Nine bursts, two answers a session: five sessions, four of them failing in
+        // that wait, which is more than the three failures in a row `fast()` allows.
+        state.answers_after_end = true;
+        state.answers_per_session = Some(2);
+    }
+    let options = PipelineOptions {
+        speakers: FollowerTiming {
+            stream_speed: 20.0,
+            stream_drain: Duration::from_millis(300),
+            ..follower_timing()
+        },
+        ..mistral_options(&fake, true)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    let state = wait_until("the meeting to end", WAIT, || {
+        let sessions = fake.state().sessions.iter().filter(|s| s.diarize).count();
+        assert!(sessions <= 12, "{sessions} sessions and no end");
+        let state = handle.state();
+        state.is_final().then_some(state)
+    });
+    handle.shutdown();
+    assert!(
+        matches!(state, PipelineState::Done),
+        "every session answered past the last one, so the meeting finishes: {state:?}"
+    );
+    let sessions = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    assert!(
+        sessions > 3,
+        "it took more sessions than the limit: {sessions}"
+    );
+    // Every burst arrives once: nine call passages with words, none lost and none twice. Where
+    // they sit isn't checked here: answers that come only after the audio ended are later than
+    // the cut the pipeline estimates from what was sent, so they land at that cut.
+    let call = last_revisions(&events(&log, &rec.id()), "call");
+    let worded = call.iter().filter(|p| !p.text.trim().is_empty()).count();
+    assert_eq!(
+        worded,
+        timeline_of(&pieces, 0).len(),
+        "{:?}",
+        call.iter()
+            .map(|p| (p.start, p.end, p.revision, p.text.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// 11n: after the stop, a provider that answers every session but never finishes runs out of
 /// tries. Each new session sends the last audio again and hears the same words, which reach no
 /// further than an earlier session's did, so they aren't progress: the meeting fails after the

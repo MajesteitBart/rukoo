@@ -255,9 +255,16 @@ impl Ctx {
                 Err(_) if self.shared.stopping() => return,
                 Err(fail) => {
                     self.drop_session();
-                    // What the failed session answered resets nothing: the next one has to
-                    // answer past it.
-                    self.counted = self.counted.max(self.confirmed);
+                    // Answers past the counted position are progress even when the session then
+                    // failed, for example in its drain after the stop: a provider that answers
+                    // part of what is left before it drops gets its tries back for the rest. The
+                    // watermark moves up, so the same answers again after a reconnect move
+                    // nothing, and this failure is counted below either way.
+                    if self.confirmed > self.counted {
+                        self.counted = self.confirmed;
+                        attempts = 0;
+                        after_stop = 0;
+                    }
                     let message = match fail {
                         Fail::Provider(e) if e.message.trim().is_empty() => {
                             "The streaming transcription failed.".to_owned()

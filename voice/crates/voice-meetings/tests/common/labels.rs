@@ -308,6 +308,12 @@ pub struct FakeStreamState {
     pub spaced_deltas: bool,
     /// Sessions that label voices answer, also for the words they hear last, but never finish.
     pub never_done: bool,
+    /// Each session that labels voices sends at most this many events; one that has more to say
+    /// stops answering and never finishes, as a provider that drops partway through.
+    pub answers_per_session: Option<usize>,
+    /// Sessions that label voices answer nothing until the audio ended, so every answer comes
+    /// while Voice waits for the session to finish.
+    pub answers_after_end: bool,
 }
 
 /// Mistral's realtime stream without a network: one segment per burst of a hidden speaker, sent
@@ -349,6 +355,10 @@ impl StreamingSpeech for FakeStreaming {
             slow: state.slow_answers.filter(|_| session.diarize),
             spaced: state.spaced_deltas && !session.diarize,
             never_done: state.never_done && session.diarize,
+            limit: state.answers_per_session.filter(|_| session.diarize),
+            sent: 0,
+            hold: state.answers_after_end && session.diarize,
+            ended: false,
             released: Instant::now(),
             names,
             heard: 0,
@@ -372,6 +382,13 @@ struct FakeStream {
     spaced: bool,
     /// `end` answers but sends no `Done`.
     never_done: bool,
+    /// At most this many events in this session.
+    limit: Option<usize>,
+    /// Events sent so far.
+    sent: usize,
+    /// Answers nothing until `end`.
+    hold: bool,
+    ended: bool,
     released: Instant,
     names: HashMap<usize, String>,
     heard: usize,
@@ -459,7 +476,7 @@ impl SpeechStream for FakeStream {
     }
 
     fn poll(&mut self, _wait: Duration) -> Result<Vec<StreamEvent>, ProviderError> {
-        if self.mute {
+        if self.mute || (self.hold && !self.ended) {
             return Ok(Vec::new());
         }
         if let Some(gap) = self.slow {
@@ -468,6 +485,11 @@ impl SpeechStream for FakeStream {
             }
             self.released = Instant::now();
             return Ok(vec![self.events.remove(0)]);
+        }
+        if let Some(limit) = self.limit {
+            let n = self.events.len().min(limit.saturating_sub(self.sent));
+            self.sent += n;
+            return Ok(self.events.drain(..n).collect());
         }
         Ok(std::mem::take(&mut self.events))
     }
@@ -484,6 +506,7 @@ impl SpeechStream for FakeStream {
             }
         }
         self.end_burst();
+        self.ended = true;
         if !self.never_done {
             self.events.push(StreamEvent::Done);
         }
