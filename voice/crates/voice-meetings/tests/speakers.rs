@@ -384,6 +384,7 @@ fn a_long_pause_keeps_the_gate_after_the_resume() {
     rec.close_segment(writer, "call", 2, 12_000);
     rec.stop(17_000);
     wait_done(&handle);
+    handle.shutdown();
     assert!(seen.is_empty(), "committed past settled: {seen:#?}");
     let call = last_revisions(&events(&log, &rec.id()), "call");
     assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
