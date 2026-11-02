@@ -36,9 +36,12 @@
 //   --visible-rukoo        (needs --real-screen) Rukoo's window sits over half the slide; two meetings from Voice,
 //                          with Rukoo's hide-from-capture switch off (its demo strings must show in the first frame)
 //                          and on (they must not, and the frame must show the slide where Rukoo's window is).
-//   --measure=screen       CPU and GPU of Voice's processes in four 10-minute meetings with live transcription on the
-//                          slide display (off, frames, video on the main display, video on the other display), sampled
-//                          by measure.ps1; release build. --seconds=<n> shortens each meeting for a trial.
+//   --measure=screen       CPU and GPU of Voice's processes in four 10-minute meetings with live transcription, sampled
+//                          by measure.ps1; release build. --seconds=<n> shortens each meeting for a trial. On the
+//                          synthetic screen by default, at the sizes of this computer's displays as Windows reports
+//                          them (off, frames and video at the main display's size, then video at the other display's
+//                          size), with a new slide every 10 s; nothing shows on the desktop. With --real-screen, on the
+//                          demo slide display instead: slides every 10 s, then a scrolling page, then still.
 
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
@@ -97,8 +100,6 @@ function parseArgs(argv) {
   }
   if ((out.chooseMonitor || out.visibleRukoo) && !out.realScreen) throw new Error('--choose-monitor and --visible-rukoo need --real-screen');
   if ([out.chooseMonitor, out.visibleRukoo, out.measure].filter(Boolean).length > 1) throw new Error('--choose-monitor, --visible-rukoo and --measure are separate runs');
-  // The cost of capture depends on the real display (RUK-108 section 7).
-  if (out.measure) out.realScreen = true;
   return out;
 }
 
@@ -116,8 +117,9 @@ const BIN = path.join(TARGET, RELEASE ? 'release' : 'debug');
 const EXE = path.join(BIN, 'rukoo-voice.exe');
 const SCREEN_EXE = path.join(BIN, 'rukoo-voice-screen.exe');
 const SHERPA = process.env.SHERPA_ONNX_ARCHIVE_DIR || path.join(ROOT, 'tmp', 'sherpa-archive');
-// The synthetic screen of every run without --real-screen (contract 1.13).
-const SYNTHETIC = 'synthetic:1920x1080,change-every=10000,text=Slide';
+// The synthetic screen of every run without --real-screen (contract 1.13). --measure=screen sets its size to a display's.
+const synthetic = (size) => `synthetic:${size},change-every=10000,text=Slide`;
+let syntheticSize = '1920x1080';
 
 // What each track says. The words checked in Rukoo are distinct per track. The call's parts start the demo slides
 // of a real-screen run: slide k shows from the moment part k starts in the call's WAV.
@@ -262,7 +264,7 @@ function voiceEnv(monitor) {
   delete env.RUKOO_VOICE_LOCAL_EXE;
   delete env.RUKOO_VOICE_TEST_SCREEN;
   delete env.RUKOO_VOICE_TEST_MONITOR;
-  if (!ARGS.realScreen) env.RUKOO_VOICE_TEST_SCREEN = SYNTHETIC;
+  if (!ARGS.realScreen) env.RUKOO_VOICE_TEST_SCREEN = synthetic(syntheticSize);
   else if (monitor) env.RUKOO_VOICE_TEST_MONITOR = monitor;
   return env;
 }
@@ -285,7 +287,7 @@ function startVoice(n, monitor = null) {
   const log = fs.openSync(path.join(RUN, `voice-${n}.log`), 'a');
   const child = spawn(EXE, ['--dev-hooks', HOOKS], { cwd: VOICE, env: voiceEnv(monitor), stdio: ['ignore', log, log], windowsHide: true });
   started.voice.push(child.pid);
-  console.log(`started Voice ${n}, pid ${child.pid}${monitor ? `, screen pinned to ${monitor}` : ''}`);
+  console.log(`started Voice ${n}, pid ${child.pid}${monitor ? `, screen pinned to ${monitor}` : ''}${ARGS.realScreen ? '' : `, synthetic screen ${syntheticSize}`}`);
   return child;
 }
 
@@ -1165,14 +1167,14 @@ function screenLog(id) {
   return { jpegMs: { p50: percentile(jpeg, 50), p95: percentile(jpeg, 95) }, ocrMs: { p50: percentile(ocr, 50), p95: percentile(ocr, 95) }, gpuMemoryMb: memory.length ? Math.max(...memory) : null };
 }
 
-// One measured meeting: started from Rukoo with `screen`, measured for ARGS.seconds once transcription runs, while
-// the slide display runs the section 7 script: slides every 10 s for 60% of the time, a scrolling page for 20%, then
-// still.
+// One measured meeting: started from Rukoo with `screen`, measured for ARGS.seconds once transcription runs. On the
+// synthetic screen a new slide comes every 10 s throughout; with --real-screen the slide display runs the section 7
+// script: slides every 10 s for 60% of the time, a scrolling page for 20%, then still.
 async function measureRun(voice, name, screen) {
   console.log(`\nmeasuring: ${name}`);
   const { meetingId: id } = await rukoo.start({ title: `Live run: measure ${name}`, screen });
   await until('the recording status in Rukoo', async () => (await rukoo.state()).recording === id, 15000);
-  if (screen !== 'off') await guardMonitor(id, report.screen.slideDisplay);
+  if (screen !== 'off' && ARGS.realScreen) await guardMonitor(id, report.screen.slideDisplay);
   await until('the first passage', async () => ((await rukoo.get(id)).passages || []).length > 0, 120000, 500);
   const pids = { 'rukoo-voice': voice.pid, recorder: recorderOf(id).pid };
   const local = childrenOf(voice.pid).find((c) => /^rukoo-voice-local/i.test(c.name));
@@ -1185,10 +1187,12 @@ async function measureRun(voice, name, screen) {
   const t0 = Date.now();
   const startAt = (await rukoo.get(id)).passages.length;
   const plan = [];
-  const slidesFor = Math.round(seconds * 0.6);
-  for (let s = 0, n = 1; s < slidesFor; s += 10, n++) plan.push([s * 1000, `slide(${n})`]);
-  plan.push([slidesFor * 1000, 'scrolling(true)']);
-  plan.push([Math.round(seconds * 0.8) * 1000, 'scrolling(false)']);
+  if (ARGS.realScreen) {
+    const slidesFor = Math.round(seconds * 0.6);
+    for (let s = 0, n = 1; s < slidesFor; s += 10, n++) plan.push([s * 1000, `slide(${n})`]);
+    plan.push([slidesFor * 1000, 'scrolling(true)']);
+    plan.push([Math.round(seconds * 0.8) * 1000, 'scrolling(false)']);
+  }
   const timers = plan.map(([at, code]) => setTimeout(() => slideCall(code).catch(() => {}), at));
   const exit = await new Promise((resolve) => sampler.on('exit', resolve));
   timers.forEach(clearTimeout);
@@ -1202,6 +1206,7 @@ async function measureRun(voice, name, screen) {
   const result = {
     name,
     screen,
+    source: ARGS.realScreen ? 'real' : synthetic(syntheticSize),
     monitor: j.find((l) => l.kind === 'monitor')?.id || null,
     seconds,
     elapsed: Math.round(elapsed),
@@ -1224,22 +1229,28 @@ async function measureRun(voice, name, screen) {
   return result;
 }
 
-async function measureAll(voice) {
+async function measureAll(voice, sizes) {
   report.measure = [];
   const main = displays.find((d) => d.primary);
   const other = displays.find((d) => !d.primary);
   for (const [name, screen] of [['off', 'off'], ['frames', 'frames'], ['video', 'video']]) report.measure.push(await measureRun(voice, name, screen));
-  // The fourth: video on the other display. RUK-109's combined run with live speaker labels follows its rebase.
-  if (other) {
+  // The fourth: video on the other display, or on the synthetic screen at its size. RUK-109's combined run with live
+  // speaker labels follows its rebase.
+  const fourth = ARGS.realScreen ? other && `${other.width}x${other.height}` : sizes.find((s) => s !== syntheticSize);
+  if (fourth) {
     killPid(voice.pid);
     await until('Voice to exit', () => !alive(voice.pid), 15000);
-    report.screen.slideDisplay = other.id;
-    report.screen.pinned = other.id;
-    await showDemoWindows(other.id);
-    voice = startVoice(2, other.id);
+    if (ARGS.realScreen) {
+      report.screen.slideDisplay = other.id;
+      report.screen.pinned = other.id;
+      await showDemoWindows(other.id);
+    } else {
+      syntheticSize = fourth;
+    }
+    voice = startVoice(2, ARGS.realScreen ? other.id : null);
     await until('Rukoo to reconnect to the new Voice', async () => (await rukoo.connected()) && (await rukoo.state()).voiceVersion, 60000);
-    report.measure.push(await measureRun(voice, `video-${other.width}x${other.height}`, 'video'));
-    report.screen.slideDisplay = main.id;
+    report.measure.push(await measureRun(voice, `video-${fourth}`, 'video'));
+    if (ARGS.realScreen) report.screen.slideDisplay = main.id;
   }
   printMeasurements(report.measure);
 }
@@ -1285,9 +1296,20 @@ async function main() {
     await showDemoWindows(slide.id, { focused: Boolean(ARGS.chooseMonitor) });
   }
 
+  // The synthetic screen of a measurement takes the sizes of this computer's displays, read from Windows, the main
+  // display's first: the cost of encoding and reading text depends on the pixels.
+  let sizes = [];
+  if (ARGS.measure && !ARGS.realScreen) {
+    const listed = windowsDisplays().sort((a, b) => Number(b.primary) - Number(a.primary));
+    sizes = [...new Set(listed.map((d) => `${d.width}x${d.height}`))];
+    if (sizes.length) syntheticSize = sizes[0];
+    report.screen.syntheticSizes = sizes;
+    note(`the synthetic screen takes the displays' sizes: ${sizes.join(', ') || 'none listed, so 1920x1080'}`);
+  }
+
   // 1. Voice, then Rukoo, paired through RUKOO_VOICE_BRIDGE.
   const voice = await pair(pinned);
-  if (ARGS.measure) await measureAll(voice);
+  if (ARGS.measure) await measureAll(voice, sizes);
   else if (ARGS.chooseMonitor) await chooseRun(offsets);
   else if (ARGS.visibleRukoo) await visibleRun();
   else await standardRun(voice, offsets);
