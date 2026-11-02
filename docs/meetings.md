@@ -38,6 +38,8 @@ With the chat open in meeting mode, the chat is about the meeting on screen: the
 
 The agent reads the meeting through [Rukoo's meeting tools](agents.md#rukoos-tools). Each turn says how many lines are new since the agent last read the transcript; the transcript itself never goes into the turn. Everyone in a meeting is a third party, so the tools hand the transcript over as untrusted text. No tool starts or stops a recording.
 
+The agent can also get a link to the meeting's audio or screen, which works for five minutes and only from where it asked. Rukoo Voice serves the media, so it must be running; with bucket sync on, Voice fetches media back from your bucket when this computer no longer has it.
+
 ## Settings
 
 Settings → Meetings shows whether Rukoo Voice is connected, and has two switches, both on by default:
@@ -56,3 +58,4 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 - Voice 0.1 records audio only, so there are no screen frames yet, and labels the whole call as one voice.
 - Rukoo keeps a copy of each transcript in its profile, so the view and the tools work while Voice is closed. Rukoo deletes that copy when Voice deletes the meeting. Your notes stay.
 - Native file dialogs and system notifications can't be hidden from screen capture.
+- Media links need Rukoo Voice running on this computer.
