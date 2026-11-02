@@ -15,17 +15,28 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message as Frame, WebSocket};
 use voice_bridge::{
-    BridgeServer, ControlError, EventLog, Handle, MeetingControl, MeetingSummary, Options,
-    StartArgs, Status,
+    BridgeServer, ControlError, EventLog, Handle, MediaKind, MediaOpenArgs, MeetingControl,
+    MeetingSummary, Options, StartArgs, Status,
 };
 use voice_protocol::{
-    validate_discovery, validate_incoming, MeetingId, MeetingState, Message, Side,
+    media_read_result, validate_discovery, validate_incoming, MeetingId, MeetingState, Message,
+    Side,
 };
 
 /// A meeting the fake knows, which isn't recording.
 pub const DONE_MEETING: &str = "m-20261030-090000-00ff";
 /// The id the fake gives a meeting it starts.
 pub const NEW_MEETING: &str = "m-20261030-171203-4f2a";
+/// The id the fake gives every audio or frame it opens.
+pub const FAKE_MEDIA: &str = "md-a1B2c3D4e5F6g7H8i9J0kL";
+/// The length of the fake's media: two full reads and a short third one.
+pub const FAKE_MEDIA_SIZE: u64 = (2 << 20) + 100;
+
+/// The fake's media from `offset`, at most `length` bytes: byte `i` is `i mod 251`.
+pub fn fake_media(offset: u64, length: u64) -> Vec<u8> {
+    let end = offset.saturating_add(length).min(FAKE_MEDIA_SIZE);
+    (offset.min(end)..end).map(|i| (i % 251) as u8).collect()
+}
 
 /// No test waits longer than this for the server.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -183,12 +194,88 @@ impl MeetingControl for FakeControl {
         ))
     }
 
+    /// Audio and frames are ready at once as [`FAKE_MEDIA`]; the fake records no video.
+    fn media_open(&self, args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        self.call(format!(
+            "media.open {} {} {} {:?}",
+            args.meeting, args.kind, args.start, args.end
+        ));
+        self.known(args.meeting.as_str())?;
+        let kind = match args.kind {
+            MediaKind::Audio => "audio/wav",
+            MediaKind::Frame => "image/jpeg",
+            MediaKind::Video => {
+                return Err(ControlError::not_available(
+                    "This meeting didn't record video.",
+                ))
+            }
+        };
+        Ok(json!({
+            "media": FAKE_MEDIA,
+            "ready": true,
+            "type": kind,
+            "size": FAKE_MEDIA_SIZE,
+            "start": args.start,
+            "end": args.end.unwrap_or(args.start),
+        }))
+    }
+
+    fn media_read(&self, media: &str, offset: u64, length: u64) -> Result<Value, ControlError> {
+        self.call(format!("media.read {media} {offset} {length}"));
+        if media != FAKE_MEDIA {
+            return Err(ControlError::not_found("There is no media with that id."));
+        }
+        Ok(media_read_result(offset, &fake_media(offset, length)))
+    }
+
     fn status(&self) -> Status {
         let recording = self.recording.lock().unwrap();
         Status {
             recording: recording.as_deref().and_then(MeetingId::parse),
             dictating: false,
         }
+    }
+}
+
+/// The fake behind a Voice that predates the commands with default bodies: it passes the required
+/// methods on and leaves the rest to the trait, so the server answers them as an older Voice would.
+pub struct PlainControl(pub Arc<FakeControl>);
+
+impl MeetingControl for PlainControl {
+    fn start(&self, args: StartArgs) -> Result<String, ControlError> {
+        self.0.start(args)
+    }
+
+    fn stop(&self, id: &str) -> Result<(), ControlError> {
+        self.0.stop(id)
+    }
+
+    fn pause(&self, id: &str) -> Result<(), ControlError> {
+        self.0.pause(id)
+    }
+
+    fn resume(&self, id: &str) -> Result<(), ControlError> {
+        self.0.resume(id)
+    }
+
+    fn mark(&self, id: &str, label: Option<&str>) -> Result<(String, u64), ControlError> {
+        self.0.mark(id, label)
+    }
+
+    fn list(&self, limit: usize) -> Vec<MeetingSummary> {
+        self.0.list(limit)
+    }
+
+    fn get(&self, id: &str) -> Result<Value, ControlError> {
+        self.0.get(id)
+    }
+
+    fn frame(&self, id: &str, at: u64) -> Result<Value, ControlError> {
+        self.0.frame(id, at)
+    }
+
+    fn status(&self) -> Status {
+        self.0.status()
     }
 }
 
@@ -214,11 +301,30 @@ impl Bridge {
     }
 
     pub fn start_on(dir: TempDir, log: EventLog, options: Options) -> Bridge {
+        Bridge::serve(dir, log, options, |fake| fake)
+    }
+
+    /// A server whose control keeps the trait's default bodies, as a Voice built before those
+    /// commands existed. `control` still records the calls that reach the fake.
+    pub fn start_plain(tag: &str) -> Bridge {
+        let dir = TempDir::new(tag);
+        let log = EventLog::open(dir.path()).unwrap();
+        Bridge::serve(dir, log, Options::default(), |fake| {
+            Arc::new(PlainControl(fake))
+        })
+    }
+
+    fn serve(
+        dir: TempDir,
+        log: EventLog,
+        options: Options,
+        wrap: impl FnOnce(Arc<FakeControl>) -> Arc<dyn MeetingControl>,
+    ) -> Bridge {
         let control = Arc::new(FakeControl::default());
         let discovery_path = dir.path().join("pair").join("bridge.json");
         let handle = BridgeServer::start_with(
             log.clone(),
-            control.clone(),
+            wrap(control.clone()),
             &discovery_path,
             "0.1.0",
             options,

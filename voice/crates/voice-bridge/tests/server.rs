@@ -8,7 +8,10 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{passage, Bridge, Client, TempDir, DONE_MEETING, NEW_MEETING};
+use common::{
+    fake_media, passage, Bridge, Client, TempDir, DONE_MEETING, FAKE_MEDIA, FAKE_MEDIA_SIZE,
+    NEW_MEETING,
+};
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Options};
 use voice_protocol::{validate_discovery, MAX_RUKOO_MESSAGE};
@@ -574,6 +577,162 @@ fn commands_reach_the_meeting_control() {
         calls.contains(&format!("mark {NEW_MEETING} Some(\"Decision\")")),
         "{calls:?}"
     );
+}
+
+#[test]
+fn media_commands_reach_the_meeting_control() {
+    let bridge = Bridge::start("server-media");
+    let (mut client, _) = bridge.client(None, 0);
+
+    client.command(
+        "c-50",
+        "media.open",
+        json!({ "meeting": DONE_MEETING, "kind": "audio", "start": 600_000, "end": 1_200_000 }),
+    );
+    assert_eq!(
+        client.read_reply("c-50")["result"],
+        json!({ "media": FAKE_MEDIA, "ready": true, "type": "audio/wav", "size": FAKE_MEDIA_SIZE, "start": 600_000, "end": 1_200_000 })
+    );
+    // A null end counts as left out.
+    client.command(
+        "c-51",
+        "media.open",
+        json!({ "meeting": DONE_MEETING, "kind": "frame", "start": 412_500, "end": null }),
+    );
+    assert_eq!(client.read_reply("c-51")["result"]["type"], "image/jpeg");
+    client.command(
+        "c-52",
+        "media.open",
+        json!({ "meeting": DONE_MEETING, "kind": "video", "start": 0, "end": 3_600_000 }),
+    );
+    assert_eq!(client.read_reply("c-52")["error"]["code"], "not_available");
+    client.command(
+        "c-53",
+        "media.open",
+        json!({ "meeting": B, "kind": "audio", "start": 0, "end": 1000 }),
+    );
+    assert_eq!(client.read_reply("c-53")["error"]["code"], "not_found");
+
+    client.command(
+        "c-54",
+        "media.read",
+        json!({ "media": FAKE_MEDIA, "offset": 1_048_576, "length": 1_048_576 }),
+    );
+    let reply = client.read_reply("c-54");
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(
+        reply["result"],
+        voice_protocol::media_read_result(1_048_576, &fake_media(1_048_576, 1_048_576))
+    );
+    // The end of the file gives fewer bytes, and past it none.
+    client.command(
+        "c-55",
+        "media.read",
+        json!({ "media": FAKE_MEDIA, "offset": 2 << 20, "length": 1_048_576 }),
+    );
+    assert_eq!(
+        client.read_reply("c-55")["result"],
+        voice_protocol::media_read_result(2 << 20, &fake_media(2 << 20, 100))
+    );
+    client.command(
+        "c-56",
+        "media.read",
+        json!({ "media": FAKE_MEDIA, "offset": FAKE_MEDIA_SIZE + 5, "length": 10 }),
+    );
+    assert_eq!(
+        client.read_reply("c-56")["result"],
+        json!({ "offset": FAKE_MEDIA_SIZE + 5, "data": "" })
+    );
+    client.command(
+        "c-57",
+        "media.read",
+        json!({ "media": "md-AAAAAAAAAAAAAAAAAAAAAA", "offset": 0, "length": 1 }),
+    );
+    assert_eq!(client.read_reply("c-57")["error"]["code"], "not_found");
+
+    // Arguments that break the protocol's rules never reach the control.
+    client.command(
+        "c-58",
+        "media.open",
+        json!({ "meeting": DONE_MEETING, "kind": "audio", "start": 0, "end": 3_600_001 }),
+    );
+    assert_eq!(client.read_reply("c-58")["error"]["code"], "bad_request");
+    client.command(
+        "c-59",
+        "media.read",
+        json!({ "media": FAKE_MEDIA, "offset": 0, "length": 1_048_577 }),
+    );
+    assert_eq!(client.read_reply("c-59")["error"]["code"], "bad_request");
+
+    let calls = bridge.control.calls.lock().unwrap().clone();
+    let media: Vec<&str> = calls
+        .iter()
+        .map(String::as_str)
+        .filter(|call| call.starts_with("media."))
+        .collect();
+    assert_eq!(
+        media,
+        [
+            format!("media.open {DONE_MEETING} audio 600000 Some(1200000)"),
+            format!("media.open {DONE_MEETING} frame 412500 None"),
+            format!("media.open {DONE_MEETING} video 0 Some(3600000)"),
+            format!("media.open {B} audio 0 Some(1000)"),
+            format!("media.read {FAKE_MEDIA} 1048576 1048576"),
+            format!("media.read {FAKE_MEDIA} 2097152 1048576"),
+            format!("media.read {FAKE_MEDIA} {} 10", FAKE_MEDIA_SIZE + 5),
+            "media.read md-AAAAAAAAAAAAAAAAAAAAAA 0 1".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_full_media_read_fits_in_one_reply() {
+    let bridge = Bridge::start("server-media-limit");
+    let (mut client, _) = bridge.client(None, 0);
+    client.command(
+        "c-1",
+        "media.read",
+        json!({ "media": FAKE_MEDIA, "offset": 0, "length": voice_protocol::MAX_MEDIA_READ }),
+    );
+    let reply = client.read_reply("c-1");
+    assert_eq!(
+        reply["ok"], true,
+        "the reply was refused: {}",
+        reply["error"]
+    );
+    let data = reply["result"]["data"].as_str().unwrap();
+    // 1 MiB in base64 is 1,398,104 characters, far below the 8 MiB a message from Voice may hold.
+    assert_eq!(data.len(), 1_398_104);
+    assert!(reply.to_string().len() < voice_protocol::MAX_VOICE_MESSAGE / 4);
+    assert_eq!(
+        reply["result"],
+        voice_protocol::media_read_result(0, &fake_media(0, 1 << 20))
+    );
+}
+
+#[test]
+fn a_voice_without_media_answers_with_the_defaults() {
+    let bridge = Bridge::start_plain("server-media-defaults");
+    let (mut client, _) = bridge.client(None, 0);
+    client.command(
+        "c-1",
+        "media.open",
+        json!({ "meeting": DONE_MEETING, "kind": "audio", "start": 0, "end": 1000 }),
+    );
+    let reply = client.read_reply("c-1");
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["error"]["code"], "not_available");
+    client.command(
+        "c-2",
+        "media.read",
+        json!({ "media": FAKE_MEDIA, "offset": 0, "length": 1024 }),
+    );
+    assert_eq!(client.read_reply("c-2")["error"]["code"], "not_found");
+    // The other commands still reach the fake behind it.
+    client.command("c-3", "meeting.get", json!({ "meeting": DONE_MEETING }));
+    assert_eq!(client.read_reply("c-3")["ok"], true);
+    let calls = bridge.control.calls.lock().unwrap().clone();
+    assert_eq!(calls, [format!("get {DONE_MEETING}")]);
 }
 
 #[test]
