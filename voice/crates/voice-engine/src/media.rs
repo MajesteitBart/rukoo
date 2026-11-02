@@ -177,7 +177,7 @@ enum Work {
     },
 }
 
-/// An audio mix: its range, its tracks and the segments to fetch back first.
+/// An audio mix: its range, its tracks and the segment files it reads.
 struct AudioPlan {
     meeting: String,
     dir: PathBuf,
@@ -185,7 +185,8 @@ struct AudioPlan {
     end: u64,
     tracks: Vec<String>,
     segments: Vec<SegmentRecord>,
-    fetch: Vec<String>,
+    /// The files of the segments in the range, on disk or not.
+    needed: Vec<String>,
 }
 
 impl AudioPlan {
@@ -281,6 +282,7 @@ impl MediaService {
                     .ok_or_else(|| ControlError::not_found("There is no frame at that time."))?;
                 let file = dir.path().join(&path);
                 if let Ok(meta) = fs::metadata(&file) {
+                    self.used(args.meeting.as_str(), std::slice::from_ref(&path));
                     let ready = Ready {
                         path: file,
                         kind: "image/jpeg",
@@ -399,16 +401,17 @@ impl MediaService {
             ));
         }
         let end = end.min(recorded_end);
-        let fetch: Vec<String> = segments
+        let needed: Vec<String> = segments
             .iter()
             .filter(|s| {
                 let from = s.t;
                 let to = (s.t * PER_MS + samples(s)).div_ceil(PER_MS);
-                from < end && to > start && !path.join(&s.file).is_file()
+                from < end && to > start
             })
             .map(|s| s.file.clone())
             .collect();
         let id = dir.id().as_str().to_owned();
+        let fetch = missing(path, &needed);
         if !fetch.is_empty() && !self.can_fetch(&id, &fetch) {
             return Err(ControlError::not_available(
                 "The audio of this meeting is no longer on this computer and isn't in a synced bucket.",
@@ -421,8 +424,17 @@ impl MediaService {
             end,
             tracks,
             segments,
-            fetch,
+            needed,
         })
+    }
+
+    /// Restored media a link uses from disk stays at least 24 hours from now, as after its fetch
+    /// (D8). Without that, retention could remove it a day after the fetch while links still use
+    /// it, and a mix in progress would lose its audio.
+    fn used(&self, meeting: &str, paths: &[String]) {
+        if let Some(sync) = &self.sync {
+            sync.used(meeting, paths);
+        }
     }
 
     /// Whether bucket sync can bring these files of the meeting back.
@@ -572,18 +584,15 @@ impl MediaService {
                 if inputs.is_empty() {
                     return Err(ControlError::not_found("There is no video at that time."));
                 }
-                let missing: Vec<String> = inputs
-                    .iter()
-                    .filter(|p| !dir.join(p).is_file())
-                    .cloned()
-                    .collect();
-                if !missing.is_empty() {
-                    if !self.can_fetch(&meeting, &missing) {
+                self.used(&meeting, &inputs);
+                let absent = missing(&dir, &inputs);
+                if !absent.is_empty() {
+                    if !self.can_fetch(&meeting, &absent) {
                         return Err(ControlError::not_available(
                             "This video is no longer on this computer and isn't in a synced bucket.",
                         ));
                     }
-                    self.fetch(&meeting, &missing)?;
+                    self.fetch(&meeting, &absent)?;
                 }
                 // The clip is at most as large as the fragments it is cut from.
                 let input_bytes: u64 = inputs
@@ -625,8 +634,11 @@ impl MediaService {
 
     /// Writes the mix of every track as a WAV file in `<data>/media/`.
     fn mix(&self, id: &str, plan: &AudioPlan) -> Result<Ready, ControlError> {
-        if !plan.fetch.is_empty() {
-            self.fetch(&plan.meeting, &plan.fetch)?;
+        // Held first, then looked at: retention may have removed a segment since `open`.
+        self.used(&plan.meeting, &plan.needed);
+        let fetch = missing(&plan.dir, &plan.needed);
+        if !fetch.is_empty() {
+            self.fetch(&plan.meeting, &fetch)?;
         }
         fs::create_dir_all(&self.dir).map_err(write_error)?;
         let part = self.dir.join(format!("{id}.wav.part"));
@@ -876,6 +888,15 @@ fn touch(path: &Path) {
     if let Ok(file) = File::options().write(true).open(path) {
         let _ = file.set_modified(SystemTime::now());
     }
+}
+
+/// The files among `paths` (relative to `dir`) that aren't on disk.
+fn missing(dir: &Path, paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|p| !dir.join(p).is_file())
+        .cloned()
+        .collect()
 }
 
 /// The samples of a segment: its `segment_end` count when it closed, so a segment the retention

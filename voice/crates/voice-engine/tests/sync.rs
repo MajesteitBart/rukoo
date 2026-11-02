@@ -793,6 +793,22 @@ fn media_comes_back_from_the_bucket() {
     let history = History::from_lines(&lines(&h.data(), &id));
     assert!(history.segments.iter().all(|s| dir.join(&s.file).is_file()));
 
+    // Fetched audio stays a day after its last use, not after its fetch (D8): another link to it
+    // a little later, from the files now on disk, moves the hold on.
+    let fetched = wall_ms();
+    std::thread::sleep(Duration::from_millis(400));
+    let _ = read_all(
+        &*control,
+        &open_ready(&*control, &audio(&id, 0, Some(20_003))),
+        1 << 20,
+    );
+    let queue = voice_sync::queue::Queue::open(&h.data().join("sync")).unwrap();
+    let later = fetched + voice_sync::queue::RESTORED_HOLD_MS + 200;
+    assert!(
+        queue.holds_media(&id, false, true, later).unwrap(),
+        "the hold counts from the last use"
+    );
+    drop(queue);
 
     // With sync off, Voice never asks the bucket.
     engine

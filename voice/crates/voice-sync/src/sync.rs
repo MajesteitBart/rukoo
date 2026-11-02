@@ -487,6 +487,18 @@ impl BucketSync {
         ok && shared.keys.info().is_some() && self.secret_saved()
     }
 
+    /// A link uses these files of the meeting from disk: the ones a restore or a fetch brought
+    /// back stay at least 24 hours from now (D8, 2.10). Others are left alone.
+    pub fn used(&self, meeting: &str, paths: &[String]) {
+        let shared = &self.shared;
+        let now = shared.now();
+        for path in paths {
+            if let Err(e) = shared.queue.touch_restored(meeting, path, now) {
+                log::warn!("sync: can't note a use of restored media: {e}");
+            }
+        }
+    }
+
     /// Whether the newest version of this file reached the bucket.
     pub fn in_bucket(&self, meeting: &str, path: &str) -> bool {
         matches!(self.shared.queue.in_bucket(meeting, path), Ok(Some(_)))
