@@ -317,6 +317,120 @@ fn the_gate_holds_call_windows_at_the_settled_position() {
     assert_eq!(last_revisions(&all, "call").len(), 8);
 }
 
+/// Call passages of the first revision that end past the settled position: what the gate
+/// should have held. Each with the settled position it was seen at.
+fn past_settled(log: &EventLog, id: &str, handle: &PipelineHandle, seen: &mut Vec<(Found, u64)>) {
+    let settled = handle.labels().settled_ms.unwrap_or(0);
+    for p in all_passages(&events(log, id)) {
+        if p.track == "call"
+            && p.revision == 1
+            && p.end > settled
+            && !seen.iter().any(|(q, _)| q.id == p.id)
+        {
+            seen.push((p, settled));
+        }
+    }
+}
+
+/// 2a: a pause longer than the stall doesn't release the gate when the recording resumes: the
+/// follower padded the gap and waits for audio, which isn't a stall.
+#[test]
+fn a_long_pause_keeps_the_gate_after_the_resume() {
+    let tmp = TempDir::new("speakers-long-pause");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::new(&lib, &[Track::Call]);
+    rec.session(0, 1);
+    let first = [
+        (0.5, None),
+        (1.5, Some(0)),
+        (1.2, None),
+        (1.5, Some(1)),
+        (1.3, None),
+    ];
+    rec.segment("call", 1, 0, &voices(&first));
+    rec.line(json!({"kind": "pause", "t": 6000}));
+    let d = ScriptedDiarizer::with(|s| s.lag_frames = 200);
+    let stall = Duration::from_millis(1_000);
+    let options = PipelineOptions {
+        speakers: FollowerTiming {
+            stall,
+            ..follower_timing()
+        },
+        ..labelled(&d)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_until("settled at the pause", WAIT, || {
+        (handle.labels().settled_ms == Some(6_000)).then_some(())
+    });
+    wait_until("both bursts", WAIT, || {
+        (last_revisions(&events(&log, &rec.id()), "call").len() >= 2).then_some(())
+    });
+    // The meeting stays paused longer than the stall.
+    std::thread::sleep(stall + Duration::from_millis(500));
+    rec.line(json!({"kind": "resume", "t": 12000}));
+    let second = voices(&[(1.5, Some(2)), (1.0, None), (1.5, Some(0)), (1.0, None)]);
+    let mut writer = rec.open_segment("call", 2, 12_000);
+    let mut seen = Vec::new();
+    for chunk in second.chunks(4_000) {
+        writer.append(chunk).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        past_settled(&log, &rec.id(), &handle, &mut seen);
+    }
+    for _ in 0..60 {
+        std::thread::sleep(Duration::from_millis(5));
+        past_settled(&log, &rec.id(), &handle, &mut seen);
+    }
+    rec.close_segment(writer, "call", 2, 12_000);
+    rec.stop(17_000);
+    wait_done(&handle);
+    assert!(seen.is_empty(), "committed past settled: {seen:#?}");
+    let call = last_revisions(&events(&log, &rec.id()), "call");
+    assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
+}
+
+/// 3c: a worker that is slow while it hears the reel after a crash doesn't release the gate:
+/// the settled position can't move then, but every push that returns is progress.
+#[test]
+fn a_slow_reel_after_a_crash_keeps_the_gate() {
+    let tmp = TempDir::new("speakers-slow-reel");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(12, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    // The worker crashes 22 pushes in; the new one takes 60 ms a push, so its reel of about
+    // 25 pushes takes five times the stall.
+    let d = ScriptedDiarizer::with(|s| {
+        s.crash_on = vec![22];
+        s.slow_after = 22;
+        s.slow = Duration::from_millis(60);
+    });
+    let options = PipelineOptions {
+        speakers: FollowerTiming {
+            stall: Duration::from_millis(300),
+            ..follower_timing()
+        },
+        ..labelled(&d)
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_done(&handle);
+    handle.shutdown();
+    assert_eq!(d.script().opens, 2, "one restart");
+    let all = events(&log, &rec.id());
+    let unlabelled: Vec<Found> = all_passages(&all)
+        .into_iter()
+        .filter(|p| p.track == "call" && p.speaker.is_none())
+        .collect();
+    assert!(
+        unlabelled.is_empty(),
+        "released by a stall: {unlabelled:#?}"
+    );
+    assert_eq!(
+        assert_stable_ids(&last_revisions(&all, "call"), &timeline_of(&pieces, 0)).len(),
+        3
+    );
+}
+
 /// 2b: a voice still talking at Stop keeps its last turn to the end of the call, and its last
 /// passage keeps its speaker, though the runtime's last frame reaches past the audio pushed.
 #[test]

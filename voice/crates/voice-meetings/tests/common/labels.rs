@@ -84,6 +84,9 @@ pub struct Script {
     /// Pushes that hang for `hang`, then time out.
     pub hang_on: Vec<usize>,
     pub hang: Duration,
+    /// Pushes after this number take `slow` each, as a starved worker's do. 0 never.
+    pub slow_after: usize,
+    pub slow: Duration,
     /// `open` refuses with this kind.
     pub refuse: Option<DiarErrorKind>,
     /// Frames are committed this many frames after they were pushed, as model chunks are.
@@ -211,7 +214,7 @@ impl DiarStream for ScriptedStream {
 
     fn push(&mut self, pcm: &[i16]) -> Result<Probs, DiarError> {
         assert!(!self.finished, "a push after finish");
-        let (crash, hang, lag, chunk, right) = {
+        let (crash, hang, slow, lag, chunk, right) = {
             let mut s = self.script.lock().unwrap();
             s.pushes += 1;
             s.pushed_samples += pcm.len() as u64;
@@ -220,9 +223,11 @@ impl DiarStream for ScriptedStream {
             }
             let n = s.pushes;
             let hang = s.hang_on.contains(&n).then_some(s.hang);
+            let slow = (s.slow_after > 0 && n > s.slow_after).then_some(s.slow);
             (
                 s.crash_all || s.crash_on.contains(&n),
                 hang,
+                slow,
                 s.lag_frames,
                 s.chunk_frames,
                 s.right_frames,
@@ -240,6 +245,9 @@ impl DiarStream for ScriptedStream {
                 DiarErrorKind::Timeout,
                 "The scripted worker stopped answering.",
             ));
+        }
+        if let Some(slow) = slow {
+            std::thread::sleep(slow);
         }
         self.buffer.extend_from_slice(pcm);
         self.take_frames();

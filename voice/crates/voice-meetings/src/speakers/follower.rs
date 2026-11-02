@@ -709,6 +709,10 @@ impl Ctx {
                 let pcm = reader.read(at, at + len)?;
                 labeller.clock.append(at, len);
                 self.push(stream.as_mut(), &mut labeller, &pcm)?;
+                // The settled position can't move while the reel plays. Each push that returns
+                // is progress, so a slow re-feed doesn't release the gate; a call that hangs
+                // still does.
+                self.shared.touch();
                 at += len;
             }
         }
@@ -765,6 +769,13 @@ impl Ctx {
                     if settled_gap && labeller.clock.last_is_real() {
                         self.pad(stream.as_mut(), &mut labeller)?;
                     } else {
+                        if settled_gap {
+                            // Everything recorded was pushed and padded: the labels wait for
+                            // audio, not for the worker, however long a pause or a lost device
+                            // lasts. Without this the gate let the first windows after a long
+                            // pause go before the resumed audio had turns.
+                            self.shared.touch();
+                        }
                         self.shared.sleep(self.timing.poll);
                     }
                 }
