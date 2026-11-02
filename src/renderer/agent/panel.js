@@ -37,7 +37,8 @@ const RUKOO_TOOLS = {
   read_meeting_transcript: 'meeting',
   search_meetings: 'search',
   read_meeting_notes: 'meeting',
-  get_meeting_frame: 'meeting'
+  get_meeting_frame: 'meeting',
+  get_meeting_media_link: 'meeting'
 };
 const CHOICES = new Set(['allow', 'deny', 'once', 'session', 'always', 'approve', 'decline', 'accept', 'acceptForSession', 'cancel']);
 // Main and the adapters label approval buttons in English. Those standard labels are matched back to

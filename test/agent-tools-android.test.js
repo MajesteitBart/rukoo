@@ -44,8 +44,8 @@ test("Android's fixture is the desktop's tools.list(null), key order included", 
   assert.equal(JSON.stringify(fixture.tools), JSON.stringify(list(null)));
   // The phone serves the meeting tools too, after checking their arguments, and answers that it has no meetings.
   assert.deepEqual(
-    fixture.tools.map((t) => t.name).slice(-8),
-    ['list_events', 'find_free_time', 'create_event', 'get_booking_link', 'read_meeting_transcript', 'search_meetings', 'read_meeting_notes', 'get_meeting_frame']
+    fixture.tools.map((t) => t.name).slice(-9),
+    ['list_events', 'find_free_time', 'create_event', 'get_booking_link', 'read_meeting_transcript', 'search_meetings', 'read_meeting_notes', 'get_meeting_frame', 'get_meeting_media_link']
   );
 });
 

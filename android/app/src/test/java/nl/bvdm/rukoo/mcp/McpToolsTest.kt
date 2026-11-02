@@ -573,7 +573,7 @@ class McpToolsTest {
         )
         hub.disabled = emptySet()
         assertEquals(
-            "Unknown tool \"send_mail\". Rukoo's tools are: get_context, search_mail, read_message, read_attachment, read_chat_file, write_draft, get_draft, show_plan, show_sources, propose_action, mail_action, read_skill, list_events, find_free_time, create_event, get_booking_link, read_meeting_transcript, search_meetings, read_meeting_notes, get_meeting_frame.",
+            "Unknown tool \"send_mail\". Rukoo's tools are: get_context, search_mail, read_message, read_attachment, read_chat_file, write_draft, get_draft, show_plan, show_sources, propose_action, mail_action, read_skill, list_events, find_free_time, create_event, get_booking_link, read_meeting_transcript, search_meetings, read_meeting_notes, get_meeting_frame, get_meeting_media_link.",
             run("send_mail").error(),
         )
         assertTrue(run("mcp__rukoo__get_draft").error() == null)
@@ -605,6 +605,8 @@ class McpToolsTest {
         assertEquals(McpTools.NO_MEETINGS, run("get_meeting_frame", """{"at_seconds":12}""").error())
         // The arguments are checked first, in desktop's words.
         assertEquals("arguments.at_seconds is required. Check the get_meeting_frame input schema and try again.", run("get_meeting_frame").error())
+        assertEquals(McpTools.NO_MEETINGS, run("get_meeting_media_link", """{"kind":"audio"}""").error())
+        assertEquals("arguments.kind is required. Check the get_meeting_media_link input schema and try again.", run("get_meeting_media_link").error())
         assertEquals(
             "arguments.max_chars must be at least 1000. Check the read_meeting_transcript input schema and try again.",
             run("read_meeting_transcript", """{"max_chars":10}""").error(),

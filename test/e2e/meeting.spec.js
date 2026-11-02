@@ -3,6 +3,7 @@
 // says for a test profile. Nothing here reaches an installed Voice. Screenshots for review go to tmp/e2e-shots/meeting
 // in the checkout, which Git ignores; each run replaces them.
 const { test, expect, _electron: electron } = require('@playwright/test');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
@@ -20,7 +21,8 @@ let dataDir;
 let voice;
 
 async function launch(size = [1500, 950]) {
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5' };
+  // Media links live 4 s instead of 5 minutes, so a test sees one expire.
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5', SEM_MEDIA_LINK_TTL_MS: '4000' };
   delete env.ELECTRON_RUN_AS_NODE;
   // The pairing goes through the profile, never a path from the shell that started the tests.
   delete env.RUKOO_VOICE_BRIDGE;
@@ -44,6 +46,49 @@ function voiceHandlers(v) {
     if (this.status.recording !== args.meeting) return { error: { code: 'not_recording', message: 'Not recording.' } };
     this.append('meeting.state', args.meeting, { state: 'recording', at: 6000 });
     return {};
+  };
+}
+
+// The audio a test Voice serves for media.open (RUK-110 spec 3.4): the canonical 44-byte WAV header for (end - start)
+// * 16 samples of 16 kHz mono 16-bit PCM, then sample k = (k mod 64) * 512 - 16384, little-endian.
+function syntheticWav(start, end) {
+  const samples = (end - start) * 16;
+  const out = Buffer.alloc(44 + samples * 2);
+  out.write('RIFF', 0, 'latin1');
+  out.writeUInt32LE(36 + samples * 2, 4);
+  out.write('WAVEfmt ', 8, 'latin1');
+  out.writeUInt32LE(16, 16);
+  out.writeUInt16LE(1, 20);
+  out.writeUInt16LE(1, 22);
+  out.writeUInt32LE(16000, 24);
+  out.writeUInt32LE(32000, 28);
+  out.writeUInt16LE(2, 32);
+  out.writeUInt16LE(16, 34);
+  out.write('data', 36, 'latin1');
+  out.writeUInt32LE(samples * 2, 40);
+  for (let k = 0; k < samples; k++) out.writeInt16LE((k % 64) * 512 - 16384, 44 + k * 2);
+  return out;
+}
+
+// media.open and media.read for audio, answered as the fake Voice's defaults answer them (spec 3.4): not ready on the
+// first open of new arguments, ready on the next, so Rukoo's polling runs too.
+function mediaHandlers(v) {
+  const files = new Map();
+  v.handlers['media.open'] = function (args) {
+    if (args.kind !== 'audio') return { error: { code: 'not_available', message: "This meeting didn't record video." } };
+    const key = `${args.meeting} ${args.start} ${args.end}`;
+    let f = files.get(key);
+    if (!f) {
+      f = { media: `md-${crypto.randomBytes(16).toString('base64url')}`, bytes: syntheticWav(args.start, args.end), opens: 0 };
+      files.set(key, f);
+    }
+    if (f.opens++ === 0) return { media: f.media, ready: false };
+    return { media: f.media, ready: true, type: 'audio/wav', size: f.bytes.length, start: args.start, end: args.end };
+  };
+  v.handlers['media.read'] = function (args) {
+    const f = [...files.values()].find((x) => x.media === args.media);
+    if (!f) return { error: { code: 'not_found', message: 'No prepared media with that id.' } };
+    return { offset: args.offset, data: f.bytes.subarray(args.offset, args.offset + args.length).toString('base64') };
   };
 }
 
@@ -336,6 +381,47 @@ test('the chat follows the meeting: the fake agent reads the transcript, and its
   await expect(win.locator('.agentpane .bui-entity__name')).not.toHaveText('Design review');
   await win.keyboard.press('Control+3');
   await expect(transcript()).toContainText('From Design review, 2 lines');
+});
+
+test("an agent gets a link to the meeting's audio that stops working", async () => {
+  mediaHandlers(voice);
+  const id = voiceStarts({ title: 'Design review', startedAt: Date.now() - 60 * 1000 });
+  say(id, 'call', 1000, 'Can we hear that part again?');
+  await openMeetings();
+  await expect(rows()).toHaveCount(1);
+  await win.keyboard.press('Control+j');
+  await expect(pane()).toBeVisible();
+  await input().fill('Get me a media link for the first seconds');
+  await input().press('Enter');
+
+  // The fake agent calls get_meeting_media_link for 0 to 5 s and answers with the link.
+  await expect(transcript().locator('.bui-tool', { hasText: "Got a link to the meeting's audio or screen" })).toBeVisible({ timeout: 10000 });
+  const answer = transcript().locator('[data-type="assistant"]').last();
+  await expect(answer).toContainText('-audio-0-5.wav', { timeout: 10000 });
+  const url = await answer.locator('a').first().getAttribute('href');
+  expect(url.startsWith('http://127.0.0.1:')).toBe(true);
+  expect(url).toMatch(/\/media\/v1\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\/m-[0-9a-f-]+-audio-0-5\.wav$/);
+  expect(url.endsWith(`/${id}-audio-0-5.wav`)).toBe(true);
+  expect(voice.commands.find((c) => c.command === 'media.open').args).toEqual({ meeting: id, kind: 'audio', start: 0, end: 5000 });
+
+  // Fetched from here, as an agent on this computer would: the mix Voice prepared, and a range of it.
+  const res = await fetch(url);
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-type')).toBe('audio/wav');
+  expect(Buffer.from(await res.arrayBuffer()).equals(syntheticWav(0, 5000))).toBe(true);
+  const head = await fetch(url, { headers: { range: 'bytes=0-43' } });
+  expect(head.status).toBe(206);
+  expect(Buffer.from(await head.arrayBuffer()).equals(syntheticWav(0, 5000).subarray(0, 44))).toBe(true);
+  await setTheme('dark');
+  await shot('media-link-dark');
+  await setTheme('light');
+  await shot('media-link-light');
+  await setLanguage('nl');
+  await expect(transcript().locator('.bui-tool', { hasText: 'Haalde een link naar geluid of scherm van de meeting' })).toBeVisible();
+  await shot('media-link-light-nl');
+
+  // Four seconds after it was made, the same link is refused.
+  await expect.poll(async () => (await fetch(url)).status, { timeout: 10000, intervals: [500] }).toBe(410);
 });
 
 test('a dropped connection and a Rukoo Voice on a new port replay without showing anything twice', async () => {
