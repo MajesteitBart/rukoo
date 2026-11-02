@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use voice_core::providers::stream::{SpeechStream, StreamEvent, StreamSession};
 use voice_core::providers::wav_bytes;
-use voice_core::ProviderError;
+use voice_core::{ErrorKind, ProviderError};
 use voice_protocol::{MeetingState, Track};
 
 use crate::library::MeetingDir;
@@ -359,10 +359,7 @@ impl Ctx {
                 self.fed = next;
                 Ok(Flow::Busy)
             }
-            None if stopped && self.fed >= reader.end() => {
-                self.drain()?;
-                Ok(Flow::Finished)
-            }
+            None if stopped && self.fed >= reader.end() => self.drain(),
             None => {
                 let settled_gap = (paused && !open) || self.fed + DRIFT_GAP <= horizon;
                 if settled_gap && self.flush()? {
@@ -392,40 +389,31 @@ impl Ctx {
         Ok(true)
     }
 
-    /// Ends the session and waits for its last answers.
-    fn drain(&mut self) -> Result<(), Fail> {
+    /// Ends the session and waits for its last answers. Only the provider's end of the stream
+    /// counts everything sent as answered, which [`Ctx::answers`] stores. A provider that
+    /// doesn't finish in time failed: the next session sends what it didn't answer for again,
+    /// and failures after the stop end as a failed meeting, which keeps its audio.
+    fn drain(&mut self) -> Result<Flow, Fail> {
         self.shared.set_state(LabelState::CatchingUp);
         self.session.as_mut().expect("connected").stream.end()?;
         let until = Instant::now() + self.timing.stream_drain;
         while !self.session.as_ref().is_some_and(|s| s.done) {
             if self.shared.stopping() {
-                return Ok(());
+                return Ok(Flow::Idle);
             }
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                eprintln!(
-                    "voice-meetings: {}: the {} stream didn't finish in time",
-                    self.dir.id(),
-                    self.track.as_str()
-                );
-                break;
+                return Err(Fail::Provider(ProviderError::new(
+                    ErrorKind::Timeout,
+                    format!(
+                        "The streaming transcription didn't finish within {} seconds.",
+                        self.timing.stream_drain.as_secs_f64().ceil() as u64
+                    ),
+                )));
             }
             self.answers(left.min(Duration::from_millis(200)))?;
         }
-        let Some(_writing) = self.shared.writing() else {
-            return Ok(());
-        };
-        // Everything that was sent is answered for now.
-        let session = self.session.as_ref().expect("connected");
-        if let Some(end) = session.clock.at(session.clock.sent(), true) {
-            let ms = end.div_ceil(PER_MS);
-            let epoch = session.epoch;
-            self.transcript.store_segments(self.track, epoch, &[], ms)?;
-            self.answered = self.answered.max(ms);
-            self.confirmed = self.confirmed.max(ms);
-            self.shared.set_settled(self.answered);
-        }
-        Ok(())
+        Ok(Flow::Finished)
     }
 
     /// Starts a session where the last one had answered.

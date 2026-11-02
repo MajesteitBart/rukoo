@@ -279,6 +279,8 @@ pub struct FakeStreamState {
     pub timed: bool,
     /// The first session that labels voices never answers, as a provider that fell behind.
     pub mute_first: bool,
+    /// No session that labels voices ever answers, nor finishes.
+    pub mute_all: bool,
     /// Every push of a session that labels voices drops the connection.
     pub fail_all: bool,
 }
@@ -318,7 +320,7 @@ impl StreamingSpeech for FakeStreaming {
             number: state.sessions.len(),
             diarize: session.diarize,
             timed: state.timed,
-            mute: session.diarize && state.mute_first && labelling == 1,
+            mute: session.diarize && (state.mute_all || (state.mute_first && labelling == 1)),
             names,
             heard: 0,
             position: 0,

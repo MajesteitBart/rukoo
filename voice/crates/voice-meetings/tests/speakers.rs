@@ -1194,6 +1194,59 @@ fn answers_that_failed_to_store_are_sent_again() {
     assert_eq!(ids, ["call-1", "call-2", "call-3"]);
 }
 
+/// 11i: a session that never finishes after the stop failed rather than answered: the next
+/// session sends the call again, and every burst gets its words before the meeting is done.
+#[test]
+fn a_stream_that_never_finishes_is_sent_again() {
+    let tmp = TempDir::new("speakers-mistral-unfinished");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(3, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    // The first labelling session takes the audio, never answers and never finishes, as a
+    // connection that stalled without a reset.
+    fake.state().mute_first = true;
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_done(&handle);
+    handle.shutdown();
+    let labelling = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    assert_eq!(
+        labelling, 2,
+        "a new session after the one that never finished"
+    );
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    // The second session started at the call's beginning: its stream ms are meeting ms.
+    every_burst_has_its_words(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
+}
+
+/// 11j: a provider that never finishes a session fails the meeting after the stop, which keeps
+/// its audio, instead of ending it `done` without the words.
+#[test]
+fn a_stream_that_never_finishes_fails_the_meeting() {
+    let tmp = TempDir::new("speakers-mistral-never");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(2, 1.5);
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    fake.state().mute_all = true;
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    let state = wait_until("the meeting to end", WAIT, || {
+        let state = handle.state();
+        state.is_final().then_some(state)
+    });
+    handle.shutdown();
+    let PipelineState::Failed { reason } = state else {
+        panic!("{state:?}");
+    };
+    assert!(reason.contains("didn't finish"), "{reason}");
+    let sessions = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    // `fast()` gives up after three failures in a row.
+    assert_eq!(sessions, 3);
+}
+
 /// 11f: after the stop, a provider that takes every connection and drops it at the first audio
 /// runs out of tries, and the meeting fails instead of trying for ever.
 #[test]
