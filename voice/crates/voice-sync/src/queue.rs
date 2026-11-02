@@ -406,6 +406,19 @@ impl Queue {
         })
     }
 
+    /// Rows waiting for a retry later than `now + horizon` become due at `now`; how many. No
+    /// backoff schedules that far ahead, so such a time came from a wall clock that ran ahead and
+    /// has since been set right.
+    pub fn reschedule_ahead(&self, now: u64, horizon: u64) -> Result<usize, SyncError> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE files SET next_at = ?1 \
+                 WHERE state IN ('waiting', 'uploading') AND next_at > ?2",
+                params![to_i64(now), to_i64(now.saturating_add(horizon))],
+            )
+        })
+    }
+
     /// When the earliest row that waits for its retry may go, for the worker's sleep.
     pub(crate) fn next_due(&self, live_only: bool) -> Result<Option<u64>, SyncError> {
         self.with(|c| {

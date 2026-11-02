@@ -7,6 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_core::config::Config;
@@ -26,6 +27,7 @@ pub const HOLD_FLOOR: u64 = 10 << 30;
 pub const SYNC_KEY: &str = "storage_sync";
 
 const DAY_MS: u64 = 86_400_000;
+const DAY: Duration = Duration::from_millis(DAY_MS);
 
 const FAILING_BODY: &str = "Voice couldn't upload to your bucket for a day. Your audio stays on this computer until it can, as long as 10 GB stay free.";
 const LOST_BODY: &str = "The disk was almost full, so Voice removed meeting media that hadn't reached your bucket yet. Settings > Storage lists how much.";
@@ -34,9 +36,10 @@ const UNREADABLE_BODY: &str = "The disk was almost full, so Voice removed meetin
 /// What the engine remembers about sync between calls.
 #[derive(Default)]
 pub(crate) struct SyncRuntime {
-    /// When each notification last went out, wall ms.
-    failing_note: Mutex<Option<u64>>,
-    lost_note: Mutex<Option<u64>>,
+    /// When each notification last went out, on the monotonic clock, so a wall clock set back
+    /// doesn't silence the next one.
+    failing_note: Mutex<Option<Instant>>,
+    lost_note: Mutex<Option<Instant>>,
     /// The last sweep held media for the bucket; a sync change may let it go now.
     held: AtomicBool,
     /// Sweep again soon: sync changed while media was held.
@@ -299,14 +302,13 @@ pub(crate) fn check_failing(core: &Core) {
     }
 }
 
-fn notify_daily(core: &Core, last: &Mutex<Option<u64>>, body: &str) {
-    let now = now_ms();
+fn notify_daily(core: &Core, last: &Mutex<Option<Instant>>, body: &str) {
     {
         let mut last = lock(last);
-        if last.is_some_and(|at| now.saturating_sub(at) < DAY_MS) {
+        if last.is_some_and(|at| at.elapsed() < DAY) {
             return;
         }
-        *last = Some(now);
+        *last = Some(Instant::now());
     }
     core.notify(NOTIFY_SYNC, body.to_string());
 }

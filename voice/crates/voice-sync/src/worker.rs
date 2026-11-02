@@ -33,8 +33,6 @@ use crate::{BucketRetention, SyncConfig, SyncError, SyncErrorKind};
 
 /// Files under this size are hashed again before each upload attempt (2.9).
 const REHASH_MAX: u64 = 64 << 20;
-/// Errors that stop all uploads wait this long before Voice tries again (2.9).
-const BLOCKED_MS: u64 = 15 * 60 * 1000;
 /// A panicked loop starts again after this long.
 const PANIC_PAUSE: Duration = Duration::from_secs(5);
 /// `staging/` holds at most this much: no new transcript snapshot while it holds more (2.3).
@@ -44,7 +42,7 @@ const NOTIFY_EVERY: Duration = Duration::from_millis(500);
 /// The worker looks at its clocks at least this often.
 const TICK: Duration = Duration::from_secs(1);
 /// A failed bucket retention run tries again after this long.
-const PRUNE_RETRY_MS: u64 = 15 * 60 * 1000;
+const PRUNE_RETRY: Duration = Duration::from_secs(15 * 60);
 const DAY_MS: u64 = 86_400_000;
 /// The staging folder in `<data>/sync`.
 pub(crate) const STAGING_DIR: &str = "staging";
@@ -101,7 +99,9 @@ pub(crate) struct State {
 #[derive(Clone, Debug)]
 pub(crate) struct Blocked {
     pub(crate) error: SyncError,
-    pub(crate) until: u64,
+    /// On the monotonic clock: a wall clock set back after a `clock` error must not stretch the
+    /// wait by the size of the error.
+    pub(crate) until: Instant,
     pub(crate) generation: u64,
 }
 
@@ -258,7 +258,10 @@ impl Shared {
         if let Err(e) = self.queue.note_error(now, error) {
             log::warn!("sync: can't note an error: {e}");
         }
-        if self.queue.meta("failing_since").ok().flatten().is_none() {
+        // A start in the future came from a clock that ran ahead; it would hide the daily
+        // "sync is failing" notification until the clock caught up.
+        let since = self.queue.meta_u64("failing_since").ok().flatten();
+        if since.is_none_or(|since| since > now) {
             let _ = self.queue.set_meta("failing_since", Some(&now.to_string()));
         }
         self.lock().last_error = Some(LastError {
@@ -410,10 +413,11 @@ struct Worker {
     refilled: Instant,
     /// Multipart rows whose parts this run checked with ListParts.
     listed: HashSet<i64>,
-    /// After three failures in a row the whole worker waits until then (wall ms).
-    wait_until: u64,
-    /// When bucket retention may run again after a failure (wall ms).
-    prune_retry: u64,
+    /// After three failures in a row the whole worker waits until then. The waits of this run
+    /// are on the monotonic clock, so setting the wall clock back never lengthens them.
+    wait_until: Option<Instant>,
+    /// When bucket retention may run again after a failure.
+    prune_retry: Option<Instant>,
     /// Counter for staged file names.
     staged: AtomicU64,
 }
@@ -430,8 +434,8 @@ impl Worker {
             tokens: 0.0,
             refilled: Instant::now(),
             listed: HashSet::new(),
-            wait_until: 0,
-            prune_retry: 0,
+            wait_until: None,
+            prune_retry: None,
             staged: AtomicU64::new(0),
         }
     }
@@ -484,8 +488,9 @@ impl Worker {
         };
         let now = shared.now();
         if let Some(blocked) = &blocked {
-            if blocked.generation == generation && now < blocked.until {
-                return Ready::No(Duration::from_millis(blocked.until - now));
+            let left = blocked.until.saturating_duration_since(Instant::now());
+            if blocked.generation == generation && !left.is_zero() {
+                return Ready::No(left);
             }
             let mut st = shared.lock();
             if st
@@ -501,7 +506,9 @@ impl Worker {
         }
         self.remote = None;
         self.listed.clear();
-        self.wait_until = 0;
+        self.wait_until = None;
+        // Retries that a clock running ahead scheduled for later than any backoff can.
+        self.reschedule_ahead(now);
         match self.connect(&cfg, now) {
             Ok(remote) => {
                 self.remote = Some(remote);
@@ -519,7 +526,7 @@ impl Worker {
                 shared.note_failure(&error);
                 shared.lock().blocked = Some(Blocked {
                     error,
-                    until: now + BLOCKED_MS,
+                    until: Instant::now() + shared.opts.timing.blocked,
                     generation,
                 });
                 self.generation = Some(generation);
@@ -1050,7 +1057,7 @@ impl Worker {
             return;
         };
         let now = shared.now();
-        if now < self.prune_retry {
+        if self.prune_retry.is_some_and(|at| Instant::now() < at) {
             return;
         }
         let last = shared
@@ -1059,7 +1066,9 @@ impl Worker {
             .ok()
             .flatten()
             .unwrap_or(0);
-        if now.saturating_sub(last) < millis(shared.opts.timing.prune_every) {
+        // A run stamped by a clock that ran ahead doesn't hold the next one off until the clock
+        // catches up.
+        if last <= now && now - last < millis(shared.opts.timing.prune_every) {
             return;
         }
         match crate::prune::bucket_retention(&shared, remote, cfg.retention, now) {
@@ -1072,7 +1081,7 @@ impl Worker {
             }
             Err(e) => {
                 log::warn!("sync: bucket retention failed: {e}");
-                self.prune_retry = now + PRUNE_RETRY_MS;
+                self.prune_retry = Some(Instant::now() + PRUNE_RETRY);
             }
         }
     }
@@ -1108,9 +1117,21 @@ impl Worker {
         }
     }
 
+    /// Makes rows due now whose retry lies further ahead than any backoff schedules one: they
+    /// were scheduled while the wall clock ran ahead, and would otherwise wait for it to catch up.
+    fn reschedule_ahead(&self, now: u64) {
+        let horizon = millis(self.shared.opts.timing.backoff_max).saturating_mul(2);
+        match self.shared.queue.reschedule_ahead(now, horizon) {
+            Ok(0) => {}
+            Ok(n) => log::info!("sync: {n} retries lay further ahead than any backoff; due now"),
+            Err(e) => log::warn!("sync: {e}"),
+        }
+    }
+
     /// Aborts uploads nothing will finish, drops rows nobody needs and staged files no row names.
     fn tidy(&mut self) {
         let shared = self.shared.clone();
+        self.reschedule_ahead(shared.now());
         if let Some(remote) = &self.remote {
             if let Ok(dangling) = shared.queue.dangling_uploads() {
                 for (id, object, upload_id) in dangling {
@@ -1151,8 +1172,12 @@ impl Worker {
     fn step(&mut self) -> Step {
         let shared = self.shared.clone();
         let now = shared.now();
-        if now < self.wait_until {
-            return Step::Idle(Duration::from_millis(self.wait_until - now));
+        if let Some(until) = self.wait_until {
+            let left = until.saturating_duration_since(Instant::now());
+            if !left.is_zero() {
+                return Step::Idle(left);
+            }
+            self.wait_until = None;
         }
         let live = match shared.queue.any_live() {
             Ok(live) => live,
@@ -1471,7 +1496,8 @@ impl Worker {
                 .queue
                 .retry(row.id, now + self.backoff(row.attempts), &error);
             if failures >= 3 {
-                self.wait_until = now + self.backoff(failures - 3);
+                self.wait_until =
+                    Some(Instant::now() + Duration::from_millis(self.backoff(failures - 3)));
             }
         } else {
             match error.kind {
@@ -1486,7 +1512,7 @@ impl Worker {
                 _ => {
                     shared.lock().blocked = Some(Blocked {
                         error,
-                        until: now + BLOCKED_MS,
+                        until: Instant::now() + shared.opts.timing.blocked,
                         generation,
                     });
                 }

@@ -25,6 +25,9 @@ pub struct SyncTiming {
     pub live_rate: u64,
     pub backoff_min: Duration,
     pub backoff_max: Duration,
+    /// Errors that stop all uploads (auth, bucket, permission, clock, key) wait this long before
+    /// Voice tries again, unless the configuration, the secret or the key changes first (2.9).
+    pub blocked: Duration,
     /// A live meeting's manifest at most this often.
     pub manifest_live: Duration,
     /// The index this long after the last manifest changed.
@@ -47,6 +50,7 @@ impl Default for SyncTiming {
             live_rate: 163_840,
             backoff_min: Duration::from_secs(2),
             backoff_max: Duration::from_secs(5 * 60),
+            blocked: Duration::from_secs(15 * 60),
             manifest_live: Duration::from_secs(5 * 60),
             index_debounce: Duration::from_secs(60),
             prune_every: Duration::from_secs(24 * 60 * 60),
@@ -261,6 +265,26 @@ impl BucketSync {
         let _ = shared
             .queue
             .set_meta("other_keys", Some(&other_keys.to_string()));
+        // A passed test of the bucket sync uploads to ends the stop an error caused: the user set
+        // the clock right or fixed the key's permissions and tested again, as Settings asked.
+        let unblocked = {
+            let mut st = shared.lock();
+            let active = st.cfg.as_ref().is_some_and(|active| {
+                SyncConfig {
+                    url_style: active.url_style,
+                    ..cfg.clone()
+                } == *active
+            });
+            let unblocked = active && st.blocked.is_some();
+            if unblocked {
+                st.blocked = None;
+                st.failures = 0;
+            }
+            unblocked
+        };
+        if unblocked {
+            shared.poke();
+        }
         shared.changed();
         Ok(TestReport {
             url_style,

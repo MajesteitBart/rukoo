@@ -237,6 +237,35 @@ fn a_row_waits_for_its_retry() {
 }
 
 #[test]
+fn retries_a_clock_that_ran_ahead_set_become_due() {
+    let dir = scratch("queue-ahead");
+    let _c = Cleanup(dir.clone());
+    let q = Queue::open(&dir).unwrap();
+    q.ensure_meeting("m-1", "h", "", 0).unwrap();
+    q.insert(row("m-1", "meeting.json", "meeting", 1, "a"))
+        .unwrap();
+    q.insert(row("m-1", "timeline.jsonl", "timeline", 1, "b"))
+        .unwrap();
+    let err = voice_sync::SyncError::new(SyncErrorKind::Network, "down");
+    let now = 1_800_000_000_000;
+    const DAY: u64 = 86_400_000;
+    // Scheduled while the clock ran two days ahead, and an ordinary retry a minute from now.
+    let ahead = q.next(now, false).unwrap().unwrap();
+    q.retry(ahead.id, now + 2 * DAY, &err).unwrap();
+    let soon = q.next(now, false).unwrap().unwrap();
+    q.retry(soon.id, now + 60_000, &err).unwrap();
+    assert!(q.next(now, false).unwrap().is_none());
+    assert_eq!(q.reschedule_ahead(now, 10 * 60_000).unwrap(), 1);
+    let due = q.next(now, false).unwrap().expect("due now");
+    assert_eq!((due.id, due.next_at), (ahead.id, now));
+    q.done(due.id, now).unwrap();
+    assert!(
+        q.next(now, false).unwrap().is_none(),
+        "the near retry keeps its time"
+    );
+}
+
+#[test]
 fn multipart_state_survives_in_the_queue() {
     let dir = scratch("queue-parts");
     let _c = Cleanup(dir.clone());

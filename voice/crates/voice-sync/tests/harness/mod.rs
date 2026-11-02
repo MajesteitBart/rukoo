@@ -55,6 +55,7 @@ pub fn timing() -> SyncTiming {
         live_rate: 1 << 40,
         backoff_min: Duration::from_millis(20),
         backoff_max: Duration::from_millis(200),
+        blocked: Duration::from_secs(15 * 60),
         manifest_live: Duration::from_millis(100),
         index_debounce: Duration::from_millis(50),
         prune_every: Duration::from_secs(3600),

@@ -4,6 +4,7 @@
 mod harness;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -456,6 +457,83 @@ fn auth_errors_stop_until_the_config_changes() {
     voice.sync.configure(Some(config(&fake.endpoint())));
     voice.settle(&fake, WAIT);
     assert!(voice.sync.status().last_error.is_none());
+}
+
+#[test]
+fn a_clock_set_right_after_a_clock_error_lets_uploads_go_on() {
+    const DAY: u64 = 86_400_000;
+    let fake = fake();
+    let data = scratch("upload-clock");
+    let _c = Cleanup(data.clone());
+    // This computer's clock runs two days ahead.
+    let ahead = Arc::new(AtomicU64::new(2 * DAY));
+    let offset = ahead.clone();
+    let voice = Voice::with(
+        &data,
+        Setup {
+            timing: voice_sync::SyncTiming {
+                blocked: Duration::from_millis(500),
+                ..timing()
+            },
+            now: Arc::new(move || now_ms() + offset.load(Ordering::SeqCst)),
+            ..Setup::default()
+        },
+    );
+    let m = Meeting::new(&voice.meetings(), "Clock", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    m.transcript(&[("mic", 0, 900, "hello")], now_ms());
+    fake.faults()
+        .fail
+        .push((Op::Put, 403, "RequestTimeTooSkewed"));
+    voice.connect(&fake.endpoint());
+    let ok = wait_for(WAIT, || voice.sync.status().state == SyncState::Failing);
+    assert!(ok, "{:?}", voice.sync.status());
+    let status = voice.sync.status();
+    assert_eq!(status.last_error.as_ref().unwrap().code, "clock");
+    assert!(
+        status.failing_since.unwrap() > now_ms() + DAY,
+        "stamped two days ahead"
+    );
+
+    // The user sets the clock right. The stop ends after its own time, not two days later, and a
+    // failure now restarts the "failing since" the clock ran ahead for.
+    ahead.store(0, Ordering::SeqCst);
+    fake.faults().fail.push((Op::Put, 403, "AccessDenied"));
+    let ok = wait_for(WAIT, || {
+        voice
+            .sync
+            .status()
+            .last_error
+            .is_some_and(|e| e.code == "permission")
+    });
+    assert!(ok, "{:?}", voice.sync.status());
+    assert!(voice.sync.status().failing_since.unwrap() <= now_ms());
+    voice.settle(&fake, WAIT);
+    let status = voice.sync.status();
+    assert_eq!(status.state, SyncState::Idle);
+    assert!(status.failing_since.is_none());
+}
+
+#[test]
+fn a_passed_test_ends_a_stop() {
+    let fake = fake();
+    let data = scratch("upload-unblock");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    let m = Meeting::new(&voice.meetings(), "Unblock", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    fake.faults()
+        .fail
+        .push((Op::Put, 403, "RequestTimeTooSkewed"));
+    voice.connect(&fake.endpoint());
+    let ok = wait_for(WAIT, || voice.sync.status().state == SyncState::Failing);
+    assert!(ok, "{:?}", voice.sync.status());
+    // Uploads would wait 15 minutes; the clock error asks the user to set the clock and test.
+    voice.sync.test(&config(&fake.endpoint())).unwrap();
+    voice.settle(&fake, WAIT);
+    assert_eq!(voice.sync.status().state, SyncState::Idle);
 }
 
 #[test]
