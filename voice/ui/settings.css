@@ -881,6 +881,149 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* ---------- bucket sync ---------- */
+
+/* What the bucket is doing, under the sync switch and in line with its title. The status pill may wrap: on one line
+   it is the 24px pill, on two a rounded box with the dot beside the first line. */
+.sync-status {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 0 16px 14px;
+}
+.card > .sync-status::before,
+.card > .card-actions::before {
+  display: none;
+}
+.sync-status .status {
+  height: auto;
+  min-height: 24px;
+  padding-block: 4px;
+  line-height: 16px;
+  border-radius: 12px;
+  white-space: normal;
+  align-items: flex-start;
+  text-wrap: pretty;
+}
+.sync-status .status .dot {
+  margin-top: 5px;
+}
+.sync-status .status > span:last-child {
+  overflow: visible;
+}
+.sync-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+  text-wrap: pretty;
+  user-select: text;
+}
+.sync-note.quiet {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.sync-note.warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text);
+}
+.sync-note.warn svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--warn);
+}
+/* The switch waits for Test connection. It looks off; the line that says why stays readable. */
+.row.sync-switch:disabled > .text {
+  opacity: 1;
+}
+.row .desc.key-note {
+  color: var(--warn);
+  font-weight: 500;
+}
+.row .lead.ok {
+  color: var(--ok);
+}
+/* Buttons under a row, in line with its title. */
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+/* Test connection's result fills the line beside the button and wraps there. */
+.form-status.grow {
+  flex: 1 1 200px;
+  min-width: 0;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+.form-status svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
+}
+
+/* The recovery code: mono, selected as a whole, broken only after a group's dash (settings.js adds a <wbr> there). */
+.recovery-key {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  user-select: all;
+  cursor: text;
+}
+.recovery-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+.dialog textarea {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  outline: none;
+  user-select: text;
+}
+.dialog textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.dialog .dialog-error {
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+}
+.recovery-actions .dialog-error {
+  margin: 0;
+}
+
 /* ---------- dialogs ---------- */
 
 .scrim {
@@ -1051,6 +1194,10 @@ kbd {
   }
   .form {
     padding: 16px 14px;
+  }
+  .sync-status,
+  .card-actions {
+    padding: 0 14px 14px;
   }
 }
 
