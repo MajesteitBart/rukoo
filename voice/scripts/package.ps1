@@ -3,11 +3,11 @@
 Builds Rukoo Voice's Windows installer and portable zip.
 
 .DESCRIPTION
-Builds the three release programs (rukoo-voice, rukoo-voice-recorder and rukoo-voice-local), runs Tauri's bundler
-for the per-user NSIS installer and checks the result. Everything goes to <cargo target dir>\package:
+Builds the four release programs (rukoo-voice, rukoo-voice-recorder, rukoo-voice-local and rukoo-voice-screen), runs
+Tauri's bundler for the per-user NSIS installer and checks the result. Everything goes to <cargo target dir>\package:
 
   Rukoo-Voice-Setup-<version>.exe     the installer
-  Rukoo-Voice-Portable-<version>.zip  the three programs with the notices, without an installer
+  Rukoo-Voice-Portable-<version>.zip  the four programs with the notices, without an installer
   SHA256SUMS.txt                      checksums of both
 
 It runs Tauri's CLI through npx at a pinned version, so the NSIS template matches voice/crates/voice-app/nsis.
@@ -15,11 +15,13 @@ Set SHERPA_ONNX_ARCHIVE_DIR to a folder holding the sherpa-onnx archive to skip 
 
 It checks that:
   - THIRD_PARTY_NOTICES.md lists exactly the Rust crates the programs contain (-UpdateNotices rewrites the list);
-  - the installer holds the three programs, the notices and the licenses, and uses Voice's NSIS hooks and texts;
-  - none of the three programs imports a C runtime DLL (vcruntime, msvcp or the UCRT);
+  - the installer holds the four programs, the notices and the licenses, and uses Voice's NSIS hooks and texts;
+  - none of the four programs imports a C runtime DLL (vcruntime, msvcp or the UCRT);
+  - rukoo-voice-screen.exe doesn't import Media Foundation (mfplat.dll, mfreadwrite.dll), so it starts without it;
   - rukoo-voice.exe shows the app icon first and carries the recording tray icon;
   - the hooks keep the program out of the data folder and refuse to run while a recording runs
-    (voice/crates/voice-app/nsis/test-hooks.ps1, which starts a recorder on a synthetic tone in the build folder).
+    (voice/crates/voice-app/nsis/test-hooks.ps1, which starts a recorder on a synthetic tone and a screen process on a
+    synthetic screen in the build folder).
 
 The installer is not signed in 0.1.
 
@@ -40,7 +42,7 @@ Set-StrictMode -Version 2.0
 # The CLI whose NSIS template voice/crates/voice-app/nsis was written against (hooks.nsh, English.nsh, Dutch.nsh).
 $TauriCli = '2.12.4'
 $Triple = 'x86_64-pc-windows-msvc'
-$Sidecars = @('rukoo-voice-recorder', 'rukoo-voice-local')
+$Sidecars = @('rukoo-voice-recorder', 'rukoo-voice-local', 'rukoo-voice-screen')
 $Programs = @('rukoo-voice') + $Sidecars
 
 $Voice = Split-Path -Parent $PSScriptRoot
@@ -71,12 +73,12 @@ function Format-License {
   return ((Sort-Ordinal $parts) -join ' OR ')
 }
 
-# The crates linked into the three programs: normal dependencies on Windows x64, without procedural macros (they run
+# The crates linked into the four programs: normal dependencies on Windows x64, without procedural macros (they run
 # only while compiling) and without Voice's own crates, which have a path instead of a registry source.
 function Get-ShippedCrates {
   Push-Location $Voice
   try {
-    $lines = & cargo tree --locked -e 'normal,no-proc-macro' --target $Triple -p voice-app -p voice-recorder -p voice-local --prefix none -f '{p}|{l}'
+    $lines = & cargo tree --locked -e 'normal,no-proc-macro' --target $Triple -p voice-app -p voice-recorder -p voice-local -p voice-screen --prefix none -f '{p}|{l}'
     if ($LASTEXITCODE -ne 0) { throw 'cargo tree failed' }
   } finally { Pop-Location }
   $seen = @{}
@@ -169,20 +171,37 @@ function Write-LicenseTexts {
   [IO.File]::WriteAllText($Path, $out.ToString().Replace("`n", "`r`n"), $Utf8)
 }
 
-# Fails when a program imports a C runtime DLL, so it would need the Visual C++ redistributable or the UCRT forwarders.
-function Assert-StaticCrt {
-  param([string[]]$Files)
+# The DLLs a program imports, at load time or delay-loaded, as dumpbin /dependents lists them.
+function Get-DllImports {
+  param([string]$File)
   $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
   if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found; install the Visual Studio C++ build tools' }
   $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
   if (-not $dumpbin) { throw 'dumpbin.exe not found; install the Visual Studio C++ build tools' }
+  $imports = @(& $dumpbin /nologo /dependents $File | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() })
+  if ($LASTEXITCODE -ne 0 -or $imports.Count -eq 0) { throw "dumpbin could not read $File" }
+  return , $imports
+}
+
+# Fails when a program imports a C runtime DLL, so it would need the Visual C++ redistributable or the UCRT forwarders.
+function Assert-StaticCrt {
+  param([string[]]$Files)
   foreach ($file in $Files) {
-    $imports = @(& $dumpbin /nologo /dependents $file | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() })
-    if ($LASTEXITCODE -ne 0 -or $imports.Count -eq 0) { throw "dumpbin could not read $file" }
+    $imports = Get-DllImports $file
     $crt = @($imports | Where-Object { $_ -match '^(vcruntime|msvcp|ucrtbase|api-ms-win-crt-)' })
     if ($crt.Count -gt 0) { throw "$(Split-Path -Leaf $file) imports the C runtime: $($crt -join ', ')" }
     Write-Host "  $(Split-Path -Leaf $file): static C runtime ($($imports.Count) DLL imports, none from the CRT)"
   }
+}
+
+# Fails when the screen process imports Media Foundation. It loads mfplat.dll and mfreadwrite.dll itself when it
+# records video, so on a Windows N edition without them it still starts and records frames (voice/RECORDING.md).
+function Assert-NoLoadTimeMediaFoundation {
+  param([string]$File)
+  $imports = Get-DllImports $File
+  $mf = @($imports | Where-Object { $_ -match '^(mfplat|mfreadwrite)\.dll$' })
+  if ($mf.Count -gt 0) { throw "$(Split-Path -Leaf $File) imports Media Foundation: $($mf -join ', ')" }
+  Write-Host "  $(Split-Path -Leaf $File): no Media Foundation import ($($imports.Count) DLL imports)"
 }
 
 # The exe's icon groups in resource order. Explorer, shortcuts and Apps & features show the first one, so that must be
@@ -271,10 +290,10 @@ if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force
 $staging = Join-Path $out 'sidecars'
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
-Write-Host 'Building the recorder and the local speech worker'
+Write-Host 'Building the recorder, the local speech worker and the screen process'
 Push-Location $Voice
 try {
-  Invoke-Native cargo @('build', '--release', '--locked', '-p', 'voice-recorder', '-p', 'voice-local')
+  Invoke-Native cargo @('build', '--release', '--locked', '-p', 'voice-recorder', '-p', 'voice-local', '-p', 'voice-screen')
 } finally { Pop-Location }
 
 # Tauri's externalBin wants each program named with the target triple. The installer puts them next to rukoo-voice.exe
@@ -318,23 +337,26 @@ foreach ($language in @('English', 'Dutch')) {
 $contents = Join-Path $out 'installer-contents'
 Expand-Installer $installer $contents
 $installed = @(Get-ChildItem -LiteralPath $contents -File | ForEach-Object { $_.Name } | Sort-Object)
-$expected = @('rukoo-voice.exe', 'rukoo-voice-local.exe', 'rukoo-voice-recorder.exe', 'THIRD_PARTY_LICENSES.txt', 'THIRD_PARTY_NOTICES.md') | Sort-Object
+$expected = @('rukoo-voice.exe', 'rukoo-voice-local.exe', 'rukoo-voice-recorder.exe', 'rukoo-voice-screen.exe', 'THIRD_PARTY_LICENSES.txt',
+  'THIRD_PARTY_NOTICES.md') | Sort-Object
 if (($installed -join ',') -ne ($expected -join ',')) { throw "The installer holds $($installed -join ', ') instead of $($expected -join ', ')" }
 # The sidecars and the notices are the files built here. The bundler marks its own copy of rukoo-voice.exe with the
 # bundle type, so that one only gets the C runtime check.
 $same = @{ 'rukoo-voice-recorder.exe' = (Join-Path $release 'rukoo-voice-recorder.exe'); 'rukoo-voice-local.exe' = (Join-Path $release 'rukoo-voice-local.exe');
-  'THIRD_PARTY_NOTICES.md' = $NoticesFile; 'THIRD_PARTY_LICENSES.txt' = $licenses }
+  'rukoo-voice-screen.exe' = (Join-Path $release 'rukoo-voice-screen.exe'); 'THIRD_PARTY_NOTICES.md' = $NoticesFile; 'THIRD_PARTY_LICENSES.txt' = $licenses }
 foreach ($name in $same.Keys) {
   if ((Get-Sha256 (Join-Path $contents $name)) -ne (Get-Sha256 $same[$name])) { throw "The installer's $name differs from $($same[$name])" }
 }
 Get-ChildItem -LiteralPath $contents -File | Sort-Object Name | ForEach-Object { Write-Host ("  {0,12:N0}  {1}" -f $_.Length, $_.Name) }
 
-Write-Host 'Checking the C runtime and the icons'
+Write-Host 'Checking the C runtime, Media Foundation and the icons'
 Assert-StaticCrt @(@($Programs | ForEach-Object { Join-Path $release "$_.exe" }) + (Join-Path $contents 'rukoo-voice.exe'))
+Assert-NoLoadTimeMediaFoundation (Join-Path $release 'rukoo-voice-screen.exe')
 Assert-IconResources (Join-Path $contents 'rukoo-voice.exe')
 
 Write-Host 'Testing the installer hooks'
-& (Join-Path $App 'nsis\test-hooks.ps1') -Recorder (Join-Path $release 'rukoo-voice-recorder.exe') -Work (Join-Path $out 'hooks-test')
+& (Join-Path $App 'nsis\test-hooks.ps1') -Recorder (Join-Path $release 'rukoo-voice-recorder.exe') -Screen (Join-Path $release 'rukoo-voice-screen.exe') `
+  -Work (Join-Path $out 'hooks-test')
 
 Write-Host 'Writing the portable zip'
 $portable = Join-Path $out 'portable'

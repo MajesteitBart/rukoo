@@ -6,9 +6,12 @@ Tests hooks.nsh without installing anything.
 Compiles a small NSIS program that includes hooks.nsh and runs it silently. It checks that:
   - the folder the directory page offers moves out of Voice's data folder (%LOCALAPPDATA%\Rukoo Voice) to
     %LOCALAPPDATA%\Programs\Rukoo Voice, and that any other folder stays as chosen;
-  - the installer stops while a rukoo-voice-recorder.exe runs from the install folder, and goes on once it has quit.
+  - the installer stops while a rukoo-voice-recorder.exe runs from the install folder, and goes on once it has quit;
+  - with -Screen, the same for a rukoo-voice-screen.exe that runs from the install folder on its own, while the
+    recorder it follows runs from elsewhere.
 For the second check it starts the recorder from a scratch folder with a synthetic tone, and stops it by its own
-process handle. The test only reads %LOCALAPPDATA%; it writes under -Work.
+process handle. For the third the screen process records a synthetic screen as a development copy, so it never
+captures the desktop. The test only reads %LOCALAPPDATA%; it writes under -Work.
 
 package.ps1 runs it after the bundler has put NSIS in %LOCALAPPDATA%\tauri\NSIS.
 #>
@@ -16,7 +19,8 @@ package.ps1 runs it after the bundler has put NSIS in %LOCALAPPDATA%\tauri\NSIS.
 param(
   [string]$MakeNsis = (Join-Path $env:LOCALAPPDATA 'tauri\NSIS\makensis.exe'),
   [Parameter(Mandatory = $true)][string]$Recorder,
-  [Parameter(Mandatory = $true)][string]$Work
+  [Parameter(Mandatory = $true)][string]$Work,
+  [string]$Screen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -135,6 +139,54 @@ try {
 $r = Invoke-Test 'stopped' $install
 Expect 'it goes on once the recorder has quit' $r.Values['went-on'] 'yes'
 Expect 'exit code after the recorder quit' $r.Exit 0
+
+function Wait-ForFile {
+  param([string]$Path, $Process, [string]$What)
+  $deadline = (Get-Date).AddSeconds(15)
+  while (-not (Test-Path -LiteralPath $Path)) {
+    if ($Process.HasExited) { throw "$What quit with exit code $($Process.ExitCode)" }
+    if ((Get-Date) -gt $deadline) { throw "$What did not start within 15 s" }
+    Start-Sleep -Milliseconds 100
+  }
+}
+
+if ($Screen) {
+  Write-Host 'A screen process running from the install folder, the recorder from elsewhere'
+  $install = Join-Path $Work 'install-screen'
+  $meeting = Join-Path $Work 'meeting-screen'
+  New-Item -ItemType Directory -Force -Path $install, $meeting | Out-Null
+  $copy = Join-Path $install 'rukoo-voice-screen.exe'
+  Copy-Item -LiteralPath $Screen -Destination $copy
+  # Not $recorder: PowerShell names ignore case, and that would overwrite the -Recorder path.
+  $following = Start-Process -FilePath $Recorder -ArgumentList @('record', '--meeting', "`"$meeting`"", '--track', 'mic=synthetic:tone:440') `
+    -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $Work 'screen-recorder.out') -RedirectStandardError (Join-Path $Work 'screen-recorder.err')
+  $running = $null
+  try {
+    Wait-ForFile (Join-Path $meeting 'recorder.json') $following 'The recorder'
+    # A development copy honours --test, which replaces the screen with a synthetic one.
+    $dataDir = $env:RUKOO_VOICE_DATA_DIR
+    $env:RUKOO_VOICE_DATA_DIR = Join-Path $Work 'screen-data'
+    try {
+      $running = Start-Process -FilePath $copy -ArgumentList @('record', '--meeting', "`"$meeting`"", '--mode', 'frames', '--test', 'synthetic:640x360') `
+        -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $Work 'screen.out') -RedirectStandardError (Join-Path $Work 'screen.err')
+    } finally { $env:RUKOO_VOICE_DATA_DIR = $dataDir }
+    Wait-ForFile (Join-Path $meeting 'screen\screen.json') $running 'The screen process'
+    $r = Invoke-Test 'screen' $install
+    Expect 'it stops while the screen process runs' $r.Values.ContainsKey('went-on') $false
+    Expect 'exit code while the screen process runs (NSIS abort)' $r.Exit 2
+    Expect 'the screen process still runs' $running.HasExited $false
+  } finally {
+    foreach ($p in @($running, $following)) {
+      if ($p) {
+        if (-not $p.HasExited) { $p.Kill() }
+        $p.WaitForExit()
+      }
+    }
+  }
+  $r = Invoke-Test 'screen-stopped' $install
+  Expect 'it goes on once the screen process has quit' $r.Values['went-on'] 'yes'
+  Expect 'exit code after the screen process quit' $r.Exit 0
+}
 
 if ($failures.Count -gt 0) { throw "$($failures.Count) hooks.nsh checks failed" }
 Write-Host 'hooks.nsh: all checks passed'

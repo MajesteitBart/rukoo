@@ -1,6 +1,6 @@
 # Third-party notices for Rukoo Voice
 
-Rukoo Voice is released under the MIT license, Copyright (c) 2026 Bart van der Meeren. Its installer and portable zip hold three programs: `rukoo-voice.exe` (the app), `rukoo-voice-recorder.exe` (the meeting recorder) and `rukoo-voice-local.exe` (the local speech worker). This file lists the work of others that is built into them, and ships next to them.
+Rukoo Voice is released under the MIT license, Copyright (c) 2026 Bart van der Meeren. Its installer and portable zip hold four programs: `rukoo-voice.exe` (the app), `rukoo-voice-recorder.exe` (the meeting recorder), `rukoo-voice-local.exe` (the local speech worker) and `rukoo-voice-screen.exe` (the screen recorder). This file lists the work of others that is built into them, and ships next to them.
 
 `THIRD_PARTY_LICENSES.txt`, which ships alongside, holds the license files of every Rust crate listed below as they appear in each crate's source package. `voice/scripts/package.ps1` writes it when it builds the installer.
 
@@ -89,9 +89,13 @@ Neither the installer nor the zip contains a speech model. The Orukeet model ([o
 - [Inter](https://github.com/rsms/inter), the typeface of the pill and Settings: SIL Open Font License 1.1, Copyright 2016 The Inter Project Authors. The app carries the font together with its license (`voice/ui/fonts/Inter-LICENSE.txt`), and `THIRD_PARTY_LICENSES.txt` repeats that license.
 - The Rukoo Voice icon is drawn from Rukoo's own pigeon, which is part of this repository.
 
+## The screen recorder: rukoo-voice-screen.exe
+
+The screen recorder uses Windows' own Windows.Graphics.Capture, Media Foundation (for the H.264 encoder and the MP4 files) and Windows.Media.Ocr, which come with Windows. It ships none of their code.
+
 ## Rust crates
 
-The Rust crates built into the three programs, by license. The list covers the normal dependencies for Windows x64 and leaves out the procedural macros, which run only while compiling, and Voice's own crates.
+The Rust crates built into the four programs, by license. The list covers the normal dependencies for Windows x64 and leaves out the procedural macros, which run only while compiling, and Voice's own crates.
 
 <!-- rust-crates:start: written by voice/scripts/package.ps1 -UpdateNotices; package.ps1 stops when this list is out of date -->
 
