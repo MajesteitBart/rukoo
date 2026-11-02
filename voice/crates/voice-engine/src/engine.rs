@@ -211,6 +211,8 @@ impl Core {
             .set_retention(new.meetings_retention);
         if old.extra.get(crate::sync::SYNC_KEY) != new.extra.get(crate::sync::SYNC_KEY) {
             crate::sync::configure_sync(self, new);
+            // Held media may go now, for instance once sync is switched off.
+            self.sync_rt.sweep_soon();
         }
         let before = looks(&self.opts, &self.svc, old);
         let after = looks(&self.opts, &self.svc, new);

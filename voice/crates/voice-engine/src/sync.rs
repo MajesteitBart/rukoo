@@ -51,6 +51,11 @@ impl SyncRuntime {
         }
     }
 
+    /// The sync settings changed: retention looks again soon.
+    pub fn sweep_soon(&self) {
+        self.resweep.store(true, Ordering::SeqCst);
+    }
+
     /// Whether a sweep is due because of a sync change; clears the flag.
     pub fn take_resweep(&self) -> bool {
         self.resweep.swap(false, Ordering::SeqCst)
