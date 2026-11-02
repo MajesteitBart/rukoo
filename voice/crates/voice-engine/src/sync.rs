@@ -203,9 +203,10 @@ pub fn holds(sync: Option<&BucketSync>, switch_on: bool, meeting: &str) -> bool 
 }
 
 /// Below [`HOLD_FLOOR`] free, releases media retention held for the bucket: oldest meeting
-/// first, one part at a time, checking free space after each. Media held only for a restore
-/// goes first (it is in the bucket), then video, frames and audio of meetings with uploads that
-/// never happened, whose rows become `lost`. Returns whether anything went.
+/// first, one part at a time, checking free space after each. Media that is in the bucket goes
+/// first (held only for the 24 hours after a restore used it), then video, frames and audio of
+/// meetings with files that never reached the bucket, whose rows become `lost`. Returns whether
+/// anything went.
 pub(crate) fn release_below_floor(core: &Core, held: &[String]) -> bool {
     let lib = core.meetings.library();
     let free = || core.svc.system.free_bytes(lib.root());
@@ -213,23 +214,35 @@ pub(crate) fn release_below_floor(core: &Core, held: &[String]) -> bool {
         return false;
     }
     let sync = core.sync.as_deref();
-    // Held only by the restore rule: nothing of it waits for the bucket.
-    let (in_bucket, waiting): (Vec<&String>, Vec<&String>) = held
-        .iter()
-        .partition(|id| sync.is_some_and(|s| !s.has_waiting(id)));
+    let reached = |id: &str, path: &str| sync.is_some_and(|s| s.in_bucket(id, path));
+    let (in_bucket, waiting): (Vec<&String>, Vec<&String>) = held.iter().partition(|id| {
+        lib.dir(id)
+            .is_some_and(|dir| all_in_bucket(sync, id, dir.path()))
+    });
     let mut released = false;
+    // Rows marked lost, and files removed that weren't in the bucket.
     let mut lost = 0;
+    let mut unsynced = 0;
     'meetings: for id in in_bucket.into_iter().chain(waiting) {
+        let Some(dir) = lib.dir(id) else {
+            continue;
+        };
         for part in MediaPart::ORDER {
             if free().is_none_or(|free| free >= HOLD_FLOOR) {
                 break 'meetings;
             }
+            let missing = part
+                .files(dir.path())
+                .iter()
+                .filter(|p| !reached(id, p))
+                .count();
             match release_held(lib, id, part) {
                 Ok(0) => continue,
                 Ok(bytes) => {
                     released = true;
+                    unsynced += missing;
                     log::warn!(
-                        "retention: the disk is almost full; removed {} of {id} ({bytes} bytes)",
+                        "retention: the disk is almost full; removed {} of {id} ({bytes} bytes, {missing} files not in the bucket)",
                         part.kind()
                     );
                     if let Some(sync) = sync {
@@ -240,15 +253,25 @@ pub(crate) fn release_below_floor(core: &Core, held: &[String]) -> bool {
             }
         }
     }
-    if released && (lost > 0 || sync.is_none()) {
-        let body = if sync.is_some() {
-            LOST_BODY
-        } else {
-            UNREADABLE_BODY
-        };
+    if lost > 0 || unsynced > 0 {
+        // Without rows to count, Settings can't say how much: sync's store didn't open or its
+        // queue can't be read.
+        let body = if lost > 0 { LOST_BODY } else { UNREADABLE_BODY };
         notify_daily(core, &core.sync_rt.lost_note, body);
     }
     released
+}
+
+/// Whether every media file the meeting still has reached the bucket, so releasing it loses
+/// nothing. `has_waiting` can't say: it also counts the transcript and the manifest, and answers
+/// `true` when the queue errors. So each media file is checked. Without sync nothing counts as
+/// in the bucket.
+fn all_in_bucket(sync: Option<&BucketSync>, id: &str, meeting_dir: &std::path::Path) -> bool {
+    MediaPart::ORDER.iter().all(|part| {
+        part.files(meeting_dir)
+            .iter()
+            .all(|path| sync.is_some_and(|s| s.in_bucket(id, path)))
+    })
 }
 
 /// After a day of failing uploads, one notification a day (spec 2.15).
@@ -325,5 +348,41 @@ mod tests {
     fn without_sync_the_hold_follows_the_switch() {
         assert!(holds(None, true, "m-20261030-171203-4f2a"));
         assert!(!holds(None, false, "m-20261030-171203-4f2a"));
+    }
+
+    #[test]
+    fn media_counts_as_in_the_bucket_file_by_file() {
+        let data = std::env::temp_dir().join(format!("voice-engine-floor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let meetings = data.join("meetings");
+        let id = "m-20261030-171203-4f2a";
+        let dir = meetings.join(id);
+        std::fs::create_dir_all(dir.join("audio").join("mic")).unwrap();
+        let sync = BucketSync::open(voice_sync::SyncOptions {
+            data_dir: data.clone(),
+            meetings_dir: meetings.clone(),
+            protector: std::sync::Arc::new(voice_sync::protect::TestProtector),
+            screen: std::sync::Arc::new(voice_sync::NoScreen),
+            now: std::sync::Arc::new(now_ms),
+            reserve: std::sync::Arc::new(|_| true),
+            timing: voice_sync::SyncTiming::default(),
+            on_change: std::sync::Arc::new(|| {}),
+        })
+        .unwrap();
+
+        let mic = dir.join("audio").join("mic");
+        // Nothing to lose: no media files, or only a fetch that never finished.
+        assert!(all_in_bucket(Some(&sync), id, &dir));
+        std::fs::write(mic.join("000001.wav.restore"), b"RI").unwrap();
+        assert!(all_in_bucket(Some(&sync), id, &dir));
+        // A segment without a done row isn't in the bucket.
+        std::fs::write(mic.join("000001.wav"), b"RIFF").unwrap();
+        assert!(!all_in_bucket(Some(&sync), id, &dir));
+        // Without sync nothing can be checked, so nothing counts as in the bucket.
+        assert!(!all_in_bucket(None, id, &dir));
+
+        sync.shutdown();
+        drop(sync);
+        let _ = std::fs::remove_dir_all(&data);
     }
 }

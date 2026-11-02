@@ -140,11 +140,49 @@ impl MediaPart {
         }
     }
 
-    fn folder(self, meeting: &Path) -> std::path::PathBuf {
+    /// The part's folder in a meeting folder.
+    pub fn folder(self, meeting: &Path) -> std::path::PathBuf {
         match self {
             MediaPart::Video => meeting.join("screen").join("video"),
             MediaPart::Frames => meeting.join("screen").join("frames"),
             MediaPart::Audio => meeting.join("audio"),
+        }
+    }
+
+    /// The part's files that bucket sync would upload, relative to the meeting folder with forward
+    /// slashes as sync names them, sorted. `*.tmp` and `*.restore` files never upload, so they
+    /// aren't listed.
+    pub fn files(self, meeting: &Path) -> Vec<String> {
+        let mut files = Vec::new();
+        collect_files(meeting, &self.folder(meeting), &mut files);
+        files.sort();
+        files
+    }
+}
+
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => collect_files(root, &path, out),
+            Ok(_) => {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".tmp") || name.ends_with(".restore") {
+                    continue;
+                }
+                if let Ok(relative) = path.strip_prefix(root) {
+                    let parts: Vec<String> = relative
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect();
+                    out.push(parts.join("/"));
+                }
+            }
+            Err(_) => {}
         }
     }
 }
@@ -383,6 +421,20 @@ mod tests {
         let id = meeting(&lib, &log, &["recording", "processing", "done"]);
         add_screen_media(&lib, &id);
         let path = lib.dir(&id).unwrap().path().to_path_buf();
+        // Each part lists its files as bucket sync names them; files that never upload don't
+        // count.
+        fs::write(path.join("audio/mic/000002.wav.restore"), b"RI").unwrap();
+        fs::write(path.join("screen/video/000002.mp4.tmp"), b"ft").unwrap();
+        assert_eq!(
+            MediaPart::ORDER.map(|part| part.files(&path)),
+            [
+                vec!["screen/video/000001.mp4".to_string()],
+                vec!["screen/frames/f-000001000.jpg".to_string()],
+                vec!["audio/mic/000001.wav".to_string()],
+            ]
+        );
+        fs::remove_file(path.join("audio/mic/000002.wav.restore")).unwrap();
+        fs::remove_file(path.join("screen/video/000002.mp4.tmp")).unwrap();
 
         assert_eq!(release_held(&lib, &id, MediaPart::Video).unwrap(), 300);
         assert!(!path.join("screen/video").exists());
