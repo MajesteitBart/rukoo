@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use support::TempDir;
 use voice_core::cleanup::Correction;
 use voice_core::config::{
-    provider_form_problem, Config, ConfigError, Consent, PillEdge, Retention, RewriteTone,
-    ScreenMode, Theme, UiLanguage,
+    provider_form_problem, Config, ConfigError, Consent, ConsentMode, PillEdge, Retention,
+    RewriteTone, ScreenMode, Theme, UiLanguage,
 };
 use voice_core::consent::ConsentState;
 use voice_core::providers::Purpose;
@@ -106,6 +106,7 @@ fn save_and_load_round_trip() {
     cfg.meetings_transcription_consent = Some(Consent {
         provider: "mistral".into(),
         host: "api.mistral.ai".into(),
+        mode: ConsentMode::Windows,
     });
     cfg.meetings_retention = Retention::AfterTranscription;
     cfg.meetings_screen = ScreenMode::Frames;
@@ -485,6 +486,7 @@ fn meeting_consent_follows_provider_and_host() {
         provider: "mistral".into(),
         label: "Mistral".into(),
         host: "api.mistral.ai".into(),
+        mode: ConsentMode::Windows,
     };
     assert_eq!(cfg.meeting_consent(), required);
     let disclosure = cfg.meeting_disclosure().unwrap();
@@ -507,7 +509,8 @@ fn meeting_consent_follows_provider_and_host() {
         cfg.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
 
@@ -535,7 +538,8 @@ fn meeting_consent_follows_provider_and_host() {
         kept.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     let dropped =
@@ -581,6 +585,7 @@ fn same_as_dictation_resolves_to_the_dictation_provider() {
     cfg.meetings_transcription_consent = Some(Consent {
         provider: "mistral".into(),
         host: "api.mistral.ai".into(),
+        mode: ConsentMode::Windows,
     });
     assert!(cfg.resolve_same_meeting_provider());
     assert_eq!(cfg.meetings_audio_provider, "mistral");

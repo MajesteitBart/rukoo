@@ -25,6 +25,7 @@ mod pipeline;
 pub mod reader;
 mod retention;
 pub mod segmentation;
+mod speakers;
 mod stt;
 pub mod transcript;
 pub mod watcher;
@@ -38,6 +39,7 @@ pub use pipeline::{
 };
 pub use reader::TrackReader;
 pub use retention::{retention_sweep, retention_sweep_at, WEEK_MS};
+pub use speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 pub use stt::{TimedSpeechToText, TimedText};
 pub use transcript::Transcript;
 pub use voice_core::config::Retention;

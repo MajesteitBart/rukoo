@@ -26,6 +26,7 @@ use crate::segmentation::{
     next_boundary, owned_tokens, timed_passages, window_passage, within, worth_recognizing, Draft,
     CORE_LIMIT, LEFT_CONTEXT, RATE, RIGHT_CONTEXT,
 };
+use crate::speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 use crate::stt::{Heard, Recognizer, TimedSpeechToText};
 use crate::transcript::{Outcome, StoredPassage, Transcript};
 use crate::watcher::{mark_key, state_key, tracks_of, Derived, Stop, Stretch, TimelineWatcher};
@@ -61,10 +62,16 @@ pub struct PipelineOptions {
     /// goes on; transcription waits, and [`PipelineState::Waiting`] says why.
     pub transcription_allowed: ConsentCheck,
     pub timing: Timing,
+    /// Who labels the speakers on the call. [`Labels::Off`] makes the whole call `call-1`, as in
+    /// Voice 0.1.
+    pub labels: Labels,
+    /// Mistral's realtime stream, when the meeting provider streams; it then transcribes both
+    /// tracks and labels the call instead of `stt`.
+    pub stream: Option<StreamOptions>,
 }
 
 impl PipelineOptions {
-    /// Transcribes with `stt`, always allowed, without hints.
+    /// Transcribes with `stt`, always allowed, without hints or speaker labels.
     pub fn new(stt: Arc<dyn SpeechToText>) -> PipelineOptions {
         PipelineOptions {
             stt,
@@ -72,6 +79,10 @@ impl PipelineOptions {
             hints: Hints::default(),
             transcription_allowed: Arc::new(|| Ok(())),
             timing: Timing::default(),
+            labels: Labels::Off {
+                reason: "off".into(),
+            },
+            stream: None,
         }
     }
 
@@ -213,6 +224,20 @@ impl PipelineHandle {
 
     pub fn state(&self) -> PipelineState {
         self.shared.state()
+    }
+
+    /// What speaker labels are doing for this meeting, for Settings.
+    pub fn labels(&self) -> LabelStatus {
+        // Placeholder until the follower lands: every meeting labels as Voice 0.1 does.
+        LabelStatus {
+            mode: "off".into(),
+            state: LabelState::Off,
+            reason: None,
+            epoch: 0,
+            speakers: 0,
+            settled_ms: None,
+            worker_pid: None,
+        }
     }
 
     /// Looks again now instead of at the next poll, for instance after the user gave consent.

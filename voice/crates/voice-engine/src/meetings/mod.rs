@@ -237,7 +237,7 @@ pub fn transcription_allowed(cfg: &Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voice_core::config::Consent;
+    use voice_core::config::{Consent, ConsentMode};
 
     #[test]
     fn transcription_waits_for_consent_but_never_for_orukeet() {
@@ -250,6 +250,7 @@ mod tests {
         cfg.meetings_transcription_consent = Some(Consent {
             provider: "mistral".into(),
             host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         });
         assert_eq!(transcription_allowed(&cfg), Ok(()));
         // Another host needs consent again.

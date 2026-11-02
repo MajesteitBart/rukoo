@@ -12,7 +12,9 @@ use std::time::Duration;
 use voice_core::local::{
     LocalEngine, LocalOptions, LocalStatus, Located, ModelError, ModelRegistry, ModelSpec, Progress,
 };
+use voice_core::providers::stream::StreamingSpeech;
 use voice_core::providers::{Activity, ProviderConfig};
+use voice_core::speakers::{Diarizer, RuntimeInfo, Unavailable};
 use voice_core::{ProviderError, Rewriter, SpeechToText};
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
 use voice_meetings::PipelineOptions;
@@ -86,6 +88,20 @@ pub trait Speech: Send + Sync {
         cancel: &AtomicBool,
     ) -> Result<Located, ModelError>;
     fn shutdown(&self);
+    /// Nemotron on this computer, for one meeting. Never a cloud provider.
+    fn diarizer(&self) -> Result<Arc<dyn Diarizer>, Unavailable> {
+        Err(Unavailable::Platform)
+    }
+    /// Whether Nemotron can run now, for Settings. Starts no process.
+    fn speaker_availability(&self) -> Result<RuntimeInfo, Unavailable> {
+        Err(Unavailable::Platform)
+    }
+    /// The realtime stream for a provider that streams.
+    fn streaming(&self, _cfg: &ProviderConfig) -> Result<Arc<dyn StreamingSpeech>, ProviderError> {
+        Err(ProviderError::provider(
+            "Streaming transcription isn't available.",
+        ))
+    }
 }
 
 pub trait Chime: Send + Sync {

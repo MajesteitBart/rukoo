@@ -7,7 +7,9 @@ mod cloud;
 pub(crate) mod http;
 mod models;
 mod multipart;
+mod realtime;
 mod rewrite;
+pub mod stream;
 mod urls;
 mod wav;
 
@@ -19,8 +21,18 @@ use serde::{Deserialize, Serialize};
 use crate::local::LocalEngine;
 
 pub use models::list_models;
+pub use realtime::{realtime_url, MistralRealtime};
+use stream::StreamingSpeech;
 pub use urls::{endpoint_host, endpoint_reachable, is_local_host};
 pub use wav::wav_bytes;
+
+/// The realtime stream for a meeting provider that streams ([`stream::streams`]).
+pub fn streaming_speech(_cfg: &ProviderConfig) -> Result<Box<dyn StreamingSpeech>, ProviderError> {
+    // Placeholder until the realtime client lands.
+    Err(ProviderError::provider(
+        "Streaming transcription isn't available.",
+    ))
+}
 
 /// The model id Ownkey and Voice store for the local Orukeet model.
 pub const ORUKEET_MODEL_ID: &str = "orukeet-onnx-int8";

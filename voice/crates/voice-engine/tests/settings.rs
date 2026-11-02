@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, TempDir};
-use voice_core::config::Consent;
+use voice_core::config::{Consent, ConsentMode};
 use voice_core::{ErrorKind, ProviderError};
 use voice_engine::Folder;
 
@@ -402,7 +402,8 @@ fn meeting_consent_names_the_provider_and_host() {
         h.saved_config().meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     // Another host needs consent again; the form carries it only when the box is ticked.
@@ -622,7 +623,8 @@ fn the_first_start_of_an_installed_copy_imports_ownkey() {
         cfg.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     let state = engine.settings_state();

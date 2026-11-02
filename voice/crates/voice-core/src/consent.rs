@@ -10,7 +10,7 @@ use crate::providers::{
     endpoint_host, is_local_host, normalize_provider, ProviderConfig, ProviderId,
 };
 
-use crate::config::Consent;
+use crate::config::{Consent, ConsentMode};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -18,11 +18,13 @@ pub enum ConsentState {
     /// Audio stays on this computer: Orukeet, or a server on a local host.
     NotNeeded,
     Granted,
-    /// Transcription waits until the user agrees to send audio to this provider and host.
+    /// Transcription waits until the user agrees to send audio to this provider and host, in
+    /// this mode.
     Required {
         provider: String,
         label: String,
         host: String,
+        mode: ConsentMode,
     },
 }
 
@@ -70,6 +72,7 @@ pub fn state(cfg: &ProviderConfig, consent: Option<&Consent>) -> ConsentState {
             provider: id.as_str().to_string(),
             label: id.label().to_string(),
             host,
+            mode: ConsentMode::Windows,
         },
     }
 }

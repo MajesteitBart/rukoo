@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "name": "nemo-runtime-97a15af-1",
+  "repository": "https://github.com/NVIDIA/NeMo-Speech.cpp",
+  "commit": "97a15afa5caa9bce5baaa86c1184103877af4101",
+  "submodules": { "ggml": "c03b4e2bcece5134827881af90242086daf75be5", "llama.cpp": "560445bf34c87356ad0f8d80fb03ec5488850b65" },
+  "build": "cpu backend, asr profile, portable AVX2 baseline, no OpenMP",
+  "flags": { "GGML_NATIVE": "OFF", "GGML_OPENMP": "OFF", "GGML_SSE42": "ON", "GGML_AVX": "ON", "GGML_AVX2": "ON", "GGML_BMI2": "ON", "GGML_FMA": "ON", "GGML_F16C": "ON", "GGML_AVX_VNNI": "OFF", "GGML_AVX512": "OFF" },
+  "vcpkg": { "tag": "2026.07.29", "triplet": "x64-windows-static-md" },
+  "toolset": { "runner": "windows-2025", "msvc": null },
+  "cpu": ["avx2", "fma", "f16c", "bmi2"],
+  "archive": null,
+  "files": []
+}

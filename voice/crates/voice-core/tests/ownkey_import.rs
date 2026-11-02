@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 use support::TempDir;
 use voice_core::cleanup::Correction;
-use voice_core::config::{Config, Consent, Retention, RewriteTone, Theme};
+use voice_core::config::{Config, Consent, ConsentMode, Retention, RewriteTone, Theme};
 use voice_core::ownkey::{import, ImportError};
 
 const AUDIO_KEY: &str = "sk-audio-0123456789";
@@ -216,7 +216,8 @@ fn live_transcription_allow_carries_consent_over() {
         cfg.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     let consent = report.item("consent").unwrap();

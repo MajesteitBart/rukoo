@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::config::{Config, Consent, SAME_AS_DICTATION};
+use crate::config::{Config, Consent, ConsentMode, SAME_AS_DICTATION};
 use crate::consent::ConsentState;
 use crate::fsutil;
 use crate::providers::provider_label;
@@ -300,12 +300,15 @@ impl ImportResult {
             provider,
             label,
             host,
+            ..
         } = cfg.meeting_consent()
         {
             if self.live_transcription_allowed {
+                // Ownkey sent recorded windows, so its answer never covers streaming.
                 cfg.meetings_transcription_consent = Some(Consent {
                     provider,
                     host: host.clone(),
+                    mode: ConsentMode::Windows,
                 });
                 report.add(
                     "consent",
