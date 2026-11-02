@@ -273,11 +273,13 @@ impl TimedSpeechToText for AmiOracle {
 /// One meeting recorded by the real recorder from the excerpt, labelled by the real worker or,
 /// without `assets`, not at all.
 struct Run {
-    _tmp: TempDir,
     dir: MeetingDir,
     log: EventLog,
     recorder: Option<Child>,
     pipeline: PipelineHandle,
+    // Last, so the folder goes after the pipeline and the meeting let go of their files: fields
+    // drop in declaration order.
+    _tmp: TempDir,
 }
 
 impl Run {
