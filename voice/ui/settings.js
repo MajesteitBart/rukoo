@@ -7,9 +7,10 @@ import { loadCatalogs, setLanguage, language, t, tHtml, esc, localize, list, byt
 import { connect, invoke, listen, params, mocked } from './lib/bridge.js';
 import { icons } from './lib/icons.js';
 
-// Rows designed now and hidden in Voice 0.1: screen recording, speaker labels and bucket sync (architecture.md).
-// ?later=1 shows them in mock mode, for design review.
+// Parts of Settings that come with a feature: the engine lists them in state.features (voice/ui/API.md).
+// ?later=1 shows every part in mock mode, for design review.
 const LATER = mocked && params.get('later') === '1';
+const feature = (name) => LATER || state?.features?.[name] === true;
 
 const HOTKEYS = ['right alt', 'right ctrl', 'right shift', 'f13', 'f14', 'f15', 'pause', 'scroll lock'];
 const KEY_NAMES = {
@@ -283,11 +284,19 @@ function mainPage() {
       row({ title: t('settings.dictation.rewriting'), value: rewritingValue(), action: 'go:rewriting' })
   );
 
-  const screenRow = LATER
+  // state.screen is null until the screen process answered its probe. A Windows that can't capture disables the
+  // choice; a computer without a hardware encoder or an OCR language records less than the choice says.
+  const screen = state.screen;
+  const screenOff = screen?.available === false;
+  const screenNotes = screenOff
+    ? [t('settings.meetings.screenUnavailable')]
+    : [screen?.hardwareEncoder === null ? t('settings.meetings.screenNoEncoder') : '', Array.isArray(screen?.ocr) && !screen.ocr.length ? t('settings.meetings.screenNoOcr') : ''].filter(Boolean);
+  const screenRow = feature('screen')
     ? row({
         title: t('settings.meetings.screen'),
         desc: t('settings.meetings.screenHelp'),
-        side: segmented('meetings.screen', SCREEN, c.meetings.screen, t('settings.meetings.screen'))
+        below: screenNotes.map((note) => `<div class="desc note">${icons.info}<span>${esc(note)}</span></div>`).join(''),
+        side: segmented('meetings.screen', SCREEN, c.meetings.screen, t('settings.meetings.screen'), { disabled: screenOff })
       })
     : '';
   const meetingsCard = card(
@@ -341,11 +350,12 @@ function mainPage() {
   };
 }
 
-function segmented(key, options, value, label) {
+function segmented(key, options, value, label, { disabled = false } = {}) {
   const index = Math.max(0, options.findIndex(([v]) => v === value));
-  return `<div class="segmented" role="tablist" aria-label="${esc(label)}" style="--n:${options.length};--i:${index}">
+  const off = disabled ? 'disabled' : '';
+  return `<div class="segmented ${disabled ? 'is-disabled' : ''}" role="tablist" aria-label="${esc(label)}" ${disabled ? 'aria-disabled="true"' : ''} style="--n:${options.length};--i:${index}">
     <span class="seg-thumb" aria-hidden="true"></span>${options
-      .map(([v, labelKey]) => `<button role="tab" aria-selected="${v === value}" data-a="seg:${esc(key)}:${esc(v)}">${esc(t(labelKey))}</button>`)
+      .map(([v, labelKey]) => `<button role="tab" aria-selected="${v === value}" data-a="seg:${esc(key)}:${esc(v)}" ${off}>${esc(t(labelKey))}</button>`)
       .join('')}</div>`;
 }
 
@@ -680,7 +690,7 @@ function storagePage() {
     // Voice 0.1 keeps meetings in its data folder, so there is no Browse here (API.md, settings_choose_folder).
     side: `<div class="side"><button class="btn sm secondary" data-a="open:recordings">${esc(t('common.openFolder'))}</button></div>`
   });
-  const sections = [section('local', groupTitle(t('settings.storage.local')) + card(folderRow) + (LATER ? paragraph(t('settings.storage.disk')) : ''))];
+  const sections = [section('local', groupTitle(t('settings.storage.local')) + card(folderRow) + (feature('screen') ? paragraph(t('settings.storage.disk')) : ''))];
   if (LATER) sections.push(section('sync', syncSection()));
   return { title: t('settings.meetings.storage'), sections };
 }

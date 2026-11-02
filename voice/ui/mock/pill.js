@@ -2,7 +2,8 @@
 //
 // pill.html?mock=<state>&theme=light|dark&lang=en|nl&edge=bottom|top&backdrop=1&hit=1&dev=1
 //   <state>: one of STATES below, or a timeline: dictation, meeting, cycle (every state in turn).
-//   backdrop=1 draws a document behind the pill; hit=1 outlines where the app would put the stop window.
+//   backdrop=1 draws a document behind the pill; hit=1 outlines where the app would put the stop and monitor windows.
+//   In a meeting state with the monitor button, a click on it moves to the next demo monitor.
 
 const MINUTE = 60_000;
 
@@ -52,7 +53,13 @@ export const STATES = {
   'meeting-failed': { phase: 'meeting', notice: 'pill.meetingFailed', meeting: meeting({ state: 'failed', stopEnabled: false }) },
   'meeting-mic-lost': { phase: 'meeting', notice: 'pill.micLost', meeting: meeting() },
   'meeting-mic-back': { phase: 'meeting', notice: 'pill.micBack', meeting: meeting() },
-  'meeting-video-dropped': { phase: 'meeting', notice: 'pill.videoDropped.disk', meeting: meeting() },
+  'meeting-video-dropped': { phase: 'meeting', notice: 'pill.videoDropped.disk', meeting: meeting({ screen: 'video', screenSwitch: true }) },
+  'meeting-video-dropped-encoder': { phase: 'meeting', notice: 'pill.videoDropped.encoder', meeting: meeting({ screen: 'video', screenSwitch: true }) },
+  'meeting-frames-dropped': { phase: 'meeting', notice: 'pill.framesDropped.disk', meeting: meeting({ screen: 'frames' }) },
+  'meeting-screen-failed': { phase: 'meeting', notice: 'pill.screenFailed', meeting: meeting({ screen: 'frames' }) },
+  'meeting-screen-moved': { phase: 'meeting', notice: 'pill.screenMoved', args: { name: 'DELL U2720Q' }, meeting: meeting({ screen: 'frames', screenSwitch: true }) },
+  'meeting-screen-button': { phase: 'meeting', meeting: meeting({ screen: 'frames', screenSwitch: true }) },
+  'meeting-screen-hover': { phase: 'meeting', meeting: meeting({ screen: 'video', screenSwitch: true, compact: true }), pointer: { hover: true, pressed: false, target: 'screen' } },
   'meeting-dictating': { phase: 'listening', level: true, meeting: meeting({ stopEnabled: false, compact: true }) },
   hidden: { phase: 'hidden', visible: false }
 };
@@ -103,7 +110,7 @@ export function createMock(params) {
       visible: state.visible !== false,
       phase: state.phase,
       activity: state.activity || 'dictate',
-      notice: state.notice ? { key: state.notice, args: {} } : null,
+      notice: state.notice ? { key: state.notice, args: { ...(state.args || {}) } } : null,
       words: state.words ?? null,
       meeting: state.meeting ? { ...state.meeting } : null,
       ...base
@@ -134,13 +141,33 @@ export function createMock(params) {
     emit('pill://level', { level: Math.max(0, Math.min(1, phrase * syllable)) });
   }, 20);
 
-  // The stop button takes clicks only in mock mode; in the app a native window over it does.
-  document.addEventListener('pointerover', (e) => e.target.closest?.('.stop') && emit('pill://pointer', { hover: true, pressed: false }));
-  document.addEventListener('pointerout', (e) => e.target.closest?.('.stop') && emit('pill://pointer', { hover: false, pressed: false }));
-  document.addEventListener('pointerdown', (e) => e.target.closest?.('.stop') && emit('pill://pointer', { hover: true, pressed: true }));
+  // The stop and monitor buttons take clicks only in mock mode; in the app native windows over them do.
+  const targetOf = (e) => (e.target.closest?.('.stop') ? 'stop' : e.target.closest?.('.screen-btn') ? 'screen' : null);
+  document.addEventListener('pointerover', (e) => targetOf(e) && emit('pill://pointer', { hover: true, pressed: false, target: targetOf(e) }));
+  document.addEventListener('pointerout', (e) => targetOf(e) && emit('pill://pointer', { hover: false, pressed: false, target: targetOf(e) }));
+  document.addEventListener('pointerdown', (e) => targetOf(e) && emit('pill://pointer', { hover: true, pressed: true, target: targetOf(e) }));
+
+  // A click on the monitor button moves to the next of two demo monitors, as the engine's next_monitor does, and
+  // says so for 2200 ms (pill.rs MOVED_HOLD).
+  const MONITORS = ['DELL U2720Q', 'Display 2'];
+  let monitor = 0;
+  let movedTimer = 0;
   document.addEventListener('pointerup', (e) => {
-    if (!e.target.closest?.('.stop') || !current?.meeting) return;
-    emit('pill://pointer', { hover: true, pressed: false });
+    if (targetOf(e) !== 'screen' || !current?.meeting) return;
+    emit('pill://pointer', { hover: true, pressed: false, target: 'screen' });
+    monitor = (monitor + 1) % MONITORS.length;
+    clearTimeout(movedTimer);
+    current = { ...current, seq: ++seq, notice: { key: 'pill.screenMoved', args: { name: MONITORS[monitor] } }, meeting: { ...current.meeting, compact: false } };
+    emit('pill://snapshot', current);
+    movedTimer = setTimeout(() => {
+      current = { ...current, seq: ++seq, notice: null };
+      emit('pill://snapshot', current);
+    }, 2200);
+  });
+
+  document.addEventListener('pointerup', (e) => {
+    if (targetOf(e) !== 'stop' || !current?.meeting) return;
+    emit('pill://pointer', { hover: true, pressed: false, target: 'stop' });
     clearTimeout(confirmTimer);
     if (!current.meeting.confirmStop) {
       current = { ...current, seq: ++seq, meeting: { ...current.meeting, confirmStop: true, compact: true } };
@@ -158,13 +185,15 @@ export function createMock(params) {
   // For dev/check.js: send any payload as if the app had sent it.
   window.__pillMock = { emit };
 
-  let hit = null;
+  const hits = {};
   function drawHit(layout) {
     if (params.get('hit') !== '1') return;
-    hit ||= document.body.appendChild(Object.assign(document.createElement('div'), { className: 'hit-debug' }));
-    const b = layout.button;
-    hit.hidden = !b;
-    if (b) Object.assign(hit.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.width}px`, height: `${b.height}px` });
+    for (const name of ['button', 'screenButton']) {
+      hits[name] ||= document.body.appendChild(Object.assign(document.createElement('div'), { className: 'hit-debug' }));
+      const b = layout[name];
+      hits[name].hidden = !b;
+      if (b) Object.assign(hits[name].style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.width}px`, height: `${b.height}px` });
+    }
   }
 
   const commands = {
