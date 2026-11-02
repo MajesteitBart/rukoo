@@ -24,7 +24,12 @@ mod tests {
     /// `VOICE_SCREEN_TEST_SPEC_EXTRA` adds options to every such test; `warp` runs them on
     /// Microsoft's software rasterizer, as on a CI runner without a GPU.
     fn spec(extra: &str) -> String {
-        let mut spec = format!("{SLIDES},software-encoder");
+        with_extra(&format!("{SLIDES},software-encoder"), extra)
+    }
+
+    /// `base` with `extra` and `VOICE_SCREEN_TEST_SPEC_EXTRA` added.
+    fn with_extra(base: &str, extra: &str) -> String {
+        let mut spec = base.to_string();
         for more in [
             extra.to_string(),
             std::env::var("VOICE_SCREEN_TEST_SPEC_EXTRA").unwrap_or_default(),
@@ -277,7 +282,10 @@ mod tests {
         let (mut recorder, mut screen) = start(
             &m,
             "video",
-            "synthetic:1440x2560,change-every=1500,text=Slide,software-encoder",
+            &with_extra(
+                "synthetic:1440x2560,change-every=1500,text=Slide,software-encoder",
+                "",
+            ),
             &[],
         );
         let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
@@ -303,7 +311,10 @@ mod tests {
         let (mut recorder, mut screen) = start(
             &m,
             "video",
-            "synthetic:5120x1440,change-every=1500,text=Slide,software-encoder",
+            &with_extra(
+                "synthetic:5120x1440,change-every=1500,text=Slide,software-encoder",
+                "",
+            ),
             &[],
         );
         let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
