@@ -498,6 +498,29 @@ fn restore_refuses_a_manifest_with_a_foreign_path() {
     plant(&fake, &key, "..", &manifest("..", vec![good.clone()]));
     restore(vec!["..".to_owned()]);
 
+    // A timeline whose segment line names a file outside the meeting folder, or another one in it:
+    // a media link would read it.
+    for named in [
+        "../../outside.pdf",
+        "C:/Users/someone/Documents/x.pdf",
+        "audio/mic/000002.wav",
+    ] {
+        let lines = [
+            serde_json::json!({"kind":"session","t":0,"wall":1_793_000_000_000u64,"session":1,
+                "pid":1,"resumed":false,"version":1,"recorder":"0.1.0"}),
+            serde_json::json!({"kind":"segment","t":0,"track":"mic","seq":1,"file":named}),
+            serde_json::json!({"kind":"segment_end","t":1000,"track":"mic","seq":1,"samples":16_000}),
+            serde_json::json!({"kind":"stop","t":1000,"wall":1_793_000_001_000u64,"reason":"user"}),
+        ];
+        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        let timeline = ManifestFile {
+            kind: "timeline".into(),
+            ..file("timeline.jsonl", text.as_bytes())
+        };
+        plant(&fake, &key, id, &manifest(id, vec![good.clone(), timeline]));
+        restore(vec![id.to_owned()]);
+    }
+
     // The same manifest with only meeting.json restores.
     plant(&fake, &key, id, &manifest(id, vec![good]));
     let (_, on_restored) = recorder();

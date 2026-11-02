@@ -21,7 +21,9 @@ use voice_recorder::timeline::{self, samples_to_ms, Line};
 
 use crate::format::{cipher_len, Header, Sealer, CHUNK, HEADER_LEN, TAG};
 use crate::keys::MasterKey;
-use crate::manifest::{is_meeting_path, merge_indexes, Index, Manifest, ManifestFile};
+use crate::manifest::{
+    is_meeting_path, is_segment_file, merge_indexes, Index, Manifest, ManifestFile,
+};
 use crate::names;
 use crate::queue::{hex, Import, MEDIA_KINDS};
 use crate::s3::Bucket;
@@ -48,6 +50,7 @@ pub fn synthesize_timeline(created_at: u64, files: &[ManifestFile]) -> String {
         .filter_map(|f| {
             let track = f.track.clone().or_else(|| track_of(&f.path))?;
             let seq = f.seq.or_else(|| seq_of(&f.path))?;
+            is_segment_file(&track, seq, &f.path).then_some(())?;
             Some((f.t?, track, seq, f.path.clone(), f.samples?))
         })
         .collect();
@@ -616,7 +619,21 @@ fn restore_into(
         return Err(crypto(BAD_MANIFEST));
     }
     let has_timeline = manifest.files.iter().any(|f| f.path == timeline::FILE_NAME);
-    if !has_timeline {
+    if has_timeline {
+        // The timeline comes back byte for byte, and its segment lines name the files that media
+        // links and transcription read: each must be the segment's own file in this folder.
+        let lines = timeline::read(&tmp.join(timeline::FILE_NAME))
+            .map_err(|e| local("Voice can't read a restored timeline", &e))?;
+        let foreign = lines.iter().any(|line| match line {
+            Line::Segment {
+                track, seq, file, ..
+            } => !is_segment_file(track, *seq, file),
+            _ => false,
+        });
+        if foreign {
+            return Err(crypto(BAD_MANIFEST));
+        }
+    } else {
         let text = synthesize_timeline(meeting_file.created_at, &manifest.files);
         fs::write(tmp.join(timeline::FILE_NAME), text)
             .map_err(|e| local("Voice can't write a timeline", &e))?;

@@ -63,6 +63,10 @@ fn main() {
             media_comes_back_from_the_bucket,
         ),
         (
+            "a_timeline_cant_point_a_link_outside_the_meeting",
+            a_timeline_cant_point_a_link_outside_the_meeting,
+        ),
+        (
             "a_restored_meeting_reaches_the_bridge",
             a_restored_meeting_reaches_the_bridge,
         ),
@@ -287,6 +291,13 @@ fn recorded_end(dir: &Path) -> u64 {
 
 fn code_of<T: std::fmt::Debug>(result: Result<T, ControlError>) -> ErrorCode {
     result.unwrap_err().code
+}
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 // Uploads ------------------------------------------------------------------------------------
@@ -782,6 +793,7 @@ fn media_comes_back_from_the_bucket() {
     let history = History::from_lines(&lines(&h.data(), &id));
     assert!(history.segments.iter().all(|s| dir.join(&s.file).is_file()));
 
+
     // With sync off, Voice never asks the bucket.
     engine
         .settings_set("storage.sync.enabled", json!(false))
@@ -793,6 +805,55 @@ fn media_comes_back_from_the_bucket() {
     );
     engine.shutdown();
     fake.stop();
+}
+
+fn a_timeline_cant_point_a_link_outside_the_meeting() {
+    let h = harness("media-outside", json!({"meetings_retention": "keep"}));
+    // A file elsewhere on this computer, and a meeting whose timeline names it twice, as one from
+    // the bucket could: by its absolute path and through `..`.
+    let outside = h.data().join("outside.pdf");
+    let bytes: Vec<u8> = b"NOT-A-MEETING-FILE-"
+        .iter()
+        .cycle()
+        .take(200_044)
+        .copied()
+        .collect();
+    std::fs::create_dir_all(h.data()).unwrap();
+    std::fs::write(&outside, &bytes).unwrap();
+    let created_at = wall_ms() - 60_000;
+    let id = MeetingId::with_suffix(created_at, 0x0abc).into_string();
+    let dir = meeting_dir(&h.data(), &id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let meeting = json!({
+        "id": id, "title": "Outside", "createdAt": created_at, "tracks": ["mic"],
+        "sources": { "mic": "default-input" }, "screen": "off", "startedBy": "voice",
+        "context": null, "retention": "keep", "version": 1
+    });
+    std::fs::write(
+        dir.join("meeting.json"),
+        serde_json::to_vec(&meeting).unwrap(),
+    )
+    .unwrap();
+    let timeline = [
+        json!({"kind":"session","t":0,"wall":created_at,"session":1,"pid":1,"resumed":false,
+            "version":1,"recorder":"0.1.0"}),
+        json!({"kind":"segment","t":0,"track":"mic","seq":1,"file":outside.to_string_lossy()}),
+        json!({"kind":"segment_end","t":6000,"track":"mic","seq":1,"samples":96_000}),
+        json!({"kind":"segment","t":6000,"track":"mic","seq":2,"file":"../../outside.pdf"}),
+        json!({"kind":"segment_end","t":12000,"track":"mic","seq":2,"samples":96_000}),
+        json!({"kind":"stop","t":12000,"wall":created_at + 12_000,"reason":"user"}),
+    ];
+    let text: String = timeline.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(dir.join("timeline.jsonl"), text).unwrap();
+
+    let engine = h.start();
+    let control = engine.meeting_control().unwrap();
+    // Neither segment names its own file, so nothing was recorded as far as a link goes.
+    assert_eq!(
+        code_of(control.media_open(&audio(&id, 0, Some(12_000)))),
+        ErrorCode::NotFound
+    );
+    engine.shutdown();
 }
 
 /// Stand-in screen media: one frame at 1 s, and one video file whose "clip" is a copy of it.

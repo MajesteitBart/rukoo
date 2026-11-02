@@ -26,6 +26,7 @@ use voice_meetings::reader::{segment_samples, PER_MS};
 use voice_meetings::{MeetingDir, TrackReader};
 use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MAX_MEDIA_READ};
 use voice_recorder::timeline::{History, SegmentRecord};
+use voice_sync::manifest::is_segment_file;
 use voice_sync::{BucketSync, SyncError, SyncErrorKind};
 
 use crate::meetings::controller::Controller;
@@ -377,10 +378,12 @@ impl MediaService {
             .iter()
             .map(|t| t.as_str().to_owned())
             .collect();
+        // Only segments that name their own file in this folder: a timeline restored from the
+        // bucket could otherwise point a link at any file on this computer.
         let segments: Vec<SegmentRecord> = History::from_lines(&dir.timeline())
             .segments
             .into_iter()
-            .filter(|s| tracks.contains(&s.track))
+            .filter(|s| tracks.contains(&s.track) && is_segment_file(&s.track, s.seq, &s.file))
             .collect();
         let path = dir.path();
         let samples = |s: &SegmentRecord| segment_length(path, s);

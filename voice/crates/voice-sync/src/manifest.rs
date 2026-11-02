@@ -138,6 +138,13 @@ pub fn is_meeting_path(path: &str) -> bool {
     }
 }
 
+/// Whether a timeline's `segment` line names the file the recorder writes for it,
+/// `audio/<track>/<seq as six digits>.wav` (voice/RECORDING.md). Readers join `file` to the meeting
+/// folder, so a timeline from elsewhere with an absolute path or `..` in it would read any file.
+pub fn is_segment_file(track: &str, seq: u64, file: &str) -> bool {
+    is_meeting_path(file) && file == format!("audio/{track}/{seq:06}.wav")
+}
+
 /// `n` ASCII digits followed by exactly `suffix`.
 fn digits_then(s: &str, n: usize, suffix: &str) -> bool {
     s.len() == n + suffix.len()
@@ -183,6 +190,23 @@ mod tests {
             "audio/mic/00000é.wav",
         ] {
             assert!(!is_meeting_path(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_segment_names_its_own_file() {
+        assert!(is_segment_file("mic", 1, "audio/mic/000001.wav"));
+        assert!(is_segment_file("call", 123_456, "audio/call/123456.wav"));
+        for (track, seq, file) in [
+            ("mic", 2, "audio/mic/000001.wav"),
+            ("mic", 1, "audio/call/000001.wav"),
+            ("mic", 1, "../../outside.pdf"),
+            ("mic", 1, "C:\\Users\\someone\\Documents\\x.pdf"),
+            ("mic", 1, "/etc/passwd"),
+            ("other", 1, "audio/other/000001.wav"),
+            ("mic", 1_000_000, "audio/mic/1000000.wav"),
+        ] {
+            assert!(!is_segment_file(track, seq, file), "{file}");
         }
     }
 
