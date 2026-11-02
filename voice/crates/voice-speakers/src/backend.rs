@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use crate::protocol::Failure;
+use crate::cpu::CpuFeatures;
+use crate::protocol::{ErrorKind, Failure};
 
 /// The `v3-streaming` preset with Ownkey's live geometry: 38 frames of 80 ms (3.04 s) per chunk
 /// and 1 frame of right context. It ran 8.2 times faster than real time on the maintainer's PC
@@ -40,6 +41,14 @@ pub struct Frames {
     pub first: u64,
     pub values: Vec<f32>,
     pub count: u64,
+}
+
+/// Refuses a processor the portable build can't run on, before anything native is loaded.
+pub fn check_cpu(features: CpuFeatures) -> Result<(), Failure> {
+    match features.refusal() {
+        Some(message) => Err(Failure::new(ErrorKind::Cpu, message)),
+        None => Ok(()),
+    }
 }
 
 pub trait Backend {
@@ -114,8 +123,9 @@ impl Backend for Native {
 #[cfg(not(windows))]
 impl Backend for Native {
     fn load(&mut self, _request: &LoadRequest) -> Result<Loaded, Failure> {
+        check_cpu(crate::cpu::detect())?;
         Err(Failure::new(
-            crate::protocol::ErrorKind::Runtime,
+            ErrorKind::Runtime,
             "Speaker labels run on Windows only.",
         ))
     }

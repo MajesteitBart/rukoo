@@ -24,7 +24,7 @@ use windows::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
 };
 
-use crate::backend::{Frames, SAMPLE_RATE};
+use crate::backend::{check_cpu, Frames, SAMPLE_RATE};
 use crate::cpu;
 use crate::protocol::{ErrorKind, Failure};
 
@@ -123,14 +123,6 @@ struct Functions {
 
 pub struct Runtime {
     f: Functions,
-}
-
-/// Refuses a processor the portable build can't run on, before anything native is loaded.
-pub fn check_cpu(features: cpu::CpuFeatures) -> Result<(), Failure> {
-    match features.refusal() {
-        Some(message) => Err(Failure::new(ErrorKind::Cpu, message)),
-        None => Ok(()),
-    }
 }
 
 fn runtime_failure(message: impl Into<String>) -> Failure {

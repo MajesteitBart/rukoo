@@ -181,6 +181,7 @@ fn invalid(id: Option<Value>, error: &str) -> Frame {
 /// Error kinds the client can act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(not(windows), allow(dead_code))] // Only the runtime reports model, behind and failed.
 pub enum ErrorKind {
     /// The request itself is wrong: framing, an unknown op, a bad field or the wrong order.
     BadRequest,
