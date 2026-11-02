@@ -31,6 +31,7 @@ const NOTICES = new Set([
   'pill.micBack',
   'pill.videoDropped.disk',
   'pill.videoDropped.encoder',
+  'pill.videoDropped.device',
   'pill.framesDropped.disk',
   'pill.screenFailed',
   'pill.screenMoved'
@@ -40,6 +41,7 @@ const NOTICES = new Set([
 const SCREEN_NOTICES = {
   'pill.videoDropped.disk': 'orange',
   'pill.videoDropped.encoder': 'orange',
+  'pill.videoDropped.device': 'orange',
   'pill.framesDropped.disk': 'orange',
   'pill.screenFailed': 'orange',
   'pill.screenMoved': 'text2'

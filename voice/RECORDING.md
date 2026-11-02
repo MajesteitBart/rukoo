@@ -306,8 +306,9 @@ The audio never stops for the screen. The screen process drops the video first a
 | The encoder fails: one retry with a new device and file after 2 s, then | dropped, `encoder` | |
 | No hardware encoder, or Media Foundation is missing | dropped, `encoder` | |
 | The graphics device is lost and two new ones fail | dropped, `device` | dropped, `device` |
+| The graphics device is lost and two new ones come without video support | dropped, `device` | |
 
-When both parts are dropped, the process writes `stop` with reason `dropped` and exits. A lost graphics device is otherwise recreated: the video file ends with reason `error`, `device_lost` is written, and the next `capture` line ends the gap. Other writers in the app, such as clip cuts, write only while at least the screen recording's floor plus 2 GiB stays free.
+When both parts are dropped, the process writes `stop` with reason `dropped` and exits. A lost graphics device is otherwise recreated: the video file ends with reason `error`, `device_lost` is written, and the next `capture` line ends the gap. While the video records on a device with video support, a new device without it, such as the basic display driver Windows runs while the real one restarts, counts as a failed one: the process tries again, and after two such devices it drops the video and records the frames on one. Other writers in the app, such as clip cuts, write only while at least the screen recording's floor plus 2 GiB stays free.
 
 ### `rukoo-voice-screen`
 
@@ -352,6 +353,7 @@ rukoo-voice-screen inspect <file.mp4>
 | `encoder-fail-at=<ms>` | The encoder fails at that moment |
 | `write-fail=video@<ms>`, `write-fail=frames@<ms>` | Writing video or frames fails with a full disk from that moment |
 | `device-lost-at=<ms>[x<n>]` | The graphics device is lost then, and the next `n` new devices fail too |
+| `no-video-device=<n>` | With `device-lost-at`, the next `n` new devices after the loss have no video support |
 | `monitor-gone-at=<ms>` | The first monitor leaves the monitor list then, without the capture's `Closed` notice, as when that notice is lost |
 | `warp` | The graphics device is WARP, Microsoft's software rasterizer, as on a CI runner |
 

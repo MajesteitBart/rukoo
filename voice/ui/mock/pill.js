@@ -55,6 +55,7 @@ export const STATES = {
   'meeting-mic-back': { phase: 'meeting', notice: 'pill.micBack', meeting: meeting() },
   'meeting-video-dropped': { phase: 'meeting', notice: 'pill.videoDropped.disk', meeting: meeting({ screen: 'video', screenSwitch: true }) },
   'meeting-video-dropped-encoder': { phase: 'meeting', notice: 'pill.videoDropped.encoder', meeting: meeting({ screen: 'video', screenSwitch: true }) },
+  'meeting-video-dropped-device': { phase: 'meeting', notice: 'pill.videoDropped.device', meeting: meeting({ screen: 'frames', screenSwitch: true }) },
   'meeting-frames-dropped': { phase: 'meeting', notice: 'pill.framesDropped.disk', meeting: meeting({ screen: 'frames' }) },
   'meeting-screen-failed': { phase: 'meeting', notice: 'pill.screenFailed', meeting: meeting({ screen: 'frames' }) },
   'meeting-screen-moved': { phase: 'meeting', notice: 'pill.screenMoved', args: { name: 'DELL U2720Q' }, meeting: meeting({ screen: 'frames', screenSwitch: true }) },

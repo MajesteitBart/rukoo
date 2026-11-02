@@ -312,6 +312,8 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         last: None,
         last_thumb_at: None,
         create_failures: 0,
+        no_video_devices: 0,
+        had_video_device: false,
         recovering: false,
         stop: None,
         stop_t: None,
@@ -380,6 +382,19 @@ fn choose_monitor(test: Option<&TestSpec>, list: &[MonitorInfo]) -> MonitorInfo 
         .unwrap_or_else(|| list[0].clone())
 }
 
+/// Why capture didn't start.
+enum StartFail {
+    /// The new graphics device lacks the video support the video needs.
+    NoVideo,
+    Windows(windows::core::Error),
+}
+
+impl From<windows::core::Error> for StartFail {
+    fn from(e: windows::core::Error) -> StartFail {
+        StartFail::Windows(e)
+    }
+}
+
 struct Stopping {
     t: u64,
     reason: String,
@@ -437,6 +452,10 @@ struct Screen {
     device_fault_at: Option<u64>,
     /// Device creations still to fail, from the `device-lost-at=<ms>x<n>` test switch.
     create_failures: u32,
+    /// Devices still to come without video support, from the `no-video-device=<n>` test switch.
+    no_video_devices: u32,
+    /// The process had a graphics device with video support: see `needs_video_device`.
+    had_video_device: bool,
     recovering: bool,
     stop: Option<Stopping>,
     stop_t: Option<u64>,
@@ -519,20 +538,39 @@ impl Screen {
             ));
         }
         let warp = self.test.as_ref().is_some_and(|t| t.warp);
+        if self.no_video_devices > 0 {
+            self.no_video_devices -= 1;
+            log("no-video-device test switch: a graphics device without video support");
+            return d3d::create(false, warp);
+        }
         d3d::create(self.mode == Mode::Video && self.drops.video.is_none(), warp)
     }
 
-    fn try_start(&mut self) -> windows::core::Result<()> {
+    /// Whether a new graphics device must have video support: the video still records and
+    /// this computer gave the process such a device before. `d3d::create` falls back to a
+    /// device without it, which suits frames only, and to WARP, which never has it; after a lost
+    /// device that fallback mustn't count as a recovery while the video needs the real one
+    /// (spec 2.5).
+    fn needs_video_device(&self) -> bool {
+        self.mode == Mode::Video && self.drops.video.is_none() && self.had_video_device
+    }
+
+    fn try_start(&mut self) -> Result<(), StartFail> {
         if self.d3d.is_none() {
             let device = self.make_device()?;
-            log(format_args!(
-                "graphics device: {}",
-                match (device.warp, device.video) {
-                    (true, _) => "WARP",
-                    (false, true) => "GPU with video support",
-                    (false, false) => "GPU",
-                }
-            ));
+            let kind = match (device.warp, device.video) {
+                (true, _) => "WARP",
+                (false, true) => "GPU with video support",
+                (false, false) => "GPU",
+            };
+            if self.needs_video_device() && !device.video {
+                log(format_args!(
+                    "graphics device: {kind}, without the video support the video needs"
+                ));
+                return Err(StartFail::NoVideo);
+            }
+            log(format_args!("graphics device: {kind}"));
+            self.had_video_device |= device.video;
             self.d3d = Some(device);
             self.source = None;
             self.thumbs = None;
@@ -567,18 +605,24 @@ impl Screen {
         {
             return;
         }
-        if let Err(e) = self.try_start() {
-            if is_device_lost(&e) && self.d3d.is_some() {
-                self.on_device_lost();
-                return;
+        match self.try_start() {
+            Ok(()) => {}
+            // Only a device without video support came: recover as from a lost device, which
+            // tries again and drops the video when the retries are spent.
+            Err(StartFail::NoVideo) => self.on_device_lost(),
+            Err(StartFail::Windows(e)) => {
+                if is_device_lost(&e) && self.d3d.is_some() {
+                    self.on_device_lost();
+                    return;
+                }
+                log(format_args!(
+                    "can't capture {}: {:#010x} {}",
+                    self.monitor.id,
+                    e.code().0,
+                    e.message()
+                ));
+                self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
             }
-            log(format_args!(
-                "can't capture {}: {:#010x} {}",
-                self.monitor.id,
-                e.code().0,
-                e.message()
-            ));
-            self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
         }
     }
 
@@ -698,11 +742,14 @@ impl Screen {
         // The policy counts this loss and every failed recreation; after `DEVICE_RETRIES`
         // failures it drops the video, then the frames, one step per call (spec 2.6). Each loss
         // gets a count of its own, so a device that came back doesn't bring a later loss closer
-        // to a drop: the episode starts from the drops made so far.
+        // to a drop: the episode starts from the drops made so far. A device without the video
+        // support the video needs counts as a failed recreation for the video only: once the
+        // video is dropped, the frames go on with such a device.
         let mut episode = DropState::new(self.mode == Mode::Video);
         episode.video = self.drops.video;
         episode.frames = self.drops.frames;
         let mut step = episode.on_device_lost();
+        let mut without_video = false;
         for _ in 0..16 {
             match step {
                 EncoderStep::Retry => {
@@ -712,7 +759,13 @@ impl Screen {
                     }
                     match self.try_start() {
                         Ok(()) => break,
-                        Err(e) => {
+                        Err(StartFail::NoVideo) => {
+                            without_video = true;
+                            self.release_device();
+                            std::thread::sleep(DEVICE_RETRY_PAUSE);
+                            step = episode.on_device_without_video();
+                        }
+                        Err(StartFail::Windows(e)) => {
                             log(format_args!(
                                 "recreating the graphics device failed: {:#010x}",
                                 e.code().0
@@ -729,7 +782,11 @@ impl Screen {
                         Part::Frames => self.drops.frames = Some(reason),
                     }
                     self.apply_drop(part, reason);
-                    step = episode.on_device_lost();
+                    step = if without_video {
+                        episode.on_device_without_video()
+                    } else {
+                        episode.on_device_lost()
+                    };
                 }
                 EncoderStep::Ignore => break,
             }
@@ -777,6 +834,7 @@ impl Screen {
                     .test
                     .as_ref()
                     .map_or(0, |spec| spec.device_create_failures);
+                self.no_video_devices = self.test.as_ref().map_or(0, |spec| spec.no_video_devices);
                 log("device-lost-at test switch: the graphics device is gone");
                 self.on_device_lost();
                 return;

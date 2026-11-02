@@ -86,7 +86,7 @@ What the page shows:
 | `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
 | `meeting`, `recording` | none | pulsing dot, "Recording" (or nothing when `compact`), time, the monitor button when `screenSwitch`, stop button |
 | `meeting`, `recording` or `paused` | `pill.micLost`, `pill.micBack` | microphone icon in orange or green, the notice, time, stop button |
-| `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.framesDropped.disk`, `pill.screenFailed` | screen icon in orange, the notice: the video, or the whole screen recording, stopped; the audio goes on. The app holds each for 4000 ms. |
+| `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.videoDropped.device`, `pill.framesDropped.disk`, `pill.screenFailed` | screen icon in orange, the notice: the video, or the whole screen recording, stopped; the audio goes on. The app holds each for 4000 ms. |
 | `meeting`, `recording` or `paused` | `pill.screenMoved` with `args.name` | screen icon in grey, "Screen: {name}": Voice records another monitor now. The app holds it for 2200 ms. |
 | `meeting`, `paused` | | pause glyph, "Paused", grey time, stop button |
 | `meeting`, `processing` | | spinner, "Saving" |

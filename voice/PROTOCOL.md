@@ -214,7 +214,7 @@ Something that happened at a moment in the meeting.
 
 - `track` is `mic`, `call`, `screen` or `null` when the mark is about the whole meeting. `dropped`, `video_dropped`, `screen_gap` and `monitor` come with `screen`; `gap` never does.
 - `label` is the text the user gave a `user` mark, the device name of a `device` mark or the monitor name of a `monitor` mark.
-- On a `screen_gap`, `locked` means the computer was locked or its session disconnected, `crash` that Voice's screen recorder restarted, and `device` that the graphics device was reset. On `dropped` and `video_dropped`, `device` means the graphics device couldn't be started again. `lost` on a `monitor` mark means the monitor Voice recorded went away. When the screen recording stops for good, Voice sends `dropped`; when the video had stopped before, a `video_dropped` came first.
+- On a `screen_gap`, `locked` means the computer was locked or its session disconnected, `crash` that Voice's screen recorder restarted, and `device` that the graphics device was reset. On `dropped`, `device` means the graphics device couldn't be started again. On `video_dropped`, `device` means the graphics device was reset and didn't come back with the video support the encoder needs; the frames go on, unless no device came back at all, when a `dropped` with `device` follows at once. `lost` on a `monitor` mark means the monitor Voice recorded went away. When the screen recording stops for good, Voice sends `dropped`; when the video had stopped before, a `video_dropped` came first.
 - Voice sends a mark once it is complete. A gap is sent when the audio or the screen comes back, or the meeting ends.
 - Rukoo shows a mark of a `kind` it doesn't know as a plain mark.
 

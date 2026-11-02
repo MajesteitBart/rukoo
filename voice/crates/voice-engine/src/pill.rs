@@ -45,6 +45,7 @@ pub mod notices {
     pub const MEETING_FAILED: &str = "pill.meetingFailed";
     pub const VIDEO_DROPPED_DISK: &str = "pill.videoDropped.disk";
     pub const VIDEO_DROPPED_ENCODER: &str = "pill.videoDropped.encoder";
+    pub const VIDEO_DROPPED_DEVICE: &str = "pill.videoDropped.device";
     pub const FRAMES_DROPPED_DISK: &str = "pill.framesDropped.disk";
     pub const SCREEN_FAILED: &str = "pill.screenFailed";
     /// `{name}`: the monitor's name.

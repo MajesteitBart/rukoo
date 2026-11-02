@@ -742,6 +742,83 @@ mod tests {
         assert_timeline_continuous(&m);
     }
 
+    /// The graphics devices the screen process's log names, in order.
+    fn devices(m: &TempMeeting) -> Vec<String> {
+        fs::read_to_string(m.screen_log())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                l.split_once("graphics device: ")
+                    .map(|(_, d)| d.to_string())
+            })
+            .collect()
+    }
+
+    /// After a lost device, a new one without video support, as a basic display driver while the
+    /// real one restarts, isn't a recovery while the video records: the process tries again and
+    /// the video comes back on a device with video support. When only such devices come, the
+    /// video goes with `dropped video device` and the frames go on.
+    pub fn a_device_without_video_support_is_no_recovery() {
+        let m = TempMeeting::new("no-video-device", "video");
+        let (mut recorder, mut screen) = start(
+            &m,
+            "video",
+            &spec("device-lost-at=3000,no-video-device=1"),
+            &[],
+        );
+        let lines = m.wait_journal("video and frames after the loss", |l| {
+            position(l, "device_lost", |_| true).is_some_and(|lost| {
+                first(&l[lost..], "video").is_some() && first(&l[lost..], "frame").is_some()
+            })
+        });
+        assert!(first(&lines, "dropped").is_none(), "{}", show(&lines));
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert!(first(&lines, "dropped").is_none(), "{}", show(&lines));
+        let devices = devices(&m);
+        if devices.first().map(String::as_str) != Some("GPU with video support") {
+            // WARP, as on a CI runner: no device ever has video support, so any one recovers.
+            println!(
+                "    no graphics device with video support here ({devices:?}); skipped the rest"
+            );
+            return;
+        }
+        assert!(
+            devices
+                .iter()
+                .any(|d| d.ends_with("without the video support the video needs")),
+            "{devices:?}"
+        );
+        assert_eq!(
+            devices.last().map(String::as_str),
+            Some("GPU with video support"),
+            "{devices:?}"
+        );
+
+        let m = TempMeeting::new("no-video-devices", "video");
+        let (mut recorder, mut screen) = start(
+            &m,
+            "video",
+            &spec("device-lost-at=3000,no-video-device=3"),
+            &[],
+        );
+        let lines = m.wait_journal("dropped video", |l| first(l, "dropped").is_some());
+        let dropped = first(&lines, "dropped").unwrap().clone();
+        assert_eq!(
+            (dropped["what"].as_str(), dropped["reason"].as_str()),
+            (Some("video"), Some("device")),
+            "{}",
+            show(&lines)
+        );
+        m.wait_journal("frames after the drop", |l| {
+            of_kind(l, "frame").iter().any(|f| t(f) > t(&dropped))
+        });
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_eq!(of_kind(&lines, "dropped").len(), 1, "{}", show(&lines));
+        assert_eq!(lines.last().unwrap()["reason"], "meeting");
+        assert_frames_open(&m, &lines);
+        assert_timeline_continuous(&m);
+    }
+
     pub fn pause_stops_capture() {
         let m = TempMeeting::new("pause", "video");
         let (mut recorder, mut screen) = start(&m, "video", &spec(""), &[]);
@@ -1154,6 +1231,11 @@ fn main() {
             name: "device_loss_keeps_frames",
             ignored: false,
             run: tests::device_loss_keeps_frames,
+        },
+        Test {
+            name: "a_device_without_video_support_is_no_recovery",
+            ignored: false,
+            run: tests::a_device_without_video_support_is_no_recovery,
         },
         Test {
             name: "pause_stops_capture",

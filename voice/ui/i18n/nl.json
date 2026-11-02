@@ -47,6 +47,7 @@
   "pill.micBack": "Microfoon terug",
   "pill.videoDropped.disk": "Video gestopt: schijf bijna vol",
   "pill.videoDropped.encoder": "Video gestopt: geen encoder",
+  "pill.videoDropped.device": "Video gestopt: videokaart",
   "pill.framesDropped.disk": "Scherm gestopt: schijf bijna vol",
   "pill.screenFailed": "Schermopname gestopt",
   "pill.screenMoved": "Scherm: {name}",

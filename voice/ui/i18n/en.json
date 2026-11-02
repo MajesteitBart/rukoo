@@ -182,6 +182,10 @@
     "message": "Video stopped: no encoder",
     "description": "Pill notice: Voice records the screen as frames only, because no video encoder on this computer worked. voice/ui/pill.js (meetingView)."
   },
+  "pill.videoDropped.device": {
+    "message": "Video stopped: graphics card",
+    "description": "Pill notice: Voice stopped the screen video because the graphics device was reset and didn't come back with the video support the encoder needs; the screen frames go on, unless \"Screen recording stopped\" follows. voice/ui/pill.js (meetingView)."
+  },
   "pill.framesDropped.disk": {
     "message": "Screen stopped: disk almost full",
     "description": "Pill notice: Voice stopped recording the screen, frames and video, to keep recording audio, because the disk is almost full. voice/ui/pill.js (meetingView)."

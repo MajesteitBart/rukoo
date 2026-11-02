@@ -194,6 +194,25 @@ impl DropState {
         }
     }
 
+    /// A new device works but lacks the video support the lost one had, as a basic display
+    /// driver does while the real one restarts. It counts as a failed recreation for the video
+    /// only: `Retry` until `DEVICE_RETRIES` recreations failed, then `Drop(Video, Device)`. Once
+    /// the video is dropped, or never recorded, such a device suits the frames: `Retry`, and
+    /// `Ignore` when the frames are dropped too.
+    pub fn on_device_without_video(&mut self) -> EncoderStep {
+        if !self.video_recording() {
+            return match self.frames_recording() {
+                true => EncoderStep::Retry,
+                false => EncoderStep::Ignore,
+            };
+        }
+        self.device_failures = self.device_failures.saturating_add(1);
+        if self.device_failures <= DEVICE_RETRIES {
+            return EncoderStep::Retry;
+        }
+        self.step(Part::Video, Reason::Device)
+    }
+
     /// A new device and capture session work again.
     pub fn on_device_recovered(&mut self) {
         self.device_failures = 0;
@@ -393,6 +412,44 @@ mod tests {
             s.on_device_lost(),
             EncoderStep::Drop(Part::Frames, Reason::Device)
         );
+        assert_eq!(s.video, Some(Reason::Encoder));
+    }
+
+    #[test]
+    fn a_device_without_video_support_costs_only_the_video() {
+        // Lost; both recreations bring a device without video support: the video goes, and
+        // the frames go on with such a device.
+        let mut s = DropState::new(true);
+        assert_eq!(s.on_device_lost(), EncoderStep::Retry);
+        assert_eq!(s.on_device_without_video(), EncoderStep::Retry);
+        assert_eq!(
+            s.on_device_without_video(),
+            EncoderStep::Drop(Part::Video, Reason::Device)
+        );
+        assert_eq!(s.on_device_without_video(), EncoderStep::Retry);
+        assert!(s.frames_recording());
+        // When even that device can't be made, the frames go as well.
+        assert_eq!(
+            s.on_device_lost(),
+            EncoderStep::Drop(Part::Frames, Reason::Device)
+        );
+        assert_eq!(s.on_device_without_video(), EncoderStep::Ignore);
+        assert!(s.all_dropped());
+
+        // One device without video support, then the real one: nothing is dropped.
+        let mut s = DropState::new(true);
+        assert_eq!(s.on_device_lost(), EncoderStep::Retry);
+        assert_eq!(s.on_device_without_video(), EncoderStep::Retry);
+        assert!(!s.all_dropped() && s.video_recording());
+
+        // Frames only, or the video dropped earlier: such a device is fine.
+        assert_eq!(
+            DropState::new(false).on_device_without_video(),
+            EncoderStep::Retry
+        );
+        let mut s = DropState::new(true);
+        s.on_no_encoder();
+        assert_eq!(s.on_device_without_video(), EncoderStep::Retry);
         assert_eq!(s.video, Some(Reason::Encoder));
     }
 

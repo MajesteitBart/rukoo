@@ -375,15 +375,7 @@ impl Core {
     pub fn on_screen(self: &Arc<Self>, change: ScreenChange) {
         match change {
             ScreenChange::Dropped { id, what, reason } => {
-                let key = match (what, reason) {
-                    (Part::Video, Reason::Disk) => Some(notices::VIDEO_DROPPED_DISK),
-                    (Part::Video, Reason::Encoder) => Some(notices::VIDEO_DROPPED_ENCODER),
-                    // Frames stop right after for the same reason; that notice says it.
-                    (Part::Video, Reason::Device) => None,
-                    (Part::Frames, Reason::Disk) => Some(notices::FRAMES_DROPPED_DISK),
-                    (Part::Frames, _) => Some(notices::SCREEN_FAILED),
-                };
-                self.screen_notice(&id, key, Map::new(), DROP_HOLD);
+                self.screen_notice(&id, Some(drop_notice(what, reason)), Map::new(), DROP_HOLD);
                 if let Some(body) = drop_text(what, reason) {
                     self.notify(NOTIFY_MEETING, body.to_string());
                 }
@@ -539,16 +531,71 @@ pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
     }
 }
 
+/// The pill notice for a part of the screen recording that stopped.
+fn drop_notice(what: Part, reason: Reason) -> &'static str {
+    match (what, reason) {
+        (Part::Video, Reason::Disk) => notices::VIDEO_DROPPED_DISK,
+        (Part::Video, Reason::Encoder) => notices::VIDEO_DROPPED_ENCODER,
+        (Part::Video, Reason::Device) => notices::VIDEO_DROPPED_DEVICE,
+        (Part::Frames, Reason::Disk) => notices::FRAMES_DROPPED_DISK,
+        (Part::Frames, _) => notices::SCREEN_FAILED,
+    }
+}
+
 /// The tray notification for a part of the screen recording that stopped.
 fn drop_text(what: Part, reason: Reason) -> Option<&'static str> {
     Some(match (what, reason) {
         (Part::Video, Reason::Disk) => "Voice stopped the screen video to keep recording audio: the disk is almost full. Frames go on.",
         (Part::Video, Reason::Encoder) => "Voice records the screen as frames only: no video encoder on this computer worked.",
+        // The frames go on with a device without video support. When no device came back at
+        // all, the frames stop right after and their notification says so.
+        (Part::Video, Reason::Device) => "Voice stopped the screen video: the graphics device didn't come back with video support.",
         (Part::Frames, Reason::Disk) => "Voice stopped recording the screen to keep recording audio: the disk is almost full.",
         (Part::Frames, Reason::Device) => "Voice stopped recording the screen: the graphics device couldn't be started again. The audio goes on.",
-        // Video stops for a lost device together with the frames, which say it.
-        (Part::Video, Reason::Device) | (Part::Frames, Reason::Encoder) => return None,
+        (Part::Frames, Reason::Encoder) => return None,
     })
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    /// Every drop the screen process can journal reaches the pill, and every one but a frames
+    /// drop for the encoder, which never happens, the tray.
+    #[test]
+    fn every_drop_has_a_notice_and_a_notification() {
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Disk),
+            "pill.videoDropped.disk"
+        );
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Encoder),
+            "pill.videoDropped.encoder"
+        );
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Device),
+            "pill.videoDropped.device"
+        );
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Disk),
+            "pill.framesDropped.disk"
+        );
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Device),
+            "pill.screenFailed"
+        );
+        assert!(drop_text(Part::Video, Reason::Encoder)
+            .unwrap()
+            .contains("frames only"));
+        assert!(drop_text(Part::Video, Reason::Device)
+            .unwrap()
+            .contains("video support"));
+        assert!(drop_text(Part::Video, Reason::Disk)
+            .unwrap()
+            .contains("Frames go on"));
+        assert!(drop_text(Part::Frames, Reason::Device).is_some());
+        assert!(drop_text(Part::Frames, Reason::Disk).is_some());
+    }
 }
 
 /// How long quitting waits for the local model to stop. Longer than its own 2 s quit grace, so a

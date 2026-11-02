@@ -220,6 +220,29 @@ impl ScreenLive {
                 _ => {}
             }
         }
+        // Video and frames dropped together, as a full disk or a device that never came back
+        // does: the frames' notice says the whole screen recording stopped, and a video notice
+        // saying the frames go on would contradict it.
+        let frames_dropped = changes.iter().any(|c| {
+            matches!(
+                c,
+                ScreenChange::Dropped {
+                    what: Part::Frames,
+                    ..
+                }
+            )
+        });
+        if frames_dropped {
+            changes.retain(|c| {
+                !matches!(
+                    c,
+                    ScreenChange::Dropped {
+                        what: Part::Video,
+                        ..
+                    }
+                )
+            });
+        }
         changes
     }
 
@@ -1374,5 +1397,64 @@ mod tests {
         let mut stopped = live(ScreenMode::Frames);
         stopped.stopped = Some("meeting".into());
         assert!(!stopped.recording());
+    }
+
+    /// Video and frames dropped in one read get the frames' notice only; a video drop alone
+    /// gets its own.
+    #[test]
+    fn a_drop_of_both_parts_reports_the_frames() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-engine-drops-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = voice_screen_files::journal::JournalWriter::open(&dir).unwrap();
+        let mut live = ScreenLive::new("m-1", &dir, ScreenMode::Video, Phase::Running);
+        let dropped = |what: &str| Line::Dropped {
+            t: 5_000,
+            what: what.into(),
+            reason: "device".into(),
+        };
+        journal.write(&dropped("video")).unwrap();
+        journal.write(&dropped("frames")).unwrap();
+        let changes = live.read_journal(true);
+        assert!(
+            matches!(
+                changes.as_slice(),
+                [ScreenChange::Dropped {
+                    what: Part::Frames,
+                    reason: Reason::Device,
+                    ..
+                }]
+            ),
+            "{changes:?}"
+        );
+        assert_eq!(live.dropped_video, Some(Reason::Device));
+        assert_eq!(live.shown_mode(), ScreenMode::Off);
+
+        let other = dir.join("video-only");
+        std::fs::create_dir_all(&other).unwrap();
+        let mut journal = voice_screen_files::journal::JournalWriter::open(&other).unwrap();
+        let mut live = ScreenLive::new("m-2", &other, ScreenMode::Video, Phase::Running);
+        journal.write(&dropped("video")).unwrap();
+        let changes = live.read_journal(true);
+        assert!(
+            matches!(
+                changes.as_slice(),
+                [ScreenChange::Dropped {
+                    what: Part::Video,
+                    reason: Reason::Device,
+                    ..
+                }]
+            ),
+            "{changes:?}"
+        );
+        assert_eq!(live.shown_mode(), ScreenMode::Frames);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
