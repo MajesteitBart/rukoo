@@ -164,7 +164,20 @@ mod tests {
             reached + 2_000 >= killed_at,
             "the video ends at {reached} ms, killed at {killed_at}"
         );
-        let report = assert_video_reads(&path);
+        // A kill between two writes of one fragment leaves a torn last box. The promise is the
+        // file up to its last complete fragment, which `--resume` and `finalize` cut it back to.
+        let report = if index.complete_len == index.file_len {
+            assert_video_reads(&path)
+        } else {
+            println!(
+                "    the kill tore the last box: {} of {} bytes complete",
+                index.complete_len, index.file_len
+            );
+            let copy = m.root.join("killed-repaired.mp4");
+            fs::copy(&path, &copy).unwrap();
+            mp4::repair(&copy).unwrap();
+            assert_video_reads(&copy)
+        };
         if hardware {
             let fragments: Vec<u64> = serde_json::from_value(report["fragmentMs"].clone()).unwrap();
             println!(
