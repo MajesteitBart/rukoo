@@ -37,7 +37,10 @@ pub use pipeline::{
     speaker_of, ConsentCheck, Pipeline, PipelineHandle, PipelineOptions, PipelineState, Timing,
 };
 pub use reader::TrackReader;
-pub use retention::{retention_sweep, retention_sweep_at, WEEK_MS};
+pub use retention::{
+    release_held, retention_sweep, retention_sweep_at, retention_sweep_holding, MediaPart, Swept,
+    WEEK_MS,
+};
 pub use stt::{TimedSpeechToText, TimedText};
 pub use transcript::Transcript;
 pub use voice_core::config::Retention;
