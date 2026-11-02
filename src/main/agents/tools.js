@@ -2597,6 +2597,14 @@ const MEDIA_NOTE =
 // Added when Voice hadn't cut the video yet, so to_seconds is the end asked for and not where the video ends.
 const VIDEO_END_NOTE =
   ' Rukoo Voice was still preparing this video, so to_seconds is the end you asked for: the MP4 ends earlier where the video breaks at a pause or a monitor switch, and its length says where.';
+// Added when the file ends less than a second after from_seconds, so to_seconds, rounded down, equals from_seconds.
+// Going on from to_seconds would open the same file again: a video goes on from the next whole second, past the break.
+function shortEndNote(kind, endMs, from) {
+  const at = endMs / 1000;
+  return kind === 'video'
+    ? ` This video ends at ${at} seconds, where it breaks at a pause or a monitor switch, so to_seconds rounds down to from_seconds. Ask for the next stretch from ${from + 1} seconds.`
+    : ` The audio ends at ${at} seconds, where the recording stops, so to_seconds rounds down to from_seconds.`;
+}
 // media.open's polling while the tool waits for a video: every 250 ms at first, then up to once a second.
 const MEDIA_POLL_FIRST_MS = 250;
 const MEDIA_POLL_MAX_MS = 1000;
@@ -2658,10 +2666,14 @@ async function getMeetingMediaLink(hub, args, call) {
   }
   // A file Voice has ready says where it really ends: audio where the recording stops, video where it breaks at a
   // pause or a monitor switch. That end, in whole seconds, goes back as to_seconds, so the agent asks for the next
-  // stretch from there. The link keeps the range asked for, so fetching it opens the same file in Voice.
+  // stretch from there. The link keeps the range asked for, so fetching it opens the same file in Voice. The end is
+  // checked in milliseconds, before rounding: one less than a second after from_seconds is still where the file ends.
   const cut = opened && opened.ready === true;
-  const ready = to !== null && cut && Number.isSafeInteger(opened.end) ? Math.floor(opened.end / 1000) : null;
-  const shown = ready !== null && ready > from && ready < to ? ready : to;
+  const endMs = to !== null && cut && Number.isSafeInteger(opened.end) && opened.end > from * 1000 && opened.end < to * 1000 ? opened.end : null;
+  const shown = endMs === null ? to : Math.floor(endMs / 1000);
+  let note = MEDIA_NOTE;
+  if (kind === 'video' && !cut) note += VIDEO_END_NOTE;
+  else if (endMs !== null && shown === from) note += shortEndNote(kind, endMs, from);
   const link = hub.mediaLinks
     ? hub.mediaLinks.issue({ agent: call.agent, remote: call.remote, peer: call.peer, tokenHash: call.tokenHash, meeting: id, kind, start: from * 1000, end: to === null ? null : to * 1000 })
     : null;
@@ -2678,7 +2690,7 @@ async function getMeetingMediaLink(hub, args, call) {
     url: link.url,
     expires_at: iso(link.expiresAt),
     expires_in_seconds: Math.round(hub.mediaLinks.ttlMs / 1000),
-    note: kind === 'video' && !cut ? MEDIA_NOTE + VIDEO_END_NOTE : MEDIA_NOTE
+    note
   };
 }
 

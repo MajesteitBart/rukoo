@@ -565,6 +565,35 @@ test('a media link checks the kind against the screen and the range against the 
   assert.equal(audio.length, 1);
 });
 
+test('a media link that ends less than a second after from_seconds keeps that end and says where to go on', async (t) => {
+  const { feed, call, hub, voice } = await setup(t);
+  const DONE = 'm-20261031-100000-0abc';
+  const T1 = Date.now() - 86400000;
+  feed([startedEv(DONE, { title: 'Video', startedAt: T1, screen: 'video' }), ev('meeting.state', DONE, { state: 'done', at: 1000, endedAt: T1 + 1000000 })]);
+  // The agent went on from the last link's to_seconds, 371, and the video breaks at 371.5 s, at a pause. After the
+  // pause it goes on at 400 s.
+  withMedia(hub, voice, (args) =>
+    args.start === 371000
+      ? { media: MEDIA_ID, ready: true, type: 'video/mp4', size: 512, start: args.start, end: 371500 }
+      : { media: MEDIA_ID, ready: true, type: 'video/mp4', size: 4096, start: 400000, end: args.end }
+  );
+  const short = data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 371, to_seconds: 671 }));
+  assert.equal(short.to_seconds, 371, 'where the video ends, not the 671 asked for: going on from 671 would skip 371.5 to 671');
+  assert.match(short.note, / This video ends at 371\.5 seconds, where it breaks at a pause or a monitor switch, so to_seconds rounds down to from_seconds\. Ask for the next stretch from 372 seconds\.$/);
+  assert.doesNotMatch(short.note, /still preparing/);
+  assert.equal(hub.mediaLinks.verify(LINK.exec(short.url)[2]).e, 671000, 'the link keeps the range asked for');
+  // Going on as the note says gets the video after the pause, with the plain note.
+  const next = data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 372, to_seconds: 672 }));
+  assert.equal(next.to_seconds, 672);
+  assert.doesNotMatch(next.note, /rounds down/);
+
+  // Audio ends where the recording stops, so there is no next stretch to point at.
+  withMedia(hub, voice, (args) => ({ media: MEDIA_ID, ready: true, type: 'audio/wav', size: 44, start: args.start, end: 999400 }));
+  const tail = data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'audio', from_seconds: 999, to_seconds: 1000 }));
+  assert.equal(tail.to_seconds, 999);
+  assert.match(tail.note, / The audio ends at 999\.4 seconds, where the recording stops, so to_seconds rounds down to from_seconds\.$/);
+});
+
 test("a media link turns each of Voice's answers into what the agent can do", async (t) => {
   const { feed, call, hub, voice } = await setup(t);
   feed(meetingEvents());
