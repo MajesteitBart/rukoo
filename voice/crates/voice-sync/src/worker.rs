@@ -424,6 +424,20 @@ struct Worker {
     prune_retry: Option<Instant>,
     /// Counter for staged file names.
     staged: AtomicU64,
+    /// Meetings whose last scan found a file it couldn't queue, such as a segment another program
+    /// held open. They don't count as synced, so retention keeps holding their media. Every run
+    /// starts with a scan of every meeting, which fills this before any manifest goes up.
+    unread: HashSet<String>,
+}
+
+/// What became of one file a scan found.
+#[derive(Debug, PartialEq, Eq)]
+enum Queued {
+    Added,
+    /// Its row is there already.
+    Known,
+    /// It couldn't be read or changed while it was read: the next scan tries again.
+    NotNow,
 }
 
 impl Worker {
@@ -441,6 +455,7 @@ impl Worker {
             wait_until: None,
             prune_retry: None,
             staged: AtomicU64::new(0),
+            unread: HashSet::new(),
         }
     }
 
@@ -660,7 +675,12 @@ impl Worker {
             .ensure_meeting(id, &mhash, &file.title, file.created_at)?;
         let before = shared.queue.meeting(id)?;
         let backfill = file.created_at < enabled_at;
-        let (live, found) = scan::scan(dir, shared.opts.screen.as_ref(), backfill);
+        let scan::Scan {
+            live,
+            found,
+            unreadable,
+        } = scan::scan(dir, shared.opts.screen.as_ref(), backfill);
+        let mut unread = unreadable;
         let outcome = if live {
             None
         } else {
@@ -693,9 +713,21 @@ impl Worker {
             if shared.stopping() {
                 return Ok(());
             }
-            if let Err(e) = self.add_file(dir, &mhash, found, now) {
-                log::warn!("sync: can't queue a file: {e}");
+            match self.add_file(dir, &mhash, found, now) {
+                Ok(Queued::Added | Queued::Known) => {}
+                Ok(Queued::NotNow) => unread = true,
+                Err(e) => {
+                    log::warn!("sync: can't queue a file: {e}");
+                    unread = true;
+                }
             }
+        }
+        if unread {
+            if self.unread.insert(id.to_owned()) {
+                log::info!("sync: a file of a meeting can't be read now; its media stays held");
+            }
+        } else {
+            self.unread.remove(id);
         }
         // A meeting that became done needs a manifest that says so.
         if before.as_ref().is_some_and(|b| b.state != state) {
@@ -703,7 +735,9 @@ impl Worker {
         }
         let after = shared.queue.meeting(id)?;
         let waiting = shared.queue.meeting_waiting(id, true)?;
+        // Synced only once every file the scan found has its row: one it couldn't read has none.
         let complete = !live
+            && !unread
             && matches!(state, "done" | "failed")
             && !waiting
             && after
@@ -738,20 +772,20 @@ impl Worker {
         done_at.is_some_and(|at| at.saturating_add(days * DAY_MS) <= now)
     }
 
-    /// Queues a found file when it is new or changed. True when a row was added.
+    /// Queues a found file when it is new or changed.
     fn add_file(
         &self,
         dir: &MeetingDir,
         mhash: &str,
         found: &Found,
         now: u64,
-    ) -> Result<bool, SyncError> {
+    ) -> Result<Queued, SyncError> {
         let shared = &self.shared;
         let id = dir.id().as_str();
         let known = shared.queue.known(id, &found.path)?;
         if found.kind == "transcript" {
             if known.as_ref().is_some_and(|k| k.1 == Some(found.mtime)) {
-                return Ok(false);
+                return Ok(Queued::Known);
             }
             return self.add_transcript(dir, mhash, found, known.map(|k| k.2), now);
         }
@@ -759,21 +793,23 @@ impl Worker {
             .as_ref()
             .is_some_and(|k| k.0 == found.size && k.1 == Some(found.mtime))
         {
-            return Ok(false);
+            return Ok(Queued::Known);
         }
         let path = dir.path().join(&found.path);
         let Ok((sha, len)) = sha256_file(&path) else {
-            return Ok(false);
+            // Another program holds it open, for instance: the next scan tries again.
+            return Ok(Queued::NotNow);
         };
         if len != found.size {
             // It changed while it was read; the next scan looks again.
-            return Ok(false);
+            return Ok(Queued::NotNow);
         }
         if known.as_ref().is_some_and(|k| k.2 == sha) {
             shared.queue.set_mtime(id, &found.path, &sha, found.mtime)?;
-            return Ok(false);
+            return Ok(Queued::Known);
         }
-        self.insert(id, mhash, found, found.size, sha, None, now)
+        let added = self.insert(id, mhash, found, found.size, sha, None, now)?;
+        Ok(if added { Queued::Added } else { Queued::Known })
     }
 
     /// `transcript.db` goes up as a `VACUUM INTO` snapshot in `staging/`, because a database in
@@ -785,12 +821,12 @@ impl Worker {
         found: &Found,
         known_sha: Option<String>,
         now: u64,
-    ) -> Result<bool, SyncError> {
+    ) -> Result<Queued, SyncError> {
         let shared = &self.shared;
         let id = dir.id().as_str();
         if folder_size(&shared.staging) > STAGING_MAX || !(shared.opts.reserve)(found.size) {
             log::info!("sync: no room for a transcript snapshot now");
-            return Ok(false);
+            return Ok(Queued::NotNow);
         }
         fs::create_dir_all(&shared.staging)
             .map_err(|e| local("Voice can't make its staging folder", &e))?;
@@ -812,13 +848,14 @@ impl Worker {
         if known_sha.as_deref() == Some(sha.as_str()) {
             let _ = fs::remove_file(&staged);
             shared.queue.set_mtime(id, &found.path, &sha, found.mtime)?;
-            return Ok(false);
+            return Ok(Queued::Known);
         }
         let added = self.insert(id, mhash, found, size, sha, Some(staged.clone()), now)?;
         if !added {
             let _ = fs::remove_file(&staged);
+            return Ok(Queued::Known);
         }
-        Ok(added)
+        Ok(Queued::Added)
     }
 
     /// One new row with a fresh header. Older versions of the file that still wait give way.
@@ -1420,6 +1457,7 @@ impl Worker {
             return Ok(());
         };
         if m.phase == "after"
+            && !self.unread.contains(meeting)
             && matches!(m.state.as_str(), "done" | "failed")
             && !m.manifest_dirty
             && !queue.meeting_waiting(meeting, true)?

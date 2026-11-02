@@ -57,6 +57,16 @@ pub struct Found {
     pub samples: Option<u64>,
 }
 
+/// What a scan of one meeting found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scan {
+    /// The timeline has no `stop` yet.
+    pub live: bool,
+    pub found: Vec<Found>,
+    /// A file that may upload exists but couldn't be looked at, so `found` lacks it this time.
+    pub unreadable: bool,
+}
+
 /// The files of one meeting that may upload now (2.8), and whether the meeting is live.
 ///
 /// - `meeting.json` at once: lane 0 during the meeting, else 1.
@@ -68,24 +78,26 @@ pub struct Found {
 ///
 /// With `backfill` (the meeting existed when sync turned on) every file of a meeting that isn't
 /// live goes to lane 2. Files that aren't on disk, `*.tmp` files, clips and `screen.json` never
-/// show up.
-pub fn scan(
-    dir: &voice_meetings::MeetingDir,
-    screen: &dyn ScreenFiles,
-    backfill: bool,
-) -> (bool, Vec<Found>) {
+/// show up; one that is there but can't be looked at sets `unreadable`.
+pub fn scan(dir: &voice_meetings::MeetingDir, screen: &dyn ScreenFiles, backfill: bool) -> Scan {
     let root = dir.path();
     let history = History::from_lines(&dir.timeline());
     let live = !history.stopped;
     let lane = |normal: u8| if backfill && !live { 2 } else { normal };
     let mut found = Vec::new();
+    let mut unreadable = false;
     let mut push =
         |path: &str, kind: &'static str, lane: u8, audio: Option<(&str, u64, u64, u64)>| {
             if !is_meeting_path(path) {
                 return;
             }
-            let Some((size, mtime)) = stat(&root.join(path)) else {
-                return;
+            let (size, mtime) = match look(&root.join(path)) {
+                Look::File(size, mtime) => (size, mtime),
+                Look::Absent => return,
+                Look::Unreadable => {
+                    unreadable = true;
+                    return;
+                }
             };
             let (track, seq, t, samples) = match audio {
                 Some((track, seq, t, samples)) => {
@@ -154,16 +166,36 @@ pub fn scan(
             }
         }
     }
-    (live, found)
+    Scan {
+        live,
+        found,
+        unreadable,
+    }
+}
+
+enum Look {
+    /// Size and modification time in wall ms.
+    File(u64, u64),
+    Absent,
+    /// There, but its metadata can't be read.
+    Unreadable,
+}
+
+fn look(path: &Path) -> Look {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_file() => Look::File(meta.len(), mtime_ms(&meta)),
+        Ok(_) => Look::Absent,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Look::Absent,
+        Err(_) => Look::Unreadable,
+    }
 }
 
 /// Size and modification time (wall ms) of a file, `None` when it isn't one.
 pub(crate) fn stat(path: &Path) -> Option<(u64, u64)> {
-    let meta = fs::metadata(path).ok()?;
-    if !meta.is_file() {
-        return None;
+    match look(path) {
+        Look::File(size, mtime) => Some((size, mtime)),
+        Look::Absent | Look::Unreadable => None,
     }
-    Some((meta.len(), mtime_ms(&meta)))
 }
 
 pub(crate) fn mtime_ms(meta: &fs::Metadata) -> u64 {

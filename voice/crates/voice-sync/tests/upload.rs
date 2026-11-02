@@ -627,6 +627,81 @@ fn the_index_follows_a_fast_clock_set_right() {
     );
 }
 
+/// A file nobody else can open while this lives, as backup or antivirus software can hold one:
+/// opened without sharing on Windows, its permissions taken away elsewhere.
+struct Locked {
+    #[cfg(unix)]
+    path: std::path::PathBuf,
+    #[cfg(windows)]
+    _file: std::fs::File,
+}
+
+/// `None` when the system lets the test read it anyway, as it does for root.
+fn lock(path: &std::path::Path) -> Option<Locked> {
+    #[cfg(windows)]
+    let locked = {
+        use std::os::windows::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap();
+        Locked { _file: file }
+    };
+    #[cfg(unix)]
+    let locked = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Locked {
+            path: path.to_owned(),
+        }
+    };
+    if std::fs::File::open(path).is_ok() {
+        return None;
+    }
+    Some(locked)
+}
+
+#[cfg(unix)]
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o644));
+    }
+}
+
+#[test]
+fn a_segment_that_cant_be_read_keeps_its_meeting_held() {
+    let fake = fake();
+    let data = scratch("upload-unreadable");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    let m = Meeting::new(&voice.meetings(), "Locked", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    let second = m.segment("mic", 2, 1_000, 16_000);
+    m.stop(2_000);
+    m.transcript(&[("mic", 0, 900, "hello")], now_ms());
+    let Some(locked) = lock(&m.path(&second)) else {
+        println!("skipped: this system lets the test read a locked file");
+        return;
+    };
+    voice.connect(&fake.endpoint());
+    // Everything else and a manifest go up; the scans that follow still can't read segment 2.
+    voice.settle(&fake, WAIT);
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert!(!voice.sync.in_bucket(&m.id, &second));
+    assert!(
+        voice.sync.holds_media(&m.id, true),
+        "a segment that never reached the bucket keeps the meeting's media held"
+    );
+
+    drop(locked);
+    let ok = wait_for(WAIT, || {
+        voice.sync.in_bucket(&m.id, &second) && !voice.sync.holds_media(&m.id, true)
+    });
+    assert!(ok, "{:?}", voice.sync.status());
+}
+
 #[test]
 fn a_changed_file_gets_a_new_object() {
     let fake = fake();
