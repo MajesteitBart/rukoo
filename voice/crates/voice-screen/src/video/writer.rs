@@ -8,10 +8,10 @@
 //! encoder takes on a CI runner that has only WARP.
 //!
 //! A frame is written when the next one arrives, so each sample's duration is the real gap to
-//! the next: the capture rate varies. A still screen re-submits its last frame every half second,
-//! a keyframe is forced once a second of media time has passed since the last one, and the sink
-//! ends a fragment at the first keyframe after half a second, so fragments stay 1 to 1.5 s long
-//! and a hard kill loses at most the open one.
+//! the next: the capture rate varies. A still screen re-submits its last frame every quarter
+//! second, and the sample after the first one a second into a fragment is a forced keyframe, which
+//! starts the next fragment, so fragments stay 1 to 2 s long and a hard kill loses at most the open
+//! one.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,16 +69,18 @@ pub struct WriterOptions {
     pub disk_fail_at: Option<u64>,
 }
 
-/// One second in 100 ns units: the media time between forced keyframes.
+/// One second in 100 ns units.
 const SECOND: i64 = 10_000_000;
-/// The longest a frame stays without a re-submit.
-const RESUBMIT: i64 = SECOND / 2;
-/// `MF_MPEG4SINK_MIN_FRAGMENT_DURATION`. The sink checks it as a sample arrives and then ends the
-/// fragment at the next keyframe, so with 1 s here the forced keyframe that crosses 1 s is the
-/// one that sets the check off, and the fragment runs on to the keyframe after it, about 2 s and
-/// on a still screen more (2.0 to 2.4 s in the live run). Half a second sets it off on a sample
-/// before the forced keyframe, which then starts the next fragment: 1 to 1.5 s.
-const MIN_FRAGMENT: i64 = SECOND / 2;
+/// `MF_MPEG4SINK_MIN_FRAGMENT_DURATION`, the shortest fragment. The sink compares it with the
+/// fragment's media time when a sample arrives, puts that sample in the fragment and ends the
+/// fragment at the next keyframe: the encoder's own, at a scene change, or the one the writer
+/// forces on the sample after it ([`VideoWriter::emit`]). Forcing it on the sample that crosses the
+/// line instead, as a plain "every second" rule does, lets the fragment run on to the keyframe
+/// after that one: 2.0 to 2.4 s on a still screen in the live run.
+const MIN_FRAGMENT: i64 = SECOND;
+/// The longest a frame stays without a re-submit. With the 250 ms tick, samples are at most 0.5 s
+/// apart, so a fragment ends before 1 s plus two gaps: under 2 s.
+const RESUBMIT: i64 = SECOND / 4;
 /// The duration of the last sample when the file ends.
 const LAST_DURATION: i64 = SECOND / FPS as i64;
 
@@ -95,7 +97,11 @@ pub struct VideoWriter {
     video_width: u32,
     video_height: u32,
     start_boot: Option<u64>,
-    last_key: Option<i64>,
+    /// Media time of the keyframe that started the open fragment.
+    fragment_start: Option<i64>,
+    /// A sample of the open fragment already lay `MIN_FRAGMENT` past its start, so the sink ends
+    /// it at the next keyframe.
+    fragment_full: bool,
     pending: Option<(ID3D11Texture2D, i64)>,
     last_time: Option<i64>,
     last_texture: Option<ID3D11Texture2D>,
@@ -148,7 +154,8 @@ impl VideoWriter {
             video_width,
             video_height,
             start_boot: None,
-            last_key: None,
+            fragment_start: None,
+            fragment_full: false,
             pending: None,
             last_time: None,
             last_texture: None,
@@ -406,8 +413,8 @@ impl VideoWriter {
         Ok(())
     }
 
-    /// After half a second without a new frame, the last one goes in again at `boot_now`, so a
-    /// still screen still gets a keyframe and a fragment boundary every 1 to 1.5 s.
+    /// After a quarter second without a new frame, the last one goes in again at `boot_now`, so a
+    /// still screen still gets a keyframe and a fragment boundary every 1 to 2 s.
     pub fn tick(&mut self, boot_now: u64) -> Result<(), VideoError> {
         let (Some(start), Some(last), Some(texture)) =
             (self.start_boot, self.last_time, self.last_texture.clone())
@@ -439,11 +446,18 @@ impl VideoWriter {
             sample
                 .SetSampleDuration(duration.max(1))
                 .map_err(classify)?;
-            if self.last_key.is_none_or(|key| time - key >= SECOND) {
-                if let Some(codec) = &self.codec {
-                    let _ = codec.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32));
+            match self.fragment_start {
+                Some(start) if !self.fragment_full => {
+                    self.fragment_full = time - start >= MIN_FRAGMENT;
                 }
-                self.last_key = Some(time);
+                _ => {
+                    if let Some(codec) = &self.codec {
+                        let _ =
+                            codec.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32));
+                    }
+                    self.fragment_start = Some(time);
+                    self.fragment_full = false;
+                }
             }
             writer.WriteSample(self.stream, &sample).map_err(classify)?;
         }

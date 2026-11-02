@@ -220,7 +220,7 @@ impl VideoThread {
         self.shared.ready.notify_one();
     }
 
-    /// Lets the writer re-submit its last frame after half a second of still screen.
+    /// Lets the writer re-submit its last frame after a quarter second of still screen.
     pub fn tick(&self, boot_now: u64) {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.tick = Some(boot_now);

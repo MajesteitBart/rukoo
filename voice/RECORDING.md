@@ -283,7 +283,7 @@ A frames meeting with one slide change, locked for a minute, the heartbeats left
 
 ### Video and frames
 
-- Video is H.264 at up to 15 frames per second, from a hardware encoder, with a keyframe at least every second of media time. A still screen sends its last picture again every half second, and a fragment ends at the first keyframe after half a second, so fragments are 1 to 1.5 s long. The cursor isn't recorded.
+- Video is H.264 at up to 15 frames per second, from a hardware encoder. A fragment ends at the first keyframe once it holds a second of video, and the sample after that second is always a keyframe. A still screen sends its last picture again every quarter second, so fragments are 1 to 2 s long. The cursor isn't recorded.
 - A video file has the monitor's own size when each side is at most 4096 and the picture at most 36,864 macroblocks of 16 x 16, else it is scaled by one factor to fit both. Both sides are then rounded down to even, so a portrait 1440 x 2560 monitor keeps its size and 5120 x 1440 becomes 4096 x 1152.
 - A frame is saved when at least 1% of a 1/8-scale picture changed noticeably since the last saved frame, once the screen is still for 0.7 s or 3 s after the change began, at most one every 2 s, and one every 10 s after 10 saves in a row at that pace. One is always saved at the start of a capture, after a monitor switch, an unlock and a resume.
 - Frames are JPEG at quality 0.75 with the longest side at most 2560 pixels. Their text is read on this computer by Windows' own OCR, in the user's language when Windows has a recognizer for it.
