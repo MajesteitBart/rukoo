@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use voice_core::providers::stream::{SpeechStream, StreamEvent, StreamSession, StreamingSpeech};
 use voice_core::speakers::{DiarError, DiarErrorKind, DiarStream, Diarizer, Probs, StreamGeometry};
@@ -283,6 +283,9 @@ pub struct FakeStreamState {
     pub mute_all: bool,
     /// Every push of a session that labels voices drops the connection.
     pub fail_all: bool,
+    /// Sessions that label voices answer one event at a time, at most one per this long, as a
+    /// provider that fell behind and catches up.
+    pub slow_answers: Option<Duration>,
 }
 
 /// Mistral's realtime stream without a network: one segment per burst of a hidden speaker, sent
@@ -321,6 +324,8 @@ impl StreamingSpeech for FakeStreaming {
             diarize: session.diarize,
             timed: state.timed,
             mute: session.diarize && (state.mute_all || (state.mute_first && labelling == 1)),
+            slow: state.slow_answers.filter(|_| session.diarize),
+            released: Instant::now(),
             names,
             heard: 0,
             position: 0,
@@ -337,6 +342,9 @@ struct FakeStream {
     timed: bool,
     /// Never answers.
     mute: bool,
+    /// One answer per this long.
+    slow: Option<Duration>,
+    released: Instant,
     names: HashMap<usize, String>,
     heard: usize,
     /// Stream samples so far.
@@ -412,6 +420,13 @@ impl SpeechStream for FakeStream {
     fn poll(&mut self, _wait: Duration) -> Result<Vec<StreamEvent>, ProviderError> {
         if self.mute {
             return Ok(Vec::new());
+        }
+        if let Some(gap) = self.slow {
+            if self.events.is_empty() || self.released.elapsed() < gap {
+                return Ok(Vec::new());
+            }
+            self.released = Instant::now();
+            return Ok(vec![self.events.remove(0)]);
         }
         Ok(std::mem::take(&mut self.events))
     }

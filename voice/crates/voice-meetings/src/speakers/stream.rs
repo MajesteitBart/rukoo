@@ -390,13 +390,15 @@ impl Ctx {
     }
 
     /// Ends the session and waits for its last answers. Only the provider's end of the stream
-    /// counts everything sent as answered, which [`Ctx::answers`] stores. A provider that
-    /// doesn't finish in time failed: the next session sends what it didn't answer for again,
-    /// and failures after the stop end as a failed meeting, which keeps its audio.
+    /// counts everything sent as answered, which [`Ctx::answers`] stores. A provider that is
+    /// behind gets the wait again with every answer; one that answers nothing for that long
+    /// failed: the next session sends what it didn't answer for again, and failures after the
+    /// stop end as a failed meeting, which keeps its audio.
     fn drain(&mut self) -> Result<Flow, Fail> {
         self.shared.set_state(LabelState::CatchingUp);
         self.session.as_mut().expect("connected").stream.end()?;
-        let until = Instant::now() + self.timing.stream_drain;
+        let mut until = Instant::now() + self.timing.stream_drain;
+        let mut heard = self.session.as_ref().map_or(0, |s| s.n);
         while !self.session.as_ref().is_some_and(|s| s.done) {
             if self.shared.stopping() {
                 return Ok(Flow::Idle);
@@ -406,12 +408,17 @@ impl Ctx {
                 return Err(Fail::Provider(ProviderError::new(
                     ErrorKind::Timeout,
                     format!(
-                        "The streaming transcription didn't finish within {} seconds.",
+                        "The streaming transcription stopped answering for {} seconds before it finished.",
                         self.timing.stream_drain.as_secs_f64().ceil() as u64
                     ),
                 )));
             }
             self.answers(left.min(Duration::from_millis(200)))?;
+            let n = self.session.as_ref().map_or(heard, |s| s.n);
+            if n > heard {
+                heard = n;
+                until = Instant::now() + self.timing.stream_drain;
+            }
         }
         Ok(Flow::Finished)
     }

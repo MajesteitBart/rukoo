@@ -1221,6 +1221,31 @@ fn a_stream_that_never_finishes_is_sent_again() {
     every_burst_has_its_words(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
 }
 
+/// 11k: a provider that is behind at the stop and answers slowly is waited for while it answers,
+/// longer than the wait for a provider that answers nothing.
+#[test]
+fn a_stream_that_answers_slowly_after_the_stop_is_waited_for() {
+    let tmp = TempDir::new("speakers-mistral-slow");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(3, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    let fake = FakeStreaming::default();
+    // One answer per 0.9 s: the last three answers and the end take 3.6 s after the stream
+    // ended, longer than the 2 s `follower_timing` waits without an answer.
+    fake.state().slow_answers = Some(Duration::from_millis(900));
+    let mut options = mistral_options(&fake, true);
+    // The delay Voice asks Mistral for: late answers are placed that far before what was sent.
+    options.stream.as_mut().unwrap().delay_ms = 480;
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), options);
+    wait_done(&handle);
+    handle.shutdown();
+    let labelling = fake.state().sessions.iter().filter(|s| s.diarize).count();
+    assert_eq!(labelling, 1, "the slow session finished");
+    let all = events(&log, &rec.id());
+    every_burst_has_its_words(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
+}
+
 /// 11j: a provider that never finishes a session fails the meeting after the stop, which keeps
 /// its audio, instead of ending it `done` without the words.
 #[test]
@@ -1241,7 +1266,7 @@ fn a_stream_that_never_finishes_fails_the_meeting() {
     let PipelineState::Failed { reason } = state else {
         panic!("{state:?}");
     };
-    assert!(reason.contains("didn't finish"), "{reason}");
+    assert!(reason.contains("stopped answering"), "{reason}");
     let sessions = fake.state().sessions.iter().filter(|s| s.diarize).count();
     // `fast()` gives up after three failures in a row.
     assert_eq!(sessions, 3);
