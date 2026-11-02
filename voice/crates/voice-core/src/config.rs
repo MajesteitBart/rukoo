@@ -658,7 +658,14 @@ fn consent_value(value: Option<&Value>) -> Value {
     {
         return Value::Null;
     }
-    json!({ "provider": provider, "host": host })
+    // Only an explicit stream agreement covers streaming; anything else, including an agreement
+    // stored before streaming existed, is one for recorded windows.
+    let mode = if text(map.get("mode")).trim().eq_ignore_ascii_case("stream") {
+        ConsentMode::Stream
+    } else {
+        ConsentMode::Windows
+    };
+    json!({ "provider": provider, "host": host, "mode": mode })
 }
 
 /// Ownkey's `load_config` migrations and checks, then Voice's own, producing a complete object.
