@@ -20,12 +20,21 @@ mod tests {
     /// software encoder light.
     const SLIDES: &str = "synthetic:1280x720,change-every=1500,text=Slide";
 
+    /// The synthetic screen with the software encoder, and `extra` options.
+    /// `VOICE_SCREEN_TEST_SPEC_EXTRA` adds options to every such test; `warp` runs them on
+    /// Microsoft's software rasterizer, as on a CI runner without a GPU.
     fn spec(extra: &str) -> String {
-        if extra.is_empty() {
-            format!("{SLIDES},software-encoder")
-        } else {
-            format!("{SLIDES},software-encoder,{extra}")
+        let mut spec = format!("{SLIDES},software-encoder");
+        for more in [
+            extra.to_string(),
+            std::env::var("VOICE_SCREEN_TEST_SPEC_EXTRA").unwrap_or_default(),
+        ] {
+            if !more.is_empty() {
+                spec.push(',');
+                spec.push_str(&more);
+            }
         }
+        spec
     }
 
     /// Starts the recorder, then the screen process of session 1.
@@ -115,6 +124,23 @@ mod tests {
         let (mut recorder, mut screen) = start(&m, "video", test, &[]);
         let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
         let capture_t = t(first(&lines, "capture").unwrap());
+
+        // Spike 1: the file the sink writer is still writing opens for reading with full sharing,
+        // and clip.get can cut its finished fragments.
+        let growing = video_path(&m, first(&lines, "video").unwrap());
+        let index = wait_until(WAIT_TIMEOUT, || {
+            mp4::index_path(&growing)
+                .ok()
+                .filter(|i| !i.fragments.is_empty())
+        });
+        assert!(index.complete_len <= index.file_len);
+        let clip = m.root.join("growing-clip.mp4");
+        let cut = mp4::cut(&growing, 0, 60_000, &clip)
+            .unwrap()
+            .expect("nothing to cut from the growing file");
+        assert!(cut.bytes > 0 && cut.end_ms > cut.start_ms, "{cut:?}");
+        assert_video_reads(&clip);
+
         let killed_at = m.wait_screen_t(1, capture_t + 6_500);
         screen.hard_kill();
 
@@ -251,16 +277,32 @@ mod tests {
             "{report}"
         );
 
+        // Over 4096 wide: the sink writer's video processor scales it by one factor.
         let m = TempMeeting::new("ultrawide", "video");
-        let (mut recorder, mut screen) =
-            start(&m, "video", "synthetic:5120x1440,software-encoder", &[]);
+        let (mut recorder, mut screen) = start(
+            &m,
+            "video",
+            "synthetic:5120x1440,change-every=1500,text=Slide,software-encoder",
+            &[],
+        );
         let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
-        let video = first(&lines, "video").unwrap();
+        let video = first(&lines, "video").unwrap().clone();
         assert_eq!(
             (video["width"].as_u64(), video["height"].as_u64()),
             (Some(4096), Some(1152))
         );
-        stop(&m, &mut recorder, &mut screen);
+        m.wait_screen_t(1, t(&video) + 3_000);
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert!(first(&lines, "dropped").is_none(), "{}", show(&lines));
+        let report = assert_video_reads(&video_path(&m, &video));
+        assert_eq!(
+            (
+                report["reader"]["width"].as_u64(),
+                report["reader"]["height"].as_u64()
+            ),
+            (Some(4096), Some(1152)),
+            "{report}"
+        );
     }
 
     pub fn pinned_monitor_is_recorded() {
@@ -431,7 +473,14 @@ mod tests {
         assert!(of_kind(&lines, "dropped")
             .iter()
             .all(|l| l["what"] == "video"));
-        assert_video_reads(&video_path(&m, first(&lines, "video").unwrap()));
+        // The writer is dropped without `Finalize`: the file keeps what reached the disk, cut on a
+        // box boundary, and reads when a fragment got there.
+        let path = video_path(&m, first(&lines, "video").unwrap());
+        let index = mp4::index_path(&path).unwrap();
+        assert_eq!(index.complete_len, index.file_len);
+        if !index.fragments.is_empty() {
+            assert_video_reads(&path);
+        }
         assert_timeline_continuous(&m);
     }
 
@@ -661,6 +710,98 @@ mod tests {
         );
         assert!(log.contains("frame f-"), "{log}");
     }
+
+    /// Spike 2 (spec 4.2), on a PC with a hardware encoder: a monitor over 4096 per side or
+    /// 36,864 macroblocks is scaled by the sink writer's video processor, and one at 3840 x 2160
+    /// keeps its size. The synthetic screen, so nothing real is captured.
+    pub fn spike_hardware_encoder_scales_large_monitors() {
+        for (size, expected) in [
+            ("5120x1440", (4096, 1152)),
+            ("7680x2160", (4096, 1152)),
+            ("3840x2160", (3840, 2160)),
+        ] {
+            let m = TempMeeting::new("spike-scale", "video");
+            let test = format!("synthetic:{size},change-every=1000,text=Slide");
+            let (mut recorder, mut screen) = start(&m, "video", &test, &[]);
+            let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+            let video = first(&lines, "video").unwrap().clone();
+            assert_eq!(video["hardware"], true, "{video}");
+            assert_eq!(
+                (video["width"].as_u64(), video["height"].as_u64()),
+                (Some(expected.0), Some(expected.1)),
+                "{size}"
+            );
+            m.wait_screen_t(1, t(&video) + 4_000);
+            stop(&m, &mut recorder, &mut screen);
+            let report = assert_video_reads(&video_path(&m, &video));
+            assert_eq!(
+                (
+                    report["reader"]["width"].as_u64(),
+                    report["reader"]["height"].as_u64()
+                ),
+                (Some(expected.0), Some(expected.1)),
+                "{report}"
+            );
+            println!(
+                "    {size} -> {}x{}: {} samples, fragments {} ms, {} bytes",
+                expected.0, expected.1, report["samples"], report["fragmentMs"], report["bytes"]
+            );
+        }
+    }
+
+    /// Spike 3 (spec 4.2): real Windows.Graphics.Capture on each display, NVENC video, and how
+    /// many frames a second arrive while the screen changes at 60 Hz. It captures the real
+    /// screen, so it runs only with `VOICE_SCREEN_TEST_REAL_SCREEN=1`, demo windows covering
+    /// every display and `VOICE_SCREEN_TEST_REAL_DIR` naming a scratch folder; the captures are
+    /// deleted at the end, also when it fails.
+    pub fn spike_real_capture_cadence() {
+        if std::env::var("VOICE_SCREEN_TEST_REAL_SCREEN").as_deref() != Ok("1") {
+            println!("    skipped: needs VOICE_SCREEN_TEST_REAL_SCREEN=1 and demo windows on every display");
+            return;
+        }
+        let base = std::path::PathBuf::from(
+            std::env::var("VOICE_SCREEN_TEST_REAL_DIR").expect("VOICE_SCREEN_TEST_REAL_DIR"),
+        );
+        let features = voice_screen::capture::wgc::features();
+        println!("    capture features on this Windows: {features:?}");
+        let probe = voice_screen::probe::probe();
+        for monitor in &probe.monitors {
+            let m = TempMeeting::real_screen(&base, "spike-capture", "video");
+            let recorder = m.recorder(&[]);
+            m.wait_recorder(1);
+            let screen = m.screen("video", None, &["--monitor", &monitor.id]);
+            let (mut recorder, mut screen) = (recorder, screen);
+            let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+            let video = first(&lines, "video").unwrap().clone();
+            let capture = first(&lines, "capture").unwrap().clone();
+            m.wait_screen_t(1, t(&video) + 8_000);
+            let lines = stop(&m, &mut recorder, &mut screen);
+            let report = assert_video_reads(&video_path(&m, &video));
+            let samples = report["samples"].as_u64().unwrap();
+            let ms = report["durationMs"].as_u64().unwrap().max(1);
+            let fps = samples as f64 * 1000.0 / ms as f64;
+            println!(
+                "    {}: capture {}x{}, video {}x{} by {} (hardware {}), {samples} samples in {ms} ms = {fps:.1} fps, fragments {} ms, {} frames saved",
+                monitor.id,
+                capture["width"],
+                capture["height"],
+                video["width"],
+                video["height"],
+                video["encoder"],
+                video["hardware"],
+                report["fragmentMs"],
+                of_kind(&lines, "frame").len()
+            );
+            assert!(fps <= 16.5, "{fps:.1} fps: the 15 fps cap doesn't hold");
+            assert_eq!(
+                (capture["width"].as_u64(), capture["height"].as_u64()),
+                (
+                    Some(u64::from(monitor.width & !1)),
+                    Some(u64::from(monitor.height & !1))
+                )
+            );
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -742,6 +883,16 @@ fn main() {
             name: "stops_when_the_recorder_is_gone",
             ignored: false,
             run: tests::stops_when_the_recorder_is_gone,
+        },
+        Test {
+            name: "spike_hardware_encoder_scales_large_monitors",
+            ignored: true,
+            run: tests::spike_hardware_encoder_scales_large_monitors,
+        },
+        Test {
+            name: "spike_real_capture_cadence",
+            ignored: true,
+            run: tests::spike_real_capture_cadence,
         },
         Test {
             name: "ocr_reads_demo_text",

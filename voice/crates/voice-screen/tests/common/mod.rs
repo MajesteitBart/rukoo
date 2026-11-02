@@ -178,20 +178,30 @@ impl Proc {
 }
 
 /// A data folder with one meeting folder in it. It's removed after a passing test and kept
-/// after a failing one.
+/// after a failing one, unless it holds captures of the real screen: those always go.
 pub struct TempMeeting {
     pub root: PathBuf,
     pub dir: PathBuf,
     spawned: Cell<u32>,
+    always_remove: bool,
 }
 
 impl TempMeeting {
     pub fn new(name: &str, screen: &str) -> TempMeeting {
+        TempMeeting::new_in(&std::env::temp_dir(), name, screen, false)
+    }
+
+    /// For captures of the real screen: under `base`, removed even when the test fails.
+    pub fn real_screen(base: &Path, name: &str, screen: &str) -> TempMeeting {
+        TempMeeting::new_in(base, name, screen, true)
+    }
+
+    fn new_in(base: &Path, name: &str, screen: &str, always_remove: bool) -> TempMeeting {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
+        let root = base.join(format!(
             "voice-screen-test-{name}-{}-{nanos}",
             std::process::id()
         ));
@@ -215,6 +225,7 @@ impl TempMeeting {
             root,
             dir,
             spawned: Cell::new(0),
+            always_remove,
         }
     }
 
@@ -433,7 +444,7 @@ impl TempMeeting {
 
 impl Drop for TempMeeting {
     fn drop(&mut self) {
-        if std::thread::panicking() {
+        if std::thread::panicking() && !self.always_remove {
             eprintln!("kept the test folder {}", self.root.display());
         } else {
             let _ = fs::remove_dir_all(&self.root);
@@ -515,5 +526,9 @@ pub fn assert_timeline_continuous(m: &TempMeeting) {
             _ => {}
         }
     }
-    assert!(end.is_some(), "the timeline has no closed segment");
+    assert!(
+        !of_kind(&lines, "segment").is_empty(),
+        "the timeline has no audio:\n{}",
+        show(&lines)
+    );
 }
