@@ -1,11 +1,12 @@
 //! Who said which words: stored speaker turns applied to a window's recognized words, speaker
 //! cuts for the window boundary, and passages from Mistral's labelled segments.
 //!
-//! The rules are Ownkey's live path (`meetings/segmentation.py:58-68`, `:91-122`): a word takes a
-//! speaker only when exactly one speaker's turns overlap it, and a new passage starts at every
-//! speaker change or a 0.9 s pause. Voice adds one rule: a run of words without a speaker that
-//! lasts under 0.6 s, with the same speaker on both sides, takes that speaker, so a backchannel
-//! fragment doesn't split a sentence.
+//! The rules start from Ownkey's live path (`meetings/segmentation.py:58-68`, `:91-122`): a word
+//! takes a speaker when exactly one speaker's turns overlap it, and a new passage starts at every
+//! speaker change or a 0.9 s pause. Voice adds two rules. When several speakers overlap a word, a
+//! clear majority takes it (`MAJORITY_RULE`). A run of words without a speaker that lasts under
+//! 0.6 s, with the same speaker on both sides, takes that speaker, so a backchannel fragment
+//! doesn't split a sentence.
 //!
 //! Turn times are meeting milliseconds; word times are meeting seconds, as the recognizer's.
 
@@ -18,9 +19,10 @@ const BRIDGE_MS: f64 = 600.0;
 /// Only a hand-over with a gap of at most this many ms suggests a cut.
 const CUT_GAP_MS: u64 = 2_000;
 /// Fallback rule (d): when several speakers overlap a word, the one whose overlap is at least
-/// twice the next and at least half the word takes it. Off unless the AMI test scores under 90 %
-/// without it.
-const MAJORITY_RULE: bool = false;
+/// twice the next and at least half the word takes it. On because the AMI test
+/// (`tests/speakers_ami.rs`, real Nemotron worker, oracle words) scored 87.5 % of transcript time
+/// with rules (a) to (c) alone and 92.1 % with it, the same in repeated runs.
+const MAJORITY_RULE: bool = true;
 
 /// One speaker's turn in meeting milliseconds.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
