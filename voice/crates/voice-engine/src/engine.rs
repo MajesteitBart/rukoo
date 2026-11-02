@@ -19,12 +19,17 @@ use crate::api::{
     Theme, TrayState, UiOptions, UiSink,
 };
 use crate::dictation::Dictation;
+use crate::media::MediaService;
 use crate::meetings::controller::Change;
 use crate::meetings::{Meetings, PipelineOptions};
 use crate::pill::{Looks, MeetingPhase, PillDriver};
 use crate::platform::CHIME_COOLDOWN;
 use crate::services::Services;
 use crate::settings::SettingsRuntime;
+use crate::sync::SyncRuntime;
+
+/// Whether a meeting records the screen now (contract 2.7).
+pub type ScreenRecording = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub(crate) struct Core {
     pub opts: EngineOptions,
@@ -37,6 +42,13 @@ pub(crate) struct Core {
     pub dictation: Dictation,
     pub settings: SettingsRuntime,
     pub meetings: Meetings,
+    /// Bucket sync; `None` when its store didn't open, and Voice runs without it.
+    pub sync: Option<Arc<voice_sync::BucketSync>>,
+    pub sync_rt: SyncRuntime,
+    /// `media.open` and `media.read` for the bridge.
+    pub media: Arc<MediaService>,
+    /// A stand-in that answers `false` until screen recording (RUK-108) is on this branch.
+    pub screen_recording: ScreenRecording,
     shutting_down: AtomicBool,
     last_chime: Mutex<Option<Instant>>,
     /// What Settings > Rukoo last showed, to tell when it changes.
@@ -48,15 +60,26 @@ pub(crate) struct Core {
     this: OnceLock<Weak<Core>>,
 }
 
+/// What [`Core::new`] gets besides the options and services.
+pub(crate) struct Parts {
+    pub config: Config,
+    pub meetings: Meetings,
+    pub settings: SettingsRuntime,
+    pub sync: Option<Arc<voice_sync::BucketSync>>,
+    pub media: Arc<MediaService>,
+    pub screen_recording: ScreenRecording,
+}
+
 impl Core {
-    pub fn new(
-        opts: EngineOptions,
-        svc: Services,
-        sink: Arc<dyn UiSink>,
-        config: Config,
-        meetings: Meetings,
-        settings: SettingsRuntime,
-    ) -> Core {
+    pub fn new(opts: EngineOptions, svc: Services, sink: Arc<dyn UiSink>, parts: Parts) -> Core {
+        let Parts {
+            config,
+            meetings,
+            settings,
+            sync,
+            media,
+            screen_recording,
+        } = parts;
         let looks = looks(&opts, &svc, &config);
         Core {
             pill: PillDriver::new(looks, Arc::clone(&sink)),
@@ -65,6 +88,10 @@ impl Core {
             writing: Mutex::new(()),
             settings,
             meetings,
+            sync,
+            sync_rt: SyncRuntime::default(),
+            media,
+            screen_recording,
             opts,
             svc,
             sink,
@@ -182,6 +209,9 @@ impl Core {
         self.meetings
             .library()
             .set_retention(new.meetings_retention);
+        if old.extra.get(crate::sync::SYNC_KEY) != new.extra.get(crate::sync::SYNC_KEY) {
+            crate::sync::configure_sync(self, new);
+        }
         let before = looks(&self.opts, &self.svc, old);
         let after = looks(&self.opts, &self.svc, new);
         if before != after || old.pill_hide_from_capture != new.pill_hide_from_capture {
@@ -277,6 +307,7 @@ impl Core {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Recording, at_ms, now));
                 self.follow(&id);
+                self.nudge_sync();
                 self.meeting_changed();
             }
             Change::Reattached { id, paused, at_ms } => {
@@ -310,6 +341,8 @@ impl Core {
             Change::Ended { id, at_ms, .. } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Processing, at_ms, now));
+                // The last segments and the timeline closed.
+                self.nudge_sync();
                 self.meeting_changed();
             }
             Change::Finalized { id } => {
@@ -349,12 +382,47 @@ impl Core {
     /// Removes meeting audio whose retention ran out. Each meeting keeps the Settings > Meetings >
     /// Keep audio it started with; the current choice counts only for meetings from before Voice
     /// stored it.
+    ///
+    /// While bucket sync is on, media that hasn't reached the bucket stays, and with the switch on
+    /// but sync's queue unreadable, all of it stays (spec 2.10). Below 10 GiB free that gives way:
+    /// held media of meetings whose time is up goes, oldest first.
     pub fn sweep(&self) {
-        let removed = self.meetings.sweep(self.config().meetings_retention);
-        if !removed.is_empty() {
-            log::info!("retention: removed the audio of {}", removed.join(", "));
+        let cfg = self.config();
+        let switch_on = crate::sync::switch_on(&cfg);
+        let sync = self.sync.as_deref();
+        let swept = self.meetings.sweep(cfg.meetings_retention, |id| {
+            crate::sync::holds(sync, switch_on, id)
+        });
+        if !swept.removed.is_empty() {
+            log::info!(
+                "retention: removed the audio of {}",
+                swept.removed.join(", ")
+            );
+        }
+        if !swept.held.is_empty() {
+            log::info!(
+                "retention: kept the media of {} for the bucket",
+                swept.held.join(", ")
+            );
+        }
+        let released = crate::sync::release_below_floor(self, &swept.held);
+        crate::sync::note_held(self, !swept.held.is_empty());
+        if !swept.removed.is_empty() || released {
             self.settings.forget_storage();
             self.settings_changed();
+        }
+    }
+
+    /// Bucket sync's status changed: Settings show it, and held media may go now.
+    pub fn sync_changed(&self) {
+        self.sync_rt.changed();
+        self.settings_changed();
+    }
+
+    /// Lets bucket sync look at the meetings now instead of at its next scan.
+    fn nudge_sync(&self) {
+        if let Some(sync) = &self.sync {
+            sync.nudge();
         }
     }
 
@@ -369,6 +437,11 @@ impl Core {
         if self.shutting_down.swap(true, Ordering::SeqCst) {
             return;
         }
+        // First, so an upload stops between requests while the rest shuts down (at most 2 s).
+        if let Some(sync) = &self.sync {
+            sync.shutdown();
+        }
+        self.media.shutdown();
         self.dictation.shutdown();
         self.meetings.shutdown();
         self.pill.update(|p, _| p.clear());
@@ -402,12 +475,17 @@ const SPEECH_SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 const WATCH_POLL: Duration = Duration::from_secs(1);
 /// How often retention runs besides at start and after a meeting is done.
 const SWEEP_EVERY: Duration = Duration::from_secs(10 * 60);
+/// Held media is looked at again at most this often after bucket sync made progress.
+const RESWEEP_AFTER: Duration = Duration::from_secs(5);
+/// How often prepared media is swept and bucket sync's notifications are checked.
+const MINUTE: Duration = Duration::from_secs(60);
 
 /// The engine's slow loop. Shows a meeting whose transcription failed and lets a finished one
 /// go (`meeting.state` `failed` and `done` come from the pipeline long after the recorder
-/// stopped), keeps Settings > Rukoo current, and runs the retention sweep.
+/// stopped), keeps Settings > Rukoo current, runs the retention sweep, and lets prepared media go.
 pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
     let mut swept = Instant::now();
+    let mut minute = Instant::now();
     loop {
         thread::sleep(WATCH_POLL);
         let Some(core) = core.upgrade() else {
@@ -417,9 +495,16 @@ pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
             return;
         }
         core.rukoo_changed();
-        if swept.elapsed() >= SWEEP_EVERY {
+        if swept.elapsed() >= SWEEP_EVERY
+            || (swept.elapsed() >= RESWEEP_AFTER && core.sync_rt.take_resweep())
+        {
             swept = Instant::now();
             core.sweep();
+        }
+        if minute.elapsed() >= MINUTE {
+            minute = Instant::now();
+            core.media.sweep();
+            crate::sync::check_failing(&core);
         }
         // Borrowed from the engine each round, so the log closes as soon as the engine is gone.
         let Some(log) = core.meetings.log.as_ref() else {
@@ -448,6 +533,10 @@ pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
                 }
                 Some("done") => {
                     core.pill.update(|p, _| p.meeting_gone(id));
+                    // The transcript and the timeline can go up now.
+                    if let Some(sync) = &core.sync {
+                        sync.nudge();
+                    }
                     // "After transcription" retention removes the audio now.
                     core.sweep();
                 }
@@ -545,6 +634,26 @@ impl EngineApi for EngineImpl {
         crate::settings::import_ownkey(&self.0)
     }
 
+    fn settings_sync_test(&self) -> Result<Value, ApiError> {
+        crate::settings::sync_test(&self.0)
+    }
+
+    fn settings_sync_save_secret(&self, secret: String) -> Result<(), ApiError> {
+        crate::settings::sync_save_secret(&self.0, secret)
+    }
+
+    fn settings_sync_key(&self, action: &str, code: Option<String>) -> Result<Value, ApiError> {
+        crate::settings::sync_key(&self.0, action, code)
+    }
+
+    fn settings_sync_key_copy(&self) -> Result<(), ApiError> {
+        crate::settings::sync_key_copy(&self.0)
+    }
+
+    fn settings_sync_restore(&self, action: &str) -> Result<Value, ApiError> {
+        crate::settings::sync_restore(&self.0, action)
+    }
+
     fn settings_start_page(&self) -> Option<String> {
         self.0.settings.take_start_page()
     }
@@ -607,6 +716,13 @@ impl EngineApi for EngineImpl {
 
     fn shutdown(&self) {
         self.0.shutdown();
+    }
+
+    fn meeting_control(&self) -> Option<Arc<dyn voice_bridge::MeetingControl>> {
+        self.0
+            .meetings
+            .control()
+            .map(|control| control as Arc<dyn voice_bridge::MeetingControl>)
     }
 }
 

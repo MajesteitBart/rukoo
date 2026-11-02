@@ -16,6 +16,7 @@ use voice_core::local::{
 };
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{Hints, ProviderError, Recognized, RewriteRequest, Rewriter, SpeechToText};
+use voice_engine::media::{NoScreenMedia, ScreenMedia};
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::meetings::PipelineOptions;
 use voice_engine::services::{
@@ -26,6 +27,8 @@ use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
 };
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
+use voice_sync::protect::TestProtector;
+use voice_sync::{NoScreen, ScreenFiles, SyncTiming};
 
 /// CI machines are slow; every wait is generous.
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -272,6 +275,9 @@ pub struct FakeInput {
     pub clipboard_wait: Mutex<Duration>,
     /// Insertions and captures that started.
     pub entered: AtomicUsize,
+    /// What `copy_hidden` put on the fake clipboard, and whether `clear_if` emptied it.
+    pub clipboard: Mutex<Option<String>>,
+    pub hidden_copies: Mutex<Vec<String>>,
 }
 
 impl FakeInput {
@@ -286,6 +292,8 @@ impl FakeInput {
             fail: Mutex::new(None),
             clipboard_wait: Mutex::new(Duration::ZERO),
             entered: AtomicUsize::new(0),
+            clipboard: Mutex::new(None),
+            hidden_copies: Mutex::new(Vec::new()),
         }
     }
 
@@ -344,6 +352,21 @@ impl TextInput for FakeInput {
 
     fn text_target(&self) -> TextTarget {
         *lock(&self.target)
+    }
+
+    fn copy_hidden(&self, text: &str) -> Result<(), InputError> {
+        lock(&self.hidden_copies).push(text.to_string());
+        *lock(&self.clipboard) = Some(text.to_string());
+        Ok(())
+    }
+
+    fn clear_if(&self, text: &str) -> Result<bool, InputError> {
+        let mut clipboard = lock(&self.clipboard);
+        let holds = clipboard.as_deref() == Some(text);
+        if holds {
+            *clipboard = None;
+        }
+        Ok(holds)
     }
 }
 
@@ -642,7 +665,13 @@ impl Updates for UpdatesHandle {
     }
 }
 
-pub struct FakeSystem;
+/// Free space on the test's disk, as the engine reads it.
+pub type FreeSpace = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
+
+/// Plenty of room: more than every free-space floor (bucket sync holds media above 10 GiB).
+pub const ROOMY: u64 = 500 << 30;
+
+pub struct FakeSystem(pub Arc<Mutex<FreeSpace>>);
 
 impl System for FakeSystem {
     fn theme(&self) -> Theme {
@@ -657,8 +686,9 @@ impl System for FakeSystem {
         false
     }
 
-    fn free_bytes(&self, _path: &Path) -> Option<u64> {
-        Some(1_000_000_000)
+    fn free_bytes(&self, path: &Path) -> Option<u64> {
+        let free = Arc::clone(&lock(&self.0));
+        free(path)
     }
 }
 
@@ -680,13 +710,23 @@ pub struct Harness {
     pub dev_mode: bool,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
+    /// Free space as the engine sees it; [`ROOMY`] unless a test changes it.
+    pub free: Arc<Mutex<FreeSpace>>,
+    pub screen_files: Arc<dyn ScreenFiles>,
+    pub screen_media: Arc<dyn ScreenMedia>,
+    pub sync_timing: SyncTiming,
 }
 
 impl Harness {
     pub fn new(name: &str) -> Harness {
         let keys = Keys::default();
         let dir = TempDir::new(name);
+        let roomy: FreeSpace = Arc::new(|_| Some(ROOMY));
         Harness {
+            free: Arc::new(Mutex::new(roomy)),
+            screen_files: Arc::new(NoScreen),
+            screen_media: Arc::new(NoScreenMedia),
+            sync_timing: SyncTiming::default(),
             recorder_exe: dir.join("no-recorder.exe"),
             dir,
             input: Arc::new(FakeInput::new(keys.clone())),
@@ -741,13 +781,23 @@ impl Harness {
             chime: Arc::new(ChimeHandle(Arc::clone(&self.chime))),
             autostart: Arc::new(AutostartHandle(Arc::clone(&self.autostart))),
             updates: Arc::new(UpdatesHandle(Arc::clone(&self.updates))),
-            system: Arc::new(FakeSystem),
+            system: Arc::new(FakeSystem(Arc::clone(&self.free))),
             ownkey_config: self.ownkey_config.clone(),
             ownkey_models: self.ownkey_models.clone(),
             recorder_exe: self.recorder_exe.clone(),
             discovery_path: Some(self.dir.join("bridge.json")),
             controller: self.timing.clone(),
+            screen_files: Arc::clone(&self.screen_files),
+            screen_media: Arc::clone(&self.screen_media),
+            // DPAPI only where a test asks for it: the stand-in works on every platform.
+            protector: Arc::new(TestProtector),
+            sync_timing: self.sync_timing.clone(),
         }
+    }
+
+    /// Sets the free space the engine sees from now on.
+    pub fn set_free(&self, free: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) {
+        *lock(&self.free) = Arc::new(free);
     }
 
     pub fn options(&self) -> EngineOptions {

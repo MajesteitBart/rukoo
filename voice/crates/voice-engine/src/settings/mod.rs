@@ -135,14 +135,19 @@ pub fn state(core: &Core) -> Value {
     let start_at_login = !core.opts.dev_mode && core.svc.autostart.is_on();
     let slow = slow(core);
     let (update_state, update_version) = lock(&core.settings.updates).clone();
+    let sync = crate::sync::sync_view(core);
+    let secret_saved = core.sync.as_ref().is_some_and(|s| s.secret_saved());
     json!({
         "seq": core.settings_seq.load(Ordering::SeqCst),
         "version": core.opts.version,
         "devMode": core.opts.dev_mode,
         "platform": platform(),
+        // The parts of Settings this Voice shows (voice/ui/API.md). Screen recording and speaker
+        // labels come with their own lanes.
+        "features": { "screen": false, "speakers": false, "sync": sync["available"] },
         "theme": match looks.theme { Theme::Light => "light", Theme::Dark => "dark" },
         "locale": match looks.locale { Locale::En => "en", Locale::Nl => "nl" },
-        "config": keys::view(&cfg, start_at_login),
+        "config": keys::view(&cfg, start_at_login, secret_saved),
         "providers": providers(),
         "dictation": { "status": dictation_status(core, &cfg) },
         "rukoo": rukoo(core),
@@ -157,7 +162,7 @@ pub fn state(core: &Core) -> Value {
         },
         "updates": { "state": update_state, "version": update_version },
         "ownkey": ownkey::state(core, &cfg, &slow.ownkey_keys, slow.ownkey_found, slow.ownkey_running),
-        "sync": { "lastUpload": null, "waiting": 0 },
+        "sync": sync,
     })
 }
 
@@ -402,15 +407,228 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
 }
 
 pub fn remove_key(core: &Arc<Core>, target: &str) -> Result<(), ApiError> {
+    if target == "sync" {
+        let sync = bucket_sync(core)?;
+        sync.remove_secret().map_err(|e| sync_error(&e))?;
+        let result = core.commit(|cfg| {
+            keys::untest_sync(cfg);
+            Ok(())
+        });
+        // The secret is gone even when nothing in config.json changed.
+        core.settings_changed();
+        return result;
+    }
     core.commit(|cfg| {
         match target {
             "transcription" => cfg.audio_api_key.clear(),
             "rewriting" => cfg.rewrite_api_key.clear(),
             "meetings" => cfg.meetings_audio_api_key.clear(),
-            _ => return Err(invalid("target is transcription, rewriting or meetings.")),
+            _ => {
+                return Err(invalid(
+                    "target is transcription, rewriting, meetings or sync.",
+                ))
+            }
         }
         Ok(())
     })
+}
+
+// Bucket sync (voice/ui/API.md, settings_sync_*) ------------------------------------------------
+
+/// The longest bucket secret Voice keeps.
+const SECRET_MAX_CHARS: usize = 1024;
+/// The recovery code leaves the clipboard after this long, unless the user copied something else.
+const KEY_COPY_CLEAR: Duration = Duration::from_secs(60);
+
+fn bucket_sync(core: &Core) -> Result<&Arc<voice_sync::BucketSync>, ApiError> {
+    core.sync.as_ref().ok_or_else(|| {
+        ApiError::new(
+            "failed",
+            "Bucket sync isn't available: Voice couldn't open its sync store.",
+        )
+    })
+}
+
+fn sync_error(error: &voice_sync::SyncError) -> ApiError {
+    crate::sync::api_error(error)
+}
+
+/// The key dialogs never open while a meeting records the screen, which could capture the code.
+fn refuse_while_screen_records(core: &Core) -> Result<(), ApiError> {
+    if (core.screen_recording)() {
+        return Err(ApiError::new(
+            "recording_screen",
+            "Stop the meeting's screen recording before you show or enter a key.",
+        ));
+    }
+    Ok(())
+}
+
+/// Test connection for the fields in Settings with the saved secret. A pass stores the URL style
+/// that worked and the fields' fingerprint in one commit, which lets the switch turn on.
+pub fn sync_test(core: &Arc<Core>) -> Result<Value, ApiError> {
+    let sync = bucket_sync(core)?;
+    let cfg = core.config();
+    let fields = crate::sync::sync_value(&cfg);
+    let bucket = voice_sync::SyncConfig::from_json(&fields).map_err(|e| sync_error(&e))?;
+    let report = sync.test(&bucket).map_err(|e| sync_error(&e))?;
+    let tested = voice_sync::SyncConfig {
+        url_style: report.url_style,
+        ..bucket.clone()
+    };
+    core.commit(|cfg| {
+        // The fields may have changed while the test ran: then it tested something else.
+        let mut now = crate::sync::sync_value(cfg);
+        let same = voice_sync::SyncConfig::from_json(&now).is_ok_and(|current| {
+            voice_sync::SyncConfig {
+                url_style: report.url_style,
+                ..current
+            } == tested
+        });
+        if !same {
+            return Err(ApiError::new(
+                "failed",
+                "The settings changed during the test. Test again.",
+            ));
+        }
+        now["urlStyle"] = json!(report.url_style.as_str());
+        now["tested"] = json!(tested.fingerprint());
+        cfg.extra.insert(crate::sync::SYNC_KEY.into(), now);
+        Ok(())
+    })?;
+    Ok(json!({ "otherKeys": report.other_keys }))
+}
+
+/// Keeps the bucket's secret with DPAPI and turns sync off until Test connection passes again.
+pub fn sync_save_secret(core: &Arc<Core>, secret: String) -> Result<(), ApiError> {
+    let secret = voice_sync::Zeroizing::new(secret);
+    if secret.trim().is_empty() || secret.chars().count() > SECRET_MAX_CHARS {
+        return Err(invalid(format!(
+            "The secret is 1 to {SECRET_MAX_CHARS} characters."
+        )));
+    }
+    let sync = bucket_sync(core)?;
+    sync.save_secret(secret.trim()).map_err(|e| {
+        ApiError::new(
+            "failed",
+            format!("Windows couldn't protect the secret: {}", e.message),
+        )
+    })?;
+    let result = core.commit(|cfg| {
+        keys::untest_sync(cfg);
+        Ok(())
+    });
+    core.settings_changed();
+    result
+}
+
+/// `show` gives the recovery code (making the key when there is none), `saved` records that the
+/// user kept it, `import` switches to a key from another computer.
+pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<Value, ApiError> {
+    let code = code.map(voice_sync::Zeroizing::new);
+    let result = match action {
+        "show" => {
+            refuse_while_screen_records(core)?;
+            let sync = bucket_sync(core)?;
+            let (code, id) = sync.show_key().map_err(|e| sync_error(&e))?;
+            let code = voice_sync::Zeroizing::new(code);
+            json!({ "code": code.as_str(), "id": crate::sync::short_id(&id) })
+        }
+        "saved" => {
+            bucket_sync(core)?
+                .mark_key_saved()
+                .map_err(|e| sync_error(&e))?;
+            Value::Null
+        }
+        "import" => {
+            refuse_while_screen_records(core)?;
+            let code = code
+                .as_deref()
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| invalid("Paste the key."))?;
+            if voice_sync::recovery::decode(code).is_err() {
+                return Err(invalid("That isn't a Rukoo Voice key."));
+            }
+            let sync = bucket_sync(core)?;
+            let id = sync.import_key(code).map_err(|e| match e.kind {
+                voice_sync::SyncErrorKind::KeyInUse => ApiError::new("key_in_use", e.message),
+                voice_sync::SyncErrorKind::Crypto => invalid(e.message),
+                _ => sync_error(&e),
+            })?;
+            json!({ "id": crate::sync::short_id(&id) })
+        }
+        _ => return Err(invalid("action is show, saved or import.")),
+    };
+    core.settings_changed();
+    Ok(result)
+}
+
+/// Puts the recovery code on the clipboard hidden from clipboard history and cloud clipboard, and
+/// empties the clipboard after 60 s while it still holds the code.
+pub fn sync_key_copy(core: &Arc<Core>) -> Result<(), ApiError> {
+    let sync = bucket_sync(core)?;
+    let (code, _) = sync.show_key().map_err(|e| sync_error(&e))?;
+    let code = voice_sync::Zeroizing::new(code);
+    core.svc
+        .input
+        .copy_hidden(&code)
+        .map_err(|e| ApiError::new("failed", format!("Voice couldn't copy the key: {e}")))?;
+    let input = Arc::clone(&core.svc.input);
+    let _ = thread::Builder::new()
+        .name("key-clipboard".into())
+        .spawn(move || {
+            thread::sleep(KEY_COPY_CLEAR);
+            let _ = input.clear_if(&code);
+        });
+    Ok(())
+}
+
+/// `list` the meetings in the bucket that aren't on this computer, or `start` restoring them.
+pub fn sync_restore(core: &Arc<Core>, action: &str) -> Result<Value, ApiError> {
+    let sync = bucket_sync(core)?;
+    match action {
+        "list" => {
+            let meetings = sync.remote_meetings().map_err(|e| sync_error(&e))?;
+            let meetings: Vec<Value> = meetings
+                .into_iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id,
+                        "title": m.title,
+                        "startedAt": m.started_at,
+                        "duration": m.duration_ms,
+                    })
+                })
+                .collect();
+            core.settings_changed();
+            Ok(json!({ "meetings": meetings }))
+        }
+        "start" => {
+            let ids: Vec<String> = sync
+                .remote_meetings()
+                .map_err(|e| sync_error(&e))?
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            let weak = Arc::downgrade(core);
+            sync.restore(
+                ids,
+                Box::new(move |id: &str| {
+                    // Its pipeline sends the meeting to Rukoo: the new bridge.db has none of it.
+                    if let Some(core) = weak.upgrade() {
+                        core.follow(id);
+                        core.settings.forget_storage();
+                        core.settings_changed();
+                    }
+                }),
+            )
+            .map_err(|e| sync_error(&e))?;
+            core.settings_changed();
+            Ok(Value::Null)
+        }
+        _ => Err(invalid("action is list or start.")),
+    }
 }
 
 pub fn list_models(core: &Arc<Core>, request: Value) -> Result<Vec<String>, ApiError> {

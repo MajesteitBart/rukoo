@@ -231,6 +231,19 @@ pub trait EngineApi: Send + Sync + 'static {
     fn settings_check_updates(&self) -> Value;
     fn settings_new_token(&self) -> Result<(), ApiError>;
     fn settings_import_ownkey(&self) -> Result<Value, ApiError>;
+    /// Test connection for `config.storage.sync` with the saved secret: `{ otherKeys }`, and the
+    /// fields count as tested.
+    fn settings_sync_test(&self) -> Result<Value, ApiError>;
+    /// Keeps the bucket's secret with DPAPI, never in `config.json`; turns sync off until the next
+    /// passed test.
+    fn settings_sync_save_secret(&self, secret: String) -> Result<(), ApiError>;
+    /// The encryption key: `show` (`{ code, id }`), `saved`, or `import` with `code` (`{ id }`).
+    fn settings_sync_key(&self, action: &str, code: Option<String>) -> Result<Value, ApiError>;
+    /// Copies the recovery code with voice-input's hidden clipboard path and clears it after 60 s
+    /// if unchanged. The page never gets the code from this command.
+    fn settings_sync_key_copy(&self) -> Result<(), ApiError>;
+    /// Meetings in the bucket that aren't here: `list` (`{ meetings }`) or `start` a restore.
+    fn settings_sync_restore(&self, action: &str) -> Result<Value, ApiError>;
     /// The page or group Settings should open at after a start, e.g. `import` after the first run.
     fn settings_start_page(&self) -> Option<String>;
     fn folder_path(&self, folder: Folder) -> Option<PathBuf>;
@@ -247,6 +260,12 @@ pub trait EngineApi: Send + Sync + 'static {
     /// Stops dictation, transcription and the bridge, and waits for the clipboard to come back.
     /// Never stops a recorder that is recording: the meeting goes on and the next start reattaches.
     fn shutdown(&self);
+
+    /// For tests: what Rukoo's bridge commands reach, called without a socket.
+    #[doc(hidden)]
+    fn meeting_control(&self) -> Option<Arc<dyn voice_bridge::MeetingControl>> {
+        None
+    }
 }
 
 /// Shared handle the app keeps.
