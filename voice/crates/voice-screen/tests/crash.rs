@@ -167,6 +167,10 @@ mod tests {
         let report = assert_video_reads(&path);
         if hardware {
             let fragments: Vec<u64> = serde_json::from_value(report["fragmentMs"].clone()).unwrap();
+            println!(
+                "    {} by {}, fragments {fragments:?} ms",
+                video["width"], video["encoder"]
+            );
             let (last, full) = fragments.split_last().unwrap();
             assert!(!full.is_empty() && *last > 0, "{report}");
             for ms in full {
