@@ -998,7 +998,8 @@ impl Screen {
         }
     }
 
-    /// Ends the open video file with `video_end`; returns how finishing it failed, if it did.
+    /// Ends the open video file and writes its `video_end`. A file that couldn't be finished on
+    /// a full disk drops the video, unless the disk is why it ended.
     fn end_video(&mut self, reason: &str) {
         let Some(video) = self.video.take() else {
             return;
