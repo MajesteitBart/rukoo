@@ -24,6 +24,9 @@ pub enum Line {
     Session {
         t: u64,
         wall: u64,
+        /// Windows interrupt time when `t` was read, in 100 ns units; missing elsewhere.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        boot: Option<u64>,
         session: u64,
         pid: u32,
         resumed: bool,
@@ -56,6 +59,9 @@ pub enum Line {
     Heartbeat {
         t: u64,
         wall: u64,
+        /// Windows interrupt time when `t` was read, in 100 ns units; missing elsewhere.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        boot: Option<u64>,
         samples: BTreeMap<String, u64>,
     },
     DeviceLost {
@@ -381,6 +387,34 @@ mod tests {
     }
 
     #[test]
+    fn boot_is_written_only_when_known() {
+        let heartbeat = |boot| Line::Heartbeat {
+            t: 1_000,
+            wall: 1_793_384_409_989,
+            boot,
+            samples: BTreeMap::from([("mic".to_string(), 16_144)]),
+        };
+        let with = heartbeat(Some(123_456_789_012));
+        assert_eq!(
+            serde_json::to_string(&with).unwrap(),
+            r#"{"kind":"heartbeat","t":1000,"wall":1793384409989,"boot":123456789012,"samples":{"mic":16144}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&heartbeat(None)).unwrap(),
+            r#"{"kind":"heartbeat","t":1000,"wall":1793384409989,"samples":{"mic":16144}}"#
+        );
+        // Lines from before the field read as `None`, and the field reads back.
+        let old = parse(concat!(
+            r#"{"kind":"session","t":0,"wall":1,"session":1,"pid":1,"resumed":false,"version":1,"recorder":"0.1.0"}"#,
+            "\n",
+            r#"{"kind":"heartbeat","t":1000,"wall":1793384409989,"boot":123456789012,"samples":{"mic":16144}}"#,
+            "\n"
+        ));
+        assert!(matches!(old[0], Line::Session { boot: None, .. }));
+        assert_eq!(old[1], with);
+    }
+
+    #[test]
     fn parse_skips_a_partial_last_line_and_broken_lines() {
         let text = concat!(
             r#"{"kind":"pause","t":5}"#,
@@ -406,6 +440,7 @@ mod tests {
             Line::Session {
                 t: 0,
                 wall: 1_000,
+                boot: None,
                 session: 1,
                 pid: 1,
                 resumed: false,
@@ -432,6 +467,7 @@ mod tests {
             Line::Heartbeat {
                 t: 1_000,
                 wall: 2_000,
+                boot: Some(50_000_000),
                 samples: BTreeMap::new(),
             },
             Line::SegmentEnd {

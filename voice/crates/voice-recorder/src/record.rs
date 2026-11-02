@@ -191,10 +191,13 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     // start.
     let backend = Backend::prepare();
     let clock = MeetingClock::starting_at(start_t);
+    // Read next to the clock's start, so another process can map its own moments onto `t`.
+    let boot = clock::boot_100ns();
 
     journal.write(Line::Session {
         t: start_t,
         wall,
+        boot,
         session,
         pid: std::process::id(),
         resumed,
@@ -1005,9 +1008,11 @@ impl Recorder {
             .collect();
         let stamp = Stamp::now();
         let t = self.clock.now();
+        let boot = clock::boot_100ns();
         self.journal.write(Line::Heartbeat {
             t,
             wall: stamp.wall,
+            boot,
             samples,
         });
         self.heartbeat = (t, stamp);
