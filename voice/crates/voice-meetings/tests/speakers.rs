@@ -1222,6 +1222,49 @@ fn mistral_options(fake: &FakeStreaming, diarize: bool) -> PipelineOptions {
     }
 }
 
+/// 11k: a meeting stopped while paused keeps the words the stream answered after the padding
+/// at the pause. Their estimated times fall in the padding and map to the last sample before
+/// it, on the end of the last window, and no window comes after that one. On the call, labelled,
+/// and on the microphone, whose answers are text deltas.
+#[test]
+fn words_answered_after_the_padding_survive_a_stop_while_paused() {
+    for diarize in [true, false] {
+        let tmp = TempDir::new(&format!("speakers-mistral-pause-stop-{diarize}"));
+        let lib = Library::open(tmp.path()).unwrap();
+        let log = EventLog::open(tmp.path()).unwrap();
+        let pieces = [(0.5, None), (3.5, Some(0)), (1.2, None), (0.3, Some(1))];
+        let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
+        rec.session(0, 1);
+        rec.segment("mic", 1, 0, &voices(&pieces));
+        rec.segment("call", 1, 0, &voices(&pieces));
+        rec.line(json!({"kind": "pause", "t": 5500}));
+        let fake = FakeStreaming::default();
+        let handle = Pipeline::start(
+            rec.dir.clone(),
+            log.clone(),
+            mistral_options(&fake, diarize),
+        );
+        wait_until("both tracks answered up to the pause", WAIT, || {
+            let answered = |track| meta(&rec.dir, &format!("stream.answered.{track}"));
+            (answered("call").as_deref() == Some("5500")
+                && answered("mic").as_deref() == Some("5500"))
+            .then_some(())
+        });
+        rec.stop(9_000);
+        wait_done(&handle);
+        handle.shutdown();
+        let all = events(&log, &rec.id());
+        assert_no_repeats(&all);
+        let timeline = timeline_of(&pieces, 0);
+        every_burst_has_its_words(&last_revisions(&all, "call"), &timeline);
+        every_burst_has_its_words(&last_revisions(&all, "mic"), &timeline);
+        if diarize {
+            let call = last_revisions(&all, "call");
+            assert!(call.iter().all(|p| p.speaker.is_some()), "{call:#?}");
+        }
+    }
+}
+
 /// 11b: a session that drops while it finishes, after the whole call was sent, is followed by a
 /// new one that sends what wasn't answered again, so the last voice still gets its passage.
 #[test]

@@ -1417,11 +1417,23 @@ impl Worker {
         };
         if cursor >= horizon {
             // With labels, `done` also waits for the follower to finish or fail.
-            return Ok(if stopped && released {
-                Advance::Complete
-            } else {
-                Advance::Waiting
-            });
+            if !(stopped && released) {
+                return Ok(Advance::Waiting);
+            }
+            // A stream's answers that came after the window for their audio had gone, as when
+            // the follower padded a pause and counted that audio as answered, have no window
+            // after them: they become passages at their own times before the track is done.
+            if self.recognizer.is_stream() {
+                let (drafts, meta) = self.stream_drafts(track, 0, horizon / PER_MS, true)?;
+                if !meta.is_empty() {
+                    let passages = drafts
+                        .into_iter()
+                        .map(|draft| self.passage(track, draft, None))
+                        .collect();
+                    return self.commit(track, cursor, cursor, "end", passages, &meta);
+                }
+            }
+            return Ok(Advance::Complete);
         }
         if !reader.covered(cursor) {
             let target = match reader.next_audio(cursor) {
@@ -1467,7 +1479,7 @@ impl Worker {
         let mut language = None;
         let mut meta = Vec::new();
         if self.recognizer.is_stream() {
-            (drafts, meta) = self.stream_drafts(track, start_ms, end_ms)?;
+            (drafts, meta) = self.stream_drafts(track, start_ms, end_ms, false)?;
         } else if worth_recognizing(&data[from..until]) {
             shared.set(PipelineState::Transcribing);
             let right = if timed { until + RIGHT_CONTEXT } else { until }.min(data.len());
@@ -1568,17 +1580,18 @@ impl Worker {
 
     /// A streamed window's passages: the segments that came after the last one a window took,
     /// up to the first whose middle lies past the window, clamped to the window. One that came
-    /// late, for time before the window, joins this one.
+    /// late, for time before the window, joins this one. With `rest`, every segment left.
     fn stream_drafts(
         &self,
         track: Track,
         start_ms: u64,
         end_ms: u64,
+        rest: bool,
     ) -> Result<(Vec<Draft>, MetaUpdates), Error> {
         let (epoch, n) = parse_taken(self.transcript.meta_get(&taken_key(track))?);
         let mut taken: Vec<StoredSegment> = Vec::new();
         for s in self.transcript.segments_after(track, epoch, n)? {
-            if (s.start + s.end) / 2 >= end_ms {
+            if !rest && (s.start + s.end) / 2 >= end_ms {
                 break;
             }
             taken.push(s);
