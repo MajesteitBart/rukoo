@@ -236,9 +236,12 @@ impl Speech for SystemSpeech {
     fn meeting_recognizer(&self, cfg: &ProviderConfig) -> Result<PipelineOptions, ProviderError> {
         if stream::streams(cfg) {
             // A realtime model has no endpoint for recorded windows; the meeting's stream
-            // transcribes it, so no window ever goes out this way.
+            // transcribes it, so no window ever goes out this way. A window only asks for this
+            // when a meeting that started with another provider keeps its way of transcribing
+            // (voice-meetings stores it at the first start) after Settings switched to a
+            // realtime model mid-meeting.
             return Err(ProviderError::config(
-                "A realtime model transcribes meetings through its stream.",
+                "A realtime model only transcribes meetings that start with it. Choose the meeting provider this meeting started with to transcribe the rest of it.",
             ));
         }
         if cfg.provider == "orukeet" {
