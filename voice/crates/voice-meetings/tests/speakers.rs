@@ -1486,6 +1486,43 @@ fn every_burst_has_its_words(call: &[Found], timeline: &[(u64, u64, usize)]) {
     }
 }
 
+/// 11m: a delta that holds only the space between two words keeps them apart, on the microphone
+/// and on a call without labels.
+#[test]
+fn spaces_sent_as_their_own_deltas_keep_the_words_apart() {
+    let tmp = TempDir::new("speakers-mistral-spaces");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    // Three bursts of 3.5 s, ten words each.
+    let pieces = three_voices(3, 3.5);
+    let length = seconds(&pieces);
+    let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
+    rec.session(0, 1);
+    rec.segment("mic", 1, 0, &voices(&pieces));
+    rec.segment("call", 1, 0, &voices(&pieces));
+    rec.stop(ms(length));
+    let fake = FakeStreaming::default();
+    fake.state().spaced_deltas = true;
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, false));
+    wait_done(&handle);
+    handle.shutdown();
+    let all = events(&log, &rec.id());
+    let timeline = timeline_of(&pieces, 0);
+    for track in ["mic", "call"] {
+        let passages = last_revisions(&all, track);
+        let words: Vec<&str> = passages
+            .iter()
+            .flat_map(|p| p.text.split_whitespace())
+            .collect();
+        assert_eq!(words.len(), 30, "{track}: {passages:#?}");
+        assert!(
+            words.iter().all(|w| w.matches('w').count() == 1),
+            "{track}: words run together: {passages:#?}"
+        );
+        every_burst_has_its_words(&passages, &timeline);
+    }
+}
+
 /// 11e: a session that fell behind and then dropped is followed by one that sends again what
 /// the provider never answered, so no burst loses its words.
 #[test]

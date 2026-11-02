@@ -303,6 +303,9 @@ pub struct FakeStreamState {
     /// Sessions that label voices answer one event at a time, at most one per this long, as a
     /// provider that fell behind and catches up.
     pub slow_answers: Option<Duration>,
+    /// Sessions that don't label voices send each word and each space before it as a delta of
+    /// its own, as Mistral's realtime model can.
+    pub spaced_deltas: bool,
 }
 
 /// Mistral's realtime stream without a network: one segment per burst of a hidden speaker, sent
@@ -342,6 +345,7 @@ impl StreamingSpeech for FakeStreaming {
             timed: state.timed,
             mute: session.diarize && (state.mute_all || (state.mute_first && labelling == 1)),
             slow: state.slow_answers.filter(|_| session.diarize),
+            spaced: state.spaced_deltas && !session.diarize,
             released: Instant::now(),
             names,
             heard: 0,
@@ -361,6 +365,8 @@ struct FakeStream {
     mute: bool,
     /// One answer per this long.
     slow: Option<Duration>,
+    /// Words and the spaces before them as deltas of their own.
+    spaced: bool,
     released: Instant,
     names: HashMap<usize, String>,
     heard: usize,
@@ -390,6 +396,19 @@ impl FakeStream {
         // A word per 350 ms, so a segment without times gets about the burst's length.
         let words = ((self.position - start) / (RATE as u64 * 350 / 1000)).max(1);
         let word = format!("w{}", start / 16);
+        if self.spaced {
+            for _ in 0..words {
+                for text in [" ".to_owned(), word.clone()] {
+                    self.events.push(StreamEvent::Segment {
+                        text,
+                        speaker: None,
+                        start: self.timed.then(|| seconds(start)),
+                        end: self.timed.then(|| seconds(self.position)),
+                    });
+                }
+            }
+            return;
+        }
         let text = vec![word; words as usize].join(" ");
         self.events.push(StreamEvent::Segment {
             text: if self.diarize {

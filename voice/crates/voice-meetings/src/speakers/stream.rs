@@ -577,7 +577,11 @@ impl Ctx {
                     end,
                 } => (text, speaker, start, end),
             };
-            if text.trim().is_empty() {
+            // A delta of only a space parts the words around it, and a passage's text is trimmed
+            // once it is put together. A labelled segment of only spaces says nothing, and would
+            // only give its voice an id.
+            let label = if labelled { speaker } else { None };
+            if text.is_empty() || (label.is_some() && text.trim().is_empty()) {
                 continue;
             }
             let timed = match (start, end) {
@@ -605,7 +609,6 @@ impl Ctx {
             let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) else {
                 continue;
             };
-            let label = if labelled { speaker } else { None };
             if let Some(label) = &label {
                 let key = (session.epoch, label.clone());
                 let known = map.contains_key(&key)
