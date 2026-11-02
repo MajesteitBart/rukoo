@@ -174,8 +174,20 @@ function protectWindows(on) {
 
 // What the meeting view and Settings show about Voice. Never the discovery file: its token stays in main.
 function voiceState() {
-  const base = voice ? voice.state() : { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false };
+  const base = voice ? voice.state() : { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null };
   return { ...base, hidden: captureHidden, canHide: process.platform === 'win32' || process.platform === 'darwin' };
+}
+
+// While Rukoo Voice records the screen, Rukoo's own mail and booking notifications would land in its frames, and
+// from there with the agent and on disk. They wait out the meeting instead; the badge still counts, and calendar
+// reminders still show, because a missed reminder costs more than its title. Other apps' notifications aren't ours.
+function screenRecording() {
+  return Boolean(voice && voice.screenRecording());
+}
+
+// Test mode counts the notifications held back, so a test can see that they were.
+function heldNotices(n) {
+  if (process.env.SEM_HIDDEN) global.__semHeldNotices = (global.__semHeldNotices || 0) + n;
 }
 // ---- /voice ----
 
@@ -265,13 +277,22 @@ function destroyTray() {
 function notify(messages) {
   for (const m of messages) newSinceFocus.add(m.id);
   refreshBadge();
+  if (screenRecording()) {
+    heldNotices(messages.length);
+    return;
+  }
   if (!engine.settings.notifications || !Notification.isSupported()) return;
   if (win && win.isFocused()) return;
   mailNotices.add(messages);
 }
 
-// Now, or once Jev sorted the mail, so the window may have come forward meanwhile.
+// Now, or once Jev sorted the mail, so the window may have come forward meanwhile, and the screen recording may have
+// started.
 function showMailNotices(list) {
+  if (screenRecording()) {
+    heldNotices(list.length);
+    return;
+  }
   if (!engine.settings.notifications || (win && win.isFocused())) return;
   for (const { id, title, body } of list) {
     if (!id) {
@@ -318,10 +339,16 @@ function showReminders(list) {
 }
 
 // Booking news (design 1.2): a toast while the main window is focused, a desktop notification otherwise. open:
-// { id, start } for an event, { request } for a request, { start } for the day a cancelled booking was on.
+// { id, start } for an event, { request } for a request, { start } for the day a cancelled booking was on. The toast
+// is inside Rukoo's window, which a meeting keeps out of the recording; the desktop notification waits while the
+// screen records.
 function showBookingNotification({ title, body, open }) {
   if (win && !win.isDestroyed() && win.isFocused() && !process.env.SEM_HIDDEN) {
     send('toast', String(body).slice(0, 200));
+    return;
+  }
+  if (screenRecording()) {
+    heldNotices(1);
     return;
   }
   calendarNotice({ title, body, open });
@@ -1338,9 +1365,18 @@ Object.assign(api, {
   },
   // null goes back to the text Voice recognized.
   meetingCorrect: (id, passageId, text) => voiceService().correct(meetingId(id), meetingText(passageId, 100), text === null ? null : meetingText(text, 20000)),
-  meetingFrame: async (id, atSeconds) => {
-    if (!Number.isInteger(atSeconds) || atSeconds < 0) throw new Error('invalid');
-    return frameUrl(await voiceService().frame(meetingId(id), atSeconds * 1000));
+  // The image of the frame at or before atMs (meeting time in ms, a frame's at), as a data URL, or null. A frame the
+  // meeting view got without its text gets the text with the delta that follows.
+  meetingFrame: async (id, atMs) => {
+    if (!Number.isInteger(atMs) || atMs < 0) throw new Error('invalid');
+    return frameUrl(await voiceService().frame(meetingId(id), atMs));
+  },
+  // The meeting's screen recording and the monitors it can move to (voice/index.js screenInfo).
+  meetingScreen: (id) => voiceService().screenInfo(meetingId(id)),
+  // monitor: an id from meetingScreen's monitors. The id of the monitor Voice records now.
+  meetingScreenSelect: (id, monitor) => {
+    if (typeof monitor !== 'string' || !monitor || Array.from(monitor).length > 64) throw new Error('invalid');
+    return voiceService().selectMonitor(meetingId(id), monitor);
   },
   meetingEvents: (id) => voiceService().events(meetingId(id))
 });

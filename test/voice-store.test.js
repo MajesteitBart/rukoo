@@ -81,7 +81,7 @@ test('recording follows the status and the meeting state, and an ended meeting n
   s.apply(ev('meeting.state', M, { state: 'recording', at: 0 }));
   assert.equal(s.status().recording, M, 'known the moment Voice says the meeting records');
   s.apply(ev('status', null, { recording: M, dictating: true }));
-  assert.deepEqual(s.status(), { recording: M, dictating: true });
+  assert.deepEqual(s.status(), { recording: M, dictating: true, screenDefault: null });
   s.apply(ev('meeting.state', M, { state: 'done', at: 5000, endedAt: 1793000005000 }));
   assert.equal(s.status().recording, null);
 });
@@ -303,7 +303,7 @@ test('a replay whose numbers skip, because Voice keeps only the newest status, a
   s.apply({ ...passage('call', 1000, 'First.'), seq: 7 });
   s.apply({ ...ev('status', null, { recording: null, dictating: true }), seq: 9 });
   assert.equal(s.cursor().after, 9);
-  assert.deepEqual(s.status(), { recording: null, dictating: true });
+  assert.deepEqual(s.status(), { recording: null, dictating: true, screenDefault: null });
   assert.deepEqual(s.meeting(M).passages.map((p) => p.text), ['First.']);
 });
 
@@ -348,4 +348,105 @@ test('speaker names from the calendar: the matching event, the guests to offer, 
   const oneOnOne = { ...standup, attendees: [standup.attendees[0], standup.attendees[2]] };
   assert.equal(suggest(speakers, oneOnOne).auto['call-1'].name, 'Sanne');
   assert.deepEqual(suggest([...speakers, { id: 'call-2', track: 'call' }], oneOnOne).auto, {}, 'two voices: the user picks');
+});
+
+const frameEv = (at, text, extra = {}) => ev('frame', M, { id: `f-${String(at).padStart(9, '0')}`, at, width: 1920, height: 1080, text, ...extra });
+
+test('a frame sent twice is one change, and it takes a tick like a passage', () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  s.apply(started(M, { screen: 'frames' }));
+  s.apply(passage('call', 1000, 'Before the slide.'));
+  const tickBefore = s.meeting(M).passages[0].changed;
+  const first = frameEv(412000, 'Q3 roadmap');
+  assert.deepEqual(s.apply(first), { meeting: M, kind: 'frame', id: 'f-000412000' });
+  assert.equal(s.apply({ ...first, seq: ++seq }), null, 'Voice sends a frame again with the same id');
+  const f = s.meeting(M).frames[0];
+  assert.deepEqual({ ...f, changed: undefined }, { id: 'f-000412000', at: 412000, width: 1920, height: 1080, text: 'Q3 roadmap', changed: undefined });
+  assert.ok(f.changed > tickBefore, `${f.changed} > ${tickBefore}`);
+  s.apply(passage('call', 420000, 'After the slide.'));
+  assert.ok(s.meeting(M).passages[1].changed > f.changed);
+  s.apply(frameEv(430000, 'The newest change is a frame'));
+  const top = s.meeting(M).frames.at(-1).changed;
+  // After a restart without voice.json the meeting's next change still counts above that frame's tick.
+  s.close();
+  fs.rmSync(path.join(dir, 'voice.json'));
+  const again = store(dir);
+  again.apply(passage('call', 500000, 'Said after the restart.'));
+  const p = again.meeting(M).passages.find((x) => x.start === 500000);
+  assert.ok(p.changed > top, `${p.changed} > ${top}`);
+});
+
+test("a snapshot replaces the frames, keeps the newer ones, and keeps the text Rukoo had for a frame it left without", () => {
+  const s = store();
+  const at = (e, n) => ({ ...e, seq: n });
+  s.apply(at(started(M, { screen: 'frames' }), 1));
+  s.apply(at(frameEv(10000, 'Agenda'), 2));
+  s.apply(at(frameEv(20000, 'Gone from Voice'), 3));
+  const newer = at(frameEv(40000, 'After the head'), 9);
+  s.apply(newer);
+  const snap = {
+    meeting: { id: M, title: 'Weekly with Anna', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'frames', startedBy: 'rukoo', context: null, state: 'recording', endedAt: null },
+    speakers: [],
+    passages: [],
+    marks: [],
+    frames: [
+      { id: 'f-000010000', at: 10000, width: 1920, height: 1080, text: '', textOmitted: true },
+      { id: 'f-000030000', at: 30000, width: 1920, height: 1080, text: '', textOmitted: true },
+      { id: 'f-000035000', at: 35000, width: 2560, height: 1440, text: 'Slide 2' },
+      { id: 'bad', at: -1, width: 1, height: 1, text: '' }
+    ],
+    head: 8
+  };
+  assert.equal(s.applySnapshot(M, snap, [newer]).kind, 'snapshot');
+  const frames = s.meeting(M).frames;
+  assert.deepEqual(
+    frames.map((f) => [f.id, f.text, f.textOmitted === true]),
+    [
+      ['f-000010000', 'Agenda', false],
+      ['f-000030000', '', true],
+      ['f-000035000', 'Slide 2', false],
+      ['f-000040000', 'After the head', false]
+    ]
+  );
+  // frame.get brings the text later; it moves the meeting's rev for the renderer, but not the frame's tick.
+  const rev = s.meeting(M).rev;
+  const tick = frames[1].changed;
+  assert.deepEqual(s.frameText(M, { id: 'f-000030000', at: 30000, width: 1920, height: 1080, text: 'Budget' }), { meeting: M, kind: 'frame', id: 'f-000030000' });
+  const filled = s.meeting(M).frames[1];
+  assert.deepEqual([filled.text, filled.textOmitted, filled.changed], ['Budget', undefined, tick]);
+  assert.ok(s.meeting(M).rev > rev);
+  assert.equal(s.frameText(M, { id: 'f-000030000', text: 'Again' }), null, 'only a frame without its text');
+  assert.equal(s.frameText(M, null), null);
+  // A second snapshot that leaves the text out again keeps it, and an older Voice's snapshot keeps every frame.
+  s.applySnapshot(M, { ...snap, head: 9 });
+  assert.equal(s.meeting(M).frames.find((f) => f.id === 'f-000030000').text, 'Budget');
+  assert.deepEqual(s.meeting(M).frames.map((f) => f.id), ['f-000010000', 'f-000030000', 'f-000035000'], 'gone after the head that covers it');
+  const { frames: _, ...older } = snap;
+  s.applySnapshot(M, { ...older, head: 10 });
+  assert.equal(s.meeting(M).frames.length, 3);
+});
+
+test("Voice's screen default is kept with the status, and anything but a screen mode reads as unknown", () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  assert.deepEqual(s.status(), { recording: null, dictating: false, screenDefault: null });
+  assert.equal(s.setStatus({ recording: null, dictating: false, screenDefault: 'frames' }), true, 'a new default alone is a change');
+  assert.equal(s.setStatus({ recording: null, dictating: false, screenDefault: 'frames' }), false);
+  assert.equal(s.status().screenDefault, 'frames');
+  // A recording keeps the default it had.
+  s.apply(started());
+  s.apply(ev('meeting.state', M, { state: 'recording', at: 0 }));
+  assert.deepEqual(s.status(), { recording: M, dictating: false, screenDefault: 'frames' });
+  s.close();
+  assert.equal(store(dir).status().screenDefault, 'frames', 'saved in voice.json');
+  const odd = store();
+  odd.setStatus({ recording: null, dictating: false, screenDefault: '4k' });
+  assert.equal(odd.status().screenDefault, null);
+  // An older Voice says nothing about it.
+  odd.welcome({ type: 'welcome', protocol: 1, voiceVersion: '0.1.0', instance: 'Vb3kQ9m2X7pL1sR4tY8wZQ', head: 1, oldest: 1, replay: 'full', status: { recording: null, dictating: false } });
+  assert.equal(odd.status().screenDefault, null);
+  assert.equal(odd.isReplay(1), true);
+  assert.equal(odd.isReplay(2), false);
+  assert.equal(odd.isReplay(undefined), false);
 });
