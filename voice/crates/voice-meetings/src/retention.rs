@@ -7,8 +7,13 @@
 //!
 //! Each meeting follows the retention it started with, kept in its `meeting.json` (Ownkey's
 //! `create_meeting` stored it the same way), so a changed setting applies to new meetings only.
+//!
+//! Bucket sync can hold a meeting's media past its time ([`retention_sweep_holding`]) until it
+//! reached the bucket, and give it up part by part when the disk runs low ([`release_held`]).
 
 use std::fs;
+use std::io;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use voice_bridge::EventLog;
@@ -40,34 +45,175 @@ pub fn retention_sweep_at(
     retention_of: impl Fn(&str) -> Retention,
     now: u64,
 ) -> Vec<String> {
-    let mut removed = Vec::new();
+    retention_sweep_holding(lib, log, retention_of, |_| false, now).removed
+}
+
+/// What a sweep did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    /// Meetings whose media went.
+    pub removed: Vec<String>,
+    /// Expired meetings that `hold` kept, oldest first, for the disk floor (voice/README.md,
+    /// Storage).
+    pub held: Vec<String>,
+}
+
+/// [`retention_sweep_at`] that leaves alone the meetings `hold` names: bucket sync holds media that
+/// hasn't reached the bucket. `hold` is asked once per meeting, and only for a meeting whose
+/// retention ran out, right before its media would go.
+pub fn retention_sweep_holding(
+    lib: &Library,
+    log: &EventLog,
+    retention_of: impl Fn(&str) -> Retention,
+    hold: impl Fn(&str) -> bool,
+    now: u64,
+) -> Swept {
+    let mut swept = Swept::default();
+    // Meeting ids sort by their start, so the held list comes out oldest first.
     for dir in lib.dirs() {
         if !dir.has_audio() {
             continue;
         }
         let id = dir.id().as_str();
-        let retention = dir.retention().unwrap_or_else(|| retention_of(id));
-        if retention == Retention::Keep {
+        if !expired(&dir, log, &retention_of, now) {
             continue;
         }
-        // The event log says when Rukoo was told the meeting is done.
-        let Ok(Some(state)) = log.latest(id, events::MEETING_STATE) else {
-            continue;
-        };
-        if state.data["state"].as_str() != Some(MeetingState::Done.as_str()) {
+        if hold(id) {
+            swept.held.push(id.to_owned());
             continue;
         }
-        let expired = match retention {
-            Retention::AfterTranscription => true,
-            Retention::Days7 => now.saturating_sub(state.created_at) >= WEEK_MS,
-            Retention::Keep => false,
-        };
         // A file that is in use stays until the next sweep.
-        if expired && fs::remove_dir_all(dir.audio_dir()).is_ok() {
-            removed.push(id.to_owned());
+        if fs::remove_dir_all(dir.audio_dir()).is_ok() {
+            swept.removed.push(id.to_owned());
         }
     }
-    removed
+    swept
+}
+
+/// Whether the meeting's retention ran out: it is `done` and its time since then is up.
+fn expired(
+    dir: &crate::MeetingDir,
+    log: &EventLog,
+    retention_of: &impl Fn(&str) -> Retention,
+    now: u64,
+) -> bool {
+    let id = dir.id().as_str();
+    let retention = dir.retention().unwrap_or_else(|| retention_of(id));
+    if retention == Retention::Keep {
+        return false;
+    }
+    // The event log says when Rukoo was told the meeting is done.
+    let Ok(Some(state)) = log.latest(id, events::MEETING_STATE) else {
+        return false;
+    };
+    if state.data["state"].as_str() != Some(MeetingState::Done.as_str()) {
+        return false;
+    }
+    match retention {
+        Retention::AfterTranscription => true,
+        Retention::Days7 => now.saturating_sub(state.created_at) >= WEEK_MS,
+        Retention::Keep => false,
+    }
+}
+
+/// One media folder of a meeting, in the order held media gives way when the disk runs low.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MediaPart {
+    /// `screen/video`.
+    Video,
+    /// `screen/frames`.
+    Frames,
+    /// `audio/`.
+    Audio,
+}
+
+impl MediaPart {
+    /// Video first, then frames, then audio.
+    pub const ORDER: [MediaPart; 3] = [MediaPart::Video, MediaPart::Frames, MediaPart::Audio];
+
+    /// The kinds of bucket sync's queue rows this part holds.
+    pub fn kind(self) -> &'static str {
+        match self {
+            MediaPart::Video => "video",
+            MediaPart::Frames => "frame",
+            MediaPart::Audio => "audio",
+        }
+    }
+
+    /// The part's folder in a meeting folder.
+    pub fn folder(self, meeting: &Path) -> std::path::PathBuf {
+        match self {
+            MediaPart::Video => meeting.join("screen").join("video"),
+            MediaPart::Frames => meeting.join("screen").join("frames"),
+            MediaPart::Audio => meeting.join("audio"),
+        }
+    }
+
+    /// The part's files that bucket sync would upload, relative to the meeting folder with forward
+    /// slashes as sync names them, sorted. `*.tmp` and `*.restore` files never upload, so they
+    /// aren't listed.
+    pub fn files(self, meeting: &Path) -> Vec<String> {
+        let mut files = Vec::new();
+        collect_files(meeting, &self.folder(meeting), &mut files);
+        files.sort();
+        files
+    }
+}
+
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => collect_files(root, &path, out),
+            Ok(_) => {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".tmp") || name.ends_with(".restore") {
+                    continue;
+                }
+                if let Ok(relative) = path.strip_prefix(root) {
+                    let parts: Vec<String> = relative
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect();
+                    out.push(parts.join("/"));
+                }
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// Removes one media folder of one meeting and returns the bytes it freed. A part the meeting
+/// doesn't have frees nothing: before screen recording, `Video` and `Frames` never do.
+pub fn release_held(lib: &Library, id: &str, part: MediaPart) -> io::Result<u64> {
+    let dir = lib
+        .dir(id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no meeting with that id"))?;
+    let folder = part.folder(dir.path());
+    if !folder.is_dir() {
+        return Ok(0);
+    }
+    let bytes = folder_bytes(&folder);
+    fs::remove_dir_all(&folder)?;
+    Ok(bytes)
+}
+
+fn folder_bytes(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => folder_bytes(&entry.path()),
+            Ok(_) => entry.metadata().map_or(0, |m| m.len()),
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 fn now_ms() -> u64 {
@@ -199,5 +345,120 @@ mod tests {
         assert_eq!(now(done_at + WEEK_MS), vec![week]);
         assert!(now(done_at + 520 * WEEK_MS).is_empty());
         assert!(has_audio(&kept), "kept until the user deletes the meeting");
+    }
+
+    /// Stand-in screen media next to the audio, as RUK-108 lays it out.
+    fn add_screen_media(lib: &Library, id: &str) {
+        let dir = lib.dir(id).unwrap();
+        let screen = dir.path().join("screen");
+        fs::create_dir_all(screen.join("video")).unwrap();
+        fs::create_dir_all(screen.join("frames")).unwrap();
+        fs::write(screen.join("video").join("000001.mp4"), vec![1u8; 300]).unwrap();
+        fs::write(screen.join("frames").join("f-000001000.jpg"), vec![2u8; 70]).unwrap();
+        fs::write(screen.join("journal.jsonl"), b"{}\n").unwrap();
+    }
+
+    #[test]
+    fn a_held_meeting_keeps_its_media_past_its_time() {
+        let tmp = TempDir::new("retention-held");
+        let lib = Library::open(tmp.path()).unwrap();
+        let log = EventLog::open(tmp.path()).unwrap();
+        let states = ["recording", "processing", "done"];
+        let older = meeting(&lib, &log, &states);
+        let held = meeting(&lib, &log, &states);
+        let free = meeting(&lib, &log, &states);
+        let unfinished = meeting(&lib, &log, &["recording", "processing"]);
+        for id in [&older, &held, &free] {
+            add_screen_media(&lib, id);
+        }
+        let asked = std::cell::RefCell::new(Vec::new());
+        let hold = |id: &str| {
+            asked.borrow_mut().push(id.to_string());
+            id == older || id == held
+        };
+        // The newest of them became done last.
+        let done_at = log
+            .latest(&free, events::MEETING_STATE)
+            .unwrap()
+            .unwrap()
+            .created_at;
+
+        // A week hasn't passed: nobody is asked, nothing goes.
+        let swept = retention_sweep_holding(&lib, &log, |_| Retention::Days7, hold, done_at + 1);
+        assert_eq!(swept, Swept::default());
+        assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
+
+        let swept =
+            retention_sweep_holding(&lib, &log, |_| Retention::Days7, hold, done_at + WEEK_MS);
+        assert_eq!(swept.removed, vec![free.clone()]);
+        // Oldest first: ids sort by their start, to the second.
+        let mut oldest_first = vec![older.clone(), held.clone()];
+        oldest_first.sort();
+        assert_eq!(swept.held, oldest_first);
+        // Only meetings whose time is up are asked, each once.
+        let mut expected = vec![older.clone(), held.clone(), free.clone()];
+        expected.sort();
+        assert_eq!(*asked.borrow(), expected);
+        for id in [&older, &held] {
+            let dir = lib.dir(id).unwrap();
+            assert!(dir.has_audio(), "{id} keeps its audio");
+            assert!(dir.path().join("screen/video/000001.mp4").is_file());
+            assert!(dir.path().join("screen/frames/f-000001000.jpg").is_file());
+        }
+        assert!(!lib.dir(&free).unwrap().has_audio());
+        assert!(lib.dir(&unfinished).unwrap().has_audio());
+
+        // Without a hold, the plain sweep removes what was held.
+        let removed = retention_sweep_at(&lib, &log, |_| Retention::Days7, done_at + WEEK_MS);
+        assert_eq!(removed, oldest_first);
+    }
+
+    #[test]
+    fn release_held_removes_one_part_at_a_time() {
+        let tmp = TempDir::new("retention-release");
+        let lib = Library::open(tmp.path()).unwrap();
+        let log = EventLog::open(tmp.path()).unwrap();
+        let id = meeting(&lib, &log, &["recording", "processing", "done"]);
+        add_screen_media(&lib, &id);
+        let path = lib.dir(&id).unwrap().path().to_path_buf();
+        // Each part lists its files as bucket sync names them; files that never upload don't
+        // count.
+        fs::write(path.join("audio/mic/000002.wav.restore"), b"RI").unwrap();
+        fs::write(path.join("screen/video/000002.mp4.tmp"), b"ft").unwrap();
+        assert_eq!(
+            MediaPart::ORDER.map(|part| part.files(&path)),
+            [
+                vec!["screen/video/000001.mp4".to_string()],
+                vec!["screen/frames/f-000001000.jpg".to_string()],
+                vec!["audio/mic/000001.wav".to_string()],
+            ]
+        );
+        fs::remove_file(path.join("audio/mic/000002.wav.restore")).unwrap();
+        fs::remove_file(path.join("screen/video/000002.mp4.tmp")).unwrap();
+
+        assert_eq!(release_held(&lib, &id, MediaPart::Video).unwrap(), 300);
+        assert!(!path.join("screen/video").exists());
+        assert!(path.join("screen/frames/f-000001000.jpg").is_file());
+        assert!(path.join("audio/mic/000001.wav").is_file());
+        // A part that is gone already frees nothing.
+        assert_eq!(release_held(&lib, &id, MediaPart::Video).unwrap(), 0);
+
+        assert_eq!(release_held(&lib, &id, MediaPart::Frames).unwrap(), 70);
+        assert!(path.join("audio/mic/000001.wav").is_file());
+        assert_eq!(release_held(&lib, &id, MediaPart::Audio).unwrap(), 4);
+        assert!(!path.join("audio").exists());
+        // The text stays, the journal included.
+        assert!(path.join("meeting.json").is_file());
+        assert!(path.join("screen/journal.jsonl").is_file());
+        assert_eq!(
+            release_held(&lib, "m-20000101-000000-0000", MediaPart::Audio)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            MediaPart::ORDER.map(MediaPart::kind),
+            ["video", "frame", "audio"]
+        );
     }
 }

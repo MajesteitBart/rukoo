@@ -16,8 +16,11 @@ use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{ProviderError, Rewriter, SpeechToText};
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
 use voice_meetings::PipelineOptions;
+use voice_sync::protect::Protector;
+use voice_sync::{NoScreen, ScreenFiles, SyncTiming};
 
 use crate::api::{EngineOptions, Locale, Theme};
+use crate::media::{NoScreenMedia, ScreenMedia};
 use crate::meetings::controller::ControllerTiming;
 
 /// Whether a key is physically down.
@@ -42,6 +45,17 @@ pub trait TextInput: Send + Sync {
     fn text_target(&self) -> TextTarget;
     /// Before quitting, so the user's clipboard comes back.
     fn wait_for_clipboard_restore(&self) {}
+    /// Puts text on the clipboard hidden from clipboard history and cloud clipboard
+    /// (voice-input's `copy_hidden`), for the recovery code.
+    fn copy_hidden(&self, text: &str) -> Result<(), InputError> {
+        let _ = text;
+        Err(InputError::Unsupported)
+    }
+    /// Empties the clipboard while it still holds `text` (voice-input's `clear_if`).
+    fn clear_if(&self, text: &str) -> Result<bool, InputError> {
+        let _ = text;
+        Err(InputError::Unsupported)
+    }
 }
 
 /// Blocks of 16 kHz mono samples, as they are captured.
@@ -132,6 +146,14 @@ pub struct Services {
     /// `None`: PROTOCOL.md's path for this data folder (`RUKOO_VOICE_BRIDGE` still wins).
     pub discovery_path: Option<PathBuf>,
     pub controller: ControllerTiming,
+    /// What the screen recording left in a meeting folder, for bucket sync.
+    pub screen_files: Arc<dyn ScreenFiles>,
+    /// The same, for media links: frames and video clips.
+    pub screen_media: Arc<dyn ScreenMedia>,
+    /// Keeps the bucket secret and the encryption key readable only by this Windows user.
+    pub protector: Arc<dyn Protector>,
+    /// Bucket sync's clocks and sizes; tests shorten them.
+    pub sync_timing: SyncTiming,
 }
 
 impl Services {
@@ -162,6 +184,12 @@ impl Services {
             recorder_exe: options.exe_dir.join(RECORDER_EXE),
             discovery_path: None,
             controller: ControllerTiming::default(),
+            // Stand-ins until screen recording (RUK-108) is on this branch: a meeting records no
+            // screen, so there are no frames or video to sync or serve.
+            screen_files: Arc::new(NoScreen),
+            screen_media: Arc::new(NoScreenMedia),
+            protector: voice_sync::protect::system(),
+            sync_timing: SyncTiming::default(),
         }
     }
 }
@@ -197,6 +225,14 @@ impl TextInput for SystemInput {
 
     fn wait_for_clipboard_restore(&self) {
         voice_input::wait_for_clipboard_restore();
+    }
+
+    fn copy_hidden(&self, text: &str) -> Result<(), InputError> {
+        voice_input::copy_hidden(text)
+    }
+
+    fn clear_if(&self, text: &str) -> Result<bool, InputError> {
+        voice_input::clear_if(text)
     }
 }
 

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, TempDir};
 use voice_bridge::{EventLog, MeetingControl};
+use voice_engine::media::{MediaService, NoScreenMedia};
 use voice_engine::meetings::bridge::Control;
 use voice_engine::meetings::controller::{Change, Controller, ControllerOptions, ControllerTiming};
 use voice_engine::{PillPhase, StopReason};
@@ -577,6 +578,17 @@ fn a_cut_off_meeting_is_finished_at_start() {
     c.shutdown();
 }
 
+/// Media links without bucket sync or screen recording.
+fn no_media(data: &Path, controller: &Arc<Controller>) -> Arc<MediaService> {
+    MediaService::new(
+        data,
+        Arc::clone(controller),
+        None,
+        Arc::new(NoScreenMedia),
+        Arc::new(|_| None),
+    )
+}
+
 fn rukoo_commands_go_through_meeting_control() {
     let dir = TempDir::new("control");
     let data = dir.join("data");
@@ -585,6 +597,7 @@ fn rukoo_commands_go_through_meeting_control() {
         controller: Arc::clone(&c),
         log: EventLog::open(&data).unwrap(),
         dictating: Arc::default(),
+        media: no_media(&data, &c),
     };
     assert_eq!(MeetingControl::status(&control).recording, None);
     let id = MeetingControl::start(
@@ -751,17 +764,19 @@ fn a_meeting_through_the_engine() {
     assert!(!lock(&h.speech.meeting_heard).is_empty());
     assert_eq!(lock(&h.speech.meeting_providers)[0], "orukeet");
     // Rukoo's meeting.get has every passage the log has.
+    let controller = Controller::new(
+        ControllerOptions {
+            data_dir: h.data(),
+            recorder_exe: recorder_exe(),
+            sources: sources(),
+            timing: timing(),
+        },
+        |_| {},
+    )
+    .unwrap();
     let control = Control {
-        controller: Controller::new(
-            ControllerOptions {
-                data_dir: h.data(),
-                recorder_exe: recorder_exe(),
-                sources: sources(),
-                timing: timing(),
-            },
-            |_| {},
-        )
-        .unwrap(),
+        media: no_media(&h.data(), &controller),
+        controller,
         log: EventLog::open(&h.data()).unwrap(),
         dictating: Arc::default(),
     };

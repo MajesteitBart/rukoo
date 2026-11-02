@@ -7,11 +7,13 @@ pub mod api;
 pub mod autostart;
 mod dictation;
 mod engine;
+pub mod media;
 pub mod meetings;
 mod pill;
 mod platform;
 pub mod services;
 mod settings;
+pub mod sync;
 
 use std::fs;
 use std::sync::{Arc, OnceLock, Weak};
@@ -29,7 +31,8 @@ pub use api::{
 pub use services::Services;
 
 use crate::dictation::Dictation;
-use crate::engine::{Core, EngineImpl};
+use crate::engine::{Core, EngineImpl, Parts};
+use crate::media::MediaService;
 use crate::meetings::controller::{self, Controller, ControllerOptions};
 use crate::meetings::Meetings;
 use crate::settings::SettingsRuntime;
@@ -37,6 +40,7 @@ use crate::settings::SettingsRuntime;
 /// Notification titles the engine uses besides dictation's (voice/ui/i18n `app.notify.*`).
 pub const NOTIFY_SETTINGS: &str = "app.notify.settings";
 pub const NOTIFY_WELCOME: &str = "app.notify.welcome";
+pub use sync::NOTIFY_SYNC;
 
 /// Every notification title the engine sends; voice-app checks that both catalogs have them.
 pub const NOTIFY_TITLES: &[&str] = &[
@@ -46,6 +50,7 @@ pub const NOTIFY_TITLES: &[&str] = &[
     meetings::controller::NOTIFY_MEETING,
     NOTIFY_SETTINGS,
     NOTIFY_WELCOME,
+    NOTIFY_SYNC,
 ];
 
 /// Starts Voice: loads Settings (running the first-run Ownkey import when it applies), starts the
@@ -174,19 +179,68 @@ pub fn start_with(
     })?;
     // Before the bridge opens, so a meeting Rukoo starts at once keeps it too.
     controller.library().set_retention(cfg.meetings_retention);
-    let meetings = Meetings::new(controller, log, discovery, &options.version);
+
+    // Bucket sync. When its store doesn't open (locked, damaged, or from a newer Voice), Voice
+    // runs without it, and retention keeps every meeting's media while the switch is on.
+    let sync = match voice_sync::BucketSync::open(sync_options(
+        &data_dir,
+        &controller,
+        &services,
+        &engine,
+    )) {
+        Ok(sync) => Some(Arc::new(sync)),
+        Err(e) => {
+            log::error!("sync: Voice runs without bucket sync: {}", e.message);
+            None
+        }
+    };
+    if sync::migrate_secret(
+        &mut cfg,
+        sync.as_deref(),
+        &data_dir,
+        Arc::clone(&services.protector),
+    ) {
+        if let Err(e) = cfg.save(&data_dir) {
+            log::error!("sync: config.json wasn't saved after moving the bucket secret: {e}");
+        }
+    }
+    let media = MediaService::new(
+        &data_dir,
+        Arc::clone(&controller),
+        sync.clone(),
+        Arc::clone(&services.screen_media),
+        {
+            let system = Arc::clone(&services.system);
+            Arc::new(move |path: &std::path::Path| system.free_bytes(path))
+        },
+    );
+    let meetings = Meetings::new(
+        controller,
+        log,
+        discovery,
+        &options.version,
+        Arc::clone(&media),
+    );
     let core = Arc::new(Core::new(
         options,
         services,
         sink,
-        cfg,
-        meetings,
-        SettingsRuntime::new(start_page),
+        Parts {
+            config: cfg,
+            meetings,
+            settings: SettingsRuntime::new(start_page),
+            sync,
+            media,
+            // Stand-in until screen recording (RUK-108) is on this branch: no meeting records the
+            // screen, so the key dialogs are never refused for it.
+            screen_recording: Arc::new(|| false),
+        },
     ));
     let _ = engine.set(Arc::downgrade(&core));
     core.set_this();
 
     let cfg = core.config();
+    sync::configure_sync(&core, &cfg);
     core.svc
         .speech
         .local_configure(core.registry(&cfg), cfg.idle_timeout());
@@ -229,4 +283,43 @@ pub fn start_with(
     core.sink.tray(core.tray());
     core.settings_changed();
     Ok(Arc::new(EngineImpl(core)))
+}
+
+/// How voice-sync runs in this engine: in the data folder, with the engine's protector and
+/// screen files, the free-space rule of every writer but the recorder, and status changes going
+/// to Settings once the engine exists.
+fn sync_options(
+    data_dir: &std::path::Path,
+    controller: &Arc<Controller>,
+    services: &Services,
+    engine: &Arc<OnceLock<Weak<Core>>>,
+) -> voice_sync::SyncOptions {
+    let reserve = {
+        let controller = Arc::clone(controller);
+        let system = Arc::clone(&services.system);
+        let root = controller.library().root().to_path_buf();
+        move |bytes: u64| {
+            system
+                .free_bytes(&root)
+                .is_none_or(|free| media::reserve_ok(free, bytes, controller.current().is_some()))
+        }
+    };
+    let on_change = {
+        let engine = Arc::clone(engine);
+        move || {
+            if let Some(core) = engine.get().and_then(Weak::upgrade) {
+                core.sync_changed();
+            }
+        }
+    };
+    voice_sync::SyncOptions {
+        data_dir: data_dir.to_path_buf(),
+        meetings_dir: controller.library().root().to_path_buf(),
+        protector: Arc::clone(&services.protector),
+        screen: Arc::clone(&services.screen_files),
+        now: Arc::new(meetings::now_ms),
+        reserve: Arc::new(reserve),
+        timing: services.sync_timing.clone(),
+        on_change: Arc::new(on_change),
+    }
 }

@@ -127,6 +127,24 @@ pub(crate) fn wait_for_clipboard_restore() {
     drop(CLIPBOARD_GATE.enter());
 }
 
+pub(crate) fn copy_hidden(text: &str) -> Result<(), InputError> {
+    // After a pending paste restore, which would otherwise put the user's old clipboard back
+    // over this text.
+    let _turn = CLIPBOARD_GATE.enter();
+    WinClipboard.set_text(text).map(|_| ())
+}
+
+pub(crate) fn clear_if(text: &str) -> Result<bool, InputError> {
+    let _turn = CLIPBOARD_GATE.enter();
+    // Read and emptied while the clipboard is open, so nobody's copy can come between the two.
+    let _open = Open::new()?;
+    let holds = read_global(format::UNICODETEXT).is_some_and(|data| utf16_text(&data) == text);
+    if holds {
+        unsafe { EmptyClipboard() }.map_err(clipboard_error)?;
+    }
+    Ok(holds)
+}
+
 pub(crate) fn foreground_window() -> Option<WindowInfo> {
     let foreground = unsafe { GetForegroundWindow() };
     if foreground.is_invalid() {
@@ -328,13 +346,7 @@ impl Clipboard for WinClipboard {
         let Some(data) = data else {
             return Ok((None, seen));
         };
-        // GlobalSize can round up, so stop at the terminating zero.
-        let units: Vec<u16> = data
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .take_while(|&unit| unit != 0)
-            .collect();
-        Ok((Some(String::from_utf16_lossy(&units)), seen))
+        Ok((Some(utf16_text(&data)), seen))
     }
 
     fn restore(&mut self, snapshot: &Snapshot, expected: Option<u32>) -> Result<bool, InputError> {
@@ -359,6 +371,17 @@ impl Clipboard for WinClipboard {
         hide_from_history()?;
         result.map(|()| true)
     }
+}
+
+/// The text of a `CF_UNICODETEXT` block. GlobalSize can round up, so it stops at the terminating
+/// zero.
+fn utf16_text(data: &[u8]) -> String {
+    let units: Vec<u16> = data
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .take_while(|&unit| unit != 0)
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 fn format_name(id: u32) -> Option<String> {
@@ -503,6 +526,26 @@ mod tests {
             let mut clipboard = WinClipboard;
             let ours = clipboard.set_text("ours").unwrap();
             assert_eq!(clipboard.sequence(), ours);
+        }
+
+        #[test]
+        #[ignore = "needs a dedicated desktop: changes the real clipboard"]
+        fn a_hidden_copy_is_cleared_only_while_it_is_still_there() {
+            let mut clipboard = WinClipboard;
+            crate::copy_hidden("RKV1-TEST").unwrap();
+            assert_eq!(clipboard.text().unwrap().0.as_deref(), Some("RKV1-TEST"));
+            assert_eq!(crate::clear_if("something else"), Ok(false));
+            assert_eq!(clipboard.text().unwrap().0.as_deref(), Some("RKV1-TEST"));
+            assert_eq!(crate::clear_if("RKV1-TEST"), Ok(true));
+            assert_eq!(clipboard.text().unwrap().0, None);
+            // The user copied something since: it stays.
+            crate::copy_hidden("RKV1-TEST").unwrap();
+            clipboard.set_text("the user's text").unwrap();
+            assert_eq!(crate::clear_if("RKV1-TEST"), Ok(false));
+            assert_eq!(
+                clipboard.text().unwrap().0.as_deref(),
+                Some("the user's text")
+            );
         }
 
         #[test]

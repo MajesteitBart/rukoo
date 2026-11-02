@@ -8,17 +8,20 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::Value;
 use voice_bridge::{
-    BridgeServer, Clients, ControlError, EventLog, Handle, MeetingControl, Refused,
+    BridgeServer, Clients, ControlError, EventLog, Handle, MediaOpenArgs, MeetingControl, Refused,
 };
 use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status};
 
 use super::controller::Controller;
+use crate::media::MediaService;
 
 /// What Rukoo's commands do.
 pub struct Control {
     pub controller: Arc<Controller>,
     pub log: EventLog,
     pub dictating: Arc<AtomicBool>,
+    /// `media.open` and `media.read`.
+    pub media: Arc<MediaService>,
 }
 
 impl Control {
@@ -76,6 +79,14 @@ impl MeetingControl for Control {
 
     fn status(&self) -> Status {
         Control::status(self)
+    }
+
+    fn media_open(&self, args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        self.media.open(args)
+    }
+
+    fn media_read(&self, media: &str, offset: u64, length: u64) -> Result<Value, ControlError> {
+        self.media.read(media, offset, length)
     }
 }
 

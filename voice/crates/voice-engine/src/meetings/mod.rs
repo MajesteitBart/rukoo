@@ -17,37 +17,52 @@ use voice_core::consent::ConsentState;
 use voice_meetings::{Pipeline, PipelineHandle};
 use voice_protocol::{MeetingState, Track};
 
-pub use voice_meetings::{Library, PipelineOptions, PipelineState};
+pub use voice_meetings::{Library, PipelineOptions, PipelineState, Swept};
+
+/// Wall time in ms.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
 
 use self::bridge::{Bridge, Control};
 use self::controller::Controller;
+use crate::media::MediaService;
 use crate::services::{AudioSink, MicStream};
 
 pub struct Meetings {
     pub controller: Arc<Controller>,
     pub log: Option<EventLog>,
     pub bridge: Option<Bridge>,
+    control: Option<Arc<Control>>,
     dictating: Arc<AtomicBool>,
     pipelines: Mutex<Vec<PipelineHandle>>,
     published: Mutex<Option<(Option<String>, bool)>>,
 }
 
 impl Meetings {
+    /// Before screen recording (RUK-108) is on this branch; it inserts `screen` second.
     pub fn new(
         controller: Arc<Controller>,
         log: Option<EventLog>,
         discovery_path: Option<PathBuf>,
         version: &str,
+        media: Arc<MediaService>,
     ) -> Meetings {
         let dictating = Arc::new(AtomicBool::new(false));
-        let bridge = match (&log, discovery_path) {
-            (Some(log), Some(path)) => Some(Bridge::start(
+        let control = log.as_ref().map(|log| {
+            Arc::new(Control {
+                controller: Arc::clone(&controller),
+                log: log.clone(),
+                dictating: Arc::clone(&dictating),
+                media,
+            })
+        });
+        let bridge = match (&log, &control, discovery_path) {
+            (Some(log), Some(control), Some(path)) => Some(Bridge::start(
                 log.clone(),
-                Arc::new(Control {
-                    controller: Arc::clone(&controller),
-                    log: log.clone(),
-                    dictating: Arc::clone(&dictating),
-                }),
+                Arc::clone(control),
                 path,
                 version,
             )),
@@ -57,10 +72,16 @@ impl Meetings {
             controller,
             log,
             bridge,
+            control,
             dictating,
             pipelines: Mutex::new(Vec::new()),
             published: Mutex::new(None),
         }
+    }
+
+    /// What Rukoo's commands reach, for tests that call it without a socket.
+    pub fn control(&self) -> Option<Arc<Control>> {
+        self.control.clone()
     }
 
     pub fn library(&self) -> &Library {
@@ -130,11 +151,18 @@ impl Meetings {
         }
     }
 
-    /// Removes the audio of meetings whose retention ran out (Ownkey's rule; voice-meetings).
-    pub fn sweep(&self, retention: Retention) -> Vec<String> {
+    /// Removes the audio of meetings whose retention ran out (Ownkey's rule; voice-meetings),
+    /// except where `hold` says bucket sync still needs it.
+    pub fn sweep(&self, retention: Retention, hold: impl Fn(&str) -> bool) -> Swept {
         match &self.log {
-            Some(log) => voice_meetings::retention_sweep(self.library(), log, |_| retention),
-            None => Vec::new(),
+            Some(log) => voice_meetings::retention_sweep_holding(
+                self.library(),
+                log,
+                |_| retention,
+                hold,
+                now_ms(),
+            ),
+            None => Swept::default(),
         }
     }
 
