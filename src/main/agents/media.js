@@ -19,6 +19,8 @@ const MEDIA_LINK_TTL_MS = 5 * 60 * 1000;
 // The most one media.read returns.
 const READ_CHUNK = MEDIA_READ_MAX;
 const PREPARE_WAIT_MS = 120 * 1000;
+// How long get_meeting_media_link waits for Voice to cut a video, so its to_seconds can say where the video ends.
+const VIDEO_END_WAIT_MS = 15 * 1000;
 // A download that started before expiry may finish, but never later than this after the link expired.
 const STREAM_MAX_MS = 15 * 60 * 1000;
 const MAX_STREAMS = 3;
@@ -110,7 +112,7 @@ class MediaLinks {
   // voice(): the VoiceService or null. canRead(): "Agents can read meetings". agentAllowed(agent, remote): the agent
   // may still use Rukoo on that listener. tokenLive(agent, remote, bind): a token Rukoo issued to that agent for that
   // listener still gives bind (bindOf). endpoint(remote): { host, port } of the listener a link must use, or null.
-  // now, ttlMs, prepareWaitMs, streamMaxMs and maxStreams for tests.
+  // now, ttlMs, prepareWaitMs, videoEndWaitMs, streamMaxMs and maxStreams for tests.
   constructor({
     voice = () => null,
     canRead = () => true,
@@ -120,6 +122,7 @@ class MediaLinks {
     now = Date.now,
     ttlMs = MEDIA_LINK_TTL_MS,
     prepareWaitMs = PREPARE_WAIT_MS,
+    videoEndWaitMs = VIDEO_END_WAIT_MS,
     streamMaxMs = STREAM_MAX_MS,
     maxStreams = MAX_STREAMS,
     log = () => {}
@@ -132,6 +135,7 @@ class MediaLinks {
     this.now = now;
     this.ttlMs = ttlMs;
     this.prepareWaitMs = prepareWaitMs;
+    this.videoEndWaitMs = videoEndWaitMs;
     this.streamMaxMs = streamMaxMs;
     this.maxStreams = maxStreams;
     this.log = log;

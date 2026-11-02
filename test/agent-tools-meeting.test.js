@@ -540,9 +540,29 @@ test('a media link checks the kind against the screen and the range against the 
   // An end Voice can't have cut (not after from_seconds, or past what was asked for) leaves to_seconds alone.
   withMedia(hub, voice, (args) => ({ media: MEDIA_ID, ready: true, type: 'video/mp4', size: 4096, start: args.start, end: args.start }));
   assert.equal(data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100, to_seconds: 400 })).to_seconds, 400);
-  // Not ready yet: what was asked for.
-  withMedia(hub, voice);
-  assert.equal(data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100, to_seconds: 400 })).to_seconds, 400);
+
+  // Voice answers the first media.open for a new range "not ready" and starts cutting: the tool asks again until the
+  // video is cut, so to_seconds still says where it breaks.
+  let opens = 0;
+  const polled = withMedia(hub, voice, (args) =>
+    ++opens < 3 ? { media: MEDIA_ID, ready: false } : { media: MEDIA_ID, ready: true, type: 'video/mp4', size: 4096, start: args.start, end: 371500 }
+  );
+  const later = data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100, to_seconds: 400 }));
+  assert.equal(later.to_seconds, 371);
+  assert.equal(polled.length, 3, 'asked until it was ready');
+  assert.doesNotMatch(later.note, /still preparing/);
+  // A cut that takes longer than the tool waits: what was asked for, and the note says the MP4 may end earlier.
+  hub.mediaLinks.videoEndWaitMs = 600;
+  const slow = withMedia(hub, voice);
+  const started = Date.now();
+  const waited = data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'video', from_seconds: 100, to_seconds: 400 }));
+  assert.equal(waited.to_seconds, 400);
+  assert.match(waited.note, /Rukoo Voice was still preparing this video, so to_seconds is the end you asked for: the MP4 ends earlier where the video breaks at a pause or a monitor switch, and its length says where\.$/);
+  assert.ok(slow.length >= 2 && Date.now() - started < 3000, `${slow.length} asks in ${Date.now() - started} ms`);
+  // Audio never waits: its end is where the recording stops, which Rukoo knows.
+  const audio = withMedia(hub, voice);
+  assert.equal(data(await call('get_meeting_media_link', { meeting_id: DONE, kind: 'audio', from_seconds: 100, to_seconds: 400 })).to_seconds, 400);
+  assert.equal(audio.length, 1);
 });
 
 test("a media link turns each of Voice's answers into what the agent can do", async (t) => {
