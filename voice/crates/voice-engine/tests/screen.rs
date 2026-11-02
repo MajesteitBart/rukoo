@@ -101,6 +101,7 @@ fn main() {
         ),
         ("screen_get_and_select", screen_get_and_select),
         ("drops_reach_the_pill", drops_reach_the_pill),
+        ("encoder_drops_reach_the_pill", encoder_drops_reach_the_pill),
         (
             "pill_screen_click_moves_to_the_next_monitor",
             pill_screen_click_moves_to_the_next_monitor,
@@ -1055,6 +1056,54 @@ fn drops_reach_the_pill() {
     assert_eq!(engine.tray_state().meeting.as_deref(), Some("recording"));
     engine.stop_meeting(voice_engine::StopReason::User).unwrap();
     engine.shutdown();
+}
+
+/// A failed encoder drops the video and says so on the pill and in the tray, and the frames go
+/// on: once on a PC without a hardware encoder, once when the encoder fails twice.
+fn encoder_drops_reach_the_pill() {
+    for (name, test) in [
+        ("no-encoder", format!("{SCREEN},no-hardware")),
+        (
+            "encoder-fails",
+            format!("{SCREEN},{VIDEO},encoder-fail-at=2000"),
+        ),
+    ] {
+        println!("    {name}");
+        let h = engine_harness(name, test);
+        h.config(json!({"meetings_screen": "video"}));
+        let engine = h.start();
+        let id = engine.start_meeting().unwrap();
+        let dir = h.data().join("meetings").join(&id);
+        let notice = wait_notice(&h, "pill.videoDropped.encoder");
+        assert_eq!(notice.phase, PillPhase::Meeting);
+        assert_eq!(notice.meeting.unwrap().screen, "frames");
+        let note = h.sink.wait_note("app.notify.meeting");
+        assert!(note.body.contains("frames only"), "{}", note.body);
+        let drops: Vec<String> = journal::read_all(&dir)
+            .unwrap()
+            .into_iter()
+            .filter_map(|l| match l {
+                Line::Dropped { what, reason, .. } => Some(format!("{what} {reason}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drops, ["video encoder"]);
+        let frames_before = journal::read_all(&dir)
+            .unwrap()
+            .iter()
+            .filter(|l| matches!(l, Line::Frame { .. }))
+            .count();
+        wait_for("frames after the drop", || {
+            journal::read_all(&dir)
+                .unwrap_or_default()
+                .iter()
+                .filter(|l| matches!(l, Line::Frame { .. }))
+                .count()
+                > frames_before
+        });
+        engine.stop_meeting(voice_engine::StopReason::User).unwrap();
+        engine.shutdown();
+    }
 }
 
 fn journal_has(dir: &Path, pick: impl Fn(&Line) -> bool) -> bool {
