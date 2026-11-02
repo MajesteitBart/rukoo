@@ -19,7 +19,10 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use super::api::{DiarError, DiarErrorKind, DiarStream, Diarizer, Probs, StreamGeometry};
+use super::api::{
+    DiarError, DiarErrorKind, DiarStream, Diarizer, Probs, StreamGeometry, CHUNK_FRAMES,
+    RIGHT_CONTEXT_FRAMES,
+};
 use super::availability::SpeakerLabels;
 use super::runtime::RuntimeInfo;
 use crate::local::{Located, ModelErrorKind, ModelSpec};
@@ -30,11 +33,9 @@ const QUIT_GRACE: Duration = Duration::from_secs(2);
 /// The worker takes at most 10 s of audio (320,000 bytes) per request; longer pushes are split.
 const MAX_PUSH_SAMPLES: usize = 160_000;
 const SAMPLE_RATE: u32 = 16_000;
-/// Nemotron 3 Diarization's streaming setup, as Ownkey runs it live: 38 frames of 80 ms per
-/// chunk and one frame of right context.
+/// Nemotron 3 Diarization's streaming setup, as Ownkey runs it live: [`CHUNK_FRAMES`] frames of
+/// 80 ms per chunk and [`RIGHT_CONTEXT_FRAMES`] of right context.
 const PRESET: &str = "v3-streaming";
-const CHUNK_FRAMES: u32 = 38;
-const RIGHT_CONTEXT_FRAMES: u32 = 1;
 
 /// Opens streams in fresh workers with one verified runtime and model.
 pub(crate) struct WorkerDiarizer {

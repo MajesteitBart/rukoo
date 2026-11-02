@@ -19,7 +19,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use voice_core::speakers::{DiarError, DiarErrorKind, DiarStream, Diarizer, Probs};
+use voice_core::speakers::{
+    DiarError, DiarErrorKind, DiarStream, Diarizer, Probs, CHUNK_FRAMES, MODEL_FRAME_SAMPLES,
+    RIGHT_CONTEXT_FRAMES,
+};
 use voice_protocol::{MeetingState, Track};
 
 use crate::library::MeetingDir;
@@ -39,9 +42,14 @@ pub(crate) const PUSH_MAX: u64 = 16_000;
 pub(crate) const PUSH_MIN: u64 = 1_600;
 /// The sleep when nothing is ready.
 pub(crate) const POLL: Duration = Duration::from_millis(100);
-/// 3.12 s of zeros, 38 + 1 frames of 80 ms, pushed once at a settled gap, so the stream commits
-/// the audio before the gap.
-pub(crate) const PAD: u64 = 49_920;
+/// Zeros pushed once at a settled gap, so the stream commits and settles the audio before it
+/// wherever that audio ends in a chunk: a whole chunk, the frame of right context the runtime
+/// waits for, and the 0.525 s the binarizer settles behind the committed frames, in whole frames
+/// of 80 ms. 46 frames, 3.68 s.
+pub(crate) const PAD: u64 =
+    (CHUNK_FRAMES as u64 + RIGHT_CONTEXT_FRAMES as u64 + SETTLE_FRAMES) * MODEL_FRAME_SAMPLES;
+/// The binarizer's settle lag, `max(min_on, pad_onset + min_off)` = 0.525 s, in 80 ms frames.
+const SETTLE_FRAMES: u64 = 7;
 /// The pipeline stops waiting for labels when the settled position hasn't moved for this long
 /// while audio waits.
 pub(crate) const STALL: Duration = Duration::from_secs(20);
@@ -1029,6 +1037,31 @@ mod tests {
             ]
         );
         assert_eq!(batch.settled, Some(12_475));
+    }
+
+    /// The runtime commits whole chunks once their right context came in; after the padding,
+    /// the binarizer's settled position must reach the end of the audio before the gap,
+    /// wherever in a chunk that audio ends.
+    #[test]
+    fn the_padding_settles_audio_that_ends_anywhere_in_a_chunk() {
+        let p = BinarizerParams::default();
+        let lag = p.min_on.max(p.pad_onset + p.min_off);
+        assert!(SETTLE_FRAMES as f64 * 0.08 >= lag, "{lag}");
+        let chunk = CHUNK_FRAMES as u64 * MODEL_FRAME_SAMPLES;
+        let right = RIGHT_CONTEXT_FRAMES as u64 * MODEL_FRAME_SAMPLES;
+        for end in (0..3 * chunk).step_by(160) {
+            let pushed = end + PAD;
+            let committed = pushed.saturating_sub(right) / chunk * chunk;
+            let settled = committed as f64 / 16_000.0 - lag;
+            assert!(
+                settled >= end as f64 / 16_000.0,
+                "audio to {end} settles at {settled} s"
+            );
+        }
+        // The 3.12 s it was before leaves audio that ends 6.0 s into a stream short, as the
+        // worker showed.
+        let committed = (96_000 + 49_920 - right) / chunk * chunk;
+        assert!((committed as f64 / 16_000.0 - lag) < 6.0);
     }
 
     #[test]

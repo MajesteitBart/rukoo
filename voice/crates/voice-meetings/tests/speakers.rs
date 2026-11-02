@@ -821,7 +821,9 @@ fn passages_from_a_stall_get_their_speaker_later() {
 }
 
 /// 10: a pause and a recorder crash each get padding once, so labels reach the audio before
-/// the gap and the call is transcribed up to it.
+/// the gap and the call is transcribed up to it. The diarizer commits in the runtime's chunks:
+/// audio that ends 6.0 s into the stream is where the worker settled 0.445 s short with less
+/// padding, and the passage before the pause then waited for the 20 s stall.
 #[test]
 fn gaps_get_padding_once_and_settle_the_audio_before_them() {
     let tmp = TempDir::new("speakers-gaps");
@@ -838,15 +840,18 @@ fn gaps_get_padding_once_and_settle_the_audio_before_them() {
     ];
     rec.segment("call", 1, 0, &voices(&first));
     rec.line(json!({"kind":"pause","t":6000}));
-    let d = ScriptedDiarizer::new();
+    let d = ScriptedDiarizer::with(Script::like_the_runtime);
+    let pad = FollowerTiming::default().pad;
     let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
-    wait_until("the audio before the pause to settle", WAIT, || {
+    // Well before the 20 s after which the pipeline stops waiting for labels.
+    let soon = Duration::from_secs(10);
+    wait_until("the audio before the pause to settle", soon, || {
         (handle.labels().settled_ms == Some(6_000)).then_some(())
     });
-    wait_until("both bursts transcribed", WAIT, || {
+    wait_until("both bursts transcribed", soon, || {
         (last_revisions(&events(&log, &rec.id()), "call").len() == 2).then_some(())
     });
-    assert_eq!(d.script().zero_samples, 49_920, "padding once at the pause");
+    assert_eq!(d.script().zero_samples, pad, "padding once at the pause");
 
     rec.line(json!({"kind":"resume","t":12000}));
     let second = [(1.5, Some(2)), (1.0, None), (1.5, Some(0)), (1.0, None)];
@@ -860,7 +865,7 @@ fn gaps_get_padding_once_and_settle_the_audio_before_them() {
     wait_done(&handle);
     assert_eq!(
         d.script().zero_samples,
-        2 * 49_920,
+        2 * pad,
         "padding once per gap, none at the end"
     );
     let mut timeline = timeline_of(&first, 0);

@@ -12,6 +12,14 @@ pub const SPEAKERS_EXE_NAME: &str = "rukoo-voice-speakers";
 /// The runtime folder next to the exe.
 pub const RUNTIME_FOLDER: &str = "nemo_speech";
 
+/// How a worker stream commits audio, in Nemotron 3 Diarization's streaming setup as Ownkey runs
+/// it live: a chunk of 38 model frames of 80 ms (3.04 s) once one more frame of right context
+/// came in.
+pub const CHUNK_FRAMES: u32 = 38;
+pub const RIGHT_CONTEXT_FRAMES: u32 = 1;
+/// 16 kHz samples per model frame: 80 ms.
+pub const MODEL_FRAME_SAMPLES: u64 = 1_280;
+
 /// Frame probabilities a stream committed: `frames` rows of `speakers` values, frame-major.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Probs {

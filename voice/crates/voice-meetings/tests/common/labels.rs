@@ -88,6 +88,18 @@ pub struct Script {
     pub refuse: Option<DiarErrorKind>,
     /// Frames are committed this many frames after they were pushed, as model chunks are.
     pub lag_frames: usize,
+    /// Frames are committed as the runtime commits them instead: in whole chunks of this many
+    /// frames, once `right_frames` more came in. 0 commits every frame at once.
+    pub chunk_frames: usize,
+    pub right_frames: usize,
+}
+
+impl Script {
+    /// The runtime's commits: 3.04 s chunks with 80 ms of right context, in 10 ms frames.
+    pub fn like_the_runtime(&mut self) {
+        self.chunk_frames = 304;
+        self.right_frames = 8;
+    }
 }
 
 /// A diarizer that needs no model: it hears each frame's hidden speaker from its loudness,
@@ -196,7 +208,7 @@ impl DiarStream for ScriptedStream {
 
     fn push(&mut self, pcm: &[i16]) -> Result<Probs, DiarError> {
         assert!(!self.finished, "a push after finish");
-        let (crash, hang, lag) = {
+        let (crash, hang, lag, chunk, right) = {
             let mut s = self.script.lock().unwrap();
             s.pushes += 1;
             s.pushed_samples += pcm.len() as u64;
@@ -205,7 +217,13 @@ impl DiarStream for ScriptedStream {
             }
             let n = s.pushes;
             let hang = s.hang_on.contains(&n).then_some(s.hang);
-            (s.crash_all || s.crash_on.contains(&n), hang, s.lag_frames)
+            (
+                s.crash_all || s.crash_on.contains(&n),
+                hang,
+                s.lag_frames,
+                s.chunk_frames,
+                s.right_frames,
+            )
         };
         if crash {
             return Err(DiarError::new(
@@ -222,7 +240,11 @@ impl DiarStream for ScriptedStream {
         }
         self.buffer.extend_from_slice(pcm);
         self.take_frames();
-        let upto = self.frames.len().saturating_sub(lag);
+        let upto = if chunk > 0 {
+            self.frames.len().saturating_sub(right) / chunk * chunk
+        } else {
+            self.frames.len().saturating_sub(lag)
+        };
         Ok(self.commit(upto))
     }
 
