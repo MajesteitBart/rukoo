@@ -15,7 +15,7 @@
 //! | `lock` then `unlock` (or `stop`) | mark `gap-screen-<t>`, kind `screen_gap`, detail `locked` |
 //! | `crash` | mark `gap-screen-<lastSeen>`, kind `screen_gap`, detail `crash` |
 //! | `device_lost` then `capture` (or `stop`) | mark `gap-screen-<t>`, kind `screen_gap`, detail `device` |
-//! | `stop` reason `failed` before the timeline's `stop` | `screen_gap` to the timeline's stop, detail `crash` |
+//! | `stop` reason `failed`: the app gave up on the screen process | mark `dropped-frames`, kind `dropped`, detail `crash` |
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -186,6 +186,18 @@ impl ScreenFollower {
             }
             Line::Stop { t, reason } => {
                 self.close_open(*t, out);
+                // The app writes `failed` when it gave up restarting the screen process while
+                // the meeting records: the screen recording stopped for good, now.
+                if reason == "failed" {
+                    out.push(ScreenDerived::Mark(mark(
+                        "dropped-frames".into(),
+                        MarkKind::Dropped,
+                        *t,
+                        None,
+                        Some("crash".into()),
+                        None,
+                    )));
+                }
                 self.stopped = Some(Stopped {
                     t: *t,
                     reason: reason.clone(),
@@ -208,24 +220,16 @@ impl ScreenFollower {
 
     /// The screen part of the meeting is over: the timeline stopped at `timeline_stop_t`. Closes
     /// a lock or device gap still open, and covers the screen's silence after a screen process
-    /// that gave up (`stop` reason `failed`) or vanished without a `stop`. Returns those marks
-    /// once; later calls return nothing.
+    /// that vanished without a `stop`. One the app gave up on has its `dropped` mark already.
+    /// Returns those marks once; later calls return nothing.
     pub fn finish(&mut self, timeline_stop_t: u64) -> Vec<ScreenDerived> {
         if self.finished {
             return Vec::new();
         }
         self.finished = true;
         let mut out = Vec::new();
-        match self.stopped.clone() {
-            Some(stopped) => {
-                if stopped.reason == "failed" && stopped.t < timeline_stop_t {
-                    out.push(ScreenDerived::Mark(gap(
-                        stopped.t,
-                        timeline_stop_t,
-                        "crash",
-                    )));
-                }
-            }
+        match self.stopped {
+            Some(_) => {}
             None => {
                 // A lock or device gap still open explains the silence to the end; otherwise the
                 // screen process vanished after its last line.
@@ -534,20 +538,32 @@ mod tests {
             ],
         );
         let mut follower = ScreenFollower::new(&failed);
-        follower.poll().unwrap();
-        let closing = follower.finish(9000);
-        let m = marks(&closing);
-        assert_eq!(m.len(), 1);
+        // A screen process the app gave up on: a `dropped` mark at once, while the meeting
+        // records, and no gap that says the recorder restarted when the meeting ends.
+        let read = follower.poll().unwrap();
+        let m = marks(&read);
+        assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(
             (
                 m[0].id.as_str(),
+                &m[0].kind,
                 m[0].at,
                 m[0].until,
                 m[0].detail.as_deref()
             ),
-            ("gap-screen-4000", 4000, Some(9000), Some("crash"))
+            (
+                "dropped-frames",
+                &MarkKind::Dropped,
+                4000,
+                None,
+                Some("crash")
+            )
         );
-        assert!(follower.finish(9000).is_empty(), "only once");
+        assert!(
+            follower.finish(9000).is_empty(),
+            "{:?}",
+            follower.finish(9000)
+        );
 
         // A journal that ends without stop while locked: the lock closes at the timeline's stop.
         let locked = tmp.path().join("locked");

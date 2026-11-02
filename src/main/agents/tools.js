@@ -2361,7 +2361,9 @@ function markLine(k) {
     case 'device':
       return k.detail === 'lost' ? `${at} [${where} lost its device]` : `${at} [${where} moved to ${line(k.label) || 'another device'}]`;
     case 'dropped':
-      return `${at} [Rukoo Voice stopped recording the screen to keep the audio]`;
+      return k.detail === 'crash'
+        ? `${at} [Rukoo Voice stopped recording the screen: its screen recorder failed too often]`
+        : `${at} [Rukoo Voice stopped recording the screen to keep the audio]`;
     case 'video_dropped':
       // After a lost graphics device the frames may stop too; a dropped mark then follows.
       return k.detail === 'device'

@@ -694,6 +694,7 @@ test('marks about the screen say what happened to it, apart from the audio', asy
   mark({ id: 'dropped-frames-a', kind: 'dropped', at: 240000, detail: 'disk' });
   mark({ id: 'dropped-video-c', kind: 'video_dropped', at: 245000, detail: 'device' });
   mark({ id: 'dropped-frames-b', kind: 'dropped', at: 250000, detail: 'device' });
+  mark({ id: 'dropped-frames-c', kind: 'dropped', at: 260000, detail: 'crash' });
   await openMeetings();
   await expect(view().locator('.mt-mark .mt-line')).toHaveText([
     'Video stopped: no video encoder on this computer worked. Frames go on.',
@@ -705,7 +706,8 @@ test('marks about the screen say what happened to it, apart from the audio', asy
     'The recorded monitor went away; screen recording moved to PHL 275V8',
     'Screen recording stopped to keep recording audio: the disk is full',
     "Video stopped: the graphics card couldn't start the video again",
-    "Screen recording stopped to keep recording audio: the graphics card couldn't start again"
+    "Screen recording stopped to keep recording audio: the graphics card couldn't start again",
+    'Screen recording stopped: the screen recorder failed too often'
   ]);
   await expect(view().locator('.mt-mark.is-monitor svg')).toHaveCount(2);
   await expect(view().locator('.mt-mark.is-screen_gap')).toHaveCount(3);
@@ -715,6 +717,7 @@ test('marks about the screen say what happened to it, apart from the audio', asy
   await setTheme('dark');
   await expect(view().locator('.mt-mark .mt-line').first()).toHaveText('Video gestopt: geen video-encoder op deze computer werkte. Schermbeelden gaan door.');
   await expect(view().locator('.mt-mark.is-video_dropped .mt-line').nth(2)).toHaveText('Video gestopt: de videokaart kon de video niet opnieuw starten');
+  await expect(view().locator('.mt-mark .mt-line').last()).toHaveText('Schermopname gestopt: de schermopname viel te vaak uit');
   await shot('screen-marks-dark-nl');
 });
 
