@@ -16,9 +16,9 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A TcpListener on 127.0.0.1, a thread per connection, the store, the log and the faults.
 pub struct FakeS3 {
@@ -139,6 +139,8 @@ impl FakeS3 {
             stopping: AtomicBool::new(false),
             connections: Mutex::new(BTreeMap::new()),
             counter: AtomicU64::new(0),
+            answering: Mutex::new(0),
+            answered: Condvar::new(),
         });
         let accept = {
             let shared = Arc::clone(&shared);
@@ -164,7 +166,25 @@ impl FakeS3 {
         self.faults.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// What the fake answered, oldest first. A client has its answer a moment before the fake
+    /// notes the request, so this waits up to 2 s for answers being written: a test that reads
+    /// the log right after a call sees that call.
     pub fn log(&self) -> Vec<Logged> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut answering = lock(&self.shared.answering);
+        while *answering > 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            answering = self
+                .shared
+                .answered
+                .wait_timeout(answering, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        drop(answering);
         self.log
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -213,6 +233,9 @@ struct Shared {
     connections: Mutex<BTreeMap<u64, TcpStream>>,
     /// Connection ids, upload ids and temporary file names.
     counter: AtomicU64,
+    /// Answers being written whose request isn't in the log yet, and the signal when one is.
+    answering: Mutex<usize>,
+    answered: Condvar,
 }
 
 impl Shared {
@@ -243,6 +266,25 @@ impl Shared {
             let _ = file.write_all(line.as_bytes());
         }
         lock(&self.log).push(entry);
+    }
+}
+
+/// One answer being written, from just before its first byte until its request is in the log
+/// or the answer failed to go out.
+struct Answering<'a>(&'a Shared);
+
+impl<'a> Answering<'a> {
+    fn start(shared: &'a Shared) -> Answering<'a> {
+        *lock(&shared.answering) += 1;
+        Answering(shared)
+    }
+}
+
+impl Drop for Answering<'_> {
+    fn drop(&mut self) {
+        let mut answering = lock(&self.0.answering);
+        *answering = answering.saturating_sub(1);
+        self.0.answered.notify_all();
     }
 }
 
@@ -465,6 +507,7 @@ fn serve(shared: &Shared, stream: TcpStream) {
         if let Some(stall) = stall {
             thread::sleep(stall);
         }
+        let answering = Answering::start(shared);
         if write_answer(&mut writer, &head, &answer, close).is_err() {
             break;
         }
@@ -472,6 +515,7 @@ fn serve(shared: &Shared, stream: TcpStream) {
             logged.at = now_ms();
             shared.record(logged);
         }
+        drop(answering);
         if close {
             break;
         }
