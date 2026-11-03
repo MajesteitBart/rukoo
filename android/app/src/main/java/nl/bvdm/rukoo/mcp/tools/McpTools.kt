@@ -255,6 +255,7 @@ class McpTools(private val d: ToolDeps) : McpBackend {
                     )
                 },
             )
+            put("meeting", JsonNull)
             put("open_message", open?.let { lookup.fullView(it) } ?: JsonNull)
             put("chat_message", bound?.let { lookup.fullView(it) } ?: JsonNull)
             // The chat is about an email Rukoo cannot find right now (moved to an unsynced folder, or deleted).

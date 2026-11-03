@@ -43,6 +43,12 @@ App code builds HTML in template strings. Every value in them goes through `esc(
 - `.card`, `.note` and `.error` group content and messages on a page. `.provider` and `.provider-grid` are the account provider picker in setup.
 - `.spinner` is the app's loading spinner.
 
+### Meeting notes and frames
+
+- `rich-editor.js` shares `formatButtons()` and `mountRichEditor()` between both mail composers and meeting notes. It handles selection, formatting commands, link dialogs and Ctrl+K. The composer also re-exports `formatButtons()` for the signature editor.
+- Meeting notes use the same toolbar in `.mt-notes-toolbar`, with a heading action. `notes-markdown.js` converts the editor's supported structures to Markdown and sanitizes them on reopening. A wider side column keeps the transcript visible; the existing segmented control also offers a full-width Notes tab on desktop.
+- `.mt-transcript-head` holds the remembered Screen toggle. Similar OCR frames fold into one row with a `.mt-frame-count` button that opens `.mt-frame-strip`; spoken passages keep their own positions.
+
 ### Icons
 
 `icons.js` exports the app's icons: a 24px grid with 1.6px round strokes, drawn in `currentColor`. `icon(name)` in `ui.js` returns one as markup. Toolbar buttons draw them at 17 or 18px with stroke 1.7.

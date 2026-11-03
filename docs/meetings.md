@@ -32,6 +32,8 @@ The transcript fills the view. Each line has its meeting time in the margin, and
 
 In a meeting that records the screen, each frame sits at the moment the screen changed: a thumbnail with the first line of the text on it. A click on the thumbnail, or Enter on the row, opens it at the transcript's width with all of its text, which you can select and copy; **Text on screen** does the same. Rukoo asks Voice for an image when its row comes into view and keeps the last 60 of the meeting on screen. Marks say when Voice stopped the video or the whole screen recording to keep the audio, when it moved to another monitor, and when there were no frames for a while, for example while the computer was locked.
 
+Screen frames with nearly unchanged text fold into one transcript row, even when people spoke between them. The +count button opens the other frames in a strip. A new slide or document gets its own row at its time. The Screen toggle above the transcript hides all frames and remembers your choice on this device. This only changes the view: the meeting tools can still read every saved frame.
+
 The header says what the meeting records of the screen (Screen: frames or Screen: video). While it records with Rukoo not hidden from screen recordings, **Visible in screen recordings** warns that Rukoo can show in the frames.
 
 Double-click a line, or press Enter on it, to correct its text; Enter saves and Esc cancels. The right-click menu brings back what Voice recognized. In the transcript the arrow keys move between lines.
@@ -40,15 +42,19 @@ Beside the transcript:
 
 - **Calendar event**: the event the meeting is linked to. Change picks another event within 15 minutes of the start, or unlinks it, and a click on the title opens the event in the calendar.
 - **People**: the voices Voice heard. Your microphone is You. With speaker labels on in Rukoo Voice, each voice on the call gets its own row, Speaker 1, Speaker 2 and so on; without them the whole call is one voice, Speaker 1. Pick who each one is from the linked event's guests, or type a name. A guest you already picked for another voice is marked. Rukoo fills in a name by itself only when the call has one voice and the event exactly one other guest; when a second voice turns up later, Rukoo asks you to check that name. A name stays on its voice for the whole meeting, also when Voice settles later who said a passage.
-- **Your notes**: saved a moment after you stop typing. Your agent can read them.
+- **Your notes**: use the composer's formatting toolbar and shortcuts for headings, lists, bold text and links. Notes save as Markdown a moment after you stop typing and when you leave the editor. The wider side editor keeps the transcript visible; the Notes tab gives you the full width. Your agent reads the saved Markdown.
 
-In a narrow window these parts become tabs: Transcript, Notes and Details.
+The Transcript, Notes and Details tabs are available at every width. In a narrow window each tab takes the whole view.
+
+Notes have a 100,000-character limit on saved Markdown, including its formatting and escaping. If a save exceeds it, Rukoo keeps the last saved copy and shows "Not saved: shorten the notes". The unsaved text stays in the editor while the app is open, including when you switch meetings. Shorten it before closing the app to save your changes.
 
 The sidebar lists the meetings by day, newest first. With the chat open the sidebar becomes a rail, where each meeting shows its day of the month.
 
 ## The agent
 
 With the chat open in meeting mode, the chat is about the meeting on screen: the panel opens that meeting's newest chat, or starts a new one about it. Its quick actions are Catch me up, What did they ask me?, Write the notes and Draft the follow-up email.
+
+In meeting chats, `get_context` returns meeting metadata and points to `read_meeting_transcript`; an email left open in Mail does not appear as the open message.
 
 The agent reads the meeting through [Rukoo's meeting tools](agents.md#rukoos-tools). Each turn says how many lines are new since the agent last read the transcript; the transcript itself never goes into the turn. Everyone in a meeting is a third party, so the tools hand the transcript over as untrusted text. In a meeting that records the screen, the agent can look at the frames at a moment or over a stretch; anything can be on a screen, so their text is untrusted too, and a video clip's file path goes only to an agent on this computer. No tool starts or stops a recording.
 

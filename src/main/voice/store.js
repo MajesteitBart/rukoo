@@ -612,6 +612,7 @@ class VoiceStore {
     if (!m || !this.index.meetings[id]) return null;
     const current = m.notes ? m.notes.rev : 0;
     if (rev !== current) return { conflict: true, rev: current, text: m.notes ? m.notes.text : '' };
+    if (typeof value === 'string' && value.length > NOTES_MAX) return { tooLong: true, maxLength: NOTES_MAX, rev: current };
     m.notes = { text: text(value, NOTES_MAX), rev: current + 1, updatedAt: this.now() };
     this.meetingChanged(id);
     return { rev: m.notes.rev };

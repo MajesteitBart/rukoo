@@ -11,9 +11,9 @@ const DROP =
 const SAFE_HREF = /^(https?:|mailto:)/i;
 const MAX_INPUT = 200000;
 
-export function sanitizeAgentHtml(html) {
+export function sanitizeAgentHtml(html, { maxInput = MAX_INPUT } = {}) {
   // An inert document: nothing in it loads or runs while it is cleaned.
-  const doc = new DOMParser().parseFromString(`<!doctype html><body>${String(html ?? '').slice(0, MAX_INPUT)}</body>`, 'text/html');
+  const doc = new DOMParser().parseFromString(`<!doctype html><body>${String(html ?? '').slice(0, maxInput)}</body>`, 'text/html');
   const body = doc.body;
   body.querySelectorAll(DROP).forEach((n) => n.remove());
   const walker = doc.createTreeWalker(body, NodeFilter.SHOW_COMMENT);

@@ -206,6 +206,338 @@ async function shot(name) {
 
 // ---------- tests ----------
 
+test('similar screen frames fold across speech, open as a strip, and the Screen toggle persists after restart', async () => {
+  const id = voiceStarts({ title: 'Launch review', screen: 'frames' });
+  say(id, 'call', 1000, 'We can ship on Thursday.');
+  frameAt(id, 2000, 'Google Meet\nLaunch review\nSanne Joris Bart');
+  say(id, 'mic', 4000, 'I will tell support.');
+  frameAt(id, 5000, 'Google Meet\nLaunch review\nSanne Joris Bart');
+  frameAt(id, 8000, 'Google Meet\nLaunch review\nSanne Joris Bart');
+  frameAt(id, 10000, 'Release checklist\nDocumentation\nSupport training');
+  await openMeetings();
+  await expect(win.locator('.mt-transcript > .mt-frame')).toHaveCount(2);
+  await expect(frame(2000).locator('.mt-frame-count')).toHaveText('+2');
+  // A later frame updates the original group's count without adding another transcript row.
+  frameAt(id, 11000, 'Release checklist\nDocumentation\nSupport training');
+  await expect(frame(10000).locator('.mt-frame-count')).toHaveText('+1');
+  await frame(2000).locator('.mt-frame-count').focus();
+  await win.keyboard.press('Enter');
+  await expect(frame(2000).locator('.mt-frame-strip')).toBeVisible();
+  await expect(frame(5000)).toHaveClass(/has-image/);
+  await expect(frame(8000)).toHaveClass(/has-image/);
+  frameAt(id, 9000, 'Google Meet\nLaunch review\nSanne Joris Bart');
+  await expect(frame(2000).locator('.mt-frame-count')).toHaveText('+3');
+  await expect(frame(2000).locator('.mt-frame-count')).toBeFocused();
+  await shot('folded-frames-strip');
+  await view().locator('[data-mt="show-frames"]').click();
+  await expect(view().locator('.mt-frame')).toHaveCount(0);
+  await expect(rows()).toHaveCount(2);
+  expect(await app.evaluate((_e, id) => global.__semVoice.get(id).frames.length, id)).toBe(6);
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Launch review');
+  await expect(view().locator('[data-mt="show-frames"]')).toHaveAttribute('aria-pressed', 'false');
+  await expect(view().locator('.mt-frame')).toHaveCount(0);
+  await view().locator('[data-mt="show-frames"]').click();
+  await expect(win.locator('.mt-transcript > .mt-frame')).toHaveCount(2);
+});
+
+test('notes share composer formatting, save Markdown and survive a restart, with full width notes and layout captures', async () => {
+  test.setTimeout(120000);
+  // The mail editor sets Chromium's document-wide CSS formatting flag; notes must reset it.
+  await win.locator('[data-action="compose"]').click();
+  await win.locator('.composer [data-c="close"]').click();
+  const id = voiceStarts({ title: 'Launch review', screen: 'frames' });
+  say(id, 'call', 1000, 'The release moves to Thursday.');
+  say(id, 'mic', 5000, 'Support needs the checklist by Monday.');
+  frameAt(id, 2500, 'Launch review\nRelease checklist\nSupport on Monday');
+  frameAt(id, 5500, 'Launch review\nRelease checklist\nSupport on Monday');
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().fill('Launch decisions');
+  await notes().press('Control+a');
+  await view().locator('[data-cmd="formatBlock"]').click();
+  await expect(notes().locator('h2')).toHaveText('Launch decisions');
+  await notes().press('End');
+  await notes().press('Enter');
+  await notes().press('Control+b');
+  await win.keyboard.type('Thursday');
+  await notes().press('Control+b');
+  await notes().press('Enter');
+  await view().locator('[data-cmd="insertUnorderedList"]').click();
+  await win.keyboard.type('Tell support on Monday');
+  await notes().press('Enter');
+  await win.keyboard.type('Publish the checklist');
+  await notes().press('Control+k');
+  await win.locator('.dialog input').fill('https://example.com/checklist');
+  await win.locator('.dialog .buttons .primary').click();
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  const stored = await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
+  expect(stored).toContain('## Launch decisions');
+  expect(stored).toContain('**Thursday**');
+  expect(stored).toContain('- Tell support on Monday');
+  expect(stored).toContain('https://example.com/checklist');
+  const result = await app.evaluate((_e, id) => global.__semAgents.callTool({ agent: 'claude', remote: false }, 'read_meeting_notes', { meeting_id: id }), id);
+  expect(result.isError).toBeFalsy();
+  expect(JSON.stringify(result.structuredContent)).toContain('## Launch decisions');
+  // Compare a wide side editor with the full width Notes tab using the same populated meeting.
+  for (const language of ['en', 'nl']) for (const theme of ['dark', 'light']) {
+    await setLanguage(language);
+    await setTheme(theme);
+    await view().locator('[data-mt-tab="transcript"]').click();
+    await shot(`notes-side-${theme}-${language}`);
+    await view().locator('[data-mt-tab="notes"]').click();
+    await expect(view().locator('.mt-transcript-pane')).toBeHidden();
+    await shot(`notes-tab-${theme}-${language}`);
+  }
+  await setSize(860, 900);
+  for (const language of ['en', 'nl']) for (const theme of ['dark', 'light']) {
+    await setLanguage(language);
+    await setTheme(theme);
+    await shot(`notes-narrow-${theme}-${language}`);
+    await view().locator('[data-mt-tab="transcript"]').click();
+    await shot(`folded-frames-narrow-${theme}-${language}`);
+    await view().locator('[data-mt-tab="notes"]').click();
+  }
+  await app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getType() === 'window').setZoomFactor(2));
+  await win.waitForTimeout(400);
+  // Electron's native capture includes the full window at non-default zoom; CDP can crop it to CSS pixels.
+  fs.writeFileSync(path.join(SHOTS, 'notes-narrow-zoom-200.png'), Buffer.from(await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64')), 'base64'));
+  await expect(notes()).toBeInViewport();
+  expect(await notes().evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getType() === 'window').setZoomFactor(0.8));
+  await setSize(1500, 950);
+  await win.waitForTimeout(400);
+  fs.writeFileSync(path.join(SHOTS, 'notes-wide-zoom-80.png'), Buffer.from(await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64')), 'base64'));
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Launch review');
+  await expect(notes().locator('h2')).toHaveText('Launch decisions');
+  await expect(notes().locator('b, strong')).toHaveText('Thursday');
+  await expect(notes().locator('li')).toHaveCount(2);
+  await expect(notes().locator('a')).toHaveAttribute('href', 'https://example.com/checklist');
+  expect(await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe(stored);
+});
+
+test('notes Markdown round trips editor structures and sanitizes pasted controls and links', async () => {
+  const result = await win.evaluate(async () => {
+    const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
+    const source = '<h2>Decisions</h2><div><b>Ship</b> on <i>Thursday</i>.</div><ul><li>Support<ul><li>Training</li></ul></li><li><a href="https://example.com/plan?q=a&amp;b=c">Plan</a></li></ul><div><u>Underlined</u> and *literal* [brackets] &lt;angle&gt;</div><pre><code>x &lt; y</code></pre>';
+    const editor = document.createElement('div');
+    editor.innerHTML = source;
+    const markdown = notesToMarkdown(editor);
+    editor.innerHTML = markdownToNotes(markdown);
+    const again = notesToMarkdown(editor);
+    const nested = editor.querySelector('li ul li')?.textContent;
+    editor.innerHTML = '<div onclick="alert(1)">Safe<script>alert(1)</script><a href="javascript:alert(1)">label</a><img src="https://example.com/track"><button data-mt="stop">Stop</button></div>';
+    const clean = markdownToNotes(notesToMarkdown(editor));
+    const variants = [
+      '<div><b>Bold <i>and italic</i></b></div>',
+      '<div><code>a ` b</code></div><pre><code>```example```</code></pre>',
+      '<div>Literal `ticks`</div>',
+      '<ol><li>First<br>More on the first item</li><li>Second</li></ol>',
+      '<div>1. Literal numbering</div><div># Literal heading</div><div></div><div>Last line</div>',
+      '<div><a href="https://example.com"><code>a*b</code> and literal * [brackets]</a></div>',
+      '<div><u><code>value</code> and literal * [brackets]</u></div>',
+      '<div><b>First<br>Second</b></div>',
+      '<div><i>First<br>Second</i></div>',
+      '<div><s>First<br>Second</s></div>',
+      '<div><u>First<br>Second</u></div>',
+      '<div><a href="https://example.com">First<br>Second</a></div>',
+      '<div><b><u>First<br><br>Second</u></b></div>',
+      '<div><code>First\nSecond</code></div>',
+      '<h2>First<br>Second</h2>',
+      '<ul><li>First<br><br>Second</li><li>Third</li></ul>',
+      '<ol><li>First<br><br>Second</li><li>Third</li></ol>',
+      '<ul><li>Parent<ul><li>Nested<br><br>Continuation</li></ul>Back at parent</li><li>Sibling</li></ul>'
+    ].map((html) => {
+      editor.innerHTML = html;
+      const first = notesToMarkdown(editor);
+      editor.innerHTML = markdownToNotes(first);
+      return [first, notesToMarkdown(editor)];
+    });
+    const blocks = ['First<div>Second</div>', 'First<p>Second</p>', '<div>First</div><div>Second</div>', 'First<div><br></div><div>Third</div>'].map((html) => {
+      editor.innerHTML = html;
+      return notesToMarkdown(editor);
+    });
+    const labels = ['[a\\*b](https://example.com)', '[a\\*b](<https://example.com>)', '<u>a\\*b</u>'].map((text) => {
+      editor.innerHTML = markdownToNotes(text);
+      return editor.textContent;
+    });
+    return { markdown, again, nested, clean, variants, blocks, labels };
+  });
+  expect(result.again).toBe(result.markdown);
+  expect(result.nested).toBe('Training');
+  expect(result.clean).toBe('<div>Safelabel</div>');
+  for (const [first, second] of result.variants) expect(second).toBe(first);
+  expect(result.blocks).toEqual(['First\nSecond', 'First\nSecond', 'First\nSecond', 'First\n\nThird']);
+  expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
+});
+
+test('blank list continuations and long escaped notes survive editing and restart without loss', async () => {
+  test.setTimeout(120000);
+  const id = voiceStarts({ title: 'Notes at their limits' });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().evaluate((el) => {
+    el.innerHTML = '<ol><li>First<br><br>Second</li><li>Third</li></ol>';
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  });
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await setLanguage('nl');
+  await expect(notes().locator('ol')).toHaveCount(1);
+  await expect(notes().locator('li')).toHaveCount(2);
+  expect(await notes().locator('li').first().innerText()).toBe('First\n\nSecond');
+  await shot('notes-blank-list-preserved');
+  // Valid persisted Markdown can expand beyond the mail sanitizer's 200 KB HTML budget.
+  const original = '&'.repeat(50000) + '\nEnd marker';
+  await app.evaluate((_e, { id, original }) => {
+    const v = global.__semVoice;
+    v.saveNotes(id, original, v.get(id).notes.rev);
+  }, { id, original });
+  await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(50010);
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker'))).toBe(true);
+  await notes().press('Control+End');
+  await win.keyboard.type(' revised');
+  await notes().blur();
+  const expected = original + ' revised';
+  await expect.poll(() => app.evaluate((_e, { id, expected }) => global.__semVoice.get(id).notes.text === expected, { id, expected })).toBe(true);
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Notes at their limits');
+  expect(await notes().evaluate((el) => el.textContent.length)).toBe(50018);
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker revised'))).toBe(true);
+});
+
+test('notes sanitize complete valid content while mail keeps its default HTML budget', async () => {
+  const result = await win.evaluate(async () => {
+    const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
+    const { sanitizeAgentHtml } = await import('./agent/richtext.js');
+    const editor = document.createElement('div');
+    const cases = ['&'.repeat(50000) + '\nEnd marker', '"'.repeat(99990) + '\nLast line'];
+    const complete = cases.map((text) => {
+      editor.innerHTML = markdownToNotes(text);
+      return notesToMarkdown(editor) === text;
+    });
+    const html = '<div>' + '&amp;'.repeat(50000) + '<script>alert(1)</script><a href="javascript:alert(1)">End marker</a></div>';
+    editor.innerHTML = html;
+    const serialized = notesToMarkdown(editor);
+    return { complete, serializedLength: serialized.length, tail: serialized.slice(-10), defaultTail: sanitizeAgentHtml(html).includes('End marker'), unsafe: serialized.includes('alert') };
+  });
+  expect(result.complete).toEqual([true, true]);
+  expect(result.serializedLength).toBe(50010);
+  expect(result.tail).toBe('End marker');
+  expect(result.defaultTail).toBe(false);
+  expect(result.unsafe).toBe(false);
+});
+
+test('escaped notes over the storage limit keep their saved original and a recoverable editor draft', async () => {
+  test.setTimeout(120000);
+  const id = voiceStarts({ title: 'Oversized notes' });
+  const other = voice.meetingId();
+  voice.append('meeting.started', other, { title: 'Another meeting', startedAt: Date.now() - 3600000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null });
+  voice.append('meeting.state', other, { state: 'done', at: 1000, endedAt: Date.now() - 3599000 });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  const original = '_'.repeat(60000) + '\nEnd marker';
+  await app.evaluate((_e, { id, original }) => global.__semVoice.saveNotes(id, original, 0), { id, original });
+  await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(60010);
+  await notes().press('Control+End');
+  await win.keyboard.type(' revised');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Not saved: shorten the notes');
+  expect(await app.evaluate((_e, { id, original }) => global.__semVoice.get(id).notes.text === original && global.__semVoice.get(id).notes.rev === 1, { id, original })).toBe(true);
+  // A permanently rejected draft must not prevent another meeting's notes from saving.
+  await win.locator('.sidebar [data-mt-open]', { hasText: 'Another meeting' }).click();
+  await notes().fill('These notes can save.');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await win.locator('.sidebar [data-mt-open]', { hasText: 'Oversized notes' }).click();
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker revised'))).toBe(true);
+  await expect(view().locator('.mt-notes-status')).toHaveText('Not saved: shorten the notes');
+  for (const language of ['en', 'nl']) for (const theme of ['dark', 'light']) {
+    await setLanguage(language);
+    await setTheme(theme);
+    await view().locator('[data-mt-tab="notes"]').click();
+    await setSize(860, 900);
+    await shot(`notes-too-long-${theme}-${language}`);
+  }
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Oversized notes');
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker'))).toBe(true);
+  expect(await app.evaluate((_e, { id, original }) => global.__semVoice.get(id).notes.text === original, { id, original })).toBe(true);
+  await notes().fill('Short enough.');
+  await notes().blur();
+  await expect.poll(() => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe('Short enough.');
+});
+
+test('soft breaks preserve note formatting and linked labels after restart', async () => {
+  const id = voiceStarts({ title: 'Soft breaks in notes' });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().fill('First bold line');
+  await notes().press('Control+a');
+  await notes().press('Control+b');
+  await notes().press('End');
+  await notes().press('Shift+Enter');
+  await win.keyboard.type('Second bold line');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  const typed = await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
+  expect(typed).toBe('**First bold line**\n**Second bold line**');
+  await notes().evaluate((el) => {
+    el.insertAdjacentHTML('beforeend', '<div><u>First underlined line<br>Second underlined line</u></div><div><a href="https://example.com">First linked line<br>Second linked line</a></div>');
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  });
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Soft breaks in notes');
+  await expect(notes().locator('b, strong')).toHaveText(['First bold line', 'Second bold line']);
+  await expect(notes().locator('u')).toHaveText(['First underlined line', 'Second underlined line']);
+  await expect(notes().locator('a')).toHaveText(['First linked line', 'Second linked line']);
+  await expect(notes()).not.toContainText('**');
+  await shot('notes-soft-breaks-reopened');
+});
+
+test('typed note lines and formatted link labels survive saving, view changes and restart', async () => {
+  test.setTimeout(120000);
+  const id = voiceStarts({ title: 'Notes preservation' });
+  say(id, 'call', 1000, 'Please keep each decision on its own line.');
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().fill('First decision');
+  await notes().press('End');
+  await notes().press('Enter');
+  await win.keyboard.type('Second decision');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await expect.poll(() => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe('First decision\nSecond decision');
+  await notes().evaluate((el) => {
+    el.insertAdjacentHTML('beforeend', '<div><a href="https://example.com"><code>plan</code> * [review]</a></div><div><u>Keep * and [brackets]</u></div>');
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  });
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  const stored = await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
+  for (const language of ['en', 'nl']) for (const theme of ['dark', 'light']) {
+    await setLanguage(language);
+    await setTheme(theme);
+    await expect(notes().locator('a')).toHaveText('plan * [review]');
+    await expect(notes().locator('a code')).toHaveText('plan');
+    await expect(notes().locator('u')).toHaveText('Keep * and [brackets]');
+    await shot(`notes-preserved-${theme}-${language}`);
+  }
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Notes preservation');
+  expect(await notes().innerText()).toContain('First decision\nSecond decision');
+  await expect(notes().locator('a')).toHaveText('plan * [review]');
+  await expect(notes().locator('u')).toHaveText('Keep * and [brackets]');
+  expect(await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe(stored);
+});
+
 test('records the Stand-up from its card: Rukoo hides first, the transcript streams in, and Stop ends it', async () => {
   // The card offers recording from 15 minutes before an event until it ends, so the window's clock is set to five
   // minutes before the Stand-up. Voice's clock follows it, so the meeting's own clock reads right.
@@ -363,7 +695,7 @@ test('a meeting Rukoo Voice starts links the Stand-up, hides Rukoo, and the name
   await expect(person('call-1').locator('.mt-person-name')).toHaveText('Sanne de Vries');
   await expect(rows().first().locator('.mt-name')).toHaveText('Sanne de Vries');
   await expect(rows().first().locator('.mt-text')).toHaveText('Shall we start? Joris is on his way.');
-  await expect(view().locator('.mt-notes-input')).toHaveValue('Launch first, then pricing.');
+  await expect(view().locator('.mt-notes-input')).toHaveText('Launch first, then pricing.');
   // Voice still records: after the restart Rukoo hides again and shows the clock.
   await expect.poll(connected, { timeout: 10000 }).toBe(true);
   if (CAN_HIDE) await expect.poll(isProtected).toEqual([true]);
@@ -488,6 +820,8 @@ test("a 1:1's guessed name stays when a second voice joins, and the People card 
 });
 
 test('the chat follows the meeting: the fake agent reads the transcript, and its second turn gets only what is new', async () => {
+  // Leave an unrelated email selected before opening Meet, as in the reported context bug.
+  await win.locator('.item').first().click();
   const id = voiceStarts({ title: 'Design review' });
   say(id, 'call', 1000, 'The new onboarding has three steps instead of five.');
   say(id, 'mic', 4500, 'Good. Can we keep the skip button?');
@@ -509,6 +843,10 @@ test('the chat follows the meeting: the fake agent reads the transcript, and its
   await expect(transcript().locator('.bui-tool', { hasText: 'Read the meeting' })).toBeVisible();
   const chat = await app.evaluate(() => global.__semAgents.list()[0]);
   expect(chat.meeting).toEqual({ id, title: 'Design review' });
+  const context = await app.evaluate((_e, cid) => global.__semAgents.callTool({ agent: 'clark', remote: false, conversationId: cid }, 'get_context', {}), chat.id);
+  expect(context.structuredContent.meeting.id).toBe(id);
+  expect(context.structuredContent.open_message).toBeNull();
+  await shot('meeting-agent-context');
 
   say(id, 'mic', 12000, 'Then I will tell support on Monday.');
   say(id, 'call', 15500, 'Thanks, that is everything.');
@@ -629,7 +967,7 @@ test('a meeting Rukoo Voice deletes keeps your notes, marked as deleted; one wit
   await expect(view().locator('.mt-state')).toHaveText('Deleted in Rukoo Voice');
   await expect(view().locator('.mt-notice')).toHaveText('Rukoo Voice deleted this meeting and its transcript. Your notes stay here.');
   await expect(rows()).toHaveCount(0);
-  await expect(view().locator('.mt-notes-input')).toHaveValue('Follow up with the supplier.');
+  await expect(view().locator('.mt-notes-input')).toHaveText('Follow up with the supplier.');
   voice.append('meeting.removed', gone, {});
   await expect(item('Gone entirely')).toHaveCount(0);
   await expect(item('Kept for its notes')).toHaveCount(1);
@@ -663,7 +1001,7 @@ test('notes typed while a save is still on its way are kept when another meeting
   await expect(view().locator('.mt-title')).toHaveText('Second meeting');
   await expect.poll(() => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, first), { timeout: 10000 }).toBe('First line. Second line.');
   await item('First meeting').click();
-  await expect(view().locator('.mt-notes-input')).toHaveValue('First line. Second line.');
+  await expect(view().locator('.mt-notes-input')).toHaveText('First line. Second line.');
 });
 
 test('without Rukoo Voice the view says to start it, and Settings > Meetings has both switches', async () => {

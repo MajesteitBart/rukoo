@@ -82,7 +82,7 @@ const TOOLS = [
     name: 'get_context',
     title: 'See what the user sees in Rukoo',
     description:
-      "Returns what is on the user's screen in Rukoo: the open email with its full text, the email this chat is about, related mail in the same thread, checked emails, the reply draft in the composer, the user's accounts and folders, and today's date. Call this first.",
+      "Returns what is on the user's screen in Rukoo: the open email with its full text, the email this chat is about, related mail in the same thread, checked emails, the reply draft in the composer, the user's accounts and folders, and today's date. In the Meet view or a meeting chat, returns meeting metadata instead of an unrelated open email; use read_meeting_transcript for what was said. Meetings are available only on desktop. Call this first.",
     inputSchema: schema({}),
     annotations: READ,
     run: getContext
@@ -942,7 +942,10 @@ async function getContext(hub, args, call) {
   const { engine } = hub;
   const view = hub.viewState;
   const c = call.conversation;
-  const openId = view.openMessageId && (cacheMessage(engine, view.openMessageId) || String(view.openMessageId).startsWith('saved:')) ? view.openMessageId : null;
+  const meetingId = c?.meeting?.id || (view.mode === 'meeting' ? view.meetingId : null);
+  const mailVisible = (!view.mode || view.mode === 'mail') && !c?.meeting;
+  const m = meetingId && !hub.meetingsOff() ? hub.deps.voice?.meeting(meetingId) : null;
+  const openId = mailVisible && view.openMessageId && (cacheMessage(engine, view.openMessageId) || String(view.openMessageId).startsWith('saved:')) ? view.openMessageId : null;
   const boundId = c && c.message ? await hub.currentMessageId(c) : null;
   const [open, bound] = await Promise.all([
     openId ? loadMessage(engine, openId) : null,
@@ -967,11 +970,12 @@ async function getContext(hub, args, call) {
       }))
     },
     open_message: open ? fullView(engine, open) : null,
+    meeting: m ? { ...meetingView(m), transcript_tool: 'read_meeting_transcript' } : null,
     chat_message: bound ? fullView(engine, bound) : null,
     // The chat is about an email Rukoo cannot find right now (moved to an unsynced folder, or deleted).
     ...(c && c.message && !boundId ? { chat_message_missing: true, chat_message_subject: unsafeValue(c.message.subject) } : {}),
     thread: focus && focus.id && !String(focus.id).startsWith('saved:') ? threadOf(engine, focus) : [],
-    selection: (view.checkedIds || []).slice(0, 20).map((id) => summaryById(engine, id)).filter(Boolean),
+    selection: mailVisible ? (view.checkedIds || []).slice(0, 20).map((id) => summaryById(engine, id)).filter(Boolean) : [],
     composer,
     view: { scope: view.scope, view: view.view, folder: view.folder }
   };

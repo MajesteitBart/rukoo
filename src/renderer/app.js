@@ -528,6 +528,8 @@ function agentViewChanged() {
   viewTimer = setTimeout(() => {
     const c = S.composer;
     api('agentView', {
+      mode: meetingMode() ? 'meeting' : calendarMode() ? 'calendar' : 'mail',
+      meetingId: meeting.current()?.id || null,
       openMessageId: S.selectedId || null,
       checkedIds: [...S.checked].slice(0, 50),
       scope: S.scope,

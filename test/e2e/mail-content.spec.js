@@ -167,7 +167,9 @@ test('an inline image and one on the web open, copy and save as the images they 
   await frame().locator('#remote').click({ button: 'right' });
   await pick('Save image as…');
   await expect(win.locator('#toast')).toHaveText('Image saved');
-  expect(fs.readFileSync(path.join(dataDir, 'banner.png')).equals(remote)).toBe(true);
+  // The previous save can leave this same toast visible while the remote image is still being fetched.
+  const saved = path.join(dataDir, 'banner.png');
+  await expect.poll(() => fs.existsSync(saved) && fs.readFileSync(saved).equals(remote)).toBe(true);
   await frame().locator('#remote').click({ button: 'right' });
   await pick('Copy image');
   await expect.poll(async () => (await clipboard()).image).toEqual({ width: 60, height: 20 });

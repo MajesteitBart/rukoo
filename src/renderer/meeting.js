@@ -1,6 +1,10 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, $, hhmm, hue, initials, readerDate, groupLabel, toast, showMenu, closeMenu, menuOpen, menuCount, segmented, setSegmented } from './ui.js';
+import { formatButtons, mountRichEditor } from './rich-editor.js';
+import { markdownToNotes, notesToMarkdown } from './notes-markdown.js';
+import { foldFrames } from './meeting-frames.js';
+import { editMenu } from './editmenu.js';
 import { promptDialog } from './settings.js';
 
 // The meeting view: Rukoo Voice's meetings, a third mode next to Mail and Calendar (Ctrl+3). Voice records and
@@ -52,7 +56,9 @@ const M = {
   // The Voice that answered screen.get with unknown_command: its meetings show no Screen button.
   noScreenSwitch: null,
   // Frames the user opened: a large image and all of their text.
-  frameOpen: new Set()
+  frameOpen: new Set(),
+  groupOpen: new Set(),
+  showFrames: localStorage.getItem('rukoo.meeting.showFrames') !== '0'
 };
 let ctx = null;
 let bound = false;
@@ -171,7 +177,7 @@ export function relocalize() {
   const el = $('.meeting');
   // The notes field is built again: what was typed goes out first, and stays in the new field.
   const area = $('.meeting .mt-notes-input');
-  const typed = area && (N.dirty || N.saving) ? area.value : null;
+  const typed = area && (N.dirty || N.saving) ? notesToMarkdown(area) : null;
   flushNotes();
   if (el) {
     el.innerHTML = '';
@@ -180,7 +186,7 @@ export function relocalize() {
   renderIndicator();
   if (M.open) renderView();
   const next = $('.meeting .mt-notes-input');
-  if (next && typed !== null) next.value = typed;
+  if (next && typed !== null) next.innerHTML = markdownToNotes(typed);
 }
 
 // The meeting the chat panel follows: the one on screen in meeting mode.
@@ -205,6 +211,7 @@ export function open(id) {
   M.fetched = null;
   M.tab = 'transcript';
   M.frameOpen.clear();
+  M.groupOpen.clear();
   forgetFrames(id);
   saveId(id);
   renderView();
@@ -469,7 +476,6 @@ function bind() {
   el.addEventListener('contextmenu', onContextMenu);
   el.addEventListener('keydown', onViewKey);
   el.addEventListener('input', (e) => {
-    if (e.target.matches('.mt-notes-input')) notesTyped();
     if (e.target.matches('.mt-edit')) grow(e.target);
   });
   el.addEventListener('focusout', (e) => {
@@ -492,7 +498,12 @@ function renderView({ fetched = false } = {}) {
   }
   if (el.dataset.id !== d.meeting.id) {
     el.dataset.id = d.meeting.id;
+    notesEditor?.dispose();
+    notesMenu?.();
     el.innerHTML = shellHtml();
+    const area = el.querySelector('.mt-notes-input');
+    notesEditor = mountRichEditor(el.querySelector('.mt-notes-card'), area, { onChange: notesTyped, cssFormatting: false });
+    notesMenu = editMenu(area);
     fillNotes(d);
     renderTranscript(true, { bottom: true });
   } else if (fetched) {
@@ -553,6 +564,7 @@ function shellHtml() {
     <div class="mt-tabs">${tabs}</div>
     <div class="mt-body">
       <section class="mt-transcript-pane" aria-label="${esc(t('meeting.tabs.transcript'))}">
+        <div class="mt-transcript-head"><span>${esc(t('meeting.tabs.transcript'))}</span><button class="tbtn" data-mt="show-frames" aria-pressed="${M.showFrames}">${icons.monitor}<span>${esc(t('meeting.frame.visibility'))}</span></button></div>
         <div class="mt-scroll" tabindex="-1">
           <ol class="mt-transcript" tabindex="0" aria-label="${esc(t('meeting.transcript.label'))}"></ol>
           <div class="mt-live" aria-live="polite"></div>
@@ -570,7 +582,8 @@ function shellHtml() {
         </section>
         <section class="mt-card mt-notes-card" data-pane="notes">
           <div class="mt-card-head"><h2 class="mt-card-title" id="mt-notes-title">${esc(t('meeting.notes.title'))}</h2><span class="mt-notes-status" aria-live="polite"></span></div>
-          <textarea class="mt-notes-input sel" spellcheck="true" aria-labelledby="mt-notes-title" placeholder="${esc(t('meeting.notes.placeholder'))}"></textarea>
+          <div class="mt-notes-toolbar" role="toolbar" aria-label="${esc(t('composer.format.label'))}">${formatButtons()}<span class="sep"></span><button class="icon-btn sm" data-cmd="formatBlock" data-value="h2" title="${esc(t('meeting.notes.heading'))}" aria-label="${esc(t('meeting.notes.heading'))}">H2</button></div>
+          <div class="mt-notes-input editor sel" contenteditable="true" role="textbox" aria-multiline="true" spellcheck="true" aria-labelledby="mt-notes-title" data-placeholder="${esc(t('meeting.notes.placeholder'))}"></div>
         </section>
       </aside>
     </div>`;
@@ -819,7 +832,7 @@ function passageHtml(p) {
 // A moment the screen changed: a thumbnail, filled in from Voice once the row comes into view (fillFrames), and the
 // first line of the text Voice read on the screen. A click on the thumbnail or the toggle, or Enter on the row,
 // opens it: the image at the row's width and all of its text. The text is whatever was on the screen: esc() only.
-function frameHtml(f) {
+function frameHtml(f, group = [f]) {
   const entry = F.cache.get(f.id) || null;
   const text = frameText(f, entry);
   const lines = text === null ? [] : text.split('\n').map((line) => line.trim()).filter(Boolean);
@@ -834,14 +847,15 @@ function frameHtml(f) {
       : '';
   const rest =
     lines.length > 1
-      ? `<button class="mt-frame-toggle" data-mt="frame" tabindex="-1" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('meeting.frame.showText'))}</span></button>
+      ? `<button class="mt-frame-toggle" data-mt="frame" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('meeting.frame.showText'))}</span></button>
         <div class="mt-frame-rest"><div class="mt-frame-full sel">${esc(lines.slice(1).join('\n'))}</div></div>`
       : '';
   return `<li class="mt-row mt-frame${open ? ' is-open' : ''}" data-key="f:${esc(f.id)}" data-id="${esc(f.id)}" data-at="${f.at}" tabindex="-1">
     <time class="mt-at">${esc(clock(f.at))}</time>
     <div class="mt-main">
-      <button class="mt-shot" data-mt="frame" tabindex="-1" aria-expanded="${open}" aria-label="${label}" style="--ar: ${ratio}">${icons.monitor}<img alt="${label}" loading="lazy" decoding="async" hidden></button>
-      <div class="mt-frame-body">${first}${note ? `<div class="mt-frame-note">${esc(note)}</div>` : ''}${rest}</div>
+      <button class="mt-shot" data-mt="frame" aria-expanded="${open}" aria-label="${label}" style="--ar: ${ratio}">${icons.monitor}<img alt="${label}" loading="lazy" decoding="async" hidden></button>
+      <div class="mt-frame-body">${first}${note ? `<div class="mt-frame-note">${esc(note)}</div>` : ''}${rest}${group.length > 1 ? `<button class="mt-frame-count" data-mt="frame-group" aria-expanded="${M.groupOpen.has(f.id)}" aria-label="${esc(t('meeting.frame.group', { count: group.length - 1 }))}">+${group.length - 1}</button>` : ''}</div>
+      ${group.length > 1 ? `<ol class="mt-frame-strip" ${M.groupOpen.has(f.id) ? '' : 'hidden'}>${group.slice(1).map((x) => frameHtml(x)).join('')}</ol>` : ''}
     </div>
   </li>`;
 }
@@ -853,7 +867,10 @@ function items(d) {
   const dictated = (k) => d.passages.some((p) => p.dictation && p.start < (Number.isFinite(k.until) ? k.until : Infinity) && p.end > k.at);
   for (const k of d.marks) if (!(k.kind === 'dictation' && dictated(k))) out.push({ key: `k:${k.id}`, at: k.at, order: 0, html: () => markHtml(k) });
   // A frame sits at the moment the screen changed, after a mark and before a passage that start then.
-  for (const f of d.frames || []) out.push({ key: `f:${f.id}`, at: f.at, order: 0.5, html: () => frameHtml(f) });
+  if (M.showFrames) for (const group of foldFrames(d.frames || [])) {
+    const f = group[0];
+    out.push({ key: `f:${f.id}`, at: f.at, order: 0.5, html: () => frameHtml(f, group) });
+  }
   for (const p of d.passages) out.push({ key: `p:${p.id}`, at: p.start, order: 1, html: () => passageHtml(p) });
   return out.sort((a, b) => a.at - b.at || a.order - b.order || (a.key < b.key ? -1 : 1));
 }
@@ -910,6 +927,8 @@ function updateRows(keys, removedKeys) {
   const stick = atBottom(sc);
   for (const key of removedKeys) list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.remove();
   const byKey = new Map(items(d).map((x) => [x.key, x]));
+  // A new frame can change an earlier group's count or split it after OCR arrives.
+  if (keys.some((key) => key.startsWith('f:'))) keys = [...keys, ...[...byKey.keys()].filter((key) => key.startsWith('f:'))];
   // A row whose item is gone, such as a dictation mark once its words arrived.
   for (const row of [...list.children]) if (!byKey.has(row.dataset.key)) row.remove();
   let added = false;
@@ -922,6 +941,9 @@ function updateRows(keys, removedKeys) {
     const row = tmp.content.firstElementChild;
     const old = list.querySelector(`[data-key="${CSS.escape(key)}"]`);
     const hadFocus = old && old === document.activeElement;
+    const active = old?.contains(document.activeElement) ? document.activeElement : null;
+    const activeFrame = active?.closest('.mt-frame')?.dataset.id;
+    const activeAction = active?.dataset.mt;
     if (old) old.remove();
     else added = true;
     const k = rowKey(row);
@@ -933,6 +955,10 @@ function updateRows(keys, removedKeys) {
     }
     list.insertBefore(row, next);
     if (hadFocus) row.focus({ preventScroll: true });
+    else if (activeFrame && activeAction) {
+      const frame = row.dataset.id === activeFrame ? row : row.querySelector(`[data-id="${CSS.escape(activeFrame)}"]`);
+      frame?.querySelector(`[data-mt="${CSS.escape(activeAction)}"]`)?.focus({ preventScroll: true });
+    }
   }
   continuations();
   fillFrames();
@@ -1352,7 +1378,10 @@ async function setEvent(eventId) {
 // The notes editor saves a moment after typing stops and when it loses focus, with the revision it started from.
 // queued holds texts waiting while another save runs, by meeting: captured when the save was asked for, so opening
 // another meeting meanwhile can't lose what was typed in the one before.
-const N = { id: null, rev: 0, dirty: false, saving: false, queued: new Map(), timer: null };
+// blocked holds oversized drafts for the current session; they leave the saved copy untouched.
+let notesEditor = null;
+let notesMenu = null;
+const N = { id: null, rev: 0, dirty: false, saving: false, queued: new Map(), blocked: new Map(), timer: null };
 
 function fillNotes(d) {
   const area = $('.meeting .mt-notes-input');
@@ -1360,9 +1389,10 @@ function fillNotes(d) {
   N.id = d.meeting.id;
   N.rev = d.notes ? d.notes.rev : 0;
   N.dirty = false;
-  area.value = d.notes ? d.notes.text : '';
-  area.disabled = false;
-  notesStatus(d.notes && d.notes.updatedAt ? t('meeting.notes.saved') : '');
+  const blocked = N.blocked.get(N.id);
+  area.innerHTML = markdownToNotes(blocked ?? (d.notes ? d.notes.text : ''));
+  area.contentEditable = "true";
+  notesStatus(blocked !== undefined ? t('meeting.notes.tooLong') : d.notes && d.notes.updatedAt ? t('meeting.notes.saved') : '', blocked !== undefined);
 }
 
 function notesStatus(text, error = false) {
@@ -1373,6 +1403,7 @@ function notesStatus(text, error = false) {
 }
 
 function notesTyped() {
+  N.blocked.delete(N.id);
   N.dirty = true;
   notesStatus('');
   clearTimeout(N.timer);
@@ -1384,10 +1415,10 @@ function notesArrived(notes) {
   if (!M.data) return;
   M.data.notes = notes;
   const area = $('.meeting .mt-notes-input');
-  if (!area || N.id !== M.data.meeting.id || N.dirty || N.saving || document.activeElement === area) return;
+  if (!area || N.id !== M.data.meeting.id || N.dirty || N.saving || N.blocked.has(N.id) || document.activeElement === area) return;
   if (notes.rev !== N.rev) {
     N.rev = notes.rev;
-    area.value = notes.text;
+    area.innerHTML = markdownToNotes(notes.text);
   }
 }
 
@@ -1397,7 +1428,7 @@ async function saveNotes() {
   const area = $('.meeting .mt-notes-input');
   if (!area || $('.meeting')?.dataset.id !== N.id) return;
   N.dirty = false;
-  N.queued.set(N.id, { text: area.value, rev: N.rev });
+  N.queued.set(N.id, { text: notesToMarkdown(area), rev: N.rev });
   if (!N.saving) await drainNotes();
 }
 
@@ -1413,7 +1444,15 @@ async function drainNotes() {
       try {
         let res = await api('meetingSaveNotes', id, job.text, job.rev);
         if (res && res.conflict) res = await api('meetingSaveNotes', id, job.text, res.rev);
+        if (res && res.tooLong) {
+          // Keep this draft in memory for returning to the meeting. A permanent limit
+          // failure must not retry forever or hold up another meeting's notes.
+          if (!N.queued.has(id)) N.blocked.set(id, job.text);
+          if (N.id === id && !N.dirty && !N.queued.has(id)) notesStatus(t('meeting.notes.tooLong'), true);
+          continue;
+        }
         if (res && !res.conflict) {
+          N.blocked.delete(id);
           // A newer text queued meanwhile goes out with the revision this save made.
           const next = N.queued.get(id);
           if (next) next.rev = res.rev;
@@ -1467,6 +1506,21 @@ async function onClick(e) {
       return recordMenu(b);
     case 'screen':
       return monitorMenu(b);
+    case 'show-frames':
+      M.showFrames = !M.showFrames;
+      localStorage.setItem('rukoo.meeting.showFrames', M.showFrames ? '1' : '0');
+      b.setAttribute('aria-pressed', String(M.showFrames));
+      return renderTranscript(true);
+    case 'frame-group': {
+      const row = b.closest('.mt-frame');
+      const id = row.dataset.id;
+      if (M.groupOpen.has(id)) M.groupOpen.delete(id);
+      else M.groupOpen.add(id);
+      row.querySelector('.mt-frame-strip').hidden = !M.groupOpen.has(id);
+      b.setAttribute('aria-expanded', String(M.groupOpen.has(id)));
+      fillFrames();
+      return;
+    }
     case 'frame':
       return toggleFrame(b.closest('.mt-frame'));
     case 'jump': {
@@ -1522,6 +1576,7 @@ async function command(run, done = null) {
 // The transcript is one tab stop: arrows move between its lines, Enter corrects a passage. In the editor Enter saves
 // and Escape cancels.
 function onViewKey(e) {
+  if (e.target.closest('button')) return;
   if (e.target.matches && e.target.matches('.mt-edit')) {
     if (e.key === 'Escape') {
       e.preventDefault();

@@ -63,7 +63,7 @@ Phones on mobile data often reach the tailnet through a relay. The bridge waits 
    ```sh
    hermes mcp test rukoo
    ```
-   It should list Rukoo's twenty-two tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 22 tool(s)`. An older Rukoo on one of your devices serves twenty-one, without `get_meeting_media_link`, twenty, without `get_meeting_clip` as well, sixteen, without the meeting tools, or twelve, without the calendar tools as well; Clark gets the list of whichever device answered last, so update Rukoo everywhere and send `/reload-mcp`. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
+   It should list Rukoo's twenty-two tools. `hermes mcp list` shows the entry, and the gateway log has a line like `MCP server 'rukoo' ... registered 22 tool(s)`. An older Rukoo on one of your devices serves twenty-one, without `get_meeting_media_link`, twenty, without `get_meeting_clip` as well, sixteen, without the meeting tools, or twelve, without the calendar tools as well; The bridge combines the lists of every device that answers, so an older phone does not hide desktop tools. Calls still go to the device that owns the chat; a device without a tool returns an error. Don't use `GET /v1/toolsets` to check: it leaves MCP servers out on purpose.
 
 The first `tools/list` has to reach Rukoo once to fill the cache. After that, Hermes keeps the tools even when Rukoo is closed.
 
@@ -97,6 +97,7 @@ Updating Rukoo doesn't update the bridge. Most releases leave the bridge protoco
 | "Rukoo Mail on ... refused the key" | The key changed in Rukoo while the bridge was using it. Same fix as above. |
 | "The Rukoo bridge has no key" | Add `RUKOO_KEY: ${API_SERVER_KEY}` under the entry's `env:` and check that `API_SERVER_KEY` is in `~/.hermes/.env`, then `/reload-mcp`. |
 | `hermes mcp test rukoo` lists no tools and the error says "The Rukoo bridge has no tool list yet" | The bridge has never reached Rukoo from this machine. The rest of the message says why, in the words of one of the rows above. Fix that, then test again. |
+| The agent is missing tools that this Rukoo has | Download the current `rukoo_bridge.py` to the Hermes machine and send `/reload-mcp`. Keep the desktop open during registration. The bridge logs each device's tool count and serves their combined list; updating Rukoo alone does not update the bridge. |
 | The bridge logs "could not get the device list from Tailscale" | `tailscale` isn't on the PATH Hermes gives the bridge. Set `RUKOO_TAILSCALE` to its full path. |
 
 The bridge logs to stderr with the prefix `rukoo-bridge:`, so its lines end up in the gateway log. It logs a line like `Rukoo is open on laptop` whenever the set of devices changes.

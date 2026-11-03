@@ -1372,10 +1372,10 @@ Object.assign(api, {
     const v = value === null ? null : plainObject(value);
     return voiceService().setSpeaker(meetingId(id), meetingText(speakerId, 100), v && { name: meetingText(v.name, 200), address: meetingText(v.address, 320) });
   },
-  // rev: the notes' revision the editor started from. {rev}, or {conflict, rev, text} when they changed meanwhile.
+  // Notes reject oversized content without clipping it. rev is the editor's starting revision.
   meetingSaveNotes: (id, text, rev) => {
     if (!Number.isInteger(rev) || rev < 0) throw new Error('invalid');
-    return voiceService().saveNotes(meetingId(id), meetingText(text, 100000), rev);
+    return voiceService().saveNotes(meetingId(id), typeof text === 'string' ? text : '', rev);
   },
   // null goes back to the text Voice recognized.
   meetingCorrect: (id, passageId, text) => voiceService().correct(meetingId(id), meetingText(passageId, 100), text === null ? null : meetingText(text, 20000)),

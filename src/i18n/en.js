@@ -9053,6 +9053,9 @@
     "message": "Voices show here once someone speaks.",
     "description": "Meeting view people list before Rukoo Voice reported any voice. src/renderer/meeting.js (renderPeople)"
   },
+  "meeting.frame.visibility": {"message":"Screen","description":"Meeting transcript toggle in meeting.js. Shows or hides screen frames; remembered on this device."},
+  "meeting.frame.group": {"message":"Show {count} more screen frames","description":"Meeting transcript button opening the folded frame strip; count is the number of additional frames."},
+  "meeting.notes.heading": {"message":"Heading","description":"Meeting notes toolbar action applying a level two heading with the shared editor."},
   "meeting.notes.title": {
     "message": "Your notes",
     "description": "Meeting view side column: heading of your notes about the meeting. src/renderer/meeting.js (shellHtml)"
@@ -9072,6 +9075,10 @@
   "meeting.notes.failed": {
     "message": "Not saved",
     "description": "Meeting view: status beside the notes heading when saving failed; Rukoo tries again with the next change. src/renderer/meeting.js (saveNotes)"
+  },
+  "meeting.notes.tooLong": {
+    "message": "Not saved: shorten the notes",
+    "description": "Meeting notes status when serialized Markdown exceeds the storage limit. Saved notes remain unchanged; the pending editor text stays in memory so the user can shorten it. src/renderer/meeting.js (fillNotes, drainNotes)"
   },
   "meeting.state.recording": {
     "message": "Recording",
