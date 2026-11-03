@@ -28,7 +28,7 @@ use voice_meetings::{
     PipelineOptions, PipelineState, StreamOptions, TimedSpeechToText, TimedText, Timing,
     Transcript,
 };
-use voice_protocol::{Passage, Track};
+use voice_protocol::{Passage, ScreenMode, Track};
 
 const WAIT: Duration = Duration::from_secs(60);
 
@@ -354,6 +354,143 @@ fn the_gate_holds_call_windows_at_the_settled_position() {
     let all = events(&log, &rec.id());
     assert_stable_ids(&last_revisions(&all, "call"), &timeline_of(&pieces, 0));
     assert_eq!(last_revisions(&all, "call").len(), 8);
+}
+
+/// A frame of the screen journal at `t`, as the screen process writes one.
+fn frame_line(t: u64) -> Value {
+    json!({"kind":"frame","t":t,"id":format!("f-{t:09}"),"file":format!("screen/frames/f-{t:09}.jpg"),"width":1920,"height":1080,"text":format!("Slide {}", t / 2_000),"ocr":"ok","language":null})
+}
+
+/// 2b: frames and labels in one meeting (contract 3.2). Frames and screen marks go out while the
+/// gate holds the newest call passages, and `done` waits for both: the gate letting go of what it
+/// held at the stop, and the screen journal's `stop`.
+#[test]
+fn frames_and_speakers_together() {
+    let tmp = TempDir::new("speakers-frames");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = Recording::with_screen(&lib, &[Track::Call], ScreenMode::Frames);
+    rec.session(0, 1);
+    rec.journal(json!({"kind":"session","t":40,"wall":1_793_000_000_040u64,"session":1,"pid":7,"resumed":false,"version":1,"mode":"frames","anchor":"boot","screen":"0.1.0"}));
+    let pieces = three_voices(8, 1.5);
+    let length = ms(seconds(&pieces));
+    let call = voices(&pieces);
+    // Model chunks commit 2 s late, so the gate holds the call windows of the last 2 s or more.
+    let d = ScriptedDiarizer::with(|s| s.lag_frames = 200);
+    let mut writer = rec.open_segment("call", 1, 0);
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), labelled(&d));
+    let gate = || {
+        let passages = last_revisions(&events(&log, &rec.id()), "call");
+        let settled = handle.labels().settled_ms.unwrap_or(0);
+        for p in &passages {
+            assert!(p.end <= settled, "{p:?} ends after the settled {settled}");
+        }
+        (passages.len(), settled)
+    };
+
+    // A new slide every 2 s while the call goes on, and the screen locked from 5 to 6 s.
+    let mut frames = Vec::new();
+    for (i, chunk) in call.chunks(4_000).enumerate() {
+        writer.append(chunk).unwrap();
+        let t = (i as u64 + 1) * 250;
+        if t % 2_000 == 0 && t < length {
+            rec.journal(frame_line(t));
+            frames.push(t);
+        }
+        match t {
+            5_000 => rec.journal(json!({"kind":"lock","t":t})),
+            6_000 => rec.journal(json!({"kind":"unlock","t":t})),
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        gate();
+    }
+    let newest = *frames.last().unwrap();
+    let settled = wait_until(
+        "every frame and the lock's gap while the gate holds the call",
+        WAIT,
+        || {
+            let all = events(&log, &rec.id());
+            let sent: Vec<u64> = of(&all, "frame")
+                .iter()
+                .map(|f| f["at"].as_u64().unwrap())
+                .collect();
+            let gap = of(&all, "mark")
+                .into_iter()
+                .any(|m| m["id"] == "gap-screen-5000");
+            let (passages, settled) = gate();
+            (sent == frames && gap && passages >= 3).then_some(settled)
+        },
+    );
+    assert!(
+        settled + 2_000 <= length && settled < newest,
+        "the frame at {newest} went out while the gate held the call at {settled}"
+    );
+    let all = events(&log, &rec.id());
+    let gap = of(&all, "mark")
+        .into_iter()
+        .find(|m| m["id"] == "gap-screen-5000")
+        .unwrap();
+    assert_eq!(
+        (&gap["kind"], &gap["track"], &gap["detail"], &gap["until"]),
+        (
+            &json!("screen_gap"),
+            &json!("screen"),
+            &json!("locked"),
+            &json!(6_000)
+        )
+    );
+    assert!(!handle.state().is_final(), "{:?}", handle.state());
+
+    // The recording stops. The labels finish and the gate lets go of every call passage, but the
+    // meeting isn't done until the screen journal has its stop.
+    rec.close_segment(writer, "call", 1, 0);
+    rec.stop(length);
+    wait_until(
+        "the labels to finish and every call passage to have its speaker",
+        WAIT,
+        || {
+            let call = last_revisions(&events(&log, &rec.id()), "call");
+            (handle.labels().state == LabelState::Finished
+                && call.len() == 8
+                && call.iter().all(|p| p.speaker.is_some()))
+            .then_some(())
+        },
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        !handle.state().is_final(),
+        "done waits for the screen journal's stop: {:?}",
+        handle.state()
+    );
+    rec.journal(json!({"kind":"stop","t":length,"reason":"meeting"}));
+    wait_done(&handle);
+    assert_eq!(handle.labels().speakers, 3);
+    handle.shutdown();
+
+    let all = events(&log, &rec.id());
+    assert_no_repeats(&all);
+    assert_speakers_come_first(&all);
+    assert_no_id_moves(&all);
+    let call = last_revisions(&all, "call");
+    assert_eq!(assert_stable_ids(&call, &timeline_of(&pieces, 0)).len(), 3);
+    let held: Vec<&Found> = call.iter().filter(|p| p.end > settled).collect();
+    assert!(!held.is_empty(), "the gate held call passages at the stop");
+    let done = all
+        .iter()
+        .find(|e| e.event == "meeting.state" && e.data["state"] == "done")
+        .unwrap()
+        .seq;
+    for e in &all {
+        if matches!(e.event.as_str(), "frame" | "mark" | "passage" | "speaker") {
+            assert!(e.seq < done, "{} {} after done", e.event, e.data);
+        }
+    }
+    let sent: Vec<u64> = of(&all, "frame")
+        .iter()
+        .map(|f| f["at"].as_u64().unwrap())
+        .collect();
+    assert_eq!(sent, frames, "every frame once, in order");
 }
 
 /// Call passages of the first revision that end past the settled position: what the gate

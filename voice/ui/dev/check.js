@@ -234,6 +234,20 @@ check('the Speaker labels row shows only with the feature, and says why labels a
   assert.match(await page.locator('[data-a="go:speakers"]').innerText(), /Speaker labels\s+Off/);
 });
 
+check('a Voice with screen recording and speaker labels shows both rows, each from its own feature', async ({ open, page }) => {
+  const rows = async () => ({
+    screen: await page.locator('[data-a^="seg:meetings.screen:"]').count(),
+    speakers: await page.locator('[data-a="go:speakers"]').count()
+  });
+  await open('settings.html?mock=1&lang=en&page=meetings&features=screen,speakers');
+  assert.deepEqual(await rows(), { screen: 3, speakers: 1 });
+  assert.match(await page.locator('[data-a="go:speakers"]').innerText(), /Speaker labels/);
+  await open('settings.html?mock=1&lang=en&page=meetings&features=screen');
+  assert.deepEqual(await rows(), { screen: 3, speakers: 0 }, 'screen alone');
+  await open('settings.html?mock=1&lang=en&page=meetings&features=speakers');
+  assert.deepEqual(await rows(), { screen: 0, speakers: 1 }, 'speakers alone');
+});
+
 check('every reason labels are off shows its text on the Speaker labels page', async ({ open, page }) => {
   for (const [reason, text] of Object.entries(SPEAKER_TEXT)) {
     await open(`settings.html?mock=1&lang=en&page=speakers&speakers=${reason}`);

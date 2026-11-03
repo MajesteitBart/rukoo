@@ -845,6 +845,37 @@ test('marks about the screen say what happened to it, apart from the audio', asy
   await shot('screen-marks-dark-nl');
 });
 
+test('frames and speaker labels in one meeting: each frame sits at its moment, and each voice keeps its row and its lines', async () => {
+  // With speaker labels Voice sends a call voice right before its first passage; frames come between the passages.
+  const id = voiceStarts({ title: 'Design review', screen: 'frames', speakers: [MIC] });
+  await openMeetings();
+  voice.append('speaker', id, callVoice(1));
+  say(id, 'call', 1500, 'Here is the first design.');
+  frameAt(id, 3000, 'Design A\nNavigation on the left');
+  voice.append('speaker', id, callVoice(2));
+  say(id, 'call', 5000, 'I prefer the second one.', { speaker: 'call-2' });
+  say(id, 'mic', 8000, "Let's look at it.");
+  frameAt(id, 9500, 'Design B\nNavigation on top');
+  voice.append('speaker', id, callVoice(3));
+  say(id, 'call', 11000, 'Same here.', { speaker: 'call-3' });
+  await expect(view().locator('.mt-screen')).toHaveText('Screen: frames');
+  await expect(view().locator('.mt-people .mt-person-name')).toHaveText(['You', 'Speaker 1', 'Speaker 2', 'Speaker 3']);
+  await expect(rows()).toHaveCount(4);
+  await expect(rows().locator('.mt-name')).toHaveText(['Speaker 1', 'Speaker 2', 'You', 'Speaker 3']);
+  const keys = await win.locator('.meeting .mt-transcript > li').evaluateAll((els) => els.map((el) => el.dataset.key));
+  expect(keys).toEqual([`p:${pid('call', 1500)}`, `f:${frameId(3000)}`, `p:${pid('call', 5000)}`, `p:${pid('mic', 8000)}`, `f:${frameId(9500)}`, `p:${pid('call', 11000)}`]);
+  await expect(frame(9500).locator('.mt-frame-line')).toHaveText('Design B');
+  // A passage Voice places later moves to its voice; the frames stay where they are.
+  say(id, 'call', 13000, 'One more thing.', { speaker: null });
+  frameAt(id, 14500, 'Design C');
+  await expect(rows().nth(4).locator('.mt-name')).toHaveText('Someone');
+  say(id, 'call', 13000, 'One more thing.', { speaker: 'call-2', revision: 2 });
+  await expect(rows().nth(4).locator('.mt-name')).toHaveText('Speaker 2');
+  await expect(frame(14500)).toHaveCount(1);
+  const after = await win.locator('.meeting .mt-transcript > li').evaluateAll((els) => els.map((el) => el.dataset.key));
+  expect(after.slice(-2)).toEqual([`p:${pid('call', 13000)}`, `f:${frameId(14500)}`]);
+});
+
 test('a meeting Rukoo Voice starts gets Rukoo hidden before Voice captures the screen; a replayed start asks nothing', async () => {
   const acks = [];
   voice.handlers['meeting.protected'] = function (args) {
