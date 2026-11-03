@@ -617,7 +617,7 @@ fn restore_into(
             &check,
         )
     };
-    // Text first: what Voice shows and sends to Rukoo. RUK-108's journal holds the frame text.
+    // Text first: what Voice shows and sends to Rukoo. The screen journal holds the frame text.
     let text = [
         "meeting.json",
         "timeline.jsonl",

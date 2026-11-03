@@ -1753,12 +1753,10 @@ pub(crate) fn meeting_dirs(root: &Path) -> Vec<MeetingDir> {
     dirs
 }
 
-/// Whether the meeting folder holds media retention would remove: `audio/`, or RUK-108's
-/// `screen/frames` or `screen/video`.
+/// Whether the meeting folder holds media retention would remove: `audio/` and the screen media
+/// (`MeetingDir::has_media`).
 pub(crate) fn has_media(meeting_dir: &Path) -> bool {
-    ["audio", "screen/frames", "screen/video"]
-        .iter()
-        .any(|d| meeting_dir.join(d).is_dir())
+    MeetingDir::at(meeting_dir).is_some_and(|dir| dir.has_media())
 }
 
 /// `VACUUM INTO` a fresh file: a consistent copy of a database another process writes.

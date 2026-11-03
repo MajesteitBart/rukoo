@@ -16,7 +16,7 @@ use voice_core::local::{
 };
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{Hints, ProviderError, Recognized, RewriteRequest, Rewriter, SpeechToText};
-use voice_engine::media::{NoScreenMedia, ScreenMedia};
+use voice_engine::media::{RecordedScreen, ScreenMedia};
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
@@ -29,7 +29,7 @@ use voice_engine::{
 };
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
 use voice_sync::protect::{Protector, TestProtector};
-use voice_sync::{NoScreen, ScreenFiles, SyncTiming};
+use voice_sync::{ScreenFiles, SyncTiming};
 
 /// CI machines are slow; every wait is generous.
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -730,10 +730,12 @@ impl Harness {
         let keys = Keys::default();
         let dir = TempDir::new(name);
         let roomy: FreeSpace = Arc::new(|_| Some(ROOMY));
+        // The screen folder as the app reads it; a meeting without a screen recording has none.
+        let screen = Arc::new(RecordedScreen::default());
         Harness {
             free: Arc::new(Mutex::new(roomy)),
-            screen_files: Arc::new(NoScreen),
-            screen_media: Arc::new(NoScreenMedia),
+            screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
+            screen_media: screen,
             sync_timing: SyncTiming::default(),
             protector: Arc::new(TestProtector),
             recorder_exe: dir.join("no-recorder.exe"),

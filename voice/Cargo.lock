@@ -4772,6 +4772,7 @@ dependencies = [
  "voice-protocol",
  "voice-recorder",
  "voice-s3-fake",
+ "voice-screen-files",
  "windows",
  "zeroize",
 ]

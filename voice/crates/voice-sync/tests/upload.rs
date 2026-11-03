@@ -898,3 +898,249 @@ fn backfill_goes_newest_first() {
     let index = indexes(&fake, &key);
     assert_eq!(index[0].meetings.len(), 3);
 }
+
+/// The screen folder through its real journal (written with `JournalWriter`, stand-in JPEG and MP4
+/// bytes): a frame goes up during the meeting once its `frame` line exists, a video file only
+/// after its `video_end` and the timeline's `stop`, the journal after its own `stop`, and the
+/// clips, `screen.json` and `*.tmp` files never (contract 2.1).
+#[test]
+fn screen_files_upload_by_their_journal() {
+    use voice_screen_files::journal::{JournalWriter, Line};
+    let fake = fake();
+    let data = scratch("upload-journal");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::with(
+        &data,
+        Setup {
+            screen: Arc::new(JournalScreen),
+            ..Setup::default()
+        },
+    );
+    let m = Meeting::new(&voice.meetings(), "Journal", 0);
+    let mic1 = m.segment("mic", 1, 0, 16_000);
+    let dir = m.path("");
+    let mut journal = JournalWriter::open(&dir).unwrap();
+    let frame = |t: u64| Line::Frame {
+        t,
+        id: format!("f-{t:09}"),
+        file: format!("screen/frames/f-{t:09}.jpg"),
+        width: 1920,
+        height: 1080,
+        text: "Slide".into(),
+        ocr: "ok".into(),
+        language: None,
+    };
+    journal
+        .write(&Line::Session {
+            t: 400,
+            wall: now_ms(),
+            boot: None,
+            session: 1,
+            pid: 1,
+            resumed: false,
+            version: 1,
+            mode: "video".into(),
+            anchor: "wall".into(),
+            screen: "0.1.0".into(),
+        })
+        .unwrap();
+    journal
+        .write(&Line::Video {
+            t: 450,
+            seq: 1,
+            file: "screen/video/000001.mp4".into(),
+            width: 1920,
+            height: 1080,
+            fps: 15,
+            encoder: "test".into(),
+            hardware: false,
+        })
+        .unwrap();
+    write(&m, "screen/frames/f-000000500.jpg", &jpeg(1));
+    journal.write(&frame(500)).unwrap();
+    // A JPEG the journal doesn't name yet (its OCR runs), the open video file, and files that
+    // never leave this computer.
+    write(&m, "screen/frames/f-000000900.jpg", &jpeg(2));
+    write(&m, "screen/video/000001.mp4", &mp4(40_000));
+    write(&m, "screen/frames/f-000001300.jpg.tmp", &jpeg(3));
+    write(
+        &m,
+        "screen/clips/c-000000000-000001000-000001.mp4",
+        &mp4(9_000),
+    );
+    write(
+        &m,
+        "screen/screen.json",
+        br#"{"pid":1,"port":1,"token":"t","session":1}"#,
+    );
+    voice.connect(&fake.endpoint());
+    assert!(wait_for(WAIT, || voice.sync.status().key.exists));
+    let key = voice.key();
+
+    let ok = wait_for(WAIT, || {
+        uploaded_files(
+            &fake,
+            &key,
+            &m,
+            &["screen/frames/f-000000500.jpg", mic1.as_str()],
+        )
+        .len()
+            == 2
+    });
+    assert!(
+        ok,
+        "a journaled frame goes up while the meeting records: {:?}",
+        fake.log()
+    );
+    let never = [
+        "screen/frames/f-000000900.jpg",
+        "screen/video/000001.mp4",
+        "screen/journal.jsonl",
+        "screen/frames/f-000001300.jpg.tmp",
+        "screen/clips/c-000000000-000001000-000001.mp4",
+        "screen/screen.json",
+    ];
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(uploaded_files(&fake, &key, &m, &never).is_empty());
+
+    // The video file closes, but the meeting still records: video waits for the timeline's stop.
+    journal
+        .write(&Line::VideoEnd {
+            t: 1_400,
+            seq: 1,
+            reason: "pause".into(),
+            bytes: 40_000,
+        })
+        .unwrap();
+    journal.write(&frame(900)).unwrap();
+    voice.sync.nudge();
+    let ok = wait_for(WAIT, || {
+        uploaded_files(&fake, &key, &m, &["screen/frames/f-000000900.jpg"]).len() == 1
+    });
+    assert!(ok, "the frame goes up once the journal names it");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        uploaded_files(&fake, &key, &m, &["screen/video/000001.mp4"]).is_empty(),
+        "video goes up only after the stop"
+    );
+
+    // The timeline stops: the video goes; the journal waits for its own stop.
+    m.stop(1_600);
+    voice.sync.nudge();
+    let ok = wait_for(WAIT, || {
+        uploaded_files(
+            &fake,
+            &key,
+            &m,
+            &["screen/video/000001.mp4", "timeline.jsonl"],
+        )
+        .len()
+            == 2
+    });
+    assert!(
+        ok,
+        "the closed video goes up after the stop: {:?}",
+        fake.log()
+    );
+    assert!(uploaded_files(&fake, &key, &m, &["screen/journal.jsonl"]).is_empty());
+
+    journal
+        .write(&Line::Stop {
+            t: 1_600,
+            reason: "meeting".into(),
+        })
+        .unwrap();
+    journal.sync();
+    voice.sync.nudge();
+    voice.settle(&fake, WAIT);
+    assert_eq!(
+        uploaded_files(&fake, &key, &m, &["screen/journal.jsonl"]).len(),
+        1,
+        "the journal goes up after its stop"
+    );
+    assert!(
+        uploaded_files(
+            &fake,
+            &key,
+            &m,
+            &[
+                "screen/frames/f-000001300.jpg.tmp",
+                "screen/clips/c-000000000-000001000-000001.mp4",
+                "screen/screen.json",
+            ],
+        )
+        .is_empty(),
+        "clips, screen.json and .tmp files never go up"
+    );
+    let listed: Vec<String> = manifest(&fake, &key, &m.id)
+        .unwrap()
+        .files
+        .iter()
+        .map(|f| f.path.clone())
+        .filter(|p| p.starts_with("screen/"))
+        .collect();
+    let mut listed = listed;
+    listed.sort();
+    assert_eq!(
+        listed,
+        [
+            "screen/frames/f-000000500.jpg",
+            "screen/frames/f-000000900.jpg",
+            "screen/journal.jsonl",
+            "screen/video/000001.mp4",
+        ]
+    );
+}
+
+/// A screen journal that can't be read keeps its meeting from counting as synced, so retention
+/// holds its media until a later scan reads it.
+#[test]
+fn an_unreadable_screen_journal_keeps_its_meeting_held() {
+    use std::sync::atomic::AtomicBool;
+    struct Flaky(Arc<AtomicBool>);
+    impl voice_sync::ScreenFiles for Flaky {
+        fn list(
+            &self,
+            _dir: &std::path::Path,
+            _stopped: bool,
+        ) -> std::io::Result<Vec<voice_sync::ScreenFile>> {
+            if self.0.load(Ordering::SeqCst) {
+                Err(std::io::Error::other("the journal is locked"))
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+    let broken = Arc::new(AtomicBool::new(true));
+    let fake = fake();
+    let data = scratch("upload-journal-broken");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::with(
+        &data,
+        Setup {
+            screen: Arc::new(Flaky(Arc::clone(&broken))),
+            ..Setup::default()
+        },
+    );
+    let m = Meeting::new(&voice.meetings(), "Broken journal", 60_000);
+    m.segment("mic", 1, 0, 16_000);
+    m.stop(1_000);
+    m.transcript(&[("mic", 0, 900, "hello")], now_ms());
+    voice.connect(&fake.endpoint());
+    // Everything else and a manifest go up; the scans that follow still can't read the journal.
+    voice.settle(&fake, WAIT);
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert!(
+        voice.sync.holds_media(&m.id, true),
+        "the meeting stays held while its screen journal can't be read"
+    );
+
+    broken.store(false, Ordering::SeqCst);
+    voice.sync.nudge();
+    let ok = wait_for(WAIT, || !voice.sync.holds_media(&m.id, true));
+    assert!(
+        ok,
+        "the hold lets go once a scan reads the journal: {:?}",
+        voice.sync.status()
+    );
+}

@@ -2,8 +2,10 @@
 //! RUK-110 4.5), and media links through `media.open` and `media.read`.
 //!
 //! Like tests/meetings.rs, this binary has its own main (`harness = false`) so it can also be the
-//! recorder: run with `VOICE_ENGINE_TEST_ROLE=recorder` it calls `voice_recorder::run`. Sources
-//! are synthetic tones; no real audio is recorded.
+//! recorder and the screen process: run with `VOICE_ENGINE_TEST_ROLE=recorder` it calls
+//! `voice_recorder::run`, or `voice_screen::run` for arguments without `--track`. Sources are
+//! synthetic tones and the screen tests record the screen process's synthetic screen; no real
+//! audio or screen is recorded.
 
 mod support;
 
@@ -20,11 +22,13 @@ use support::{
 use voice_bridge::{ControlError, EventLog, MediaKind, MediaOpenArgs, MeetingControl};
 use voice_engine::media::ScreenMedia;
 use voice_engine::meetings::controller::ControllerTiming;
+use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::{Engine, StopReason};
-use voice_meetings::TrackReader;
-use voice_protocol::{ErrorCode, MeetingId};
+use voice_meetings::{TrackReader, Transcript};
+use voice_protocol::{ErrorCode, MeetingId, Speaker, Track};
 use voice_recorder::timeline::{self, History, Line};
 use voice_s3_fake::{FakeS3, Op};
+use voice_screen_files::journal::Line as ScreenLine;
 use voice_sync::{ScreenFile, ScreenFileKind, ScreenFiles};
 
 const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
@@ -32,15 +36,24 @@ const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 fn main() {
     if std::env::var(ROLE).as_deref() == Ok("recorder") {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        if let Err(e) = voice_recorder::run(&args) {
-            eprintln!("rukoo-voice-recorder: {e}");
+        // Only the recorder takes `--track`; the screen process never does.
+        if args.iter().any(|a| a == "--track") {
+            if let Err(e) = voice_recorder::run(&args) {
+                eprintln!("rukoo-voice-recorder: {e}");
+                std::process::exit(e.code);
+            }
+        } else if let Err(e) = voice_screen::run(&args) {
+            eprintln!("rukoo-voice-screen: {e}");
             std::process::exit(e.code);
         }
         return;
     }
-    // Single-threaded here, so setting the variable is safe; every recorder started from now on
-    // inherits it.
+    // Single-threaded here, so setting the variables is safe; every recorder and screen process
+    // started from now on inherits them. The screen process takes `--test` only in a development
+    // copy.
     std::env::set_var(ROLE, "recorder");
+    let scratch = std::env::temp_dir().join(format!("voice-engine-sync-{}", std::process::id()));
+    std::env::set_var(voice_core::paths::DATA_DIR_ENV, &scratch);
     let tests: Vec<(&str, fn())> = vec![
         (
             "a_meeting_uploads_while_it_records",
@@ -89,6 +102,19 @@ fn main() {
         (
             "repairing_a_failing_bucket_keeps_held_audio",
             repairing_a_failing_bucket_keeps_held_audio,
+        ),
+        (
+            "screen_files_upload_by_their_rules",
+            screen_files_upload_by_their_rules,
+        ),
+        (
+            "media_open_serves_a_frame_and_a_clip",
+            media_open_serves_a_frame_and_a_clip,
+        ),
+        ("retention_holds_screen_media", retention_holds_screen_media),
+        (
+            "a_restored_meeting_keeps_its_speakers",
+            a_restored_meeting_keeps_its_speakers,
         ),
     ];
     let filters: Vec<String> = std::env::args()
@@ -1002,9 +1028,9 @@ fn media_open_for_video_answers_within_50_ms() {
     fake.stop();
 }
 
-/// The parts of `media_open_serves_a_frame_and_a_clip` that need no real screen recording: a
-/// frame on disk, the same frame fetched back from the bucket, and a clip that went mid-read.
-/// The real cutter's stretches come with RUK-108.
+/// What `media_open_serves_a_frame_and_a_clip` can't reach with a real screen recording: a frame
+/// fetched back while the meeting's other media stays, and a clip that went mid-read, on
+/// stand-in screen files that run on every platform.
 fn media_open_serves_a_frame_and_opens_a_gone_clip_again() {
     let mut h = harness("media-frame", json!({"meetings_retention": "keep"}));
     h.screen_files = Arc::new(StandInScreen);
@@ -1157,6 +1183,463 @@ fn a_restored_meeting_reaches_the_bridge() {
         engine_b.settings_state()["sync"]["restore"]["state"],
         "done"
     );
+    engine_b.shutdown();
+    fake.stop();
+}
+
+// The real screen recording --------------------------------------------------------------------
+
+/// The screen process's synthetic screen, a new slide every second, with Microsoft's software
+/// encoder for video, as in tests/screen.rs.
+const SYNTHETIC_SCREEN: &str =
+    "synthetic:1280x720,change-every=1000,text=Slide,no-hardware,software-encoder";
+
+/// `harness` that also records the screen: this binary as the screen process on the synthetic
+/// screen, and Voice's default screen mode `video`.
+fn screen_harness(name: &str, retention: &str) -> Harness {
+    let mut h = harness(
+        name,
+        json!({"meetings_retention": retention, "meetings_screen": "video"}),
+    );
+    h.screen_exe = std::env::current_exe().unwrap();
+    h.screen_timing = ScreenTiming {
+        poll: Duration::from_millis(100),
+        start_timeout: Duration::from_secs(20),
+        backoff: vec![Duration::from_millis(100), Duration::from_millis(200)],
+        stable_after: Duration::from_secs(60),
+        ping_failures: 3,
+        handshake: Duration::from_millis(500),
+        end_wait: Duration::from_secs(10),
+        reconnect: Duration::from_secs(5),
+    };
+    h.test_screen = Some(SYNTHETIC_SCREEN.into());
+    h
+}
+
+fn journal(data: &Path, id: &str) -> Vec<ScreenLine> {
+    voice_screen_files::journal::read_all(&meeting_dir(data, id)).unwrap_or_default()
+}
+
+fn frames_journaled(data: &Path, id: &str) -> usize {
+    journal(data, id)
+        .iter()
+        .filter(|l| matches!(l, ScreenLine::Frame { .. }))
+        .count()
+}
+
+/// Whether a decrypted object is the screen journal: its first line is the screen process's
+/// `session`, which names its clock `anchor`; the recorder's doesn't.
+fn is_journal(plain: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(plain);
+    text.lines()
+        .next()
+        .and_then(|l| serde_json::from_str::<Value>(l).ok())
+        .is_some_and(|l| l["kind"] == "session" && l.get("anchor").is_some())
+}
+
+/// The first time the fake took an upload of an object, in wall ms.
+fn first_upload(fake: &FakeS3, object: &str) -> Option<u64> {
+    fake.log()
+        .iter()
+        .filter(|l| matches!(l.op, Op::Put | Op::UploadPart) && l.status < 300)
+        .filter(|l| l.key.ends_with(object))
+        .map(|l| l.at)
+        .min()
+}
+
+/// Records `before` ms, pauses for `paused` ms, resumes, records `after` ms more, and stops: two
+/// video files, the first ended by the pause. Waits until the meeting is done.
+fn record_with_pause(engine: &Engine, data: &Path, before: u64, paused: u64, after: u64) -> String {
+    let id = engine.start_meeting().unwrap();
+    wait_recorded(data, &id, before);
+    wait_long(
+        "a frame in the screen journal",
+        Duration::from_secs(30),
+        || frames_journaled(data, &id) > 0,
+    );
+    let control = engine.meeting_control().unwrap();
+    control.pause(&id).unwrap();
+    std::thread::sleep(Duration::from_millis(paused));
+    control.resume(&id).unwrap();
+    wait_long("the second video file", Duration::from_secs(30), || {
+        journal(data, &id)
+            .iter()
+            .any(|l| matches!(l, ScreenLine::Video { seq: 2, .. }))
+    });
+    std::thread::sleep(Duration::from_millis(after));
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_done(data, &id);
+    id
+}
+
+/// Frames go up while the meeting records, after audio; video only after the timeline's stop and
+/// its `video_end`; the journal after its own `stop`; the clips and `screen.json` never (contract
+/// 2.1, spec RUK-110 2.8).
+fn screen_files_upload_by_their_rules() {
+    if !cfg!(windows) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
+    let h = screen_harness("sync-screen", "keep");
+    let fake = fake_s3();
+    let engine = h.start();
+    connect_bucket(&engine, &fake.endpoint());
+    let code = recovery_code(&engine);
+    let id = engine.start_meeting().unwrap();
+    let dir = meeting_dir(&h.data(), &id);
+    wait_recorded(&h.data(), &id, 3000);
+    wait_long(
+        "frames in the bucket while it records",
+        Duration::from_secs(60),
+        || bucket_kinds(&fake, &code).contains(&"jpeg"),
+    );
+    let screen_json =
+        std::fs::read(dir.join("screen").join("screen.json")).expect("a live screen.json");
+    let live = decrypt_all(&fake, &code);
+    assert!(
+        live.iter().any(|(_, p)| support::kind_of(p) == "audio"),
+        "audio goes up with the frames"
+    );
+    assert!(
+        !live.iter().any(|(_, p)| support::kind_of(p) == "mp4"),
+        "no video while the meeting records"
+    );
+    assert!(
+        !live.iter().any(|(_, p)| is_journal(p)),
+        "the journal waits for its stop"
+    );
+    let stopped_at = wall_ms();
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_done(&h.data(), &id);
+    wait_uploaded(&engine);
+
+    let closed = voice_screen_files::media::closed_files(&dir).unwrap();
+    let objects = decrypt_all(&fake, &code);
+    let object_of = |rel: &str| {
+        let bytes = std::fs::read(dir.join(rel)).unwrap();
+        objects
+            .iter()
+            .find(|(_, plain)| *plain == bytes)
+            .map(|(name, _)| name.clone())
+    };
+    let mut frames_before_stop = 0;
+    let mut videos = 0;
+    for (rel, kind) in &closed {
+        let object = object_of(rel).unwrap_or_else(|| panic!("{rel} isn't in the bucket"));
+        let first = first_upload(&fake, &object).expect("an upload");
+        match kind {
+            voice_screen_files::media::ScreenFileKind::Video => {
+                videos += 1;
+                assert!(first >= stopped_at, "{rel} went up before the stop");
+            }
+            voice_screen_files::media::ScreenFileKind::Frame if first < stopped_at => {
+                frames_before_stop += 1
+            }
+            _ => {}
+        }
+    }
+    assert!(videos >= 1, "the meeting recorded video: {closed:?}");
+    assert!(frames_before_stop >= 1);
+    assert!(
+        closed
+            .iter()
+            .any(|(_, k)| *k == voice_screen_files::media::ScreenFileKind::Journal),
+        "the journal is closed after the stop"
+    );
+    assert_eq!(objects.iter().filter(|(_, p)| is_journal(p)).count(), 1);
+    assert!(!dir.join("screen").join("screen.json").exists());
+    assert!(
+        !objects.iter().any(|(_, p)| *p == screen_json),
+        "screen.json never goes up"
+    );
+
+    // A clip cut for Rukoo stays on this computer.
+    let control = engine.meeting_control().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut clip = control.clip(&id, 0, 2000, deadline).unwrap();
+    wait_long("a cut clip", Duration::from_secs(60), || {
+        if clip["clips"].as_array().is_some_and(|c| !c.is_empty()) {
+            return true;
+        }
+        clip = control
+            .clip(&id, 0, 2000, Instant::now() + Duration::from_secs(4))
+            .unwrap();
+        false
+    });
+    let clip_path = PathBuf::from(clip["clips"][0]["path"].as_str().unwrap());
+    let clip_bytes = std::fs::read(&clip_path).unwrap();
+    engine
+        .settings_set("storage.sync.enabled", json!(true))
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    wait_uploaded(&engine);
+    assert!(
+        !decrypt_all(&fake, &code)
+            .iter()
+            .any(|(_, p)| *p == clip_bytes),
+        "a clip never goes up"
+    );
+    engine.shutdown();
+    fake.stop();
+}
+
+/// A frame and a stretch of video through `media.open` and `media.read`, from this computer and
+/// again after retention removed them and sync fetched them back. A range across a pause gives
+/// one stretch, with the shorter end (contract 2.3).
+fn media_open_serves_a_frame_and_a_clip() {
+    if !cfg!(windows) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
+    let h = screen_harness("media-screen", "after_transcription");
+    let fake = fake_s3();
+    let engine = h.start();
+    connect_bucket(&engine, &fake.endpoint());
+    // Nothing reaches the bucket yet, so retention holds the media while the test reads it.
+    fake.faults().refuse = true;
+    let id = record_with_pause(&engine, &h.data(), 3000, 1500, 2500);
+    let dir = meeting_dir(&h.data(), &id);
+    let lines = journal(&h.data(), &id);
+    let pause_end = lines
+        .iter()
+        .find_map(|l| match l {
+            ScreenLine::VideoEnd {
+                seq: 1, t, reason, ..
+            } => {
+                assert_eq!(reason, "pause");
+                Some(*t)
+            }
+            _ => None,
+        })
+        .expect("the first video file ends at the pause");
+    let stop = lines
+        .iter()
+        .find_map(|l| match l {
+            ScreenLine::Stop { t, .. } => Some(*t),
+            _ => None,
+        })
+        .unwrap();
+    let frame = lines
+        .iter()
+        .find_map(|l| match l {
+            ScreenLine::Frame { t, file, .. } => Some((*t, file.clone())),
+            _ => None,
+        })
+        .unwrap();
+    let jpeg = std::fs::read(dir.join(&frame.1)).unwrap();
+    let control = engine.meeting_control().unwrap();
+    let frame_args = MediaOpenArgs {
+        kind: MediaKind::Frame,
+        ..audio(&id, frame.0 + 10, None)
+    };
+    let video_args = MediaOpenArgs {
+        kind: MediaKind::Video,
+        ..audio(&id, 0, Some(stop))
+    };
+
+    // From this computer: the frame at once, the video once it is cut.
+    let ready = control.media_open(&frame_args).unwrap();
+    assert_eq!(ready["ready"], true, "{ready}");
+    assert_eq!(
+        (&ready["type"], &ready["start"]),
+        (&json!("image/jpeg"), &json!(frame.0))
+    );
+    assert_eq!(read_all(&*control, &ready, 1 << 20), jpeg);
+    let video = open_ready(&*control, &video_args);
+    assert_eq!(video["type"], "video/mp4");
+    let end = video["end"].as_u64().unwrap();
+    assert!(
+        end < stop && end <= pause_end + 100,
+        "one stretch, ending at the pause ({pause_end}), not at the stop ({stop}): {video}"
+    );
+    let clip = read_all(&*control, &video, 1 << 20);
+    assert_eq!(&clip[4..8], b"ftyp");
+
+    // Retention removes the media once it is in the bucket; a link fetches it back.
+    fake.faults().refuse = false;
+    wait_uploaded(&engine);
+    let frames_dir = dir.join("screen").join("frames");
+    let video_dir = dir.join("screen").join("video");
+    wait_long(
+        "retention to remove the screen media",
+        Duration::from_secs(60),
+        || !frames_dir.exists() && !video_dir.exists(),
+    );
+    assert!(
+        dir.join("screen").join("journal.jsonl").is_file(),
+        "the journal stays"
+    );
+    let back = open_ready(&*control, &frame_args);
+    assert_eq!(
+        read_all(&*control, &back, 7_001),
+        jpeg,
+        "the frame came back from the bucket"
+    );
+    let again = open_ready(&*control, &video_args);
+    assert_eq!(again["end"], video["end"], "the same stretch");
+    assert_eq!(
+        read_all(&*control, &again, 1 << 20),
+        clip,
+        "the same clip from the fetched video"
+    );
+    engine.shutdown();
+    fake.stop();
+}
+
+/// A meeting whose video hasn't reached the bucket keeps `screen/video`, with its frames and audio,
+/// past its retention; once it uploaded, the sweep removes them and keeps the journal (contract 2.6).
+fn retention_holds_screen_media() {
+    if !cfg!(windows) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
+    let h = screen_harness("retention-screen", "after_transcription");
+    let fake = fake_s3();
+    let engine = h.start();
+    connect_bucket(&engine, &fake.endpoint());
+    let code = recovery_code(&engine);
+    let id = engine.start_meeting().unwrap();
+    wait_recorded(&h.data(), &id, 3000);
+    wait_long("frames in the bucket", Duration::from_secs(60), || {
+        bucket_kinds(&fake, &code).contains(&"jpeg")
+    });
+    // The bucket stops taking uploads before the video can go up.
+    fake.faults().refuse = true;
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_done(&h.data(), &id);
+    let dir = meeting_dir(&h.data(), &id);
+    // The engine sweeps right after it reads `done`, within a second or two.
+    std::thread::sleep(Duration::from_millis(3000));
+    let video = dir.join("screen").join("video");
+    assert!(video.is_dir(), "video that isn't in the bucket stays");
+    assert!(dir.join("screen").join("frames").is_dir());
+    assert!(dir.join("audio").is_dir());
+    assert!(!bucket_kinds(&fake, &code).contains(&"mp4"));
+
+    fake.faults().refuse = false;
+    wait_long("the uploaded media to go", Duration::from_secs(60), || {
+        !video.exists()
+            && !dir.join("screen").join("frames").exists()
+            && !dir.join("audio").exists()
+    });
+    assert!(bucket_kinds(&fake, &code).contains(&"mp4"));
+    assert!(dir.join("screen").join("journal.jsonl").is_file());
+    engine.shutdown();
+    fake.stop();
+}
+
+/// Speaker ids and labels come back with a restore: data folder A's `transcript.db` is seeded with
+/// three call speakers, `speakers.mode = nemotron` and passages that name them, so no diarizer is
+/// needed; a fresh data folder restores the meeting and sends the same speakers and passages
+/// (contract 2.5).
+fn a_restored_meeting_keeps_its_speakers() {
+    let fake = fake_s3();
+    let a = harness("speakers-a", json!({"meetings_retention": "keep"}));
+    let engine_a = a.start();
+    connect_bucket(&engine_a, &fake.endpoint());
+    let code = recovery_code(&engine_a);
+    let id = record(&engine_a, &a.data(), 3000);
+    wait_uploaded(&engine_a);
+    // The transcript snapshots in the bucket, by object name: a changed one gets a new name.
+    let transcripts = |fake: &FakeS3| -> Vec<String> {
+        decrypt_all(fake, &code)
+            .into_iter()
+            .filter(|(_, plain)| support::kind_of(plain) == "transcript")
+            .map(|(name, _)| name)
+            .collect()
+    };
+    let before = transcripts(&fake);
+    engine_a.shutdown();
+
+    // Labels as a Nemotron meeting has them: call-1 to call-3, each call passage naming one.
+    let dir_a = meeting_dir(&a.data(), &id);
+    let seeded = {
+        let t = Transcript::open(&dir_a).unwrap();
+        for n in 1..=3 {
+            t.save_speaker(&Speaker {
+                id: format!("call-{n}"),
+                track: Track::Call,
+                label: format!("Speaker {n}"),
+            })
+            .unwrap();
+        }
+        t.meta_set(voice_meetings::transcript::MODE_KEY, "nemotron")
+            .unwrap();
+        let mut n = 0;
+        for stored in t.passages().unwrap() {
+            let mut p = stored.passage;
+            if p.track == Track::Call {
+                p.speaker = Some(format!("call-{}", n % 3 + 1));
+                p.revision += 1;
+                n += 1;
+                t.update_passage(&p).unwrap();
+            }
+        }
+        assert!(n >= 1, "the meeting has call passages");
+        t.passages()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.passage.id, s.passage.speaker))
+            .collect::<Vec<_>>()
+    };
+    // A starts again, sees the changed transcript and uploads its new snapshot.
+    let engine_a = a.start();
+    wait_long(
+        "the new transcript snapshot",
+        Duration::from_secs(60),
+        || transcripts(&fake).iter().any(|name| !before.contains(name)),
+    );
+    wait_uploaded(&engine_a);
+    engine_a.shutdown();
+
+    let b = harness("speakers-b", json!({"meetings_retention": "keep"}));
+    let engine_b = b.start();
+    engine_b
+        .settings_sync_key("import", Some(code.clone()))
+        .unwrap();
+    connect_bucket(&engine_b, &fake.endpoint());
+    engine_b.settings_sync_restore("start").unwrap();
+    wait_done(&b.data(), &id);
+    let snapshot = engine_b.meeting_control().unwrap().get(&id).unwrap();
+    let mut speakers: Vec<(String, String)> = snapshot["speakers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_str().unwrap().to_string(),
+                s["label"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    speakers.sort();
+    assert_eq!(
+        speakers
+            .iter()
+            .filter(|(id, _)| id.starts_with("call-"))
+            .cloned()
+            .collect::<Vec<_>>(),
+        (1..=3)
+            .map(|n| (format!("call-{n}"), format!("Speaker {n}")))
+            .collect::<Vec<_>>(),
+        "{snapshot}"
+    );
+    assert!(speakers.iter().any(|(id, _)| id == "mic"));
+    let mut restored: Vec<(String, Option<String>)> = snapshot["passages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["id"].as_str().unwrap().to_string(),
+                p["speaker"].as_str().map(str::to_string),
+            )
+        })
+        .collect();
+    restored.sort();
+    let mut seeded = seeded;
+    seeded.sort();
+    assert_eq!(restored, seeded, "every passage keeps its speaker");
     engine_b.shutdown();
     fake.stop();
 }

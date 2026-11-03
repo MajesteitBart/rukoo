@@ -486,6 +486,29 @@ impl ScreenFiles for TestScreen {
     }
 }
 
+/// The screen folder's own closed-file rules (`voice_screen_files::media::closed_files`), as the engine's
+/// `RecordedScreen` lists them: a frame once the journal names it, a video file after its `video_end`, the
+/// journal after its `stop`; never clips, `screen.json` or `*.tmp`.
+pub struct JournalScreen;
+
+impl ScreenFiles for JournalScreen {
+    fn list(&self, meeting_dir: &Path, _stopped: bool) -> std::io::Result<Vec<ScreenFile>> {
+        use voice_screen_files::media::{closed_files, ScreenFileKind as Kind};
+        Ok(closed_files(meeting_dir)?
+            .into_iter()
+            .map(|(path, kind)| ScreenFile {
+                path,
+                kind: match kind {
+                    Kind::Journal => ScreenFileKind::Journal,
+                    Kind::Frame => ScreenFileKind::Frame,
+                    Kind::Video => ScreenFileKind::Video,
+                },
+                closed: true,
+            })
+            .collect())
+    }
+}
+
 /// A JPEG's structure around stand-in bytes.
 pub fn jpeg(seed: u8) -> Vec<u8> {
     let mut v = vec![

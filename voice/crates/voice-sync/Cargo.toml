@@ -35,6 +35,8 @@ windows = { version = "=0.62.2", features = [
 [dev-dependencies]
 voice-audio = { path = "../voice-audio" }
 voice-s3-fake = { path = "../voice-s3-fake" }
+# The screen folder's format and its closed-file rules, platform-neutral, for upload tests with a real journal.
+voice-screen-files = { path = "../voice-screen-files" }
 
 # Kills a child that uploads, then resumes: the test binary is also the uploader.
 [[test]]
