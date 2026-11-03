@@ -64,15 +64,16 @@ pub(crate) const RUNTIME_DLLS: [&str; 5] = [
     "ggml-cpu.dll",
 ];
 
-/// The Visual C++ runtime the five DLLs import. Voice's own folder holds it; Ownkey's sits one
-/// folder up, in Ownkey's `_internal\`.
-pub(crate) const CRT_DLLS: [&str; 3] = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
+/// The Visual C++ runtime the five DLLs import. Voice's own folder holds it, pinned by the
+/// manifest; Ownkey's sits one folder up, in Ownkey's `_internal\`, pinned by [`OWNKEY_CRT`].
+#[cfg(test)]
+const CRT_DLLS: [&str; 3] = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 
 /// The NeMo-Speech.cpp commit of Ownkey's runtime: the same one Voice builds.
 const OWNKEY_COMMIT: &str = "97a15afa5caa9bce5baaa86c1184103877af4101";
 
 /// The installed Ownkey's build of that commit (2026-10-02): size and SHA-256 per DLL, from its
-/// `runtime.json`. Its MSVC runtime sits one folder up: it has to be there, unhashed.
+/// `runtime.json`. Its MSVC runtime sits one folder up and is pinned too ([`OWNKEY_CRT`]).
 const OWNKEY_RUNTIME: [(&str, u64, &str); 5] = [
     (
         "nemo_speech_asr_c.dll",
@@ -98,6 +99,29 @@ const OWNKEY_RUNTIME: [(&str, u64, &str); 5] = [
         "ggml-cpu.dll",
         786_432,
         "aaecc8a7984d92ca5ec1d3a15a54fcb371e15fb912626d2d31e8bb86cc9e415c",
+    ),
+];
+
+/// The Visual C++ runtime in that Ownkey install's `_internal\`, one folder above its runtime:
+/// size and SHA-256 per DLL (msvcp140 14.51.36247.0, vcruntime140 and vcruntime140_1
+/// 14.44.35211.0). The worker searches that folder for the five DLLs' imports, so a copy that
+/// isn't this one would run in the worker while the five still match. An Ownkey update that
+/// brings another C runtime makes the fallback stop counting, as other DLL hashes do.
+const OWNKEY_CRT: [(&str, u64, &str); 3] = [
+    (
+        "msvcp140.dll",
+        643_512,
+        "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
+    ),
+    (
+        "vcruntime140.dll",
+        124_544,
+        "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066",
+    ),
+    (
+        "vcruntime140_1.dll",
+        49_792,
+        "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f",
     ),
 ];
 
@@ -225,23 +249,17 @@ pub(crate) fn verify_voice(dir: &Path, manifest: &Manifest) -> bool {
         })
 }
 
-/// Ownkey's copy: its five DLLs at the known sizes and hashes, and its C runtime one folder up.
+/// Ownkey's copy: its five DLLs and its C runtime one folder up, all at the known sizes and
+/// hashes.
 pub(crate) fn verify_ownkey(dir: &Path) -> bool {
-    verify_ownkey_with(dir, &OWNKEY_RUNTIME)
+    verify_ownkey_with(dir, &OWNKEY_RUNTIME, &OWNKEY_CRT)
 }
 
-fn verify_ownkey_with(dir: &Path, known: &[(&str, u64, &str)]) -> bool {
-    verify_known(dir, known) && crt_beside(dir)
-}
-
-/// Ownkey's C runtime in the folder above its runtime folder. Without it the DLLs load only on a
-/// PC that has a system copy, so such a folder doesn't count as a runtime.
-fn crt_beside(dir: &Path) -> bool {
-    dir.parent().is_some_and(|up| {
-        CRT_DLLS.iter().all(|name| {
-            fs::symlink_metadata(up.join(name)).is_ok_and(|meta| meta.file_type().is_file())
-        })
-    })
+/// The folder above `dir` has to hold the C runtime the DLLs import, matching `crt`: without it
+/// they load only on a PC that has a system copy, and the worker searches that folder, so an
+/// unknown copy there would run in the worker.
+fn verify_ownkey_with(dir: &Path, known: &[(&str, u64, &str)], crt: &[(&str, u64, &str)]) -> bool {
+    verify_known(dir, known) && dir.parent().is_some_and(|up| verify_known(up, crt))
 }
 
 fn verify_known(dir: &Path, known: &[(&str, u64, &str)]) -> bool {
@@ -479,17 +497,44 @@ mod tests {
             .map(|(name, size, sha)| (name.as_str(), *size, sha.as_str()))
             .collect();
         assert!(verify_known(&ownkey, &known));
-        // The DLLs match, but nothing they import is there.
-        assert!(!verify_ownkey_with(&ownkey, &known));
-        for name in &CRT_DLLS[..2] {
-            fs::write(internal.join(name), "crt").unwrap();
+        for (i, name) in CRT_DLLS.iter().enumerate() {
+            fs::write(internal.join(name), format!("crt {i}")).unwrap();
         }
+        let crt: Vec<(String, u64, String)> = CRT_DLLS
+            .iter()
+            .map(|name| {
+                let path = internal.join(name);
+                (
+                    name.to_string(),
+                    fs::metadata(&path).unwrap().len(),
+                    sha(&path),
+                )
+            })
+            .collect();
+        let crt: Vec<(&str, u64, &str)> = crt
+            .iter()
+            .map(|(name, size, sha)| (name.as_str(), *size, sha.as_str()))
+            .collect();
+        assert!(verify_ownkey_with(&ownkey, &known, &crt));
+        // A C runtime DLL that isn't the known one, at the same size: the worker would load it
+        // while the five still match, so the folder doesn't count.
+        fs::write(internal.join(CRT_DLLS[1]), "crt 9").unwrap();
         assert!(
-            !verify_ownkey_with(&ownkey, &known),
+            !verify_ownkey_with(&ownkey, &known, &crt),
+            "a changed C runtime DLL"
+        );
+        fs::write(internal.join(CRT_DLLS[1]), "crt 1").unwrap();
+        assert!(verify_ownkey_with(&ownkey, &known, &crt));
+        // Nothing the DLLs import is there.
+        fs::remove_file(internal.join(CRT_DLLS[2])).unwrap();
+        assert!(
+            !verify_ownkey_with(&ownkey, &known, &crt),
             "one of three is missing"
         );
-        fs::write(internal.join(CRT_DLLS[2]), "crt").unwrap();
-        assert!(verify_ownkey_with(&ownkey, &known));
+        fs::write(internal.join(CRT_DLLS[2]), "crt 2").unwrap();
+        assert!(verify_ownkey_with(&ownkey, &known, &crt));
+        // The real pins never match these stand-ins.
+        assert!(!verify_ownkey(&ownkey));
         // The worker searches that folder too.
         let info = RuntimeInfo {
             dir: ownkey.clone(),
@@ -543,8 +588,8 @@ mod tests {
 
     #[test]
     fn ownkeys_pins_are_lower_case_sha256() {
-        for (name, size, sha) in OWNKEY_RUNTIME {
-            assert!(RUNTIME_DLLS.contains(&name));
+        for (name, size, sha) in OWNKEY_RUNTIME.into_iter().chain(OWNKEY_CRT) {
+            assert!(RUNTIME_DLLS.contains(&name) || CRT_DLLS.contains(&name));
             assert!(size > 0);
             assert_eq!(sha.len(), 64);
             assert!(sha

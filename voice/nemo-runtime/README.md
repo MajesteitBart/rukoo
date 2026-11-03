@@ -23,7 +23,7 @@ Voice builds this runtime itself, once per pinned commit, because MSVC builds di
 
 Who reads `manifest.json`: voice-core compiles it in to check the `nemo_speech\` folder next to the exe before it offers speaker labels; `voice/scripts/package.ps1` downloads the archive, checks every hash and puts the folder into the installer and the portable zip; `voice/scripts/speaker-assets.ps1 -Runtime` fetches it for the tests.
 
-Until the runtime is published, `archive` is `null` and `files` is empty. Then Voice's own runtime never verifies, a development copy uses Ownkey's runtime read only when its files match Ownkey's known hashes and Ownkey's Visual C++ runtime sits one folder up, the runtime tests skip, and `package.ps1` stops with "Publish the NeMo runtime first".
+Until the runtime is published, `archive` is `null` and `files` is empty. Then Voice's own runtime never verifies, a development copy uses Ownkey's runtime read only when its five DLLs and the Visual C++ runtime one folder up all match the sizes and hashes of Ownkey's known install, the runtime tests skip, and `package.ps1` stops with "Publish the NeMo runtime first".
 
 ## Building it on your computer
 
