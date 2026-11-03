@@ -675,6 +675,46 @@ fn queued_commands_keep_their_deadline() {
 }
 
 #[test]
+fn screen_commands_queued_behind_a_clip_keep_their_deadline() {
+    let bridge = Bridge::start("server-screen-deadline");
+    let (mut client, _) = bridge.client(None, 0);
+    client.command("c-1", "meeting.start", json!({ "screen": "frames" }));
+    assert_eq!(client.read_reply("c-1")["result"]["meeting"], NEW_MEETING);
+    *bridge.control.screen.lock().unwrap() = Some(
+        json!({ "screen": "frames", "state": "recording", "video": false, "frames": true, "monitor": "\\\\.\\DISPLAY1",
+        "monitors": [{ "id": "\\\\.\\DISPLAY2", "name": "Display 2", "width": 1440, "height": 2560, "primary": false }] }),
+    );
+    *bridge.control.clips.lock().unwrap() = Some(json!({ "clips": [] }));
+    bridge.control.slow_clips.store(true, Ordering::SeqCst);
+    // screen.get and screen.select wait for the screen recorder, which can be slow to start or
+    // answer: behind a clip that took its 4 s, they get what is left of their own 4 s.
+    let sent = Instant::now();
+    client.command(
+        "c-2",
+        "clip.get",
+        json!({ "meeting": DONE_MEETING, "start": 0, "end": 300_000 }),
+    );
+    client.command("c-3", "screen.get", json!({ "meeting": NEW_MEETING }));
+    client.command(
+        "c-4",
+        "screen.select",
+        json!({ "meeting": NEW_MEETING, "monitor": "\\\\.\\DISPLAY2" }),
+    );
+    for id in ["c-2", "c-3", "c-4"] {
+        assert_eq!(client.read_reply(id)["ok"], true, "{id}");
+    }
+    let deadlines = bridge.control.screen_deadlines.lock().unwrap().clone();
+    assert_eq!(deadlines.len(), 2);
+    for deadline in deadlines {
+        assert!(
+            deadline >= sent + CLIP_WAIT && deadline < sent + CLIP_WAIT + Duration::from_secs(1),
+            "the deadline isn't CLIP_WAIT after the command arrived: {:?} after it was sent",
+            deadline - sent
+        );
+    }
+}
+
+#[test]
 fn bad_and_unknown_commands_get_error_replies() {
     let bridge = Bridge::start("server-bad-commands");
     let (mut client, _) = bridge.client(None, 0);

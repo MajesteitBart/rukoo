@@ -170,12 +170,17 @@ impl MeetingControl for Control {
         Ok(())
     }
 
-    fn screen(&self, id: &str) -> Result<Value, ControlError> {
-        self.screen.describe(id)
+    fn screen(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
+        self.screen.describe(id, deadline)
     }
 
-    fn select_monitor(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
-        self.screen.select(id, monitor)
+    fn select_monitor(
+        &self,
+        id: &str,
+        monitor: &str,
+        deadline: Instant,
+    ) -> Result<String, ControlError> {
+        self.screen.select(id, monitor, deadline)
     }
 
     fn status(&self) -> Status {

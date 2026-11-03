@@ -528,11 +528,16 @@ impl MeetingControl for ScriptedVoice {
         }
     }
 
-    fn screen(&self, id: &str) -> Result<Value, ControlError> {
+    fn screen(&self, id: &str, _deadline: Instant) -> Result<Value, ControlError> {
         Err(self.no_screen(id))
     }
 
-    fn select_monitor(&self, id: &str, _monitor: &str) -> Result<String, ControlError> {
+    fn select_monitor(
+        &self,
+        id: &str,
+        _monitor: &str,
+        _deadline: Instant,
+    ) -> Result<String, ControlError> {
         Err(self.no_screen(id))
     }
 
