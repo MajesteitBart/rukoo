@@ -332,18 +332,72 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
     const nested = editor.querySelector('li ul li')?.textContent;
     editor.innerHTML = '<div onclick="alert(1)">Safe<script>alert(1)</script><a href="javascript:alert(1)">label</a><img src="https://example.com/track"><button data-mt="stop">Stop</button></div>';
     const clean = markdownToNotes(notesToMarkdown(editor));
-    const variants = ['<div><b>Bold <i>and italic</i></b></div>', '<div><code>a ` b</code></div><pre><code>```example```</code></pre>', '<div>Literal `ticks`</div>', '<ol><li>First<br>More on the first item</li><li>Second</li></ol>', '<div>1. Literal numbering</div><div># Literal heading</div><div></div><div>Last line</div>'].map((html) => {
+    const variants = [
+      '<div><b>Bold <i>and italic</i></b></div>',
+      '<div><code>a ` b</code></div><pre><code>```example```</code></pre>',
+      '<div>Literal `ticks`</div>',
+      '<ol><li>First<br>More on the first item</li><li>Second</li></ol>',
+      '<div>1. Literal numbering</div><div># Literal heading</div><div></div><div>Last line</div>',
+      '<div><a href="https://example.com"><code>a*b</code> and literal * [brackets]</a></div>',
+      '<div><u><code>value</code> and literal * [brackets]</u></div>'
+    ].map((html) => {
       editor.innerHTML = html;
       const first = notesToMarkdown(editor);
       editor.innerHTML = markdownToNotes(first);
       return [first, notesToMarkdown(editor)];
     });
-    return { markdown, again, nested, clean, variants };
+    const blocks = ['First<div>Second</div>', 'First<p>Second</p>', '<div>First</div><div>Second</div>', 'First<div><br></div><div>Third</div>'].map((html) => {
+      editor.innerHTML = html;
+      return notesToMarkdown(editor);
+    });
+    const labels = ['[a\\*b](https://example.com)', '[a\\*b](<https://example.com>)', '<u>a\\*b</u>'].map((text) => {
+      editor.innerHTML = markdownToNotes(text);
+      return editor.textContent;
+    });
+    return { markdown, again, nested, clean, variants, blocks, labels };
   });
   expect(result.again).toBe(result.markdown);
   expect(result.nested).toBe('Training');
   expect(result.clean).toBe('<div>Safelabel</div>');
   for (const [first, second] of result.variants) expect(second).toBe(first);
+  expect(result.blocks).toEqual(['First\nSecond', 'First\nSecond', 'First\nSecond', 'First\n\nThird']);
+  expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
+});
+
+test('typed note lines and formatted link labels survive saving, view changes and restart', async () => {
+  test.setTimeout(120000);
+  const id = voiceStarts({ title: 'Notes preservation' });
+  say(id, 'call', 1000, 'Please keep each decision on its own line.');
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().fill('First decision');
+  await notes().press('End');
+  await notes().press('Enter');
+  await win.keyboard.type('Second decision');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await expect.poll(() => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe('First decision\nSecond decision');
+  await notes().evaluate((el) => {
+    el.insertAdjacentHTML('beforeend', '<div><a href="https://example.com"><code>plan</code> * [review]</a></div><div><u>Keep * and [brackets]</u></div>');
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  });
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  const stored = await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
+  for (const language of ['en', 'nl']) for (const theme of ['dark', 'light']) {
+    await setLanguage(language);
+    await setTheme(theme);
+    await expect(notes().locator('a')).toHaveText('plan * [review]');
+    await expect(notes().locator('a code')).toHaveText('plan');
+    await expect(notes().locator('u')).toHaveText('Keep * and [brackets]');
+    await shot(`notes-preserved-${theme}-${language}`);
+  }
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Notes preservation');
+  expect(await notes().innerText()).toContain('First decision\nSecond decision');
+  await expect(notes().locator('a')).toHaveText('plan * [review]');
+  await expect(notes().locator('u')).toHaveText('Keep * and [brackets]');
+  expect(await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe(stored);
 });
 
 test('records the Stand-up from its card: Rukoo hides first, the transcript streams in, and Stop ends it', async () => {

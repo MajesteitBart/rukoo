@@ -5,19 +5,18 @@ import { sanitizeAgentHtml } from './agent/richtext.js';
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const safeHref = (s) => /^(https?:|mailto:)/i.test(s);
 
-function inline(text) {
-  const slots = [];
+function inline(text, slots = []) {
   const keep = (html) => `\u0000${slots.push(html) - 1}\u0000`;
   let s = text.replace(/\\([\\`*_{}\[\]()#+.!<>~-])|(`+)([^\n]*?)\2(?!`)/g, (_, escaped, ticks, c) => {
     if (escaped) return keep(esc(escaped));
     if (c.startsWith(' ') && c.endsWith(' ') && c.trim()) c = c.slice(1, -1);
     return keep(`<code>${esc(c)}</code>`);
   });
-  s = s.replace(/\[([^\]\n]+)\]\(<([^>]+)>\)/g, (_, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label)}</a>`) : keep(inline(label)));
-  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label)}</a>`) : keep(inline(label)));
-  s = s.replace(/<u>(.*?)<\/u>/g, (_, c) => keep(`<u>${inline(c)}</u>`));
+  s = s.replace(/\[([^\]\n]+)\]\(<([^>]+)>\)/g, (_, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots)}</a>`) : keep(inline(label, slots)));
+  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots)}</a>`) : keep(inline(label, slots)));
+  s = s.replace(/<u>(.*?)<\/u>/g, (_, c) => keep(`<u>${inline(c, slots)}</u>`));
   s = esc(s).replace(/\*\*(\S[\s\S]*?)\*\*/g, '<b>$1</b>').replace(/\*(\S[^*]*?)\*/g, '<i>$1</i>').replace(/~~(\S.*?)~~/g, '<s>$1</s>');
-  // Resolve nested inline slots, such as a link label with an escaped Markdown character.
+  // Recursive labels share the table that owns their escaped text and code placeholders.
   for (let i = 0; i <= slots.length; i++) s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)]);
   return s;
 }
@@ -71,7 +70,18 @@ const ticksFor = (text, min = 1) => '`'.repeat(Math.max(min, ...[...text.matchAl
 export function notesToMarkdown(editor) {
   // Parse inertly and strip controls and styles before serializing a paste.
   const doc = new DOMParser().parseFromString(sanitizeAgentHtml(editor.innerHTML), 'text/html');
-  const children = (el) => [...el.childNodes].map(write).join('');
+  const blocks = new Set(['DIV', 'P', 'H1', 'H2', 'H3', 'UL', 'OL', 'BLOCKQUOTE', 'PRE', 'HR']);
+  const children = (el) => {
+    let text = '';
+    for (const child of el.childNodes) {
+      const next = write(child);
+      // Chromium can leave a bare text node before the DIV created by Enter. A block
+      // starts a new line there too, without adding a blank line after an adjacent block.
+      if (blocks.has(child.tagName) && text && !text.endsWith('\n')) text += '\n';
+      text += next;
+    }
+    return text;
+  };
   function write(node) {
     if (node.nodeType === Node.TEXT_NODE) return escapeMarkdown(node.textContent.replace(/\u00a0/g, ' '));
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
@@ -92,7 +102,7 @@ export function notesToMarkdown(editor) {
         return safeHref(href) ? `[${body()}](<${href.replace(/>/g, '%3E').replace(/</g, '%3C')}>)` : body();
       }
       case 'H1': case 'H2': case 'H3': return `${'#'.repeat(Number(node.tagName[1]))} ${body().trim()}\n`;
-      case 'UL': case 'OL': return (node.parentElement.tagName === 'LI' ? '\n' : '') + [...node.children].filter((n) => n.tagName === 'LI').map((li, i) => {
+      case 'UL': case 'OL': return [...node.children].filter((n) => n.tagName === 'LI').map((li, i) => {
         const content = children(li).replace(/\n+$/, '');
         const lines = content.split('\n');
         return `${node.tagName === 'UL' ? '-' : `${i + 1}.`} ${lines[0]}\n${lines.slice(1).map((l) => `    ${l}\n`).join('')}`;
